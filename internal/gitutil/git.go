@@ -90,7 +90,13 @@ func repoTreePath(ctx context.Context, repo, path string) (string, error) {
 }
 
 func RevParse(ctx context.Context, repo, rev string) (string, error) {
-	out, err := run(ctx, repo, "git", "rev-parse", rev)
+	// --verify --end-of-options: rev can be a caller-supplied label (e.g. a
+	// diff --base/--head argument). Plain `git rev-parse --end-of-options
+	// <rev>` still just ECHOES an option-shaped arg back on its own output
+	// line instead of rejecting it (rev-parse's parseopt-style passthrough
+	// for shell scripts) -- --verify is what turns "not a revision" into a
+	// hard, single-line failure instead of a silently wrong resolution.
+	out, err := run(ctx, repo, "git", "rev-parse", "--verify", "--end-of-options", rev)
 	if err != nil {
 		return "", err
 	}
@@ -98,7 +104,10 @@ func RevParse(ctx context.Context, repo, rev string) (string, error) {
 }
 
 func FirstParent(ctx context.Context, repo, rev string) (string, error) {
-	out, err := run(ctx, repo, "git", "rev-parse", rev+"^")
+	// --verify --end-of-options: rev is a caller-supplied revision label
+	// (e.g. the `entire commit <rev>` CLI argument); guard it the same way
+	// RevParse does.
+	out, err := run(ctx, repo, "git", "rev-parse", "--verify", "--end-of-options", rev+"^")
 	if err != nil {
 		return "", fmt.Errorf("resolve first parent for %s: %w", rev, err)
 	}

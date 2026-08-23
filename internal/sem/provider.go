@@ -376,6 +376,9 @@ type ProviderSnapshotOptions struct {
 	// (see searchSnapshotKey), so a forced rebuild refreshes the same entry every
 	// other reader serves.
 	ForceRebuild bool
+	// cachePolicy is an immutable, bounded capture of external ignore inputs.
+	// Cache pipelines set it once and carry it through keying and construction.
+	cachePolicy *capturedIgnorePolicy
 }
 
 type BuildPhase string
@@ -760,8 +763,12 @@ type sourceContext struct {
 	read       contentReader
 	readPrefix prefixReader
 	oversize   oversizeReader
-	close      func() error
-	warnings   []ProviderWarning
+	// ignores is the exact matcher that admitted paths. Search carries it to
+	// whole-tree Git-grep filtering so no second policy-file read can diverge
+	// from the corpus listing.
+	ignores  ignoreMatcher
+	close    func() error
+	warnings []ProviderWarning
 }
 
 // oversizeAt reports the oversize record for path when the source has one.
@@ -1427,6 +1434,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 	opened, err := openSource(ctx, absRepo, committedRevision, sourceOptions{
 		ignoreFiles:  options.IgnoreFiles,
 		includeFiles: options.IncludeFiles,
+		cachePolicy:  options.cachePolicy,
 		maxReadBytes: resolveMaxParseBytes(options.MaxParseBytes),
 		maxFiles:     options.MaxFiles,
 	})
@@ -1480,6 +1488,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		read:       opened.read,
 		readPrefix: opened.readPrefix,
 		oversize:   opened.oversize,
+		ignores:    opened.ignores,
 		close:      opened.close,
 		warnings:   warnings,
 	}, nil
@@ -9746,6 +9755,7 @@ func externalParts(id string) (string, string) {
 type sourceOptions struct {
 	ignoreFiles  []string
 	includeFiles []string
+	cachePolicy  *capturedIgnorePolicy
 	// maxReadBytes caps how large a file the content reader will materialize.
 	// Zero or negative removes the cap.
 	maxReadBytes int
@@ -9762,6 +9772,7 @@ type openedSource struct {
 	read       contentReader
 	readPrefix prefixReader
 	oversize   oversizeReader
+	ignores    ignoreMatcher
 	// prime deterministically admits the final filtered committed-tree paths
 	// to any shared bounded metadata reader before parallel workers start.
 	prime    func([]string) error
@@ -9783,7 +9794,15 @@ type openedSource struct {
 func openSource(ctx context.Context, repo, committedRevision string, options sourceOptions) (openedSource, error) {
 	maxReadBytes := int64(options.maxReadBytes)
 	if committedRevision != "" {
-		ignores, err := loadExplicitIgnoreMatcher(repo, options.ignoreFiles, options.includeFiles)
+		var ignores ignoreMatcher
+		var err error
+		if options.cachePolicy != nil {
+			if err = options.cachePolicy.validate(repo, options.ignoreFiles, options.includeFiles); err == nil {
+				ignores, err = options.cachePolicy.matcher()
+			}
+		} else {
+			ignores, err = loadExplicitIgnoreMatcher(repo, options.ignoreFiles, options.includeFiles)
+		}
 		if err != nil {
 			return openedSource{}, err
 		}
@@ -9891,6 +9910,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			read:       read,
 			readPrefix: readPrefix,
 			oversize:   oversize,
+			ignores:    ignores,
 			prime:      prime,
 			close:      closeReaders,
 			warnings:   warnings,
@@ -9945,6 +9965,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		read:       read,
 		readPrefix: readPrefix,
 		oversize:   registry.lookup,
+		ignores:    ignores,
 		warnings:   warnings,
 	}, nil
 }

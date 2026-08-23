@@ -445,54 +445,14 @@ func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
 
 func (m *ignoreMatcher) loadPath(file string, includeMode, required bool) error {
 	label := ignoreFileLabel(includeMode)
-	info, err := os.Stat(file)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
-		if !required {
-			// ENOTDIR: a parent component is not a directory, so the file cannot
-			// exist. For an optional exclude file that is absence, never a hard
-			// failure.
-			return nil
-		}
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%s %q does not exist", label, file)
-		}
-	}
+	content, present, err := readBoundedRegularFile(file, label, required, maxIgnoreFileBytes)
 	if err != nil {
-		return fmt.Errorf("read %s %q: %w", label, file, err)
+		return err
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s %q is not a regular file", label, file)
+	if !present {
+		return nil
 	}
-	if info.Size() > maxIgnoreFileBytes {
-		return fmt.Errorf(
-			"read %s %q: file exceeds %d bytes",
-			label,
-			file,
-			maxIgnoreFileBytes,
-		)
-	}
-
-	opened, err := os.Open(file)
-	if err != nil {
-		return fmt.Errorf("read %s %q: %w", label, file, err)
-	}
-	defer opened.Close()
-	openedInfo, err := opened.Stat()
-	if err != nil {
-		return fmt.Errorf("read %s %q: %w", label, file, err)
-	}
-	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
-		return fmt.Errorf("%s %q changed while opening", label, file)
-	}
-	if openedInfo.Size() > maxIgnoreFileBytes {
-		return fmt.Errorf(
-			"read %s %q: file exceeds %d bytes",
-			label,
-			file,
-			maxIgnoreFileBytes,
-		)
-	}
-	if err := m.loadReader(io.LimitReader(opened, maxIgnoreFileBytes+1), includeMode); err != nil {
+	if err := m.loadReader(bytes.NewReader(content), includeMode); err != nil {
 		return fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	return nil
@@ -543,33 +503,82 @@ func (m *ignoreMatcher) loadReader(source io.Reader, includeMode bool) error {
 }
 
 func readSmallRegularFile(file string, limit int64) ([]byte, error) {
+	content, _, err := readBoundedRegularFile(file, "Git indirection file", true, limit)
+	return content, err
+}
+
+// readBoundedRegularFile is the one policy for every external ignore/include
+// read, including cache-key derivation. It follows symlinks to regular files,
+// but refuses directories, devices, pipes, sockets, identity swaps, and growth
+// past limit. Optional means only that a genuinely absent path is allowed.
+func readBoundedRegularFile(file, label string, required bool, limit int64) ([]byte, bool, error) {
 	info, err := os.Stat(file)
-	if err != nil {
-		return nil, err
+	if isMissingPathError(err) {
+		if required {
+			return nil, false, fmt.Errorf("%s %q does not exist", label, file)
+		}
+		return nil, false, nil
 	}
-	if !info.Mode().IsRegular() || info.Size() > limit {
-		return nil, fmt.Errorf("file is not a regular file of at most %d bytes", limit)
-	}
-	opened, err := os.Open(file)
 	if err != nil {
-		return nil, err
+		return nil, false, fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("%s %q is not a regular file", label, file)
+	}
+	if info.Size() > limit {
+		return nil, false, fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, limit)
+	}
+	opened, err := openBoundedRegularFile(file)
+	if isMissingPathError(err) {
+		if required {
+			return nil, false, fmt.Errorf("%s %q does not exist", label, file)
+		}
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	defer opened.Close()
+	content, err := readOpenedBoundedRegularFile(opened, info, file, label, limit)
+	if err != nil {
+		return nil, false, err
+	}
+	return content, true, nil
+}
+
+// readOpenedBoundedRegularFile validates the description that will actually be
+// read. Keeping this step separate also makes identity and growth checks
+// deterministic to test without weakening the production path with hooks.
+func readOpenedBoundedRegularFile(opened *os.File, expected os.FileInfo, file, label string, limit int64) ([]byte, error) {
 	openedInfo, err := opened.Stat()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read %s %q: %w", label, file, err)
 	}
-	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) || openedInfo.Size() > limit {
-		return nil, errors.New("file changed while opening")
+	regular, err := openedFileIsRegular(opened, openedInfo)
+	if err != nil {
+		return nil, fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	if !regular {
+		return nil, fmt.Errorf("%s %q is not a regular file", label, file)
+	}
+	if !os.SameFile(expected, openedInfo) {
+		return nil, fmt.Errorf("%s %q changed while opening", label, file)
+	}
+	if openedInfo.Size() > limit {
+		return nil, fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, limit)
 	}
 	content, err := io.ReadAll(io.LimitReader(opened, limit+1))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	if int64(len(content)) > limit {
-		return nil, fmt.Errorf("file exceeds %d bytes", limit)
+		return nil, fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, limit)
 	}
 	return content, nil
+}
+
+func isMissingPathError(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 func ignoreFileLabel(includeMode bool) string {

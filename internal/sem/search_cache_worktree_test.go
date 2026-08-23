@@ -31,11 +31,9 @@ func cacheTestRepo(t *testing.T) string {
 	return repo
 }
 
-// A working-tree snapshot of a CLEAN tree is exactly a snapshot of HEAD's
-// content, so it may be cached — that is what stops the relation verbs, which
-// index the whole repository, from re-indexing on every call. A dirty tree must
-// still bypass the cache entirely.
-func TestWorktreeSnapshotCachesOnlyWhileTreeMatchesHEAD(t *testing.T) {
+// Worktree queries always rebuild until raw worktree equality can be checked
+// without invoking repository-selected Git conversion filters.
+func TestWorktreeSnapshotAlwaysBypassesCache(t *testing.T) {
 	repo := cacheTestRepo(t)
 	cacheDir := t.TempDir()
 	options := ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull, NoNetwork: true}
@@ -55,23 +53,22 @@ func TestWorktreeSnapshotCachesOnlyWhileTreeMatchesHEAD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hit {
-		t.Fatal("clean worktree query did not reuse the cached index")
+	if hit {
+		t.Fatal("clean worktree query reused the cache")
 	}
 	if len(second.Symbols) != len(first.Symbols) {
-		t.Fatalf("cached snapshot differs: %d symbols vs %d", len(second.Symbols), len(first.Symbols))
+		t.Fatalf("rebuilt snapshot differs: %d symbols vs %d", len(second.Symbols), len(first.Symbols))
 	}
 	// A working-tree snapshot keeps its provenance warning; it must not be
 	// silently replaced by a committed-tree entry.
 	if !hasWarningCode(second.Header.Warnings, "W_WORKTREE_SNAPSHOT") {
-		t.Fatalf("cached worktree snapshot lost its provenance warning: %#v", second.Header.Warnings)
+		t.Fatalf("rebuilt worktree snapshot lost its provenance warning: %#v", second.Header.Warnings)
 	}
 
 	if err := os.WriteFile(filepath.Join(repo, "app.go"),
 		[]byte("package app\n\nfunc Alpha() { Beta() }\nfunc Beta() {}\nfunc Delta() { Beta() }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	InvalidateWorktreeCleanVerdicts()
 	dirty, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", options, cacheDir, false)
 	if err != nil {
 		t.Fatal(err)
@@ -84,8 +81,8 @@ func TestWorktreeSnapshotCachesOnlyWhileTreeMatchesHEAD(t *testing.T) {
 	}
 }
 
-// An untracked file is indexed by a working-tree walk but absent from HEAD, so
-// its presence alone must disable caching.
+// Working-tree snapshots always bypass persistence; this case verifies that
+// the resulting rebuild observes an untracked source file.
 func TestWorktreeSnapshotBypassesCacheForUntrackedFiles(t *testing.T) {
 	repo := cacheTestRepo(t)
 	cacheDir := t.TempDir()
@@ -96,7 +93,6 @@ func TestWorktreeSnapshotBypassesCacheForUntrackedFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "extra.go"), []byte("package app\n\nfunc Extra() { Beta() }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	InvalidateWorktreeCleanVerdicts()
 	snapshot, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", options, cacheDir, false)
 	if err != nil {
 		t.Fatal(err)
@@ -109,8 +105,8 @@ func TestWorktreeSnapshotBypassesCacheForUntrackedFiles(t *testing.T) {
 	}
 }
 
-// Committed-tree and working-tree entries occupy separate key spaces: neither
-// may be served for the other, because their provenance differs.
+// A committed-tree entry must never serve a worktree query, whose mutable
+// provenance requires a fresh build.
 func TestWorktreeAndHeadSnapshotEntriesDoNotShare(t *testing.T) {
 	repo := cacheTestRepo(t)
 	cacheDir := t.TempDir()
@@ -121,21 +117,19 @@ func TestWorktreeAndHeadSnapshotEntriesDoNotShare(t *testing.T) {
 		t.Fatalf("cold head build = (hit %v, err %v)", hit, err)
 	}
 	// The head entry exists now; a worktree query must still build its own.
-	InvalidateWorktreeCleanVerdicts()
 	if _, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", worktree, cacheDir, false); err != nil || hit {
 		t.Fatalf("worktree query reused a committed-tree entry: (hit %v, err %v)", hit, err)
 	}
-	// And each view now hits its own entry.
+	// The committed view hits its entry, while the worktree still rebuilds.
 	if _, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", head, cacheDir, false); err != nil || !hit {
 		t.Fatalf("head re-query = (hit %v, err %v)", hit, err)
 	}
-	InvalidateWorktreeCleanVerdicts()
 	worktreeSnapshot, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", worktree, cacheDir, false)
-	if err != nil || !hit {
+	if err != nil || hit {
 		t.Fatalf("worktree re-query = (hit %v, err %v)", hit, err)
 	}
 	if !hasWarningCode(worktreeSnapshot.Header.Warnings, "W_WORKTREE_SNAPSHOT") {
-		t.Fatal("worktree entry served without its provenance warning")
+		t.Fatal("rebuilt worktree snapshot omitted its provenance warning")
 	}
 }
 
@@ -153,7 +147,6 @@ func TestWorktreeSnapshotWithoutCommittedHEADIsNotCached(t *testing.T) {
 	options := ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull, NoNetwork: true}
 	cacheDir := t.TempDir()
 	for attempt := 0; attempt < 2; attempt++ {
-		InvalidateWorktreeCleanVerdicts()
 		if _, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", options, cacheDir, false); err != nil || hit {
 			t.Fatalf("attempt %d = (hit %v, err %v), want (false, nil)", attempt, hit, err)
 		}
@@ -178,11 +171,9 @@ func hasSymbolNamed(symbols []SymbolRecord, name string) bool {
 	return false
 }
 
-// The complement of the test above: a file no parser ever opens cannot change a
-// snapshot, so its presence must NOT throw the index away. Before this, a single
-// .DS_Store or a compiled binary in the tree made every query re-index the whole
-// repository from scratch.
-func TestWorktreeSnapshotStillCachesWithUnindexableUntrackedFiles(t *testing.T) {
+// Worktree bypass is unconditional, including when every new path is a file no
+// parser opens. Cache behavior must not depend on a path-eligibility heuristic.
+func TestWorktreeSnapshotBypassesCacheWithUnindexableUntrackedFiles(t *testing.T) {
 	repo := cacheTestRepo(t)
 	cacheDir := t.TempDir()
 	options := ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull, NoNetwork: true}
@@ -192,9 +183,8 @@ func TestWorktreeSnapshotStillCachesWithUnindexableUntrackedFiles(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	// Every name here must carry an extension that maps to no language.
-	// An EXTENSIONLESS path stays conservative on purpose (a shebang can make it
-	// a script), so it keeps bypassing the cache — see the sibling assertion below.
+	// Every name here carries an extension that maps to no language, proving
+	// that unconditional bypass does not depend on whether a parser claims it.
 	for name, content := range map[string]string{
 		".DS_Store":           "\x00\x00binary junk",
 		"entire-graph.bin":    "\x7fELF not source",
@@ -205,24 +195,21 @@ func TestWorktreeSnapshotStillCachesWithUnindexableUntrackedFiles(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	InvalidateWorktreeCleanVerdicts()
 	second, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", options, cacheDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hit {
-		t.Fatal("unindexable untracked files disabled the cache")
+	if hit {
+		t.Fatal("worktree snapshot reused the cache with unindexable untracked files")
 	}
 	if len(second.Symbols) != len(first.Symbols) {
-		t.Fatalf("cached snapshot differs: %d symbols vs %d", len(second.Symbols), len(first.Symbols))
+		t.Fatalf("rebuilt snapshot differs: %d symbols vs %d", len(second.Symbols), len(first.Symbols))
 	}
 
-	// An extensionless untracked file stays conservative: a shebang can make it a
-	// script, so the graph must assume it is indexable and skip the cache.
+	// An extensionless untracked file also leaves unconditional bypass intact.
 	if err := os.WriteFile(filepath.Join(repo, "somebinary"), []byte("\x7fELF"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	InvalidateWorktreeCleanVerdicts()
 	if _, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", options, cacheDir, false); err != nil {
 		t.Fatal(err)
 	} else if hit {
@@ -231,14 +218,10 @@ func TestWorktreeSnapshotStillCachesWithUnindexableUntrackedFiles(t *testing.T) 
 	if err := os.Remove(filepath.Join(repo, "somebinary")); err != nil {
 		t.Fatal(err)
 	}
-	InvalidateWorktreeCleanVerdicts()
-
-	// Adding ONE indexable untracked file alongside them must still bypass: the
-	// forgiveness is per-path, not a blanket "ignore untracked".
+	// Adding one indexable source verifies that the subsequent rebuild exposes it.
 	if err := os.WriteFile(filepath.Join(repo, "extra.go"), []byte("package app\n\nfunc Extra() { Beta() }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	InvalidateWorktreeCleanVerdicts()
 	third, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", options, cacheDir, false)
 	if err != nil {
 		t.Fatal(err)

@@ -251,6 +251,50 @@ func TestSnapshotAcceptsWorktree(t *testing.T) {
 	}
 }
 
+func TestProviderRecordsCacheDoesNotReplaySameTreeCommitHeader(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "main.go", "package sample\n\nfunc Main() {}\n")
+	git(t, repo, "add", "main.go")
+	git(t, repo, "commit", "-m", "initial")
+	cacheDir := t.TempDir()
+
+	run := func() string {
+		t.Helper()
+		var out bytes.Buffer
+		err := Run(t.Context(), Options{
+			Version: "commit-cache-test",
+			Env:     EntireEnv{RepoRoot: repo},
+			Stdout:  &out,
+			Stderr:  io.Discard,
+		}, []string{"snapshot", "--repo", repo, "--format", "ndjson", "--cache-dir", cacheDir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		line, _, ok := bytes.Cut(out.Bytes(), []byte{'\n'})
+		if !ok {
+			t.Fatalf("snapshot omitted header line: %q", out.Bytes())
+		}
+		var header sem.SnapshotHeader
+		if err := json.Unmarshal(line, &header); err != nil {
+			t.Fatalf("decode snapshot header: %v\n%s", err, line)
+		}
+		return header.Commit
+	}
+
+	first := run()
+	git(t, repo, "commit", "--allow-empty", "-m", "same tree, new provenance")
+	second := run()
+	if want := rev(t, repo, "HEAD^{commit}"); second != want {
+		t.Fatalf("same-tree cache replayed commit %q, want current commit %q (first %q)", second, want, first)
+	}
+	if second == first {
+		t.Fatal("empty commit reused the previous snapshot header")
+	}
+}
+
 func TestSnapshotCompactNDJSONRoundTripsToNativeRecords(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "main.go", "package sample\n\nfunc caller() { callee() }\nfunc callee() {}\n")
