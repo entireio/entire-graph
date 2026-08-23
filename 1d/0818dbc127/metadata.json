@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "1d0818dbc127",
+  "strategy": "manual-commit",
+  "branch": "codex/pr132-final-latest-20260822",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/parking-lot.md",
+    "internal/sem/provider.go",
+    "internal/sem/provider_gitdir_unc_windows_test.go",
+    "internal/sem/provider_path_volume_unix_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/1d/0818dbc127/0/metadata.json",
+      "transcript": "/1d/0818dbc127/0/full.jsonl",
+      "compact_transcript": "/1d/0818dbc127/0/transcript.jsonl",
+      "content_hash": "/1d/0818dbc127/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 9672495,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 585687296,
+    "output_tokens": 1385491,
+    "api_call_count": 4893
+  }
+}
