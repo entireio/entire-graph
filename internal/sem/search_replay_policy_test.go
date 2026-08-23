@@ -407,7 +407,7 @@ func requireReplayTestSymlink(t *testing.T, target, link string) {
 	}
 }
 
-func TestReadSearchReplayNestedIgnoreIsBounded(t *testing.T) {
+func TestWorktreeNestedIgnoreReadIsBounded(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	writeFile(t, repo, "nested/.gitignore", "*.generated\n")
@@ -418,12 +418,12 @@ func TestReadSearchReplayNestedIgnoreIsBounded(t *testing.T) {
 	}
 	defer root.Close()
 
-	content, ok, err := readSearchReplayNestedIgnore(root, "nested/.gitignore")
+	content, ok, err := readWorktreeNestedIgnore(root, repo, "nested/.gitignore")
 	if err != nil || !ok || content != "*.generated\n" {
 		t.Fatalf("bounded nested ignore read = (%q, %v, %v)", content, ok, err)
 	}
-	if content, ok, err := readSearchReplayNestedIgnore(root, "oversized/.gitignore"); err != nil || ok || content != "" {
-		t.Fatalf("oversized nested ignore read = (%q, %v, %v), want refused", content, ok, err)
+	if content, ok, err := readWorktreeNestedIgnore(root, repo, "oversized/.gitignore"); err == nil || ok || content != "" {
+		t.Fatalf("oversized nested ignore read = (%q, %v, %v), want reported refusal", content, ok, err)
 	}
 }
 
@@ -531,7 +531,7 @@ func TestSearchReplayPolicyHonorsNestedVendoredReinclude(t *testing.T) {
 	}
 }
 
-func TestSearchReplayPolicyMirrorsGlobalNestedIgnoreCap(t *testing.T) {
+func TestSearchReplayPolicyReportsGlobalNestedIgnoreCap(t *testing.T) {
 	repo := t.TempDir()
 	initRepo(t, repo)
 	writeFile(t, repo, "vendor/.gitignore", "*\n!mypkg/\n!mypkg/**\n")
@@ -554,22 +554,14 @@ func TestSearchReplayPolicyMirrorsGlobalNestedIgnoreCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	providerPaths, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, providerPath := range providerPaths {
-		if providerPath == "vendor/mypkg/kept.go" {
-			t.Fatal("fixture did not push vendor/.gitignore beyond the provider's global cap")
-		}
+	if _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil ||
+		!strings.Contains(err.Error(), "nested-ignore candidates exceed 512") {
+		t.Fatalf("provider nested-ignore cap error = %v", err)
 	}
 
-	after, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.AllowsReplayPaths([]string{"vendor/mypkg/kept.go"}) {
-		t.Fatal("replay admitted a path excluded after its nested rule became the 513th global rule")
+	if _, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true}); err == nil ||
+		!strings.Contains(err.Error(), "nested-ignore candidates exceed") {
+		t.Fatalf("replay nested-ignore cap error = %v", err)
 	}
 }
 

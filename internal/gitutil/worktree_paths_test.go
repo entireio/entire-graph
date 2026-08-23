@@ -383,7 +383,10 @@ func TestFirstWorktreeNestedIgnorePathsPreservesProviderOrder(t *testing.T) {
 	gitCmd(t, repo, "add", "b/.gitignore")
 	gitCmd(t, repo, "commit", "-m", "tracked")
 	write(t, repo, "a/.gitignore", "untracked\n")
-	write(t, repo, ".git/info/exclude", "ignored/\n")
+	// Ignore the policy pathname, not its whole parent directory. Git still
+	// traverses this directory and applies the ignored policy to siblings, so it
+	// remains relevant when the caller admits it.
+	write(t, repo, ".git/info/exclude", "ignored/.gitignore\n")
 	write(t, repo, "ignored/.gitignore", "ignored\n")
 
 	withoutIncludes, err := FirstWorktreeNestedIgnorePaths(t.Context(), repo, 3, nil)
@@ -403,6 +406,115 @@ func TestFirstWorktreeNestedIgnorePathsPreservesProviderOrder(t *testing.T) {
 	want := []string{"a/.gitignore", "b/.gitignore", "ignored/.gitignore"}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("worktree nested ignore paths = %v, want %v", paths, want)
+	}
+}
+
+func TestBoundedWorktreeNestedIgnorePathsCollapseWhollyIgnoredDirectories(t *testing.T) {
+	repo := t.TempDir()
+	gitCmd(t, repo, "init")
+	gitCmd(t, repo, "config", "user.name", "T")
+	gitCmd(t, repo, "config", "user.email", "t@example.com")
+	write(t, repo, ".gitignore", "ignored/\n")
+	gitCmd(t, repo, "add", ".gitignore")
+	gitCmd(t, repo, "commit", "-m", "ignore subtree")
+	for index := 0; index <= nestedIgnoreCandidateMaxCount; index++ {
+		write(t, repo, fmt.Sprintf("ignored/d%03d/.gitignore", index), "# irrelevant\n")
+	}
+
+	paths, err := BoundedWorktreeNestedIgnorePaths(
+		t.Context(), repo, nestedIgnoreCandidateMaxCount, func(string) bool { return true },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("wholly ignored subtree produced nested policy paths %q", paths)
+	}
+}
+
+func TestBoundedNestedIgnorePathsReportOverflow(t *testing.T) {
+	repo := t.TempDir()
+	gitCmd(t, repo, "init")
+	gitCmd(t, repo, "config", "user.name", "T")
+	gitCmd(t, repo, "config", "user.email", "t@example.com")
+	for _, name := range []string{"a/.gitignore", "b/.gitignore", "c/.gitignore"} {
+		write(t, repo, name, "# policy\n")
+	}
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-m", "nested ignores")
+
+	if _, err := BoundedTreeNestedIgnorePaths(t.Context(), repo, "HEAD", 2); err == nil ||
+		!strings.Contains(err.Error(), "exceed 2 paths") {
+		t.Fatalf("bounded tree nested-ignore overflow = %v", err)
+	}
+	if _, err := BoundedWorktreeNestedIgnorePaths(t.Context(), repo, 2, nil); err == nil ||
+		!strings.Contains(err.Error(), "exceed 2 paths") {
+		t.Fatalf("bounded worktree nested-ignore overflow = %v", err)
+	}
+
+	for _, list := range []func() ([]string, error){
+		func() ([]string, error) {
+			return BoundedTreeNestedIgnorePaths(t.Context(), repo, "HEAD", 3)
+		},
+		func() ([]string, error) {
+			return BoundedWorktreeNestedIgnorePaths(t.Context(), repo, 3, nil)
+		},
+	} {
+		paths, err := list()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"a/.gitignore", "b/.gitignore", "c/.gitignore"}; !reflect.DeepEqual(paths, want) {
+			t.Fatalf("bounded nested-ignore paths = %v, want %v", paths, want)
+		}
+	}
+}
+
+func TestBoundedWorktreeNestedIgnorePathsDeduplicatesUnmergedStages(t *testing.T) {
+	repo := t.TempDir()
+	gitCmd(t, repo, "init")
+	gitCmd(t, repo, "config", "user.name", "T")
+	gitCmd(t, repo, "config", "user.email", "t@example.com")
+	// Keep the newline-bearing candidate where the filesystem supports it so
+	// this fixture covers both NUL-safe path handling and unmerged-stage
+	// deduplication. Windows uses an ordinary nested path, but the three-stage
+	// assertion below still makes its native deduplication check non-vacuous.
+	candidate := "odd\nname/.gitignore"
+	if runtime.GOOS == "windows" {
+		candidate = "ordinary/name/.gitignore"
+	}
+	write(t, repo, candidate, "# worktree policy\n")
+	gitCmd(t, repo, "add", candidate)
+	gitCmd(t, repo, "commit", "-m", "nested ignore")
+
+	blobs := []string{
+		gitInputOutput(t, repo, "# base\n", "hash-object", "-w", "--stdin"),
+		gitInputOutput(t, repo, "# ours\n", "hash-object", "-w", "--stdin"),
+		gitInputOutput(t, repo, "# theirs\n", "hash-object", "-w", "--stdin"),
+	}
+	gitCmd(t, repo, "update-index", "--force-remove", "--", candidate)
+	var indexInfo strings.Builder
+	for index, blob := range blobs {
+		fmt.Fprintf(&indexInfo, "100644 %s %d\t%s%c", blob, index+1, candidate, byte(0))
+	}
+	gitInputOutput(t, repo, indexInfo.String(), "update-index", "-z", "--index-info")
+
+	cmd := exec.Command("git", "ls-files", "-z", "--cached", "--", ":(glob)**/.gitignore")
+	cmd.Dir = repo
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git ls-files: %v\n%s", err, out)
+	}
+	if got := strings.Count(string(out), candidate+"\x00"); got != 3 {
+		t.Fatalf("unmerged fixture emitted %d copies of %q, want 3", got, candidate)
+	}
+
+	paths, err := BoundedWorktreeNestedIgnorePaths(t.Context(), repo, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{candidate}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("bounded unmerged nested-ignore paths = %q, want %q", paths, want)
 	}
 }
 

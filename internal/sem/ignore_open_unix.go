@@ -14,6 +14,10 @@ func openBoundedRegularFile(file string) (*os.File, error) {
 	return os.OpenFile(file, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 }
 
+func openRootBoundedRegularFile(root *os.Root, name string) (*os.File, error) {
+	return root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+}
+
 func openedFileIsRegular(_ *os.File, info os.FileInfo) (bool, error) {
 	return info.Mode().IsRegular(), nil
 }

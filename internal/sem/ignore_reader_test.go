@@ -128,6 +128,40 @@ func TestReadOpenedBoundedRegularFileRejectsIdentityAndGrowth(t *testing.T) {
 	}
 }
 
+func TestOpenRootBoundedRegularFileRejectsEscapingAncestorSymlink(t *testing.T) {
+	repo := t.TempDir()
+	external := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "nested", ".gitignore"), []byte("inside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(external, ".gitignore"), []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	// Model the race after the confined Lstat: replace an already-inspected
+	// ancestor with a symlink that points outside the repository.
+	if err := os.RemoveAll(filepath.Join(repo, "nested")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(repo, "nested")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	opened, err := openRootBoundedRegularFile(root, filepath.Join("nested", ".gitignore"))
+	if opened != nil {
+		_ = opened.Close()
+	}
+	if err == nil {
+		t.Fatal("root-confined nested ignore open followed an escaping ancestor symlink")
+	}
+}
+
 func TestCacheKeysPreserveIgnoreInputOrderAndRepeatability(t *testing.T) {
 	repo := t.TempDir()
 	for name, content := range map[string]string{
