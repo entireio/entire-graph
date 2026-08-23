@@ -13,18 +13,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
-	"time"
-
-	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 // searchSnapshotCacheVersion names the on-disk cache directory and is hashed
 // into every entry key, so bumping it moves new entries to a fresh directory
 // and any prior-version directory can simply be deleted wholesale — cleanup is
 // "remove old version dirs" instead of per-entry reachability analysis.
-// (v5 isolated the tree-only key layout; v6, on main, supersedes it.)
-const searchSnapshotCacheVersion = "search-snapshot-v8"
+// v12 retires every entry produced before the final immutable-policy,
+// unconditional-worktree-bypass transaction checks, and shared nested-ignore
+// resource policy were complete.
+const searchSnapshotCacheVersion = "search-snapshot-v12"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -38,12 +36,9 @@ type cachedSearchSnapshot struct {
 	Tree            string  `json:"tree"`
 	Profile         Profile `json:"profile"`
 	MaxParseBytes   int     `json:"max_parse_bytes"`
-	// Worktree records which view produced this entry. Working-tree snapshots
-	// carry provenance a committed-tree snapshot does not (W_WORKTREE_SNAPSHOT),
-	// so the two views never share an entry even when their content is equal.
-	// This became load-bearing when a clean working tree turned cacheable at all
-	// (worktreeSnapshotCacheable): before that, `options.Worktree` bypassed the
-	// cache outright and no working-tree entry could exist to collide.
+	// Worktree is retained for decoding and validating older in-memory fixtures.
+	// Persistent worktree caching is disabled because Git listing inputs and
+	// working-tree contents cannot be pinned to one atomic cache transaction.
 	Worktree bool             `json:"worktree,omitempty"`
 	Snapshot ProviderSnapshot `json:"snapshot"`
 	// FileRecord.Lines, SymbolRecord.Local, and exact symbol byte ranges are
@@ -73,99 +68,12 @@ type cachedSignatureTypes struct {
 	Returns string `json:"returns,omitempty"`
 }
 
-// worktreeCleanTTL bounds how stale a working-tree cleanliness verdict may be.
-// One command issues several snapshot lookups (graph scope, complete preindex,
-// selective build) and must not pay for a `git status` each time; a window this
-// short cannot span an edit that happens between two of them, while a
-// long-lived library consumer still re-checks on every new command.
-const worktreeCleanTTL = 2 * time.Second
-
-type worktreeCleanVerdict struct {
-	clean     bool
-	checkedAt time.Time
-}
-
-var worktreeCleanVerdicts sync.Map // absRepo -> worktreeCleanVerdict
-
-// absOrRepo resolves repo to an absolute path, falling back to the input when
-// that is impossible. It exists so a cleanliness verdict is memoized under the
-// same key the cache lookups use.
-func absOrRepo(repo string) string {
-	if abs, err := filepath.Abs(repo); err == nil {
-		return abs
-	}
-	return repo
-}
-
-// worktreeSnapshotCacheable reports whether these options may be served from,
-// and stored in, the tree-keyed snapshot cache.
-//
-// Committed-tree snapshots always could. A working-tree snapshot may too, but
-// only while the working tree's INDEXABLE content is identical to HEAD: then the
-// tree hash names that content exactly, which is the whole premise of the cache
-// key. This is what makes the relation verbs (neighbors/impact, which index the
-// whole repository) warm on their second call instead of re-indexing from
-// scratch — and it never hides a dirty edit, because a dirty indexable file
-// fails the check and bypasses the cache exactly as before.
-//
-// "Indexable" is the load-bearing word. Requiring a wholly pristine tree made a
-// stray untracked file that no parser ever opens — .DS_Store, a compiled binary,
-// a log, an editor swap file — disable the cache for the entire repository, so
-// every query re-indexed from scratch. A path that cannot contribute a symbol or
-// a relation cannot make a snapshot stale either, so it is not a reason to throw
-// one away.
-//
-// The test is extensionUnsupported, which is what the indexer uses to decide whether to PARSE a
-// file — but parsing is not the only way a file reaches the graph. buildManifestImportResolver
-// also reads the CONTENT of the repo-root manifests, and two of those (go.mod, setup.cfg) carry
-// no supported extension while deciding how every import in the repository resolves. Forgiving
-// them served a snapshot whose call edges were still resolved against the previous module path.
-// They are excluded by name through isManifestImportFile, and TestManifestImportFilesCoverReads
-// fails if that list falls behind the manifests actually read.
-//
-// Otherwise the rule is deliberately conservative in the safe direction: an extensionless path
-// counts as supported, because a shebang can make it a script, and any supported path still
-// bypasses the cache whatever its status.
-//
-// Ignored files never reach this loop: git status omits them, and the provider's walk skips them
-// too, so neither side can serve what the other would have indexed. Note the two do not agree in
-// general — git never ignores a TRACKED file, while the walk applies the ignore stack to every
-// path — but that disagreement only ever reports a path as dirty that the walk would have
-// skipped, which costs a re-index and cannot serve a stale one.
-func worktreeSnapshotCacheable(ctx context.Context, absRepo string, options ProviderSnapshotOptions) bool {
-	if !options.Worktree {
-		return true
-	}
-	if cached, ok := worktreeCleanVerdicts.Load(absRepo); ok {
-		verdict := cached.(worktreeCleanVerdict)
-		if time.Since(verdict.checkedAt) < worktreeCleanTTL {
-			return verdict.clean
-		}
-	}
-	clean := true
-	dirty, err := gitutil.WorktreeDirtyPaths(ctx, absRepo)
-	if err != nil {
-		clean = false
-	}
-	for _, path := range dirty {
-		if !extensionUnsupported(path) || isManifestImportFile(path) {
-			clean = false
-			break
-		}
-	}
-	worktreeCleanVerdicts.Store(absRepo, worktreeCleanVerdict{clean: clean, checkedAt: time.Now()})
-	return clean
-}
-
-// InvalidateWorktreeCleanVerdicts drops the memoized cleanliness verdicts. A
-// one-shot command never needs it (the memo cannot outlive the process), but a
-// long-lived embedder that has just written to a working tree can call it to
-// force the next query to re-check rather than wait out the TTL.
-func InvalidateWorktreeCleanVerdicts() {
-	worktreeCleanVerdicts.Range(func(key, _ any) bool {
-		worktreeCleanVerdicts.Delete(key)
-		return true
-	})
+// worktreeSnapshotCacheable deliberately rejects every working-tree snapshot.
+// A cleanliness comparison cannot pin Git's listing, info/exclude, nested
+// ignore files, and filesystem content to one atomic view; A→B→A changes can
+// therefore evade any pre/post recheck and poison a persistent entry.
+func worktreeSnapshotCacheable(_ context.Context, _ string, options ProviderSnapshotOptions) bool {
+	return !options.Worktree
 }
 
 // loadOrBuildSearchGraphSnapshot preserves the exact candidate-file scope even
@@ -203,6 +111,14 @@ func loadCachedCompleteSearchSnapshot(
 	if !worktreeSnapshotCacheable(ctx, absRepo, options) {
 		return ProviderSnapshot{}, false, nil
 	}
+	capturedOptions, captureErr := ensureProviderCachePolicy(absRepo, options)
+	if captureErr != nil {
+		// Cache policy is stricter than sequential matcher construction because
+		// it retains every input at once. An optional cache must not make an
+		// otherwise valid query fail; let the caller continue to a cold build.
+		return ProviderSnapshot{}, false, nil
+	}
+	options = capturedOptions
 	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
 	if headErr != nil {
 		return ProviderSnapshot{}, false, nil
@@ -262,6 +178,16 @@ func loadOrBuildSearchSnapshot(
 		snapshot, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
 		return snapshot, false, buildErr
 	}
+	capturedOptions, captureErr := ensureProviderCachePolicy(absRepo, options)
+	if captureErr != nil {
+		// Capture can reject an aggregate input set that the sequential matcher
+		// can safely consume. Preserve cache/no-cache behavior parity by taking
+		// the existing uncached build path; ordinary input errors still surface
+		// from that build.
+		snapshot, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
+		return snapshot, false, buildErr
+	}
+	options = capturedOptions
 	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
 	if headErr != nil {
 		snapshot, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
@@ -295,6 +221,12 @@ func loadOrBuildSearchSnapshot(
 				// letting an optional cache break retrieval.
 				return ProviderSnapshot{}, false
 			}
+			if validateBuiltSearchSnapshot(selective, repositoryKey, providerVersion, tree, options) != nil {
+				// The derivation reopens the repository to enumerate the selective
+				// source. If identity or HEAD moved since this transaction was keyed,
+				// discard the result and take the ordinary build path below.
+				return ProviderSnapshot{}, false
+			}
 			// Persisting the exact selective view makes repeated identical queries
 			// a direct cache hit. As with ordinary search caching, this is best effort.
 			_ = writeSearchSnapshot(entry, newCachedSearchSnapshot(providerVersion, commit, tree, options, selective))
@@ -326,10 +258,10 @@ func loadOrBuildSearchSnapshot(
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	if snapshot.Header.Tree != tree {
+	if err := validateBuiltSearchSnapshot(snapshot, repositoryKey, providerVersion, tree, options); err != nil {
 		return ProviderSnapshot{}, false, fmt.Errorf(
-			"HEAD changed while building search snapshot: got commit %q tree %q, started at commit %q tree %q",
-			snapshot.Header.Commit, snapshot.Header.Tree, commit, tree,
+			"search snapshot provenance changed while building from commit %q tree %q: %w",
+			commit, tree, err,
 		)
 	}
 	// The tree we started at is still what got built even if a same-tree
@@ -400,6 +332,10 @@ func preindexProviderSnapshotWithPersistenceReader(
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
+	options, err = CaptureProviderCachePolicy(absRepo, options)
+	if err != nil {
+		return ProviderSnapshot{}, false, err
+	}
 	commit, tree, err := resolveCommittedHEAD(ctx, absRepo)
 	if err != nil {
 		return ProviderSnapshot{}, false, fmt.Errorf("resolve committed HEAD for preindex: %w", err)
@@ -417,10 +353,10 @@ func preindexProviderSnapshotWithPersistenceReader(
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	if snapshot.Header.Tree != tree {
+	if err := validateBuiltSearchSnapshot(snapshot, repositoryKey, providerVersion, tree, options); err != nil {
 		return ProviderSnapshot{}, false, fmt.Errorf(
-			"preindex snapshot provenance mismatch: got tree %q (commit %q), want tree %q (commit %q); only tree identity is checked",
-			snapshot.Header.Tree, snapshot.Header.Commit, tree, commit,
+			"preindex snapshot provenance mismatch for commit %q tree %q: %w",
+			commit, tree, err,
 		)
 	}
 	if cacheHit {
@@ -454,6 +390,34 @@ func preindexProviderSnapshotWithPersistenceReader(
 		}
 	}
 	return snapshot, cacheHit, nil
+}
+
+// validateBuiltSearchSnapshot closes the transaction between cache keying and
+// snapshot construction. Git tree identity alone is enough for source bytes,
+// but repository identity participates in stable symbol IDs, while provider
+// version and profile select the shape of the graph. A concurrent config or
+// option change must therefore fail before the snapshot is returned or stored.
+// Commit is deliberately excluded: different commits with the same tree have
+// identical graph content and are re-stamped to the commit captured by the
+// caller after this validation succeeds.
+func validateBuiltSearchSnapshot(
+	snapshot ProviderSnapshot,
+	repositoryKey, providerVersion, tree string,
+	options ProviderSnapshotOptions,
+) error {
+	header := snapshot.Header
+	if header.Tree != tree ||
+		header.RepoKey != repositoryKey ||
+		header.Provider != ProviderName ||
+		header.ProviderVersion != providerVersion ||
+		header.Profile != string(options.Profile) {
+		return fmt.Errorf(
+			"got repo %q tree %q provider %q version %q profile %q; want repo %q tree %q provider %q version %q profile %q",
+			header.RepoKey, header.Tree, header.Provider, header.ProviderVersion, header.Profile,
+			repositoryKey, tree, ProviderName, providerVersion, options.Profile,
+		)
+	}
+	return nil
 }
 
 func newCachedSearchSnapshot(providerVersion, commit, tree string, options ProviderSnapshotOptions, snapshot ProviderSnapshot) cachedSearchSnapshot {
@@ -776,18 +740,21 @@ func LoadOrBuildProviderSnapshot(
 // accepted because those edges are heuristic and confidence-scored, not
 // exact facts about the tree.
 func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions) (string, error) {
-	hash := sha256.New()
-	writePart := func(value string) {
-		_, _ = io.WriteString(hash, value)
-		_, _ = io.WriteString(hash, "\x00")
+	if options.Worktree {
+		return "", errors.New("working-tree snapshots cannot have persistent cache keys")
 	}
-	writePart(searchSnapshotCacheVersion)
-	writePart(absRepo)
-	writePart(repositoryKey)
-	writePart(providerVersion)
-	writePart(tree)
-	writePart(string(options.Profile))
-	writePart(fmt.Sprintf("%d", options.MaxParseBytes))
+	policy, err := cachePolicyForOptions(absRepo, options)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	writeCacheKeyString(hash, "cache-version", searchSnapshotCacheVersion)
+	writeCacheKeyString(hash, "repository-path", absRepo)
+	writeCacheKeyString(hash, "repository-key", repositoryKey)
+	writeCacheKeyString(hash, "provider-version", providerVersion)
+	writeCacheKeyString(hash, "tree", tree)
+	writeCacheKeyString(hash, "profile", string(options.Profile))
+	writeCacheKeyString(hash, "max-parse-bytes", fmt.Sprintf("%d", options.MaxParseBytes))
 	// The resolved file cap SHAPES THE GRAPH: a run capped at N files produces a snapshot missing
 	// everything past N, and without the cap in the key that truncated snapshot is served to a later
 	// uncapped caller. Measured on this repo: a cap-5 build wrote 28 symbols, and the next uncapped
@@ -803,56 +770,24 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	// It cuts both ways, which is why the term has to be the resolved value rather than a lower
 	// bound: an entry built with a HIGHER cap also survives a later LOWERED one, handing back more
 	// of the tree than the caller asked to see. Neither direction announces itself.
-	writePart(fmt.Sprintf("max-files=%d", resolveMaxSourceFiles(options.MaxFiles)))
-	// Working-tree entries live in their own key space. The marker is only
-	// written for them so committed-tree keys — and every cache already on disk
-	// built under them — stay byte-identical.
-	if options.Worktree {
-		writePart("worktree")
-	}
+	writeCacheKeyString(hash, "max-files", fmt.Sprintf("%d", resolveMaxSourceFiles(options.MaxFiles)))
 	onlyFiles := append([]string(nil), options.OnlyFiles...)
 	sort.Strings(onlyFiles)
-	writePart("only-files")
+	writeCacheKeyString(hash, "only-files", "begin")
 	for _, filePath := range onlyFiles {
-		writePart(filepath.ToSlash(filepath.Clean(filePath)))
-	}
-	for groupIndex, group := range [][]string{options.IgnoreFiles, options.IncludeFiles} {
-		writePart(fmt.Sprintf("path-group-%d", groupIndex))
-		// Preserve caller order: ignore matching is last-rule-wins, including
-		// across repeatable ignore/include files within each group.
-		for _, path := range group {
-			resolved := path
-			if !filepath.IsAbs(resolved) {
-				resolved = filepath.Join(absRepo, resolved)
-			}
-			writePart(filepath.Clean(resolved))
-			content, err := os.ReadFile(resolved)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					writePart("missing")
-					continue
-				}
-				return "", err
-			}
-			_, _ = hash.Write(content)
-			writePart("")
-		}
+		writeCacheKeyString(hash, "only-file", filepath.ToSlash(filepath.Clean(filePath)))
 	}
 	// The repo-root .graphignore is applied implicitly, so it must key the entry
 	// exactly as an explicit --ignore-file does. Without it, editing
 	// .graphignore against an unchanged tree hits the old entry and the new
 	// rules silently do nothing.
-	writePart("graphignore")
-	graphIgnore := filepath.Join(absRepo, graphIgnoreFileName)
-	switch content, err := os.ReadFile(graphIgnore); {
-	case err == nil:
-		_, _ = hash.Write(content)
-		writePart("")
-	case errors.Is(err, os.ErrNotExist):
-		writePart("missing")
-	default:
-		return "", err
-	}
+	// The built-in credential-store deny is applied implicitly too, after the
+	// repository's own exclude files, so it keys the entry for the same reason
+	// .graphignore does: it decides which files the snapshot may contain, and
+	// therefore which files the ranked payload, the snippets and the context blocks
+	// can quote. See builtinSecretRulesDigest.
+	writeCacheKeyString(hash, "builtin-secret-rules", builtinSecretRulesDigest())
+	policy.writeCacheKey(hash)
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -870,15 +805,13 @@ func validCachedSearchSnapshot(cache cachedSearchSnapshot, repositoryKey, provid
 		cache.Profile == options.Profile &&
 		cache.MaxParseBytes == options.MaxParseBytes &&
 		cache.Snapshot.Header.RepoKey == repositoryKey &&
-		// Both identity gates are required and neither implies the other: RepoKey
-		// separates two checkouts that share a tree hash, Worktree separates the two
-		// VIEWS of one checkout. A clean working tree is now cacheable
-		// (worktreeSnapshotCacheable), so a working-tree entry and a committed-tree
-		// entry can have the same repo, tree and profile while carrying different
-		// provenance (W_WORKTREE_SNAPSHOT) — without this they would collide.
+		// Both identity gates remain required for decoding older entries: RepoKey
+		// separates two checkouts that share a tree hash, while Worktree prevents a
+		// retired working-tree entry from ever serving a committed-tree request.
 		cache.Worktree == options.Worktree &&
 		cache.Snapshot.Header.Tree == tree &&
 		cache.Snapshot.Header.Provider == ProviderName &&
+		cache.Snapshot.Header.ProviderVersion == providerVersion &&
 		cache.Snapshot.Header.Profile == string(options.Profile)
 }
 

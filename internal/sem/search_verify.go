@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -129,6 +130,9 @@ type SearchVerifyCommand struct {
 	// PreFixStatus is caller-supplied text rendered verbatim as a `PRE-FIX:` line under the command.
 	// The harness computes it (it already validates the pristine tree); the binary only renders it.
 	PreFixStatus string `json:"pre_fix_status,omitempty"`
+	// provenancePaths are the repository files whose contents or existence produced this command.
+	// They are internal replay-safety metadata, not part of the public schema or rendered block.
+	provenancePaths []string
 }
 
 // searchVerifyEvidence is the bounded view of the repository the derivation is allowed to consult.
@@ -267,7 +271,30 @@ func buildSearchVerifyCommand(
 	if searchVerifyControlBytes(command.Command) {
 		return searchVerifyResidualFloor("", evidence.prefix, evidence.preFixStatus)
 	}
+	command.provenancePaths = searchVerifyProvenancePaths(subject, evidence)
 	return command
+}
+
+func searchVerifyProvenancePaths(subject searchVerifySubject, evidence searchVerifyEvidence) []string {
+	seen := make(map[string]struct{}, len(evidence.cache)+2)
+	add := func(filePath string) {
+		if filePath != "" {
+			seen[filePath] = struct{}{}
+		}
+	}
+	add(subject.sourcePath)
+	add(subject.testPath)
+	// Only successful reads enter cache. Misses affect which derivation wins, but they contribute no
+	// repository bytes to the rendered command and can be numerous by design.
+	for filePath := range evidence.cache {
+		add(filePath)
+	}
+	paths := make([]string, 0, len(seen))
+	for filePath := range seen {
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // searchVerifyControlBytes reports whether a derived command carries a byte that

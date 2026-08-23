@@ -172,6 +172,10 @@ type SearchLiteralCluster struct {
 	// Unclassified counts FILES the graph holds no symbols for. They are reported as a number and
 	// nothing more: without a symbol there is no honest role to give them.
 	Unclassified int `json:"unclassified,omitempty"`
+	// provenancePaths retains every file counted by HitsTotal, FilesTotal, and
+	// Unclassified, including files whose occurrences are not rendered in Hits.
+	// Unexported so the public response schema stays unchanged.
+	provenancePaths []string
 }
 
 // SearchLiteralHit is one occurrence: where it is, what encloses it, and what that site does with
@@ -685,9 +689,10 @@ func classifySearchLiteralHits(
 	symbolsByFile map[string][]SymbolRecord,
 ) *SearchLiteralCluster {
 	cluster := &SearchLiteralCluster{
-		Literal:    literal,
-		HitsTotal:  scan.occurrences,
-		FilesTotal: scan.files,
+		Literal:         literal,
+		HitsTotal:       scan.occurrences,
+		FilesTotal:      scan.files,
+		provenancePaths: append([]string(nil), scan.matchingPaths...),
 	}
 	unclassifiedFiles := map[string]bool{}
 	for _, hit := range scan.hits {

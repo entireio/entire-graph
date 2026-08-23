@@ -157,6 +157,10 @@ type SearchCoverageNote struct {
 	// FilePath is where the peers live, present only when they all share one file — the case
 	// where a single path is the truthful answer to "where do I run them".
 	FilePath string `json:"file_path,omitempty"`
+	// provenancePaths retains every file whose qualifying test contributes to
+	// Total, including the shown test and peers omitted from Peers by naming or
+	// byte limits. Unexported so the public response schema stays unchanged.
+	provenancePaths []string
 }
 
 // selectSearchCoveringTest picks the test that covers an anchor, or reports that none does. The
@@ -286,7 +290,11 @@ func buildSearchCoverageNote(
 	if len(peers) == 0 || anchor.Name == "" {
 		return nil
 	}
-	note := &SearchCoverageNote{Symbol: anchor.Name, Total: len(peers) + 1}
+	note := &SearchCoverageNote{
+		Symbol:          anchor.Name,
+		Total:           len(peers) + 1,
+		provenancePaths: searchCoverageProvenancePaths(shown, peers),
+	}
 	sharedFile := shown.symbol.FilePath
 	for _, peer := range peers {
 		if peer.symbol.FilePath != sharedFile {
@@ -343,6 +351,25 @@ func buildSearchCoverageNote(
 		}
 	}
 	return note
+}
+
+func searchCoverageProvenancePaths(shown searchCoveringTest, peers []searchCoveringTest) []string {
+	seen := make(map[string]struct{}, len(peers)+1)
+	add := func(filePath string) {
+		if filePath != "" {
+			seen[filePath] = struct{}{}
+		}
+	}
+	add(shown.symbol.FilePath)
+	for _, peer := range peers {
+		add(peer.symbol.FilePath)
+	}
+	paths := make([]string, 0, len(seen))
+	for filePath := range seen {
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // searchCoverageNoteCost is the note's serialized size in the same currency the rest of search is

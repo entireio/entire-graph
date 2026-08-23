@@ -15,6 +15,154 @@ import (
 	"github.com/entireio/entire-graph/internal/sem"
 )
 
+func TestResolveRepoHonorsInheritedGitCeiling(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	ceiling := filepath.Join(repo, "discovery-boundary")
+	child := filepath.Join(ceiling, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", ceiling)
+	t.Chdir(child)
+	// Repository discovery with a ceiling is deliberately in-process. If this
+	// regresses to Git, an empty PATH makes the test fail for the right reason.
+	t.Setenv("PATH", t.TempDir())
+
+	if discovered, err := resolveRepo(t.Context(), EntireEnv{}, ""); err == nil {
+		t.Fatalf("resolveRepo = %q, nil; want no implicit repository above ceiling %q", discovered, ceiling)
+	}
+
+	// A repository selected by the trusted Entire environment is not discovery
+	// and remains authoritative even when a caller also supplied a ceiling.
+	selected, err := resolveRepo(t.Context(), EntireEnv{RepoRoot: repo}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != repo {
+		t.Fatalf("resolveRepo with ENTIRE_REPO_ROOT = %q, want %q", selected, repo)
+	}
+}
+
+func TestDiscoverImplicitCheckoutRootStopsAtGitCeiling(t *testing.T) {
+	outer := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outer, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ceiling := filepath.Join(outer, "discovery-boundary")
+	blockedChild := filepath.Join(ceiling, "blocked", "child")
+	insideRepo := filepath.Join(ceiling, "inside-repo")
+	insideChild := filepath.Join(insideRepo, "child")
+	for _, dir := range []string{blockedChild, filepath.Join(insideRepo, ".git"), insideChild} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", ceiling)
+
+	if root, ok := discoverImplicitCheckoutRoot(blockedChild); ok {
+		t.Fatalf("filesystem fallback discovered %q above ceiling %q", root, ceiling)
+	}
+	root, ok := discoverImplicitCheckoutRoot(insideChild)
+	if !ok || root != insideRepo {
+		t.Fatalf("filesystem fallback below ceiling = (%q, %v), want (%q, true)", root, ok, insideRepo)
+	}
+}
+
+func TestDiscoverImplicitCheckoutRootCanonicalizesGitCeilingsBeforeEmptyMarker(t *testing.T) {
+	requireSymlinkSupport(t)
+
+	outer := t.TempDir()
+	boundary := filepath.Join(outer, "discovery-boundary")
+	child := filepath.Join(boundary, "nested", "child")
+	for _, dir := range []string{filepath.Join(outer, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(t.TempDir(), "boundary-alias")
+	if err := os.Symlink(boundary, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("before marker", func(t *testing.T) {
+		t.Setenv("GIT_CEILING_DIRECTORIES", alias)
+		if root, ok := discoverImplicitCheckoutRoot(child); ok {
+			t.Fatalf("filesystem fallback discovered %q above symlinked ceiling %q", root, alias)
+		}
+	})
+
+	t.Run("after marker", func(t *testing.T) {
+		t.Setenv("GIT_CEILING_DIRECTORIES", string(os.PathListSeparator)+alias)
+		root, ok := discoverImplicitCheckoutRoot(child)
+		if !ok || root != outer {
+			t.Fatalf("filesystem fallback with non-canonicalized ceiling = (%q, %v), want (%q, true)", root, ok, outer)
+		}
+	})
+}
+
+func TestDiscoverImplicitCheckoutRootDoesNotExcludeStartingDirectory(t *testing.T) {
+	outer := t.TempDir()
+	child := filepath.Join(outer, "child")
+	for _, dir := range []string{filepath.Join(outer, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", child)
+
+	root, ok := discoverImplicitCheckoutRoot(child)
+	if !ok || root != outer {
+		t.Fatalf("filesystem fallback from the ceiling directory = (%q, %v), want (%q, true)", root, ok, outer)
+	}
+
+	if err := os.Mkdir(filepath.Join(child, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, ok = discoverImplicitCheckoutRoot(child)
+	if !ok || root != child {
+		t.Fatalf("filesystem fallback for repository at the ceiling = (%q, %v), want (%q, true)", root, ok, child)
+	}
+}
+
+func TestDiscoverImplicitCheckoutRootDiscardsUnresolvableGitCeilings(t *testing.T) {
+	outer := t.TempDir()
+	child := filepath.Join(outer, "nested", "child")
+	for _, dir := range []string{filepath.Join(outer, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	missing := filepath.Join(t.TempDir(), "missing-ceiling")
+	t.Setenv("GIT_CEILING_DIRECTORIES", "relative-ceiling"+string(os.PathListSeparator)+missing)
+
+	root, ok := discoverImplicitCheckoutRoot(child)
+	if !ok || root != outer {
+		t.Fatalf("filesystem fallback with unusable ceilings = (%q, %v), want (%q, true)", root, ok, outer)
+	}
+}
+
+func TestResolveRepoIgnoresUnrelatedGitCeilingsWithoutStartingGit(t *testing.T) {
+	repo := t.TempDir()
+	child := filepath.Join(repo, "nested", "child")
+	for _, dir := range []string{filepath.Join(repo, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	t.Chdir(child)
+
+	got, err := resolveRepo(t.Context(), EntireEnv{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != repo {
+		t.Fatalf("resolveRepo with unrelated ceiling = %q, want %q", got, repo)
+	}
+}
+
 func TestDoctorPrintsEntireEnvironment(t *testing.T) {
 	var out bytes.Buffer
 	dataDir := t.TempDir()
@@ -248,6 +396,50 @@ func TestSnapshotAcceptsWorktree(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"schema_version":"1.1"`) {
 		t.Fatalf("snapshot output:\n%s", out.String())
+	}
+}
+
+func TestProviderRecordsCacheDoesNotReplaySameTreeCommitHeader(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "main.go", "package sample\n\nfunc Main() {}\n")
+	git(t, repo, "add", "main.go")
+	git(t, repo, "commit", "-m", "initial")
+	cacheDir := t.TempDir()
+
+	run := func() string {
+		t.Helper()
+		var out bytes.Buffer
+		err := Run(t.Context(), Options{
+			Version: "commit-cache-test",
+			Env:     EntireEnv{RepoRoot: repo},
+			Stdout:  &out,
+			Stderr:  io.Discard,
+		}, []string{"snapshot", "--repo", repo, "--format", "ndjson", "--cache-dir", cacheDir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		line, _, ok := bytes.Cut(out.Bytes(), []byte{'\n'})
+		if !ok {
+			t.Fatalf("snapshot omitted header line: %q", out.Bytes())
+		}
+		var header sem.SnapshotHeader
+		if err := json.Unmarshal(line, &header); err != nil {
+			t.Fatalf("decode snapshot header: %v\n%s", err, line)
+		}
+		return header.Commit
+	}
+
+	first := run()
+	git(t, repo, "commit", "--allow-empty", "-m", "same tree, new provenance")
+	second := run()
+	if want := rev(t, repo, "HEAD^{commit}"); second != want {
+		t.Fatalf("same-tree cache replayed commit %q, want current commit %q (first %q)", second, want, first)
+	}
+	if second == first {
+		t.Fatal("empty commit reused the previous snapshot header")
 	}
 }
 
