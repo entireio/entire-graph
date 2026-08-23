@@ -2366,6 +2366,7 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	t.Setenv("LC_ALL", "fr_FR.UTF-8")
 	t.Setenv("LANG", "fr_FR.UTF-8")
 	t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
+	t.Setenv("GIT_NO_LAZY_FETCH", "0")
 	t.Setenv("GIT_ALLOW_PROTOCOL", "https")
 	t.Setenv("GIT_OPTIONAL_LOCKS", "1")
 	dir := t.TempDir()
@@ -2396,6 +2397,9 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	if optionalLocks != "0" {
 		t.Fatalf("effective GIT_OPTIONAL_LOCKS=%q, want 0 for read-only provider subprocesses", optionalLocks)
 	}
+	assertSingleEnvironmentEntry(t, cmd.Env, "GIT_NO_LAZY_FETCH", "1")
+	assertSingleEnvironmentEntry(t, cmd.Env, "GIT_ALLOW_PROTOCOL", "")
+	assertSingleEnvironmentEntry(t, cmd.Env, "GIT_OPTIONAL_LOCKS", "0")
 	assertIsolatedGitConfiguration(t, "stable-locale command", env, dir)
 
 	grepCmd := newGitCmdWithCallerLocale(context.Background(), dir, "version")
@@ -2424,7 +2428,24 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	if optionalLocks != "0" {
 		t.Fatalf("caller-locale git command GIT_OPTIONAL_LOCKS=%q, want 0", optionalLocks)
 	}
+	assertSingleEnvironmentEntry(t, grepCmd.Env, "GIT_NO_LAZY_FETCH", "1")
+	assertSingleEnvironmentEntry(t, grepCmd.Env, "GIT_ALLOW_PROTOCOL", "")
+	assertSingleEnvironmentEntry(t, grepCmd.Env, "GIT_OPTIONAL_LOCKS", "0")
 	assertIsolatedGitConfiguration(t, "caller-locale command", env, dir)
+}
+
+func assertSingleEnvironmentEntry(t *testing.T, env []string, wantKey, wantValue string) {
+	t.Helper()
+	values := make([]string, 0, 1)
+	for _, entry := range env {
+		key, value, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(key, wantKey) {
+			values = append(values, value)
+		}
+	}
+	if len(values) != 1 || values[0] != wantValue {
+		t.Fatalf("environment %s entries = %q, want exactly [%q]", wantKey, values, wantValue)
+	}
 }
 
 func commandEnvironment(cmd *exec.Cmd) map[string]string {

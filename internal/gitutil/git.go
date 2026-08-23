@@ -2095,11 +2095,14 @@ func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) 
 }
 
 // gitRepositoryEnvironment contains Git's repository-local environment
-// variables (`git rev-parse --local-env-vars`). None is meaningful to a
-// provider subprocess because every call already receives an explicit working
-// directory. Inheriting one would let the caller replace the repository,
-// index, worktree, object store, refs or config observed for an unrelated
-// --repo path. GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n accompany GIT_CONFIG_COUNT
+// variables (`git rev-parse --local-env-vars`) plus the command guards this
+// package pins below. Repository selectors are not meaningful to a provider
+// subprocess because every call already receives an explicit working directory;
+// inheriting one would let the caller replace the repository, index, worktree,
+// object store, refs or config observed for an unrelated --repo path. Guard
+// variables are removed before their fixed replacements are appended because
+// subprocess safety must not depend on duplicate-key resolution semantics.
+// GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n accompany GIT_CONFIG_COUNT
 // but are filtered by prefix too so the child never receives a partial injected
 // configuration if Git's handling changes. GIT_TRACE* is also filtered by prefix:
 // Git accepts arbitrary filesystem and socket trace targets, including UNC paths
@@ -2109,6 +2112,7 @@ func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) 
 // dispatch, so those paths are stripped for the same reason.
 var gitRepositoryEnvironment = map[string]struct{}{
 	"GIT_ALTERNATE_OBJECT_DIRECTORIES": {},
+	"GIT_ALLOW_PROTOCOL":               {},
 	"GIT_ATTR_NOSYSTEM":                {},
 	"GIT_ATTR_SOURCE":                  {},
 	"GIT_COMMON_DIR":                   {},
@@ -2129,8 +2133,10 @@ var gitRepositoryEnvironment = map[string]struct{}{
 	"GIT_LITERAL_PATHSPECS":            {},
 	"GIT_NAMESPACE":                    {},
 	"GIT_NOGLOB_PATHSPECS":             {},
+	"GIT_NO_LAZY_FETCH":                {},
 	"GIT_NO_REPLACE_OBJECTS":           {},
 	"GIT_OBJECT_DIRECTORY":             {},
+	"GIT_OPTIONAL_LOCKS":               {},
 	"GIT_PREFIX":                       {},
 	"GIT_REPLACE_REF_BASE":             {},
 	"GIT_SHALLOW_FILE":                 {},
