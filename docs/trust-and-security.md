@@ -61,9 +61,15 @@ other is installation.
   while the preflight continues across every other reachable directory. A
   traversable redirect, mount boundary, cancellation, or traversal ceiling
   fails closed. Every earlier Git failure also passes through this safety gate
-  before the filesystem fallback begins.
+  before the filesystem fallback begins. Under Go's legacy Windows reparse-mode
+  compatibility, mount points surface as symlinks instead; both filesystem
+  fallbacks apply their no-follow rule before considering a directory entry.
   This prevents an untracked gitfile from making Git resolve a UNC or off-volume
   target before the post-listing Git-directory excluder can observe it.
+- `stats` applies the same worktree safety gate before sampling on-disk file
+  sizes. Transcript-derived top-hit paths are confined beneath the selected
+  repository and measured with a final-component no-follow lookup; an unsafe
+  worktree contributes no filesystem-size estimate.
 - Repository-controlled Git ignore policy, including nested `.gitignore` files,
   `.git/info/exclude`, and per-worktree excludes, plus `.graphignore` and any
   `--ignore-file`/`--include-file` the caller passes.

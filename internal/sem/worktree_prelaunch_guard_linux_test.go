@@ -106,8 +106,58 @@ func TestLinuxSweepMountInventoryFailureIsFallbackUnsafe(t *testing.T) {
 	}
 }
 
-func TestLinuxOpenat2SeccompDenialIsNotAnOrdinaryPermissionFailure(t *testing.T) {
+func TestLinuxOpenat2SeccompDenialSelectsOnlyTheGuardedFallback(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	anchor, resolvedRepo, err := newPathTraversalAnchor(repo, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := newSweepDirectoryRoot(resolvedRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	opened, err := root.openAfterOpenat2Failure(anchor, []string{"child"}, func() bool { return true }, syscall.EPERM)
+	if err != nil {
+		t.Fatalf("guarded fallback after openat2 EPERM: %v", err)
+	}
+	if opened == nil {
+		t.Fatal("guarded fallback after openat2 EPERM returned no directory")
+	}
+	if err := opened.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if linuxSweepOpenCanSkipLocalPathFailure(syscall.EPERM) {
-		t.Fatal("EPERM must not directly select fallback when a safety syscall may have been denied by policy")
+		t.Fatal("EPERM must not directly select the ordinary filesystem fallback")
+	}
+}
+
+func TestLinuxOpenat2SeccompFallbackRetainsMountInventoryFailure(t *testing.T) {
+	repo := t.TempDir()
+	anchor, resolvedRepo, err := newPathTraversalAnchor(repo, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := newSweepDirectoryRoot(resolvedRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	inventoryErr := errors.New("synthetic mount inventory failure")
+	root.mountOnce.Do(func() {
+		root.mountErr = inventoryErr
+	})
+
+	opened, err := root.openAfterOpenat2Failure(anchor, []string{"child"}, func() bool { return true }, syscall.EPERM)
+	if opened != nil {
+		_ = opened.Close()
+		t.Fatal("guarded fallback returned a directory after mount inventory failure")
+	}
+	if !errors.Is(err, errSymlinkChainOffVolume) || !errors.Is(err, inventoryErr) {
+		t.Fatalf("guarded fallback error = %v, want both %v and %v", err, errSymlinkChainOffVolume, inventoryErr)
 	}
 }

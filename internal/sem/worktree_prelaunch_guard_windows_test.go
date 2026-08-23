@@ -66,3 +66,70 @@ func TestGitWorktreeFallbackSelectedEarlyCannotBypassJunctionGuard(t *testing.T)
 		t.Fatalf("paths = %q, warnings = %+v; early fallback must fail closed", paths, warnings)
 	}
 }
+
+func TestGitWorktreePreflightUsesNoFollowFallbackForDirectorySymlink(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "clean.go", "package clean\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "clean worktree")
+
+	external := t.TempDir()
+	writeFile(t, external, "outside.go", "package outside\n")
+	windowsSymlinkOrSkip(t, external, filepath.Join(repo, "linked"))
+
+	calls := 0
+	paths, warnings, err := worktreeSourceFilesWithLister(
+		t.Context(), repo, ignoreMatcher{}, false,
+		func(context.Context, string) ([]string, error) {
+			calls++
+			return nil, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("worktree lister calls = %d, want 0", calls)
+	}
+	if !hasProviderWarning(warnings, "W_GIT_WORKTREE_FALLBACK") {
+		t.Fatalf("warnings = %+v, want W_GIT_WORKTREE_FALLBACK", warnings)
+	}
+	if !containsWorktreePath(paths, "clean.go") || containsWorktreePath(paths, "linked/outside.go") {
+		t.Fatalf("fallback paths = %q, want clean.go without linked/outside.go", paths)
+	}
+}
+
+func TestGitWorktreePreflightCompatibilityModeSkipsJunctionInNoFollowFallback(t *testing.T) {
+	t.Setenv("GODEBUG", "winsymlink=0")
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "clean.go", "package clean\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "clean worktree")
+
+	external := t.TempDir()
+	writeFile(t, external, "outside.go", "package outside\n")
+	windowsJunction(t, external, filepath.Join(repo, "mounted"))
+
+	calls := 0
+	paths, warnings, err := worktreeSourceFilesWithLister(
+		t.Context(), repo, ignoreMatcher{}, false,
+		func(context.Context, string) ([]string, error) {
+			calls++
+			return nil, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("worktree lister calls = %d, want 0", calls)
+	}
+	if !hasProviderWarning(warnings, "W_GIT_WORKTREE_FALLBACK") {
+		t.Fatalf("warnings = %+v, want W_GIT_WORKTREE_FALLBACK", warnings)
+	}
+	if !containsWorktreePath(paths, "clean.go") || containsWorktreePath(paths, "mounted/outside.go") {
+		t.Fatalf("compatibility fallback paths = %q, want clean.go without mounted/outside.go", paths)
+	}
+}

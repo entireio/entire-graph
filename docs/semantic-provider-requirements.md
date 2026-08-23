@@ -401,6 +401,8 @@ mount or traversable redirect. Unreadable local subtrees retain the fallback's
 warned omission while the preflight checks every other reachable directory.
 Redirects, mount boundaries, cancellation, and traversal ceilings fail closed.
 Fallbacks selected by earlier Git failures pass through the same safety gate.
+The provider exposes this filesystem-traversal gate to local consumers such as
+`stats`, so a non-provider fallback cannot silently reintroduce mount traversal.
 
 Implicit repository discovery is the sole ceiling-sensitive path. When
 `GIT_CEILING_DIRECTORIES` is present, the CLI applies its usable absolute entries

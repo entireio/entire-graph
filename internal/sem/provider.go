@@ -14886,6 +14886,19 @@ func gitWorktreeSafeBeforeListing(ctx context.Context, repo string) error {
 	return gitWorktreeSafeBeforeListingFromDirectories(ctx, root, anchor, &budget, []string{""})
 }
 
+// EnsureWorktreeSafeForFilesystemTraversal verifies that a subsequent bounded,
+// no-follow filesystem walk cannot enter a known mount or traversable redirect.
+// Nested .git markers and unreadable local subtrees are safe for such a walk:
+// the preflight checks every other reachable directory first, and the caller's
+// walker must preserve its ordinary skip behavior for those local paths.
+func EnsureWorktreeSafeForFilesystemTraversal(ctx context.Context, repo string) error {
+	err := gitWorktreeSafeBeforeListing(ctx, repo)
+	if errors.Is(err, errGitWorktreeFallbackUnsafe) {
+		return err
+	}
+	return nil
+}
+
 func worktreePreflightCanSkipLocalFailure(err error) bool {
 	return errors.Is(err, fs.ErrPermission) || os.IsPermission(err) || errors.Is(err, fs.ErrNotExist)
 }
@@ -14961,12 +14974,15 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				entryType := entry.Type()
 				if entryType&fs.ModeSymlink != 0 {
 					if runtime.GOOS == "windows" {
-						_ = opened.Close()
-						return fmt.Errorf("%w: %w: reparse point at %q", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child)
+						if fallbackReason == nil {
+							fallbackReason = fmt.Errorf("%w: symlink reparse point at %q", errGitWorktreePreflight, child)
+						}
 					}
 					// Git treats POSIX symlinks as leaf entries. Matching that
-					// behavior without resolving them preserves ordinary source
-					// symlinks while keeping the preflight no-follow.
+					// no-follow behavior in the filesystem fallback preserves
+					// ordinary source symlinks on every platform. Windows junctions
+					// are ModeIrregular and fail closed under current semantics; the
+					// legacy ModeSymlink view is safely skipped by the same fallback.
 					continue
 				}
 				if runtime.GOOS == "windows" && entryType&fs.ModeIrregular != 0 {
@@ -15357,7 +15373,7 @@ func walkWorktreeFiles(ctx context.Context, repo string, ignores ignoreMatcher, 
 	// Every filesystem fallback enters through here, including paths selected
 	// before Git's index listing succeeds. Require the same complete held-root
 	// safety proof so an earlier Git failure cannot bypass mount detection.
-	if err := gitWorktreeSafeBeforeListing(ctx, repo); errors.Is(err, errGitWorktreeFallbackUnsafe) {
+	if err := EnsureWorktreeSafeForFilesystemTraversal(ctx, repo); err != nil {
 		return nil, nil, err
 	}
 	var paths []string
@@ -15605,6 +15621,12 @@ func visitWalkWorktreeFilesWithRawLimit(
 		if frame.rel != "" {
 			rel = frame.rel + "/" + rel
 		}
+		// Check the no-follow rule before IsDir. Go's Windows compatibility
+		// mode can report a mount-point reparse as ModeSymlink; regardless of
+		// any accompanying directory attribute, the fallback must not enter it.
+		if entry.Type()&fs.ModeSymlink != 0 {
+			continue
+		}
 		if entry.IsDir() {
 			if !budget.admitDirectory(rel) {
 				walkErr = fmt.Errorf(
@@ -15616,9 +15638,6 @@ func visitWalkWorktreeFilesWithRawLimit(
 				break
 			}
 			frames = append(frames, worktreeWalkFrame{rel: rel})
-			continue
-		}
-		if entry.Type()&fs.ModeSymlink != 0 {
 			continue
 		}
 		name := entry.Name()

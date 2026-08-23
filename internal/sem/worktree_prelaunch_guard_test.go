@@ -136,7 +136,7 @@ func TestGitWorktreePreflightPreservesCancellationIdentity(t *testing.T) {
 	repo := t.TempDir()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	err := gitWorktreeSafeBeforeListing(ctx, repo)
+	err := EnsureWorktreeSafeForFilesystemTraversal(ctx, repo)
 	if !errors.Is(err, errGitWorktreeFallbackUnsafe) {
 		t.Fatalf("cancelled preflight error = %v, want %v", err, errGitWorktreeFallbackUnsafe)
 	}

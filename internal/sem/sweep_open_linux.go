@@ -230,6 +230,37 @@ func linuxSweepOpenCanSkipLocalPathFailure(err error) bool {
 	return errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ENOTDIR)
 }
 
+func linuxOpenat2NeedsGuardedFallback(err error) bool {
+	return errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.EPERM)
+}
+
+func (r *sweepDirectoryRoot) openAfterOpenat2Failure(
+	anchor pathTraversalAnchor,
+	components []string,
+	admitStep func() bool,
+	openat2Err error,
+) (*os.File, error) {
+	if errors.Is(openat2Err, syscall.EXDEV) || errors.Is(openat2Err, syscall.ELOOP) || errors.Is(openat2Err, syscall.EAGAIN) {
+		return nil, errSymlinkChainOffVolume
+	}
+	if !linuxOpenat2NeedsGuardedFallback(openat2Err) {
+		if linuxSweepOpenCanSkipLocalPathFailure(openat2Err) {
+			return nil, openat2Err
+		}
+		return nil, errors.Join(errSymlinkChainOffVolume, openat2Err)
+	}
+	// EPERM commonly means a container's seccomp policy denied openat2 rather
+	// than the path. The descriptor-relative fallback remains safe because it
+	// requires a bounded mount inventory and validates the held root; any failure
+	// in those guards is mapped back to errSymlinkChainOffVolume below.
+	opened, err := r.openWithoutOpenat2(anchor, components, admitStep)
+	if err == nil || errors.Is(err, errSymlinkChainOffVolume) || errors.Is(err, errGitDirSweepHalted) ||
+		linuxSweepOpenCanSkipLocalPathFailure(err) {
+		return opened, err
+	}
+	return nil, errors.Join(errSymlinkChainOffVolume, err)
+}
+
 func (r *sweepDirectoryRoot) Open(anchor pathTraversalAnchor, dir string, admitStep func() bool) (*os.File, error) {
 	rel := filepath.FromSlash(dir)
 	if rel == "" {
@@ -256,21 +287,5 @@ func (r *sweepDirectoryRoot) Open(anchor pathTraversalAnchor, dir string, admitS
 	if err == nil {
 		return opened, nil
 	}
-	if errors.Is(err, syscall.EXDEV) || errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.EAGAIN) {
-		return nil, errSymlinkChainOffVolume
-	}
-	if !errors.Is(err, syscall.ENOSYS) {
-		// EPERM can mean seccomp denied the openat2 syscall entirely, so it
-		// cannot prove that this particular directory is merely unreadable.
-		if linuxSweepOpenCanSkipLocalPathFailure(err) {
-			return nil, err
-		}
-		return nil, errors.Join(errSymlinkChainOffVolume, err)
-	}
-	opened, err = r.openWithoutOpenat2(anchor, components, admitStep)
-	if err == nil || errors.Is(err, errSymlinkChainOffVolume) || errors.Is(err, errGitDirSweepHalted) ||
-		linuxSweepOpenCanSkipLocalPathFailure(err) {
-		return opened, err
-	}
-	return nil, errors.Join(errSymlinkChainOffVolume, err)
+	return r.openAfterOpenat2Failure(anchor, components, admitStep, err)
 }
