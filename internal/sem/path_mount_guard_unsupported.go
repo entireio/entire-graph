@@ -1,4 +1,4 @@
-//go:build !linux && !windows && !darwin && !dragonfly && !freebsd && !openbsd
+//go:build !linux && !windows && !darwin && !dragonfly && !freebsd && !openbsd && !netbsd && !(aix && cgo) && !(solaris && cgo)
 
 package sem
 

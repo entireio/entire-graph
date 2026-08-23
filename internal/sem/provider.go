@@ -13629,7 +13629,7 @@ func parseGitConfigSection(line string) (section string, subsection, header, ok 
 		return "", false, false, true
 	}
 	header = true
-	if len(line) < 3 || !asciiAlpha(line[1]) {
+	if len(line) < 3 || !(asciiAlphaNumeric(line[1]) || line[1] == '-' || line[1] == '.') {
 		return "", false, true, false
 	}
 	index := 2

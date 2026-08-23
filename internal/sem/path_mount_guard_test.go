@@ -1,4 +1,4 @@
-//go:build linux || darwin || dragonfly || freebsd || openbsd
+//go:build linux || darwin || dragonfly || freebsd || openbsd || netbsd || (solaris && cgo) || (aix && cgo)
 
 package sem
 

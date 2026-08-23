@@ -151,6 +151,18 @@ func TestGitMetadataGuardAllowsNonPromisorRemoteConfiguration(t *testing.T) {
 	}
 }
 
+func TestGitMetadataGuardAllowsGitValidCustomSections(t *testing.T) {
+	repo, gitDir := gitConfigPreflightFixture(t)
+	content := "[123]\nvalue = true\n[9-custom \"subsection\"]\nother = safe\n[-custom]\nvalue = true\n[.custom]\nvalue = true\n"
+	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "config", "--file", filepath.Join(gitDir, "config"), "--list")
+	if !gitMetadataSafeForSubprocess(repo) {
+		t.Fatalf("Git-valid custom section was refused:\n%s", content)
+	}
+}
+
 func TestGitMetadataGuardChecksOnlyActiveWorktreeConfig(t *testing.T) {
 	const planted = "[include]\npath = ../outside\n"
 
