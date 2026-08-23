@@ -1,0 +1,62 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "ee60f196a0e0",
+  "session_id": "01a02ccc-cca8-7c03-9fae-23b4a21b6c95",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-23T09:42:38.423297Z",
+  "branch": "codex/pr-132-windows-fix",
+  "checkpoints_count": 2,
+  "save_step_count": 1,
+  "files_touched": [
+    "docs/adr/0002-committed-tree-cache-key.md",
+    "docs/parking-lot.md",
+    "docs/semantic-provider-requirements.md",
+    "docs/trust-and-security.md",
+    "internal/cli/root.go",
+    "internal/cli/root_test.go",
+    "internal/cli/root_windows_test.go",
+    "internal/cli/search.go",
+    "internal/gitutil/git.go",
+    "internal/gitutil/git_config_isolation_test.go",
+    "internal/gitutil/git_test.go",
+    "internal/gitutil/worktree.go",
+    "internal/gitutil/worktree_files_test.go",
+    "internal/gitutil/worktree_paths_test.go",
+    "internal/gitutil/worktree_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_git_config_preflight_mount_test.go",
+    "internal/sem/provider_git_config_preflight_test.go",
+    "internal/sem/provider_git_config_preflight_windows_test.go",
+    "internal/sem/provider_gitdir_unreadable_test.go",
+    "internal/sem/worktree_listing_test.go",
+    "internal/sem/worktree_prelaunch_guard_bsd_test.go",
+    "internal/sem/worktree_prelaunch_guard_linux_test.go",
+    "internal/sem/worktree_prelaunch_guard_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "0a106bd09bd3",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 2484744,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 141222144,
+    "output_tokens": 357951,
+    "api_call_count": 1225
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-23T09:42:37.649724Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 1671,
+    "human_modified": 503,
+    "human_removed": 0,
+    "total_committed": 1671,
+    "total_lines_changed": 2174,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
