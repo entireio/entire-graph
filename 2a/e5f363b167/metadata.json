@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "2ae5f363b167",
+  "strategy": "manual-commit",
+  "branch": "codex/pr-132-windows-fix",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/gitutil/git.go",
+    "internal/gitutil/git_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/2a/e5f363b167/0/metadata.json",
+      "transcript": "/2a/e5f363b167/0/full.jsonl",
+      "compact_transcript": "/2a/e5f363b167/0/transcript.jsonl",
+      "content_hash": "/2a/e5f363b167/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 288126,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 5303296,
+    "output_tokens": 14781,
+    "api_call_count": 64
+  }
+}
