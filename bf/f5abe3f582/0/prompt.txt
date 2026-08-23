@@ -1,21 +1,14 @@
-On PR 132, CI is failing on Windows. Figure out the reason by running the tests on a Windows VM.
-
----
-
-Jeez, we had this before. A Windows VM can be booted via the az CLI.
-
----
-
-Why on earth did you delete the VM before the issue is fixed?&#x20;
-
----
-
-You are wasting my time
-
----
-
-Ok, CI green now?
-
----
-
 Aha. So guess what you do next?
+
+---
+
+<environment_context>
+  <current_date>2026-08-23</current_date>
+  <timezone>America/Los_Angeles</timezone>
+  <filesystem><workspace_roots><root>/Users/thomi/.codex/worktrees/caa8/entire-graph</root><root>/Users/thomi/.codex/visualizations/2026/08/23/01a02ccc-cca8-7c03-9fae-23b4a21b6c95</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
+  <subagents>
+    - head_ref_design: Pasteur
+    - head_ref_tests: Gibbs
+    - mount_preflight_tests: Bohr
+  </subagents>
+</environment_context>
