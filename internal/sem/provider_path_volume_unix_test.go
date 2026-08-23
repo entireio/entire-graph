@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -70,6 +71,149 @@ func TestGitMetadataGuardRejectsCrossFilesystemObjectStore(t *testing.T) {
 	}
 	if gitMetadataSafeForSubprocess(repo) {
 		t.Fatal("cross-filesystem .git/objects redirect passed the pre-subprocess metadata guard")
+	}
+}
+
+func TestGitMetadataGuardRejectsCrossFilesystemReftableStore(t *testing.T) {
+	repo := t.TempDir()
+	repoInfo, err := os.Stat(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devInfo, err := os.Stat("/dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoDevice, repoOK := fileSystemDevice(repoInfo)
+	devDevice, devOK := fileSystemDevice(devInfo)
+	if !repoOK || !devOK {
+		t.Fatal("platform did not expose filesystem device identities")
+	}
+	if repoDevice == devDevice {
+		t.Skip("/dev is not a distinct filesystem on this host")
+	}
+	for name, redirect := range map[string]func(string) error{
+		"directory": func(gitDir string) error {
+			return os.Symlink("/dev", filepath.Join(gitDir, "reftable"))
+		},
+		"tables list": func(gitDir string) error {
+			if err := os.Mkdir(filepath.Join(gitDir, "reftable"), 0o755); err != nil {
+				return err
+			}
+			return os.Symlink("/dev/null", filepath.Join(gitDir, "reftable", "tables.list"))
+		},
+		"listed table": func(gitDir string) error {
+			if err := os.Mkdir(filepath.Join(gitDir, "reftable"), 0o755); err != nil {
+				return err
+			}
+			const table = "0x000000000001-0x000000000002-test.ref"
+			if err := os.WriteFile(filepath.Join(gitDir, "reftable", "tables.list"), []byte(table+"\n"), 0o644); err != nil {
+				return err
+			}
+			return os.Symlink("/dev/null", filepath.Join(gitDir, "reftable", table))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			gitDir := filepath.Join(repo, ".git")
+			if err := os.MkdirAll(filepath.Join(gitDir, "objects"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := redirect(gitDir); err != nil {
+				t.Fatal(err)
+			}
+			if gitMetadataSafeForSubprocess(repo) {
+				t.Fatalf("cross-filesystem .git/reftable %s redirect passed the pre-subprocess metadata guard", name)
+			}
+		})
+	}
+}
+
+func TestGitReftableTableNameBounds(t *testing.T) {
+	valid := []byte("one.ref\ntwo.log\n")
+	if names, ok := parseGitReftableTableNames(valid, 2); !ok || !slices.Equal(names, []string{"one.ref", "two.log"}) {
+		t.Fatalf("parse valid table names = (%q, %v)", names, ok)
+	}
+	for name, content := range map[string][]byte{
+		"too many entries": []byte("one.ref\ntwo.ref\n"),
+		"parent traversal": []byte("../outside.ref\n"),
+		"nested path":      []byte("nested/outside.ref\n"),
+		"embedded NUL":     []byte("one.ref\x00outside\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if names, ok := parseGitReftableTableNames(content, 1); ok || names != nil {
+				t.Fatalf("parse rejected table names = (%q, %v), want (nil, false)", names, ok)
+			}
+		})
+	}
+}
+
+func TestGitMetadataGuardResolvesSymlinkedRepoBeforeWalkingAncestors(t *testing.T) {
+	repo := t.TempDir()
+	repoInfo, err := os.Stat(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devInfo, err := os.Stat("/dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoDevice, repoOK := fileSystemDevice(repoInfo)
+	devDevice, devOK := fileSystemDevice(devInfo)
+	if !repoOK || !devOK {
+		t.Fatal("platform did not expose filesystem device identities")
+	}
+	if repoDevice == devDevice {
+		t.Skip("/dev is not a distinct filesystem on this host")
+	}
+	checkout := filepath.Join(repo, "checkout")
+	gitDir := filepath.Join(checkout, ".git")
+	if err := os.MkdirAll(filepath.Join(checkout, "subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(gitDir, "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/dev", filepath.Join(gitDir, "objects")); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(repo, "repo-alias")
+	if err := os.Symlink(filepath.Join(checkout, "subdir"), alias); err != nil {
+		t.Fatal(err)
+	}
+	if gitMetadataSafeForSubprocess(alias) {
+		t.Fatal("symlinked --repo missed unsafe metadata in the physical checkout ancestor")
+	}
+}
+
+func TestGitMetadataGuardAllowsSymlinkedRepoWithSafePhysicalAncestor(t *testing.T) {
+	repo := t.TempDir()
+	checkout := filepath.Join(repo, "checkout")
+	gitDir := filepath.Join(checkout, ".git")
+	for _, dir := range []string{
+		filepath.Join(checkout, "subdir"),
+		filepath.Join(gitDir, "objects"),
+		filepath.Join(gitDir, "refs"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(repo, "repo-alias")
+	if err := os.Symlink(filepath.Join(checkout, "subdir"), alias); err != nil {
+		t.Fatal(err)
+	}
+	if !gitMetadataSafeForSubprocess(alias) {
+		t.Fatal("safe repository reached through a symlink was refused")
 	}
 }
 

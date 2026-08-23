@@ -878,6 +878,132 @@ func TestRootGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing(t *testing.T) 
 	}
 }
 
+func TestRootGitDirectoryWithUNCReftableStoreIsUnsafeWithoutDialing(t *testing.T) {
+	for name, redirect := range map[string]func(*testing.T, string){
+		"directory": func(t *testing.T, gitDir string) {
+			windowsSymlinkOrSkip(t, `\\203.0.113.1\share\reftable`, filepath.Join(gitDir, "reftable"))
+		},
+		"tables list": func(t *testing.T, gitDir string) {
+			if err := os.Mkdir(filepath.Join(gitDir, "reftable"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			windowsSymlinkOrSkip(t, `\\203.0.113.1\share\tables.list`, filepath.Join(gitDir, "reftable", "tables.list"))
+		},
+		"listed table": func(t *testing.T, gitDir string) {
+			if err := os.Mkdir(filepath.Join(gitDir, "reftable"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			const table = "0x000000000001-0x000000000002-test.ref"
+			writeFile(t, filepath.Join(gitDir, "reftable"), "tables.list", table+"\n")
+			windowsSymlinkOrSkip(t, `\\203.0.113.1\share\table.ref`, filepath.Join(gitDir, "reftable", table))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			gitDir := filepath.Join(repo, ".git")
+			if err := os.MkdirAll(filepath.Join(gitDir, "objects"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, gitDir, "HEAD", "ref: refs/heads/main\n")
+			redirect(t, gitDir)
+
+			done := make(chan bool, 1)
+			go func() { done <- gitMetadataSafeForSubprocess(repo) }()
+			select {
+			case safe := <-done:
+				if safe {
+					t.Fatalf("UNC .git/reftable %s redirect passed the pre-subprocess metadata guard", name)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("UNC .git/reftable %s redirect was followed instead of rejected before network access", name)
+			}
+		})
+	}
+}
+
+func TestGitMetadataGuardResolvesJunctionedRepoBeforeWalkingAncestors(t *testing.T) {
+	repo := t.TempDir()
+	checkout := filepath.Join(repo, "checkout")
+	if err := os.MkdirAll(filepath.Join(checkout, "subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, checkout, ".git", `gitdir: \\203.0.113.1\share\repo`+"\n")
+	alias := filepath.Join(repo, "repo-alias")
+	windowsJunction(t, filepath.Join(checkout, "subdir"), alias)
+
+	done := make(chan bool, 1)
+	go func() { done <- gitMetadataSafeForSubprocess(alias) }()
+	select {
+	case safe := <-done:
+		if safe {
+			t.Fatal("junctioned --repo missed unsafe metadata in the physical checkout ancestor")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("junctioned --repo reached UNC metadata instead of rejecting it before network access")
+	}
+}
+
+func TestGitMetadataGuardAllowsJunctionedRepoWithSafePhysicalAncestor(t *testing.T) {
+	repo := t.TempDir()
+	checkout := filepath.Join(repo, "checkout")
+	gitDir := filepath.Join(checkout, ".git")
+	for _, dir := range []string{
+		filepath.Join(checkout, "subdir"),
+		filepath.Join(gitDir, "objects"),
+		filepath.Join(gitDir, "refs"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, gitDir, "HEAD", "ref: refs/heads/main\n")
+	alias := filepath.Join(repo, "repo-alias")
+	windowsJunction(t, filepath.Join(checkout, "subdir"), alias)
+	if !gitMetadataSafeForSubprocess(alias) {
+		t.Fatal("safe repository reached through a junction was refused")
+	}
+}
+
+func TestGitMetadataGuardAllowsSubstSubdirectoryRepository(t *testing.T) {
+	backing := t.TempDir()
+	var drive string
+	for letter := 'Z'; letter >= 'D'; letter-- {
+		candidate := string(letter) + ":"
+		if _, err := os.Stat(candidate + `\`); errors.Is(err, os.ErrNotExist) {
+			drive = candidate
+			break
+		}
+	}
+	if drive == "" {
+		t.Fatal("no unused drive letter available for SUBST regression")
+	}
+	if output, err := exec.Command("subst", drive, backing).CombinedOutput(); err != nil {
+		t.Fatalf("create SUBST alias %s -> %q: %v: %s", drive, backing, err, output)
+	}
+	t.Cleanup(func() {
+		if output, err := exec.Command("subst", drive, "/D").CombinedOutput(); err != nil {
+			t.Errorf("remove SUBST alias %s: %v: %s", drive, err, output)
+		}
+	})
+
+	checkout := filepath.Join(backing, "checkout")
+	gitDir := filepath.Join(checkout, ".git")
+	for _, dir := range []string{
+		filepath.Join(checkout, "subdir"),
+		filepath.Join(gitDir, "objects"),
+		filepath.Join(gitDir, "refs"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, gitDir, "HEAD", "ref: refs/heads/main\n")
+	alias := filepath.Join(drive+`\`, "checkout", "subdir")
+	if !gitMetadataSafeForSubprocess(alias) {
+		t.Fatal("safe repository discovered from a SUBST subdirectory was refused")
+	}
+}
+
 func TestBareGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, "refs"), 0o755); err != nil {

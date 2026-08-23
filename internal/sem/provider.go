@@ -13142,7 +13142,8 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 		return false
 	}
 	defer resolver.Close()
-	for dir := repoAbs; ; dir = filepath.Dir(dir) {
+	resolvedDiscoveryRoot := false
+	for dir := repoAbs; ; {
 		dotGit := filepath.Join(dir, ".git")
 		opened, resolvedDotGit, openErr := resolver.open(dotGit)
 		if openErr == nil {
@@ -13210,10 +13211,32 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 		if bare {
 			return true
 		}
+		if !resolvedDiscoveryRoot {
+			// Git discovers ancestors from the physical working directory. Before
+			// walking to the first parent, resolve a symlinked or junctioned repo so
+			// the loop follows the same ancestor chain. Root invocations that find
+			// their own metadata return above without paying for this extra walk.
+			repoHandle, resolvedRepo, resolveErr := resolver.open(repoAbs)
+			if resolveErr != nil {
+				return false
+			}
+			_ = repoHandle.Close()
+			if _, sameNamespace := resolver.anchor.components(resolvedRepo); !sameNamespace {
+				physicalResolver, physicalErr := newSameVolumePathResolver(resolvedRepo)
+				if physicalErr != nil {
+					return false
+				}
+				defer physicalResolver.Close()
+				resolver = physicalResolver
+			}
+			dir = resolvedRepo
+			resolvedDiscoveryRoot = true
+		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			return true
 		}
+		dir = parent
 	}
 }
 
@@ -13284,6 +13307,8 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 		return false
 	}
 	objectsPath := filepath.Join(common, "objects")
+	reftablePath := filepath.Join(common, "reftable")
+	tablesListPath := filepath.Join(reftablePath, "tables.list")
 	resolvedObjects := ""
 	entries := []string{
 		filepath.Join(gitDir, "HEAD"),
@@ -13292,10 +13317,12 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 		objectsPath,
 		filepath.Join(common, "refs"),
 		filepath.Join(common, "packed-refs"),
+		reftablePath,
 		filepath.Join(common, "config"),
 		filepath.Join(common, "info", "exclude"),
 	}
-	for _, entry := range entries {
+	for index := 0; index < len(entries); index++ {
+		entry := entries[index]
 		opened, resolved, err := resolver.open(entry)
 		if err == nil {
 			info, statErr := opened.Stat()
@@ -13308,9 +13335,32 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 				_ = opened.Close()
 				return false
 			}
-			if entry == objectsPath {
-				if info.IsDir() {
-					resolvedObjects = resolved
+			if entry == objectsPath && info.IsDir() {
+				resolvedObjects = resolved
+			}
+			if entry == reftablePath && info.IsDir() {
+				// Git follows this fixed manifest after opening a reftable store.
+				// Append it only for reftable repositories so the common loose-ref
+				// path does not pay for another missing-path traversal.
+				entries = append(entries, tablesListPath)
+			}
+			if entry == tablesListPath && regular {
+				if info.Size() < 0 || info.Size() > maxGitReftableListBytes {
+					_ = opened.Close()
+					return false
+				}
+				content, whole, ok := readGitPointerWindowFromOpened(opened, maxGitReftableListBytes, info.Size())
+				if !ok || !whole {
+					_ = opened.Close()
+					return false
+				}
+				tableNames, ok := parseGitReftableTableNames(content, maxGitReftableEntries)
+				if !ok {
+					_ = opened.Close()
+					return false
+				}
+				for _, name := range tableNames {
+					entries = append(entries, filepath.Join(reftablePath, filepath.FromSlash(name)))
 				}
 			}
 			_ = opened.Close()
@@ -13324,6 +13374,36 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 		return true
 	}
 	return gitAlternatesPathsSafeWithResolver(resolver, resolvedObjects)
+}
+
+const (
+	// Reftable stacks are normally compacted to a handful of files. These
+	// ceilings keep hostile manifests bounded while leaving ample headroom for
+	// repositories whose compaction has fallen behind.
+	maxGitReftableListBytes = 1 << 20
+	maxGitReftableEntries   = 4096
+)
+
+func parseGitReftableTableNames(content []byte, maxEntries int) ([]string, bool) {
+	if len(content) > maxGitReftableListBytes || bytes.IndexByte(content, 0) >= 0 {
+		return nil, false
+	}
+	names := make([]string, 0)
+	for _, line := range bytes.Split(content, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		if len(line) > maxGitPointerBytes || len(names) >= maxEntries {
+			return nil, false
+		}
+		name := string(line)
+		native := filepath.FromSlash(name)
+		if native == "." || native == ".." || filepath.IsAbs(native) || filepath.VolumeName(native) != "" || filepath.Base(native) != native {
+			return nil, false
+		}
+		names = append(names, name)
+	}
+	return names, true
 }
 
 const (

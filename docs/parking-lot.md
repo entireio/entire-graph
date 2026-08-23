@@ -25,8 +25,28 @@ validation before launching Git, but the shared Git command constructors do not
 enforce it. A future caller could omit the guard, and repository metadata can
 also change between validation and a later Git operation.
 
+A deterministic test now confirms the remaining race: after a successful
+validation, replacing a checked metadata entry before command construction lets
+the Git subprocess start. Repeating the pathname check closer to launch would
+only narrow that window, not close it, so it is not a complete correction.
+
 A follow-up should move enforcement to the shared subprocess boundary, ideally
 using held handles or a synthetic/index-only environment where practical. This
 likely requires relocating validator and rooted-path helpers into a lower-level
 package, along with their platform-specific tests. The design must avoid import
 cycles while preserving no-egress guarantees, functionality, and performance.
+
+## 4. Harden dependent-file fallback coordinates for future subdirectory callers
+
+The dependent-file helper passes scope-relative paths to `LimitedFileReader`,
+whose contract uses paths rooted at Git's command tree. The current production
+caller first normalizes the repository to `RepoCommandRoot`, so its scope prefix
+is empty and the mismatch is not reachable in shipped behavior. A direct or
+future subdirectory caller could nevertheless undercount dependents when the
+batch reader falls back to bounded individual reads.
+
+If such a caller is added, compute the repository prefix once and apply it only
+to `LimitedFileReader.Prime` and `LimitedFileReader.ReadFile`; keep the original
+scope-relative paths for batch reads, parsing, and diagnostics. Preserve the
+current two-batch behavior for newline-bearing candidates and avoid adding work
+to the normalized production path until the helper contract actually changes.
