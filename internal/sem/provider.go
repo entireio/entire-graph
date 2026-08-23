@@ -11908,6 +11908,13 @@ func (r *GitCeilingPathResolver) Canonicalize(path string) (string, GitCeilingPa
 // walk into a nested network mount. Enumeration is bounded so a hostile
 // directory cannot consume unbounded memory or time.
 func (r *GitCeilingPathResolver) HasGitEntry(dir string) (bool, GitCeilingPathResolution) {
+	entriesSeen, bytesSeen := 0, 0
+	return r.hasGitEntryWithBudget(dir, &entriesSeen, &bytesSeen)
+}
+
+// hasGitEntryWithBudget shares one bounded directory-observation ledger across
+// callers that inspect more than one directory during a single discovery walk.
+func (r *GitCeilingPathResolver) hasGitEntryWithBudget(dir string, entriesSeen, bytesSeen *int) (bool, GitCeilingPathResolution) {
 	opened, resolved, err := r.resolver.open(dir)
 	if err != nil {
 		return false, gitCeilingPathResolution(err)
@@ -11925,15 +11932,15 @@ func (r *GitCeilingPathResolver) HasGitEntry(dir string) (bool, GitCeilingPathRe
 	}
 
 	const batchSize = 128
-	entriesSeen, bytesSeen := 0, 0
 	for {
 		names, readErr := opened.Readdirnames(batchSize)
 		for _, name := range names {
-			entriesSeen++
-			bytesSeen += len(name) + 1
-			if entriesSeen > maxListedDirectoryObservations || bytesSeen > maxListedDirectoryBytes {
+			entryBytes := len(name) + 1
+			if *entriesSeen >= maxListedDirectoryObservations || entryBytes > maxListedDirectoryBytes-*bytesSeen {
 				return false, GitCeilingPathUnsafe
 			}
+			(*entriesSeen)++
+			*bytesSeen += entryBytes
 			if name == ".git" {
 				return true, GitCeilingPathResolved
 			}
@@ -15103,12 +15110,55 @@ func isVendoredScanFile(rel, name string) bool {
 }
 
 func repositoryHasGitMetadata(repo string) bool {
-	for directory := filepath.Clean(repo); ; directory = filepath.Dir(directory) {
-		_, err := os.Lstat(filepath.Join(directory, ".git"))
-		if err == nil || !errors.Is(err, os.ErrNotExist) {
-			// Permission and other probe errors are metadata uncertainty, not
-			// evidence that this is safely a non-Git directory.
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return true
+	}
+	spellingResolver, resolution := NewGitCeilingPathResolver(repoAbs)
+	if resolution != GitCeilingPathResolved {
+		return true
+	}
+	resolvedRepo, resolution := spellingResolver.Canonicalize(repoAbs)
+	if resolution != GitCeilingPathResolved {
+		_ = spellingResolver.Close()
+		return true
+	}
+	resolver := spellingResolver
+	if _, sameNamespace := spellingResolver.resolver.anchor.components(resolvedRepo); !sameNamespace {
+		// A SUBST path can canonicalize to a different Windows volume spelling.
+		// Re-anchor only for that namespace change; ordinary symlinks and junctions
+		// keep the first held root so the physical spelling is never reopened after
+		// a race window.
+		physicalResolver, physicalResolution := NewGitCeilingPathResolver(resolvedRepo)
+		if physicalResolution != GitCeilingPathResolved {
+			_ = spellingResolver.Close()
 			return true
+		}
+		if err := spellingResolver.Close(); err != nil {
+			_ = physicalResolver.Close()
+			return true
+		}
+		resolver = physicalResolver
+	}
+	defer resolver.Close()
+	entriesSeen, bytesSeen := 0, 0
+	discoveryRoot := filepath.Clean(resolver.resolver.anchor.root)
+	for directory := filepath.Clean(resolvedRepo); ; directory = filepath.Dir(directory) {
+		hasGitEntry, resolution := resolver.hasGitEntryWithBudget(directory, &entriesSeen, &bytesSeen)
+		if resolution != GitCeilingPathResolved || hasGitEntry {
+			// Resolution, permission, and other probe failures are metadata
+			// uncertainty, not evidence that this is safely a non-Git directory.
+			return true
+		}
+		atDiscoveryRoot := directory == discoveryRoot
+		if runtime.GOOS == "windows" {
+			atDiscoveryRoot = strings.EqualFold(directory, discoveryRoot)
+		}
+		if atDiscoveryRoot {
+			// Git's default discovery stops at the filesystem/volume boundary. The
+			// subprocess environment removes GIT_DISCOVERY_ACROSS_FILESYSTEM, so a
+			// marker above this guarded anchor cannot make the selection a worktree.
+			return false
 		}
 		parent := filepath.Dir(directory)
 		if parent == directory {

@@ -39,6 +39,118 @@ func TestGitWorktreePreflightAllowsRootGitMetadataAndInvokesLister(t *testing.T)
 	}
 }
 
+func TestGitWorktreeListingFailuresThroughSymlinkedAncestorWarn(t *testing.T) {
+	physicalRepo := t.TempDir()
+	initRepo(t, physicalRepo)
+	writeFile(t, physicalRepo, "nested/source.go", "package source\nfunc PresentOnFallback() {}\n")
+	git(t, physicalRepo, "add", ".")
+	git(t, physicalRepo, "commit", "-m", "source")
+
+	repo := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(filepath.Join(physicalRepo, "nested"), repo); err != nil {
+		t.Skipf("create repository-subdirectory symlink: %v", err)
+	}
+
+	t.Run("index listing", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		calls := 0
+		paths, warnings, err := worktreeSourceFilesWithLister(
+			t.Context(), repo, ignoreMatcher{}, false,
+			func(context.Context, string) ([]string, error) {
+				calls++
+				return nil, errors.New("worktree lister must not run after index failure")
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls != 0 {
+			t.Fatalf("worktree lister calls = %d, want 0 after index failure", calls)
+		}
+		if !hasProviderWarning(warnings, "W_GIT_WORKTREE_FALLBACK") {
+			t.Fatalf("warnings = %+v, want W_GIT_WORKTREE_FALLBACK", warnings)
+		}
+		if !containsWorktreePath(paths, "source.go") {
+			t.Fatalf("fallback paths = %q, want source.go", paths)
+		}
+	})
+
+	t.Run("worktree listing", func(t *testing.T) {
+		calls := 0
+		paths, warnings, err := worktreeSourceFilesWithLister(
+			t.Context(), repo, ignoreMatcher{}, false,
+			func(context.Context, string) ([]string, error) {
+				calls++
+				return nil, errors.New("forced worktree listing failure")
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 {
+			t.Fatalf("worktree lister calls = %d, want 1", calls)
+		}
+		if !hasProviderWarning(warnings, "W_GIT_WORKTREE_FALLBACK") {
+			t.Fatalf("warnings = %+v, want W_GIT_WORKTREE_FALLBACK", warnings)
+		}
+		if !containsWorktreePath(paths, "source.go") {
+			t.Fatalf("fallback paths = %q, want source.go", paths)
+		}
+	})
+}
+
+func TestPlainDirectoryListingFailureThroughSymlinkedAncestorIsUnmarked(t *testing.T) {
+	physicalRoot := t.TempDir()
+	writeFile(t, physicalRoot, "nested/source.go", "package source\nfunc PlainFallback() {}\n")
+	repo := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(filepath.Join(physicalRoot, "nested"), repo); err != nil {
+		t.Skipf("create plain-directory symlink: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir())
+
+	paths, warnings, err := worktreeSourceFilesWithLister(
+		t.Context(), repo, ignoreMatcher{}, false,
+		func(context.Context, string) ([]string, error) {
+			t.Fatal("worktree lister ran after index failure")
+			return nil, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasProviderWarning(warnings, "W_GIT_WORKTREE_FALLBACK") {
+		t.Fatalf("plain-directory warnings = %+v, do not want W_GIT_WORKTREE_FALLBACK", warnings)
+	}
+	if !containsWorktreePath(paths, "source.go") {
+		t.Fatalf("fallback paths = %q, want source.go", paths)
+	}
+}
+
+func TestGitEntryProbeSharesDirectoryObservationBudget(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "first/a", "a")
+	writeFile(t, root, "second/b", "b")
+	resolver, resolution := NewGitCeilingPathResolver(root)
+	if resolution != GitCeilingPathResolved {
+		t.Fatalf("create resolver: resolution %v", resolution)
+	}
+	defer resolver.Close()
+	canonicalRoot, resolution := resolver.Canonicalize(root)
+	if resolution != GitCeilingPathResolved {
+		t.Fatalf("canonicalize resolver root: resolution %v", resolution)
+	}
+
+	entriesSeen, bytesSeen := maxListedDirectoryObservations-1, 0
+	found, resolution := resolver.hasGitEntryWithBudget(filepath.Join(canonicalRoot, "first"), &entriesSeen, &bytesSeen)
+	if found || resolution != GitCeilingPathResolved {
+		t.Fatalf("first probe = found %v, resolution %v; want false, resolved", found, resolution)
+	}
+	found, resolution = resolver.hasGitEntryWithBudget(filepath.Join(canonicalRoot, "second"), &entriesSeen, &bytesSeen)
+	if found || resolution != GitCeilingPathUnsafe {
+		t.Fatalf("second probe = found %v, resolution %v; want false, unsafe after shared bound", found, resolution)
+	}
+}
+
 func TestGitWorktreePreflightDeclinesNestedGitMarkerBeforeLister(t *testing.T) {
 	repo := t.TempDir()
 	initRepo(t, repo)

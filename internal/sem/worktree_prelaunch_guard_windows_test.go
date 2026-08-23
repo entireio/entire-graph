@@ -9,6 +9,37 @@ import (
 	"testing"
 )
 
+func TestGitWorktreeListingFailureThroughJunctionedSubdirectoryWarns(t *testing.T) {
+	physicalRepo := t.TempDir()
+	initRepo(t, physicalRepo)
+	writeFile(t, physicalRepo, "nested/source.go", "package source\nfunc PresentOnFallback() {}\n")
+	git(t, physicalRepo, "add", ".")
+	git(t, physicalRepo, "commit", "-m", "source")
+
+	repo := filepath.Join(t.TempDir(), "alias")
+	windowsJunction(t, filepath.Join(physicalRepo, "nested"), repo)
+	calls := 0
+	paths, warnings, err := worktreeSourceFilesWithLister(
+		t.Context(), repo, ignoreMatcher{}, false,
+		func(context.Context, string) ([]string, error) {
+			calls++
+			return nil, errors.New("forced worktree listing failure")
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("worktree lister calls = %d, want 1", calls)
+	}
+	if !hasProviderWarning(warnings, "W_GIT_WORKTREE_FALLBACK") {
+		t.Fatalf("warnings = %+v, want W_GIT_WORKTREE_FALLBACK", warnings)
+	}
+	if !containsWorktreePath(paths, "source.go") {
+		t.Fatalf("fallback paths = %q, want source.go", paths)
+	}
+}
+
 func TestGitWorktreePreflightJunctionFailsClosedBeforeListerOrFallback(t *testing.T) {
 	repo := t.TempDir()
 	initRepo(t, repo)
