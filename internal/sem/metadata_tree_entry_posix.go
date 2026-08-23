@@ -1,4 +1,4 @@
-//go:build cgo && (linux || darwin || dragonfly || freebsd || openbsd)
+//go:build cgo && !windows
 
 package sem
 

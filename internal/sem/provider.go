@@ -13895,7 +13895,8 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 		return false
 	}
 	if commonConfig.worktreeConfig {
-		if !worktreeConfigValid || worktreeConfig.hasInclude || worktreeConfig.hasPromisorRemote {
+		if !worktreeConfigValid || worktreeConfig.hasInclude ||
+			worktreeConfig.hasPartialCloneExtension || worktreeConfig.hasPromisorRemote {
 			return false
 		}
 		if worktreeConfig.hasCoreWorktree &&

@@ -211,6 +211,36 @@ func TestGitMetadataGuardChecksPromisorInOnlyActiveWorktreeConfig(t *testing.T) 
 	})
 }
 
+func TestGitMetadataGuardChecksPartialCloneExtensionInOnlyActiveWorktreeConfig(t *testing.T) {
+	const planted = "[extensions]\npartialClone = origin\n"
+
+	t.Run("disabled", func(t *testing.T) {
+		repo, gitDir := gitConfigPreflightFixture(t)
+		if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte("[extensions]\nworktreeConfig = false\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(gitDir, "config.worktree"), []byte(planted), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if !gitMetadataSafeForSubprocess(repo) {
+			t.Fatal("inactive config.worktree partial-clone extension was treated as repository config")
+		}
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		repo, gitDir := gitConfigPreflightFixture(t)
+		if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte("[extensions]\nworktreeConfig = true\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(gitDir, "config.worktree"), []byte(planted), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if gitMetadataSafeForSubprocess(repo) {
+			t.Fatal("active config.worktree partial-clone extension passed metadata preflight")
+		}
+	})
+}
+
 func TestGitMetadataGuardBoundsActiveLocalConfigRead(t *testing.T) {
 	repo, gitDir := gitConfigPreflightFixture(t)
 	content := bytes.Repeat([]byte{'#'}, maxGitFileBytes+1)

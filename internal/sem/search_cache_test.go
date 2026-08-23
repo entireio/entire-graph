@@ -915,6 +915,11 @@ func TestWarmNoHitSearchPreservesCachedGraphHealth(t *testing.T) {
 func TestWarmCommittedSearchMatchesExhaustiveResultsWithoutFullContentRescan(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
+	// Git 2.55 runs the geometric maintenance strategy in a detached process
+	// after this repository's larger commit. Keep the fixture deterministic:
+	// the production metadata preflight must continue to fail closed while a
+	// separate process is actively rewriting the Git administrative tree.
+	git(t, repo, "config", "maintenance.auto", "false")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, "src/policy.ts", "export const durableCacheRefreshPolicy = 'eager'\n")
