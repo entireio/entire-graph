@@ -1,0 +1,53 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "ea4219b32c69",
+  "session_id": "01a02ccc-cca8-7c03-9fae-23b4a21b6c95",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-23T08:00:40.058687Z",
+  "branch": "codex/pr-132-windows-fix",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/parking-lot.md",
+    "docs/semantic-provider-requirements.md",
+    "docs/trust-and-security.md",
+    "internal/cli/root.go",
+    "internal/gitutil/git.go",
+    "internal/gitutil/git_test.go",
+    "internal/sem/metadata_tree_entry_posix.go",
+    "internal/sem/metadata_tree_entry_unsupported.go",
+    "internal/sem/metadata_tree_entry_windows.go",
+    "internal/sem/path_mount_guard_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_git_alternates_test.go",
+    "internal/sem/provider_git_metadata_tree_unix_test.go",
+    "internal/sem/provider_git_metadata_tree_windows_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "0a106bd09bd3",
+  "checkpoint_transcript_start": 2795,
+  "transcript_lines_at_start": 2795,
+  "compact_transcript_start": 448,
+  "token_usage": {
+    "input_tokens": 546336,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 42677248,
+    "output_tokens": 121391,
+    "api_call_count": 346
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-23T08:00:39.644147Z",
+    "agent_lines": 1458,
+    "agent_removed": 65,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1458,
+    "total_lines_changed": 1523,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
