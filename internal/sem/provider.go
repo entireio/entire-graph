@@ -933,11 +933,13 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 	snapshot.Header.PartialFailures = summary.PartialFailures
 	snapshot.Header.Stats = summary.Stats
 	snapshot.Header.Completeness = summary.Completeness
-	sort.Slice(snapshot.Relations, func(i, j int) bool {
-		left := snapshot.Relations[i].Type + snapshot.Relations[i].FromID + snapshot.Relations[i].ToID
-		right := snapshot.Relations[j].Type + snapshot.Relations[j].FromID + snapshot.Relations[j].ToID
-		return left < right
-	})
+	if !SnapshotTruncated(&summary) {
+		sort.Slice(snapshot.Relations, func(i, j int) bool {
+			left := snapshot.Relations[i].Type + snapshot.Relations[i].FromID + snapshot.Relations[i].ToID
+			right := snapshot.Relations[j].Type + snapshot.Relations[j].FromID + snapshot.Relations[j].ToID
+			return left < right
+		})
+	}
 	return snapshot, nil
 }
 
@@ -1099,6 +1101,17 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	}
 	// noteStop classifies the work context's current state.
 	noteStop := func() error { return classifyStop(gate.err()) }
+	// callerStop returns only when the caller's own context is done. Finalization
+	// runs after the relation phase has already classified budget expiry into
+	// budgetHit; re-polling the gate there would mark an otherwise complete
+	// snapshot truncated because slow stdout or progress callbacks ran past
+	// MaxDuration after the relation phase finished.
+	callerStop := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return nil
+	}
 	if sc.close != nil {
 		defer sc.close()
 	}
@@ -1239,6 +1252,10 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	}
 	emitProgress(BuildPhaseParse, len(sc.paths), symbolCount, relationCount)
 
+	externalsByID := map[string]ExternalRecord{}
+	var externalOrder []string
+	relationsByType := map[string]int{}
+	if !budgetHit {
 	// Phase 2: resolve relations from indexes, re-reading content per file.
 	// Relation dedup uses compact 64-bit hashed keys rather than the full
 	// from+to+type string, so the set's memory is ~one machine word per unique
@@ -1247,13 +1264,6 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// collisions across realistic relation counts are negligible.
 	startPhase()
 	seenRelation := map[uint64]struct{}{}
-	externalsByID := map[string]ExternalRecord{}
-	// externalOrder is the first-seen order of every external ID, tracked
-	// alongside externalsByID (not derived from it) so a budget-truncated
-	// snapshot can emit externals in a deterministic order without paying for
-	// a sort: see the budgetHit branch below.
-	var externalOrder []string
-	relationsByType := map[string]int{}
 	var emitErr error
 	emitRelation := func(r RelationRecord, symbolsByID map[string]SymbolRecord, filesByID map[string]FileRecord) {
 		if emitErr != nil || budgetHit {
@@ -1348,15 +1358,15 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	if err := noteStop(); err != nil {
 		return err
 	}
+	} // !budgetHit
 	emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 
 	startPhase()
 	externalIDs := orderedExternalIDs(externalsByID, externalOrder, budgetHit)
 	for _, id := range externalIDs {
 		// Externals are already resolved in memory; only a caller cancellation
-		// stops emitting them, so a budget-truncated snapshot still ends with a
-		// complete, well-formed record stream.
-		if err := noteStop(); err != nil {
+		// stops emitting them once the relation phase has finished.
+		if err := callerStop(); err != nil {
 			return err
 		}
 		if err := emit(externalsByID[id]); err != nil {
