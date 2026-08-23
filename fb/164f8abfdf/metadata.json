@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "fb164f8abfdf",
+  "strategy": "manual-commit",
+  "branch": "codex/pr-132-windows-fix",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "go.mod",
+    "go.sum",
+    "internal/sem/path_mount_guard_aix.go",
+    "internal/sem/path_mount_guard_build_test.go",
+    "internal/sem/path_mount_guard_mnttab.go",
+    "internal/sem/path_mount_guard_netbsd.go",
+    "internal/sem/path_mount_guard_portable_test.go",
+    "internal/sem/path_mount_guard_test.go",
+    "internal/sem/path_mount_guard_unsupported.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_git_config_preflight_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fb/164f8abfdf/0/metadata.json",
+      "transcript": "/fb/164f8abfdf/0/full.jsonl",
+      "compact_transcript": "/fb/164f8abfdf/0/transcript.jsonl",
+      "content_hash": "/fb/164f8abfdf/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 272774,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 20411904,
+    "output_tokens": 40908,
+    "api_call_count": 153
+  }
+}
