@@ -689,6 +689,9 @@ func runCommit(ctx context.Context, opts Options, args []string) error {
 	if len(rest) > 1 {
 		return errors.New("commit accepts at most one revision")
 	}
+	if err := validateRevision("commit", rev); err != nil {
+		return err
+	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {
 		return err
@@ -730,6 +733,37 @@ func runCheckpoint(ctx context.Context, opts Options, args []string) error {
 
 func runAnalyze(ctx context.Context, opts Options, args []string) error {
 	return runDiff(ctx, opts, args)
+}
+
+// validateRevision rejects a revision value that Git would read as an option instead.
+//
+// Every revision this package accepts is eventually spliced into a git argv — `git diff -z
+// --name-status --find-renames <base> <head> --` in gitutil.ChangedFiles, `git rev-parse
+// <rev>^` in gitutil.FirstParent, `git show <rev>^{tree}:<path>` in gitutil.ShowFile. Git
+// parses options anywhere ahead of `--`, so a value beginning with '-' stops being a revision
+// and becomes a flag of the command it lands in: `diff --base '--output=FILE'` exited 0 having
+// truncated FILE and replaced it with git's own name-status output (CWE-88), and `commit
+// '--output=FILE'` reached the same argv because `git rev-parse '--output=FILE^'` does not
+// fail first.
+//
+// Refusing at the boundary costs nothing legitimate. Values beginning with "--" are always
+// Git options; bare "-" is ambiguous with git's path/option syntax. Single-hyphen refs such as
+// "-foo" are valid and must not be rejected here — gitutil uses "--end-of-options" elsewhere
+// when splicing user paths into git argv.
+func validateRevision(name, rev string) error {
+	if rev == "" {
+		return fmt.Errorf("%s requires a revision", name)
+	}
+	if strings.HasPrefix(rev, "--") {
+		return fmt.Errorf("%s %q is not a revision: a revision cannot begin with %q, which Git would read as an option", name, rev, "--")
+	}
+	if rev == "-" {
+		return fmt.Errorf("%s %q is not a revision: bare %q is ambiguous with git's path/option syntax", name, rev, "-")
+	}
+	if strings.ContainsRune(rev, '\x00') {
+		return fmt.Errorf("%s %q is not a revision: a revision cannot contain a NUL byte", name, rev)
+	}
+	return nil
 }
 
 // diffFlags is the parsed argument set for `diff` and its `analyze` alias.
@@ -780,11 +814,17 @@ func parseDiffFlags(args []string) (diffFlags, []string, error) {
 			if i >= len(rest) {
 				return diffFlags{}, nil, errors.New("--base requires a value")
 			}
+			if err := validateRevision("--base", rest[i]); err != nil {
+				return diffFlags{}, nil, err
+			}
 			parsed.base = rest[i]
 		case "--head":
 			i++
 			if i >= len(rest) {
 				return diffFlags{}, nil, errors.New("--head requires a value")
+			}
+			if err := validateRevision("--head", rest[i]); err != nil {
+				return diffFlags{}, nil, err
 			}
 			parsed.head = rest[i]
 		default:
