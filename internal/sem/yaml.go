@@ -13,8 +13,11 @@ type yamlBlock struct {
 	EndLine   int
 }
 
-func yamlEntities(path, content string) []Entity {
+func yamlEntities(path, content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
+	if stopped(stop) {
+		return nil
+	}
 	topLevel := yamlTopLevelBlocks(lines)
 	if len(topLevel) == 0 {
 		return nil
@@ -24,11 +27,20 @@ func yamlEntities(path, content string) []Entity {
 	if yamlWorkflowPath(path) {
 		entities = append(entities, yamlEntity("workflow", yamlWorkflowEntityName(path), yamlWorkflowSignature(path, lines, topLevel), 1, len(lines), lines))
 	}
+	if stopped(stop) {
+		return nil
+	}
 	entities = append(entities, yamlKubernetesResourceEntities(lines)...)
+	if stopped(stop) {
+		return nil
+	}
 	if yamlDockerComposePath(path) {
 		entities = append(entities, yamlComposeServiceEntities(topLevel, lines)...)
 	}
-	for _, block := range topLevel {
+	for i, block := range topLevel {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return nil
+		}
 		switch block.Key {
 		case "name":
 			continue

@@ -394,7 +394,7 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 		if root.HasError() {
 			status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetail(root, src)}
 		}
-		return yamlEntities(path, content), spec.language, status
+		return yamlEntities(path, content, stop), spec.language, status
 	}
 
 	var entities []Entity

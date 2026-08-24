@@ -703,6 +703,27 @@ func selectiveSearchSnapshotFromFull(
 	}
 	selective.Files, selective.Symbols = filterFilesAndSymbolsForBudget(full.Files, full.Symbols, allowedFiles, stopNow)
 
+	if stopNow() {
+		if err := classifyStop(gate.err()); err != nil {
+			return ProviderSnapshot{}, err
+		}
+		finalizeSelectiveOrdering(&selective, nil, nil, budgetHit)
+		failures := filterSearchPartialFailures(full.Header.PartialFailures, retainedFileSet(selective.Files))
+		if budgetHit {
+			failures = append(failures, analysisBudgetFailure(options.MaxDuration))
+		}
+		selective.Header.PartialFailures = failures
+		selective.Header.Stats = ProviderStats{
+			Files:             len(selective.Files),
+			ParsedFiles:       len(selective.Files),
+			Symbols:           len(selective.Symbols),
+			Relations:         len(selective.Relations),
+			PartialFailures:   len(failures),
+			CompletenessLevel: completenessLevel(failures, len(selective.Files), len(selective.Files), len(selective.Symbols)),
+		}
+		return selective, nil
+	}
+
 	// recordsByFile only feeds relation resolution below (never the reported
 	// selective.Symbols, which is already complete by this point), so
 	// stopping it early merely narrows how many of the RETAINED files get a

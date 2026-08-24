@@ -1064,7 +1064,10 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// Expiry of an OPT-IN budget is a truncation, not a failure: budgetHit turns
 	// into an E_ANALYSIS_BUDGET_EXCEEDED partial failure and the stream is
 	// finished normally, the way E_FILE_TOO_LARGE reports a file the provider
-	// chose not to parse. Everything else is returned as an error -- a
+	// chose not to parse. The retained prefix under MaxDuration is intentionally
+	// best-effort (parallel workers and cache warmth vary); callers that need a
+	// reproducible boundary must not rely on wall-clock truncation alone.
+	// Everything else is returned as an error -- a
 	// cancellation, and also a deadline that came from the CALLER's own context
 	// rather than from MaxDuration. A caller that never asked for truncation
 	// must not receive a silently incomplete snapshot with a nil error: it would

@@ -167,6 +167,9 @@ func processProviderFile(
 	}
 
 	contentBytes := []byte(content)
+	if stop() {
+		return providerFileResult{index: index, path: path}
+	}
 	langSpec, ok := languageForContent(path, content)
 	if !ok {
 		result.failures = append(result.failures, PartialFailure{
@@ -191,6 +194,9 @@ func processProviderFile(
 		Lines:      sourceLineCount(content),
 	}
 	if skipFastProfilePerSymbolScan(spec, language) {
+		if stop() {
+			return providerFileResult{index: index, path: path}
+		}
 		result.precomputedImports = importsFor(path, content)
 		result.hasPrecomputedImports = true
 	}
@@ -205,6 +211,9 @@ func processProviderFile(
 			Detail:               fmt.Sprintf("file is %d bytes, above max parser input %d bytes", len(contentBytes), maxParseBytes),
 		})
 		return result
+	}
+	if stop() {
+		return providerFileResult{index: index, path: path}
 	}
 	if looksMinified(content) {
 		result.language = language
