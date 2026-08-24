@@ -33,7 +33,7 @@ entire graph search --repo . --query "<the task or bug in one plain sentence>" -
 
 - `--format agent` for compact ranked output with latency telemetry; `json`/`ndjson` for the full schema (completeness, partial failures, diagnostics).
 - `--top-k N` result count; `--max-context-bytes N` byte budget (`0` = unbounded).
-- Working tree by default (clean trees reuse a keyed cache); add `--head` for committed-tree semantics.
+- Working tree by default (always rebuilt and never cached); add `--head` for cached committed-tree semantics.
 - `--profile syntax-only|fast|full` (default `fast`); `--index-all-files` or `--max-indexed-files N` to widen/bound cold-search parsing.
 
 **When:** the start of essentially every task. One good query lands you on the fix area.

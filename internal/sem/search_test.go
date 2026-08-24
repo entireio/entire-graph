@@ -86,7 +86,7 @@ func Match%02d() string { return "needle" }
 				Profile:                 ProfileSyntaxOnly,
 				MaxIndexedFiles:         2,
 				progressivePreselection: true,
-			}, ProviderSnapshot{}, false)
+			}, ProviderSnapshotOptions{NoNetwork: true, Worktree: true}, ProviderSnapshot{}, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -119,7 +119,8 @@ func TestColdPreselectionKeepsLegacyOrderAndStatsWhenEligibleSetFitsBase(t *test
 	q := buildSearchQuery("quasar nebula")
 	selection, err := preselectSearchFiles(
 		t.Context(), repo, q, buildSparseSearchQuery("quasar nebula"),
-		SearchOptions{Worktree: true, MaxIndexedFiles: 3}, ProviderSnapshot{}, false,
+		SearchOptions{Worktree: true, MaxIndexedFiles: 3},
+		ProviderSnapshotOptions{NoNetwork: true, Worktree: true}, ProviderSnapshot{}, false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +155,8 @@ func TestColdPreselectionExcludesConstraintOnlyDistractorWhenLegacySetFitsBase(t
 	}
 	selection, err := preselectSearchFiles(
 		t.Context(), repo, q, buildSparseSearchQuery("needle"),
-		SearchOptions{Worktree: true, MaxIndexedFiles: 2}, ProviderSnapshot{}, false,
+		SearchOptions{Worktree: true, MaxIndexedFiles: 2},
+		ProviderSnapshotOptions{NoNetwork: true, Worktree: true}, ProviderSnapshot{}, false,
 	)
 	if err != nil {
 		t.Fatal(err)

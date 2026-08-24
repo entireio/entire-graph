@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Full LoCoMo (n=1540) for one benchmark arm.
 #
-# This is the launcher the published runs used, with the credential-sourcing line
-# replaced by the env-var NAMES it expects. Run it from the patched upstream
+# This is the launcher the published runs used, with authentication updated to
+# use Azure identity instead of a model key. Run it from the patched upstream
 # memory-benchmarks checkout (see ../README.md §2).
 #
 # Fairness spine (do not vary between arms):
@@ -17,12 +17,19 @@
 # Usage: run_locomo.sh <arm> [resume]
 set -euo pipefail
 
-# Credentials — export these yourself, by name. Never commit values.
-#   AZURE_AI_API_KEY   AZURE_AI_ENDPOINT   AZURE_AI_API_VERSION
-: "${AZURE_AI_API_KEY:?export AZURE_AI_API_KEY}"
+# Authentication is identity-only; API keys and static bearer tokens are not
+# accepted. Locally the harness uses DefaultAzureCredential (for example, an
+# `az login` session or managed identity). In GitHub Actions it exchanges fresh
+# runner OIDC assertions, which also requires AZURE_CLIENT_ID and AZURE_TENANT_ID.
 : "${AZURE_AI_ENDPOINT:?export AZURE_AI_ENDPOINT}"
 : "${AZURE_AI_API_VERSION:=2024-05-01-preview}"
-export AZURE_AI_API_KEY AZURE_AI_ENDPOINT AZURE_AI_API_VERSION
+if [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+  : "${ACTIONS_ID_TOKEN_REQUEST_URL:?GitHub OIDC request URL is missing}"
+  : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?GitHub OIDC request token is missing}"
+  : "${AZURE_CLIENT_ID:?GitHub OIDC requires AZURE_CLIENT_ID}"
+  : "${AZURE_TENANT_ID:?GitHub OIDC requires AZURE_TENANT_ID}"
+fi
+export AZURE_AI_ENDPOINT AZURE_AI_API_VERSION
 
 export PATH="$HOME/bin:$PATH"          # the `entire-graph` binary must be on PATH
 export FAIR_MODE=1
@@ -36,9 +43,11 @@ if pgrep -f -- "locomo.run --project-name ${PN} " > /dev/null 2>&1; then
   echo "REFUSING: ${PN} already running"; exit 3
 fi
 
-# State roots must live under $HOME. systemd wipes /tmp on boot, and the default
-# tempfile.mkdtemp() resolves under /tmp — this is how multi-GB arm state was lost.
+# Keep every filesystem-backed arm under the explicit benchmark state root.
+# Without ENTIRE_CORPUS_ROOT the entire adapter falls back to tempfile.mkdtemp(),
+# making BENCH_STATE_ROOT misleading and losing its corpus on host cleanup.
 STATE_ROOT="${BENCH_STATE_ROOT:-$HOME/memarms/state}/${PN}"
+export ENTIRE_CORPUS_ROOT="$STATE_ROOT/entire"
 export GRAPHIFY_STATE_ROOT="$STATE_ROOT/graphify"
 export CMM_STATE_ROOT="$STATE_ROOT/cmm"
 mkdir -p "$STATE_ROOT"
