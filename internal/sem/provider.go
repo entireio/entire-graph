@@ -1046,6 +1046,14 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, workers int, emit func(record any) error) error {
 	started := time.Now()
 
+	// An opt-in wall-clock budget must parse files serially so the retained
+	// prefix is a function of path order alone. Parallel workers finish
+	// different prefixes depending on scheduling and cache warmth, which
+	// regresses the provider's determinism contract for truncated snapshots.
+	if options.MaxDuration > 0 && workers > 1 {
+		workers = 1
+	}
+
 	// Source preparation (the git listing and plumbing) runs on the caller's
 	// context and OUTSIDE the budget clock: a partially-listed source has no
 	// reportable shape, so there is nothing to truncate it to. MaxDuration is
@@ -1064,9 +1072,11 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// Expiry of an OPT-IN budget is a truncation, not a failure: budgetHit turns
 	// into an E_ANALYSIS_BUDGET_EXCEEDED partial failure and the stream is
 	// finished normally, the way E_FILE_TOO_LARGE reports a file the provider
-	// chose not to parse. The retained prefix under MaxDuration is intentionally
-	// best-effort (parallel workers and cache warmth vary); callers that need a
-	// reproducible boundary must not rely on wall-clock truncation alone.
+	// chose not to parse. The retained prefix under MaxDuration is a function
+	// of stable path order (the file pipeline runs serially when a budget is
+	// set); callers that need a reproducible boundary must still not rely on
+	// wall-clock truncation alone because the exact cut point moves with
+	// machine speed.
 	// Everything else is returned as an error -- a
 	// cancellation, and also a deadline that came from the CALLER's own context
 	// rather than from MaxDuration. A caller that never asked for truncation
@@ -2736,6 +2746,31 @@ func jsScanPartialFailure(path string, err error) PartialFailure {
 	}
 }
 
+func buildGraphQLOperationRootAliases(files []FileRecord, recordsByFile map[string][]SymbolRecord, shouldStop func() bool) map[string]string {
+	graphqlOperationRootAliases := map[string]string{}
+	for _, file := range files {
+		if shouldStop != nil && shouldStop() {
+			return graphqlOperationRootAliases
+		}
+		for _, symbol := range recordsByFile[file.Path] {
+			if shouldStop != nil && shouldStop() {
+				return graphqlOperationRootAliases
+			}
+			if symbol.Kind != "graphql_schema_field" {
+				continue
+			}
+			rootName := graphqlRootNameFromSignature(symbol)
+			if rootName == "" || !graphqlOperationRoot(rootName) {
+				continue
+			}
+			if typeName, _, ok := strings.Cut(symbol.QualifiedName, "."); ok {
+				graphqlOperationRootAliases[strings.ToLower(typeName)] = rootName
+			}
+		}
+	}
+	return graphqlOperationRootAliases
+}
+
 func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
 	// Nothing above the file loop used to consult shouldStop, so entering this
 	// function with an already-expired budget still bought three whole-repository
@@ -2784,31 +2819,10 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	httpCallsByRoute := map[string][]RelationRecord{}
 	graphqlSchemaFields := map[string][]SymbolRecord{}
 	graphqlResolvers := map[string][]SymbolRecord{}
-	graphqlOperationRootAliases := map[string]string{}
-	for _, file := range files {
-		if shouldStop != nil && shouldStop() {
-			return
-		}
-		for _, symbol := range recordsByFile[file.Path] {
-			if symbol.Kind != "graphql_schema_field" {
-				continue
-			}
-			rootName := graphqlRootNameFromSignature(symbol)
-			if rootName == "" || !graphqlOperationRoot(rootName) {
-				continue
-			}
-			if typeName, _, ok := strings.Cut(symbol.QualifiedName, "."); ok {
-				graphqlOperationRootAliases[strings.ToLower(typeName)] = rootName
-			}
-		}
+	graphqlOperationRootAliases := buildGraphQLOperationRootAliases(files, recordsByFile, shouldStop)
+	if shouldStop != nil && shouldStop() {
+		return
 	}
-	// Cross-file container index: entitySymbols links a member to its container
-	// only within one file, but some containers span files — a Go receiver type
-	// commonly lives in a different file of the same package than its methods
-	// (C# partial classes and reopened Ruby classes behave the same) — leaving
-	// such members with an empty ContainerID and therefore invisible to
-	// receiver-typed call resolution. Resolve those containers from the
-	// member's qualified-name prefix against the workspace's type-like symbols.
 	crossFileContainers := needsCallScan || needsReceiverCalls || needsFields || needsOverrides
 	// Cross-file namespace membership is only consulted by the JS/TS
 	// merged-declaration fallback (rare), and the lookup memoizes per file, so
@@ -2821,7 +2835,10 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			if shouldStop != nil && shouldStop() {
 				return
 			}
-			for _, symbol := range recordsByFile[file.Path] {
+			for si, symbol := range recordsByFile[file.Path] {
+				if si%budgetPollStride == 0 && shouldStop != nil && shouldStop() {
+					return
+				}
 				if typeLikeKind(symbol.Kind) {
 					typeLikeByShortName[symbol.Name] = append(typeLikeByShortName[symbol.Name], symbol)
 				}
