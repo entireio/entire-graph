@@ -347,16 +347,30 @@ func runProviderFilePipeline(
 		select {
 		case <-ctx.Done():
 			for {
-				ordered, ok := pending[nextReduce]
-				if !ok {
+				reduced := false
+				for {
+					ordered, ok := pending[nextReduce]
+					if !ok {
+						break
+					}
+					if err := reduce(ordered); err != nil {
+						return err
+					}
+					delete(pending, nextReduce)
+					nextReduce++
+					outstanding--
+					reduced = true
+				}
+				gotResult := false
+				select {
+				case result := <-results:
+					pending[result.index] = result
+					gotResult = true
+				default:
+				}
+				if !reduced && !gotResult {
 					break
 				}
-				if err := reduce(ordered); err != nil {
-					return err
-				}
-				delete(pending, nextReduce)
-				nextReduce++
-				outstanding--
 			}
 			return ctx.Err()
 		case submit <- job:

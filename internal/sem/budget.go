@@ -2,6 +2,7 @@ package sem
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -60,6 +61,28 @@ func (g budgetGate) err() error {
 
 // expired is the predicate form of err.
 func (g budgetGate) expired() bool { return g.err() != nil }
+
+// isOptInBudgetExceeded reports whether err is the opt-in MaxDuration deadline
+// expiring rather than a stricter caller-owned deadline or cancellation.
+// ctx.Err() alone is not enough: its timer can lag the clock the same way the
+// budget timer does, so a caller deadline that precedes MaxDuration by less
+// than one timer tick can look like ctx.Err()==nil while the work context is
+// already done.
+func isOptInBudgetExceeded(ctx context.Context, gate budgetGate, budgetDeadline time.Time, maxDuration time.Duration, err error) bool {
+	if err == nil || maxDuration <= 0 || budgetDeadline.IsZero() {
+		return false
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return false
+	}
+	if callerDL, ok := ctx.Deadline(); ok && callerDL.Before(budgetDeadline) && !gate.now().Before(callerDL) {
+		return false
+	}
+	return !gate.now().Before(budgetDeadline)
+}
 
 // reader wraps a content reader so that every read refuses once the budget is
 // gone. This is the structural close for the "a loop keeps reading whole files

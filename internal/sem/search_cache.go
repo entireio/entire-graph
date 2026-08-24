@@ -659,7 +659,7 @@ func selectiveSearchSnapshotFromFull(
 		if err == nil {
 			return nil
 		}
-		if options.MaxDuration > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		if isOptInBudgetExceeded(ctx, gate, budgetDeadline, options.MaxDuration, err) {
 			budgetHit = true
 			return nil
 		}
@@ -681,7 +681,7 @@ func selectiveSearchSnapshotFromFull(
 		if !shouldStop() {
 			return false
 		}
-		if options.MaxDuration > 0 && errors.Is(gate.err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		if isOptInBudgetExceeded(ctx, gate, budgetDeadline, options.MaxDuration, gate.err()) {
 			budgetHit = true
 		}
 		return true

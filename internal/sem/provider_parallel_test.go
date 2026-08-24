@@ -282,6 +282,57 @@ func TestProviderFilePipelineCancellationJoinsWorkers(t *testing.T) {
 	}
 }
 
+// When ctx expires with a completed result already buffered, the cancel branch
+// must reduce that result before returning so budget-truncated snapshots do not
+// drop the next in-order file scheduler-dependently.
+func TestProviderFilePipelineCancellationEmitsBufferedResult(t *testing.T) {
+	paths := []string{"first.go", "second.go"}
+	ctx, cancel := context.WithCancel(context.Background())
+	allowFirst := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		close(allowFirst)
+	}()
+
+	var reduced []int
+	done := make(chan error, 1)
+	go func() {
+		done <- runProviderFilePipeline(ctx, paths, 2,
+			func(workerCtx context.Context, index int, path string) providerFileResult {
+				if index == 0 {
+					<-allowFirst
+				}
+				if index == 1 {
+					<-releaseSecond
+				}
+				return providerFileResult{index: index, path: path}
+			},
+			func(result providerFileResult) error {
+				reduced = append(reduced, result.index)
+				if result.index == 0 {
+					close(releaseSecond)
+					time.Sleep(20 * time.Millisecond)
+					cancel()
+				}
+				return nil
+			},
+		)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("pipeline error = %v, want nil or context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pipeline did not return after cancel")
+	}
+	if want := []int{0, 1}; !reflect.DeepEqual(reduced, want) {
+		t.Fatalf("reducer order = %v, want buffered completion %v before cancel return", reduced, want)
+	}
+}
+
 // If admission is tied only to worker/channel capacity, an early slow path can
 // let every later file finish and accumulate in memory. Holding index zero
 // proves the scheduler never starts more than 2*workers unreduced files.

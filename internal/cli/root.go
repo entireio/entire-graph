@@ -139,13 +139,22 @@ func runUnderSignals(run func(context.Context) error) error {
 
 const writeBytesChunkSize = 64 * 1024
 
-// writeBytesWithContext writes b to w in chunks, returning ctx.Err() as soon as
-// the context is canceled. A cache hit can be megabytes; a plain Write would
-// ignore SIGINT until the whole buffer is flushed.
-func writeBytesWithContext(ctx context.Context, w io.Writer, b []byte) error {
+// contextChunkWriter wraps w so each Write honors ctx cancellation. Large
+// writes are chunked the same way writeBytesWithContext does, so a blocked
+// stdout pipe cannot prevent SIGINT/SIGTERM from stopping the command.
+type contextChunkWriter struct {
+	ctx context.Context
+	w   io.Writer
+}
+
+func (cw *contextChunkWriter) Write(b []byte) (int, error) {
+	written := 0
 	for len(b) > 0 {
-		if err := ctx.Err(); err != nil {
-			return err
+		if err := cw.ctx.Err(); err != nil {
+			if written == 0 {
+				return 0, err
+			}
+			return written, err
 		}
 		n := writeBytesChunkSize
 		if n > len(b) {
@@ -158,23 +167,32 @@ func writeBytesWithContext(ctx context.Context, w io.Writer, b []byte) error {
 		}
 		done := make(chan writeResult, 1)
 		go func() {
-			written, err := w.Write(chunk)
-			done <- writeResult{written, err}
+			wrote, err := cw.w.Write(chunk)
+			done <- writeResult{wrote, err}
 		}()
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-cw.ctx.Done():
+			return written, cw.ctx.Err()
 		case res := <-done:
 			if res.err != nil {
-				return res.err
+				return written, res.err
 			}
 			if res.n == 0 {
-				return io.ErrShortWrite
+				return written, io.ErrShortWrite
 			}
+			written += res.n
 			b = b[res.n:]
 		}
 	}
-	return nil
+	return written, nil
+}
+
+// writeBytesWithContext writes b to w in chunks, returning ctx.Err() as soon as
+// the context is canceled. A cache hit can be megabytes; a plain Write would
+// ignore SIGINT until the whole buffer is flushed.
+func writeBytesWithContext(ctx context.Context, w io.Writer, b []byte) error {
+	_, err := (&contextChunkWriter{ctx: ctx, w: w}).Write(b)
+	return err
 }
 
 func Run(ctx context.Context, opts Options, args []string) error {
@@ -454,7 +472,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		encoder.SetEscapeHTML(false) // match json.Marshal used elsewhere (no < escaping)
 		return encoder.Encode
 	}
-	encodeRecord := newRecordEncoder(opts.Stdout)
+	encodeRecord := newRecordEncoder(&contextChunkWriter{ctx: ctx, w: opts.Stdout})
 
 	// Targeted edge query: when --to/--from/--relation is set, emit only matching
 	// relations (plus header/summary), never files/symbols. Turns "callers of X"

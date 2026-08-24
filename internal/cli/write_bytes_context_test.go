@@ -31,3 +31,18 @@ func TestWriteBytesWithContextWritesAll(t *testing.T) {
 		t.Fatalf("got %q, want %q", got.Bytes(), want)
 	}
 }
+
+func TestContextChunkWriterReturnsOnCancelDuringStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var buf bytes.Buffer
+	writer := &contextChunkWriter{ctx: ctx, w: &buf}
+	_, err := writer.Write(bytes.Repeat([]byte("x"), writeBytesChunkSize*2))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("contextChunkWriter.Write = %v, want context.Canceled", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("wrote %d bytes after cancel, want 0", buf.Len())
+	}
+}

@@ -985,7 +985,13 @@ func collectRegistrationAliases(stop func() bool, paths []string, read contentRe
 		aliasesByHandler[handler] = append(aliasesByHandler[handler], alias)
 	}
 	for handler, aliases := range aliasesByHandler {
+		if stop != nil && stop() {
+			break
+		}
 		sort.Strings(aliases)
+		if stop != nil && stop() {
+			break
+		}
 		aliasesByHandler[handler] = dedupeSortedStrings(aliases)
 	}
 	return aliasesByHandler
@@ -1106,7 +1112,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		if err == nil {
 			return nil
 		}
-		if options.MaxDuration > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		if isOptInBudgetExceeded(ctx, gate, budgetDeadline, options.MaxDuration, err) {
 			budgetHit = true
 			return nil
 		}
@@ -2848,7 +2854,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	if shouldStop != nil && shouldStop() {
 		return
 	}
-	partialContainerCanonical, partialContainerFile := partialTypeCanonicalIDs(files, recordsByFile)
+	partialContainerCanonical, partialContainerFile := partialTypeCanonicalIDs(shouldStop, files, recordsByFile)
 	// Iterate files in their (stable) slice order, not the recordsByFile map, so
 	// structural relations stream deterministically.
 	for _, file := range files {
@@ -4442,11 +4448,17 @@ func buildMixinRelation(repoKey string, anchor SymbolRecord, edge rawSupertype, 
 // two different types (different namespaces, different assemblies) and must
 // stay separate. The second return value gives each canonical part's file, so
 // callers can scope a cross-file CONTAINS edge correctly.
-func partialTypeCanonicalIDs(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]string, map[string]string) {
+func partialTypeCanonicalIDs(stop func() bool, files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]string, map[string]string) {
 	canonicalByKey := map[string]SymbolRecord{}
 	var parts []SymbolRecord
 	for _, file := range files {
-		for _, symbol := range recordsByFile[file.Path] {
+		if stop != nil && stop() {
+			return nil, nil
+		}
+		for si, symbol := range recordsByFile[file.Path] {
+			if si%budgetPollStride == 0 && stop != nil && stop() {
+				return nil, nil
+			}
 			if !typeLikeKind(symbol.Kind) || !declaresPartialType(symbol) {
 				continue
 			}
@@ -4464,7 +4476,10 @@ func partialTypeCanonicalIDs(files []FileRecord, recordsByFile map[string][]Symb
 	}
 	canonical := make(map[string]string, len(parts))
 	canonicalFile := make(map[string]string, len(canonicalByKey))
-	for _, symbol := range parts {
+	for pi, symbol := range parts {
+		if pi%budgetPollStride == 0 && stop != nil && stop() {
+			return nil, nil
+		}
 		key := symbol.Language + "\x00" + symbol.Kind + "\x00" + symbol.QualifiedName
 		anchor := canonicalByKey[key]
 		canonical[symbol.ID] = anchor.ID
