@@ -1,0 +1,53 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "7d178f0377e1",
+  "session_id": "2a557a2a-c9ee-425b-99d7-537a8e69f87d",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-24T20:19:22.580201Z",
+  "branch": "review/pr133-merge",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "internal/cli/root.go",
+    "internal/cli/root_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "bab2b9b8b409",
+  "checkpoint_transcript_start": 1193,
+  "transcript_lines_at_start": 1193,
+  "compact_transcript_start": 239,
+  "token_usage": {
+    "input_tokens": 27,
+    "cache_creation_tokens": 308076,
+    "cache_read_tokens": 3793557,
+    "output_tokens": 8885,
+    "api_call_count": 14
+  },
+  "session_metrics": {
+    "turn_count": 27
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-24T20:19:22.460183Z",
+    "agent_lines": 8,
+    "agent_removed": 42,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 8,
+    "total_lines_changed": 50,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 19,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 19
+      }
+    }
+  ]
+}
