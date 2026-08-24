@@ -85,3 +85,36 @@ func TestRunUnderSignalsReturnsNilWhenRunSucceedsDespiteASignal(t *testing.T) {
 		t.Fatalf("runUnderSignals(successful run) = %v, want nil", err)
 	}
 }
+
+// TestRunUnderSignalsWrapsSignalWhenRunSucceeds covers help/version-style paths
+// that return nil while a signal is in flight: the operator still gets the
+// conventional 130/143 exit instead of a silent success.
+func TestRunUnderSignalsWrapsSignalWhenRunSucceeds(t *testing.T) {
+	started := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runUnderSignals(func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return nil
+		})
+	}()
+
+	<-started
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatalf("send SIGINT to self: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		var sigErr *SignalError
+		if !errors.As(err, &sigErr) {
+			t.Fatalf("runUnderSignals returned %v (%T), want a *SignalError", err, err)
+		}
+		if sigErr.Signal != syscall.SIGINT {
+			t.Fatalf("SignalError.Signal = %v, want SIGINT", sigErr.Signal)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runUnderSignals did not return within 5s of receiving SIGINT")
+	}
+}

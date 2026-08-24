@@ -123,7 +123,10 @@ func runUnderSignals(run func(context.Context) error) error {
 	case caught = <-caughtCh:
 	default:
 	}
-	if err != nil && caught != nil {
+	if caught != nil {
+		if err == nil {
+			err = context.Canceled
+		}
 		return &SignalError{Signal: caught, Err: err}
 	}
 	return err
@@ -143,14 +146,28 @@ func writeBytesWithContext(ctx context.Context, w io.Writer, b []byte) error {
 		if n > len(b) {
 			n = len(b)
 		}
-		written, err := w.Write(b[:n])
-		if err != nil {
-			return err
+		chunk := b[:n]
+		type writeResult struct {
+			n   int
+			err error
 		}
-		if written == 0 {
-			return io.ErrShortWrite
+		done := make(chan writeResult, 1)
+		go func() {
+			written, err := w.Write(chunk)
+			done <- writeResult{written, err}
+		}()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case res := <-done:
+			if res.err != nil {
+				return res.err
+			}
+			if res.n == 0 {
+				return io.ErrShortWrite
+			}
+			b = b[res.n:]
 		}
-		b = b[written:]
 	}
 	return nil
 }

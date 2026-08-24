@@ -712,15 +712,7 @@ func selectiveSearchSnapshotFromFull(
 		if budgetHit {
 			failures = append(failures, analysisBudgetFailure(options.MaxDuration))
 		}
-		selective.Header.PartialFailures = failures
-		selective.Header.Stats = ProviderStats{
-			Files:             len(selective.Files),
-			ParsedFiles:       len(selective.Files),
-			Symbols:           len(selective.Symbols),
-			Relations:         len(selective.Relations),
-			PartialFailures:   len(failures),
-			CompletenessLevel: completenessLevel(failures, len(selective.Files), len(selective.Files), len(selective.Symbols)),
-		}
+		populateSelectiveHeader(&selective, sc.warnings, failures, nil)
 		return selective, nil
 	}
 
@@ -860,9 +852,6 @@ func selectiveSearchSnapshotFromFull(
 	finalizeSelectiveOrdering(&selective, externalsByID, externalOrder, budgetHit)
 
 	warnings := sc.warnings
-	if warnings == nil {
-		warnings = []ProviderWarning{}
-	}
 	failures := filterSearchPartialFailures(full.Header.PartialFailures, retainedFileSet(selective.Files))
 	failures = mergePartialFailures(failures, relationFailures)
 	if budgetHit {
@@ -871,6 +860,21 @@ func selectiveSearchSnapshotFromFull(
 		// it, so a truncated derivation can never be served to a later
 		// unbudgeted query as the complete index.
 		failures = append(failures, analysisBudgetFailure(options.MaxDuration))
+	}
+	populateSelectiveHeader(&selective, warnings, failures, relationsByType)
+	return selective, nil
+}
+
+// populateSelectiveHeader fills Languages, LanguageTiers, Warnings, PartialFailures,
+// Stats, and Completeness on a selective snapshot. Both the budget-truncated
+// early-return path and the complete derivation path call this so metadata stays
+// consistent regardless of where the gate tripped.
+func populateSelectiveHeader(selective *ProviderSnapshot, warnings []ProviderWarning, failures []PartialFailure, relationsByType map[string]int) {
+	if warnings == nil {
+		warnings = []ProviderWarning{}
+	}
+	if relationsByType == nil {
+		relationsByType = map[string]int{}
 	}
 	languageSet := make(map[string]struct{})
 	completenessLanguages := make(map[string]LanguageCompleteness)
@@ -913,7 +917,6 @@ func selectiveSearchSnapshotFromFull(
 		Languages: completenessLanguages,
 		Relations: relationsByType,
 	}
-	return selective, nil
 }
 
 // finalizeSelectiveOrdering populates selective.Externals from externalsByID
