@@ -1437,11 +1437,15 @@ func twoCommitRepo(t *testing.T) string {
 	git(t, repo, "init", "-b", "twocommitrepo-trunk")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
-	// A developer's global commit.gpgsign would otherwise fail these commits
-	// with "gpg failed to sign the data", the same class of global-config
-	// dependence as the init.defaultBranch collision above. Most fixtures in
-	// this repository already pin it.
+	// A developer's global signing config would otherwise fail this fixture with
+	// "gpg failed to sign the data", the same class of global-config dependence
+	// as the init.defaultBranch collision above. Both keys are needed and they
+	// are independent: commit.gpgsign covers the two commits below, and
+	// tag.gpgSign covers the annotated tag TestDiffAcceptsOrdinaryRevisions
+	// creates in this repository ("git tag -a" signs under its own key, so
+	// pinning only commit.gpgsign still aborts with "unable to sign the tag").
 	git(t, repo, "config", "commit.gpgsign", "false")
+	git(t, repo, "config", "tag.gpgSign", "false")
 	write(t, repo, "a.go", "package main\n\nfunc validate() bool { return true }\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "one")
