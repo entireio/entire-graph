@@ -143,10 +143,14 @@ func writeBytesWithContext(ctx context.Context, w io.Writer, b []byte) error {
 		if n > len(b) {
 			n = len(b)
 		}
-		if _, err := w.Write(b[:n]); err != nil {
+		written, err := w.Write(b[:n])
+		if err != nil {
 			return err
 		}
-		b = b[n:]
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		b = b[written:]
 	}
 	return nil
 }
