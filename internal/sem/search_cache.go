@@ -734,7 +734,8 @@ func selectiveSearchSnapshotFromFull(
 	}
 	if spec.name == ProfileSyntaxOnly {
 		i := 0
-		for filePath, symbols := range recordsByFile {
+		for _, filePath := range sortedKeysOf(recordsByFile) {
+			symbols := recordsByFile[filePath]
 			if i%budgetPollStride == 0 && stopNow() {
 				break
 			}
@@ -743,7 +744,8 @@ func selectiveSearchSnapshotFromFull(
 		}
 	} else {
 		i := 0
-		for filePath, symbols := range recordsByFile {
+		for _, filePath := range sortedKeysOf(recordsByFile) {
+			symbols := recordsByFile[filePath]
 			if i%budgetPollStride == 0 && stopNow() {
 				break
 			}
@@ -936,6 +938,8 @@ func populateSelectiveHeader(selective *ProviderSnapshot, warnings []ProviderWar
 // map, so a truncated snapshot's relations come out in the same order for
 // the same tree and budget every time; skipping the sort trades
 // "alphabetical" for "scan order", not determinism for nondeterminism.
+// Preprocessing walks recordsByFile in sorted file-path order (not map
+// iteration) so that scan order is stable even when the budget stops early.
 func finalizeSelectiveOrdering(selective *ProviderSnapshot, externalsByID map[string]ExternalRecord, externalOrder []string, budgetHit bool) {
 	for _, id := range orderedExternalIDs(externalsByID, externalOrder, budgetHit) {
 		selective.Externals = append(selective.Externals, externalsByID[id])

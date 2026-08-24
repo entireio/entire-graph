@@ -622,7 +622,7 @@ func includeRecord(mode string, record any) bool {
 // command stops cleanly at the limit and emits the partial result plus
 // machine-readable W_ANALYSIS_BUDGET_EXCEEDED warnings. --max-seconds 0
 // disables the budget.
-const defaultMaxSeconds = 120
+const defaultMaxSeconds int64 = 120
 
 // maxSecondsCeiling is the largest --max-seconds value that still fits in a
 // time.Duration once multiplied by time.Second (~292 years). strconv.Atoi
@@ -638,7 +638,7 @@ type commonFlags struct {
 	Progress bool
 	// MaxSeconds is the overall analysis budget in seconds; -1 means the flag
 	// was not given (commands apply their default), 0 means unlimited.
-	MaxSeconds int
+	MaxSeconds int64
 }
 
 type providerFlags struct {
@@ -656,7 +656,7 @@ type providerFlags struct {
 	// a full index of a large repository legitimately runs for minutes, and
 	// silently truncating one by default would turn a slow index into a wrong
 	// one. The ceiling is opt-in.
-	MaxSeconds int
+	MaxSeconds int64
 	// Targeted edge filters (edges mode). When any is set the command emits only
 	// the matching relation records (plus header/summary) instead of the whole
 	// graph, so "callers of X" is a tiny reply rather than a 50MB dump that the
@@ -718,6 +718,17 @@ func parseProfile(value string) (sem.Profile, error) {
 	}
 }
 
+func parseMaxSecondsValue(raw string) (int64, error) {
+	seconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || seconds < 0 {
+		return 0, fmt.Errorf("--max-seconds requires a non-negative integer, got %q", raw)
+	}
+	if seconds > maxSecondsCeiling {
+		return 0, fmt.Errorf("--max-seconds must be at most %d (larger values overflow time.Duration and disable the ceiling), got %q", maxSecondsCeiling, raw)
+	}
+	return seconds, nil
+}
+
 func parseProviderFlags(args []string) (providerFlags, []string, error) {
 	flags := providerFlags{Format: "ndjson", MaxSeconds: -1}
 	var rest []string
@@ -746,12 +757,9 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 			if i >= len(args) {
 				return flags, nil, errors.New("--max-seconds requires a value")
 			}
-			seconds, err := strconv.Atoi(args[i])
-			if err != nil || seconds < 0 {
-				return flags, nil, fmt.Errorf("--max-seconds requires a non-negative integer, got %q", args[i])
-			}
-			if int64(seconds) > maxSecondsCeiling {
-				return flags, nil, fmt.Errorf("--max-seconds must be at most %d (larger values overflow time.Duration and disable the ceiling), got %q", maxSecondsCeiling, args[i])
+			seconds, err := parseMaxSecondsValue(args[i])
+			if err != nil {
+				return flags, nil, err
 			}
 			flags.MaxSeconds = seconds
 		case "--no-network":
@@ -824,12 +832,9 @@ func parseCommonFlags(args []string) (commonFlags, []string, error) {
 			if i >= len(args) {
 				return flags, nil, errors.New("--max-seconds requires a value")
 			}
-			seconds, err := strconv.Atoi(args[i])
-			if err != nil || seconds < 0 {
-				return flags, nil, fmt.Errorf("--max-seconds requires a non-negative integer, got %q", args[i])
-			}
-			if int64(seconds) > maxSecondsCeiling {
-				return flags, nil, fmt.Errorf("--max-seconds must be at most %d (larger values overflow time.Duration and disable the ceiling), got %q", maxSecondsCeiling, args[i])
+			seconds, err := parseMaxSecondsValue(args[i])
+			if err != nil {
+				return flags, nil, err
 			}
 			flags.MaxSeconds = seconds
 		case "--repo":
