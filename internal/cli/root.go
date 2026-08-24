@@ -746,17 +746,19 @@ func runAnalyze(ctx context.Context, opts Options, args []string) error {
 // '--output=FILE'` reached the same argv because `git rev-parse '--output=FILE^'` does not
 // fail first.
 //
-// Refusing at the boundary costs nothing legitimate. A Git revision never begins with '-';
-// even the bare "-" that reads as a path elsewhere in this parser is not one ("git diff -" is
-// itself "error: invalid option: -"). This is the guard gitutil already applies to the values
-// it splices into git argv itself — GrepTreeMatches, grepTreePaths and FileCochanges all
-// reject a leading '-' and an embedded NUL the same way.
+// Refusing at the boundary costs nothing legitimate. Values beginning with "--" are always
+// Git options; bare "-" is ambiguous with git's path/option syntax. Single-hyphen refs such as
+// "-foo" are valid and must not be rejected here — gitutil uses "--end-of-options" elsewhere
+// when splicing user paths into git argv.
 func validateRevision(name, rev string) error {
 	if rev == "" {
 		return fmt.Errorf("%s requires a revision", name)
 	}
-	if strings.HasPrefix(rev, "-") {
-		return fmt.Errorf("%s %q is not a revision: a revision cannot begin with %q, which Git would read as an option", name, rev, "-")
+	if strings.HasPrefix(rev, "--") {
+		return fmt.Errorf("%s %q is not a revision: a revision cannot begin with %q, which Git would read as an option", name, rev, "--")
+	}
+	if rev == "-" {
+		return fmt.Errorf("%s %q is not a revision: bare %q is ambiguous with git's path/option syntax", name, rev, "-")
 	}
 	if strings.ContainsRune(rev, '\x00') {
 		return fmt.Errorf("%s %q is not a revision: a revision cannot contain a NUL byte", name, rev)

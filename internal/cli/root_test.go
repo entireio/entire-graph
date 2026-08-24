@@ -1285,6 +1285,11 @@ func TestParseDiffFlagsSeparatesUnknownFlagsFromPaths(t *testing.T) {
 			base: "HEAD~1", head: "HEAD",
 			paths: []string{"--base"},
 		},
+		{
+			name: "tag ref beginning with hyphen",
+			args: []string{"--base", "-foo", "--head", "HEAD"},
+			base: "-foo", head: "HEAD",
+		},
 	}
 
 	for _, test := range tests {
@@ -1345,6 +1350,10 @@ func TestParseDiffFlagsRejectsOptionShapedRevision(t *testing.T) {
 		if _, _, err := parseDiffFlags(args); err == nil {
 			t.Errorf("parseDiffFlags(%q) accepted an option-shaped revision, want an error", args)
 		}
+	}
+	// Ordinary path-shaped refs with a single leading hyphen are valid Git revisions.
+	if _, _, err := parseDiffFlags([]string{"--base", "-foo", "--head", "HEAD"}); err != nil {
+		t.Errorf("parseDiffFlags([--base -foo --head HEAD]) = %v, want nil (-foo is a valid ref)", err)
 	}
 }
 
