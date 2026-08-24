@@ -86,7 +86,41 @@ func TestRunUnderSignalsReturnsNilWhenRunSucceedsDespiteASignal(t *testing.T) {
 	}
 }
 
-// TestRunUnderSignalsWrapsSignalWhenRunSucceeds covers help/version-style paths
+// TestRunUnderSignalsPreservesRealErrorWhenSignalRaces reproduces the finding
+// at root.go:126: a SIGINT/SIGTERM recorded before the check wrapped the
+// command's result even when run independently returned a non-cancellation
+// error, replacing exit status 1 with 130/143.
+func TestRunUnderSignalsPreservesRealErrorWhenSignalRaces(t *testing.T) {
+	sentinel := errors.New("ordinary command failure")
+	started := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runUnderSignals(func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return sentinel
+		})
+	}()
+
+	<-started
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatalf("send SIGINT to self: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("runUnderSignals returned %v (%T), want the real failure %v unwrapped", err, err, sentinel)
+		}
+		var sigErr *SignalError
+		if errors.As(err, &sigErr) {
+			t.Fatalf("a real failure was wrapped in a SignalError: %+v", sigErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runUnderSignals did not return within 5s of receiving SIGINT")
+	}
+}
+
 // that return nil while a signal is in flight: the operator still gets the
 // conventional 130/143 exit instead of a silent success.
 func TestRunUnderSignalsWrapsSignalWhenRunSucceeds(t *testing.T) {

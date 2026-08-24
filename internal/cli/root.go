@@ -125,9 +125,14 @@ func runUnderSignals(run func(context.Context) error) error {
 	}
 	if caught != nil {
 		if err == nil {
-			err = context.Canceled
+			return &SignalError{Signal: caught, Err: context.Canceled}
 		}
-		return &SignalError{Signal: caught, Err: err}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return &SignalError{Signal: caught, Err: err}
+		}
+		// A signal racing with an independent failure must not replace the
+		// real exit status with the conventional 130/143 cancellation codes.
+		return err
 	}
 	return err
 }
