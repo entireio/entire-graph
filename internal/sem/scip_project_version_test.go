@@ -149,3 +149,20 @@ func TestSCIPNoteCountsRecordsItCouldNotCarry(t *testing.T) {
 		t.Errorf("clean note carries the counters: %s", encoded)
 	}
 }
+
+// TestSCIPOmissionNoteVersionIsPinned makes a change to the note's contract
+// version deliberate rather than incidental.
+//
+// The note is contract, not debug output: a consumer decides per language
+// whether to trust the feed from it. Fields may be added within v1 on tolerant-
+// reader terms, so this pins the version string itself -- renaming a field,
+// removing one, or changing what one counts must fail here and bump to v2.
+func TestSCIPOmissionNoteVersionIsPinned(t *testing.T) {
+	note := NewSCIPSnapshotEncoder(nil, "1.0.0").OmissionNote()
+	if note.Version != "entire-graph-scip-omissions/v1" {
+		t.Fatalf("omission note version = %q; a change here is a contract change", note.Version)
+	}
+	if note.RecordType != "scip_omissions" || note.Format != "scip" {
+		t.Fatalf("omission note identity changed: %#v", note)
+	}
+}
