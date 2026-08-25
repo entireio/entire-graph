@@ -1,4 +1,4 @@
-# RFD 0004 - Converge code search on one engine, deprecate duplicates
+# RFD 0005 - Converge code search on one engine, deprecate duplicates
 
 Status: Proposed (RFC, open for comment). P2.M1, COR-786
 Date: 2026-08-21
@@ -223,7 +223,7 @@ Nothing is removed before step 7 has held for two release cycles. Then:
 - **peregrine**: the per-language extractors and import resolvers (`src/symbols/lang_*.rs`,
   `src/symbols/imports_*.rs`) for every language at feed-on parity, plus the index-time heuristic
   `batch_resolve_references` (`resolve.rs:122`) once no shipped language depends on it. Up to 15
-  extractor modules and 15 import-resolver modules, including `lang_kotlin.rs`, dead today.
+  extractor modules and 11 import-resolver modules, including `lang_kotlin.rs`, dead today.
   tree-sitter stays only for languages still on the fallback path. `resolve_file_references` stays
   as the query-time path for repos with no feed.
 - **entire-graph**: branches `codex/eg-graphify-lexical-sidecar` and
@@ -267,9 +267,12 @@ Nothing is removed before step 7 has held for two release cycles. Then:
 
 1. **SCIP coverage per language.** 36 semantic languages against peregrine's 15, but the
    projection is lossier than the native snapshot and its per-language fidelity is unmeasured.
-   Step 2 answers this and could shrink the set that ever reaches feed-on. Doc drift to reconcile:
-   `docs/language-support.md` says 185 supported / 36 semantic, live `capabilities --json` says
-   179 / 35.
+   Step 2 answers this and could shrink the set that ever reaches feed-on. (An earlier
+   revision of this RFD also flagged doc drift here, `docs/language-support.md` reporting
+   185 supported / 36 semantic against a live `capabilities --json` of 179 / 35. That drift
+   has since been reconciled on main: `capabilities --json` now reports 185 supported / 36
+   semantic / 149 inventory-only and 30 relation types, matching the doc. Only the
+   per-language SCIP fidelity question remains open.)
 2. **Symbol identity.** The exporter emits entire-graph-internal identity inside SCIP syntax
    (`compact_snapshot.go:613-636,660-664`). peregrine joins on name plus position today, so the
    initial feed works, but this blocks cross-repo and cross-tool navigation later. Real
