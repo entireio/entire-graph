@@ -92,7 +92,7 @@ recording "SCIP evaluated later." Nothing constructs `SymbolSource::Scip` today.
 slot waiting for a producer.
 
 The producer exists but is **not merged**: PR #97 (`ec/candidate-scip-export-v2`, ashtom, OPEN,
-`CONFLICTING` with main, 0 reviews) adds `snapshot --format scip` emitting a real `scippb.Index`
+draft, `MERGEABLE` and level with main as of 2026-08-25, 0 reviews) adds `snapshot --format scip` emitting a real `scippb.Index`
 via `github.com/scip-code/scip/bindings/go/scip v0.9.0`, deterministically marshalled
 (`internal/sem/compact_snapshot.go:454,462`), with unsupported relations reported in a JSON stderr
 omission note.
@@ -206,7 +206,7 @@ legal and honest rather than hidden.
 
 | # | Step | Owner | Gate |
 |---|---|---|---|
-| 1 | Rebase and merge PR #97, promote `--format scip` from experimental, freeze the omission-note schema | Us | Byte-identical export on repeat runs, already shown in PR #97 |
+| 1 | Take PR #97 out of draft and merge it, promote `--format scip` from experimental, freeze the omission-note schema | Us | Byte-identical export on repeat runs, shown in PR #97. The rebase half is done: #97 carries main and merges clean, and the note now also reports `unidentified_records` and `unlocated_symbols`, so freezing the schema means freezing that shape |
 | 2 | Publish per-language SCIP coverage matrix vs peregrine's tier-1 15 | Us | Reviewed by Evis |
 | 3 | Decide the moniker scheme (open question 2) | Us + Evis | Written into the contract |
 | 4 | Build the parity harness | TBD (open question 5) | Reproducible by both sides |
@@ -273,14 +273,40 @@ Nothing is removed before step 7 has held for two release cycles. Then:
    has since been reconciled on main: `capabilities --json` now reports 185 supported / 36
    semantic / 149 inventory-only and 30 relation types, matching the doc. Only the
    per-language SCIP fidelity question remains open.)
-2. **Symbol identity.** The exporter emits entire-graph-internal identity inside SCIP syntax
-   (`compact_snapshot.go:613-636,660-664`). peregrine joins on name plus position today, so the
-   initial feed works, but this blocks cross-repo and cross-tool navigation later. Real
-   package-manager monikers now, or internal IDs and revisit? Decide before step 5.
+2. **Symbol identity.** Partly resolved; the remainder is a real decision.
+
+   **Resolved.** The package version used to be the commit, so an unchanged symbol got a new
+   identity on every commit: two indexes of the same repository one unrelated commit apart
+   shared no symbol string at all, which would have made a per-`repo@commit` feed unjoinable
+   across commits and defeated the cross-index linking the field exists for. The version is now
+   the project's own declared version from its root manifest (`package.json`, `Cargo.toml`,
+   `pyproject.toml`), falling back to `0` -- the common case for Go, whose `go.mod` carries a
+   module path and not a version. A regression test pins it, and commit provenance moved to
+   `Metadata` and the omission note. Consumers must now take `(repo, commit)` from the
+   envelope, never from the symbol.
+
+   **Still open.** Two things that must move together, because each rewrites every symbol's
+   identity and doing them separately churns consumers twice:
+   - The scheme is `entire-graph` with package manager `.`, and the descriptor embeds
+     `shortDigest(record.ID)`, an internal compound-v1 hash. SCIP parses that into the standard
+     `disambiguator` field, so it is valid and stable, but it is not a moniker another indexer
+     resolves to the same symbol. Real package-manager monikers, or internal IDs and revisit?
+   - Package identity is per-repository: the package name is the repo key, so a monorepo whose
+     sub-packages carry different versions cannot express that without also moving the name.
+     Per-directory package identity is the same decision viewed from the other side.
+
+   Decide both before step 5.
 3. **Index size and latency budgets.** Semantic symbols carry more data per symbol. peregrine's
    headline is 4.9x smaller than Zoekt; decide how much of that lead is for sale before spending it.
-4. **In-memory materialization.** PR #97 builds the full SCIP index in memory. Unknown whether that
-   survives our largest monorepo. Measure before step 5.
+4. **In-memory materialization.** PR #97 builds the full SCIP index in memory, which a SCIP
+   `Index` cannot avoid: it is one protobuf message and cannot be streamed. Now measured on
+   entire-graph itself (about 28 MB of native NDJSON, 9,770 definitions, 25,476 references):
+   peak RSS about 170 MB against about 115 MB for `ndjson` and about 119 MB for
+   `compact-ndjson`, so roughly **1.5x** the streaming formats rather than the order of
+   magnitude this question assumed. A multiplier measured on a mid-size repository does not
+   carry to a monorepo, where the absolute figure is what decides, so the corpus in the test
+   gates must still include one monorepo large enough to settle it -- but this is now a
+   sizing question, not an unknown.
 5. **Who owns the parity harness?** It must be trusted by both sides, which argues against either
    side owning it alone. Unassigned, and the biggest scheduling risk here.
 6. **Producer runtime placement.** Inside peregrine's indexer tier, or a separate job publishing to
@@ -350,7 +376,7 @@ Nothing is removed before step 7 has held for two release cycles. Then:
   `docs/search.md` search is hybrid lexical plus graph expansion, single `--repo`, byte-budgeted.
 - `docs/brain-and-graph-boundaries.md` MCP surface and multi-repo graph are "Brain's job";
   per-file incremental invalidation is "unbuilt, not declined".
-- PR #97 `ec/candidate-scip-export-v2`, OPEN, `CONFLICTING`, 0 reviews. `internal/cli/root.go:255`
+- PR #97 `ec/candidate-scip-export-v2`, OPEN, draft, `MERGEABLE`, 0 reviews. `internal/cli/root.go:255`
   `--format scip`, `:262-269` snapshot-mode only. `internal/sem/compact_snapshot.go:454,462`
   deterministic marshal; `:345-365` Documents; `:384-404` SymbolInformation and definition
   occurrences; `:407-420` external symbols; `:540-547` only 15 of 30 relations map; `:549-560`
