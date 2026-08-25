@@ -1,0 +1,213 @@
+name: release
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/release.sh
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.goos }}/${{ matrix.goarch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+          - runner: windows-2025
+            goos: windows
+            goarch: amd64
+          - runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+      - name: Install LLVM-MinGW for Windows ARM64
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        shell: pwsh
+        run: |
+          $version = "20260616"
+          $expected = "312593669435bd0bfc1a43ac3fba23c8b27e0610bade88b2738e5a01702a99ba"
+          $archive = Join-Path $env:RUNNER_TEMP "llvm-mingw-$version-ucrt-aarch64.zip"
+          $destination = Join-Path $env:RUNNER_TEMP "llvm-mingw"
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$version/llvm-mingw-$version-ucrt-aarch64.zip"
+
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "LLVM-MinGW checksum mismatch: expected $expected, got $actual"
+          }
+
+          Expand-Archive -Path $archive -DestinationPath $destination
+          $toolchain = Get-ChildItem -Path $destination -Directory | Select-Object -First 1
+          $cc = Join-Path $toolchain.FullName "bin/aarch64-w64-mingw32-clang.exe"
+          $cxx = Join-Path $toolchain.FullName "bin/aarch64-w64-mingw32-clang++.exe"
+          if (!(Test-Path $cc) -or !(Test-Path $cxx)) {
+            throw "LLVM-MinGW ARM64 compiler wrappers were not found"
+          }
+          "CC=$cc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CXX=$cxx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $cc --version
+      - name: Select artifact version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version=$GITHUB_REF_NAME
+          else
+            version=v0.0.0-ci
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build release archive
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          OUT_DIR: dist
+          ENTIRE_RELEASE_TARGETS: ${{ matrix.goos }}/${{ matrix.goarch }}
+        run: scripts/release.sh
+      - name: Verify release archive
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          asset_version=${VERSION#v}
+          extension=tar.gz
+          binary=entire-graph
+          if [[ "$GOOS" == windows ]]; then
+            extension=zip
+            binary=entire-graph.exe
+          fi
+          asset="entire-graph_${asset_version}_${GOOS}_${GOARCH}.${extension}"
+          test -f "dist/$asset"
+
+          verify_dir=$(mktemp -d)
+          trap 'rm -rf "$verify_dir"' EXIT
+          if [[ "$GOOS" == windows ]]; then
+            7z x -bd -y -o"$verify_dir" "dist/$asset" >/dev/null
+          else
+            tar -xzf "dist/$asset" -C "$verify_dir"
+          fi
+          test -f "$verify_dir/$binary"
+          test "$("$verify_dir/$binary" version)" = "$VERSION"
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum -c checksums.txt)
+          else
+            (cd dist && shasum -a 256 -c checksums.txt)
+          fi
+          read -r _ checksum_name < dist/checksums.txt
+          test "${checksum_name#\*}" = "$asset"
+      - name: Verify Windows archive without toolchain DLLs
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $assetVersion = $env:VERSION -replace '^v', ''
+          $asset = Join-Path "dist" "entire-graph_${assetVersion}_windows_$($env:GOARCH).zip"
+          $verifyDir = Join-Path $env:RUNNER_TEMP "entire-graph-clean-path-$($env:GOARCH)"
+          Remove-Item -Path $verifyDir -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -Path $asset -DestinationPath $verifyDir
+
+          $binary = Join-Path $verifyDir "entire-graph.exe"
+          $originalPath = $env:PATH
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+            $actualVersion = (& $binary version | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) {
+              throw "entire-graph.exe exited with code $LASTEXITCODE on a clean PATH"
+            }
+          } finally {
+            $env:PATH = $originalPath
+          }
+          if ($actualVersion -ne $env:VERSION) {
+            throw "unexpected version: expected $env:VERSION, got $actualVersion"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/entire-graph_*.tar.gz
+            dist/entire-graph_*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Assemble and verify release
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          asset_version=${VERSION#v}
+          assets=(
+            "dist/entire-graph_${asset_version}_darwin_amd64.tar.gz"
+            "dist/entire-graph_${asset_version}_darwin_arm64.tar.gz"
+            "dist/entire-graph_${asset_version}_linux_amd64.tar.gz"
+            "dist/entire-graph_${asset_version}_linux_arm64.tar.gz"
+            "dist/entire-graph_${asset_version}_windows_amd64.zip"
+            "dist/entire-graph_${asset_version}_windows_arm64.zip"
+          )
+          for asset in "${assets[@]}"; do
+            test -f "$asset"
+          done
+          (cd dist && sha256sum entire-graph_* > checksums.txt)
+          test "$(wc -l < dist/checksums.txt)" -eq 6
+      - name: Publish release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          assets=(dist/entire-graph_* dist/checksums.txt)
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$VERSION" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$VERSION" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes \
+              --title "$VERSION"
+          fi

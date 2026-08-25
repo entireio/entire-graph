@@ -1,243 +1,250 @@
+![entire-graph theme](docs/images/gh-repo-cover.png "entire-graph cover image")
+
 # Entire Graph
 
-**This release is for your agents.**
+Coding agents lose time before the edit, while they are still looking for the
+right code. Entire Graph is a plugin for the Entire CLI that gives an agent a
+precomputed map of one Git repository: ranked code search plus definitions,
+callers, types, routes, and change impact, each with `file:line` locations. The
+built-in analyzer parses the repository locally with tree-sitter and makes no
+network requests, model calls, or API-key lookups. Installing the plugin is the
+networked step.
 
-Entire Graph gives coding agents a precomputed, deterministic map of your codebase — every
-function, type, route, and call relationship — so they can start from ranked
-structural evidence instead of broad grep-and-read exploration. It is 100% local:
-no network, no model calls, no keys.
+Setup happens once per repository. After that, the interface is your coding
+agent: you ask a code question in plain language, the agent runs graph queries,
+reads the code the graph points at, and answers with citations. A captured
+example is shown below.
 
-## Install (one minute)
+## Benchmarks
 
-Go 1.24+ and a C compiler required first
+The Entire Graph retrieval engine ranked first in an eight-system LoCoMo comparison
+(1,540 questions, shared reader and judge, 200-item retrieval budget for every
+arm) while building its index without model calls. Measured 2026-08-14, on the
+retrieval path that first shipped in
+[v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0)
+([#104](https://github.com/entireio/entire-graph/pull/104))
+
+| System | LoCoMo | Index-time tokens | Version tested |
+| --- | --- | --- | --- |
+| **entire-graph** | **94.74** | **0** | [v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0) ([#104](https://github.com/entireio/entire-graph/pull/104)) |
+| [mem0](https://github.com/mem0ai/mem0) | 93.83 | 50.85M | commit [`4debc58`](https://github.com/mem0ai/mem0/commit/4debc58a83377b18be81ae1e5969a300736b2fac) |
+| [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M | commit [`38eece5`](https://github.com/topoteretes/cognee/commit/38eece5bbb0cb9f5706fed908abd16dba0f5505e) |
+| [bm25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 | [0.2.2](https://github.com/dorianbrown/rank_bm25/releases/tag/0.2.2) |
+| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) | 91.30 | 0 | [v0.9.0](https://github.com/DeusData/codebase-memory-mcp/releases#release-v0.9.0) |
+| [graphify](https://github.com/Graphify-Labs/graphify) | 87.34 | 0 | [v0.9.43](https://github.com/Graphify-Labs/graphify/releases/tag/v0.9.43) |
+| [letta](https://github.com/letta-ai/letta) | 84.68 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
+| [supermemory](https://github.com/supermemoryai/supermemory) | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
+
+See [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
+retractions, and reproduction steps.
+
+## Install
+
+Entire Graph requires Entire CLI 0.10.0 or later and Git 2.36 or later on
+`PATH`. Git 2.36 added the single-session object protocol Entire Graph uses to
+inspect an object's type before reading its contents. The commands below are
+the official ones from the [Entire CLI installation
+guide](https://docs.entire.io/installation), which also covers Windows and
+other channels.
+
+On macOS:
 
 ```sh
-go install github.com/entireio/entire-graph/cmd/entire-graph@main
-entire plugin install "$(go env GOBIN | grep . || echo "$(go env GOPATH)/bin")/entire-graph" --force
+brew tap entireio/tap
+brew trust entireio/tap
+brew install --cask entire
 ```
 
-Then, in any repo your agents work in:
+On Linux:
 
 ```sh
-entire graph init-agents
+curl -fsSL https://entire.io/install.sh | bash
 ```
 
-That's it. `init-agents` drops the operating guide into your project's `AGENTS.md` and `CLAUDE.md`,
-so Claude Code, Codex, Gemini, Cursor, Pi — any agent that reads those files — picks up the
-search-first workflow automatically. No config, no MCP server, no daemon.
+Then **install the plugin** from the plugin index and confirm its version:
 
-## Status line: estimated exploration savings
+```sh
+entire plugin install graph
+entire graph version
+```
 
-A one-line Claude Code badge, updated as the session runs:
+`entire graph version` printing a release tag confirms that a versioned build
+is active.
+The local install helper reports the source checkout's Git description; a raw
+unversioned build prints `dev` (see [operations](docs/operations.md)).
+
+## Activate it for your agent
+
+Activation is per repository:
+
+```sh
+entire graph init-agents --repo .
+```
+
+The command creates or updates these files:
+
+- `.entire/graph-agent.md`: the agent operating guide. Generated in full and
+  regenerated in full on each successful rerun; manual edits there do not
+  survive.
+- `AGENTS.md` and `CLAUDE.md`: created if absent; otherwise one managed block
+  between `<!-- entire-graph:begin -->` and `<!-- entire-graph:end -->` markers
+  is added or replaced. Text outside the markers is preserved.
+
+Review the three files, then commit them together when the instructions should
+apply to your team.
+
+Finally, start a fresh agent session in the repository. A session that was open
+during activation has not seen the new instructions.
+
+## Ask your first question
+
+Ask the agent a repository question in your own words. The transcript below is
+a real captured session, recorded with pinned inputs: the installed Entire
+Graph release, a fresh clone of `gorilla/mux` at commit `db9d1d0` with
+no prior agent instructions, activation files committed, and Claude Code
+2.1.233 (model Claude Fable 5) as the client. The prompt:
+
+> Without changing any files, find where route matching is implemented in this
+> repository, what calls it, and what is most likely to be affected if its
+> behavior changes. Cite the relevant source.
+
+The session's tool calls, in order (long commands wrapped for width, the last
+one truncated):
 
 ```text
-[GRAPH] ↗ 2.1M saved · 28 search · 9 impact · graph-first ✓ · 75% of locates · 12% of session
+Bash: entire graph search --repo . --profile full --query "route matching
+      implementation for incoming request paths"
+Bash: entire graph impact --repo . --symbol Route.Match
+Bash: entire graph impact --repo . --symbol Router.Match
+Bash: sed -n 145,230p mux.go
+Bash: sed -n 40,120p route.go
+Bash: grep -n "func.*Match\|matcher\b" route.go regexp.go | head -40
+Bash: sed -n 185,225p regexp.go; grep -n "\.Match(" mux.go route.go middleware.go ...
 ```
 
-- **saved** — heuristic estimated tokens, not a measured counterfactual or
-  evidence of end-to-end task savings; it uses the same model as
-  `entire graph stats`.
-- **verb split** — top three graph verbs by call count for this session.
-- **graph-first** — did the session open with a graph call rather than grep/read.
-- **of locates** — share of all locate-ish calls (graph vs `Read`/`Grep`/`Glob`/shell `grep|find|cat`)
-  that went to the graph.
-- **of session** — the estimate as a share of billed session tokens.
+The first call is a graph search. That is the activation instructions at
+work: Claude Code loads `CLAUDE.md` at session start and resolves its import
+of the guide, so the agent reached for the graph before any grep.
+Search returns ranked JSON evidence; the top hit for this query was
+`Route.addMatcher` at `route.go:237` with `newRouteRegexp` at `regexp.go:41`
+right behind it. The agent then asked for blast radius. The start of the
+`impact` output it received, verbatim except for one line wrapped to fit:
 
-Before any graph call it reads `[GRAPH] no graph calls yet · 35 explore`, and if the binary or
-transcript is missing it prints nothing at all.
-
-Enable it in `~/.claude/settings.json` (or `.claude/settings.json` for one project):
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "sh /path/to/entire-graph/scripts/entire-graph-statusline.sh"
-  }
-}
+```text
+Index: cache-hit (49ms) | Query: 0ms | Total: 50ms
+Impact: Router.Match (mux.go:151) def=151 span=151-182 [method in Router]
+Blast radius: 1 caller (1 direct, 0 transitive), 0 callees, 3 type consumers,
+  1 data flow, 7 co-change files, 29 siblings.
+Callers (1 direct, 0 transitive; who breaks if behavior changes):
+- Router.ServeHTTP (mux.go:203, def :188)
 ```
 
-Installed as a plugin, the path is `sh "$CLAUDE_PLUGIN_ROOT/scripts/entire-graph-statusline.sh"`.
-The plugin manifest declares the same block under `settings`, but Claude Code only merges an
-allowlisted subset of plugin-provided settings (`agent`, `subagentStatusLine` as of 2.1.219) and
-drops `statusLine` — so today the settings.json entry above is what actually turns it on. The
-manifest entry costs nothing and starts working if that allowlist widens.
+That point-in-time capture predates ADR 0004's security correction. A current
+default working-tree query reports `cache-miss`; committed-tree queries can
+still report `cache-hit` when a matching entry exists.
 
-Knobs: `ENTIRE_GRAPH_BIN` (explicit binary path), `NO_COLOR`,
-`ENTIRE_GRAPH_STATUSLINE_CACHE=0` (disable the render cache),
-`ENTIRE_GRAPH_STATUSLINE_SCOPE=project` (whole-project totals instead of this session — it
-re-scans the entire transcript directory, which is far slower; the default `session` scope reads
-one transcript).
+Only after the graph queries did the agent read source, in narrow line ranges
+around the reported locations. Its answer traced matching through
+`Router.Match` (`mux.go:151-182`), `Route.Match` (`route.go:47-114`), and
+`routeRegexp.Match` (`regexp.go:189-209`), and named what a change would
+touch: handler dispatch and 404-vs-405 selection, route variables via
+`setMatch`, URL reversing built by `newRouteRegexp`, and the CORS middleware
+path through `getAllMethodsForRoute`. It also exposed a graph limit that the
+agent verified against source: `impact --symbol Route.Match` reports zero
+callers, while source inspection finds two direct call sites.
 
-## What your agents get
+That last point is the working relationship to expect: graph output is
+evidence for the agent to check against source, not an oracle. The
+[supporting record](docs/evidence/2026-08-16-mux-agent-session.md) includes the
+capture conditions, relevant agent and tool events, complete graph-command
+outputs, and the final answer verbatim.
 
-| agent workflow | before | with Entire Graph |
-|---|---|---|
-| **Locate a fix** | repeated grep/open cycles | `entire graph search` → inspect focused source → edit and verify |
-| **Impact of a change** | repo-wide grep for callers | `entire graph impact --symbol X` — callers, type consumers, data flow, co-change in one shot |
-| **Review a diff** | file-by-file reading | `entire graph diff` — entity-level changes with dependent counts |
+Each layer of the setup has its own success signal. Installation: both
+`entire version` and `entire graph version` succeed. Activation: the three
+files exist with intact markers. Adoption: in a fresh session, the first
+code-locating call is `entire graph search`. If the agent begins with broad
+grep or whole-file exploration, the guide may not have loaded or may not have
+been followed. Check the activation files and the client's instruction view;
+see [agent activation](docs/agents.md). Grounding: the answer cites files and
+lines the agent actually opened.
 
-The search understands natural language ("XTRIM trims wrong stream entries"), ranks real
-implementation code above tests and docs, bridges vocabulary gaps through the call graph, and
-returns budgeted output designed to drop straight into an agent's context.
+## What to ask
 
-For Markdown and other prose-heavy repositories, ranked hits carry
-`retrieval_mode=prose-parent`. Unless the caller explicitly sets
-`--head-window-lines`, `search` widens the highest-ranked parent files to
-bounded 80-line read windows. Prose windows may use the caller's remaining
-`--max-context-bytes` capacity; an oversized window degrades to the largest
-verbatim window that fits instead of collapsing to a one-line locator. Ordinary
-code search keeps its measured growth allowance, explicit caller settings take
-precedence, and search returns the ranges natively without requiring
-adapter-side source expansion.
+Prompts are the interface. The commands are what the agent runs underneath;
+you can also invoke them directly for manual inspection, debugging, or
+automation. See the [command reference](docs/commands.md).
 
-When useful prose from the same selected parent is split across distant regions,
-JSON and NDJSON results also carry an additive `passages` list. Each passage is
-an exact, non-overlapping source range from the result's file. Passages are
-selected by marginal query-term coverage, allocated round-robin across ranked
-parents, source-ordered, and charged to the same `--max-context-bytes` ceiling.
-Existing clients can keep reading the primary `snippet`; text and agent formats
-render the extra ranges automatically. `stats.prose_passages` and
-`stats.prose_passage_bytes` make the additional context auditable.
+| Goal | Example prompt | Graph command |
+| --- | --- | --- |
+| Find the implementation | Find where request routing is implemented. | `search` |
+| Read one definition | Show the definition of `ResolveRoute`. | `def` |
+| Trace callers or callees | What calls `ResolveRoute`? | `neighbors` |
+| Check the blast radius | What would changing `ResolveRoute` affect? | `impact` |
+| Review a branch | Summarize the semantic changes from `main` to `HEAD`. | `diff` |
+| Export the full graph | Export the repository graph as NDJSON. | `snapshot` |
 
-**One search returns everything the next three turns would have cost:**
+## Working tree and cache
 
-- **candidate fix sites**, the top hits as complete function bodies, plus **RELATED SITES**
-  (callers, siblings, near-duplicate bodies) and the **COVERING TEST** that exercises the fix site.
-- **SAME-CONCEPT LITERAL** — every place in the repository the queried concept is spelled out,
-  each tagged `EDIT` (declares or registers it), `CONSUMER` (only passes it) or `DOC`, with the
-  repository's own totals. That is the sweep, so there is no grep to run.
-- **VERIFY** — the narrowest test command for the file being changed, derived from the repository's
-  own build files (Cargo workspace member, Go module, Maven module, the `package.json` runner,
-  PHPUnit, pytest, Rake/RSpec, a `Makefile` target) and the test file it targets. When the build
-  files do not license a narrow command, nothing is emitted: a wrong command costs more than none.
-- **CLOSED-SET WARNING** — when the hit belongs to an enum, sealed hierarchy, union type or typed
-  const group, the switch/match sites that would throw at RUNTIME rather than fail to compile if a
-  variant were added without an arm. It stays silent where the compiler already checks (Rust
-  `match`, exhaustive Kotlin `when`, a TypeScript `never` assertion).
+The interactive query family (`search`, `def`, `explain`, `neighbors`, and
+`impact`) reads the working tree by default, so agents see uncommitted edits.
+Add `--head` to ask about the committed tree instead. Bulk streams
+(`snapshot`, `symbols`, `edges`) and ref-based analysis (`diff`, `commit`)
+default to committed state.
 
-Three further reference blocks — a container map, the signature's types, a declaration card — are
-available behind `--reference-blocks all` but **off by default**: measured across real agent
-sessions they raised turns and cost without improving the result, because they answer questions the
-agent was not about to ask. They remain useful when a human is reading one search.
+Queries can write a derivative local cache; they never modify repository files.
+Default working-tree queries always build fresh and do not load or store cache
+entries. A `--head` query can reuse a snapshot keyed to the committed tree and
+query options; changing `.graphignore` selects a different committed-tree
+entry.
 
-Want the exact agent instructions? `entire graph agent-guide` prints them; they also live in
-[AGENTS.md](AGENTS.md), including the copy-paste prompt block and what the benchmark did and did
-not measure about it.
+Cache state is visible where the format reports it: the default `search` JSON
+carries `stats.index_cache_hit`, and `impact`/`neighbors` text output opens
+with an `Index: cache-hit`/`cache-miss` line. Default working-tree queries
+report a miss; matching `--head` queries may hit. `search --format text` does
+not report cache state.
 
-## Where it fits in Entire
+`entire graph index` prewarms committed-tree (`--head`) queries only, and
+defaults to profile `full` while plain `search` defaults to `fast`. A default
+`index` run therefore does not warm the default working-tree path. One caveat
+inside the query family: `def` and `explain` only cache when `--cache-dir` or
+`ENTIRE_PLUGIN_DATA_DIR` is set, unlike the other query commands. Cache
+locations, key inputs, and prewarming are documented in
+[operations](docs/operations.md#cache).
 
-Entire Graph is the **semantic layer** of the Entire platform — infrastructure, not another
-workflow to learn:
+## Limits
 
-- **Entire Search / Why / Blame** consume it to answer developer questions with entity-level
-  precision.
-- **Checkpoints and Trails** use its `diff`/`commit` analysis to describe what an agent actually
-  changed.
+Static analysis is heuristic. Calls through interfaces, reflection, dynamic
+dispatch, and generated or runtime-wired code can be missed or unresolved.
+The captured session above shows one such case. Dependent counts are guidance
+for inspection, not compiler facts. Files the parser cannot handle surface as
+machine-readable partial failures rather than silent gaps.
 
-You (a human) will mostly experience it *through* those surfaces. Your agents call it directly.
+[Language coverage](docs/language-support.md) has two tiers: 36 languages with
+semantic parsing, and inventory-only filetypes that get file and symbol
+structure without call or type analysis. Check the current build with
+`entire graph capabilities --json`.
 
-## Long-conversation retrieval, measured fairly
+Entire Graph is code intelligence for the repository your agent is working in:
+ranked search, relationships, and change impact grounded in source. It does _not_
+store user or conversation memory, run in the background, or expose its own MCP
+server. The full data-flow and write-surface description, including what runs
+caller-provided commands, is in
+the [trust and security](docs/trust-and-security.md) documentation.
 
-The native prose search path above was evaluated in a paired comparison with
-Graphify on the same 300 LOCOMO and 50 LongMemEval-S questions, with three
-repetitions, one shared Kimi K3 reader/grader, a deterministic 20% Opus 5 audit,
-top ten, and a 128,000-byte context ceiling. Codebase Memory MCP is included as
-an off-domain native diagnostic, not as a third apples-to-apples prose-memory
-competitor.
+## Documentation
 
-| Benchmark | Metric | Graphify | Entire Graph | CMM diagnostic* |
-|---|---|---:|---:|---:|
-| LOCOMO (n=300) | recall@10 | 0.787 | **0.914** | 0.000 |
-| LOCOMO (n=300) | QA accuracy | 59.3% | **77.2%** | 22.3% |
-| LongMemEval-S (n=50) | QA accuracy | 68.0% | **76.0%** | 6.0% |
-| Graph build | LLM credits | 0 | 0 | 0 |
+- [All Documentation](docs/README.md)
+- [Command reference](docs/commands.md)
+- [Agent activation and verification](docs/agents.md)
+- [Search results and ranking](docs/search.md)
+- [Operations: installs, cache, troubleshooting](docs/operations.md)
+- [Trust and security](docs/trust-and-security.md)
+- [Language support](docs/language-support.md)
+- [Benchmark methodology and evidence](docs/benchmarks.md)
 
-\* CMM v0.9.0 indexed the Markdown conversations as `Section` nodes, but its
-public natural-language `search_graph(query=...)` BM25 path excludes that node
-type. Its separate `search_code` verb can find literal source phrases, but the
-unchanged benchmark question is not a literal source pattern. That route
-retrieved nothing at all here: all 1,050 CMM cells returned a byte-identical
-empty context (24 bytes, zero hits), so the CMM QA percentages are the shared
-reader answering from the question alone. The CMM column therefore reports that
-public route on an off-domain corpus and is not a claim about CMM's code-search
-quality.
-
-**Holdout (tune-disjoint).** The 300 + 50 full set is not tune-disjoint: 35 of
-the 350 cases overlap the tune phase. The clean generalization estimate is the
-sealed holdout, where Entire Graph scored 75.6% LOCOMO QA accuracy and 0.900
-recall@10 (n=30; the LongMemEval-S holdout is n=5).
-
-All 3,150 raw cells, 3,150 blinded primary grades, and 630 fixed audit cells
-passed the sealed integrity gates. The Opus audit agreed with the primary judge
-on 98.41% of cells (Cohen's kappa 0.9682), and there were zero invalid attempts.
-Across all 350 paired memory cases, Entire minus Graphify semantic accuracy was
-+0.1648 (95% CI +0.1034 to +0.2146, a bootstrap clustered by conversation over
-10 effective LOCOMO clusters; McNemar p=1.70e-11).
-
-This is a **public-protocol reimplementation**, not a reproduction of
-Graphify's historical README run: Graphify's advertised memory harness and
-original selectors are not public. The comparison froze Graphify public `v8`
-at `9f25a3a`, used disjoint precommitted samples, ran an untouched 10% validity
-holdout before the full population, kept prompts/models/limits identical, and
-did not selectively rerun cells. Graphify's reader received its native BFS text;
-Entire's reader received only native snippets and additive passages returned by
-`search`; the neutral adapter source-validates every additive passage, validates
-the primary locator, and reapplies the shared byte cap. Full protocol, bridge
-details, historical references, failed-attempt lineage, and artifact hashes are
-published in GraphMark's `memory-native-v52` result bundle.
-
-QA accuracy means the share of questions answered correctly. Recall@10 means
-the share for which the evidence-bearing conversation appears among the first
-ten retrieved results. A score such as 0.914 is 91.4%.
-
-## Evidence status
-
-The former 54.9% Haiku, 57.7% Sonnet, and 31–73% open-model token-savings
-figures are withdrawn. They were token-first measurements under a prompt policy
-that encouraged the graph arms to stop early and did not require equivalent
-resolution evidence from every arm. “Patch produced” was also reported as task
-completion, which is not the same as passing the task's tests.
-
-A replacement claim requires:
-
-- identical tool-agnostic working instructions across arms;
-- each tool's normal interface;
-- official task resolution as the primary outcome;
-- token and turn comparisons over commonly resolved tasks;
-- repeated runs with uncertainty; and
-- pinned binaries, prompts, datasets, and retained raw artifacts.
-
-Until that evidence is frozen, `entire graph stats` and the status line are
-local heuristic reports only, not benchmark results.
-
-## More
-
-### Compact and SCIP snapshot artifacts
-
-`entire graph snapshot --repo . --format ndjson` remains the interoperable default: it is the existing object-per-line stream. For a complete, local compact artifact, use:
-
-```sh
-entire graph snapshot --repo . --format compact-ndjson > graph.compact.ndjson
-entire graph snapshot-query --input graph.compact.ndjson --symbol Cache.Refresh --format ndjson
-entire graph snapshot-query --input graph.compact.ndjson --from '<stable-id>' --relation CALLS --format ndjson
-```
-
-Compact NDJSON v1 is full-snapshot-only; targeted `--to`, `--from`, and `--relation` output stays native NDJSON. Its first `h` line is the only version marker, dictionary `d` lines are part of the artifact and its raw byte count, and unknown versions are rejected. The compact and native streams must have the same decoded public projection and canonical semantic SHA-256; hash equality alone is not a losslessness proof. Compact cache entries use a separate namespace from native snapshot entries.
-
-For experimental SCIP consumers, write the protobuf index to a binary file and keep stderr for the machine-readable omission note:
-
-```sh
-entire graph snapshot --repo . --format scip > index.scip 2> index.scip.omissions.json
-```
-
-The SCIP export is complete-snapshot-only and never changes the default NDJSON stream. It emits definitions and supported reference-like relations as line-granular SCIP occurrences; relation families that do not map to SCIP references are omitted from the protobuf and counted in the stderr JSON note. A `--worktree` export uses `worktree` rather than the current commit as its SCIP package version and records `worktree_snapshot: true` in that note. Because a SCIP `Index` is one protobuf message, this experimental path assembles the complete index in memory. `--progress` is rejected so stderr remains exactly one parseable JSON note.
-
-- [AGENTS.md](AGENTS.md) — the agent operating guide (also: `entire graph agent-guide`)
-- [docs/DETAILS.md](docs/DETAILS.md) — full command reference, architecture, language support,
-  performance and accuracy benchmarks, security model
-- `entire graph help` — command list; `entire graph doctor --json` — environment check
+Please report problems in [GitHub Issues](https://github.com/entireio/entire-graph/issues)
+or open a pull request. Thank you! ❤️
 
 ## License
 
-See [LICENSE](LICENSE).
+Entire Graph is distributed under the [MIT License](LICENSE).

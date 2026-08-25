@@ -31,9 +31,10 @@ func write(t *testing.T, repo, path, content string) {
 	}
 }
 
-// TestListWorktreeFilesAppliesEveryExcludeSource pins the reason this function
-// exists: it must report the same set `git status` would, including the exclude
-// sources a root-.gitignore reader cannot see.
+// TestListWorktreeFilesAppliesEveryExcludeSource pins the safe exclude sources
+// this function delegates to Git. Configuration-derived external exclude files
+// are deliberately neutralized at the subprocess boundary; a hostile repository
+// must not make this local-only provider open an arbitrary path.
 func TestListWorktreeFilesAppliesEveryExcludeSource(t *testing.T) {
 	repo := t.TempDir()
 	gitCmd(t, repo, "init")
@@ -64,11 +65,14 @@ func TestListWorktreeFilesAppliesEveryExcludeSource(t *testing.T) {
 		}
 	}
 	for _, unwanted := range []string{
-		"root_ignored/a.go", "private/b.go", "sub/vendored/c.go", "src/d.generated",
+		"root_ignored/a.go", "private/b.go", "sub/vendored/c.go",
 	} {
 		if slices.Contains(files, unwanted) {
 			t.Fatalf("listing included excluded path %q: %#v", unwanted, files)
 		}
+	}
+	if !slices.Contains(files, "src/d.generated") {
+		t.Fatalf("listing honored configuration-derived core.excludesFile outside the isolated Git config boundary: %#v", files)
 	}
 
 	ignored, err := ListIgnoredWorktreeFiles(t.Context(), repo)
@@ -79,6 +83,73 @@ func TestListWorktreeFilesAppliesEveryExcludeSource(t *testing.T) {
 		if !slices.Contains(ignored, want) {
 			t.Fatalf("ignored listing missing %q: %#v", want, ignored)
 		}
+	}
+}
+
+// TestVisitIgnoredWorktreeDirectoryEntriesDropsPatternIgnoredFilenames is the
+// end-to-end form of the same finding: a real git checkout where a directory
+// is ignored only by a file-pattern rule, mixed with content that is NOT
+// ignored, so `--directory` cannot collapse it. Before the fix, every ignored
+// filename inside such a directory reached the caller; after it, none does —
+// the caller only ever wanted directory roots for the git-directory sweep.
+func TestVisitIgnoredWorktreeDirectoryEntriesDropsPatternIgnoredFilenames(t *testing.T) {
+	repo := t.TempDir()
+	gitCmd(t, repo, "init")
+	gitCmd(t, repo, "config", "user.name", "T")
+	gitCmd(t, repo, "config", "user.email", "t@example.com")
+	write(t, repo, ".gitignore", "*.o\n")
+	write(t, repo, "src/keep.go", "package src\n")
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-m", "tracked")
+
+	// vendor/ mixes a pattern-ignored file with an untracked-but-not-ignored
+	// one, so git cannot collapse the whole directory to "vendor/".
+	write(t, repo, "vendor/dep.o", "object\n")
+	write(t, repo, "vendor/keep.txt", "not ignored\n")
+	// wholly ignored, and nothing else in it: this one DOES collapse.
+	write(t, repo, "cache/a.o", "object\n")
+	write(t, repo, "cache/b.o", "object\n")
+
+	var entries []string
+	err := VisitWorktreeDirectoryEntries(t.Context(), repo, true, func(entry string) bool {
+		entries = append(entries, entry)
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry, "/") {
+			t.Fatalf("listing leaked a non-directory entry %q: %#v", entry, entries)
+		}
+	}
+	if !slices.Contains(entries, "cache/") {
+		t.Fatalf("listing missing wholly-ignored directory %q: %#v", "cache/", entries)
+	}
+	if slices.Contains(entries, "vendor/") {
+		t.Fatalf("listing collapsed a MIXED directory to %q, which git itself would not have done: %#v", "vendor/", entries)
+	}
+}
+
+func TestVisitWorktreeDirectoryEntriesStopsAtCallerBound(t *testing.T) {
+	repo := t.TempDir()
+	gitCmd(t, repo, "init")
+	for _, dir := range []string{"a", "b", "c"} {
+		write(t, repo, filepath.Join(dir, "file.txt"), "fixture\n")
+	}
+	count := 0
+	err := VisitWorktreeDirectoryEntries(t.Context(), repo, false, func(entry string) bool {
+		if !strings.HasSuffix(entry, "/") {
+			t.Fatalf("visitor received non-directory entry %q", entry)
+		}
+		count++
+		return false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("visitor count = %d, want exactly one before early stop", count)
 	}
 }
 

@@ -79,6 +79,8 @@ type searchFlags struct {
 	VerifyPreFixStatus    string
 	FileOutline           bool
 	Deep                  bool
+	SingleResolution      bool
+	DocumentResolution    bool
 	// The reference blocks, off unless asked for. See SearchOptions in internal/sem/search.go for
 	// the session measurement that made OFF the default.
 	ContainerMap   bool
@@ -138,10 +140,12 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	// The echo is decided before any INDEXING work: a replayed payload must not pay for an index
 	// build. See searchSession for what the cap is worth and why it is an echo.
 	//
-	// It does now pay for a repo resolution and two `git rev-parse` calls, which is the price of
-	// knowing the payload belongs to the tree in front of it. That is two subprocesses against an
-	// index build, and against the alternative — replaying another repository's answer for the rest
-	// of a run — it is not a close trade. See searchSessionScope.
+	// It does now pay for bounded tree, corpus-policy, and path-admissibility checks. Those checks
+	// prove that the same committed identity and current effective corpus policy still admit every
+	// recorded contributing path. Corpus broadening and worktree source bytes remain intentionally
+	// session-stale, like the later query itself: this cap replays the first answer verbatim rather
+	// than promising a fresh ranking. The checks stay deliberately ahead of the index build. See
+	// searchSessionScope and sem.SearchReplayPolicy.
 	session, err := newSearchSession(opts.Env, opts.Stderr)
 	if err != nil {
 		return err
@@ -154,15 +158,105 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	var scope searchSessionScope
+	var (
+		scope               searchSessionScope
+		replayPolicy        sem.SearchReplayPolicy
+		replayPolicyReady   bool
+		forceSessionReplace bool
+	)
 	if session != nil {
 		scope = searchSessionScopeFor(ctx, repo)
-		if state, ok := session.echo(scope); ok {
-			if _, err := io.WriteString(opts.Stdout, searchEchoHeader(flags.Query, state.Query)); err != nil {
-				return err
+		scope.Format = flags.Format
+		// A rendered payload is opaque: snippets and reference blocks cannot be safely removed from
+		// it after the fact. Bind it to the semantic layer's effective corpus policy and validate
+		// every contributing path before writing even the replay header. Policy resolution is an
+		// optimization gate; failure declines the echo and lets the real search report any error.
+		var (
+			policy    sem.SearchReplayPolicy
+			policyErr error
+		)
+		if flags.Worktree {
+			// A mutable worktree cannot provide an immutable replay identity.
+			// Skip the corpus-policy observation entirely; it cannot authorize a
+			// replay and would add an unnecessary second filesystem traversal.
+			forceSessionReplace = true
+		} else {
+			policy, policyErr = sem.ResolveSearchReplayPolicy(ctx, repo, sem.SearchOptions{
+				Worktree:     false,
+				IgnoreFiles:  flags.IgnoreFiles,
+				IncludeFiles: flags.IncludeFiles,
+			})
+		}
+		if policyErr == nil && !policy.MatchesTree(scope.Tree) {
+			// Mutable worktree state cannot be pinned through the final
+			// admission-to-output interval. Discard any payload written by an
+			// older binary as the live search completes; retaining it would keep
+			// credential-bearing bytes on disk even though this binary can never
+			// safely replay them.
+			forceSessionReplace = true
+		}
+		if policyErr == nil && policy.MatchesTree(scope.Tree) {
+			replayPolicy = policy
+			replayPolicyReady = true
+			scope.PolicyFingerprint = policy.Fingerprint()
+			state, ok := searchSessionState{}, false
+			if searchFormatSupportsReplay(flags.Format) {
+				state, ok = session.echo(scope)
 			}
-			_, err := io.WriteString(opts.Stdout, state.Payload)
-			return err
+			if !ok && state.Payload != "" {
+				forceSessionReplace = true
+			}
+			if ok {
+				// Resolve both identities again immediately before output. This brackets the
+				// candidate lookup with tree and policy observations, so a concurrent ref or
+				// policy-file change declines replay instead of serving the earlier view.
+				confirmedPolicy, confirmErr := sem.ResolveSearchReplayPolicy(ctx, repo, sem.SearchOptions{
+					Worktree:     flags.Worktree,
+					IgnoreFiles:  flags.IgnoreFiles,
+					IncludeFiles: flags.IncludeFiles,
+				})
+				confirmedScope := searchSessionScopeFor(ctx, repo)
+				confirmedScope.PolicyFingerprint = confirmedPolicy.Fingerprint()
+				confirmedScope.Format = flags.Format
+				if confirmErr == nil &&
+					confirmedPolicy.Fingerprint() == replayPolicy.Fingerprint() &&
+					confirmedPolicy.MatchesTree(confirmedScope.Tree) &&
+					state.matches(confirmedScope) {
+					if confirmedPolicy.AllowsReplayPaths(state.PayloadPaths) {
+						// Path admission can stream a large tree. Recheck the identities and exact paths
+						// after it so a concurrent ref or policy change cannot land in that interval and
+						// still release the older payload. The second admission is intentional: Git's
+						// effective worktree excludes include dynamic nested .gitignore inputs that are
+						// not all part of the root-rule fingerprint.
+						finalPolicy, finalErr := sem.ResolveSearchReplayPolicy(ctx, repo, sem.SearchOptions{
+							Worktree:     flags.Worktree,
+							IgnoreFiles:  flags.IgnoreFiles,
+							IncludeFiles: flags.IncludeFiles,
+						})
+						finalScope := searchSessionScopeFor(ctx, repo)
+						finalScope.PolicyFingerprint = finalPolicy.Fingerprint()
+						finalScope.Format = flags.Format
+						if finalErr == nil &&
+							finalPolicy.Fingerprint() == confirmedPolicy.Fingerprint() &&
+							finalPolicy.MatchesTree(finalScope.Tree) &&
+							state.matches(finalScope) &&
+							finalPolicy.AllowsReplayPaths(state.PayloadPaths) {
+							// The persisted state is local input, not a trusted rendering sink. A live
+							// text/agent response passes through termsafe; replay must preserve that
+							// terminal-safety boundary even if the session file was tampered with.
+							replayOut := termsafe.NewWriter(opts.Stdout)
+							if _, err := io.WriteString(replayOut, searchEchoHeader(flags.Query, state.Query)); err != nil {
+								return err
+							}
+							_, err := io.WriteString(replayOut, state.Payload)
+							return err
+						}
+					}
+					// The candidate passed the first identity bracket but failed either path
+					// admission or the final identity observation. Replace it after the fresh search.
+					forceSessionReplace = true
+				}
+			}
 		}
 	}
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
@@ -198,6 +292,8 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		IncludeFileOutline:    flags.FileOutline,
 		VerifyExplainCommand:  flags.VerifyExplain,
 		Deep:                  flags.Deep,
+		SingleResolution:      flags.SingleResolution,
+		DocumentResolution:    flags.DocumentResolution,
 
 		IncludeContainerMap:   flags.ContainerMap,
 		IncludeSignatureTypes: flags.SignatureTypes,
@@ -220,7 +316,37 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	if session != nil {
-		session.record(flags.Query, payload.Bytes(), scope)
+		payloadPaths := sem.SearchResponsePaths(response)
+		recordScope := scope
+		// Empty is meaningful: a requested HEAD view can fall back to the worktree when no revision
+		// is available. Never retain a tree observed before that fallback.
+		recordScope.Tree = response.Tree
+		replayable := false
+		if replayPolicyReady {
+			// Re-resolve after the search so a policy file changed concurrently cannot make a payload
+			// produced under one policy replay under another one's fingerprint. A disagreement keeps
+			// only the bounded search count; it never stores ambiguous response bytes.
+			currentPolicy, policyErr := sem.ResolveSearchReplayPolicy(ctx, repo, sem.SearchOptions{
+				Worktree:     flags.Worktree,
+				IgnoreFiles:  flags.IgnoreFiles,
+				IncludeFiles: flags.IncludeFiles,
+			})
+			if policyErr == nil {
+				recordScope.PolicyFingerprint = currentPolicy.Fingerprint()
+				replayable = searchResponseCanReplay(flags.Format, response) &&
+					currentPolicy.Fingerprint() == replayPolicy.Fingerprint() &&
+					currentPolicy.MatchesTree(response.Tree) &&
+					currentPolicy.AllowsReplayPaths(payloadPaths)
+			}
+		}
+		session.record(
+			flags.Query,
+			payload.Bytes(),
+			payloadPaths,
+			recordScope,
+			forceSessionReplace,
+			replayable,
+		)
 	}
 	return nil
 }
@@ -236,11 +362,10 @@ func searchSessionScopeFor(ctx context.Context, repo string) searchSessionScope 
 	if resolved, err := filepath.Abs(repo); err == nil {
 		scope.Repo = resolved
 	}
-	commit, err := gitutil.RevParse(ctx, repo, "HEAD")
-	if err != nil {
+	if sem.EnsureGitMetadataSafeForSubprocess(repo) != nil {
 		return scope
 	}
-	tree, err := gitutil.RevParse(ctx, repo, commit+"^{tree}")
+	_, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
 	if err != nil {
 		return scope
 	}
@@ -263,6 +388,23 @@ func writeSearchResponse(out io.Writer, response sem.SearchResponse, format stri
 	default:
 		return fmt.Errorf("search --format must be json, ndjson, text, or agent, got %q", format)
 	}
+}
+
+// searchFormatSupportsReplay is the pre-search half of searchResponseCanReplay. JSON and NDJSON
+// always render corpus-wide statistics and completeness facts whose contributors are not carried
+// as individual response paths, so those opaque payloads are never persisted or replayed. Agent
+// output is conditionally safe; its diagnostic case is rejected after the live response exists.
+func searchFormatSupportsReplay(format string) bool {
+	return format == "text" || format == "agent"
+}
+
+func searchResponseCanReplay(format string, response sem.SearchResponse) bool {
+	if !searchFormatSupportsReplay(format) {
+		return false
+	}
+	// Agent diagnostics render corpus-wide language/file and warning/failure counts. Ordinary agent
+	// output and text output render only fields whose direct source provenance is retained.
+	return format != "agent" || (len(response.Warnings) == 0 && len(response.PartialFailures) == 0)
 }
 
 // echoPresearchPayload returns a payload that was computed before the agent started, verbatim.
@@ -1299,9 +1441,19 @@ func searchLowConfidenceNotices(response sem.SearchResponse) ([]byte, []byte) {
 	if !assessment.Low {
 		return nil, nil
 	}
+	// Gate the "below" suffix on the score AS DISPLAYED, not the raw value: 11.96 renders
+	// as 12.0, and "top score 12.0 (weak, below 12)" is the contradiction this notice must
+	// never contain. Parsing the rendered string back keeps the two in lockstep even where
+	// %.1f's half-to-even rounding and math.Round disagree.
+	display := fmt.Sprintf("%.1f", assessment.TopScore)
+	score := "top score " + display
+	shown, err := strconv.ParseFloat(display, 64)
+	if ceiling := sem.LowConfidenceScoreCeiling(); err == nil && shown < ceiling {
+		score += fmt.Sprintf(" (weak, below %.0f)", ceiling)
+	}
 	full := []byte(fmt.Sprintf(
-		"LOW CONFIDENCE: top score %.1f (weak, below %.0f) and %s. This repo may not contain what you asked for; verify before editing.\n",
-		assessment.TopScore, sem.LowConfidenceScoreCeiling(), assessment.Reason,
+		"LOW CONFIDENCE: %s and %s. This repo may not contain what you asked for; verify before editing.\n",
+		score, assessment.Reason,
 	))
 	compact := []byte(fmt.Sprintf("!LOW s=%.1f\n", assessment.TopScore))
 	return full, compact
@@ -1862,6 +2014,10 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 			flags.IndexAllFiles = true
 		case "--deep":
 			flags.Deep = true
+		case "--single-resolution":
+			flags.SingleResolution = true
+		case "--document-resolution":
+			flags.DocumentResolution = true
 		case "--container-map":
 			flags.ContainerMap = true
 		case "--signature-types":

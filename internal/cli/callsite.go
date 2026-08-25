@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/entireio/entire-graph/internal/gitutil"
 	"github.com/entireio/entire-graph/internal/sem"
 	"github.com/entireio/entire-graph/internal/termsafe"
 )
@@ -23,7 +26,8 @@ import (
 // The call line is recovered from the source rather than from the parser, so
 // this stays entirely inside the relation-output layer: the caller's body span
 // is known, the call expression's text is known (evidence detail), and the file
-// is on disk. Everything below is deterministic and language-agnostic.
+// comes from the same source view as the graph. Everything below is
+// deterministic and language-agnostic.
 
 const (
 	// callContextGuardLimit caps how many enclosing block headers are quoted.
@@ -80,6 +84,109 @@ type sourceLine struct {
 // files report false; callers degrade to the definition line.
 type lineReader func(relPath string) ([]string, bool)
 
+// openSnapshotLineReader returns one memoized source reader whose provenance
+// matches snapshot. A committed snapshot must never be annotated with dirty
+// working-tree source, so --head reads through one command-lifetime git
+// cat-file process bound to the snapshot's commit. Worktree snapshots, and the
+// provider's no-HEAD fallback, keep the contained on-disk reader.
+func openSnapshotLineReader(
+	ctx context.Context,
+	snapshot sem.ProviderSnapshot,
+	worktree bool,
+) (lineReader, func() error, error) {
+	if worktree || snapshot.Header.Commit == "" {
+		return newRepoLineReader(snapshot.Header.RepoRoot), nil, nil
+	}
+	if err := sem.EnsureGitMetadataSafeForSubprocess(snapshot.Header.RepoRoot); err != nil {
+		return nil, nil, err
+	}
+
+	treePathPrefix, err := gitutil.RepoPrefix(ctx, snapshot.Header.RepoRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+	batch, err := gitutil.NewBatchFileReader(ctx, snapshot.Header.RepoRoot, snapshot.Header.Commit)
+	if err != nil {
+		return nil, nil, err
+	}
+	batch.SetMaxBytes(callSiteMaxFileBytes)
+	limited := gitutil.NewLimitedFileReader(ctx, snapshot.Header.RepoRoot, snapshot.Header.Commit, callSiteMaxFileBytes)
+
+	cache := map[string][]string{}
+	read := func(relPath string) ([]string, bool) {
+		if relPath == "" || snapshot.Header.RepoRoot == "" {
+			return nil, false
+		}
+		if lines, ok := cache[relPath]; ok {
+			return lines, lines != nil
+		}
+
+		var content string
+		var ok bool
+		var readErr error
+		if !batch.IsPathSafe(relPath) {
+			// The batch protocol is line based, so a newline-bearing Git path
+			// needs the shared exact-object bounded reader. It still reads the
+			// same commit; failure never falls back to the dirty working tree. The
+			// ceiling is
+			// passed DOWN rather than applied to the returned string: the sibling
+			// readers refuse an oversized blob before materializing it, and a path
+			// that reaches here can come from an ingested snapshot record, so this
+			// one must not be the exception that allocates first and checks after.
+			// One reader shares its component cache and process allowance across
+			// all source records handled by this command.
+			result, err := limited.ReadFile(treePathPrefix + relPath)
+			readErr = err
+			content = result.Content
+			ok = result.Status == gitutil.LimitedFileContent
+		} else {
+			content, ok, readErr = batch.ReadFile(relPath)
+		}
+		if readErr != nil || !ok || strings.IndexByte(content, 0) >= 0 {
+			cache[relPath] = nil
+			return nil, false
+		}
+
+		lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+		cache[relPath] = lines
+		return lines, true
+	}
+	closeReaders := func() error {
+		return errors.Join(batch.Close(), limited.Close())
+	}
+	return read, closeReaders, nil
+}
+
+// openSnapshotLineReaderOrDegrade opens the provenance-correct reader and, when
+// that cannot be done, reports no source instead of failing the command.
+//
+// Quoted source is enrichment, not the answer. Every other read failure in this
+// file — missing file, binary, oversized, path outside the root — already
+// degrades to the definition line, and a `--head` answer without source windows
+// still answers the graph question. Only the opening of the git child process
+// was fatal, so an fd exhaustion or a fork failure turned a complete relation
+// answer into no output at all. The failure is reported on stderr, which never
+// reaches an agent's payload.
+func openSnapshotLineReaderOrDegrade(
+	ctx context.Context,
+	snapshot sem.ProviderSnapshot,
+	worktree bool,
+	warn io.Writer,
+) (lineReader, func() error) {
+	read, closeSource, err := openSnapshotLineReader(ctx, snapshot, worktree)
+	if err != nil {
+		if warn != nil {
+			fmt.Fprintf(warn, "graph: committed source unavailable (%v); reporting locations without source\n", err)
+		}
+		return noSourceLineReader, nil
+	}
+	return read, closeSource
+}
+
+// noSourceLineReader reports no source for every path, so that a degraded reader
+// is indistinguishable from a file that could not be quoted.
+func noSourceLineReader(string) ([]string, bool) { return nil, false }
+
 // newRepoLineReader reads files under repoRoot, memoizing per path so several
 // call sites in one file cost one read. It refuses oversized and NUL-bearing
 // files: neither can usefully be quoted.
@@ -91,8 +198,8 @@ type lineReader func(relPath string) ([]string, bool)
 // a path above the root, and os.Lstat only guarded the FINAL component, so an
 // intermediate symlink was followed by the subsequent read.
 //
-// Nothing reaches this with an untrusted relPath today — the three callers pass
-// paths from a snapshot this process built, and both snapshot sources omit
+// Nothing reaches this with an untrusted relPath today — callers pass paths
+// from a snapshot this process built, and both snapshot sources omit
 // symlinks. That is a property of today's callers, held by nothing: the
 // signature takes any string, and this package already ships a verb that
 // ingests externally supplied snapshot records. Making the boundary structural

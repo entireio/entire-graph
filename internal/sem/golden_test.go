@@ -644,20 +644,19 @@ func TestImportCapabilityMatchesScannerRegistry(t *testing.T) {
 	}
 }
 
-// TestHeuristicRelationTypesMatchDocumentation pins docs/baseline-report.md to
-// the executable heuristic list. The two had drifted: the prose named
-// HANDLES_GRPC, HANDLES_GRAPHQL, HANDLES_TRPC and CONFIGURES as globally
-// heuristic while all four are attributed per language, which left readers with
-// no reliable answer for whether to trust the per-language matrix for them.
+// TestHeuristicRelationTypesMatchDocumentation pins the active semantic
+// provider requirements to the executable heuristic list. The two had drifted:
+// older prose named HANDLES_GRPC, HANDLES_GRAPHQL, HANDLES_TRPC and CONFIGURES
+// as globally heuristic while all four are attributed per language.
 func TestHeuristicRelationTypesMatchDocumentation(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "baseline-report.md"))
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "semantic-provider-requirements.md"))
 	if err != nil {
-		t.Fatalf("read baseline report: %v", err)
+		t.Fatalf("read semantic provider requirements: %v", err)
 	}
 	const marker = "`heuristic_relation_types` ("
 	index := bytes.Index(doc, []byte(marker))
 	if index < 0 {
-		t.Fatalf("baseline report no longer documents heuristic_relation_types")
+		t.Fatalf("semantic provider requirements no longer document heuristic_relation_types")
 	}
 	rest := doc[index+len(marker):]
 	end := bytes.IndexByte(rest, ')')
