@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "7e9edde4867d",
+  "strategy": "manual-commit",
+  "branch": "review/pr146",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/adr/0005-converge-code-search.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/7e/9edde4867d/0/metadata.json",
+      "transcript": "/7e/9edde4867d/0/full.jsonl",
+      "compact_transcript": "/7e/9edde4867d/0/transcript.jsonl",
+      "content_hash": "/7e/9edde4867d/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 26,
+    "cache_creation_tokens": 550694,
+    "cache_read_tokens": 6541405,
+    "output_tokens": 9958,
+    "api_call_count": 13
+  }
+}

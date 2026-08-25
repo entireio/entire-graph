@@ -1,0 +1,52 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "7e9edde4867d",
+  "session_id": "2a557a2a-c9ee-425b-99d7-537a8e69f87d",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-25T22:01:49.022925Z",
+  "branch": "review/pr146",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/adr/0005-converge-code-search.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "06685ce814cd",
+  "checkpoint_transcript_start": 2292,
+  "transcript_lines_at_start": 2292,
+  "compact_transcript_start": 434,
+  "token_usage": {
+    "input_tokens": 26,
+    "cache_creation_tokens": 550694,
+    "cache_read_tokens": 6541405,
+    "output_tokens": 9958,
+    "api_call_count": 13
+  },
+  "session_metrics": {
+    "turn_count": 44
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-25T22:01:48.799402Z",
+    "agent_lines": 405,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 405,
+    "total_lines_changed": 405,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 19,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 19
+      }
+    }
+  ]
+}
