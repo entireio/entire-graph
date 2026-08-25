@@ -578,7 +578,10 @@ func TestSnapshotSCIPEmitsBinaryIndexAndOmissionNote(t *testing.T) {
 	documents := map[string]*scippb.Document{}
 	displayNames := map[string]bool{}
 	references := 0
-	worktreeSymbols := 0
+	// This fixture declares no manifest version, so every symbol must carry the
+	// unversioned fallback. Worktree provenance is asserted through the omission
+	// note below, not through the package version, which no longer encodes it.
+	unversionedSymbols := 0
 	for _, doc := range index.GetDocuments() {
 		documents[doc.GetRelativePath()] = doc
 		for _, info := range doc.GetSymbols() {
@@ -587,8 +590,8 @@ func TestSnapshotSCIPEmitsBinaryIndexAndOmissionNote(t *testing.T) {
 			if err != nil {
 				t.Fatalf("invalid SCIP symbol %q: %v", info.GetSymbol(), err)
 			}
-			if parsed.GetPackage().GetVersion() == "worktree" {
-				worktreeSymbols++
+			if parsed.GetPackage().GetVersion() == sem.ScipProjectVersionUnknown {
+				unversionedSymbols++
 			}
 		}
 		for _, occurrence := range doc.GetOccurrences() {
@@ -597,8 +600,8 @@ func TestSnapshotSCIPEmitsBinaryIndexAndOmissionNote(t *testing.T) {
 			}
 		}
 	}
-	if documents["main.go"] == nil || documents["main.go"].GetLanguage() != "Go" || !displayNames["caller"] || !displayNames["callee"] || references == 0 || worktreeSymbols == 0 {
-		t.Fatalf("scip index omitted expected navigation facts: docs=%v names=%v references=%d worktree_symbols=%d", documents, displayNames, references, worktreeSymbols)
+	if documents["main.go"] == nil || documents["main.go"].GetLanguage() != "Go" || !displayNames["caller"] || !displayNames["callee"] || references == 0 || unversionedSymbols == 0 {
+		t.Fatalf("scip index omitted expected navigation facts: docs=%v names=%v references=%d unversioned_symbols=%d", documents, displayNames, references, unversionedSymbols)
 	}
 	var note sem.SCIPOmissionNote
 	if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &note); err != nil {

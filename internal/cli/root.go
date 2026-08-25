@@ -307,7 +307,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			return sem.NewCompactSnapshotEncoder(out).Encode
 		}
 		if scip {
-			scipEncoder = sem.NewSCIPSnapshotEncoder(out)
+			scipEncoder = sem.NewSCIPSnapshotEncoder(out, scipProjectVersion(ctx, repo, flags.Worktree))
 			return scipEncoder.Encode
 		}
 		encoder := json.NewEncoder(out)
@@ -446,6 +446,32 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		_ = recordsCache.Store(recordBuf.Bytes(), summary, snapshotHeader)
 	}
 	return nil
+}
+
+// scipProjectVersion reads the project's own declared version for the SCIP
+// package field, from the same tree the snapshot describes.
+//
+// A committed-tree snapshot reads the manifest at HEAD, not from disk: a dirty
+// working tree must not put a version into an index that describes a commit.
+// A --worktree snapshot reads the working tree, which is what it describes.
+// Every failure is non-fatal and falls through to "not declared" -- a version
+// string cannot be allowed to fail an export.
+func scipProjectVersion(ctx context.Context, repo string, worktree bool) string {
+	return sem.ScipProjectVersion(func(name string) (string, bool) {
+		if !worktree {
+			content, ok, err := gitutil.ShowFile(ctx, repo, "HEAD", name)
+			if err == nil {
+				return content, ok
+			}
+			// No HEAD, or Git unavailable. The snapshot itself falls back to
+			// the working tree in that case, so the version does too.
+		}
+		content, err := os.ReadFile(filepath.Join(repo, name))
+		if err != nil {
+			return "", false
+		}
+		return string(content), true
+	})
 }
 
 func scipOmissionNoteWithSummary(note sem.SCIPOmissionNote, summary *sem.SnapshotSummary) sem.SCIPOmissionNote {

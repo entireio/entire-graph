@@ -56,7 +56,7 @@ func encodeCompactFixture(t *testing.T, records []any) ([]byte, *CompactSnapshot
 func encodeSCIPFixture(t *testing.T, records []any) ([]byte, *SCIPSnapshotEncoder) {
 	t.Helper()
 	var out bytes.Buffer
-	encoder := NewSCIPSnapshotEncoder(&out)
+	encoder := NewSCIPSnapshotEncoder(&out, "1.2.3")
 	for _, record := range records {
 		if err := encoder.Encode(record); err != nil {
 			t.Fatal(err)
@@ -277,8 +277,13 @@ func TestSCIPSnapshotEncoderMarksWorktreeProvenance(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := parsed.GetPackage().GetVersion(); got != "worktree" {
-				t.Fatalf("worktree symbol package version = %q", got)
+			// Provenance is carried by the omission note and Metadata
+			// arguments asserted above, NOT by the package version. The
+			// version is the project's own and must be unaffected by
+			// worktree-ness, so a symbol keeps one identity whether it was
+			// indexed from a commit or from the working tree.
+			if got := parsed.GetPackage().GetVersion(); got != "1.2.3" {
+				t.Fatalf("worktree symbol package version = %q, want the project version unchanged", got)
 			}
 		}
 	}
@@ -304,8 +309,13 @@ func TestSCIPSnapshotEncoderMarksNoHEADFallbackProvenance(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := parsed.GetPackage().GetVersion(); got != "worktree" {
-				t.Fatalf("fallback symbol package version = %q", got)
+			// Provenance is carried by the omission note and Metadata
+			// arguments asserted above, NOT by the package version. The
+			// version is the project's own and must be unaffected by
+			// worktree-ness, so a symbol keeps one identity whether it was
+			// indexed from a commit or from the working tree.
+			if got := parsed.GetPackage().GetVersion(); got != "1.2.3" {
+				t.Fatalf("fallback symbol package version = %q, want the project version unchanged", got)
 			}
 		}
 	}
@@ -376,17 +386,20 @@ func TestSCIPKindsUseStandardKindsAndDescriptors(t *testing.T) {
 
 func TestSCIPSymbolEscapingRoundTrips(t *testing.T) {
 	header := SnapshotHeader{RepoKey: "owner/repo with space", Commit: "work tree"}
+	// A version carrying a space still exercises the package-component doubling
+	// that used to be covered through Commit, which is no longer the version.
+	const projectVersion = "1.2.3 beta"
 	record := SymbolRecord{
 		ID:       "compound-v1:odd-symbol",
 		Kind:     "function",
 		Name:     "render`item/name",
 		FilePath: "dir with space/source.go",
 	}
-	parsed, err := scippb.ParseSymbol(scipSymbol(header, record))
+	parsed, err := scippb.ParseSymbol(scipSymbol(header, projectVersion, record))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.GetPackage().GetName() != header.RepoKey || parsed.GetPackage().GetVersion() != header.Commit {
+	if parsed.GetPackage().GetName() != header.RepoKey || parsed.GetPackage().GetVersion() != projectVersion {
 		t.Fatalf("escaped package did not round trip: %#v", parsed.GetPackage())
 	}
 	descriptors := parsed.GetDescriptors()
@@ -396,7 +409,7 @@ func TestSCIPSymbolEscapingRoundTrips(t *testing.T) {
 }
 
 func TestSCIPSnapshotEncoderReportsShortWrites(t *testing.T) {
-	encoder := NewSCIPSnapshotEncoder(scipShortWriter{})
+	encoder := NewSCIPSnapshotEncoder(scipShortWriter{}, "1.2.3")
 	for _, record := range compactFixtureRecords() {
 		err := encoder.Encode(record)
 		if _, final := record.(SnapshotSummary); final {

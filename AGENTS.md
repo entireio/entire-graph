@@ -95,8 +95,10 @@ entire graph snapshot --repo . --format scip > index.scip 2> index.scip.omission
 The experimental `scip` format is a complete-snapshot binary projection for
 standard SCIP consumers. Native NDJSON remains the lossless default; SCIP
 retains one complete index in memory and reserves stderr for its JSON omission
-note, so it cannot be combined with `--progress`. With `--worktree`, SCIP uses
-package version `worktree` and marks that provenance in the note.
+note, so it cannot be combined with `--progress`. Its SCIP package version is the
+project's own declared version from the root manifest (`0` when none declares
+one), never the commit, so a symbol keeps one identity across commits; worktree
+provenance is marked in the note rather than in the version.
 
 **When:** ingesting the full graph into agent memory or a store such as Entire Brain, or exporting a navigation-oriented index to a SCIP consumer.
 

@@ -220,25 +220,34 @@ type SCIPOmissionNote struct {
 // encoder projects definition and reference-like facts into SCIP's navigation
 // model and reports omitted relation families separately.
 type SCIPSnapshotEncoder struct {
-	out          io.Writer
-	header       *SnapshotHeader
-	summary      *SnapshotSummary
-	files        map[string]FileRecord
-	externals    map[string]ExternalRecord
-	symbols      map[string]SymbolRecord
-	relations    []RelationRecord
-	wroteHeader  bool
-	wroteSummary bool
-	note         SCIPOmissionNote
+	out       io.Writer
+	header    *SnapshotHeader
+	summary   *SnapshotSummary
+	files     map[string]FileRecord
+	externals map[string]ExternalRecord
+	symbols   map[string]SymbolRecord
+	relations []RelationRecord
+	// projectVersion is the SCIP package version: the project's own declared
+	// version, never the commit. A commit here would give every symbol a new
+	// identity on every commit, which defeats the cross-index linking the field
+	// exists for. Commit provenance lives in Metadata and the omission note.
+	projectVersion string
+	wroteHeader    bool
+	wroteSummary   bool
+	note           SCIPOmissionNote
 }
 
 // NewSCIPSnapshotEncoder returns an encoder for one complete snapshot stream.
-func NewSCIPSnapshotEncoder(out io.Writer) *SCIPSnapshotEncoder {
+func NewSCIPSnapshotEncoder(out io.Writer, projectVersion string) *SCIPSnapshotEncoder {
+	if strings.TrimSpace(projectVersion) == "" {
+		projectVersion = ScipProjectVersionUnknown
+	}
 	return &SCIPSnapshotEncoder{
-		out:       out,
-		files:     map[string]FileRecord{},
-		externals: map[string]ExternalRecord{},
-		symbols:   map[string]SymbolRecord{},
+		out:            out,
+		projectVersion: projectVersion,
+		files:          map[string]FileRecord{},
+		externals:      map[string]ExternalRecord{},
+		symbols:        map[string]SymbolRecord{},
 		note: SCIPOmissionNote{
 			RecordType:                "scip_omissions",
 			Version:                   "entire-graph-scip-omissions/v1",
@@ -373,12 +382,12 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 	symbolIDs := scipSortedKeys(encoder.symbols)
 	symbols := make(map[string]string, len(symbolIDs))
 	for _, id := range symbolIDs {
-		symbols[id] = scipSymbol(header, encoder.symbols[id])
+		symbols[id] = scipSymbol(header, encoder.projectVersion, encoder.symbols[id])
 	}
 	externalIDs := scipSortedKeys(encoder.externals)
 	externals := make(map[string]string, len(externalIDs))
 	for _, id := range externalIDs {
-		externals[id] = scipExternalSymbol(header, encoder.externals[id])
+		externals[id] = scipExternalSymbol(header, encoder.projectVersion, encoder.externals[id])
 	}
 
 	for _, id := range symbolIDs {
@@ -610,9 +619,9 @@ func scipKind(kind string) scippb.SymbolInformation_Kind {
 	}
 }
 
-func scipSymbol(header SnapshotHeader, record SymbolRecord) string {
+func scipSymbol(header SnapshotHeader, projectVersion string, record SymbolRecord) string {
 	name := scipFirstNonEmpty(record.Name, record.QualifiedName, "symbol")
-	return scipSymbolPrefix(header, record.FilePath) + scipDescriptor(name, record.Kind, shortDigest(record.ID))
+	return scipSymbolPrefix(header, projectVersion, record.FilePath) + scipDescriptor(name, record.Kind, shortDigest(record.ID))
 }
 
 func scipDescriptor(name, kind, short string) string {
@@ -644,22 +653,28 @@ func methodLikeSCIPKind(kind string) bool {
 	}
 }
 
-func scipExternalSymbol(header SnapshotHeader, record ExternalRecord) string {
+func scipExternalSymbol(header SnapshotHeader, projectVersion string, record ExternalRecord) string {
 	name := scipFirstNonEmpty(record.Value, record.ID, "external")
-	return scipSymbolPackage(header) + "external/" + scipDescriptor(name, record.Kind, shortDigest(record.ID))
+	return scipSymbolPackage(header, projectVersion) + "external/" + scipDescriptor(name, record.Kind, shortDigest(record.ID))
 }
 
-func scipSymbolPrefix(header SnapshotHeader, filePath string) string {
-	prefix := scipSymbolPackage(header)
+func scipSymbolPrefix(header SnapshotHeader, projectVersion, filePath string) string {
+	prefix := scipSymbolPackage(header, projectVersion)
 	if filePath != "" {
 		prefix += scipIdentifier(filePath) + "/"
 	}
 	return prefix
 }
 
-func scipSymbolPackage(header SnapshotHeader) string {
+func scipSymbolPackage(header SnapshotHeader, projectVersion string) string {
 	packageName := scipFirstNonEmpty(header.RepoKey, "repository")
-	version := scipFirstNonEmpty(header.Commit, header.Tree, "worktree")
+	// The version is the project's own, from its root manifest, and NOT the
+	// commit. Using the commit made every symbol's identity change on every
+	// commit: two indexes of the same repository one unrelated commit apart
+	// shared no symbol at all, so nothing downstream could match a symbol
+	// across commits. Commit and tree provenance are carried by Metadata, the
+	// feed's own addressing, and the omission note's worktree_snapshot flag.
+	version := scipFirstNonEmpty(projectVersion, ScipProjectVersionUnknown)
 	return "entire-graph . " + scipPackageComponent(packageName) + " " + scipPackageComponent(version) + " "
 }
 
