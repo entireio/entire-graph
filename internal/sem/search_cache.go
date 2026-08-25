@@ -712,7 +712,7 @@ func selectiveSearchSnapshotFromFull(
 		if budgetHit {
 			failures = append(failures, analysisBudgetFailure(options.MaxDuration))
 		}
-		populateSelectiveHeader(&selective, sc.warnings, failures, nil)
+		populateSelectiveHeader(&selective, sc.warnings, failures, nil, stopNow)
 		return selective, nil
 	}
 
@@ -863,7 +863,7 @@ func selectiveSearchSnapshotFromFull(
 		// unbudgeted query as the complete index.
 		failures = append(failures, analysisBudgetFailure(options.MaxDuration))
 	}
-	populateSelectiveHeader(&selective, warnings, failures, relationsByType)
+	populateSelectiveHeader(&selective, warnings, failures, relationsByType, stopNow)
 	return selective, nil
 }
 
@@ -871,7 +871,7 @@ func selectiveSearchSnapshotFromFull(
 // Stats, and Completeness on a selective snapshot. Both the budget-truncated
 // early-return path and the complete derivation path call this so metadata stays
 // consistent regardless of where the gate tripped.
-func populateSelectiveHeader(selective *ProviderSnapshot, warnings []ProviderWarning, failures []PartialFailure, relationsByType map[string]int) {
+func populateSelectiveHeader(selective *ProviderSnapshot, warnings []ProviderWarning, failures []PartialFailure, relationsByType map[string]int, stop func() bool) {
 	if warnings == nil {
 		warnings = []ProviderWarning{}
 	}
@@ -880,13 +880,19 @@ func populateSelectiveHeader(selective *ProviderSnapshot, warnings []ProviderWar
 	}
 	languageSet := make(map[string]struct{})
 	completenessLanguages := make(map[string]LanguageCompleteness)
-	for _, file := range selective.Files {
+	for i, file := range selective.Files {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			break
+		}
 		languageSet[file.Language] = struct{}{}
 		completeness := completenessLanguages[file.Language]
 		completeness.Files++
 		completenessLanguages[file.Language] = completeness
 	}
-	for _, symbol := range selective.Symbols {
+	for i, symbol := range selective.Symbols {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			break
+		}
 		completeness := completenessLanguages[symbol.Language]
 		completeness.Symbols++
 		completenessLanguages[symbol.Language] = completeness
@@ -898,7 +904,10 @@ func populateSelectiveHeader(selective *ProviderSnapshot, warnings []ProviderWar
 		}
 	}
 	parsedFiles := 0
-	for _, file := range selective.Files {
+	for i, file := range selective.Files {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			break
+		}
 		if !unparsedFiles[filepath.ToSlash(filepath.Clean(file.Path))] {
 			parsedFiles++
 		}

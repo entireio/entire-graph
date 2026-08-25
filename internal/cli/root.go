@@ -554,7 +554,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// a successful run without a second pass over the graph.
 	var recordBuf bytes.Buffer
 	if useCache {
-		encodeRecord = newRecordEncoder(io.MultiWriter(opts.Stdout, &recordBuf))
+		encodeRecord = newRecordEncoder(io.MultiWriter(&contextChunkWriter{ctx: ctx, w: opts.Stdout}, &recordBuf))
 	}
 	if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
 		capture(record)
@@ -921,7 +921,7 @@ func runCheckpoint(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	return printResult(opts.Stdout, result, flags.JSON, opts.Version)
+	return printResult(ctx, opts.Stdout, result, flags.JSON, opts.Version)
 }
 
 func runAnalyze(ctx context.Context, opts Options, args []string) error {
@@ -1038,7 +1038,7 @@ func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string,
 	if err != nil {
 		return err
 	}
-	return printResult(opts.Stdout, result, flags.JSON, opts.Version)
+	return printResult(ctx, opts.Stdout, result, flags.JSON, opts.Version)
 }
 
 // diffProgressLine renders one --progress event for stderr.
@@ -1062,12 +1062,13 @@ func diffProgressLine(event sem.AnalyzeProgressEvent) string {
 	return line
 }
 
-func printResult(out io.Writer, result sem.Result, asJSON bool, producerVersion string) error {
+func printResult(ctx context.Context, out io.Writer, result sem.Result, asJSON bool, producerVersion string) error {
 	// ProducerVersion is set here, the one place a Result is rendered, rather
 	// than at each of the two callers — it needs the CLI's build-time version
 	// (Options.Version), which the sem package that builds the rest of the
 	// Result has no access to.
 	result.ProducerVersion = producerVersion
+	out = &contextChunkWriter{ctx: ctx, w: out}
 	if asJSON {
 		encoded, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
