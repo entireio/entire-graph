@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "cb384ddab1ab",
+  "strategy": "manual-commit",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/snapshot-format.md",
+    "internal/sem/compact_snapshot.go",
+    "internal/sem/scip_project_version_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/cb/384ddab1ab/0/metadata.json",
+      "transcript": "/cb/384ddab1ab/0/full.jsonl",
+      "compact_transcript": "/cb/384ddab1ab/0/transcript.jsonl",
+      "content_hash": "/cb/384ddab1ab/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 10265,
+    "cache_read_tokens": 3182745,
+    "output_tokens": 6576,
+    "api_call_count": 6
+  }
+}
