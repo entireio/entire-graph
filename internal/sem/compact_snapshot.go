@@ -213,6 +213,16 @@ type SCIPOmissionNote struct {
 	CompletenessLevel         string         `json:"completeness_level,omitempty"`
 	WarningCount              int            `json:"warning_count,omitempty"`
 	PartialFailureCount       int            `json:"partial_failure_count,omitempty"`
+	// UnidentifiedRecords counts records the encoder could not key and
+	// therefore did not carry into the index: a file with no path, or a symbol
+	// or external endpoint with no id. Such a record is a provider bug rather
+	// than an expected input, but dropping one silently would make the index
+	// quietly incomplete, which this format's whole point is to avoid.
+	UnidentifiedRecords int `json:"unidentified_records,omitempty"`
+	// UnlocatedSymbols counts symbols with no file path. They are emitted, so
+	// they can still be referenced, but they land in a synthetic document and
+	// carry no navigable definition location.
+	UnlocatedSymbols int `json:"unlocated_symbols,omitempty"`
 }
 
 // SCIPSnapshotEncoder writes an experimental SCIP Index protobuf for complete
@@ -291,25 +301,31 @@ func (encoder *SCIPSnapshotEncoder) Encode(record any) error {
 		if !encoder.wroteHeader {
 			return errors.New("scip snapshot header must be first")
 		}
-		if typed.Path != "" {
-			encoder.files[typed.Path] = typed
+		if typed.Path == "" {
+			encoder.note.UnidentifiedRecords++
+			return nil
 		}
+		encoder.files[typed.Path] = typed
 		return nil
 	case ExternalRecord:
 		if !encoder.wroteHeader {
 			return errors.New("scip snapshot header must be first")
 		}
-		if typed.ID != "" {
-			encoder.externals[typed.ID] = typed
+		if typed.ID == "" {
+			encoder.note.UnidentifiedRecords++
+			return nil
 		}
+		encoder.externals[typed.ID] = typed
 		return nil
 	case SymbolRecord:
 		if !encoder.wroteHeader {
 			return errors.New("scip snapshot header must be first")
 		}
-		if typed.ID != "" {
-			encoder.symbols[typed.ID] = typed
+		if typed.ID == "" {
+			encoder.note.UnidentifiedRecords++
+			return nil
 		}
+		encoder.symbols[typed.ID] = typed
 		return nil
 	case RelationRecord:
 		if !encoder.wroteHeader {
@@ -348,6 +364,7 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 	encoder.note.MissingEvidenceRelations = 0
 	encoder.note.EmittedDefinitions = 0
 	encoder.note.EmittedReferences = 0
+	encoder.note.UnlocatedSymbols = 0
 	encoder.note.WorktreeSnapshot = worktree
 
 	documents := map[string]*scippb.Document{}
@@ -393,6 +410,9 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 	for _, id := range symbolIDs {
 		record := encoder.symbols[id]
 		scipID := symbols[id]
+		if record.FilePath == "" {
+			encoder.note.UnlocatedSymbols++
+		}
 		doc := documentFor(record.FilePath, record.Language)
 		info := &scippb.SymbolInformation{
 			Symbol:      scipID,

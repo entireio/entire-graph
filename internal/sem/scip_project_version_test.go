@@ -1,6 +1,9 @@
 package sem
 
 import (
+	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	scippb "github.com/scip-code/scip/bindings/go/scip"
@@ -104,5 +107,45 @@ func TestNewSCIPSnapshotEncoderDefaultsBlankProjectVersion(t *testing.T) {
 		if got := NewSCIPSnapshotEncoder(nil, blank).projectVersion; got != ScipProjectVersionUnknown {
 			t.Fatalf("projectVersion for %q = %q, want %q", blank, got, ScipProjectVersionUnknown)
 		}
+	}
+}
+
+// TestSCIPNoteCountsRecordsItCouldNotCarry pins the contract that this format
+// never drops input silently. A record with no usable identity cannot be keyed,
+// and a symbol with no path cannot be located; both used to vanish without a
+// trace, leaving an index that looked complete.
+func TestSCIPNoteCountsRecordsItCouldNotCarry(t *testing.T) {
+	var out bytes.Buffer
+	encoder := NewSCIPSnapshotEncoder(&out, "1.0.0")
+	mustEncode := func(record any) {
+		t.Helper()
+		if err := encoder.Encode(record); err != nil {
+			t.Fatalf("Encode(%T): %v", record, err)
+		}
+	}
+	mustEncode(SnapshotHeader{SchemaVersion: SchemaVersion, Provider: ProviderName, RepoKey: "local/demo"})
+	mustEncode(FileRecord{Path: "", Language: "Go"})                   // unkeyable
+	mustEncode(ExternalRecord{ID: "", Value: "orphan"})                // unkeyable
+	mustEncode(SymbolRecord{ID: "", Name: "orphan", FilePath: "a.go"}) // unkeyable
+	mustEncode(FileRecord{Path: "a.go", Language: "Go"})
+	// Keyed, but with nowhere to live: emitted into the synthetic document.
+	mustEncode(SymbolRecord{ID: "compound-v1:floating", Kind: "function", Name: "Floating", StartLine: 1, EndLine: 1})
+	mustEncode(SnapshotSummary{})
+
+	note := encoder.OmissionNote()
+	if note.UnidentifiedRecords != 3 {
+		t.Errorf("unidentified_records = %d, want 3", note.UnidentifiedRecords)
+	}
+	if note.UnlocatedSymbols != 1 {
+		t.Errorf("unlocated_symbols = %d, want 1", note.UnlocatedSymbols)
+	}
+	// A clean stream must not carry either counter, so the JSON stays quiet
+	// when there is nothing to report.
+	encoded, err := json.Marshal(SCIPOmissionNote{RecordType: "scip_omissions"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "unidentified_records") || strings.Contains(string(encoded), "unlocated_symbols") {
+		t.Errorf("clean note carries the counters: %s", encoded)
 	}
 }
