@@ -59,9 +59,9 @@ const (
 	// Root and explicit ignore inputs affect both the live provider corpus and
 	// replay admission. Keep their resource contract identical and bounded before
 	// parsing can retain an attacker-controlled number or size of regular
-	// expressions. The rule count is cumulative across every external file loaded
-	// into one matcher; the fixed, trusted built-in secret rules are not charged to
-	// that budget.
+	// expressions. The rule count is cumulative across the external inputs one
+	// operation retains, including its nested matchers; the fixed, trusted built-in
+	// secret rules are not charged to that budget.
 	maxIgnoreFileBytes   = 1 << 20
 	maxIgnoreRuleBytes   = 64 << 10
 	maxIgnoreParsedRules = 16 << 10
@@ -71,6 +71,51 @@ const (
 	// discovery itself from becoming an unbounded read.
 	maxGitIndirectionFileBytes = 4 << 10
 )
+
+// ignoreRuleBudget is one operation's allowance of external rules retained at
+// the same time. A per-matcher cap is not a resource bound when a repository can
+// create hundreds of nested .gitignore files, each of which becomes a separate
+// matcher. The budget is deliberately owned by the operation, not by
+// ignoreMatcher: replay policies retain a matcher and may be evaluated more than
+// once, so embedding mutable allowance state there would make the answer depend
+// on how many times the policy had already been used.
+type ignoreRuleBudget struct {
+	remaining int
+}
+
+func newIgnoreRuleBudget(base ignoreMatcher) *ignoreRuleBudget {
+	remaining := maxIgnoreParsedRules - base.parsedRuleCount
+	if remaining < 0 {
+		remaining = 0
+	}
+	return &ignoreRuleBudget{remaining: remaining}
+}
+
+func (b *ignoreRuleBudget) retain(count int) error {
+	if count > b.remaining {
+		return fmt.Errorf(
+			"ignore inputs exceed %d parsed rules across one operation",
+			maxIgnoreParsedRules,
+		)
+	}
+	b.remaining -= count
+	return nil
+}
+
+func (b *ignoreRuleBudget) release(count int) {
+	b.remaining += count
+	if b.remaining > maxIgnoreParsedRules {
+		b.remaining = maxIgnoreParsedRules
+	}
+}
+
+func loadNestedIgnoreMatcher(content string, budget *ignoreRuleBudget) (ignoreMatcher, error) {
+	var matcher ignoreMatcher
+	if err := matcher.loadReaderWithBudget(strings.NewReader(content), false, budget); err != nil {
+		return ignoreMatcher{}, err
+	}
+	return matcher, nil
+}
 
 // Built-in credential-store exclusion
 // ===================================
@@ -345,7 +390,7 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	// non-directory: os.Stat returns ENOTDIR rather than ErrNotExist, and treating
 	// that as fatal aborted the entire search with zero results in every worktree.
 	if exclude := gitInfoExcludePath(repo); exclude != "" {
-		if err := matcher.loadOptional(exclude, false); err != nil {
+		if err := matcher.loadOptionalSameVolume(repo, exclude, false); err != nil {
 			return ignoreMatcher{}, err
 		}
 	}
@@ -399,44 +444,112 @@ func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []st
 // lives under the common directory, not under <repo>/.git.
 func gitInfoExcludePath(repo string) string {
 	dotGit := filepath.Join(repo, ".git")
-	info, err := os.Stat(dotGit)
+	opened, resolvedDotGit, err := openSameVolumePath(repo, dotGit)
+	if err != nil {
+		return ""
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
 	if err != nil {
 		return ""
 	}
 	if info.IsDir() {
-		return filepath.Join(dotGit, "info", "exclude")
+		common, ok := gitCommonDir(resolvedDotGit)
+		if !ok {
+			return ""
+		}
+		return filepath.Join(common, "info", "exclude")
 	}
-	if !info.Mode().IsRegular() {
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil || !regular || info.Size() > maxGitFileBytes {
 		return ""
 	}
-	raw, err := readSmallRegularFile(dotGit, maxGitIndirectionFileBytes)
+	// One reader and one byte rule for both pointer files, in provider.go: git
+	// applies read_gitfile_gently() here too, so a `.git` text file git refuses
+	// to parse must steer this worktree's exclude rules nowhere — git applies no
+	// info/exclude at all there — and a pointer git DOES follow must be followed
+	// to the same place. Reading these bytes here with rules of its own (a
+	// whole-file size test, TrimSpace, no NUL rule) disagreed with the excluder
+	// about which directory a worktree's `.git` names.
+	gitDir, ok := readGitDirPointerFromOpened(opened, info.Size())
+	if !ok {
+		return ""
+	}
+	gitDir = filepath.FromSlash(gitDir)
+	if !gitTargetPathValid(gitDir) {
+		return ""
+	}
+	if absoluteGitDir, absolute := gitAbsolutePath(repo, gitDir); absolute {
+		gitDir = absoluteGitDir
+	} else {
+		gitDir = gitJoinRelative(repo, gitDir)
+	}
+	if !sameVolume(gitDir, repo) {
+		return ""
+	}
+	gitDirHandle, resolvedGitDir, err := openSameVolumePath(repo, gitDir)
 	if err != nil {
 		return ""
 	}
-	gitDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(raw)), "gitdir:"))
-	if gitDir == "" {
+	_ = gitDirHandle.Close()
+	// commondir points at the shared .git that owns info/; it may be relative to
+	// gitDir. Resolved through gitCommonDir (provider.go), not a second,
+	// hand-rolled parse here: gitCommonDir walks a `commondir` symlink hop by
+	// hop via safeStatThroughSymlinks, rejecting any hop that lands off
+	// gitDir's volume, BEFORE the file is ever opened — the same guard
+	// hasObjectsAndRefs and gitDirPointerTarget already apply to `objects`,
+	// `refs`, and `.git`. This function used to reimplement the same
+	// commondir parse inline with only a single-hop volume check on the
+	// already-fully-resolved target, which is exactly the gap
+	// safeStatThroughSymlinks' own doc comment describes: a `commondir` that
+	// is itself a same-volume local symlink to a SECOND symlink naming a UNC
+	// share would have this process dial SMB with ambient credentials while
+	// resolving a path this function never even looked at, before the single
+	// top-level check ever ran.
+	common, ok := gitCommonDir(resolvedGitDir)
+	if !ok {
 		return ""
 	}
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(repo, gitDir)
-	}
-	// commondir points at the shared .git that owns info/; it may be relative to gitDir.
-	if common, err := readSmallRegularFile(
-		filepath.Join(gitDir, "commondir"),
-		maxGitIndirectionFileBytes,
-	); err == nil {
-		if c := strings.TrimSpace(string(common)); c != "" {
-			if !filepath.IsAbs(c) {
-				c = filepath.Join(gitDir, c)
-			}
-			gitDir = filepath.Clean(c)
-		}
-	}
+	gitDir = filepath.Clean(common)
 	return filepath.Join(gitDir, "info", "exclude")
 }
 
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
 	return m.loadPath(file, includeMode, false)
+}
+
+func (m *ignoreMatcher) loadOptionalSameVolume(base, file string, includeMode bool) error {
+	label := ignoreFileLabel(includeMode)
+	opened, resolved, err := openSameVolumePath(base, file)
+	if isMissingPathError(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
+	if err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	if !regular {
+		return fmt.Errorf("%s %q is not a regular file", label, file)
+	}
+	if info.Size() > maxIgnoreFileBytes {
+		return fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, maxIgnoreFileBytes)
+	}
+	content, err := readOpenedBoundedRegularFile(opened, info, resolved, label, maxIgnoreFileBytes)
+	if err != nil {
+		return err
+	}
+	if err := m.loadContent(string(content), includeMode); err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	return nil
 }
 
 func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
@@ -445,54 +558,14 @@ func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
 
 func (m *ignoreMatcher) loadPath(file string, includeMode, required bool) error {
 	label := ignoreFileLabel(includeMode)
-	info, err := os.Stat(file)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
-		if !required {
-			// ENOTDIR: a parent component is not a directory, so the file cannot
-			// exist. For an optional exclude file that is absence, never a hard
-			// failure.
-			return nil
-		}
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%s %q does not exist", label, file)
-		}
-	}
+	content, present, err := readBoundedRegularFile(file, label, required, maxIgnoreFileBytes)
 	if err != nil {
-		return fmt.Errorf("read %s %q: %w", label, file, err)
+		return err
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s %q is not a regular file", label, file)
+	if !present {
+		return nil
 	}
-	if info.Size() > maxIgnoreFileBytes {
-		return fmt.Errorf(
-			"read %s %q: file exceeds %d bytes",
-			label,
-			file,
-			maxIgnoreFileBytes,
-		)
-	}
-
-	opened, err := os.Open(file)
-	if err != nil {
-		return fmt.Errorf("read %s %q: %w", label, file, err)
-	}
-	defer opened.Close()
-	openedInfo, err := opened.Stat()
-	if err != nil {
-		return fmt.Errorf("read %s %q: %w", label, file, err)
-	}
-	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
-		return fmt.Errorf("%s %q changed while opening", label, file)
-	}
-	if openedInfo.Size() > maxIgnoreFileBytes {
-		return fmt.Errorf(
-			"read %s %q: file exceeds %d bytes",
-			label,
-			file,
-			maxIgnoreFileBytes,
-		)
-	}
-	if err := m.loadReader(io.LimitReader(opened, maxIgnoreFileBytes+1), includeMode); err != nil {
+	if err := m.loadReader(bytes.NewReader(content), includeMode); err != nil {
 		return fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	return nil
@@ -507,8 +580,22 @@ func (m *ignoreMatcher) loadContent(content string, includeMode bool) error {
 }
 
 func (m *ignoreMatcher) loadReader(source io.Reader, includeMode bool) error {
+	return m.loadReaderWithBudget(source, includeMode, nil)
+}
+
+func (m *ignoreMatcher) loadReaderWithBudget(
+	source io.Reader,
+	includeMode bool,
+	budget *ignoreRuleBudget,
+) (resultErr error) {
 	reader := bufio.NewReaderSize(source, maxIgnoreRuleBytes+1)
 	totalBytes := 0
+	charged := 0
+	defer func() {
+		if resultErr != nil && budget != nil {
+			budget.release(charged)
+		}
+	}()
 	for {
 		line, readErr := reader.ReadSlice('\n')
 		totalBytes += len(line)
@@ -528,6 +615,12 @@ func (m *ignoreMatcher) loadReader(source io.Reader, includeMode bool) error {
 				if m.parsedRuleCount >= maxIgnoreParsedRules {
 					return fmt.Errorf("ignore inputs exceed %d parsed rules", maxIgnoreParsedRules)
 				}
+				if budget != nil {
+					if err := budget.retain(1); err != nil {
+						return err
+					}
+					charged++
+				}
 				m.rules = append(m.rules, rule)
 				m.parsedRuleCount++
 			}
@@ -543,33 +636,138 @@ func (m *ignoreMatcher) loadReader(source io.Reader, includeMode bool) error {
 }
 
 func readSmallRegularFile(file string, limit int64) ([]byte, error) {
+	content, _, err := readBoundedRegularFile(file, "Git indirection file", true, limit)
+	return content, err
+}
+
+// readBoundedRegularFile is the one policy for every external ignore/include
+// read, including cache-key derivation. It follows symlinks to regular files,
+// but refuses directories, devices, pipes, sockets, identity swaps, and growth
+// past limit. Optional means only that a genuinely absent path is allowed.
+func readBoundedRegularFile(file, label string, required bool, limit int64) ([]byte, bool, error) {
 	info, err := os.Stat(file)
-	if err != nil {
-		return nil, err
+	if isMissingPathError(err) {
+		if required {
+			return nil, false, fmt.Errorf("%s %q does not exist", label, file)
+		}
+		return nil, false, nil
 	}
-	if !info.Mode().IsRegular() || info.Size() > limit {
-		return nil, fmt.Errorf("file is not a regular file of at most %d bytes", limit)
-	}
-	opened, err := os.Open(file)
 	if err != nil {
-		return nil, err
+		return nil, false, fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("%s %q is not a regular file", label, file)
+	}
+	if info.Size() > limit {
+		return nil, false, fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, limit)
+	}
+	content, err := readKnownBoundedRegularFile(file, label, info, limit)
+	if isMissingPathError(err) {
+		if required {
+			return nil, false, fmt.Errorf("%s %q does not exist", label, file)
+		}
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return content, true, nil
+}
+
+func readKnownBoundedRegularFile(file, label string, expected os.FileInfo, limit int64) ([]byte, error) {
+	opened, err := openBoundedRegularFile(file)
+	if err != nil {
+		return nil, fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	defer opened.Close()
+	return readOpenedBoundedRegularFile(opened, expected, file, label, limit)
+}
+
+// readWorktreeNestedIgnore applies the bounded ignore reader to a
+// repository-confined path. Root.Lstat refuses an ancestor symlink that escapes
+// repo and identifies a leaf symlink without following it. The subsequent open
+// is performed through the same root, so an ancestor swap cannot redirect it
+// outside the repository; it retains the non-blocking, fstat, identity, and
+// post-read growth checks used by every other external ignore input.
+func readWorktreeNestedIgnore(root *os.Root, repo, candidate string) (string, bool, error) {
+	candidate = filepath.ToSlash(candidate)
+	if candidate == "" || path.IsAbs(candidate) || path.Clean(candidate) != candidate ||
+		candidate == ".." || strings.HasPrefix(candidate, "../") ||
+		!strings.HasSuffix(candidate, "/.gitignore") {
+		return "", false, fmt.Errorf("invalid nested ignore path %q", candidate)
+	}
+	name := filepath.FromSlash(candidate)
+	if filepath.IsAbs(name) || filepath.VolumeName(name) != "" {
+		return "", false, fmt.Errorf("invalid nested ignore path %q", candidate)
+	}
+	info, err := root.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read nested ignore file %q: %w", candidate, err)
+	}
+	// Git does not follow a .gitignore symlink from the worktree. Other special
+	// files are not ignore inputs either; in particular, do not open a FIFO or
+	// device merely because it has this basename.
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", false, nil
+	}
+	if info.Size() > maxNestedIgnoreFileBytes {
+		return "", false, fmt.Errorf(
+			"read nested ignore file %q: file exceeds %d bytes",
+			candidate,
+			maxNestedIgnoreFileBytes,
+		)
+	}
+	full := filepath.Join(repo, name)
+	opened, err := openRootBoundedRegularFile(root, name)
+	if err != nil {
+		return "", false, fmt.Errorf("read nested ignore file %q: %w", full, err)
+	}
+	defer opened.Close()
+	content, err := readOpenedBoundedRegularFile(
+		opened, info, full, "nested ignore file", int64(maxNestedIgnoreFileBytes),
+	)
+	if err != nil {
+		return "", false, err
+	}
+	return string(content), true, nil
+}
+
+// readOpenedBoundedRegularFile validates the description that will actually be
+// read. Keeping this step separate also makes identity and growth checks
+// deterministic to test without weakening the production path with hooks.
+func readOpenedBoundedRegularFile(opened *os.File, expected os.FileInfo, file, label string, limit int64) ([]byte, error) {
 	openedInfo, err := opened.Stat()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read %s %q: %w", label, file, err)
 	}
-	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) || openedInfo.Size() > limit {
-		return nil, errors.New("file changed while opening")
+	regular, err := openedFileIsRegular(opened, openedInfo)
+	if err != nil {
+		return nil, fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	if !regular {
+		return nil, fmt.Errorf("%s %q is not a regular file", label, file)
+	}
+	if !os.SameFile(expected, openedInfo) {
+		return nil, fmt.Errorf("%s %q changed while opening", label, file)
+	}
+	if openedInfo.Size() > limit {
+		return nil, fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, limit)
 	}
 	content, err := io.ReadAll(io.LimitReader(opened, limit+1))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	if int64(len(content)) > limit {
-		return nil, fmt.Errorf("file exceeds %d bytes", limit)
+		return nil, fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, limit)
 	}
 	return content, nil
+}
+
+func isMissingPathError(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 func ignoreFileLabel(includeMode bool) string {
@@ -713,9 +911,12 @@ const maxNestedIgnoreFileBytes = maxIgnoreFileBytes
 // `backend/.gitignore` is invisible to a reader that only ever parsed the
 // repository root's .gitignore.
 type nestedIgnoreStack struct {
-	repo   string
-	base   ignoreMatcher
-	levels []nestedIgnoreLevel
+	repo      string
+	root      *os.Root
+	base      ignoreMatcher
+	budget    *ignoreRuleBudget
+	filesSeen int
+	levels    []nestedIgnoreLevel
 }
 
 type nestedIgnoreLevel struct {
@@ -724,7 +925,42 @@ type nestedIgnoreLevel struct {
 }
 
 func newNestedIgnoreStack(repo string, base ignoreMatcher) *nestedIgnoreStack {
-	return &nestedIgnoreStack{repo: repo, base: base}
+	return &nestedIgnoreStack{repo: repo, base: base, budget: newIgnoreRuleBudget(base)}
+}
+
+func (s *nestedIgnoreStack) close() error {
+	if s.root == nil {
+		return nil
+	}
+	return s.root.Close()
+}
+
+// directoryReadable distinguishes an unreadable directory from an unreadable
+// .gitignore inside a readable directory after enter reports fs.ErrPermission.
+// The former cannot contribute source and is disclosed by the walk warning;
+// the latter is policy evidence the provider must not silently ignore. OpenRoot
+// keeps this one-entry probe confined to the repository if the path changes
+// between WalkDir's directory entry and this check.
+func (s *nestedIgnoreStack) directoryReadable(dir string) bool {
+	if s.root == nil {
+		return false
+	}
+	opened, err := s.root.Open(filepath.FromSlash(cleanIgnorePath(dir)))
+	if err != nil {
+		return false
+	}
+	defer opened.Close()
+	entries, err := opened.ReadDir(1)
+	if err != nil || len(entries) == 0 {
+		// This probe is reached only after the confined .gitignore lookup failed.
+		// An empty directory contributes no policy or source, so treating it as
+		// inaccessible is conservative and avoids pretending enumeration implies
+		// traversal/search permission.
+		return false
+	}
+	child := path.Join(cleanIgnorePath(dir), entries[0].Name())
+	_, err = s.root.Lstat(filepath.FromSlash(child))
+	return err == nil
 }
 
 // enter registers the directory the walk is about to descend into (repo-relative,
@@ -737,7 +973,13 @@ func (s *nestedIgnoreStack) enter(dir string) error {
 	for _, level := range s.levels {
 		if level.dir == dir || strings.HasPrefix(dir, level.dir+"/") {
 			kept = append(kept, level)
+			continue
 		}
+		// The walk has left this directory, so this matcher and its compiled
+		// expressions are no longer retained. Return exactly that level's external
+		// rules to the operation allowance; the base rules remain charged for the
+		// lifetime of the operation.
+		s.budget.release(level.matcher.parsedRuleCount)
 	}
 	s.levels = kept
 	if dir == "" {
@@ -745,23 +987,28 @@ func (s *nestedIgnoreStack) enter(dir string) error {
 		// ignore/include files that must keep overriding it.
 		return nil
 	}
-	file := filepath.Join(s.repo, filepath.FromSlash(dir), ".gitignore")
-	info, err := os.Stat(file)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
-		return nil
+	if s.root == nil {
+		root, err := os.OpenRoot(s.repo)
+		if err != nil {
+			return fmt.Errorf("open repository for nested ignore files: %w", err)
+		}
+		s.root = root
 	}
+	candidate := path.Join(dir, ".gitignore")
+	content, present, err := readWorktreeNestedIgnore(s.root, s.repo, candidate)
 	if err != nil {
-		return fmt.Errorf("read nested ignore file %q: %w", file, err)
+		return err
 	}
-	if !info.Mode().IsRegular() {
+	if !present {
 		return nil
 	}
-	if info.Size() > maxNestedIgnoreFileBytes {
-		return fmt.Errorf("read nested ignore file %q: file exceeds %d bytes", file, maxNestedIgnoreFileBytes)
+	s.filesSeen++
+	if s.filesSeen > maxNestedIgnoreFiles {
+		return tooManyNestedIgnoreFilesError()
 	}
-	var matcher ignoreMatcher
-	if err := matcher.loadFile(file, false); err != nil {
-		return fmt.Errorf("read nested ignore file %q: %w", file, err)
+	matcher, err := loadNestedIgnoreMatcher(content, s.budget)
+	if err != nil {
+		return fmt.Errorf("read nested ignore file %q: %w", candidate, err)
 	}
 	s.levels = append(s.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
 	return nil
@@ -814,9 +1061,11 @@ func (s *nestedIgnoreStack) ReincludesDescendant(rel string) bool {
 	return false
 }
 
-// maxNestedIgnoreFiles bounds how many per-directory .gitignore files one listing
-// merges. A repository with more ignore files than this is not a repository whose
-// vendored-tree verdict hinges on the last one.
+// maxNestedIgnoreFiles bounds how many per-directory .gitignore files one
+// operation observes. The next file is reported rather than skipped: truncating
+// the policy would silently change the corpus. A filesystem walk may release a
+// departed level's rules, but it still counts the file against this traversal
+// bound.
 const maxNestedIgnoreFiles = 512
 
 // nestedIgnoreRules merges the repository's per-directory .gitignore files for a
@@ -833,33 +1082,74 @@ const maxNestedIgnoreFiles = 512
 // negation at the root kept it).
 type nestedIgnoreRules struct {
 	base   ignoreMatcher
+	budget *ignoreRuleBudget
 	levels []nestedIgnoreLevel
+	// baseUnreadable is set when the root .gitignore could not be read at the
+	// committed revision (a real I/O error, not simply "no such file") — for
+	// example a promised blob a partial clone cannot lazily fetch because
+	// network egress is disabled. The project's own re-inclusion rules are
+	// then unknowable, so ReincludesDescendant fails OPEN for every path
+	// rather than let the vendored-directory heuristic silently drop
+	// first-party source it would have re-included.
+	baseUnreadable bool
+	// unreadableDirs holds the repo-relative directories whose OWN nested
+	// .gitignore failed to read for the same reason, scoped to that
+	// subtree only: the rest of the tree's rules are still known and still
+	// enforced.
+	unreadableDirs []string
+	// incomplete is set when the bounded reader cannot inspect every nested
+	// .gitignore. Unknown rules can affect any vendored subtree, so the heuristic
+	// must fail open globally instead of silently dropping possible re-inclusions.
+	incomplete bool
 }
 
 func newNestedIgnoreRules(base ignoreMatcher) *nestedIgnoreRules {
-	return &nestedIgnoreRules{base: base}
+	return newNestedIgnoreRulesWithBudget(base, newIgnoreRuleBudget(base))
+}
+
+func newNestedIgnoreRulesWithBudget(base ignoreMatcher, budget *ignoreRuleBudget) *nestedIgnoreRules {
+	return &nestedIgnoreRules{base: base, budget: budget}
 }
 
 // addFile registers the parsed content of the .gitignore at repo-relative path
-// file. Content that does not parse, or one file past the cap, is skipped: this
-// is a heuristic's escape hatch, not a correctness boundary.
-func (r *nestedIgnoreRules) addFile(file, content string) {
+// file. Refusals are reported rather than turning a resource limit into a
+// successful but incomplete listing.
+func (r *nestedIgnoreRules) addFile(file, content string) error {
 	dir := cleanIgnorePath(path.Dir(filepath.ToSlash(file)))
-	if dir == "" || len(r.levels) >= maxNestedIgnoreFiles {
-		return
+	if dir == "" {
+		return nil
 	}
-	var matcher ignoreMatcher
-	if err := matcher.loadContent(content, false); err != nil {
-		return
+	if len(r.levels) >= maxNestedIgnoreFiles {
+		return tooManyNestedIgnoreFilesError()
+	}
+	matcher, err := loadNestedIgnoreMatcher(content, r.budget)
+	if err != nil {
+		return fmt.Errorf("read nested ignore file %q: %w", file, err)
 	}
 	r.levels = append(r.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
+	return nil
+}
+
+func tooManyNestedIgnoreFilesError() error {
+	return fmt.Errorf("more than %d nested ignore files in one operation", maxNestedIgnoreFiles)
 }
 
 // ReincludesDescendant reports whether the root rules or any nested .gitignore
-// negate a path at or below rel.
+// negate a path at or below rel. It also fails open — reports true, meaning
+// "do not vendor-exclude this" — wherever the rules needed to answer honestly
+// could not be read, rather than silently agree with a heuristic that has no
+// idea what the project's own re-inclusion rules say there.
 func (r *nestedIgnoreRules) ReincludesDescendant(rel string) bool {
+	if r.baseUnreadable || r.incomplete {
+		return true
+	}
 	if r.base.ReincludesDescendant(rel) {
 		return true
+	}
+	for _, dir := range r.unreadableDirs {
+		if subtreesOverlap(dir, rel) {
+			return true
+		}
 	}
 	for _, level := range r.levels {
 		if level.matcher.reincludesDescendantUnder(level.dir, rel) {
@@ -878,6 +1168,17 @@ func pathUnder(dir, rel string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimPrefix(rel, dir+"/"), true
+}
+
+// subtreesOverlap reports whether either path is the other path or its
+// ancestor. An unreadable nested .gitignore makes both its own subtree and any
+// ancestor that the vendored-directory heuristic might skip unknowable: if the
+// ancestor were skipped, traversal would never reach the unreadable rules.
+func subtreesOverlap(a, b string) bool {
+	if a == "" || b == "" || a == b {
+		return true
+	}
+	return strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 func (m ignoreMatcher) MayIncludeDescendant(rel string) bool {

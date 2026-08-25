@@ -1,11 +1,10 @@
 # ADR 0002 — Committed-tree cache key: total over graph-shaping inputs
 
-Status: Accepted; partially superseded by
-[ADR 0003](0003-working-tree-search-snapshot-cache.md) (2026-08-16), which
-replaces only this document's "no change to working-tree mode / stays
-uncached" consequence for the search snapshot cache. The key-totality
-decision below is unchanged, and the working-tree bypass still holds for the
-provider records cache.
+Status: Accepted. [ADR 0003](0003-working-tree-search-snapshot-cache.md)
+temporarily replaced this document's "working-tree mode stays uncached"
+consequence for the search snapshot cache;
+[ADR 0004](0004-working-tree-cache-security-boundary.md) (2026-08-21) restores
+that bypass. The committed-tree key-totality decision below is unchanged.
 Date: 2026-07-28
 
 ## Context
@@ -26,11 +25,14 @@ be served on another, and what does the current keying cost?
 
 Both keys hash the cache version, the **checkout path** (`filepath.Abs(repo)`), the provider
 version, the **HEAD tree hash**, the profile, `MaxParseBytes`, `OnlyFiles`, and the **contents**
-of any `--ignore-file` / `--include-file`. In `--head` mode the file set is otherwise a pure
-function of the tree: `openSource` lists via `gitutil.ListFiles(ctx, repo, committedRevision)`
-and filters with `loadExplicitIgnoreMatcher` (content-hashed) plus a tree-derived
-`headIgnoreMatcher`. `.git/info/exclude` and `core.excludesFile` reach only the working-tree
-path, which is never cached.
+of any `--ignore-file` / `--include-file`. Provider-record entries additionally hash the exact
+commit because their opaque NDJSON header records that commit; the search cache can remain
+tree-keyed because it safely restamps structured commit provenance on a hit. In `--head` mode
+the file set is otherwise a pure function of the tree: `openSource` lists via
+`gitutil.ListFiles(ctx, repo, committedRevision)` and filters with the captured explicit policy
+plus a tree-derived `headIgnoreMatcher`. `.git/info/exclude` reaches only the working-tree path,
+which is never cached; configuration-derived `core.excludesFile` is neutralized at the Git
+subprocess boundary and reaches neither path.
 
 Measured on a binary built from `cdcb8db`, against an isolated clone with three linked
 worktrees — `wtA`/`wtC` at `cdcb8db`, `wtB` at `6e4bfde`, 3 of 317 tracked files differing:
@@ -138,9 +140,10 @@ correctness fix.
   across worktrees if repository identity is a keyed, validated term, which it now is.
 - **No change to working-tree mode.** It stays uncached; dirty state has no durable key. The
   0-entry rows in the measurement are that policy, not a write failure.
-- **No change to tree-only keying of the parsed graph.** Two commits sharing a tree still share
-  an entry, and `FILE_CHANGES_WITH` co-change edges are still allowed to come from the other
-  commit's history — already documented on `searchSnapshotKey` and unchanged here.
+- **Search snapshots remain tree-keyed.** Two commits sharing a tree still share that structured
+  entry, whose commit provenance is restamped on load. Provider-record streams no longer share
+  across same-tree commits because their serialized header cannot be restamped without decoding
+  and rewriting the stream.
 - **No fix for the linked-worktree `.git/info/exclude` ENOTDIR failure** seen while measuring
   (`read ignore file ".../wtA/.git/info/exclude": not a directory`, exit 1). That is
   working-tree-only, therefore cache-irrelevant, and is owned by a separate change.
@@ -179,3 +182,14 @@ cache**. Two gaps remained and are what this change actually closes:
 Still explicitly NOT done, unchanged from the original decision: cross-worktree sharing (blocked by
 `repoRoot` being overwritten from the cached header) and per-file content-hash incrementality, for
 which a total key is the prerequisite.
+
+## Addendum — immutable cache transactions and exact provenance
+
+The 2026-08-21 transaction hardening captures one bounded ignore policy and carries those same
+bytes through keying, construction, and persistence. Provider-record transactions also capture
+the exact commit, tree, repository key, resolved file cap, and slice options, then reject storage
+when the emitted header does not match the captured commit/tree/repository/provider/profile.
+This closes policy, moving-HEAD, remote-identity, environment, and caller-slice TOCTOU seams.
+
+The final generations are `provider-records-v7` and `search-snapshot-v11`; earlier intermediate
+entries are retired. Working-tree snapshots are never persisted, as recorded by ADR 0004.

@@ -2,6 +2,8 @@ package sem
 
 import (
 	"bufio"
+	"bytes"
+	"container/heap"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,6 +26,9 @@ import (
 
 	"github.com/entireio/entire-graph/internal/filedigest"
 	"github.com/entireio/entire-graph/internal/gitutil"
+	"github.com/entireio/entire-graph/internal/termsafe"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -376,6 +381,9 @@ type ProviderSnapshotOptions struct {
 	// (see searchSnapshotKey), so a forced rebuild refreshes the same entry every
 	// other reader serves.
 	ForceRebuild bool
+	// cachePolicy is an immutable, bounded capture of external ignore inputs.
+	// Cache pipelines set it once and carry it through keying and construction.
+	cachePolicy *capturedIgnorePolicy
 }
 
 type BuildPhase string
@@ -733,6 +741,14 @@ type oversizeFile struct {
 	Bytes int64
 	Hash  string
 	Lines int
+	// Prefix holds up to a few KiB of leading content, captured for free from
+	// the same streaming pass that computes Hash and Lines when the source
+	// can. It backs shebang routing for a committed, extensionless file whose
+	// blob is too large for the ordinary content read to reach at all (Git
+	// blob reads are all-or-nothing, so readPrefix cannot bound its own read
+	// the way the filesystem source's readPrefix does). Empty when the
+	// source has no prefix to offer.
+	Prefix string
 }
 
 // oversizeReader reports why a content read came back empty: a file above the
@@ -752,8 +768,12 @@ type sourceContext struct {
 	read       contentReader
 	readPrefix prefixReader
 	oversize   oversizeReader
-	close      func() error
-	warnings   []ProviderWarning
+	// ignores is the exact matcher that admitted paths. Search carries it to
+	// whole-tree Git-grep filtering so no second policy-file read can diverge
+	// from the corpus listing.
+	ignores  ignoreMatcher
+	close    func() error
+	warnings []ProviderWarning
 }
 
 // oversizeAt reports the oversize record for path when the source has one.
@@ -1406,8 +1426,17 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 	if err != nil {
 		return sourceContext{}, err
 	}
-	key := repoKey(ctx, absRepo)
-	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
+	key := "local/" + filepath.Base(absRepo)
+	commit := ""
+	tree := ""
+	var headErr error
+	ctx, metadataSafe := newGitMetadataValidation(ctx, absRepo)
+	if metadataSafe {
+		key = repoKey(ctx, absRepo)
+		commit, tree, headErr = resolveCommittedHEAD(ctx, absRepo)
+	} else {
+		headErr = fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", absRepo)
+	}
 
 	// The provider is local-only. NoNetwork is accepted to make that contract
 	// explicit for callers that enforce no-egress provider execution.
@@ -1419,6 +1448,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 	opened, err := openSource(ctx, absRepo, committedRevision, sourceOptions{
 		ignoreFiles:  options.IgnoreFiles,
 		includeFiles: options.IncludeFiles,
+		cachePolicy:  options.cachePolicy,
 		maxReadBytes: resolveMaxParseBytes(options.MaxParseBytes),
 		maxFiles:     options.MaxFiles,
 	})
@@ -1438,6 +1468,14 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 			}
 		}
 		paths = filtered
+	}
+	if opened.prime != nil {
+		if err := opened.prime(paths); err != nil {
+			if opened.close != nil {
+				err = errors.Join(err, opened.close())
+			}
+			return sourceContext{}, err
+		}
 	}
 
 	warnings := append([]ProviderWarning(nil), opened.warnings...)
@@ -1464,6 +1502,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		read:       opened.read,
 		readPrefix: opened.readPrefix,
 		oversize:   opened.oversize,
+		ignores:    opened.ignores,
 		close:      opened.close,
 		warnings:   warnings,
 	}, nil
@@ -1485,17 +1524,14 @@ func resolveMaxParseBytes(requested int) int {
 // HEAD expression, preventing mixed commit/tree provenance if HEAD advances
 // between subprocesses.
 func resolveCommittedHEAD(ctx context.Context, repo string) (string, string, error) {
-	commit, err := gitutil.RevParse(ctx, repo, "HEAD")
+	if !gitMetadataSafeForSubprocessContext(ctx, repo) {
+		err := fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+		return "", "", err
+	}
+	commit, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
 	if err != nil || commit == "" {
 		if err == nil {
 			err = errors.New("HEAD resolved to an empty commit")
-		}
-		return "", "", err
-	}
-	tree, err := gitutil.RevParse(ctx, repo, commit+"^{tree}")
-	if err != nil || tree == "" {
-		if err == nil {
-			err = errors.New("committed HEAD resolved to an empty tree")
 		}
 		return "", "", err
 	}
@@ -9730,6 +9766,7 @@ func externalParts(id string) (string, string) {
 type sourceOptions struct {
 	ignoreFiles  []string
 	includeFiles []string
+	cachePolicy  *capturedIgnorePolicy
 	// maxReadBytes caps how large a file the content reader will materialize.
 	// Zero or negative removes the cap.
 	maxReadBytes int
@@ -9746,8 +9783,12 @@ type openedSource struct {
 	read       contentReader
 	readPrefix prefixReader
 	oversize   oversizeReader
-	close      func() error
-	warnings   []ProviderWarning
+	ignores    ignoreMatcher
+	// prime deterministically admits the final filtered committed-tree paths
+	// to any shared bounded metadata reader before parallel workers start.
+	prime    func([]string) error
+	close    func() error
+	warnings []ProviderWarning
 }
 
 // openSource lists the repository's files and returns a per-file content reader
@@ -9764,7 +9805,15 @@ type openedSource struct {
 func openSource(ctx context.Context, repo, committedRevision string, options sourceOptions) (openedSource, error) {
 	maxReadBytes := int64(options.maxReadBytes)
 	if committedRevision != "" {
-		ignores, err := loadExplicitIgnoreMatcher(repo, options.ignoreFiles, options.includeFiles)
+		var ignores ignoreMatcher
+		var err error
+		if options.cachePolicy != nil {
+			if err = options.cachePolicy.validate(repo, options.ignoreFiles, options.includeFiles); err == nil {
+				ignores, err = options.cachePolicy.matcher()
+			}
+		} else {
+			ignores, err = loadExplicitIgnoreMatcher(repo, options.ignoreFiles, options.includeFiles)
+		}
 		if err != nil {
 			return openedSource{}, err
 		}
@@ -9772,21 +9821,62 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		if err != nil {
 			return openedSource{}, err
 		}
-		paths = filterVendoredPaths(paths, headVendorIgnoreRules(ctx, repo, committedRevision, paths))
+		vendorRules, err := headVendorIgnoreRules(ctx, repo, committedRevision, paths, ignores)
+		if err != nil {
+			return openedSource{}, err
+		}
+		paths = filterVendoredPaths(paths, vendorRules)
 		paths = filterIgnoredPaths(paths, ignores)
-		paths, warnings := capSourceFiles(paths, options.maxFiles)
+		paths, capWarnings := capSourceFiles(paths, options.maxFiles)
+		warnings := capWarnings
+		treePathPrefix, err := gitutil.RepoPrefix(ctx, repo)
+		if err != nil {
+			return openedSource{}, err
+		}
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, committedRevision)
 		if err != nil {
 			return openedSource{}, err
 		}
 		batch.SetMaxBytes(maxReadBytes)
+		batch.SetOversizePrefixSelector(func(path string) bool {
+			return !Supported(path)
+		})
+		limited := gitutil.NewLimitedFileReader(ctx, repo, committedRevision, maxReadBytes)
+		// The oversize registry for the paths the batch reader cannot carry.
+		// batch.OversizeBlob only knows blobs that streamed past IT, so a
+		// refusal in the line-unsafe fallback below has to be recorded here or the
+		// file has no record at all and the snapshot drops it for being NAMED
+		// with a newline.
+		fallback := newFallbackOversizeRegistry(repo, committedRevision, maxReadBytes)
 		read := func(path string) (string, bool) {
-			if strings.Contains(path, "\n") {
-				content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, path)
-				if err != nil || !ok {
+			if !batch.IsPathSafe(path) {
+				// The batch protocol is line based, so a newline-bearing Git
+				// path needs the exact-object bounded reader. Sharing it across
+				// files also shares its component cache and process allowance.
+				// The ceiling is passed DOWN rather than applied to the returned string: this
+				// fallback is selected by the file's NAME, which the repository
+				// under analysis chooses, so an unbounded read here would let
+				// any repository opt one blob out of the cap that makes this
+				// reader's memory claim true.
+				result, err := limited.ReadFile(treePathPrefix + path)
+				if err != nil {
 					return "", false
 				}
-				return content, true
+				if result.Status != gitutil.LimitedFileContent {
+					// An oversize refusal has to leave the same trace the batch reader
+					// leaves, or processProviderFile cannot tell a file it
+					// declined from one it could not read: the file record is
+					// dropped, the warning becomes an error-severity
+					// E_FILE_READ, and completeness falls to degraded.
+					// LimitedFileReader gives the exact size without reading, but
+					// the digest MaxParseBytes promises is still owed — noted here and
+					// resolved lazily below. An absent path records nothing.
+					if result.Status == gitutil.LimitedFileOversize {
+						fallback.note(path)
+					}
+					return "", false
+				}
+				return result.Content, true
 			}
 			content, ok, err := batch.ReadFile(path)
 			if err != nil || !ok {
@@ -9795,11 +9885,14 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			return content, true
 		}
 		oversize := func(path string) (oversizeFile, bool) {
-			blob, ok := batch.OversizeBlob(path)
+			if over, ok := fallback.lookup(ctx, path); ok {
+				return over, true
+			}
+			blob, ok := batch.TakeOversizeBlob(path)
 			if !ok {
 				return oversizeFile{}, false
 			}
-			return oversizeFile{Bytes: blob.Bytes, Hash: blob.Hash, Lines: blob.Lines}, true
+			return oversizeFile{Bytes: blob.Bytes, Hash: blob.Hash, Lines: blob.Lines, Prefix: blob.Prefix}, true
 		}
 		// Git blob reads are all-or-nothing, so the HEAD-tree prefix reader
 		// fetches the blob and truncates.
@@ -9813,12 +9906,27 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			}
 			return content, true
 		}
+		closeReaders := func() error {
+			return errors.Join(batch.Close(), limited.Close())
+		}
+		prime := func(paths []string) error {
+			unsafeTreePaths := make([]string, 0, len(paths))
+			for _, path := range paths {
+				treePath := treePathPrefix + path
+				if !batch.IsPathSafe(path) && gitutil.IsCanonicalGitTreePath(treePath) {
+					unsafeTreePaths = append(unsafeTreePaths, treePath)
+				}
+			}
+			return limited.Prime(unsafeTreePaths)
+		}
 		return openedSource{
 			paths:      paths,
 			read:       read,
 			readPrefix: readPrefix,
 			oversize:   oversize,
-			close:      batch.Close,
+			ignores:    ignores,
+			prime:      prime,
+			close:      closeReaders,
 			warnings:   warnings,
 		}, nil
 	}
@@ -9826,11 +9934,15 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	if err != nil {
 		return openedSource{}, err
 	}
-	paths, err := worktreeSourceFiles(ctx, repo, ignores, len(options.includeFiles) > 0)
+	paths, sweepWarnings, err := worktreeSourceFiles(ctx, repo, ignores, len(options.includeFiles) > 0)
 	if err != nil {
 		return openedSource{}, err
 	}
 	paths, warnings := capSourceFiles(paths, options.maxFiles)
+	// An incomplete `.git` pointer sweep changes what the listing MEANS — the
+	// exclusions below it are wider than a complete sweep's — so it is reported
+	// beside the file-limit warning rather than inferred from a short listing.
+	warnings = append(warnings, sweepWarnings...)
 	registry := newOversizeRegistry()
 	read := func(path string) (string, bool) {
 		full := filepath.Join(repo, filepath.FromSlash(path))
@@ -9871,8 +9983,90 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		read:       read,
 		readPrefix: readPrefix,
 		oversize:   registry.lookup,
+		ignores:    ignores,
 		warnings:   warnings,
 	}, nil
+}
+
+// fallbackOversizeRegistry remembers the HEAD-tree paths the bounded line-unsafe
+// fallback refused, and resolves each one's record at most once. It is the
+// committed-revision counterpart of oversizeRegistry below, and defers for the
+// same reason: resolving costs a streaming pass over the blob, and preselection
+// only needs to know the file is out of reach, so paying that pass to answer a
+// question nobody asked would trade a memory blow-up for an I/O one.
+//
+// A noted path is already known to be oversized from typed metadata, but its
+// content hash and line count still require one streaming pass.
+// gitutil.OversizeBlobAtRev computes those against the same ceiling; a path it
+// cannot re-establish as oversized resolves to no record rather than being
+// misreported.
+type fallbackOversizeRegistry struct {
+	repo     string
+	rev      string
+	maxBytes int64
+	mu       sync.Mutex
+	pending  map[string]struct{}
+	// resolved caches the answer, nil meaning "asked, and not oversized".
+	resolved map[string]*oversizeFile
+}
+
+func newFallbackOversizeRegistry(repo, rev string, maxBytes int64) *fallbackOversizeRegistry {
+	return &fallbackOversizeRegistry{
+		repo:     repo,
+		rev:      rev,
+		maxBytes: maxBytes,
+		pending:  map[string]struct{}{},
+		resolved: map[string]*oversizeFile{},
+	}
+}
+
+// note records that the fallback refused path. Files are processed in parallel
+// and the batch reader's own registry is private to it, so this keeps its lock.
+func (r *fallbackOversizeRegistry) note(path string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, done := r.resolved[path]; done {
+		return
+	}
+	r.pending[path] = struct{}{}
+}
+
+// lookup resolves a noted path to the record MaxParseBytes promises. The lock is
+// not held across the git call; a concurrent duplicate would only recompute the
+// same answer, because the revision it reads is immutable.
+func (r *fallbackOversizeRegistry) lookup(ctx context.Context, path string) (oversizeFile, bool) {
+	r.mu.Lock()
+	record, done := r.resolved[path]
+	if !done {
+		_, done = r.pending[path]
+		if !done {
+			r.mu.Unlock()
+			return oversizeFile{}, false
+		}
+		r.mu.Unlock()
+		blob, over, err := gitutil.OversizeBlobAtRev(ctx, r.repo, r.rev, path, r.maxBytes)
+		if err == nil && over {
+			prefix := blob.Prefix
+			if Supported(path) {
+				prefix = ""
+			}
+			record = &oversizeFile{Bytes: blob.Bytes, Hash: blob.Hash, Lines: blob.Lines, Prefix: prefix}
+		}
+		r.mu.Lock()
+		stored := record
+		if record != nil && record.Prefix != "" {
+			cached := *record
+			cached.Prefix = ""
+			stored = &cached
+		}
+		r.resolved[path] = stored
+		delete(r.pending, path)
+	}
+	r.mu.Unlock()
+	if record == nil {
+		return oversizeFile{}, false
+	}
+	return *record, true
 }
 
 // oversizeRegistry remembers the working-tree files the reader refused, and
@@ -10059,13 +10253,3008 @@ type vendorIgnoreRules interface {
 	ReincludesDescendant(rel string) bool
 }
 
+// hasGitDirComponent reports whether a repo-relative path IS a git directory, or
+// lies inside one, by whole path component at ANY depth.
+//
+// Depth is deliberate. A vendored dependency that carries its own checkout
+// (`vendor/dep/.git/`) is a git directory too, and its config holds that
+// dependency's remote credentials — a nested git directory is never program
+// text, so there is nothing to weigh against excluding it. Matching a whole
+// component rather than a name prefix keeps `.github/` and `.repo-github/`
+// first-party, and matching a component rather than a directory also covers a
+// `.git` FILE: the `gitdir:` pointer of a linked worktree or of a nested clone,
+// which the directory decision never sees.
+func hasGitDirComponent(rel string) bool {
+	for _, component := range strings.Split(filepath.ToSlash(rel), "/") {
+		if component == ".git" {
+			return true
+		}
+	}
+	return false
+}
+
+// maxGitPointerBytes bounds how much of a `commondir` file is READ. It bounds
+// the read, not the file: `commondir` carries no size limit of git's own, so
+// this is a read-safety bound this tool chooses, not one git enforces. See
+// readGitPointerFile.
+//
+// 64 KiB, not the original 4 KiB: gitPointerPath refuses a window with no NUL
+// in it on the theory that "no path that long names anything on any
+// filesystem" — true of the REAL path a `commondir` resolves to, but not of
+// its LEXICAL text. Git concatenates and hands the raw string to the kernel
+// without collapsing it (see gitJoinRelative), so a legitimate commondir
+// padded with repeated `./` components — or produced by a tool that emits
+// one per intermediate symlink hop it flattened — can be lexically many times
+// longer than the real directory it names while still resolving on any OS's
+// actual path-length limit (Windows extended-length paths alone go to 32767
+// characters). A real linked worktree whose commondir happened to be that
+// long, with no NUL at all, was refused here though git accepts it — hiding
+// its genuinely credentialed config and hooks from exclusion instead of the
+// intended fail-closed direction. 64 KiB clears every OS's real path-length
+// ceiling with room to spare while still bounding the read.
+const maxGitPointerBytes = 64 << 10
+
+// maxGitFileBytes is git's own limit on a `.git` FILE. read_gitfile_gently()
+// stats the path and dies "Too large to be a .git file" above this size — a
+// check of the file's REAL size, performed before a single byte is read, so
+// the NUL that ends the target plays no part in it: a 5 MiB file with a NUL on
+// line one is refused by git exactly as a 5 MiB file with no NUL at all is.
+// Bounding only the READ instead — accepting whatever NUL falls inside a
+// smaller window — disagrees with git on every file between that window and
+// this one, in both directions: it accepts what git refuses above the window,
+// and (at a window narrower than this) it refuses what git accepts below it.
+// This is the gitfile reader's own bound; `commondir` keeps maxGitPointerBytes
+// because git enforces no ceiling on it at all. Verified on git 2.54.0:
+//
+//	$ { printf 'gitdir: x\0'; head -c 1048569 /dev/zero | tr '\0' A; } > .git
+//	$ git rev-parse --git-dir
+//	fatal: too large to be a .git file: '<abs>/.git'
+const maxGitFileBytes = 1 << 20
+
+// gitDirPointerPrefix is the prefix git's read_gitfile_gently() requires at BYTE
+// 0 of a `.git` file, the space after the colon included.
+const gitDirPointerPrefix = "gitdir: "
+
+// gitPointerPath is git's byte rule for a file whose content is a PATH — the
+// `.git` gitfile and the `commondir` file alike — and it is the ONE place that
+// rule lives. Every reader of either file goes through it, because git applies
+// one rule to both and a reader that applies its own disagrees with git in a way
+// that is always a leak or always an over-exclusion.
+//
+// The rule is two steps, in this order:
+//
+//  1. Trailing `\n` and `\r` are stripped off the RAW buffer. Git does this
+//     explicitly in read_gitfile_gently() and in get_common_dir_noenv(), and
+//     nothing else is stripped: a second space after `gitdir:`, or a space or
+//     tab at the end, belongs to the name.
+//  2. The result is handed on as a C STRING, so the first NUL ends the path and
+//     everything after it is neither part of the path nor an error. Git reads
+//     into a NUL-terminated strbuf and passes `buf` to is_absolute_path(),
+//     is_git_directory() and real_pathdup(); those see a C string.
+//
+// Both wants come from git 2.54.0 run as an oracle, on both files:
+//
+//	$ printf 'gitdir: .repo-git\0junkjunk\n' > .git
+//	$ git rev-parse --git-dir
+//	<worktree>/.repo-git
+//
+//	$ printf '../realcommon\0junkjunkjunk\n' > adm/commondir
+//	$ git --git-dir=adm rev-parse --git-common-dir
+//	<tmp>/realcommon
+//	$ git --git-dir=adm rev-parse --git-dir
+//	adm                                  <- git ACCEPTS the git directory
+//
+// Keeping the NUL produced a name nothing on disk is called, and the two files
+// failed the same way: on the gitfile no target was recorded and the separate
+// git directory was indexed, and on `commondir` the objects/ and refs/ lookup
+// missed, so BOTH the pointer rule and the structural rule called a linked
+// worktree's administrative directory ordinary content and its config — remote
+// URL, credential and all — was ranked as a search snippet.
+//
+// `whole` says whether content is the entire file. It is false when the file is
+// longer than the read window, and then two things change: the trailing-newline
+// strip is skipped, since the file's last byte is not in hand — and it cannot
+// matter, because any byte it could strip lies beyond the NUL — and a window
+// with no NUL in it is REFUSED, since the path does not end inside the window
+// and no path that long names anything on any filesystem.
+func gitPointerPath(content []byte, whole bool) (string, bool) {
+	text := string(content)
+	if whole {
+		text = strings.TrimRight(text, "\r\n")
+	}
+	if nul := strings.IndexByte(text, 0); nul >= 0 {
+		return text[:nul], true
+	}
+	return text, whole
+}
+
+// readGitPointerFromOpened reads up to maxBytes from a git pointer file. The
+// limit bounds the read rather than the file's real size: commondir has no size
+// ceiling and Git accepts an early NUL-terminated path from a longer file. The
+// stricter `.git` gitfile reader below requires a whole read and separately
+// enforces Git's 1 MiB real-size ceiling.
+func readGitPointerFromOpened(file *os.File, maxBytes int, observedSize int64) (string, bool) {
+	buffer, whole, ok := readGitPointerWindowFromOpened(file, maxBytes, observedSize)
+	if !ok {
+		return "", false
+	}
+	return gitPointerPath(buffer, whole)
+}
+
+func readGitPointerWindowFromOpened(file *os.File, maxBytes int, observedSize int64) ([]byte, bool, bool) {
+	// One byte past the window tells a file that fits from one that is longer,
+	// which is what `whole` reports.
+	window := int64(maxBytes) + 1
+	if observedSize >= 0 && observedSize < int64(maxBytes) {
+		window = observedSize + 1
+	}
+	buffer := make([]byte, int(window))
+	read, err := io.ReadFull(file, buffer)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, false, false
+	}
+	whole := err != nil && read <= maxBytes
+	if !whole {
+		read = min(read, maxBytes)
+	}
+	return buffer[:read], whole, true
+}
+
+// parseGitDirPointer reads the bytes of a `.git` FILE the way git's
+// read_gitfile_gently() reads them, and reports the target path git would
+// resolve — or that this is not a gitfile at all.
+//
+// Git checks the prefix against byte 0 and strips only trailing NEWLINE bytes
+// (`\n`, `\r`). Everything else after the prefix is the path: a second space
+// after the colon, or a space or tab at the end, belongs to the name. Trimming
+// the buffer before the prefix check — and the target after it — disagreed with
+// git in both directions, and each direction was a bug of its own:
+//
+//   - Too lenient. ` gitdir: x`, `\tgitdir: x` and `gitdir:x` are `invalid
+//     gitfile format` to git, so no directory is named at all; accepting them
+//     let an ordinary text file named `.git` — a fixture, a stray note — name
+//     any directory in the tree and delete it from the index.
+//   - Too eager. `gitdir: .repo-git ` names `.repo-git ` WITH the space;
+//     trimming recorded `.repo-git`, which nothing on disk is called, and the
+//     real git directory was walked and its config indexed.
+//
+// Both wants come from git 2.54.0, not from its documentation:
+// `git init --separate-git-dir='<path>/trailspace '` writes the trailing space
+// into the pointer and `git rev-parse --git-dir` reads it back with the space,
+// while every rejected spelling above fails `git rev-parse --git-dir`.
+//
+// A NUL byte ENDS the target. Git reads the file into a NUL-terminated buffer,
+// trims the trailing newlines off the raw length, and then hands `buf + 8` on as
+// a C string to is_absolute_path(), is_git_directory() and real_pathdup() — so
+// the first NUL is the end of the name and everything after it is neither part
+// of the path nor an error. Keeping it produced a name nothing on disk is
+// called: the structure test could not find the directory, no target was
+// recorded, and the git directory the pointer named was indexed. Verified on
+// git 2.54.0 with a `--separate-git-dir=.repo-git` worktree:
+//
+//	$ printf 'gitdir: .repo-git\0junkjunk\n' > .git
+//	$ git rev-parse --git-dir
+//	<worktree>/.repo-git
+//	$ git ls-files --cached --others --exclude-standard --directory
+//	.repo-git/
+//	tracked.go
+//
+// The truncation is applied AFTER the newline trim, which is the order git's own
+// buffer produces: `gitdir: x\n\0` keeps the newline in the name there and here
+// alike, because the trim looks at the last byte of the file and finds the NUL.
+//
+// The empty target — `gitdir: ` and nothing else, or a NUL straight after the
+// prefix — is reported as absent. Git resolves it to the directory holding the
+// pointer only to reject it in is_git_directory() (`printf 'gitdir: \0x\n' >
+// .git` gives `fatal: not a git repository: (null)`, exit 128); treating it as a
+// hit would exclude that whole directory on the strength of a file git does not
+// accept.
+func parseGitDirPointer(content []byte) (string, bool) {
+	text, ok := gitPointerPath(content, true)
+	if !ok {
+		return "", false
+	}
+	return parseGitDirPointerText(text)
+}
+
+// parseGitDirPointerText applies git's prefix test to a pointer file that has
+// already been through the shared byte rule, and is what both readers of a
+// `.git` gitfile — this file's excluder and ignore.go's info/exclude resolver —
+// call on the bytes the shared pointer window reader hands back.
+//
+// Applying the byte rule BEFORE cutting the prefix is git's own order — it
+// strips and NUL-terminates the buffer it read, and only then looks at `buf[0]`
+// and hands `buf + 8` on — and the two orders cannot disagree in any case, since
+// a prefix at byte 0 survives every operation on the buffer's tail.
+func parseGitDirPointerText(text string) (string, bool) {
+	target, ok := strings.CutPrefix(text, gitDirPointerPrefix)
+	if !ok || target == "" {
+		return "", false
+	}
+	return target, true
+}
+
+// readGitDirPointer reads `path` as a `.git` gitfile and reports the target git
+// would resolve, through the one reader and the one byte rule.
+//
+// The stat comes first and is checked against the file's REAL size, exactly as
+// git's read_gitfile_gently() checks it, and before the strict reader consumes
+// the file: git dies "Too large to be a .git file" above maxGitFileBytes
+// regardless of where — or whether — a NUL appears, so a multi-megabyte file
+// with a NUL on line one is refused by git exactly as one with no NUL at all
+// is. Deciding this by bounding the READ instead accepted every size above the
+// window as long as it held a NUL early enough, which made the window git's
+// ceiling in name only: the window was the old maxGitPointerBytes (4 KiB), so
+// a file at, say, 512 KiB with an early NUL was accepted here though git itself
+// would still follow it (512 KiB is under git's 1 MiB ceiling) — that half
+// happened to agree with git by luck — but a file at 5 MiB with an early NUL
+// was accepted here though git refuses the whole file outright, and a
+// legitimate target at 8 KiB with no NUL at all was refused here though git
+// reads and accepts it. Passing maxGitFileBytes as both the stat ceiling and
+// the read window fixes both directions at once: nothing over git's real
+// ceiling is read at all, and nothing under it is refused for want of a NUL
+// inside a narrower window.
+func readGitDirPointer(path string) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxGitFileBytes {
+		return "", false
+	}
+	return readGitDirPointerAtSize(path, info.Size())
+}
+
+func readGitDirPointerAtSize(path string, observedSize int64) (string, bool) {
+	if observedSize < 0 || observedSize > maxGitFileBytes {
+		return "", false
+	}
+	file, err := openBoundedRegularFile(path)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = file.Close() }()
+	return readGitDirPointerFromOpened(file, observedSize)
+}
+
+func readGitDirPointerFromOpened(file *os.File, observedSize int64) (string, bool) {
+	if observedSize < 0 || observedSize > maxGitFileBytes {
+		return "", false
+	}
+	openedInfo, err := file.Stat()
+	if err != nil || openedInfo.Size() != observedSize || openedInfo.Size() > maxGitFileBytes {
+		return "", false
+	}
+	regular, err := openedFileIsRegular(file, openedInfo)
+	if err != nil || !regular {
+		return "", false
+	}
+	buffer, whole, ok := readGitPointerWindowFromOpened(file, maxGitFileBytes, openedInfo.Size())
+	if !ok || !whole {
+		// Git rejects a `.git` FILE on its real size, independent of an early
+		// NUL. Requiring EOF within the observed size also refuses a file that
+		// grows after this handle's stat instead of parsing a raced prefix.
+		return "", false
+	}
+	text, ok := gitPointerPath(buffer, true)
+	if !ok {
+		return "", false
+	}
+	return parseGitDirPointerText(text)
+}
+
+// gitDirExcluder answers "is this repo-relative path a git directory, or inside
+// one?" for a working-tree listing. Both of its rules are unconditional: no
+// gitignore negation can cancel either, because the project's exclude rules are
+// attacker-controlled input in the repository being scanned.
+//
+//  1. hasGitDirComponent — a `.git` component at any depth.
+//  2. A `gitdir:` pointer's target, when it resolves to a path inside the
+//     repository AND that target carries a git directory's structure. `git
+//     init|clone --separate-git-dir=.repo-git` moves the whole git directory —
+//     config with its credentialed remote URL, hooks, logs — under an ordinary
+//     name that rule 1 cannot see. The structure test is not optional: git
+//     itself resolves a `.git` file and then asks is_git_directory() of the
+//     target, so `gitdir: ../src` naming an ordinary package is `fatal: not a
+//     git repository` to git (2.54.0) and naming it must not delete `src` from
+//     the index. Targets are learned by observing directories, so every caller
+//     must observe before it trusts a verdict; the walk additionally re-filters
+//     at the end, since a pointer can name a directory the walk already passed.
+type gitDirExcluder struct {
+	repo    string
+	targets map[string]struct{}
+	// gitDirRoot records the special target whose git directory and worktree
+	// share the repository root. Variable Git-owned names are then recognized
+	// directly by excluded, avoiding an unbounded root ReadDir merely to find a
+	// sharedindex.<hash> entry.
+	gitDirRoot          bool
+	rootEntryIdentities map[string]os.FileInfo
+	rootEntryMatchCache map[string]bool
+	rootEntryMatchBytes int
+	rootIdentityProbes  int
+	// foldedTargets holds the same targets lowercased, and is populated only
+	// where the filesystem itself folds case. A pointer's spelling and the
+	// listing's spelling are two independent strings for one directory there —
+	// git writes `gitdir:` with the spelling it was given, while the listing
+	// carries the spelling the caller walked with — so an exact match is not
+	// enough. It stays empty on a case-sensitive filesystem, where two
+	// spellings really are two directories and folding would exclude an
+	// innocent one.
+	foldedTargets map[string]struct{}
+	// normalizedTargets and foldedNormalizedTargets close the corresponding
+	// Unicode-normalization alias on filesystems such as the default APFS. They
+	// are populated only after an alternate normalization was verified to name
+	// the same file, so a case-sensitive or normalization-sensitive filesystem
+	// never loses a genuinely distinct source directory.
+	normalizedTargets       map[string]struct{}
+	foldedNormalizedTargets map[string]struct{}
+	// canonicalObservedDirs maps a Windows listing spelling to the physical
+	// repo-relative directory name obtained from an already-rooted open. NTFS's
+	// case relation is volume-specific and cannot safely be replaced by Go's
+	// generic Unicode fold; caching each already-bounded observed directory lets
+	// excluded compare Git/index spellings to exact physical targets instead.
+	canonicalObservedDirs           map[string]string
+	canonicalObservedDirectoryBytes int
+	// unlistedRoots names the directories the listing says nothing under, from
+	// git's own `--directory` listing, and gitAnsweredRoots records that git
+	// answered at all (an empty answer is a real answer). Without them the sweep
+	// has to rediscover those directories by reading the whole tree; see
+	// observeUnlistedDirs.
+	unlistedRoots    []string
+	gitAnsweredRoots bool
+	// sweepCtx is the query's context. Every other part of this listing is
+	// bounded by content git names; the sweep alone is bounded by content git
+	// OMITS, so it is the one part that has to be able to stop when the caller
+	// has stopped waiting.
+	sweepCtx context.Context
+	// sweepBudget is how many directories this query's sweep may take on and
+	// sweepDirectories is what it has spent. One ledger for the whole query —
+	// every root, every pruned subtree, both listing paths. See
+	// admitSweepDirectory. directoriesRead is the reads that ledger paid for,
+	// kept separate because it is what the disclosure quotes.
+	sweepBudget      int
+	sweepDirectories int
+	directoriesRead  int
+	// sweepTraversalSteps bounds the component-by-component rooted walk.
+	// Restarting from the root for every queued directory otherwise turns a
+	// bounded directory count into quadratic path work on a sufficiently deep
+	// tree.
+	sweepTraversalSteps int
+	// directoryEntriesRead is a second ledger under the same configured bound.
+	// Counting only directories still let one flat directory force ReadDir to
+	// allocate and inspect an arbitrary number of non-directory entries.
+	directoryEntriesRead int
+	// pointerBytesReserved bounds aggregate `.git` gitfile reads. A single
+	// gitfile may legitimately be 1 MiB, but multiplying that allowance by the
+	// directory sweep's 20,000 entries would permit tens of GiB of read and
+	// allocation churn. Reads reserve their observed size plus one race-detection
+	// byte before opening the file; exhaustion is disclosed and fails closed.
+	pointerBytesReserved      int64
+	pointerReadBudgetExceeded bool
+	// sweepStop records why the sweep stopped short, so what the listing means
+	// is disclosed rather than quietly changed.
+	sweepStop sweepStopReason
+	// hiddenEvidence counts the reads rule 2 depends on that failed for a reason
+	// other than the thing not being there — an unreadable directory the sweep
+	// had to skip, an unreadable `.git` file. Each one may have hidden a
+	// `gitdir:` pointer, and a pointer's target is somewhere ELSE in the tree,
+	// where git lists it as ordinary content. promoteUnverifiedGitDirs is what
+	// this count pays for.
+	hiddenEvidence int
+	// observedDirs is every directory observe() was given, in observation order
+	// and without the repository root. It is the candidate set
+	// promoteUnverifiedGitDirs re-examines, and it is collected rather than
+	// recomputed because whether the sweep was complete is only known once the
+	// sweep has finished. Recording the name costs one slice append per
+	// directory; the structure test itself is paid only when evidence was
+	// actually hidden.
+	observedDirs              []string
+	listedDirectoriesObserved int
+	listedDirectoryBytes      int
+	listedObservationExceeded bool
+	// promotedUnverified makes promoteUnverifiedGitDirs idempotent, since the
+	// filesystem fallback and the git listing each call it at their own end.
+	promotedUnverified bool
+	// unreadableWalkDirs samples the paths walkWorktreeFiles could not read
+	// (permission denied, removed mid-walk, etc.), capped at
+	// maxUnreadableWalkDirSample so a pathological tree cannot make this
+	// unbounded. hiddenEvidence already counts every one of them for
+	// promoteUnverifiedGitDirs' fail-closed exclusion; this is what lets
+	// unreadableWalkWarning tell a caller WHICH paths were skipped instead of
+	// only that some directory, somewhere, was.
+	unreadableWalkDirs []string
+	// sweepUnreadableDirs samples the repo-relative directories descendObserving
+	// could not ReadDir (permission denied, etc.), capped at
+	// maxUnreadableWalkDirSample like unreadableWalkDirs. hiddenEvidence already
+	// counts every one of them for promoteUnverifiedGitDirs' fail-closed
+	// exclusion of unrelated structure-only trees; sweepStop stays
+	// sweepRanToCompletion for these (the sweep skips the one directory and
+	// keeps going, it does not stop), so sweepWarnings alone never surfaces
+	// them. This is what lets sweepUnreadableDirWarning disclose which
+	// directories were skipped instead of leaving the wider exclusion silent.
+	sweepUnreadableDirs []string
+	// unreadablePointers samples `.git` files or links whose evidence could not
+	// be inspected. hiddenEvidence already drives the fail-closed exclusion;
+	// this list makes that wider omission visible to callers and cache identity.
+	unreadablePointers []string
+}
+
+// maxUnreadableWalkDirSample bounds unreadableWalkDirs and sweepUnreadableDirs.
+const maxUnreadableWalkDirSample = 8
+
+const (
+	maxListedDirectoryObservations = 200_000
+	maxListedDirectoryBytes        = 64 << 20
+)
+
+var errGitDirListedObservationBound = errors.New("Git worktree path observation exceeded a resource bound")
+
+const maxGitRootIdentityProbes = 200_000
+
+var errGitDirSweepHalted = errors.New("git directory sweep halted")
+
+// noteUnreadableWalkDir records one directory walkWorktreeFiles could not
+// read, for unreadableWalkWarning. Source under it is silently excluded from
+// the listing rather than aborting the whole walk (see the comment at the
+// fallback traversal's open/read branch), so unlike an aborted walk this has
+// to say so itself.
+func (g *gitDirExcluder) noteUnreadableWalkDir(rel string) {
+	retainSmallestPathSample(&g.unreadableWalkDirs, rel)
+}
+
+// unreadableWalkWarning reports the shortfall noteUnreadableWalkDir recorded:
+// every directory walkWorktreeFiles could not read is missing from the
+// listing with no error returned to the caller (a deliberate trade against
+// the alternative, a single unreadable subdirectory turning the whole search
+// into a repository-wide outage), so the gap has to be disclosed some other
+// way. hiddenEvidence's fail-closed exclusion in promoteUnverifiedGitDirs
+// covers the security property this can hide a `.git` pointer; this covers
+// the completeness property that ordinary source under the same path is now
+// silently absent, exactly as the same failure was on main before that trade
+// was made, which returned an error a caller could act on instead of a quiet
+// success with a smaller corpus.
+func (g *gitDirExcluder) unreadableWalkWarning() []ProviderWarning {
+	if len(g.unreadableWalkDirs) == 0 {
+		return nil
+	}
+	return []ProviderWarning{{
+		Code:     "W_WALK_UNREADABLE_DIRECTORY",
+		Severity: "warning",
+		EffectOnCompleteness: "one or more directories in the working tree could not be read, so any source " +
+			"under them is absent from this listing without being reported as an error",
+		Detail: fmt.Sprintf("unreadable: %s", termsafe.Line(strings.Join(g.unreadableWalkDirs, ", "))),
+	}}
+}
+
+// noteSweepUnreadableDir records one directory descendObserving could not
+// ReadDir, for sweepUnreadableDirWarning. Unlike admitSweepDirectory's budget
+// and cancel cases, this does not set sweepStop: the sweep skips the one
+// directory and keeps going rather than stopping outright, so sweepWarnings'
+// switch on sweepStop never sees it.
+func (g *gitDirExcluder) noteSweepUnreadableDir(rel string) {
+	label := rel
+	if label == "" {
+		label = "."
+	}
+	retainSmallestPathSample(&g.sweepUnreadableDirs, label)
+}
+
+func (g *gitDirExcluder) noteUnreadablePointer(dir string) {
+	label := ".git"
+	if dir != "" {
+		label = path.Join(filepath.ToSlash(dir), ".git")
+	}
+	retainSmallestPathSample(&g.unreadablePointers, label)
+}
+
+func retainSmallestPathSample(sample *[]string, value string) {
+	values := *sample
+	index := sort.SearchStrings(values, value)
+	if index < len(values) && values[index] == value {
+		return
+	}
+	if len(values) < maxUnreadableWalkDirSample {
+		values = append(values, "")
+		copy(values[index+1:], values[index:])
+		values[index] = value
+		*sample = values
+		return
+	}
+	if index >= len(values) {
+		return
+	}
+	copy(values[index+1:], values[index:len(values)-1])
+	values[index] = value
+}
+
+// sweepUnreadableDirWarning reports the shortfall noteSweepUnreadableDir
+// recorded: each directory the `.git`-pointer sweep could not read may have
+// hidden a `gitdir:` pointer, and hiddenEvidence already makes
+// promoteUnverifiedGitDirs react by excluding every structurally-git-shaped
+// directory it could not rule out as a result — including unrelated,
+// structure-only source trees that merely happen to contain `objects/` and
+// `refs/` entries of their own. sweepWarnings alone never discloses this case
+// (sweepStop stays sweepRanToCompletion), so this is the only place the wider
+// exclusion is explained.
+func (g *gitDirExcluder) sweepUnreadableDirWarning() []ProviderWarning {
+	if len(g.sweepUnreadableDirs) == 0 {
+		return nil
+	}
+	return []ProviderWarning{{
+		Code:     "W_GITDIR_SWEEP_UNREADABLE_DIRECTORY",
+		Severity: "warning",
+		EffectOnCompleteness: "one or more directories could not be read while scanning for `.git` pointers, so a directory that structurally " +
+			"resembles a git directory may be excluded from the listing even though no pointer was found naming it",
+		Detail: fmt.Sprintf("unreadable: %s", termsafe.Line(strings.Join(g.sweepUnreadableDirs, ", "))),
+	}}
+}
+
+// sweepStopReason names why the `.git`-pointer sweep stopped before it had read
+// every directory it was given. Both values mean the same thing to correctness —
+// evidence was not gathered — and differ only in what the caller is told.
+type sweepStopReason uint8
+
+const (
+	sweepRanToCompletion sweepStopReason = iota
+	sweepStoppedOnBudget
+	sweepStoppedOnCancel
+)
+
+// defaultSweepDirectoryBudget bounds both directories admitted and directory
+// entries inspected by one query's `.git`-pointer sweep.
+//
+// Why a bound is not optional. The sweep descends every root git collapsed,
+// including the IGNORED ones, because `.gitignore` is committed content in the
+// repository being scanned and pruning by it let that repository choose which
+// pointers this rule may read. But those roots are exactly the trees whose size
+// is unbounded by anything the tool controls: `node_modules`, a pnpm store, a
+// build cache. Measured on this branch before the bound, with 2 indexed files
+// and 110,120 directories under an ignored `node_modules/`, one working-tree
+// listing took 2.31-2.39 s against 9-11 ms on main — ~21 us per directory,
+// linear, and paid again on EVERY query. A tree ten times that size is an
+// ordinary monorepo and a twenty-second listing.
+//
+// Why this number. The largest real checkout available to measure here is
+// 10,893 directories in total (a pnpm monorepo, `node_modules` included), and
+// the other five range from 269 to 9,259. 20,000 is a little under twice the
+// largest of them, so no repository of that shape spends the ledger, and it caps
+// the sweep at ~0.42 s on the timings above instead of at nothing at all. It
+// also caps the sweep's additions to `observedDirs`; ancestors supplied by
+// Git's main listing have their own count and byte bounds below.
+//
+// ENTIRE_GRAPH_SWEEP_DIR_BUDGET overrides it for a caller who knows their own
+// tree; 0 or a negative value means unbounded, which is what this branch did
+// before and is offered only because the fail-closed behaviour below makes an
+// unbounded sweep a performance choice rather than a security one.
+const defaultSweepDirectoryBudget = 20000
+
+// maxGitPointerAggregateBytes is the per-listing aggregate allowance for `.git`
+// gitfiles encountered by the excluder. Real pointers are ordinarily tens or
+// hundreds of bytes; 64 MiB leaves ample room for large nested-worktree sets
+// while putting a hard ceiling under adversarial near-1-MiB pointer files.
+const maxGitPointerAggregateBytes int64 = 64 << 20
+
+// sweepDirBudgetEnv overrides defaultSweepDirectoryBudget.
+const sweepDirBudgetEnv = "ENTIRE_GRAPH_SWEEP_DIR_BUDGET"
+
+// sweepCancelCheckInterval is how many directories the sweep reads between
+// checks of the caller's context. The budget is the deterministic bound and this
+// is only the responsiveness one, so it is read rarely enough to cost nothing
+// and often enough to notice a cancelled query inside ~10 ms at the measured
+// ~21 us per directory.
+const sweepCancelCheckInterval = 512
+
+// One directory admission buys this many rooted path-component checks on
+// platforms that need them. The multiplier clears ordinary repository depth
+// while keeping the default 20,000-directory sweep below 320,000 component
+// walks.
+const sweepTraversalStepMultiplier = 16
+
+// resolveSweepDirectoryBudget reads the override, falling back to the default
+// for anything unparseable so a typo cannot silently unbound the sweep.
+func resolveSweepDirectoryBudget() int {
+	raw, ok := os.LookupEnv(sweepDirBudgetEnv)
+	if !ok {
+		return defaultSweepDirectoryBudget
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return defaultSweepDirectoryBudget
+	}
+	if value <= 0 {
+		return 0
+	}
+	return value
+}
+
+// newGitDirExcluder builds the excluder for one listing of repo, having already
+// observed the repository root — the `--separate-git-dir` case that needs no
+// listing to find.
+func newGitDirExcluder(ctx context.Context, repo string) *gitDirExcluder {
+	excluder := &gitDirExcluder{
+		repo:                    repo,
+		targets:                 map[string]struct{}{},
+		foldedTargets:           map[string]struct{}{},
+		normalizedTargets:       map[string]struct{}{},
+		foldedNormalizedTargets: map[string]struct{}{},
+		canonicalObservedDirs:   map[string]string{},
+		rootEntryIdentities:     map[string]os.FileInfo{},
+		rootEntryMatchCache:     map[string]bool{},
+		sweepCtx:                ctx,
+		sweepBudget:             resolveSweepDirectoryBudget(),
+	}
+	excluder.observe("")
+	return excluder
+}
+
+// admitSweepDirectory draws one directory from the query's ledger and reports
+// whether the sweep may take it on. When the ledger is empty it stops the sweep
+// and records hidden evidence, which is the whole design.
+//
+// One unit is one DIRECTORY the sweep brings in, not one ReadDir, because the
+// syscalls are not where the count would suggest. A directory costs one ReadDir
+// to enumerate and one observe() — two pointer reads and the structural stats —
+// per subdirectory it turns up, so charging the read alone undercounts by the
+// tree's fan-out: on the 110,120-directory synthetic below, a 20,000-READ budget
+// let the sweep observe 110,101 directories and cost 0.86 s. Charged at
+// admission, the same budget bounds both halves: at most `budget` directories
+// are observed and at most `budget` are read.
+//
+// The tension it resolves. descendObserving prunes on NOTHING, for a reason that
+// is still true: every prune tried here — a vendored NAME, the project's own
+// ignore rules, "this path is already excluded" — is something the scanned
+// repository can arrange, and each one therefore bought a hiding place for a
+// `.git` pointer whose target sits elsewhere in the tree and is indexed in full.
+// The cheapest of them, "already excluded", costs an attacker three empty
+// directories. But an unpruned sweep is unbounded, and its size is set by the
+// content git omits, which no one controls.
+//
+// So the bound is not a prune. A prune says "there is nothing to find in here"
+// and is wrong; a spent ledger says "I did not look, and I am not pretending I
+// did". Exhaustion sets hiddenEvidence, and hiddenEvidence is what
+// promoteUnverifiedGitDirs acts on: every observed directory carrying a git
+// directory's structure becomes a target, pointer or no pointer. The pointer
+// rule accepts a target on exactly that test, so the set of directories an
+// UNREAD pointer could have excluded is a subset of the set promotion excludes.
+// Running the ledger out therefore hides nothing — it costs the attacker
+// sweepBudget real directories on disk and buys a strictly WIDER exclusion than
+// letting the pointer be read would have.
+//
+// The ledger is one ledger. It is a field of the excluder, and the excluder is
+// built once per listing, so the roots of observeUnlistedDirs and every
+// observePrunedSubtree call on the filesystem fallback all spend from it. A
+// repository cannot win a fresh allowance by splitting one huge ignored tree
+// into a hundred ignored trees.
+//
+// The context check is the responsiveness half and not the correctness half:
+// cancelling a query stops the sweep the same fail-closed way, and the listing
+// it belongs to is about to be abandoned anyway.
+func (g *gitDirExcluder) admitSweepDirectory() bool {
+	if g.sweepStop != sweepRanToCompletion {
+		return false
+	}
+	if g.sweepBudget > 0 && g.sweepDirectories >= g.sweepBudget {
+		g.sweepStop = sweepStoppedOnBudget
+		g.hiddenEvidence++
+		return false
+	}
+	if g.sweepDirectories%sweepCancelCheckInterval == 0 && g.sweepHalted() {
+		return false
+	}
+	g.sweepDirectories++
+	return true
+}
+
+// admitSweepEntry bounds the other dimension of a directory traversal: entries
+// inspected while looking for subdirectories. Without it, a flat ignored
+// directory containing millions of files spent one directory from the ledger
+// and still forced an unbounded ReadDir allocation and scan.
+func (g *gitDirExcluder) admitSweepEntry() bool {
+	if g.sweepStop != sweepRanToCompletion {
+		return false
+	}
+	if g.sweepBudget > 0 && g.directoryEntriesRead >= g.sweepBudget {
+		g.sweepStop = sweepStoppedOnBudget
+		g.hiddenEvidence++
+		return false
+	}
+	if g.directoryEntriesRead%sweepCancelCheckInterval == 0 && g.sweepHalted() {
+		return false
+	}
+	g.directoryEntriesRead++
+	return true
+}
+
+func (g *gitDirExcluder) admitSweepTraversalStep() bool {
+	if g.sweepStop != sweepRanToCompletion {
+		return false
+	}
+	// Division avoids overflow when a caller supplies a near-MaxInt override.
+	if g.sweepBudget > 0 && g.sweepTraversalSteps/sweepTraversalStepMultiplier >= g.sweepBudget {
+		g.sweepStop = sweepStoppedOnBudget
+		g.hiddenEvidence++
+		return false
+	}
+	if g.sweepTraversalSteps%sweepCancelCheckInterval == 0 && g.sweepHalted() {
+		return false
+	}
+	g.sweepTraversalSteps++
+	return true
+}
+
+func (g *gitDirExcluder) admitPointerRead(size int64) bool {
+	if size < 0 {
+		return false
+	}
+	// One extra byte detects a file that grew after the no-follow stat. Clamp
+	// defensively even though callers reject gitfiles over maxGitFileBytes.
+	reserved := min(size, int64(maxGitFileBytes)) + 1
+	if reserved > maxGitPointerAggregateBytes-g.pointerBytesReserved {
+		if !g.pointerReadBudgetExceeded {
+			g.hiddenEvidence++
+		}
+		g.pointerReadBudgetExceeded = true
+		return false
+	}
+	g.pointerBytesReserved += reserved
+	return true
+}
+
+// sweepHalted reports whether the caller has stopped waiting, and stops the
+// sweep the same fail-closed way the ledger does if so. It is asked on the read
+// side as well as at admission because the queue admitted before a cancellation
+// can still be up to a whole budget long.
+func (g *gitDirExcluder) sweepHalted() bool {
+	if g.sweepStop != sweepRanToCompletion {
+		return true
+	}
+	if g.sweepCtx == nil || g.sweepCtx.Err() == nil {
+		return false
+	}
+	g.sweepStop = sweepStoppedOnCancel
+	g.hiddenEvidence++
+	return true
+}
+
+// sweepWarnings reports what the caller is owed when the sweep stopped short:
+// the directory count is a LOWER bound on the tree, and the exclusions that
+// follow are wider than a complete sweep would have produced. Nothing is
+// reported for a sweep that finished, which is every repository of ordinary
+// size.
+func (g *gitDirExcluder) sweepWarnings() []ProviderWarning {
+	var warnings []ProviderWarning
+	switch g.sweepStop {
+	case sweepStoppedOnBudget:
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "W_GITDIR_SWEEP_BUDGET",
+			Severity:             "warning",
+			EffectOnCompleteness: "the scan for `.git` pointers stopped early, so directories that carry a git directory's structure were excluded from the listing without a pointer naming them; source under them is absent",
+			Detail: fmt.Sprintf(
+				"the `.git` pointer sweep spent its whole budget of %d directory admissions or entries, or the corresponding bounded path-traversal allowance, and stopped; the tree under the ignored and collapsed roots is at least that large (%s overrides the budget, 0 removes it)",
+				g.sweepBudget, sweepDirBudgetEnv,
+			),
+		})
+	case sweepStoppedOnCancel:
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "W_GITDIR_SWEEP_CANCELLED",
+			Severity:             "warning",
+			EffectOnCompleteness: "the scan for `.git` pointers was cancelled, so directories that carry a git directory's structure were excluded from the listing without a pointer naming them; source under them is absent",
+			Detail: fmt.Sprintf(
+				"the `.git` pointer sweep was cancelled after %d directories",
+				g.directoriesRead,
+			),
+		})
+	}
+	if g.pointerReadBudgetExceeded {
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "W_GITDIR_POINTER_READ_BUDGET",
+			Severity:             "warning",
+			EffectOnCompleteness: "the aggregate `.git` pointer read allowance was exhausted, so directories that carry a git directory's structure were excluded without a pointer naming them; source under them is absent",
+			Detail: fmt.Sprintf(
+				"the `.git` pointer scan reserved its whole %d-byte aggregate allowance and stopped reading additional pointer files",
+				maxGitPointerAggregateBytes,
+			),
+		})
+	}
+	if len(g.unreadablePointers) > 0 {
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "W_GITDIR_POINTER_UNREADABLE",
+			Severity:             "warning",
+			EffectOnCompleteness: "one or more `.git` pointer files or links could not be inspected, so directories that structurally resemble git directories may be excluded without a readable pointer naming them",
+			Detail:               fmt.Sprintf("unreadable: %s", termsafe.Line(strings.Join(g.unreadablePointers, ", "))),
+		})
+	}
+	return warnings
+}
+
+// observe decides whether one repo-relative directory ("" for the repository
+// root) reveals a git directory, by either half of rule 2, and records what it
+// finds.
+//
+// The `.git` pointer it holds names one. So does its own structure: a directory
+// carrying HEAD, objects/ and refs/ IS a git directory whatever it is called,
+// and that half is what closes the cases where no pointer is reachable — a
+// pointer inside a tree the vendored heuristic skips unread, a pointer git never
+// lists, a bare clone vendored under a `*.git` name that no pointer names at all.
+// The two halves are complementary, not redundant: a planted git directory with
+// no HEAD is caught only by the pointer, and a git directory whose pointer is
+// out of reach is caught only by the structure.
+//
+// The repository root is exempt from the structure half. Pointing the tool at a
+// bare repository or at a git directory is a deliberate act by the caller, not a
+// leak, and must keep listing what it lists today.
+func (g *gitDirExcluder) observe(dir string) {
+	switch target, ok, hidden := gitDirPointerTargetWithBudget(g.repo, dir, g.admitPointerRead); {
+	case hidden:
+		g.hiddenEvidence++
+		if !g.pointerReadBudgetExceeded {
+			g.noteUnreadablePointer(dir)
+		}
+	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead) != gitDirStructureAbsent:
+		g.addTarget(target)
+	}
+	switch target, ok, hidden := gitDirLinkTarget(g.repo, dir); {
+	case hidden:
+		g.hiddenEvidence++
+		g.noteUnreadablePointer(dir)
+	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead) != gitDirStructureAbsent:
+		g.addTarget(target)
+	}
+	if dir == "" {
+		return
+	}
+	// Recorded for promoteUnverifiedGitDirs, which needs the candidates a
+	// pointer COULD have named and cannot know until the sweep is over whether
+	// it will have to look at them. The repository root is left out for the same
+	// reason the structure half below skips it.
+	g.observedDirs = append(g.observedDirs, dir)
+	if looksLikeGitDirWithBudget(filepath.Join(g.repo, filepath.FromSlash(dir)), g.admitPointerRead) {
+		g.addTarget(filepath.ToSlash(dir))
+	}
+	if foldedGitDirName(g.repo, dir) {
+		g.addTarget(filepath.ToSlash(dir))
+	}
+}
+
+// foldedGitDirName reports whether dir's last component is a differently-cased
+// spelling of `.git` that the filesystem folds onto the real thing. On macOS
+// (APFS/HFS+) and Windows a directory physically named `.GIT` IS the
+// repository's git directory — reading `.GIT/config` reads `.git/config` — but
+// the component test in excluded() compares exactly, and an incomplete or
+// corrupt one carries no HEAD for the structural test to find, so it passed
+// both. Asking foldsCase, rather than runtime.GOOS, keeps a genuinely distinct
+// `.GIT` on a case-sensitive filesystem indexable: there it is not an alias of
+// anything, and excluding it would drop first-party content.
+func foldedGitDirName(repo, dir string) bool {
+	name := path.Base(filepath.ToSlash(dir))
+	if name == ".git" || !strings.EqualFold(name, ".git") {
+		return false
+	}
+	return foldsCase(repo, filepath.ToSlash(dir))
+}
+
+// addTarget records one repo-relative git directory under every spelling the
+// filesystem accepts for it, so the verdict does not depend on which of the two
+// producers — the pointer's text or the listing — supplied the path.
+//
+// A SYMLINK is the second such spelling, and the one the listing never uses. Git
+// resolves a `gitdir:` target with real_pathdup() — read_gitfile_gently() ends
+// there — so `gitdir: admin-link` with `admin-link -> .real-git` names
+// `.real-git`, and that is the directory whose config holds the credential and
+// the one the listing walks: neither `git ls-files --others` nor the filesystem
+// walk descends a symlink, so nothing is ever listed under `admin-link/`.
+// Recording the link's own spelling alone left `.real-git/config` indexable, and
+// the structural rule could not rescue it — the pointer rule exists precisely
+// for a target whose HEAD is missing or corrupt, which is the state that makes
+// git refuse the worktree and the filesystem fallback run.
+//
+// Verified on git 2.54.0: after `git init --separate-git-dir=.real-git .`,
+// `ln -s .real-git admin-link` and `printf 'gitdir: admin-link\n' > .git`,
+// `git rev-parse --git-dir` answers `<worktree>/.real-git`, and
+// `git ls-files --others --directory` lists `.real-git/` as ordinary untracked
+// content.
+//
+// Both spellings are kept rather than one: the link's own path is what the
+// pointer named and what a differently-shaped listing could still carry, and a
+// target that resolves OUTSIDE the repository adds nothing to exclude.
+func (g *gitDirExcluder) addTarget(target string) {
+	g.recordTarget(target)
+	if resolved, ok := symlinkResolvedRel(g.repo, target); ok && resolved != target {
+		g.recordTarget(resolved)
+	}
+}
+
+// gitDirRootTarget is the repo-relative spelling of the repository root, which
+// containedRel reports for a pointer that names the root itself.
+const gitDirRootTarget = "."
+
+// recordTarget stores one spelling of a git directory, plus its folded form
+// where the filesystem itself folds case.
+//
+// The repository ROOT is the one target that cannot be stored as a prefix: every
+// path in the listing is under it, so recording it would exclude the whole
+// snapshot — the source the caller asked for included — which is the
+// over-suppression this rule has already had to be narrowed back from twice.
+// recordGitDirRootEntries takes that case instead, and this is the single place
+// every spelling passes through, so neither producer — a pointer's text, its
+// symlink-resolved form, a `.git` link — can put "." into targets by another
+// route.
+func (g *gitDirExcluder) recordTarget(target string) {
+	if target == gitDirRootTarget {
+		g.recordGitDirRootEntries()
+		return
+	}
+	g.targets[target] = struct{}{}
+	// Windows paths returned by openSameVolumePath already carry the physical
+	// spelling obtained from the opened handle. Do not add Go's generic Unicode
+	// fold key there: NTFS's volume-specific upcase table is not the same
+	// equivalence relation (for example, it aliases Greek capital sigma with
+	// small sigma but keeps final sigma distinct). Collapsing all three through
+	// cases.Fold would let one real git directory suppress a distinct ordinary
+	// source tree. Exact physical spellings are both sufficient and narrower on
+	// Windows; the probes below remain necessary on filesystems such as APFS,
+	// where the opened path does not provide that canonical spelling.
+	if runtime.GOOS == "windows" {
+		return
+	}
+	caseFolded := foldsCase(g.repo, target)
+	normalizationFolded := foldsNormalization(g.repo, target)
+	if caseFolded {
+		g.foldedTargets[unicodeCaseFoldKey(target)] = struct{}{}
+	}
+	if normalizationFolded {
+		g.normalizedTargets[norm.NFD.String(target)] = struct{}{}
+	}
+	if caseFolded && normalizationFolded {
+		g.foldedNormalizedTargets[unicodeFoldedNFDKey(target)] = struct{}{}
+	}
+}
+
+// gitDirRootEntryNames are the top-level names that belong to a git directory
+// rather than to a worktree. They come from git's own two lists — path.c's
+// `common_list[]`, which is what git shares between worktrees through
+// `commondir`, and the per-git-directory files setup.c and the sequencer write
+// beside it — and, for everything below the first group, from asking the real
+// git binary what it leaves behind:
+// TestGitDirRootEntryNamesCoversEveryNameGitWrites drives git through the
+// operations that park state in a git directory and fails naming any top-level
+// entry this list does not cover. `objects`, `refs` and `HEAD` are
+// is_git_directory()'s own three.
+//
+// That oracle is the lock, and it exists because reading git's source once is
+// exactly what let `reftable` through: a repository initialized with
+// `--ref-format=reftable` keeps its whole ref store — and its reflogs, which the
+// loose layout keeps in `logs/` and this list therefore already excluded — under
+// `reftable/`, and a list written against the loose layout had never heard of
+// the name. Verified on git 2.54.0: `git init --ref-format=reftable` writes
+// `reftable/tables.list` and the `*.ref` tables, and with `gitdir: .` at the
+// root `git ls-files --others --directory` lists `reftable/` as ordinary
+// untracked content.
+//
+// This list is consulted in exactly one situation: a `.git` pointer names the
+// repository ROOT and that root carries objects/ and refs/, so the git directory
+// and the worktree are one directory and there is no prefix that separates them.
+// Excluding by name is the narrow half of that — `config` and `logs/` hold the
+// credential, `src/app.go` is still the caller's source and stays indexed —
+// where excluding the root itself would return nothing at all.
+//
+// An ordinary repository never reaches it: a project whose root holds a `config`
+// file keeps it, because nothing there says the root is a git directory.
+var gitDirRootEntryNames = []string{
+	// is_git_directory() and the per-worktree files.
+	"HEAD", "index", "ORIG_HEAD", "FETCH_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD",
+	"REVERT_HEAD", "BISECT_LOG", "COMMIT_EDITMSG", "MERGE_MSG", "SQUASH_MSG",
+	"sequencer", "rebase-merge", "rebase-apply", "commondir", "gitdir",
+	// path.c common_list[].
+	"branches", "common", "config", "gc.pid", "hooks", "info", "logs",
+	"lost-found", "modules", "objects", "packed-refs", "refs", "remotes",
+	"rr-cache", "shallow", "svn", "worktrees",
+	// The description git init writes, and the config include git 2.46+ writes.
+	"description", "config.worktree",
+	// The reftable ref store, which replaces loose refs, `packed-refs` AND the
+	// `logs/` reflogs for a repository initialized with `--ref-format=reftable`.
+	"reftable",
+	// In-progress operation state the oracle above observed git 2.54.0 write:
+	// a conflicted merge (`AUTO_MERGE`, `MERGE_MODE`), rerere's record of it
+	// (`MERGE_RR`), an autostashed merge (`MERGE_AUTOSTASH`), a stopped rebase
+	// (`REBASE_HEAD`), a bisect with and without a checkout (`BISECT_START`,
+	// `BISECT_TERMS`, `BISECT_NAMES`, `BISECT_EXPECTED_REV`,
+	// `BISECT_ANCESTORS_OK`, `BISECT_HEAD`), a conflicted notes merge
+	// (`NOTES_MERGE_REF`, `NOTES_MERGE_WORKTREE`, `NOTES_MERGE_PARTIAL`), and the
+	// two buffers git hands an editor (`TAG_EDITMSG`, `EDIT_DESCRIPTION`).
+	"AUTO_MERGE", "MERGE_MODE", "MERGE_RR", "MERGE_AUTOSTASH", "REBASE_HEAD",
+	"BISECT_START", "BISECT_TERMS", "BISECT_NAMES", "BISECT_EXPECTED_REV",
+	"BISECT_ANCESTORS_OK", "BISECT_HEAD",
+	"NOTES_MERGE_REF", "NOTES_MERGE_WORKTREE", "NOTES_MERGE_PARTIAL",
+	"TAG_EDITMSG", "EDIT_DESCRIPTION",
+	// lockfile.c's transient `.lock` siblings of the files above. The oracle
+	// above cannot plant these itself — git removes each one when the
+	// operation that held it finishes cleanly — but a crashed or killed git
+	// process leaves one behind exactly where these names say, still holding
+	// the credentialed content of the file it was about to replace.
+	// config.worktree.lock is the same lock discipline applied to
+	// config.worktree above: `git config --worktree` (or any write to a
+	// per-worktree config git 2.46+ splits out) creates this sibling while
+	// rewriting it, and a crash or kill mid-write leaves it holding the
+	// complete rewritten worktree config, credentials included, exactly like
+	// config.lock does for the main config.
+	"config.lock", "config.worktree.lock", "index.lock", "HEAD.lock", "packed-refs.lock", "shallow.lock",
+}
+
+// gitDirRootEntryPrefixes are the git-owned top-level names whose full
+// spelling is not fixed, so no exact string in gitDirRootEntryNames can name
+// them. `git update-index --split-index` writes `sharedindex.<hash>` beside
+// `index`, with a fresh content-addressed hash each time the shared index
+// changes; matching by name alone would need to enumerate every hash git
+// could ever write. Verified on git 2.54.0: `git update-index --split-index`
+// at a repository root that doubles as its own git directory leaves
+// `sharedindex.<40-or-64-hex-chars>` there, and `git ls-files --others
+// --directory` does not list it (it is git index state, not worktree
+// content) while a name-only exact-match excluder does not recognize it
+// either and leaves it in the source listing. See isGitSharedIndexName below
+// for how the variable part is actually validated.
+
+// gitSharedIndexNameSuffixLens are the hash-hex-digit lengths git's own
+// object-id formats produce: 40 for SHA-1, 64 for the newer SHA-256 repository
+// format. A bare `strings.HasPrefix(name, "sharedindex.")` check accepted ANY
+// name starting that way, so a legitimate tracked source file that happens to
+// share the prefix -- `sharedindex.go`, `sharedindex.test.ts` -- was silently
+// treated as git-owned and excluded whenever a pointer made the repository
+// root double as its own git directory. Requiring the suffix to be exactly
+// one of these lengths of lowercase hex digits, matching what
+// `update-index --split-index` actually writes, is what tells the two apart.
+var gitSharedIndexNameSuffixLens = map[int]bool{40: true, 64: true}
+
+// isGitSharedIndexName reports whether name is a `sharedindex.<hash>` file as
+// written by `git update-index --split-index`, not merely something that
+// starts with that prefix.
+func isGitSharedIndexName(name string) bool {
+	const prefix = "sharedindex."
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	suffix := name[len(prefix):]
+	if !gitSharedIndexNameSuffixLens[len(suffix)] {
+		return false
+	}
+	for _, r := range suffix {
+		isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+		if !isHex {
+			return false
+		}
+	}
+	return true
+}
+
+// canonicalGitSharedIndexName derives Git's lowercase sharedindex.<hash>
+// spelling with Unicode simple folding. The fold is only a candidate: the
+// Windows caller must still prove the listed and canonical names are the same
+// file, because NTFS's per-volume case table is not identical to Go's Unicode
+// relation and a case-sensitive directory may contain both.
+func canonicalGitSharedIndexName(name string) (string, bool) {
+	folded := unicodeCaseFoldKey(name)
+	return folded, isGitSharedIndexName(folded)
+}
+
+func (g *gitDirExcluder) isGitSharedIndexEntry(name string) bool {
+	if isGitSharedIndexName(name) {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	canonical, ok := canonicalGitSharedIndexName(name)
+	if !ok {
+		return false
+	}
+	if !g.admitRootIdentityProbes(2) {
+		return true
+	}
+	canonicalInfo, err := g.lstatRootEntry(canonical)
+	if err != nil {
+		return false
+	}
+	listedInfo, err := g.lstatRootEntry(name)
+	return err == nil && os.SameFile(canonicalInfo, listedInfo)
+}
+
+// recordGitDirRootEntries excludes the git directory's own top-level entries
+// when the repository root IS the git directory a pointer named.
+//
+// Only entries that exist are recorded, so the excluder carries nothing for a
+// repository this never fires on, and `excluded()` keeps comparing whole
+// components against a map as it did.
+func (g *gitDirExcluder) recordGitDirRootEntries() {
+	g.gitDirRoot = true
+	for _, name := range gitDirRootEntryNames {
+		entry := filepath.Join(g.repo, name)
+		info, err := os.Lstat(entry)
+		if err != nil {
+			continue
+		}
+		if runtime.GOOS == "windows" {
+			g.rootEntryIdentities[name] = info
+		}
+		g.recordTarget(name)
+	}
+}
+
+func (g *gitDirExcluder) isGitDirRootEntry(name string) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	if match, ok := g.rootEntryMatchCache[name]; ok {
+		return match
+	}
+	if !g.admitRootIdentityProbes(1) {
+		return true
+	}
+	listedInfo, err := g.lstatRootEntry(name)
+	match := false
+	if err == nil {
+		for _, canonical := range gitDirRootEntryNames {
+			if info, ok := g.rootEntryIdentities[canonical]; ok && os.SameFile(info, listedInfo) {
+				match = true
+				break
+			}
+		}
+	}
+	if len(g.rootEntryMatchCache) >= maxListedDirectoryObservations ||
+		len(name)+1 > maxListedDirectoryBytes-g.rootEntryMatchBytes {
+		g.listedObservationExceeded = true
+		return true
+	}
+	g.rootEntryMatchCache[name] = match
+	g.rootEntryMatchBytes += len(name) + 1
+	return match
+}
+
+func (g *gitDirExcluder) admitRootIdentityProbes(count int) bool {
+	if g.listedObservationExceeded || count > maxGitRootIdentityProbes-g.rootIdentityProbes {
+		g.listedObservationExceeded = true
+		return false
+	}
+	g.rootIdentityProbes += count
+	return true
+}
+
+// lstatRootEntry is one exact, no-follow probe beneath the caller-selected
+// repository root. The candidate is always a single listed root component, so
+// an attacker cannot insert an ancestor redirect here; using one OS lstat also
+// avoids multiplying the repository's absolute depth by every listed file.
+func (g *gitDirExcluder) lstatRootEntry(name string) (os.FileInfo, error) {
+	native := filepath.FromSlash(name)
+	if native == "" || filepath.Base(native) != native {
+		return nil, fs.ErrInvalid
+	}
+	return os.Lstat(filepath.Join(g.repo, native))
+}
+
+// symlinkResolvedRel reports <repo>/<target> with every symlink resolved, as a
+// repo-relative slash path, when the result is still inside the repository.
+//
+// The repository root is resolved too, and not only as a fallback: a checkout
+// reached through a symlinked path (macOS `/tmp` -> `/private/tmp`, a symlinked
+// worktree) makes the resolved target and the caller's root spell one directory
+// two ways, and comparing them unresolved reports "outside" for a directory that
+// is plainly inside. Resolution before the containment test is also the order
+// that matters — filepath.Abs and filepath.Join clean `..` LEXICALLY, before any
+// link resolves, so a link pointing out of the tree can survive a purely
+// lexical containment check.
+func symlinkResolvedRel(repo, target string) (string, bool) {
+	targetPath := filepath.Join(repo, filepath.FromSlash(target))
+	targetFile, resolvedTarget, err := openSameVolumePath(repo, targetPath)
+	if err != nil {
+		return "", false
+	}
+	_ = targetFile.Close()
+	if rel, inside := containedRel(repo, resolvedTarget); inside {
+		return rel, true
+	}
+	repoFile, resolvedRepo, err := openSameVolumePath(repo, repo)
+	if err != nil {
+		return "", false
+	}
+	_ = repoFile.Close()
+	return containedRel(resolvedRepo, resolvedTarget)
+}
+
+// foldsCase reports whether the filesystem holding <repo>/<target> resolves that
+// same directory under a differently-cased spelling of the WHOLE repo-relative
+// path. macOS (APFS/HFS+ by default) and Windows fold case; ext4, XFS and btrfs
+// do not. Three properties matter here:
+//
+//   - It asks the filesystem instead of guessing from runtime.GOOS, because one
+//     machine can mount both kinds.
+//   - It compares identity (os.SameFile), not mere existence, so a genuinely
+//     distinct sibling of another case is never mistaken for the same directory
+//     and no innocent path is excluded on a case-sensitive filesystem.
+//   - It re-spells every component, not just the last one, because the case a
+//     pointer differs in is usually an ANCESTOR (`STATE/.dep-git`), and a leaf
+//     that carries no letters at all (`state/42`) has no other spelling to
+//     compare.
+//
+// A path with no letters anywhere has exactly one spelling, so there is nothing
+// to fold and false is the right answer.
+func foldsCase(repo, target string) bool {
+	info, err := lstatSameVolumePath(repo, filepath.Join(repo, filepath.FromSlash(target)))
+	if err != nil {
+		return false
+	}
+	for _, spelling := range [2]string{unicodeCaseFoldKey(target), strings.ToUpper(target)} {
+		if spelling == target {
+			continue
+		}
+		other, otherErr := lstatSameVolumePath(repo, filepath.Join(repo, filepath.FromSlash(spelling)))
+		if otherErr != nil {
+			continue
+		}
+		if os.SameFile(info, other) {
+			return true
+		}
+	}
+	return false
+}
+
+func unicodeCaseFoldKey(value string) string {
+	return cases.Fold().String(value)
+}
+
+func unicodeFoldedNFDKey(value string) string {
+	return norm.NFD.String(unicodeCaseFoldKey(value))
+}
+
+// foldsNormalization reports whether the filesystem resolves canonically
+// equivalent Unicode spellings of <repo>/<target> to the same entry. Default
+// APFS does, so a pointer may carry a decomposed spelling while Git's listing
+// carries the composed spelling (or vice versa). Exact and case-only maps miss
+// that alias even though opening either path reads the same credentialed git
+// directory. The identity check keeps distinct names distinct on filesystems
+// that do not normalize names.
+func foldsNormalization(repo, target string) bool {
+	info, err := lstatSameVolumePath(repo, filepath.Join(repo, filepath.FromSlash(target)))
+	if err != nil {
+		return false
+	}
+	for _, spelling := range [2]string{norm.NFC.String(target), norm.NFD.String(target)} {
+		if spelling == target {
+			continue
+		}
+		other, otherErr := lstatSameVolumePath(repo, filepath.Join(repo, filepath.FromSlash(spelling)))
+		if otherErr == nil && os.SameFile(info, other) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeGitDir reports whether a directory is a git directory by its own
+// contents, applying the same three tests git's own is_git_directory() applies:
+// a VALID HEAD, an objects/ directory and a refs/ directory. HEAD is tested
+// first, so the ordinary answer costs one lstat — only a directory that actually
+// holds a HEAD is ever read — and a path that is not a directory at all fails it
+// immediately.
+//
+// A `commondir` git refuses to read is refused here too, which is where this
+// rule and the pointer rule below part company: git dies on such a directory, so
+// nothing licenses excluding it, and treating it as though no `commondir` were
+// there dropped an ordinary tree that merely carried the three names.
+func looksLikeGitDir(dir string) bool {
+	return looksLikeGitDirWithBudget(dir, nil)
+}
+
+func looksLikeGitDirWithBudget(dir string, admitRead func(int64) bool) bool {
+	if !validGitHEAD(filepath.Join(dir, "HEAD")) {
+		return false
+	}
+	// A `commondir` git refuses to read makes git refuse the whole git
+	// directory, so it is not a git directory here either. Falling back to dir
+	// instead called an ordinary fixture tree carrying HEAD, objects/ and refs/
+	// a git directory and dropped it from every snapshot.
+	common, state := gitCommonDirStateWithBudget(dir, admitRead)
+	return state == gitCommonDirResolved && hasObjectsAndRefs(common)
+}
+
+// hasGitDirStructure is is_git_directory() with the HEAD test removed: the
+// objects/ and refs/ directories, resolved through `commondir` exactly as git
+// resolves them.
+//
+// It is what the POINTER rule asks of a target, and the split is the whole
+// reason the two rules are not one function. On its own the structure is not
+// enough to call a directory a git directory — `testdata/parser/{objects,refs}`
+// is ordinary program text — which is why the standalone rule keeps git's HEAD
+// test. A `gitdir:` pointer naming the directory is the second, independent
+// piece of evidence, and it is what lets the HEAD test be dropped here: the
+// pointer rule exists precisely to carry a git directory whose HEAD is missing
+// or corrupt, which is the state that makes git refuse the worktree and the
+// filesystem fallback run in the first place.
+//
+// The same reasoning decides the `commondir` git will not read, and it decides
+// it the other way round from looksLikeGitDir: there the refusal means git says
+// "not a git directory" and there is nothing to hide, here the pointer already
+// says otherwise and the refusal is just more of the damage this rule exists to
+// survive.
+func hasGitDirStructure(dir string) bool {
+	return hasGitDirStructureWithBudget(dir, nil) == gitDirStructurePresent
+}
+
+type gitDirStructureState uint8
+
+const (
+	gitDirStructureAbsent gitDirStructureState = iota
+	gitDirStructurePresent
+	gitDirStructureUnknown
+)
+
+func hasGitDirStructureWithBudget(dir string, admitRead func(int64) bool) gitDirStructureState {
+	common, state := gitCommonDirStateWithBudget(dir, admitRead)
+	if state == gitCommonDirBudgetUnknown {
+		return gitDirStructureUnknown
+	}
+	if state != gitCommonDirResolved {
+		// A `commondir` git will not read is the same class of damage as the
+		// missing HEAD this rule already carries: git refuses the repository,
+		// which is what makes the fallback run, while the config keeps the
+		// credential. The pointer is the evidence, so look in the directory
+		// itself rather than declaring it ordinary content.
+		common = dir
+	}
+	if hasObjectsAndRefs(common) {
+		return gitDirStructurePresent
+	}
+	return gitDirStructureAbsent
+}
+
+// sameVolume reports whether a and b name the same Windows volume. Windows
+// drive letters and UNC share roots are case-INSENSITIVE ("C:" and "c:" are
+// one volume; "\\HOST\Share" and "\\host\share" are one share), but
+// filepath.VolumeName preserves whatever spelling the string carries. A raw
+// `!=` comparison rejected a target spelled with different case than the
+// path being compared against — a false "different volume", which for a
+// git-directory pointer meant the false positive went the SAFE direction
+// (refuse a real git directory) except at the ONE call site
+// (hasGitDirStructure's HEAD-less recovery path) where an over-eager refusal
+// left a target with real objects/refs and an invalid HEAD unrecovered, so
+// its git-owned entries stayed indexable instead of excluded. VolumeName is
+// "" for every relative and POSIX-absolute path, and EqualFold("", "") is
+// true, so this is a no-op off Windows and for two relative paths.
+func sameVolume(a, b string) bool {
+	return strings.EqualFold(filepath.VolumeName(a), filepath.VolumeName(b))
+}
+
+// maxSymlinkChainHops bounds how many symlink levels safeStatThroughSymlinks
+// follows itself. Linux's own kernel limit is 40; this is that same
+// conservative ceiling, used here only to guarantee termination rather than
+// to match any particular OS's exact behavior for a pathological chain.
+const maxSymlinkChainHops = 40
+
+// safeStatThroughSymlinks resolves path exactly like os.Stat would — following
+// every symlink hop to its terminal target — but walks the chain manually, ONE
+// HOP AT A TIME, checking EVERY intermediate hop's volume before ever asking
+// the kernel to resolve it further.
+//
+// Checking only the FIRST hop's target and then handing the ORIGINAL path to
+// os.Stat/filepath.EvalSymlinks is not enough: a same-volume local symlink or
+// junction can itself point at a second symlink that names a UNC share, and
+// the kernel's own symlink-following inside that one Stat/EvalSymlinks call
+// resolves EVERY hop to satisfy its own answer — including the second one —
+// before this function's caller ever sees that an intermediate hop existed.
+// That is exactly how the single-hop guards on `.git`, `commondir`, and
+// `objects`/`refs` could still be walked into dialing SMB with ambient
+// credentials: not through the entry itself, but through a same-volume local
+// redirect placed one hop before the network share.
+//
+// errSymlinkChainOffVolume is safeStatThroughSymlinks' sentinel for "a hop in
+// the chain names a different volume than base (or the chain is implausibly
+// deep)" — a definitive answer, not an inability to look, so callers must NOT
+// treat it the way they treat fs.ErrPermission (an unresolved unknown that
+// promoteUnverifiedGitDirs' fail-closed path exists for).
+var errSymlinkChainOffVolume = errors.New("symlink chain resolves off the expected volume")
+
+var errPathRedirectUnreadable = errors.New("path redirect could not be inspected")
+
+// errPathCrossesKnownMount distinguishes a mount-table rejection from the
+// descriptor-level device check that backs it up. The mount check must happen
+// first: asking Lstat about an NFS/SMB/autofs mount point can activate that
+// filesystem before its different device identity is available to reject.
+var errPathCrossesKnownMount = fmt.Errorf("%w: path crosses a known mount point", errSymlinkChainOffVolume)
+
+// base is the volume every hop must match; a hop landing on a different
+// volume aborts immediately, with no further Stat or Readlink issued on it or
+// anything beyond it. The error is the raw OS error from whichever hop failed
+// (ErrNotExist for a dangling link, ErrPermission for one this process could
+// not traverse), or errSymlinkChainOffVolume when every hop was reachable but
+// one left the volume — callers that distinguish "absent" from "hidden" need
+// that difference preserved rather than collapsed to a single bool.
+func safeStatThroughSymlinks(base, path string) (os.FileInfo, error) {
+	file, _, err := openSameVolumePath(base, path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return file.Stat()
+}
+
+// sameVolumePathResolver resolves paths beneath one held filesystem root. A
+// metadata validation checks several fixed paths and may recursively inspect
+// thousands of alternates, so it creates one resolver and reuses both the
+// traversal anchor and os.Root instead of rediscovering the same volume for
+// every path.
+type sameVolumePathResolver struct {
+	baseAbs      string
+	baseResolved string
+	anchor       pathTraversalAnchor
+	root         *os.Root
+	mounts       pathMountGuard
+}
+
+func newSameVolumePathResolver(base string) (*sameVolumePathResolver, error) {
+	baseAbs, err := filepath.Abs(base)
+	if err != nil {
+		return nil, err
+	}
+	anchor, resolvedBase, err := newPathTraversalAnchor(baseAbs, baseAbs)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(anchor.root)
+	if err != nil {
+		return nil, err
+	}
+	mounts, err := newPathMountGuard(anchor.root, resolvedBase)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return &sameVolumePathResolver{baseAbs: baseAbs, baseResolved: resolvedBase, anchor: anchor, root: root, mounts: mounts}, nil
+}
+
+func (r *sameVolumePathResolver) Close() error {
+	return r.root.Close()
+}
+
+// open resolves path one component at a time beneath the resolver's os.Root.
+// Inspecting only the final path with Lstat is insufficient: the kernel follows
+// an ancestor junction before reporting that final component, which let an
+// in-repository path redirect to UNC and dial SMB before the caller could
+// inspect it. Rooted Lstat/Readlink keeps every probe on the original volume;
+// the final Open returns a held handle so callers need not reopen a checked
+// pathname.
+func (r *sameVolumePathResolver) open(path string) (*os.File, string, error) {
+	if !filepath.IsAbs(path) {
+		path = trimTrailingPathSeparators(r.baseAbs) + string(filepath.Separator) + path
+	}
+
+	components, ok := r.anchor.components(path)
+	if !ok {
+		return nil, "", errSymlinkChainOffVolume
+	}
+	resolved := make([]string, 0, len(components))
+	hops := 0
+	for len(components) > 0 {
+		component := components[0]
+		components = components[1:]
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			if len(resolved) == 0 {
+				return nil, "", errSymlinkChainOffVolume
+			}
+			resolved = resolved[:len(resolved)-1]
+			continue
+		}
+
+		candidateParts := append(append([]string(nil), resolved...), component)
+		candidate := filepath.Join(candidateParts...)
+		if err := r.mounts.beforeLookup(candidate); err != nil {
+			return nil, "", err
+		}
+		info, statErr := r.root.Lstat(candidate)
+		if statErr != nil {
+			return nil, "", statErr
+		}
+		if !r.anchor.allows(info) {
+			return nil, "", errSymlinkChainOffVolume
+		}
+		if !pathMayRedirect(info) {
+			resolved = append(resolved, component)
+			continue
+		}
+		hops++
+		if hops > maxSymlinkChainHops {
+			return nil, "", errSymlinkChainOffVolume
+		}
+		target, readErr := r.root.Readlink(candidate)
+		if readErr != nil {
+			return nil, "", fmt.Errorf("%w: %v", errPathRedirectUnreadable, readErr)
+		}
+		target = filepath.FromSlash(target)
+		if absoluteTarget, absolute := linkAbsolutePath(r.baseAbs, target); absolute {
+			targetComponents, inside := r.anchor.components(absoluteTarget)
+			if !inside {
+				return nil, "", errSymlinkChainOffVolume
+			}
+			resolved = resolved[:0]
+			components = append(targetComponents, components...)
+			continue
+		}
+		components = append(splitNativePathComponents(target), components...)
+	}
+
+	rel := "."
+	if len(resolved) > 0 {
+		rel = filepath.Join(resolved...)
+	}
+	if err := r.mounts.beforeLookup(rel); err != nil {
+		return nil, "", err
+	}
+	file, err := openRootBoundedRegularFile(r.root, rel)
+	if err != nil {
+		return nil, "", err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, "", err
+	}
+	if !r.anchor.allows(openedInfo) {
+		_ = file.Close()
+		return nil, "", errSymlinkChainOffVolume
+	}
+	resolvedPath, err := canonicalOpenedPath(file, filepath.Join(r.anchor.root, rel), r.anchor)
+	if err != nil {
+		_ = file.Close()
+		return nil, "", err
+	}
+	return file, resolvedPath, nil
+}
+
+// beforeLookup applies the mount-table guard to one absolute or base-relative
+// path before a caller performs its own descriptor-relative metadata lookup.
+func (r *sameVolumePathResolver) beforeLookup(path string) error {
+	if !filepath.IsAbs(path) {
+		path = trimTrailingPathSeparators(r.baseAbs) + string(filepath.Separator) + path
+	}
+	components, ok := r.anchor.components(path)
+	if !ok {
+		return errSymlinkChainOffVolume
+	}
+	rel := "."
+	if len(components) > 0 {
+		rel = filepath.Join(components...)
+	}
+	return r.mounts.beforeLookup(rel)
+}
+
+// openSameVolumePath preserves the one-shot helper used outside metadata
+// validation. Multi-path validation uses sameVolumePathResolver directly.
+func openSameVolumePath(base, path string) (*os.File, string, error) {
+	resolver, err := newSameVolumePathResolver(base)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resolver.Close()
+	return resolver.open(path)
+}
+
+// GitCeilingPathResolution tells repository discovery whether a ceiling path
+// was resolved, failed the way Git's realpath would fail, was deliberately
+// refused before a potentially off-volume lookup, or lacks a platform guard.
+type GitCeilingPathResolution uint8
+
+const (
+	GitCeilingPathUnresolvable GitCeilingPathResolution = iota
+	GitCeilingPathResolved
+	GitCeilingPathUnsafe
+	GitCeilingPathUnsupported
+)
+
+// GitCeilingPathResolver keeps one guarded filesystem root open throughout
+// implicit repository discovery. Reusing it matters beyond efficiency: a
+// caller-controlled path must not be canonicalized safely and then reopened by
+// name with os.Stat/Lstat after a redirect has been swapped into place.
+type GitCeilingPathResolver struct {
+	resolver *sameVolumePathResolver
+}
+
+// GitAbsolutePath applies Git's platform-specific absolute-path grammar and
+// returns the native absolute spelling it denotes. On Windows this includes
+// rooted paths on the current drive and drive-prefixed paths without a slash,
+// both of which filepath.IsAbs rejects even though Git accepts them.
+func GitAbsolutePath(base, value string) (string, bool) {
+	return gitAbsolutePath(base, value)
+}
+
+// GitAbsolutePathNeedsFailClosed reports a Git absolute spelling that the
+// platform accepts but Go cannot safely normalize for guarded traversal.
+func GitAbsolutePathNeedsFailClosed(value string) bool {
+	return gitAbsolutePathNeedsFailClosed(value)
+}
+
+// NewGitCeilingPathResolver anchors a guarded discovery walk at base.
+func NewGitCeilingPathResolver(base string) (*GitCeilingPathResolver, GitCeilingPathResolution) {
+	resolver, err := newSameVolumePathResolver(base)
+	if err != nil {
+		if errors.Is(err, errPathMountGuardUnsupported) {
+			return nil, GitCeilingPathUnsupported
+		}
+		return nil, GitCeilingPathUnsafe
+	}
+	return &GitCeilingPathResolver{resolver: resolver}, GitCeilingPathResolved
+}
+
+// Close releases the resolver's held filesystem root.
+func (r *GitCeilingPathResolver) Close() error {
+	return r.resolver.Close()
+}
+
+// Canonicalize returns path's physical spelling without leaving the filesystem
+// that contains the resolver's base. Git normally canonicalizes
+// GIT_CEILING_DIRECTORIES entries before repository discovery, but its generic
+// pathname resolution can probe a caller-supplied network path. The guarded
+// component walk preserves local symlink semantics while rejecting mount,
+// volume, and UNC redirects before following them.
+func (r *GitCeilingPathResolver) Canonicalize(path string) (string, GitCeilingPathResolution) {
+	opened, resolved, err := r.resolver.open(path)
+	if err != nil {
+		return "", gitCeilingPathResolution(err)
+	}
+	_ = opened.Close()
+	return filepath.Clean(resolved), GitCeilingPathResolved
+}
+
+// HasGitEntry opens dir through the guarded resolver, then enumerates that held
+// directory handle for a .git entry. It deliberately does not close the
+// checked parent and re-walk its
+// pathname for Lstat: that gap would let a raced ancestor redirect the second
+// walk into a nested network mount. Enumeration is bounded so a hostile
+// directory cannot consume unbounded memory or time.
+func (r *GitCeilingPathResolver) HasGitEntry(dir string) (bool, GitCeilingPathResolution) {
+	entriesSeen, bytesSeen := 0, 0
+	return r.hasGitEntryWithBudget(dir, &entriesSeen, &bytesSeen)
+}
+
+// hasGitEntryWithBudget shares one bounded directory-observation ledger across
+// callers that inspect more than one directory during a single discovery walk.
+func (r *GitCeilingPathResolver) hasGitEntryWithBudget(dir string, entriesSeen, bytesSeen *int) (bool, GitCeilingPathResolution) {
+	opened, resolved, err := r.resolver.open(dir)
+	if err != nil {
+		return false, gitCeilingPathResolution(err)
+	}
+	defer opened.Close()
+	expected := filepath.Clean(dir)
+	equal := resolved == expected
+	if runtime.GOOS == "windows" {
+		equal = strings.EqualFold(resolved, expected)
+	}
+	if !equal {
+		// The candidate changed identity after the physical discovery path
+		// was chosen, so its relationship to the ceilings is now unknown.
+		return false, GitCeilingPathUnsafe
+	}
+
+	const batchSize = 128
+	for {
+		names, readErr := opened.Readdirnames(batchSize)
+		for _, name := range names {
+			entryBytes := len(name) + 1
+			if *entriesSeen >= maxListedDirectoryObservations || entryBytes > maxListedDirectoryBytes-*bytesSeen {
+				return false, GitCeilingPathUnsafe
+			}
+			(*entriesSeen)++
+			*bytesSeen += entryBytes
+			if name == ".git" {
+				return true, GitCeilingPathResolved
+			}
+			if strings.EqualFold(name, ".git") {
+				// This is an alias on common Windows and macOS filesystems but a
+				// different entry on a case-sensitive volume. Without a
+				// descriptor-relative case-sensitivity query, refuse discovery:
+				// accepting it could select a false child and let downstream Git
+				// climb into the real parent after the ceiling is discarded.
+				return false, GitCeilingPathUnsafe
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return false, GitCeilingPathResolved
+		}
+		if readErr != nil {
+			return false, GitCeilingPathUnresolvable
+		}
+	}
+}
+
+func gitCeilingPathResolution(err error) GitCeilingPathResolution {
+	if errors.Is(err, errSymlinkChainOffVolume) || errors.Is(err, errPathRedirectUnreadable) {
+		return GitCeilingPathUnsafe
+	}
+	return GitCeilingPathUnresolvable
+}
+
+func splitNativePathComponents(value string) []string {
+	return strings.FieldsFunc(filepath.ToSlash(value), func(r rune) bool { return r == '/' })
+}
+
+func trimTrailingPathSeparators(value string) string {
+	for len(value) > 0 && os.IsPathSeparator(value[len(value)-1]) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
+
+func lstatSameVolumePath(base, path string) (os.FileInfo, error) {
+	resolver, err := newSameVolumePathResolver(base)
+	if err != nil {
+		return nil, err
+	}
+	defer resolver.Close()
+	return resolver.lstat(path)
+}
+
+func (r *sameVolumePathResolver) lstat(path string) (os.FileInfo, error) {
+	parent, resolvedParent, err := r.open(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	_ = parent.Close()
+	parentParts, ok := r.anchor.components(resolvedParent)
+	if !ok {
+		return nil, errSymlinkChainOffVolume
+	}
+	relParts := append(parentParts, filepath.Base(path))
+	rel := filepath.Join(relParts...)
+	if rel == "" {
+		rel = "."
+	}
+	if err := r.mounts.beforeLookup(rel); err != nil {
+		return nil, err
+	}
+	info, err := r.root.Lstat(rel)
+	if err != nil {
+		return nil, err
+	}
+	if !r.anchor.allows(info) {
+		return nil, errSymlinkChainOffVolume
+	}
+	return info, nil
+}
+
+func readlinkSameVolumePath(base, path string) (string, error) {
+	resolver, err := newSameVolumePathResolver(base)
+	if err != nil {
+		return "", err
+	}
+	defer resolver.Close()
+	return resolver.readlink(path)
+}
+
+func (r *sameVolumePathResolver) readlink(path string) (string, error) {
+	parent, resolvedParent, err := r.open(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	_ = parent.Close()
+	parentParts, ok := r.anchor.components(resolvedParent)
+	if !ok {
+		return "", errSymlinkChainOffVolume
+	}
+	relParts := append(parentParts, filepath.Base(path))
+	rel := filepath.Join(relParts...)
+	if rel == "" {
+		rel = "."
+	}
+	if err := r.mounts.beforeLookup(rel); err != nil {
+		return "", err
+	}
+	info, err := r.root.Lstat(rel)
+	if err != nil {
+		return "", err
+	}
+	if !r.anchor.allows(info) {
+		return "", errSymlinkChainOffVolume
+	}
+	target, err := r.root.Readlink(rel)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", errPathRedirectUnreadable, err)
+	}
+	return target, nil
+}
+
+// hasObjectsAndRefs is the objects/ and refs/ half of is_git_directory(), asked
+// of the directory git resolves them through.
+//
+// os.Stat, not os.Lstat, on the final read: git accepts a repository whose
+// object store or refs tree is a symlink elsewhere, and Lstat would see the
+// symlink rather than the directory and call a real git directory ordinary
+// content. safeStatThroughSymlinks resolves the whole chain hop by hop instead
+// of a bare os.Stat, so a target on a different volume (a UNC share on
+// Windows) is rejected at whichever hop first reaches it, BEFORE the kernel
+// ever follows that hop. Without this, a committed `objects -> \\host\share\x`
+// — or an ordinary same-volume `objects -> local-link` where `local-link`
+// itself points at a UNC share — inside an otherwise-ordinary directory would
+// make this structural probe, which runs over every directory the sweep
+// observes and not just ones a `.git` pointer already named, open an SMB
+// connection to a server the scanned repository's own committed content
+// names, with ambient credentials.
+func hasObjectsAndRefs(common string) bool {
+	for _, name := range []string{"objects", "refs"} {
+		entry := filepath.Join(common, name)
+		info, err := safeStatThroughSymlinks(common, entry)
+		if err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+// gitJoinRelative joins a RELATIVE path git read out of a `.git` pointer or a
+// `commondir` file onto the directory that held that file, the way git joins it.
+//
+// Git concatenates and lets the OS resolve: read_gitfile_gently() appends the
+// `gitdir:` target onto the `.git` file's own directory prefix, and
+// get_common_dir_noenv() appends the `commondir` target onto the git directory,
+// and each hands the result straight to the kernel, which walks the components
+// IN ORDER. `filepath.Join` cleans `..` LEXICALLY, before any link is consulted,
+// so a `..` that FOLLOWS a symlink component names a different directory in the
+// two schemes: git steps out of the link's TARGET, filepath.Join steps out of
+// the link's own parent.
+//
+// Verified on git 2.54.0, with `nested/link -> sub/child`:
+//
+//	$ printf 'gitdir: link/../.real-git\n' > nested/.git
+//	$ cd nested && git rev-parse --absolute-git-dir
+//	<repo>/nested/sub/.real-git
+//
+// and the same shape for `commondir`, with `adm/link -> sub/child`:
+//
+//	$ printf 'link/../.common\n' > adm/commondir
+//	$ git --git-dir=adm rev-parse --git-common-dir
+//	<tmp>/adm/sub/.common
+//
+// Both lexical answers — `nested/.real-git`, `adm/.common` — name nothing on
+// disk. On the pointer that meant NO target was recorded (observe() asks for git
+// structure at the name, and the lexical name has none) and the HEAD-less git
+// directory git really names was indexed with its credentialed config; on
+// `commondir` it meant a linked worktree's administrative directory was called
+// ordinary content.
+//
+// Keep the path uncleaned here. The rooted resolver that consumes this result
+// walks its components in order, including `..` after a symlink, while refusing
+// any off-volume hop before following it. If resolution later fails, git would
+// call the target "not a git repository" too.
+func gitJoinRelative(base, target string) string {
+	return trimTrailingPathSeparators(base) + string(filepath.Separator) + target
+}
+
+// gitCommonDir reports the directory git resolves `objects` and `refs` THROUGH
+// when deciding whether dir is a git directory — git's own get_common_dir(),
+// which looksLikeGitDir must apply or it disagrees with git in both directions.
+//
+// Without it a linked worktree's administrative git directory — HEAD and
+// `commondir` present, no local objects/ or refs/, which git accepts — is
+// classified as ordinary content and its files stay indexable; and a source
+// fixture carrying HEAD plus its own objects/ and refs/ alongside a stale
+// `commondir`, which git REJECTS, is excluded from every worktree snapshot.
+//
+// ABSENT commondir: dir itself, as git does. PRESENT but unreadable — a
+// zero-byte file, a directory, a dangling symlink — git dies rather than
+// resolving anything, so the answer is neither a path nor dir but "git refuses
+// this", and the caller decides what that is worth. Verified on git 2.54.0, all
+// three refused:
+//
+//	fatal: failed to read adm/commondir: No such file or directory
+//	fatal: failed to read admd/commondir: Is a directory
+//
+// Present, readable, and EMPTY AFTER THE BYTE RULE is a fourth case, and it is
+// not the third: git's read only fails on a file it got nothing out of, so a
+// `commondir` holding a bare newline — or a NUL as its first byte — is read
+// successfully and leaves the common directory at dir. Verified on git 2.54.0,
+// with `objects/` and `refs/` beside it:
+//
+//	$ printf '\n' > admG/commondir
+//	$ git --git-dir=admG rev-parse --git-common-dir
+//	<tmp>/admG                       <- dir itself, and the directory is ACCEPTED
+//	$ printf '\0junkjunk\n' > admE/commondir
+//	$ git --git-dir=admE rev-parse --git-dir
+//	admE
+//
+// Folding that onto "git refuses" left a real git directory unexcluded, which is
+// the same leak the NUL rule closes and reachable by the same one byte.
+//
+// Presence is lstat, because git's file_exists() is an lstat: os.Stat reports a
+// dangling symlink as ENOENT, indistinguishable from absent, and that collapsed
+// git's refusal into "resolve inside dir".
+//
+// Reading follows symlinks: git reads `commondir` through the ordinary stdio path,
+// which follows a symlink, so a symlinked `commondir` names a common directory
+// to git and the git directory holding it is a git directory. Refusing it —
+// lstat plus a regular-file requirement — called a real linked worktree's
+// administrative directory ordinary content and left its config and hooks
+// indexable. Verified on git 2.54.0: with `adm/commondir` a symlink to a regular
+// file, `git --git-dir=adm rev-parse --git-dir` succeeds and
+// `--git-common-dir` resolves through the link.
+func gitCommonDir(dir string) (string, bool) {
+	return gitCommonDirWithBudget(dir, nil)
+}
+
+func gitCommonDirWithBudget(dir string, admitRead func(int64) bool) (string, bool) {
+	common, state := gitCommonDirStateWithBudget(dir, admitRead)
+	return common, state == gitCommonDirResolved
+}
+
+type gitCommonDirState uint8
+
+const (
+	gitCommonDirRefused gitCommonDirState = iota
+	gitCommonDirResolved
+	gitCommonDirBudgetUnknown
+)
+
+func gitCommonDirStateWithBudget(dir string, admitRead func(int64) bool) (string, gitCommonDirState) {
+	resolver, err := newSameVolumePathResolver(dir)
+	if err != nil {
+		return "", gitCommonDirRefused
+	}
+	defer resolver.Close()
+	return gitCommonDirStateWithResolver(resolver, dir, admitRead)
+}
+
+func gitCommonDirStateWithResolver(resolver *sameVolumePathResolver, dir string, admitRead func(int64) bool) (string, gitCommonDirState) {
+	dirHandle, resolvedDir, err := resolver.open(dir)
+	if err != nil {
+		return "", gitCommonDirRefused
+	}
+	_ = dirHandle.Close()
+	pointer := filepath.Join(resolvedDir, "commondir")
+	// Presence is lstat, exactly as git's file_exists() decides it. os.Stat
+	// cannot tell an absent `commondir` from a present but DANGLING symlink —
+	// both are ENOENT — and git treats those two oppositely: absent means
+	// "resolve inside dir", present-but-unreadable means it refuses the
+	// directory outright.
+	if _, err := resolver.lstat(pointer); err != nil {
+		return resolvedDir, gitCommonDirResolved
+	}
+	// A zero-byte file is the read git gets nothing out of and dies on; every
+	// other readable content is a successful read whatever it holds.
+	//
+	// safeStatThroughSymlinks, not a bare os.Stat: `commondir` itself can be a
+	// symlink (see the "Reading follows symlinks" paragraph above), and a
+	// bare os.Stat resolves every hop of a symlink CHAIN in one syscall — so a
+	// same-volume local `commondir` symlink to a SECOND symlink naming a UNC
+	// share would dial SMB before this function ever saw the intermediate
+	// hop. Resolving hop by hop and checking each one's volume against dir
+	// closes that the same way hasObjectsAndRefs and gitDirPointerTarget do
+	// for objects/refs and .git.
+	opened, _, err := resolver.open(pointer)
+	if err != nil {
+		return "", gitCommonDirRefused
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
+	if err != nil {
+		return "", gitCommonDirRefused
+	}
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil || !regular || info.Size() == 0 {
+		return "", gitCommonDirRefused
+	}
+	if admitRead != nil && !admitRead(info.Size()) {
+		return "", gitCommonDirBudgetUnknown
+	}
+	// One byte rule for both pointer files, and one reader: git strips the
+	// trailing newlines and then stops the path at the first NUL here exactly as
+	// it does in a `.git` gitfile, and it caps neither file at 4 KiB. Reading
+	// these bytes with a rule of its own was the whole defect — `commondir`
+	// holding `../common\0junk` kept the NUL, so objects/ and refs/ were looked
+	// for at a path nothing on disk is called, and BOTH rules then called a
+	// linked worktree's administrative git directory ordinary content.
+	target, ok := readGitPointerFromOpened(opened, maxGitPointerBytes, info.Size())
+	if !ok {
+		return "", gitCommonDirRefused
+	}
+	if target == "" {
+		// Read, and empty: git leaves the common directory at dir.
+		return resolvedDir, gitCommonDirResolved
+	}
+	target = filepath.FromSlash(target)
+	if !gitTargetPathValid(target) {
+		return "", gitCommonDirRefused
+	}
+	if absoluteTarget, absolute := gitAbsolutePath(resolvedDir, target); absolute {
+		target = absoluteTarget
+	} else {
+		// Git resolves a relative commondir against the git directory itself,
+		// by concatenation — see gitJoinRelative.
+		target = gitJoinRelative(resolvedDir, target)
+	}
+	// A different volume than dir's own is rejected BEFORE the caller ever
+	// stats it: unlike gitDirPointerTarget, this result feeds straight into
+	// hasObjectsAndRefs's os.Stat with no containment check downstream, so
+	// the guard has to live here. On Windows, filepath.VolumeName reports a
+	// UNC share (`\\host\share`) as its own volume, and a `commondir` naming
+	// one would otherwise make looksLikeGitDir/hasGitDirStructure open an
+	// SMB connection to a server the scanned repository's own committed
+	// content names — with ambient credentials. sameVolume compares
+	// case-insensitively: VolumeName preserves spelling, but Windows volumes
+	// are not case-sensitive ("C:" and "c:" are the same drive), and this is
+	// a no-op off Windows.
+	if !sameVolume(target, resolvedDir) {
+		return "", gitCommonDirRefused
+	}
+	targetHandle, resolvedTarget, err := resolver.open(target)
+	if err != nil {
+		return "", gitCommonDirRefused
+	}
+	_ = targetHandle.Close()
+	return resolvedTarget, gitCommonDirResolved
+}
+
+// maxGitHEADBytes bounds the read of a HEAD file, and is git's own buffer size
+// in validate_headref().
+const maxGitHEADBytes = 256
+
+// validGitHEAD reports whether head is a HEAD file git would accept, which is
+// what separates a git directory from a source tree that merely carries the
+// three names. It is git's validate_headref(), rule for rule: a symlink whose
+// target begins `refs/`, a `ref:` line whose whitespace-skipped remainder begins
+// `refs/`, or a leading object id — and nothing else.
+//
+// Deliberately NOT check_refname_format: git does not validate the refname here,
+// so `ref: refs/heads/my branch` names a directory git treats as a repository,
+// and rejecting it would leave that repository's config to be indexed. In the
+// other direction git requires the `refs/` prefix, so a one-level `ref: SOMEREF`
+// is not a git directory to git and must not be one here.
+//
+// Without the content test, `testdata/parser/{HEAD,objects/,refs/}` — ordinary
+// program text — is classified as a git directory and silently dropped from
+// every worktree snapshot.
+func validGitHEAD(head string) bool {
+	base := filepath.Dir(head)
+	resolver, err := newSameVolumePathResolver(base)
+	if err != nil {
+		return false
+	}
+	defer resolver.Close()
+	return validGitHEADWithResolver(resolver, head)
+}
+
+func validGitHEADWithResolver(resolver *sameVolumePathResolver, head string) bool {
+	info, err := resolver.lstat(head)
+	if err != nil {
+		return false
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		// Git's own rule for a symlinked HEAD, which it accepts even dangling.
+		// Tested against the RAW link text, not a slash-normalized copy: git's
+		// validate_headref reads the bytes readlink() returns and does a literal
+		// byte prefix test, with no separator translation. On Windows a symlink
+		// whose target is spelled with backslashes (`refs\heads\main`) fails that
+		// literal test in real git — it is not a git HEAD to git — but
+		// filepath.ToSlash would turn it into `refs/heads/main` here and accept
+		// it anyway, misclassifying an ordinary source fixture as a git
+		// directory and dropping it from the corpus.
+		target, readErr := resolver.readlink(head)
+		return readErr == nil && strings.HasPrefix(target, "refs/")
+	}
+	if !info.Mode().IsRegular() {
+		return false
+	}
+	file, _, err := resolver.open(head)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = file.Close() }()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	regular, err := openedFileIsRegular(file, openedInfo)
+	if err != nil || !regular {
+		return false
+	}
+	buffer := make([]byte, maxGitHEADBytes)
+	read, err := io.ReadFull(file, buffer)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false
+	}
+	content := string(buffer[:read])
+	if refname, isSymbolic := strings.CutPrefix(content, "ref:"); isSymbolic {
+		// Git skips whitespace after the prefix, then asks only for the prefix.
+		return strings.HasPrefix(strings.TrimLeft(refname, " \t\n\v\f\r"), "refs/")
+	}
+	return startsWithObjectID(content)
+}
+
+// startsWithObjectID reports whether content opens with an object id, which is
+// what a detached HEAD holds. Git reads it with get_oid_hex, which consumes the
+// hash's hex length and ignores whatever follows, so a SHA-256 id and a trailing
+// newline are both accepted by the shorter SHA-1 length.
+func startsWithObjectID(content string) bool {
+	const sha1HexLen = 40
+	if len(content) < sha1HexLen {
+		return false
+	}
+	for _, char := range []byte(content[:sha1HexLen]) {
+		isHex := (char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')
+		if !isHex {
+			return false
+		}
+	}
+	return true
+}
+
+// observeListedPaths observes every listed path AND every ancestor directory of
+// one.
+//
+// The listed path itself is not an optimisation, it is the point: git emits a
+// tracked nested repository as a single gitlink entry with no trailing slash
+// (`vendor/dep`, mode 160000), so that directory is never an ancestor of
+// anything in the listing. Starting at the ancestor would walk straight past the
+// one directory holding the `.git` pointer, leaving its target — which git DOES
+// list, in full, when the target sits elsewhere in the worktree — indexed.
+//
+// Git's own listing likewise never enumerates a valid nested checkout in place;
+// it reports the directory as one entry and stops. It does enumerate a broken or
+// planted one, and that is the shape an attacker supplies.
+//
+// listedDirs is the subset of listed that are directories on disk — in a file
+// listing, the gitlink entries and nothing else — so the caller's own lstat of
+// each path answers this, and no path is stat'd twice.
+//
+// Each directory is visited once, the same traversal trackedDirSet already
+// performs over the same listing.
+func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
+	seen := make(map[string]struct{}, len(listed))
+	observeChain := func(start string) bool {
+		for dir := start; dir != "." && dir != "/"; dir = path.Dir(dir) {
+			if _, done := seen[dir]; done {
+				return true
+			}
+			if g.listedDirectoriesObserved >= maxListedDirectoryObservations ||
+				len(dir)+1 > maxListedDirectoryBytes-g.listedDirectoryBytes {
+				g.listedObservationExceeded = true
+				return false
+			}
+			seen[dir] = struct{}{}
+			g.listedDirectoriesObserved++
+			g.listedDirectoryBytes += len(dir) + 1
+			if runtime.GOOS == "windows" {
+				physical, ok := symlinkResolvedRel(g.repo, dir)
+				if ok && physical != dir {
+					if len(physical)+1 > maxListedDirectoryBytes-g.canonicalObservedDirectoryBytes {
+						g.listedObservationExceeded = true
+						return false
+					}
+					g.canonicalObservedDirs[dir] = physical
+					g.canonicalObservedDirectoryBytes += len(physical) + 1
+				}
+			}
+			g.observe(dir)
+		}
+		return true
+	}
+	for _, entry := range listedDirs {
+		if !observeChain(filepath.ToSlash(entry)) {
+			return
+		}
+	}
+	for _, entry := range listed {
+		if !observeChain(path.Dir(filepath.ToSlash(entry))) {
+			return
+		}
+	}
+	g.observeUnlistedDirs(seen)
+	g.promoteUnverifiedGitDirs()
+}
+
+func (g *gitDirExcluder) listedObservationError() error {
+	if g.listedObservationExceeded {
+		return errGitDirListedObservationBound
+	}
+	return nil
+}
+
+// observeUnlistedDirs observes the directories git's listing does not mention at
+// all, which the chains above cannot reach.
+//
+// Git suppresses every `.git` entry, so a directory whose entire content IS a
+// `.git` pointer file contributes no listed path and is not the ancestor of one:
+// `nested/.git` -> `gitdir: ../.dep-git` is invisible to the listing, while the
+// target it names is listed in full. Rule 2 already excludes that target once
+// the pointer is seen — the pointer was simply never reachable, and a target
+// without the structural HEAD/objects/refs signature had nothing else to catch
+// it.
+//
+// Git names those directories itself, and is asked rather than re-derived.
+// `git ls-files --cached --others --exclude-standard --directory` reports a
+// directory with no listed content as one entry — `nested/` for a directory
+// holding only a `.git` pointer — so the entries ending in `/` are the roots
+// this sweep needs. Verified on git 2.54.0 in a repository with tracked content,
+// an ignored `build/` tree and two pointer-only directories: the listing reports
+// `nested/` and `nested2/` and says nothing about `build/`.
+//
+// A root is swept whether or not the ordinary listing already mentioned content
+// under it. `--directory` collapses an UNTRACKED directory to one entry no
+// matter what it holds, so `pkg/` holding `source.go` beside `nested/.git` is
+// reported as `pkg/` alone while the ordinary listing reports `pkg/source.go`:
+// the collapsed root is in `seen`, and the pointer-only directory inside it is
+// in neither listing. Skipping a seen root — or a seen directory during the
+// descent — therefore skipped the only path to it, at any depth, since git
+// collapses at the top-most untracked directory (`pkg/` for `pkg/a/nested/`).
+//
+// Deriving them instead — queueing every ancestor of every listed path and
+// reading each one — made the successful git-listing path perform a second
+// traversal of the whole tree, ignored build and cache trees included, since
+// nothing pruned by git's exclude rules was pruned here. On a 5,946-directory
+// repository whose 501 listed source files sit beside ignored build/ and
+// .cache/ trees, one cold `search` went from 0.12 s to 0.43 s, and the gap grew
+// with the ignored trees while the indexed source did not change.
+//
+// The sweep descends from each root, because git collapses a pointer-only
+// directory's ancestor (`nested2/` for `nested2/sub/.git`), and the descent is
+// pruned exactly one way: an already-excluded path is not descended into.
+// Symlinked entries report as symlinks, not directories, so no link is followed
+// and no cycle is possible; each directory is read once.
+//
+// ~~A vendored or installed-dependency tree is skipped, since nothing in it is
+// indexed for a pointer there to leak through.~~ Struck: the premise is false.
+// A pointer's target is somewhere ELSE, so `vendor/dep/.git` naming
+// `../../.dep-git` names a root-level git directory that is not vendored and is
+// indexed. See skipSweptDir.
+//
+// Its cost is therefore the directories under the roots git collapsed — an
+// entirely untracked, non-ignored tree, which is the tree whose files this
+// listing indexes anyway — plus nothing at all for a repository whose untracked
+// content is ignored or absent. Git collapses only a directory that is entirely
+// untracked, so a directory holding tracked content is neither a root nor inside
+// one, and this sweep never reads it.
+//
+// ~~What that gives up is narrow and stated: a pointer buried in an IGNORED tree
+// is no longer read, so a git directory whose only pointer lives there and whose
+// HEAD is damaged — the one shape neither rule 1 nor the structural rule can
+// reach — is not excluded by this path. The filesystem fallback, which observes
+// every directory it walks, is unaffected.~~ Struck on both counts. The give-up
+// was a leak, not a narrowing: `.gitignore` is committed, attacker-controlled
+// input in the repository being scanned, so pruning by it let the scanned
+// repository choose which pointers this rule may read. And the fallback was NOT
+// unaffected — it pruned the same tree the same way, and leaked the same
+// `.dep-git/config` under an ignored `build/`. Both now read the directories of
+// a tree they prune. See skipSweptDir.
+//
+// maxStringHeap keeps the lexicographically largest retained key at index zero,
+// allowing smallestMapKeys to select a deterministic bounded prefix without
+// cloning an unbounded map before the sweep ledger can stop it.
+type maxStringHeap []string
+
+func (h maxStringHeap) Len() int           { return len(h) }
+func (h maxStringHeap) Less(i, j int) bool { return h[i] > h[j] }
+func (h maxStringHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *maxStringHeap) Push(value any)    { *h = append(*h, value.(string)) }
+func (h *maxStringHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	value := old[last]
+	*h = old[:last]
+	return value
+}
+
+func smallestMapKeys(values map[string]struct{}, limit int) []string {
+	if limit < 0 || len(values) <= limit {
+		result := make([]string, 0, len(values))
+		for value := range values {
+			result = append(result, value)
+		}
+		sort.Strings(result)
+		return result
+	}
+	if limit == 0 {
+		return nil
+	}
+	selected := make(maxStringHeap, 0, limit)
+	for value := range values {
+		if len(selected) < limit {
+			heap.Push(&selected, value)
+			continue
+		}
+		if value < selected[0] {
+			selected[0] = value
+			heap.Fix(&selected, 0)
+		}
+	}
+	result := []string(selected)
+	sort.Strings(result)
+	return result
+}
+
+func sweepQueueCapacity(seenCount, sweepBudget int) int {
+	capacity := seenCount
+	if capacity < int(^uint(0)>>1) {
+		capacity++
+	}
+	if sweepBudget > 0 {
+		capacity = min(capacity, sweepBudget)
+	}
+	return capacity
+}
+
+// When git could not answer, the old derivation is the fallback.
+func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
+	queueCapacity := sweepQueueCapacity(len(seen), g.sweepBudget)
+	queue := make([]string, 0, queueCapacity)
+	queued := make(map[string]struct{}, queueCapacity)
+	// Being already observed and being already swept are two different facts,
+	// and conflating them let a whole subtree go unread. `--directory` collapses
+	// an untracked directory to ONE entry and says nothing about anything under
+	// it, while the ordinary listing names that directory's files — so the
+	// collapsed root is always in `seen`, and skipping it there skipped the only
+	// path to the pointer-only directories inside it. Verified on git 2.54.0
+	// with `pkg/` untracked, holding `source.go` and `nested/.git`:
+	//
+	//	$ git ls-files --cached --others --exclude-standard
+	//	pkg/source.go
+	//	tracked.go
+	//	$ git ls-files --cached --others --exclude-standard --directory
+	//	pkg/
+	//	tracked.go
+	//
+	// `pkg/nested/` is in neither listing. So `seen` now guards observation
+	// only, and `queued` guards the descent.
+	observeOnce := func(dir string) {
+		if _, done := seen[dir]; done {
+			return
+		}
+		seen[dir] = struct{}{}
+		g.observe(dir)
+	}
+	// admit charges one directory to the query's ledger, observes it and queues
+	// it for the descent. It reports false when the ledger is spent, which ends
+	// the sweep — see admitSweepDirectory for why stopping is safe.
+	admit := func(dir string) bool {
+		if _, done := queued[dir]; done {
+			return true
+		}
+		if !g.admitSweepDirectory() {
+			return false
+		}
+		observeOnce(dir)
+		queued[dir] = struct{}{}
+		queue = append(queue, dir)
+		return true
+	}
+	if g.gitAnsweredRoots {
+		for _, entry := range g.unlistedRoots {
+			// Only a directory git COLLAPSED carries the trailing slash. The
+			// same listing reports every tracked and untracked file by name,
+			// and a gitlink the same way, so without this test the sweep pays
+			// one failed ReadDir per file in the repository — and gains
+			// nothing: a listed path is already observed through its own chain,
+			// gitlink entries included.
+			if !strings.HasSuffix(entry, "/") {
+				continue
+			}
+			dir := strings.TrimSuffix(filepath.ToSlash(entry), "/")
+			if dir == "" || dir == "." {
+				continue
+			}
+			if !admit(dir) {
+				break
+			}
+		}
+	} else {
+		// Keep only the deterministic prefix the ledger can consume, plus the one
+		// entry whose failed admission records exhaustion. Cloning and sorting all
+		// of seen first let this fallback allocate without regard to the bound it
+		// was about to enforce.
+		limit := -1
+		if g.sweepBudget > 0 {
+			limit = max(0, g.sweepBudget-g.sweepDirectories)
+		}
+		derived := smallestMapKeys(seen, limit)
+		if admit("") {
+			for _, dir := range derived {
+				if !admit(dir) {
+					break
+				}
+			}
+		}
+	}
+	g.descendObserving(queue, queued, observeOnce)
+}
+
+// descendObserving reads each queued directory, observes every subdirectory it
+// finds and queues that subdirectory in turn. It opens directories only — never
+// a file — and follows no symlink, since a symlinked entry reports as a symlink
+// rather than a directory, so no cycle is possible and each directory is read
+// once.
+//
+// It prunes on NOTHING, and that is the whole of the rule. Three reasons to
+// prune have been tried here and all three were the same mistake: a vendored or
+// installed-dependency NAME, the project's own ignore rules, and finally "this
+// path is already excluded". Each of them says *do not index this tree*, and
+// this sweep indexes nothing — what it reads there is a `.git` pointer, and a
+// pointer's target is somewhere ELSE. `vendorgit/dep/.git` ->
+// `gitdir: ../../.dep-git` names a directory at the repository root that git
+// lists in full and that, HEAD-less, no other rule can classify, so refusing to
+// look inside `vendorgit/` published `.dep-git/config` and the credential in it.
+//
+// The excluded case is the cheapest of the three for a repository to arrange,
+// which is why it is the one that had to go last: any directory carrying HEAD,
+// objects/ and refs/ is excluded on sight by the structural half of rule 2, and
+// a literal `.git` component is excluded by name — so a tree that buys itself an
+// exclusion buys a hiding place for the pointer as well. Reproduced with the
+// real `search` verb on both listing paths.
+//
+// Its price is one ReadDir per directory under a tree that is not indexed
+// anyway, and no file read at all: nothing inside an excluded tree can become
+// indexable by way of this sweep, because the sweep only ever adds targets.
+//
+// That price is BOUNDED, and the bound is not a fourth prune. Pruning on
+// nothing left the sweep's size set by content git omits — an ignored
+// `node_modules` or build cache — so it is bounded by a directory ledger
+// instead, and running the ledger out fails closed rather than falling silent.
+// spendSweepDirectory carries the argument for why that keeps the hiding place
+// shut.
+func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]struct{}, observeOnce func(string)) {
+	repoAbs, err := filepath.Abs(g.repo)
+	if err != nil {
+		g.hiddenEvidence++
+		g.noteSweepUnreadableDir("")
+		return
+	}
+	anchor, resolvedRepo, err := newPathTraversalAnchor(repoAbs, repoAbs)
+	if err != nil {
+		g.hiddenEvidence++
+		g.noteSweepUnreadableDir("")
+		return
+	}
+	repoRoot, err := newSweepDirectoryRoot(resolvedRepo)
+	if err != nil {
+		g.hiddenEvidence++
+		g.noteSweepUnreadableDir("")
+		return
+	}
+	defer repoRoot.Close()
+
+	// Sorted so the observation order, and therefore the pruning, is the same on
+	// every run over the same tree.
+	sort.Strings(queue)
+	for cursor := 0; cursor < len(queue); cursor++ {
+		dir := queue[cursor]
+		// Every directory in this queue was already charged to the ledger when
+		// it was admitted, so the read side owes nothing — it only has to notice
+		// a caller who has stopped waiting, since a queue admitted before the
+		// cancellation can be a whole budget long.
+		if cursor%sweepCancelCheckInterval == 0 && g.sweepHalted() {
+			return
+		}
+		opened, err := repoRoot.Open(anchor, dir, g.admitSweepTraversalStep)
+		if err != nil {
+			if errors.Is(err, errGitDirSweepHalted) {
+				return
+			}
+			// A directory this sweep may not read can hold a `.git` pointer, and
+			// the target that pointer names is somewhere ELSE in the tree, where
+			// git lists it as ordinary content. So the failure is recorded rather
+			// than passed over; promoteUnverifiedGitDirs is what acts on it, and
+			// its comment records why neither of the two obvious remedies works.
+			//
+			// A directory that is simply GONE hides nothing: there is no pointer
+			// in a directory that does not exist, and it is the pointer, not the
+			// listing, that this sweep is here for. Only an error that means "it
+			// is there and you may not look" narrows what may be claimed.
+			if !errors.Is(err, fs.ErrNotExist) {
+				g.hiddenEvidence++
+				g.noteSweepUnreadableDir(dir)
+			}
+			continue
+		}
+		g.directoriesRead++
+		for {
+			// ReadDir(n), unlike os.ReadDir, retains only one fixed-size batch.
+			// Sorting the batch keeps repeated runs stable until the entry ledger
+			// is exhausted; after exhaustion hiddenEvidence's promotion determines
+			// the result independently of which later entries were not inspected.
+			entries, readErr := opened.ReadDir(256)
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+			for _, entry := range entries {
+				if !g.admitSweepEntry() {
+					_ = opened.Close()
+					return
+				}
+				if !entry.IsDir() {
+					continue
+				}
+				child := entry.Name()
+				if dir != "" {
+					child = dir + "/" + entry.Name()
+				}
+				// Deduplicated before it is charged: a directory already queued has
+				// already been observed by this sweep, so re-observing it is a
+				// no-op that would spend the directory ledger twice.
+				if _, done := queued[child]; done {
+					continue
+				}
+				if !g.admitSweepDirectory() {
+					_ = opened.Close()
+					return
+				}
+				observeOnce(child)
+				queued[child] = struct{}{}
+				queue = append(queue, child)
+			}
+			if readErr == nil {
+				continue
+			}
+			if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, fs.ErrNotExist) {
+				g.hiddenEvidence++
+				g.noteSweepUnreadableDir(dir)
+			}
+			break
+		}
+		_ = opened.Close()
+	}
+}
+
+// observePrunedSubtree reads the directories under one tree a CALLER is about to
+// stop walking, so a `.git` pointer inside it is still seen. The filesystem
+// fallback prunes a vendored or installed-dependency tree for indexing, and a
+// pointer there names a git directory that is not vendored and is indexed —
+// exactly the leak skipSweptDir describes on the git-listing path. Directories
+// only, no files. The walk calls it for a tree the project's own ignore rules
+// removed as well: those rules are committed, attacker-controlled content, and
+// skipping such a tree unread leaked `.dep-git/config` under an ignored
+// `build/`.
+//
+// root itself is charged to the ledger before descendObserving ever reads it.
+// Every other directory the sweep reads is charged by admit() before it is
+// queued; seeding descendObserving's queue with root directly bypassed that,
+// so an arbitrarily large tree of empty ignored or vendored roots could each
+// trigger one uncharged ReadDir while g.sweepDirectories stayed below the
+// configured budget and no warning was ever emitted. root's own `.git`
+// pointer was already read by the caller's g.observe(rel) on the way in
+// (before the prune decision), so admitSweepDirectory failing here only
+// stops descending into root's children — it does not lose root's own
+// pointer.
+func (g *gitDirExcluder) observePrunedSubtree(root string) {
+	if !g.admitSweepDirectory() {
+		return
+	}
+	seen := map[string]struct{}{}
+	observeOnce := func(dir string) {
+		if _, done := seen[dir]; done {
+			return
+		}
+		seen[dir] = struct{}{}
+		g.observe(dir)
+	}
+	g.descendObserving([]string{root}, map[string]struct{}{root: {}}, observeOnce)
+}
+
+// promoteUnverifiedGitDirs closes rule 2 for the pointers this run could not
+// read, by dropping the one piece of evidence it could not get and keeping every
+// other test exactly as it is.
+//
+// The hole it closes. A `.git` pointer whose bytes are out of reach — inside a
+// mode-000 directory the sweep skipped, or a mode-000 `.git` file — is a pointer
+// that was never seen, and the git directory it names sits SOMEWHERE ELSE in the
+// tree, where git lists it as ordinary untracked content. The shape that makes
+// the pointer necessary is the shape that makes it dangerous: a
+// `--separate-git-dir` target with a damaged HEAD is what makes git refuse the
+// worktree in the first place, and the standalone structural rule keeps git's
+// HEAD test, so nothing else classifies it. Reproduced with `build/` mode 000
+// holding `build/dep/.git` -> `gitdir: ../../.dep-git`: `search` returned
+// `.dep-git/config` and the remote credential in it.
+//
+// Why not propagate the error. It makes a repository holding ONE unreadable
+// directory wholly unsearchable, and root-owned build output or a
+// permission-restricted directory is ordinary in a real checkout. That is not an
+// argument, it is measured: on the filesystem fallback the walk DID propagate,
+// and `search` over a directory with one mode-000 subdirectory answered
+// `permission denied` and nothing else. walkWorktreeFiles no longer does that,
+// for this reason.
+//
+// Why not exclude the unreadable subtree. Nothing in it is indexed either way —
+// the leak is the pointer's TARGET, which by construction is elsewhere in the
+// tree and perfectly readable. Excluding the subtree excludes the wrong path.
+//
+// What it does instead. The pointer rule accepts a target on exactly one test:
+// hasGitDirStructure — objects/ and refs/ resolved through commondir, git's
+// is_git_directory() with the HEAD test dropped. So the set of directories an
+// unread pointer could have excluded is a SUBSET of the directories that carry
+// that structure. When evidence was hidden, every observed directory carrying it
+// becomes a target, pointer or no pointer. Nothing the readable sweep would have
+// caught is left behind, because the acceptance test is the same test.
+//
+// The candidate set is complete for what can leak: a git directory only leaks by
+// having its files LISTED, observeListedPaths observes the ancestor chain of
+// every listed path, and the filesystem fallback observes every directory it
+// walks. So a directory whose content is indexable has been observed.
+//
+// The cost, and it is paid only here. This runs only when a read failed, and it
+// can only over-exclude a directory that holds both an `objects/` and a `refs/`
+// DIRECTORY while no pointer names it — `testdata/parser/{objects,refs}`, the
+// case that is exactly why the standalone rule keeps git's HEAD test. A
+// repository with no unreadable directory is untouched, and one with an
+// unreadable directory but no such shape is untouched too: the whole of the rest
+// of the tree stays indexed either way. This is a narrowing of ONE subtree, not
+// of the search.
+//
+// The repository root IS a candidate here, even though observe() exempts it
+// from the structure half for a DIFFERENT reason: pointing the tool at a bare
+// repository or at a git directory directly is the caller's own act, and that
+// exemption keeps listing what it lists today for the ordinary case where
+// nothing was hidden. This rule reacts to something else — a `.git` pointer
+// this run could not read, which by construction could have named ANY
+// directory carrying git structure, root included. A READ pointer naming the
+// root already narrows to root's own git-owned entries rather than excluding
+// the whole tree (recordTarget's `.` case, via recordGitDirRootEntries) — it
+// does not hide an intentionally-scanned bare repository either. Skipping
+// root here left a hidden pointer landing on it as the one target this rule
+// could not close, while every other directory the same pointer could have
+// named was covered. hiddenEvidence being zero is what keeps a clean scan of
+// a bare repository untouched, exactly as before this rule runs at all.
+func (g *gitDirExcluder) promoteUnverifiedGitDirs() {
+	if g.promotedUnverified || g.hiddenEvidence == 0 {
+		return
+	}
+	g.promotedUnverified = true
+	if hasGitDirStructureWithBudget(g.repo, g.admitPointerRead) != gitDirStructureAbsent {
+		g.addTarget(gitDirRootTarget)
+	}
+	for _, dir := range g.observedDirs {
+		if g.excluded(dir) {
+			continue
+		}
+		if hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(dir)), g.admitPointerRead) != gitDirStructureAbsent {
+			g.addTarget(dir)
+		}
+	}
+}
+
+// listedPathKind is what one lstat of a listed path found. The listing needs the
+// answer twice — a gitlink entry is a directory that may hold a `.git` pointer,
+// and only a regular file is readable source — so it is taken once, up front,
+// rather than once per question.
+type listedPathKind uint8
+
+const (
+	listedPathOther listedPathKind = iota
+	listedPathRegular
+	listedPathDir
+)
+
+// excluded reports the verdict for one repo-relative path, in a single pass over
+// its components: a `.git` component anywhere, or any ancestor prefix that an
+// observed pointer named.
+func (g *gitDirExcluder) excluded(rel string) bool {
+	rel = filepath.ToSlash(rel)
+	for start := 0; start <= len(rel); {
+		end := strings.IndexByte(rel[start:], '/')
+		if end < 0 {
+			end = len(rel)
+		} else {
+			end += start
+		}
+		if rel[start:end] == ".git" {
+			return true
+		}
+		if start == 0 && g.gitDirRoot && runtime.GOOS == "windows" && g.isGitDirRootEntry(rel[:end]) {
+			return true
+		}
+		if start == 0 && end == len(rel) && g.gitDirRoot && g.isGitSharedIndexEntry(rel[:end]) {
+			return true
+		}
+		if _, isTarget := g.targets[rel[:end]]; isTarget {
+			return true
+		}
+		if physical, ok := g.canonicalObservedDirs[rel[:end]]; ok {
+			if _, isTarget := g.targets[physical]; isTarget {
+				return true
+			}
+		}
+		if len(g.foldedTargets) > 0 {
+			if _, isTarget := g.foldedTargets[unicodeCaseFoldKey(rel[:end])]; isTarget {
+				return true
+			}
+		}
+		if len(g.normalizedTargets) > 0 {
+			if _, isTarget := g.normalizedTargets[norm.NFD.String(rel[:end])]; isTarget {
+				return true
+			}
+		}
+		if len(g.foldedNormalizedTargets) > 0 {
+			key := unicodeFoldedNFDKey(rel[:end])
+			if _, isTarget := g.foldedNormalizedTargets[key]; isTarget {
+				return true
+			}
+		}
+		start = end + 1
+	}
+	return false
+}
+
+// gitDirPointerTarget resolves `<repo>/<dir>/.git` when it is a FILE rather than
+// a directory, and reports the target as a repo-relative slash path when it
+// lands INSIDE the repository root.
+//
+// The pointer is parsed here rather than asked of `git rev-parse --git-dir`
+// deliberately: one of the two listing paths that need this answer is the
+// filesystem fallback, which runs precisely because git just failed or is
+// unavailable. gitInfoExcludePath parses the same pointer but cannot answer this
+// question — it follows the gitdir's `commondir` on to the SHARED git directory
+// (for a linked worktree that is the main checkout's `.git`, outside this tree
+// entirely) and yields an info/exclude path rather than the directory to skip.
+//
+// A target outside the repository is reported as absent: it is not part of this
+// listing, so there is nothing to exclude. That is the ordinary linked-worktree
+// case, whose gitdir lives in the main checkout.
+// The third result is `hidden`: a `.git` is there and its bytes are out of
+// reach, so this answer is "unknown", not "no pointer". It is the same fact an
+// unreadable directory carries — see promoteUnverifiedGitDirs — and it is
+// reported separately because ABSENT is a real answer and unreadable is not.
+func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
+	return gitDirPointerTargetWithBudget(repo, dir, nil)
+}
+
+func gitDirPointerTargetWithBudget(
+	repo, dir string,
+	admitRead func(size int64) bool,
+) (string, bool, bool) {
+	base := repo
+	if dir != "" {
+		base = filepath.Join(repo, filepath.FromSlash(dir))
+	}
+	pointer := filepath.Join(base, ".git")
+	// os.Stat, not os.Lstat: git's read_gitfile_gently() stats the path and asks
+	// S_ISREG of the RESULT, so a `.git` symlink pointing at a regular gitfile is
+	// a gitfile to git. Refusing it left the separate git directory behind such a
+	// link outside every rule — gitDirLinkTarget accepts only a link to a
+	// DIRECTORY, and the structural rule cannot classify the HEAD-less target
+	// that makes the fallback run — and its config was indexed. Verified on git
+	// 2.54.0: with the gitfile moved aside and `.git` linked to it,
+	// `git rev-parse --git-dir` still answers the separate git directory and
+	// `git status` lists that directory as ordinary untracked content.
+	//
+	// Conflating ABSENT with DANGLING is right here and only here: git stats too,
+	// so a dangling `.git` link is `not a git repository` to git and names no
+	// directory, which is what "not a pointer" already means. gitCommonDir keeps
+	// its lstat, because git's file_exists() there is an lstat and a dangling
+	// `commondir` makes git REFUSE the directory rather than ignore the file.
+	//
+	// This stat decides presence and regularity only. The SIZE test that
+	// matters for git-fidelity — refusing a `.git` file only above its real 1
+	// MiB ceiling, independent of where a NUL falls — lives in
+	// readGitDirPointer, on this same file, because it has to run before any
+	// byte of it is read and a second stat here would only race the first.
+	//
+	// safeStatThroughSymlinks, not a bare os.Stat: `.git` ITSELF can be a
+	// symlink (the gitfile-fidelity comment above is about following it, not
+	// about skipping the check), and os.Stat resolves a symlink — and every
+	// FURTHER symlink hop beneath it — as part of the SAME syscall that
+	// reports its result. On Windows, a `.git` symlink to a UNC path
+	// (`\\host\share\gitfile`), or an ordinary same-volume `.git` symlink to
+	// a SECOND symlink that names one, would dial SMB with ambient
+	// credentials as a side effect of that one call, before this function
+	// ever got to look at, let alone reject, the offending hop. Resolving hop
+	// by hop and checking each one's volume — exactly as hasObjectsAndRefs
+	// already does for an `objects`/`refs` entry — means a cross-volume
+	// `.git` link, at any depth, is rejected without the kernel ever
+	// resolving it, and a same-volume chain still stats through to whatever
+	// it ultimately points at, matching git's own S_ISREG-of-the-result
+	// fidelity.
+	openedPointer, _, err := openSameVolumePath(base, pointer)
+	if err != nil {
+		// ABSENT and DANGLING both mean "no pointer", as the paragraph above
+		// says; so does a chain that resolves off the expected volume, which
+		// is a definitive "not this repository's git directory" answer, not
+		// an inability to look. Anything else — the directory or the file
+		// itself out of reach — means the pointer could not be looked at,
+		// which is not the same answer.
+		hidden := !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, errSymlinkChainOffVolume)
+		return "", false, hidden
+	}
+	defer openedPointer.Close()
+	info, err := openedPointer.Stat()
+	if err != nil {
+		return "", false, true
+	}
+	regular, err := openedFileIsRegular(openedPointer, info)
+	if err != nil {
+		return "", false, true
+	}
+	if !regular {
+		return "", false, false
+	}
+	if info.Size() > maxGitFileBytes {
+		return "", false, false
+	}
+	if admitRead != nil && !admitRead(info.Size()) {
+		return "", false, true
+	}
+	target, ok := readGitDirPointerFromOpened(openedPointer, info.Size())
+	if !ok {
+		// A regular `.git` that did not parse is either not a gitfile — a
+		// fixture, a stray note, which is a real "no" — or a gitfile whose bytes
+		// this process may not read, which is not. One open tells them apart, and
+		// it is paid only for a `.git` FILE that failed to parse: a mode-000
+		// pointer hid `dep/.git` -> `gitdir: ../.dep-git` exactly the way an
+		// unreadable parent directory hides it, and the HEAD-damaged `.dep-git`
+		// it named came back as a ranked snippet with its credential.
+		return "", false, false
+	}
+	// Git writes the pointer with `/` separators on every platform, and resolves
+	// a relative target against the directory that holds the `.git` file.
+	target = filepath.FromSlash(target)
+	if !gitTargetPathValid(target) {
+		return "", false, false
+	}
+	if absoluteTarget, absolute := gitAbsolutePath(base, target); absolute {
+		target = absoluteTarget
+	} else {
+		target = gitJoinRelative(base, target)
+	}
+	// No lexical fast path on a target that EXISTS: a target that LOOKS like
+	// it is inside the repository (`<repo>/admin-link`) can still be a
+	// symlink or junction to an external or network-backed directory, and
+	// containedRel is a string comparison that cannot see that. Accepting it
+	// on lexical containment alone made hasGitDirStructure probe
+	// commondir/objects/refs through that link before this function's own
+	// EvalSymlinks-based check below ever ran.
+	//
+	// A different volume than the repository's is outside it whatever a
+	// symlink further down the path resolves to, and has to be rejected BEFORE
+	// EvalSymlinks touches it: on Windows, filepath.VolumeName reports a UNC
+	// share (`\\host\share`) as its own volume, and a `.git` file containing
+	// `gitdir: \\host\share\repo` would otherwise reach EvalSymlinks on that
+	// path directly, making this process open an SMB connection to a
+	// server the SCANNED REPOSITORY'S OWN COMMITTED CONTENT names — with
+	// ambient credentials, and to a `.git` file whose target already can't be
+	// inside this repo. sameVolume compares case-insensitively: VolumeName
+	// preserves spelling, but Windows volumes are not case-sensitive ("C:"
+	// and "c:" are the same drive — a raw `!=` here rejected a target spelled
+	// with different case than repo's own, which for THIS check fails toward
+	// the safe side (an over-eager refusal, not an escape) but is still the
+	// wrong answer), and this is a no-op off Windows.
+	if !sameVolume(target, repo) {
+		return "", false, false
+	}
+	// No lexical fallback after a failed resolution. Even ENOENT is only an
+	// observation about that instant: returning the unchecked spelling lets a
+	// concurrent writer replace a dangling in-repository link with an
+	// off-volume redirect before hasGitDirStructure consumes the result. A
+	// missing or unrepresentably long target has no git-directory structure to
+	// preserve, so refusing it is both Git-faithful and the safe answer.
+	targetFile, resolvedTarget, targetErr := openSameVolumePath(repo, target)
+	if targetErr != nil {
+		return "", false, false
+	}
+	_ = targetFile.Close()
+	// Git writes the pointer as an absolute path, so a symlinked repository root
+	// (macOS /var -> /private/var, a symlinked checkout) makes the pointer and
+	// the caller's root spell one directory two ways. Compare their resolved
+	// forms before concluding the git directory is outside the repository.
+	repoFile, resolvedRepo, repoErr := openSameVolumePath(repo, repo)
+	if repoErr != nil {
+		return "", false, false
+	}
+	_ = repoFile.Close()
+	if rel, inside := containedRel(resolvedRepo, resolvedTarget); inside {
+		return rel, true, false
+	}
+	return "", false, false
+}
+
+// gitDirLinkTarget resolves `<repo>/<dir>/.git` when it is a SYMLINK to a
+// DIRECTORY, and reports that directory as a repo-relative slash path when it
+// lands inside the repository.
+//
+// This is the third spelling of "the git directory is not called `.git`", and
+// the one neither other rule reaches. It is not a gitfile — there is no
+// `gitdir:` line to parse, and gitDirPointerTarget's regular-file test refuses
+// it — and the `.git` component match only covers the LINK, which the walk never
+// descends. Verified on git 2.54.0: after
+// `git init --separate-git-dir=.real-git .` and `ln -s .real-git .git`,
+// `git rev-parse --git-dir` answers `.git`, so reading `.git/config` reads
+// `.real-git/config`.
+//
+// The leak is the same shape as the pointer's. With `.real-git/HEAD` moved aside
+// git says `fatal: not a git repository` and the filesystem fallback runs; the
+// structural rule cannot classify a HEAD-less directory, so `.real-git/config`
+// and its remote credential came back as a ranked search snippet.
+//
+// The caller applies the same structure test the pointer rule applies, for the
+// same reason: `.git` linked to an ordinary package is `not a git repository` to
+// git, and naming it must not delete that package from the index.
+//
+// The third result is `hidden`, exactly as in gitDirPointerTarget: the link is
+// there and what it points at could not be looked at. A DANGLING link is not
+// that — git stats too, so it names nothing and the answer really is "no".
+func gitDirLinkTarget(repo, dir string) (string, bool, bool) {
+	rel := ".git"
+	if dir != "" {
+		rel = path.Join(filepath.ToSlash(dir), ".git")
+	}
+	link := filepath.Join(repo, filepath.FromSlash(rel))
+	info, err := lstatSameVolumePath(repo, link)
+	if err != nil {
+		return "", false, !errors.Is(err, fs.ErrNotExist)
+	}
+	if !pathMayRedirect(info) {
+		return "", false, false
+	}
+	// safeStatThroughSymlinks, not a bare os.Stat: exactly the same hazard
+	// gitDirPointerTarget's own comment describes for a `.git` GITFILE naming
+	// a UNC target applies here to a `.git` SYMLINK naming one directly (or a
+	// same-volume link to a second link that does). A bare os.Stat resolves
+	// every hop of the chain, including an off-volume one, in the same
+	// syscall that reports the result — dialing SMB with ambient credentials
+	// before this function ever gets to look at, let alone reject, the
+	// offending hop. Resolving hop by hop and checking each one's volume
+	// against repo closes that the same way hasObjectsAndRefs and
+	// gitDirPointerTarget already do.
+	resolved, statErr := safeStatThroughSymlinks(repo, link)
+	if statErr != nil {
+		return "", false, !errors.Is(statErr, fs.ErrNotExist) && !errors.Is(statErr, errSymlinkChainOffVolume)
+	}
+	if !resolved.IsDir() {
+		return "", false, false
+	}
+	target, ok := symlinkResolvedRel(repo, rel)
+	return target, ok, false
+}
+
+// containedRel reports target's slash-separated path relative to root, and
+// whether it is inside root — the ROOT ITSELF included, reported as
+// gitDirRootTarget.
+//
+// The root is not outside. Folding it in with `..` — "not part of this listing,
+// nothing to exclude" — was a leak, because a `.git` pointer CAN name the
+// repository root and git follows it. Verified on git 2.54.0, with the git
+// directory's own files sitting at the top of the worktree:
+//
+//	$ printf 'gitdir: .\n' > .git
+//	$ git rev-parse --git-dir
+//	<repo>
+//	$ git ls-files --cached --others --exclude-standard --directory
+//	HEAD
+//	app.go
+//	config           <- the remote URL, credential and all, as ordinary content
+//	objects/
+//	refs/
+//
+// `gitdir: ..` from a subdirectory, and an absolute pointer spelling the root,
+// are the same shape by another route, as is a `.git` SYMLINK to the root.
+// recordTarget decides what to do with it; what it must not do is silently
+// resolve to "outside the repository".
+func containedRel(root, target string) (string, bool) {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	return rel, true
+}
+
 // skipVendoredDir is the single vendored-directory decision for both the
 // working-tree walk and the HEAD-tree listing: skip unambiguous vendored names
 // always, and ambiguous generated-output names only when the directory is not
 // tracked in git (dirTracked). Gitignore negations that re-include a
 // descendant (see ReincludesDescendant) keep the tree walked in either case;
 // the ignore rules themselves then filter its contents.
+//
+// This repository's own git directory is the exception, and it is decided BEFORE
+// the negation is consulted. `.git` used to be merely one of isVendoredScanDir's
+// re-includable names, so a repo-committed root .gitignore holding `!.git/**` —
+// or the stealthier `!.git/config` — cancelled the skip. On the filesystem
+// fallback listing (git refusing the worktree for dubious ownership on a
+// uid-mismatched bind mount, a sandbox with no git binary, a corrupt index) the
+// walk then descended `.git`, and the credentials in a `.git/config` remote URL
+// came back as a ranked search snippet.
 func skipVendoredDir(rel, name string, ignores vendorIgnoreRules, dirTracked func(string) bool) bool {
+	if hasGitDirComponent(rel) {
+		return true
+	}
 	untrackedOnly := isAmbiguousVendoredDirName(name) || isInstalledDependencyDirName(rel, name)
 	vendored := isVendoredScanDir(rel, name) || (untrackedOnly && !dirTracked(rel))
 	return vendored && !ignores.ReincludesDescendant(rel)
@@ -10076,21 +13265,1844 @@ func skipVendoredDir(rel, name string, ignores vendorIgnoreRules, dirTracked fun
 // the whole snapshot; the walk then answers "is this directory tracked?" with
 // a map lookup instead of per-directory git calls. A non-git directory yields
 // nil, so every directory reads as untracked there.
-func trackedDirSet(ctx context.Context, repo string) map[string]struct{} {
+func trackedDirSet(ctx context.Context, repo string) (map[string]struct{}, error) {
 	files, err := gitutil.ListIndexFiles(ctx, repo)
 	if err != nil {
-		return nil
+		return nil, err
 	}
+	return trackedDirSetFromFiles(files, maxTrackedDirectories, maxTrackedDirectoryBytes)
+}
+
+const (
+	maxTrackedDirectories    = 200_000
+	maxTrackedDirectoryBytes = 64 << 20
+)
+
+var errTrackedDirectoryBound = errors.New("Git index directory expansion exceeded a resource bound")
+
+func trackedDirSetFromFiles(files []string, maxDirectories, maxBytes int) (map[string]struct{}, error) {
 	dirs := make(map[string]struct{})
+	retainedBytes := 0
 	for _, file := range files {
 		for dir := path.Dir(file); dir != "." && dir != "/"; dir = path.Dir(dir) {
 			if _, seen := dirs[dir]; seen {
 				break
 			}
+			if maxDirectories >= 0 && len(dirs) >= maxDirectories {
+				return nil, fmt.Errorf("%w: more than %d directories", errTrackedDirectoryBound, maxDirectories)
+			}
+			if maxBytes >= 0 && len(dir) > maxBytes-retainedBytes {
+				return nil, fmt.Errorf("%w: more than %d aggregate path bytes", errTrackedDirectoryBound, maxBytes)
+			}
 			dirs[dir] = struct{}{}
+			retainedBytes += len(dir)
 		}
 	}
-	return dirs
+	return dirs, nil
+}
+
+// gitMetadataSafeForSubprocess verifies Git's repository-discovery path and the
+// complete structural metadata trees its read-only commands can open before a
+// production subprocess is started. Git's transport protocols are disabled
+// separately, but .git gitfiles, junctions, commondir, object/ref stores and
+// index/config files are filesystem paths; on Windows an attacker-named UNC
+// redirect can otherwise dial SMB before Git has parsed an ordinary subcommand
+// argument. The rooted resolver rejects every cross-volume or cross-filesystem
+// hop before asking the kernel to follow it. Configuration values are not
+// filesystem entries themselves and are outside this structural path validator.
+func gitMetadataSafeForSubprocess(repo string) bool {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return false
+	}
+	resolver, err := newSameVolumePathResolver(repoAbs)
+	if err != nil {
+		return false
+	}
+	defer resolver.Close()
+	resolvedDiscoveryRoot := false
+	resolveDiscoveryRoot := func() (*sameVolumePathResolver, string, error) {
+		repoHandle, resolvedRepo, resolveErr := resolver.open(repoAbs)
+		if resolveErr != nil {
+			return nil, "", resolveErr
+		}
+		_ = repoHandle.Close()
+		if _, sameNamespace := resolver.anchor.components(resolvedRepo); sameNamespace {
+			return resolver, resolvedRepo, nil
+		}
+		physicalResolver, physicalErr := newSameVolumePathResolver(resolvedRepo)
+		if physicalErr != nil {
+			return nil, "", physicalErr
+		}
+		return physicalResolver, resolvedRepo, nil
+	}
+	for dir := repoAbs; ; {
+		dotGit := filepath.Join(dir, ".git")
+		opened, resolvedDotGit, openErr := resolver.open(dotGit)
+		if openErr == nil {
+			if _, sameNamespace := resolver.anchor.components(resolvedDotGit); !sameNamespace {
+				discoveryResolver, resolvedRepo, resolveErr := resolveDiscoveryRoot()
+				if resolveErr != nil {
+					_ = opened.Close()
+					return false
+				}
+				if discoveryResolver != resolver {
+					defer discoveryResolver.Close()
+					resolver = discoveryResolver
+				}
+				repoAbs = resolvedRepo
+				dir = resolvedRepo
+				resolvedDiscoveryRoot = true
+			}
+			info, statErr := opened.Stat()
+			if statErr != nil {
+				_ = opened.Close()
+				return false
+			}
+			if info.IsDir() {
+				_ = opened.Close()
+				return gitMetadataDirectoryPathsSafeWithResolver(resolver, resolvedDotGit)
+			}
+			regular, regularErr := openedFileIsRegular(opened, info)
+			if regularErr != nil {
+				_ = opened.Close()
+				return false
+			}
+			if !regular || info.Size() > maxGitFileBytes {
+				_ = opened.Close()
+				// Git rejects this metadata locally and does not follow a path.
+				return true
+			}
+			target, ok := readGitDirPointerFromOpened(opened, info.Size())
+			_ = opened.Close()
+			if !ok {
+				// An ordinary or malformed .git file is not a path-bearing
+				// repository-discovery input.
+				return true
+			}
+			target = filepath.FromSlash(target)
+			if !gitTargetPathValid(target) {
+				// Git rejects this target locally before treating it as a
+				// repository-discovery path.
+				return true
+			}
+			if absoluteTarget, absolute := gitAbsolutePath(dir, target); absolute {
+				target = absoluteTarget
+			} else {
+				target = gitJoinRelative(dir, target)
+			}
+			targetHandle, resolvedTarget, targetErr := resolver.open(target)
+			if targetErr != nil {
+				// A missing local target makes Git fail discovery without
+				// touching anything else. An off-volume or unreadable target is
+				// not safe to hand back to Git.
+				return errors.Is(targetErr, fs.ErrNotExist)
+			}
+			targetInfo, targetStatErr := targetHandle.Stat()
+			if targetStatErr != nil {
+				_ = targetHandle.Close()
+				return false
+			}
+			if !targetInfo.IsDir() {
+				_ = targetHandle.Close()
+				return true
+			}
+			_ = targetHandle.Close()
+			return gitMetadataDirectoryPathsSafeWithResolver(resolver, resolvedTarget)
+		}
+		if !isMissingPathError(openErr) {
+			return false
+		}
+		if !resolvedDiscoveryRoot {
+			// Git probes the physical working directory for bare metadata before it
+			// walks to the first parent. Resolve a symlinked, junctioned, or SUBST
+			// repo before either step so both checks use the same path namespace.
+			discoveryResolver, resolvedRepo, resolveErr := resolveDiscoveryRoot()
+			if resolveErr != nil {
+				return false
+			}
+			if discoveryResolver != resolver {
+				defer discoveryResolver.Close()
+				resolver = discoveryResolver
+			}
+			repoAbs = resolvedRepo
+			dir = resolvedRepo
+			resolvedDiscoveryRoot = true
+		}
+		bare, safe := bareGitMetadataDirectorySafeWithResolver(resolver, dir)
+		if !safe {
+			return false
+		}
+		if bare {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return true
+		}
+		dir = parent
+	}
+}
+
+// bareGitMetadataDirectorySafe recognizes the same HEAD/objects/refs shape Git
+// checks while walking ancestors of a cwd inside a bare repository. Path
+// resolution happens before Git is started, so redirected metadata is refused
+// without asking the kernel to follow it on Git's behalf.
+func bareGitMetadataDirectorySafe(repoRoot, dir string) (bare, safe bool) {
+	resolver, err := newSameVolumePathResolver(repoRoot)
+	if err != nil {
+		return false, false
+	}
+	defer resolver.Close()
+	return bareGitMetadataDirectorySafeWithResolver(resolver, dir)
+}
+
+func bareGitMetadataDirectorySafeWithResolver(resolver *sameVolumePathResolver, dir string) (bare, safe bool) {
+	head := filepath.Join(dir, "HEAD")
+	headInfo, err := resolver.lstat(head)
+	if err != nil {
+		return false, isMissingPathError(err)
+	}
+	if headInfo.Mode()&os.ModeSymlink == 0 && !headInfo.Mode().IsRegular() && !headInfo.IsDir() {
+		// Git may block reading a FIFO/device while probing whether this ancestor
+		// is bare. Directories fail locally; symbolic HEADs are validated from
+		// their raw link text by validGitHEAD without following the target.
+		return false, false
+	}
+	if !validGitHEADWithResolver(resolver, head) {
+		return false, true
+	}
+	common, commonState := gitCommonDirStateWithResolver(resolver, dir, nil)
+	if commonState != gitCommonDirResolved {
+		return false, false
+	}
+	for _, entry := range []string{filepath.Join(common, "objects"), filepath.Join(common, "refs")} {
+		opened, _, err := resolver.open(entry)
+		if err != nil {
+			if isMissingPathError(err) {
+				return false, true
+			}
+			return false, false
+		}
+		info, statErr := opened.Stat()
+		_ = opened.Close()
+		if statErr != nil {
+			return false, false
+		}
+		if !info.IsDir() {
+			return false, true
+		}
+	}
+	return true, gitMetadataDirectoryPathsSafeWithResolver(resolver, dir)
+}
+
+func gitMetadataDirectoryPathsSafe(repoRoot, gitDir string) bool {
+	resolver, err := newSameVolumePathResolver(repoRoot)
+	if err != nil {
+		return false
+	}
+	defer resolver.Close()
+	return gitMetadataDirectoryPathsSafeWithResolver(resolver, gitDir)
+}
+
+// gitLocalConfigPreflight retains only the repository-format settings that can
+// change which additional config, worktree path, or promisor remote Git opens.
+// The ordinary Git config API follows include.path while it is parsing a file,
+// before a later command-scope override can replace the value. Promisor remotes
+// have the same ordering problem: Git registers a true remote.*.promisor or any
+// remote.*.partialCloneFilter monotonically, while extensions.partialClone is
+// read directly from the repository-format file. A later -c value cannot undo
+// either one. The metadata guard therefore has to reject those namespaces before
+// Git starts.
+type gitLocalConfigPreflight struct {
+	hasInclude               bool
+	hasPartialCloneExtension bool
+	hasPromisorRemote        bool
+	worktreeConfig           bool
+	coreWorktree             string
+	hasCoreWorktree          bool
+}
+
+// gitLocalConfigPreflightFromOpened reads repository config from the handle the
+// rooted resolver already opened and classified. Reopening its pathname would
+// give a concurrent rename or redirect a second chance to select a different
+// file. Reuse the existing one-MiB metadata-file ceiling so a hostile config
+// cannot turn this content check into an unbounded allocation; exceeding the
+// ceiling fails closed before any bytes are read.
+func gitLocalConfigPreflightFromOpened(opened *os.File, info os.FileInfo) (gitLocalConfigPreflight, bool) {
+	if info.Size() < 0 || info.Size() > maxGitFileBytes {
+		return gitLocalConfigPreflight{}, false
+	}
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil || !regular {
+		return gitLocalConfigPreflight{}, false
+	}
+	content, whole, ok := readGitPointerWindowFromOpened(opened, maxGitFileBytes, info.Size())
+	if !ok || !whole {
+		// A file that grew after the handle's Stat is not the file whose size was
+		// admitted above. Refuse instead of parsing a raced prefix.
+		return gitLocalConfigPreflight{}, false
+	}
+	return parseGitLocalConfigPreflight(content)
+}
+
+// gitConfigLogicalLines applies the part of Git's config lexer needed before
+// section/key parsing: comments outside quotes end a line, and a final
+// unescaped backslash joins the next physical line without the newline. It is
+// deliberately strict on malformed quotes and a continuation at EOF. Git would
+// fail locally on those inputs too, and a fail-closed answer cannot conceal an
+// include directive behind syntax this parser did not understand.
+func gitConfigLogicalLines(content []byte) ([]string, bool) {
+	if bytes.IndexByte(content, 0) >= 0 {
+		return nil, false
+	}
+	lines := make([]string, 0, bytes.Count(content, []byte{'\n'})+1)
+	var logical strings.Builder
+	inQuote := false
+	for offset := 0; offset < len(content); {
+		end := bytes.IndexByte(content[offset:], '\n')
+		hasNewline := end >= 0
+		if hasNewline {
+			end += offset
+		} else {
+			end = len(content)
+		}
+		physical := content[offset:end]
+		if len(physical) > 0 && physical[len(physical)-1] == '\r' {
+			physical = physical[:len(physical)-1]
+		}
+
+		fragmentEnd := len(physical)
+		continued := false
+		for index := 0; index < len(physical); index++ {
+			switch physical[index] {
+			case '\\':
+				if index+1 == len(physical) {
+					fragmentEnd = index
+					continued = true
+					index = len(physical)
+					continue
+				}
+				// The escaped byte cannot start/end a quote or start a comment.
+				index++
+			case '"':
+				inQuote = !inQuote
+			case '#', ';':
+				if !inQuote {
+					fragmentEnd = index
+					index = len(physical)
+				}
+			}
+		}
+		logical.Write(physical[:fragmentEnd])
+		if continued {
+			if !hasNewline {
+				return nil, false
+			}
+		} else {
+			if inQuote {
+				return nil, false
+			}
+			lines = append(lines, logical.String())
+			logical.Reset()
+		}
+		if !hasNewline {
+			break
+		}
+		offset = end + 1
+	}
+	if logical.Len() != 0 || inQuote {
+		return nil, false
+	}
+	return lines, true
+}
+
+// parseGitConfigSection returns the case-folded base section and whether the
+// header carries a subsection. It accepts Git's quoted modern form and the old
+// dotted form. The latter matters to the guard even when a particular Git
+// version would not turn it into the exact include.path key: rejecting the
+// complete include namespace avoids making safety depend on parser-version
+// quirks in the executable found on PATH.
+func parseGitConfigSection(line string) (section string, subsection, header, ok bool) {
+	line = strings.TrimLeft(line, " \t\v\f\r")
+	if line == "" || line[0] != '[' {
+		return "", false, false, true
+	}
+	header = true
+	if len(line) < 3 || !(asciiAlphaNumeric(line[1]) || line[1] == '-' || line[1] == '.') {
+		return "", false, true, false
+	}
+	index := 2
+	for index < len(line) && (asciiAlphaNumeric(line[index]) || line[index] == '-') {
+		index++
+	}
+	section = strings.ToLower(line[1:index])
+	if index >= len(line) {
+		return "", false, true, false
+	}
+
+	switch line[index] {
+	case ']':
+		index++
+	case '.':
+		subsection = true
+		index++
+		start := index
+		for index < len(line) && line[index] != ']' {
+			if line[index] == '\n' || line[index] == '\r' {
+				return "", false, true, false
+			}
+			index++
+		}
+		if index == start || index >= len(line) {
+			return "", false, true, false
+		}
+		index++
+	default:
+		if !asciiConfigSpace(line[index]) {
+			return "", false, true, false
+		}
+		for index < len(line) && asciiConfigSpace(line[index]) {
+			index++
+		}
+		if index >= len(line) || line[index] != '"' {
+			return "", false, true, false
+		}
+		subsection = true
+		index++
+		closed := false
+		for index < len(line) {
+			switch line[index] {
+			case '\\':
+				if index+1 >= len(line) {
+					return "", false, true, false
+				}
+				index += 2
+				continue
+			case '"':
+				index++
+				closed = true
+			}
+			if closed {
+				break
+			}
+			index++
+		}
+		if !closed {
+			return "", false, true, false
+		}
+		for index < len(line) && asciiConfigSpace(line[index]) {
+			index++
+		}
+		if index >= len(line) || line[index] != ']' {
+			return "", false, true, false
+		}
+		index++
+	}
+	if strings.Trim(line[index:], " \t\v\f\r") != "" {
+		return "", false, true, false
+	}
+	return section, subsection, true, true
+}
+
+func asciiAlpha(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
+}
+
+func asciiAlphaNumeric(value byte) bool {
+	return asciiAlpha(value) || value >= '0' && value <= '9'
+}
+
+func asciiConfigSpace(value byte) bool {
+	switch value {
+	case ' ', '\t', '\v', '\f', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+func parseGitConfigVariable(line string) (name, rawValue string, hasValue, ok bool) {
+	line = strings.TrimLeft(line, " \t\v\f\r")
+	if line == "" {
+		return "", "", false, true
+	}
+	if !asciiAlpha(line[0]) {
+		return "", "", false, false
+	}
+	index := 1
+	for index < len(line) && (asciiAlphaNumeric(line[index]) || line[index] == '-') {
+		index++
+	}
+	name = strings.ToLower(line[:index])
+	for index < len(line) && asciiConfigSpace(line[index]) {
+		index++
+	}
+	if index == len(line) {
+		return name, "", false, true
+	}
+	if line[index] != '=' {
+		return "", "", false, false
+	}
+	return name, line[index+1:], true, true
+}
+
+func parseGitConfigValue(raw string) (string, bool) {
+	raw = strings.Trim(raw, " \t\v\f\r")
+	var value strings.Builder
+	inQuote := false
+	for index := 0; index < len(raw); index++ {
+		switch raw[index] {
+		case '"':
+			inQuote = !inQuote
+		case '\\':
+			if index+1 >= len(raw) {
+				return "", false
+			}
+			index++
+			switch raw[index] {
+			case '\\', '"':
+				value.WriteByte(raw[index])
+			case 'n':
+				value.WriteByte('\n')
+			case 't':
+				value.WriteByte('\t')
+			case 'b':
+				value.WriteByte('\b')
+			default:
+				return "", false
+			}
+		default:
+			value.WriteByte(raw[index])
+		}
+	}
+	if inQuote {
+		return "", false
+	}
+	return value.String(), true
+}
+
+func parseGitConfigBool(value string, implicit bool) (bool, bool) {
+	if implicit {
+		return true, true
+	}
+	value = strings.TrimSpace(strings.ToLower(value))
+	switch value {
+	case "", "false", "no", "off":
+		return false, true
+	case "true", "yes", "on":
+		return true, true
+	}
+	// Git accepts a numeric prefix (including hexadecimal and values with a
+	// unit suffix) and interprets zero as false, non-zero as true.
+	end := 0
+	if end < len(value) && (value[end] == '+' || value[end] == '-') {
+		end++
+	}
+	digits := end
+	base := 10
+	if end+2 <= len(value) && value[end] == '0' && (value[end+1] == 'x') {
+		base = 16
+		end += 2
+		digits = end
+		for end < len(value) && (value[end] >= '0' && value[end] <= '9' || value[end] >= 'a' && value[end] <= 'f') {
+			end++
+		}
+	} else {
+		for end < len(value) && value[end] >= '0' && value[end] <= '9' {
+			end++
+		}
+	}
+	if end == digits {
+		return false, false
+	}
+	var number int64
+	if base == 16 {
+		sign := int64(1)
+		prefix := 0
+		if value[prefix] == '+' || value[prefix] == '-' {
+			if value[prefix] == '-' {
+				sign = -1
+			}
+			prefix++
+		}
+		unsigned, err := strconv.ParseUint(value[prefix+2:end], 16, 64)
+		if err != nil || unsigned > uint64(^uint64(0)>>1) {
+			return false, false
+		}
+		number = sign * int64(unsigned)
+	} else {
+		var err error
+		number, err = strconv.ParseInt(value[:end], 10, 64)
+		if err != nil {
+			return false, false
+		}
+	}
+	return number != 0, true
+}
+
+func parseGitLocalConfigPreflight(content []byte) (gitLocalConfigPreflight, bool) {
+	// Git accepts exactly one UTF-8 byte-order mark at byte zero. Normalize that
+	// one prefix before lexing, but leave displaced or repeated marks intact so
+	// syntax Git rejects still fails closed here.
+	if bytes.HasPrefix(content, []byte{0xef, 0xbb, 0xbf}) {
+		content = content[3:]
+	}
+	lines, ok := gitConfigLogicalLines(content)
+	if !ok {
+		return gitLocalConfigPreflight{}, false
+	}
+	var result gitLocalConfigPreflight
+	section := ""
+	topLevel := false
+	for _, line := range lines {
+		parsedSection, subsection, header, sectionOK := parseGitConfigSection(line)
+		if !sectionOK {
+			return gitLocalConfigPreflight{}, false
+		}
+		if header {
+			if parsedSection == "include" || parsedSection == "includeif" {
+				result.hasInclude = true
+				return result, true
+			}
+			section = parsedSection
+			topLevel = !subsection
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if section == "" {
+			return gitLocalConfigPreflight{}, false
+		}
+		name, rawValue, hasValue, variableOK := parseGitConfigVariable(line)
+		if !variableOK {
+			return gitLocalConfigPreflight{}, false
+		}
+		if section == "remote" && !topLevel {
+			switch name {
+			case "promisor":
+				value, valueOK := parseGitConfigValue(rawValue)
+				if !valueOK {
+					return gitLocalConfigPreflight{}, false
+				}
+				enabled, boolOK := parseGitConfigBool(value, !hasValue)
+				if !boolOK {
+					return gitLocalConfigPreflight{}, false
+				}
+				// Git's promisor callback adds on true but does not remove on a
+				// later false, so preserve any true occurrence rather than applying
+				// ordinary last-value-wins semantics.
+				if enabled {
+					result.hasPromisorRemote = true
+				}
+			case "partialclonefilter":
+				if !hasValue {
+					return gitLocalConfigPreflight{}, false
+				}
+				if _, valueOK := parseGitConfigValue(rawValue); !valueOK {
+					return gitLocalConfigPreflight{}, false
+				}
+				// Merely configuring a filter registers the named remote as a
+				// promisor, even without remote.<name>.promisor=true.
+				result.hasPromisorRemote = true
+			}
+			continue
+		}
+		if !topLevel || name == "" {
+			continue
+		}
+		switch {
+		case section == "extensions" && name == "partialclone":
+			if !hasValue {
+				return gitLocalConfigPreflight{}, false
+			}
+			if _, valueOK := parseGitConfigValue(rawValue); !valueOK {
+				return gitLocalConfigPreflight{}, false
+			}
+			result.hasPartialCloneExtension = true
+		case section == "extensions" && name == "worktreeconfig":
+			value, valueOK := parseGitConfigValue(rawValue)
+			if !valueOK {
+				return gitLocalConfigPreflight{}, false
+			}
+			enabled, boolOK := parseGitConfigBool(value, !hasValue)
+			if !boolOK {
+				return gitLocalConfigPreflight{}, false
+			}
+			result.worktreeConfig = enabled
+		case section == "core" && name == "worktree":
+			if !hasValue {
+				return gitLocalConfigPreflight{}, false
+			}
+			value, valueOK := parseGitConfigValue(rawValue)
+			if !valueOK || strings.IndexByte(value, 0) >= 0 {
+				return gitLocalConfigPreflight{}, false
+			}
+			result.coreWorktree = value
+			result.hasCoreWorktree = true
+		}
+	}
+	return result, true
+}
+
+func gitCoreWorktreePathSafeWithResolver(resolver *sameVolumePathResolver, gitDir, value string) bool {
+	target := filepath.FromSlash(value)
+	if target == "" {
+		target = gitDir
+	} else if absoluteTarget, absolute := gitAbsolutePath(gitDir, target); absolute {
+		target = absoluteTarget
+	} else {
+		target = gitJoinRelative(gitDir, target)
+	}
+	if !gitTargetPathValid(target) {
+		return false
+	}
+	opened, _, err := resolver.open(target)
+	if err != nil {
+		// A missing same-volume worktree makes Git fail locally at chdir. Mount,
+		// volume, redirect and permission failures are not safe to hand to Git.
+		return isMissingPathError(err)
+	}
+	_ = opened.Close()
+	return true
+}
+
+func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver, gitDir string) bool {
+	common, commonState := gitCommonDirStateWithResolver(resolver, gitDir, nil)
+	if commonState != gitCommonDirResolved {
+		return false
+	}
+	commonConfigPath := filepath.Join(common, "config")
+	worktreeConfigPath := filepath.Join(gitDir, "config.worktree")
+	var commonConfig, worktreeConfig gitLocalConfigPreflight
+	commonConfigValid, worktreeConfigValid := true, true
+	objectsPath := filepath.Join(common, "objects")
+	reftablePath := filepath.Join(common, "reftable")
+	resolvedObjects := ""
+	entries := []string{
+		filepath.Join(gitDir, "HEAD"),
+		filepath.Join(gitDir, "index"),
+		worktreeConfigPath,
+		objectsPath,
+		filepath.Join(common, "refs"),
+		filepath.Join(common, "packed-refs"),
+		filepath.Join(common, "shallow"),
+		reftablePath,
+		commonConfigPath,
+		filepath.Join(common, "info", "exclude"),
+		filepath.Join(common, "info", "grafts"),
+	}
+	for index := 0; index < len(entries); index++ {
+		entry := entries[index]
+		opened, resolved, err := resolver.open(entry)
+		if err == nil {
+			info, statErr := opened.Stat()
+			if statErr != nil {
+				_ = opened.Close()
+				return false
+			}
+			regular, regularErr := openedFileIsRegular(opened, info)
+			if regularErr != nil || (!regular && !info.IsDir()) {
+				_ = opened.Close()
+				return false
+			}
+			if entry == objectsPath && info.IsDir() {
+				resolvedObjects = resolved
+			}
+			if regular {
+				switch entry {
+				case commonConfigPath:
+					commonConfig, commonConfigValid = gitLocalConfigPreflightFromOpened(opened, info)
+				case worktreeConfigPath:
+					worktreeConfig, worktreeConfigValid = gitLocalConfigPreflightFromOpened(opened, info)
+				}
+			}
+			_ = opened.Close()
+			continue
+		}
+		if !isMissingPathError(err) {
+			return false
+		}
+	}
+	if !commonConfigValid || commonConfig.hasInclude ||
+		commonConfig.hasPartialCloneExtension || commonConfig.hasPromisorRemote {
+		return false
+	}
+	if commonConfig.hasCoreWorktree &&
+		!gitCoreWorktreePathSafeWithResolver(resolver, gitDir, commonConfig.coreWorktree) {
+		return false
+	}
+	if commonConfig.worktreeConfig {
+		if !worktreeConfigValid || worktreeConfig.hasInclude ||
+			worktreeConfig.hasPartialCloneExtension || worktreeConfig.hasPromisorRemote {
+			return false
+		}
+		if worktreeConfig.hasCoreWorktree &&
+			!gitCoreWorktreePathSafeWithResolver(resolver, gitDir, worktreeConfig.coreWorktree) {
+			return false
+		}
+	}
+	objectStores := make([]string, 0)
+	if resolvedObjects != "" {
+		var safe bool
+		objectStores, safe = gitAlternateObjectDirectoriesWithResolver(resolver, resolvedObjects)
+		if !safe {
+			return false
+		}
+	}
+	// Fixed path checks are not enough for Git's derived metadata reads. HEAD
+	// can name a recursive symbolic ref; `log --all` enumerates every loose
+	// ref; reflog syntax reads logs/<ref>; split indexes name sharedindex.<oid>;
+	// and object ids select loose-object, pack, commit-graph, and MIDX children.
+	// Validate the complete administrative trees (plus every recursive
+	// alternate object store) so all of those dynamic paths inherit the same
+	// mount, volume, redirect, and special-file policy as the fixed entries.
+	trees := []string{gitDir, common}
+	trees = append(trees, objectStores...)
+	return gitMetadataTreesSafeWithResolver(resolver, trees)
+}
+
+const (
+	// A repository with more structural metadata than this is refused before
+	// Git starts. The ceilings match the largest raw discovery surfaces in this
+	// provider: high enough for large unpacked object stores, but fixed so a
+	// hostile administrative tree cannot turn validation into an unbounded walk.
+	maxGitMetadataTreeEntries   = 2_000_000
+	maxGitMetadataTreePathBytes = 256 << 20
+)
+
+type gitMetadataTreeValidation struct {
+	resolver        *sameVolumePathResolver
+	entries         int
+	pathBytes       int
+	reftableBytes   int64
+	reftableEntries int
+	seenDirs        map[string]gitMetadataTreeRole
+	seenReftables   map[string]struct{}
+	adminRoots      map[string]struct{}
+	pendingSockets  map[string]struct{}
+}
+
+type gitMetadataEntryKind uint8
+
+const (
+	gitMetadataEntrySpecial gitMetadataEntryKind = iota
+	gitMetadataEntryRegular
+	gitMetadataEntryDirectory
+	gitMetadataEntryRedirect
+	gitMetadataEntrySocket
+)
+
+type gitMetadataDirectoryEntry struct {
+	name string
+	kind gitMetadataEntryKind
+}
+
+type gitMetadataTreeDirectory struct {
+	path          string
+	reftable      bool
+	adminRoot     bool
+	commonRoot    bool
+	worktreesRoot bool
+}
+
+type gitMetadataTreeRole uint8
+
+const (
+	gitMetadataTreeScanned gitMetadataTreeRole = 1 << iota
+	gitMetadataTreeAdminRoot
+	gitMetadataTreeCommonRoot
+	gitMetadataTreeWorktreesRoot
+)
+
+var errGitMetadataTreeBound = errors.New("Git metadata tree exceeded its structural validation bound")
+
+// gitMetadataTreesSafeWithResolver walks complete Git administrative trees
+// through the rooted resolver. Readdirnames enumerates from the already-opened
+// directory handle without an implicit Lstat; each name is then inspected by
+// the resolver, which runs the mount preflight before its first metadata lookup.
+// Special files are rejected without opening, so a writerless FIFO cannot park
+// the validator. Directory redirects that remain on the local filesystem are
+// followed and scanned, with canonical-path deduplication to bound cycles.
+func gitMetadataTreesSafeWithResolver(resolver *sameVolumePathResolver, roots []string) bool {
+	validation := gitMetadataTreeValidation{
+		resolver:       resolver,
+		seenDirs:       make(map[string]gitMetadataTreeRole),
+		seenReftables:  make(map[string]struct{}),
+		adminRoots:     make(map[string]struct{}),
+		pendingSockets: make(map[string]struct{}),
+	}
+	queue := make([]gitMetadataTreeDirectory, 0, len(roots))
+	queuedRoots := make(map[string]int, len(roots))
+	for index, root := range roots {
+		relative, ok := validation.relativePath(root)
+		if !ok {
+			return false
+		}
+		candidate := gitMetadataTreeDirectory{
+			path:       relative,
+			adminRoot:  index < 2,
+			commonRoot: index == 1,
+		}
+		if existing, duplicate := queuedRoots[relative]; duplicate {
+			queue[existing].adminRoot = queue[existing].adminRoot || candidate.adminRoot
+			queue[existing].commonRoot = queue[existing].commonRoot || candidate.commonRoot
+			continue
+		}
+		if !validation.admitRetainedPath(relative) {
+			return false
+		}
+		queuedRoots[relative] = len(queue)
+		queue = append(queue, candidate)
+	}
+	for cursor := 0; cursor < len(queue); cursor++ {
+		current := queue[cursor]
+		opened, resolved, err := resolver.open(filepath.Join(resolver.baseResolved, current.path))
+		if err != nil {
+			return false
+		}
+		info, err := opened.Stat()
+		if err != nil || !info.IsDir() {
+			_ = opened.Close()
+			return false
+		}
+		resolvedKey, ok := validation.relativePath(resolved)
+		if !ok {
+			_ = opened.Close()
+			return false
+		}
+		if current.adminRoot {
+			validation.adminRoots[resolvedKey] = struct{}{}
+		}
+		if current.reftable {
+			if _, checked := validation.seenReftables[resolvedKey]; !checked {
+				if !validation.reftableStackSafe(resolved) {
+					_ = opened.Close()
+					return false
+				}
+				validation.seenReftables[resolvedKey] = struct{}{}
+			}
+		}
+		role := gitMetadataTreeScanned
+		if current.adminRoot {
+			role |= gitMetadataTreeAdminRoot
+		}
+		if current.commonRoot {
+			role |= gitMetadataTreeCommonRoot
+		}
+		if current.worktreesRoot {
+			role |= gitMetadataTreeWorktreesRoot
+		}
+		seenRole := validation.seenDirs[resolvedKey]
+		if seenRole&role == role {
+			_ = opened.Close()
+			continue
+		}
+		validation.seenDirs[resolvedKey] = seenRole | role
+
+		for {
+			entries, readErr := readGitMetadataDirectory(opened, resolved, resolver, 256, validation.admit)
+			for _, entry := range entries {
+				child := filepath.Join(resolved, entry.name)
+				childKey, keyOK := validation.relativePath(child)
+				if !keyOK {
+					_ = opened.Close()
+					return false
+				}
+				if entry.kind != gitMetadataEntryRedirect {
+					switch entry.kind {
+					case gitMetadataEntryRegular:
+						continue
+					case gitMetadataEntrySocket:
+						// Git's built-in fsmonitor daemon owns this one socket.
+						// Every subprocess explicitly disables core.fsmonitor, so it
+						// cannot connect while the metadata preflight permits it.
+						if strings.EqualFold(entry.name, "fsmonitor--daemon.ipc") {
+							validation.pendingSockets[resolvedKey] = struct{}{}
+							continue
+						}
+						_ = opened.Close()
+						return false
+					case gitMetadataEntryDirectory:
+						reftable := false
+						if current.adminRoot {
+							var nameSafe bool
+							reftable, nameSafe = validation.matchesGitDirectoryName(resolved, child, entry.name, "reftable")
+							if !nameSafe {
+								_ = opened.Close()
+								return false
+							}
+						}
+						worktreesRoot := false
+						if current.commonRoot {
+							var nameSafe bool
+							worktreesRoot, nameSafe = validation.matchesGitDirectoryName(resolved, child, entry.name, "worktrees")
+							if !nameSafe {
+								_ = opened.Close()
+								return false
+							}
+						}
+						queue = append(queue, gitMetadataTreeDirectory{
+							path:          childKey,
+							reftable:      reftable,
+							adminRoot:     current.worktreesRoot,
+							worktreesRoot: worktreesRoot,
+						})
+						continue
+					default:
+						// Lstat-like inspection cannot block on a FIFO/device;
+						// reject it without opening it at all.
+						_ = opened.Close()
+						return false
+					}
+				}
+
+				// Redirects need the full rooted walk so every hop is checked and
+				// a safe same-volume directory target can itself be scanned.
+				childFile, childResolved, openErr := resolver.open(child)
+				if openErr != nil {
+					// An entry removed between ReadDir and Open is absent when Git
+					// starts too. Redirect, permission, mount, and type failures are
+					// uncertainty and therefore fail closed.
+					if isMissingPathError(openErr) {
+						continue
+					}
+					_ = opened.Close()
+					return false
+				}
+				childInfo, statErr := childFile.Stat()
+				if statErr != nil {
+					_ = childFile.Close()
+					_ = opened.Close()
+					return false
+				}
+				regular, regularErr := openedFileIsRegular(childFile, childInfo)
+				_ = childFile.Close()
+				if regularErr != nil {
+					_ = opened.Close()
+					return false
+				}
+				switch {
+				case regular:
+					continue
+				case childInfo.IsDir():
+					childResolvedKey, keyOK := validation.relativePath(childResolved)
+					if !keyOK {
+						_ = opened.Close()
+						return false
+					}
+					reftable := false
+					if current.adminRoot {
+						var nameSafe bool
+						reftable, nameSafe = validation.matchesGitDirectoryNameWithInfo(resolved, entry.name, "reftable", childInfo)
+						if !nameSafe {
+							_ = opened.Close()
+							return false
+						}
+					}
+					worktreesRoot := false
+					if current.commonRoot {
+						var nameSafe bool
+						worktreesRoot, nameSafe = validation.matchesGitDirectoryNameWithInfo(resolved, entry.name, "worktrees", childInfo)
+						if !nameSafe {
+							_ = opened.Close()
+							return false
+						}
+					}
+					if !validation.admitRetainedPath(childResolvedKey) {
+						_ = opened.Close()
+						return false
+					}
+					queue = append(queue, gitMetadataTreeDirectory{
+						path:          childResolvedKey,
+						reftable:      reftable,
+						adminRoot:     current.worktreesRoot,
+						worktreesRoot: worktreesRoot,
+					})
+				default:
+					// Git can block on FIFOs/devices, and Windows reparse data
+					// must not be treated as an ordinary disk file.
+					_ = opened.Close()
+					return false
+				}
+			}
+			if readErr == nil {
+				continue
+			}
+			_ = opened.Close()
+			if !errors.Is(readErr, io.EOF) && !isMissingPathError(readErr) {
+				return false
+			}
+			break
+		}
+	}
+	for directory := range validation.pendingSockets {
+		if _, allowed := validation.adminRoots[directory]; !allowed {
+			return false
+		}
+	}
+	return true
+}
+
+func (v *gitMetadataTreeValidation) matchesGitDirectoryName(parent, child, listed, expected string) (bool, bool) {
+	if listed == expected {
+		return true, true
+	}
+	if !strings.EqualFold(listed, expected) {
+		return false, true
+	}
+	opened, _, err := v.resolver.open(child)
+	if err != nil {
+		return false, false
+	}
+	info, statErr := opened.Stat()
+	_ = opened.Close()
+	if statErr != nil || !info.IsDir() {
+		return false, false
+	}
+	return v.matchesGitDirectoryNameWithInfo(parent, listed, expected, info)
+}
+
+func (v *gitMetadataTreeValidation) matchesGitDirectoryNameWithInfo(parent, listed, expected string, childInfo os.FileInfo) (bool, bool) {
+	if listed == expected {
+		return true, true
+	}
+	if !strings.EqualFold(listed, expected) {
+		return false, true
+	}
+	opened, _, err := v.resolver.open(filepath.Join(parent, expected))
+	if err != nil {
+		return false, isMissingPathError(err)
+	}
+	info, statErr := opened.Stat()
+	_ = opened.Close()
+	if statErr != nil {
+		return false, false
+	}
+	return info.IsDir() && os.SameFile(info, childInfo), true
+}
+
+// reftableStackSafe validates one stack's path-bearing tables.list. Unlike
+// loose refnames, Git's reftable parser accepts raw names containing `..` and
+// joins them onto the stack directory, so walking the directory tree alone does
+// not reveal every file Git can open. The validation budget is aggregate across
+// the common stack and all linked-worktree stacks reached by the metadata walk.
+func (v *gitMetadataTreeValidation) reftableStackSafe(directory string) bool {
+	manifest := filepath.Join(directory, "tables.list")
+	opened, _, err := v.resolver.open(manifest)
+	if err != nil {
+		return isMissingPathError(err)
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
+	if err != nil {
+		return false
+	}
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil {
+		return false
+	}
+	if !regular {
+		// Git's fopen fails locally on a directory. A FIFO/device can block and
+		// must be rejected before Git opens it.
+		return info.IsDir()
+	}
+	if info.Size() < 0 || info.Size() > maxGitReftableListBytes ||
+		info.Size() > maxGitReftableAggregateBytes-v.reftableBytes {
+		return false
+	}
+	content, whole, ok := readGitPointerWindowFromOpened(opened, maxGitReftableListBytes, info.Size())
+	if !ok || !whole {
+		return false
+	}
+	remainingEntries := maxGitReftableAggregateEntries - v.reftableEntries
+	if remainingEntries < 0 {
+		return false
+	}
+	names, ok := parseGitReftableTableNames(content, min(maxGitReftableEntries, remainingEntries))
+	if !ok {
+		return false
+	}
+	v.reftableBytes += info.Size()
+	v.reftableEntries += len(names)
+	for _, name := range names {
+		table, _, openErr := v.resolver.open(filepath.Join(directory, filepath.FromSlash(name)))
+		if openErr != nil {
+			if isMissingPathError(openErr) {
+				continue
+			}
+			return false
+		}
+		tableInfo, statErr := table.Stat()
+		if statErr != nil {
+			_ = table.Close()
+			return false
+		}
+		tableRegular, regularErr := openedFileIsRegular(table, tableInfo)
+		_ = table.Close()
+		if regularErr != nil || (!tableRegular && !tableInfo.IsDir()) {
+			return false
+		}
+	}
+	return true
+}
+
+func (v *gitMetadataTreeValidation) relativePath(path string) (string, bool) {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(v.resolver.baseResolved, path)
+	}
+	relative, err := filepath.Rel(v.resolver.baseResolved, path)
+	if err != nil || filepath.IsAbs(relative) {
+		return "", false
+	}
+	return filepath.Clean(relative), true
+}
+
+func (v *gitMetadataTreeValidation) admit(path string) bool {
+	if v.entries >= maxGitMetadataTreeEntries {
+		return false
+	}
+	relative, ok := v.relativePath(path)
+	if !ok {
+		return false
+	}
+	if !v.admitRetainedPath(relative) {
+		return false
+	}
+	v.entries++
+	return true
+}
+
+func (v *gitMetadataTreeValidation) admitRetainedPath(relative string) bool {
+	pathBytes := len(relative) + 1
+	if pathBytes > maxGitMetadataTreePathBytes-v.pathBytes {
+		return false
+	}
+	v.pathBytes += pathBytes
+	return true
+}
+
+const (
+	// Reftable stacks are normally compacted to a handful of files. These
+	// ceilings keep hostile manifests bounded while leaving ample headroom for
+	// repositories whose compaction has fallen behind.
+	maxGitReftableListBytes        = 1 << 20
+	maxGitReftableEntries          = 4096
+	maxGitReftableAggregateBytes   = 16 << 20
+	maxGitReftableAggregateEntries = 65_536
+)
+
+func parseGitReftableTableNames(content []byte, maxEntries int) ([]string, bool) {
+	if len(content) > maxGitReftableListBytes || bytes.IndexByte(content, 0) >= 0 {
+		return nil, false
+	}
+	names := make([]string, 0)
+	for _, line := range bytes.Split(content, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		if len(line) > maxGitPointerBytes || len(names) >= maxEntries {
+			return nil, false
+		}
+		name := string(line)
+		native := filepath.FromSlash(name)
+		if native == "." || native == ".." || filepath.IsAbs(native) || filepath.VolumeName(native) != "" || filepath.Base(native) != native {
+			return nil, false
+		}
+		names = append(names, name)
+	}
+	return names, true
+}
+
+const (
+	maxGitAlternatesAggregateBytes = 1 << 20
+	maxGitAlternateEntries         = 4096
+	maxGitAlternateDepth           = 5
+)
+
+type gitAlternatesValidation struct {
+	resolver          *sameVolumePathResolver
+	remainingBytes    int64
+	remainingPaths    int
+	resolvedPathBytes int
+	seen              map[string]struct{}
+	objectDirs        []string
+}
+
+// gitAlternatesPathsSafe validates the path-bearing contents Git reads from
+// objects/info/alternates, including the recursive alternates Git follows.
+// Transport guards do not cover filesystem UNC paths, so every entry is
+// resolved with the same rooted, same-volume walker as fixed metadata paths.
+func gitAlternatesPathsSafe(repoRoot, objectsDir string) bool {
+	resolver, err := newSameVolumePathResolver(repoRoot)
+	if err != nil {
+		return false
+	}
+	defer resolver.Close()
+	return gitAlternatesPathsSafeWithResolver(resolver, objectsDir)
+}
+
+func gitAlternatesPathsSafeWithResolver(resolver *sameVolumePathResolver, objectsDir string) bool {
+	_, safe := gitAlternateObjectDirectoriesWithResolver(resolver, objectsDir)
+	return safe
+}
+
+// gitAlternateObjectDirectoriesWithResolver returns the object-store roots
+// Git can reach through its bounded recursive alternates chain. The caller
+// uses those roots for complete structural validation after the path-bearing
+// alternates files themselves have been read safely here.
+func gitAlternateObjectDirectoriesWithResolver(resolver *sameVolumePathResolver, objectsDir string) ([]string, bool) {
+	validation := gitAlternatesValidation{
+		resolver:       resolver,
+		remainingBytes: maxGitAlternatesAggregateBytes,
+		remainingPaths: maxGitAlternateEntries,
+		seen:           make(map[string]struct{}),
+	}
+	if !validation.admitObjectDirectory(objectsDir) {
+		return nil, false
+	}
+	// Git reads the primary object's alternates before entering its recursive
+	// depth counter: the first alternate is depth 0 and the sixth is depth 5.
+	if !validation.validate(objectsDir, -1) {
+		return nil, false
+	}
+	return validation.objectDirs, true
+}
+
+func (v *gitAlternatesValidation) validate(objectsDir string, depth int) bool {
+	opened, _, err := v.resolver.open(filepath.Join(objectsDir, "info", "alternates"))
+	if err != nil {
+		return isMissingPathError(err)
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
+	if err != nil {
+		return false
+	}
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil {
+		return false
+	}
+	if !regular {
+		// A directory makes Git's fopen fail locally. FIFOs/devices can block or
+		// yield attacker-controlled bytes and must be refused before Git opens them.
+		return info.IsDir()
+	}
+	if info.Size() < 0 || info.Size() > v.remainingBytes {
+		return false
+	}
+	content, whole, ok := readGitPointerWindowFromOpened(opened, int(info.Size()), info.Size())
+	if !ok || !whole {
+		return false
+	}
+	v.remainingBytes -= info.Size()
+	entries, ok := parseGitAlternatePaths(content, v.remainingPaths)
+	if !ok {
+		return false
+	}
+	v.remainingPaths -= len(entries)
+	for _, entry := range entries {
+		target := filepath.FromSlash(entry)
+		if absolute, isAbsolute := gitAbsolutePath(objectsDir, target); isAbsolute {
+			target = absolute
+		} else {
+			target = gitJoinRelative(objectsDir, target)
+		}
+		alternate, resolved, openErr := v.resolver.open(target)
+		if openErr != nil {
+			if isMissingPathError(openErr) {
+				continue
+			}
+			return false
+		}
+		alternateInfo, statErr := alternate.Stat()
+		_ = alternate.Close()
+		if statErr != nil {
+			return false
+		}
+		if !alternateInfo.IsDir() {
+			continue
+		}
+		// Git resolves every path in the terminal store's alternates file, but
+		// refuses to add those targets as object stores once the recursion depth
+		// is exhausted. Mirror that split: resolution still closes UNC/mount
+		// escapes, while retention, sweeping, and recursion stop here.
+		if depth >= maxGitAlternateDepth {
+			continue
+		}
+		resolvedKey, ok := v.objectDirectoryKey(resolved)
+		if !ok {
+			return false
+		}
+		if _, duplicate := v.seen[resolvedKey]; duplicate {
+			continue
+		}
+		if !v.admitObjectDirectory(resolved) {
+			return false
+		}
+		if !v.validate(resolved, depth+1) {
+			return false
+		}
+	}
+	return true
+}
+
+func (v *gitAlternatesValidation) admitObjectDirectory(directory string) bool {
+	relative, ok := v.objectDirectoryKey(directory)
+	if !ok {
+		return false
+	}
+	pathBytes := len(relative) + 1
+	if pathBytes > maxGitMetadataTreePathBytes-v.resolvedPathBytes {
+		return false
+	}
+	v.resolvedPathBytes += pathBytes
+	v.seen[relative] = struct{}{}
+	v.objectDirs = append(v.objectDirs, relative)
+	return true
+}
+
+func (v *gitAlternatesValidation) objectDirectoryKey(directory string) (string, bool) {
+	if !filepath.IsAbs(directory) {
+		directory = filepath.Join(v.resolver.baseResolved, directory)
+	}
+	relative, err := filepath.Rel(v.resolver.baseResolved, directory)
+	if err != nil || filepath.IsAbs(relative) {
+		return "", false
+	}
+	return filepath.Clean(relative), true
+}
+
+// parseGitAlternatePaths implements Git's newline-separated parse_alternates
+// input, including C-style quoted paths. A raw NUL terminates Git's C string;
+// a decoded NUL terminates the pathname handed to realpath. Broken quoting
+// falls back to a literal entry. Trailing bytes after a successful closing
+// quote consume Git's single separator byte before the remainder is parsed as
+// another entry.
+func parseGitAlternatePaths(content []byte, maxPaths int) ([]string, bool) {
+	if nul := bytes.IndexByte(content, 0); nul >= 0 {
+		content = content[:nul]
+	}
+	input := string(content)
+	paths := make([]string, 0)
+	for len(input) > 0 {
+		if input[0] == '#' {
+			if newline := strings.IndexByte(input, '\n'); newline >= 0 {
+				input = input[newline+1:]
+				continue
+			}
+			break
+		}
+		entry := ""
+		if input[0] == '"' {
+			if decoded, end, ok := unquoteGitCStyle(input); ok {
+				entry = decoded
+				if end < len(input) {
+					// Git advances past exactly one separator byte, even when it is
+					// not a newline, then parses the remainder as another entry.
+					end++
+				}
+				input = input[end:]
+			} else {
+				entry, input = cutGitAlternateLine(input)
+			}
+		} else {
+			entry, input = cutGitAlternateLine(input)
+		}
+		if nul := strings.IndexByte(entry, 0); nul >= 0 {
+			entry = entry[:nul]
+		}
+		if len(entry) > maxGitPointerBytes {
+			return nil, false
+		}
+		if entry != "" {
+			if len(paths) >= maxPaths {
+				return nil, false
+			}
+			paths = append(paths, entry)
+		}
+	}
+	return paths, true
+}
+
+func cutGitAlternateLine(input string) (line, rest string) {
+	if newline := strings.IndexByte(input, '\n'); newline >= 0 {
+		return input[:newline], input[newline+1:]
+	}
+	return input, ""
+}
+
+func unquoteGitCStyle(input string) (string, int, bool) {
+	result := make([]byte, 0, len(input))
+	for index := 1; index < len(input); index++ {
+		switch input[index] {
+		case '"':
+			return string(result), index + 1, true
+		case '\\':
+			index++
+			if index >= len(input) {
+				return "", 0, false
+			}
+			character := input[index]
+			switch character {
+			case 'a':
+				character = '\a'
+			case 'b':
+				character = '\b'
+			case 'f':
+				character = '\f'
+			case 'n':
+				character = '\n'
+			case 'r':
+				character = '\r'
+			case 't':
+				character = '\t'
+			case 'v':
+				character = '\v'
+			case '\\', '"':
+			case '0', '1', '2', '3':
+				if index+2 >= len(input) || input[index+1] < '0' || input[index+1] > '7' || input[index+2] < '0' || input[index+2] > '7' {
+					return "", 0, false
+				}
+				value := int(character-'0')<<6 | int(input[index+1]-'0')<<3 | int(input[index+2]-'0')
+				character = byte(value)
+				index += 2
+			default:
+				return "", 0, false
+			}
+			result = append(result, character)
+		default:
+			result = append(result, input[index])
+		}
+	}
+	return "", 0, false
+}
+
+// EnsureGitMetadataSafeForSubprocess rejects a repository whose discovery or
+// structural metadata paths can leave the repository's local filesystem before
+// Git has a chance to interpret them. Callers that do any Git work before
+// provider construction must invoke this first; provider construction invokes
+// it too.
+func EnsureGitMetadataSafeForSubprocess(repo string) error {
+	if gitMetadataSafeForSubprocess(repo) {
+		return nil
+	}
+	return fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+}
+
+type gitMetadataValidationContextKey struct{}
+
+type gitMetadataValidationReceipt struct {
+	repo string
+	safe bool
+}
+
+// WithGitMetadataValidationForSetup validates one repository and returns a
+// context that lets immediately adjacent setup helpers reuse that exact result.
+// The receipt is repo-bound, operation-scoped, and carried only in memory; it is
+// not a process cache and must not be retained beyond the current command setup.
+func WithGitMetadataValidationForSetup(ctx context.Context, repo string) (context.Context, error) {
+	validated, safe := newGitMetadataValidation(ctx, repo)
+	if !safe {
+		return validated, fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+	}
+	return validated, nil
+}
+
+func newGitMetadataValidation(ctx context.Context, repo string) (context.Context, bool) {
+	absRepo, err := filepath.Abs(repo)
+	if err != nil {
+		return ctx, false
+	}
+	absRepo = filepath.Clean(absRepo)
+	safe := gitMetadataSafeForSubprocess(absRepo)
+	return context.WithValue(ctx, gitMetadataValidationContextKey{}, gitMetadataValidationReceipt{repo: absRepo, safe: safe}), safe
+}
+
+func gitMetadataSafeForSubprocessContext(ctx context.Context, repo string) bool {
+	absRepo, err := filepath.Abs(repo)
+	if err != nil {
+		return false
+	}
+	absRepo = filepath.Clean(absRepo)
+	if receipt, ok := ctx.Value(gitMetadataValidationContextKey{}).(gitMetadataValidationReceipt); ok && receipt.repo == absRepo {
+		return receipt.safe
+	}
+	return gitMetadataSafeForSubprocess(absRepo)
+}
+
+// errGitWorktreePreflight marks a worktree shape that must be enumerated by the
+// filesystem fallback instead of Git. In particular, `git ls-files --others`
+// performs its own recursive directory walk and can inspect a nested `.git`
+// marker before the provider's post-listing excluder ever sees that pathname.
+// On Windows a repository-controlled gitfile can name a UNC share, and a
+// junction or mount can redirect the recursive walk off the selected volume.
+var errGitWorktreePreflight = errors.New("Git worktree preflight declined subprocess enumeration")
+
+// errGitWorktreeFallbackUnsafe marks a preflight refusal whose cause (a mount,
+// traversable redirect, unavailable safety guard, cancellation, or exhausted
+// traversal bound) is unsafe for the ordinary os.Root filesystem fallback too.
+// A nested .git marker or unreadable local subtree may use that fallback only
+// after every other reachable directory is checked; this class must fail closed
+// before either traversal begins.
+var errGitWorktreeFallbackUnsafe = errors.New("filesystem worktree fallback cannot safely traverse the refused path")
+
+// gitWorktreePreflightBudget reuses the filesystem fallback's supported-tree
+// ceilings. The preflight has to finish the entire traversal before Git starts;
+// reaching any ceiling is therefore a decline, never a partial success. The
+// aggregate directory-path byte ceiling also bounds the component-by-component
+// rooted opens, but keep an explicit step count so that relationship is not an
+// implicit invariant of sweepDirectoryRoot.Open.
+type gitWorktreePreflightBudget struct {
+	worktreeWalkBudget
+	traversalSteps int
+}
+
+func (b *gitWorktreePreflightBudget) admitTraversalStep(ctx context.Context) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	if b.traversalSteps >= maxWorktreeWalkDirectoryBytes {
+		return false
+	}
+	b.traversalSteps++
+	return true
+}
+
+// gitWorktreeSafeBeforeListing performs a complete, bounded directory-only
+// traversal through held-root opens. It does not resolve or read `.git`
+// markers: the selected root's own marker is the sole exemption, while any
+// case spelling at a nested location declines Git enumeration. Symlinks are not
+// followed. Windows reparses are declined because Git for Windows can traverse
+// directory junctions even though the Go lstat view reports them as redirects.
+func gitWorktreeSafeBeforeListing(ctx context.Context, repo string) error {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return fmt.Errorf("%w: %w: resolve selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
+	}
+	anchor, resolvedRepo, err := newPathTraversalAnchor(repoAbs, repoAbs)
+	if err != nil {
+		return fmt.Errorf("%w: %w: anchor selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
+	}
+	root, err := newSweepDirectoryRoot(resolvedRepo)
+	if err != nil {
+		return fmt.Errorf("%w: %w: hold selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
+	}
+	defer root.Close()
+
+	var budget gitWorktreePreflightBudget
+	if !budget.admitDirectory("") {
+		return fmt.Errorf("%w: %w: selected root exceeds the directory ceiling", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe)
+	}
+	return gitWorktreeSafeBeforeListingFromDirectories(ctx, root, anchor, &budget, []string{""})
+}
+
+// EnsureWorktreeSafeForFilesystemTraversal verifies that a subsequent bounded,
+// no-follow filesystem walk cannot enter a known mount or traversable redirect.
+// Nested .git markers and unreadable local subtrees are safe for such a walk:
+// the preflight checks every other reachable directory first, and the caller's
+// walker must preserve its ordinary skip behavior for those local paths.
+func EnsureWorktreeSafeForFilesystemTraversal(ctx context.Context, repo string) error {
+	err := gitWorktreeSafeBeforeListing(ctx, repo)
+	if errors.Is(err, errGitWorktreeFallbackUnsafe) {
+		return err
+	}
+	return nil
+}
+
+func worktreePreflightCanSkipLocalFailure(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || os.IsPermission(err) || errors.Is(err, fs.ErrNotExist)
+}
+
+// gitWorktreeSafeBeforeListingFromDirectories is split from the setup above so
+// mount-boundary tests can seed a known mounted directory and exercise the
+// exact rooted-open path used by production without walking an unrelated host
+// filesystem first.
+func gitWorktreeSafeBeforeListingFromDirectories(
+	ctx context.Context,
+	root *sweepDirectoryRoot,
+	anchor pathTraversalAnchor,
+	budget *gitWorktreePreflightBudget,
+	queue []string,
+) error {
+	var fallbackReason error
+	for cursor := 0; cursor < len(queue); cursor++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%w: %w: traversal cancelled: %w", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
+		}
+		dir := queue[cursor]
+		opened, err := root.Open(anchor, dir, func() bool {
+			return budget.admitTraversalStep(ctx)
+		})
+		if err != nil {
+			if errors.Is(err, errGitDirSweepHalted) && ctx.Err() != nil {
+				return fmt.Errorf("%w: %w: traversal cancelled: %w", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, ctx.Err())
+			}
+			if errors.Is(err, errSymlinkChainOffVolume) ||
+				errors.Is(err, errGitDirSweepHalted) ||
+				!worktreePreflightCanSkipLocalFailure(err) {
+				return fmt.Errorf("%w: %w: open directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), err)
+			}
+			if fallbackReason == nil {
+				fallbackReason = fmt.Errorf("%w: open directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), err)
+			}
+			// The fallback already warns and skips an unreadable local subtree.
+			// Keep checking every other reachable directory so that condition
+			// cannot mask a later mount or redirect.
+			continue
+		}
+		for {
+			entries, readErr := opened.ReadDir(256)
+			for _, entry := range entries {
+				name := entry.Name()
+				child := name
+				if dir != "" {
+					child = filepath.ToSlash(dir) + "/" + name
+				}
+				if !budget.admitRawEntry(child) {
+					_ = opened.Close()
+					return fmt.Errorf(
+						"%w: %w: more than %d entries or %d aggregate path bytes",
+						errGitWorktreePreflight, errGitWorktreeFallbackUnsafe,
+						maxWorktreeWalkRawEntries,
+						maxWorktreeWalkRawBytes,
+					)
+				}
+				if strings.EqualFold(name, ".git") {
+					if dir == "" {
+						// The explicitly selected repository root owns this one
+						// marker. Do not stat, read, resolve, or descend into it.
+						continue
+					}
+					if fallbackReason == nil {
+						fallbackReason = fmt.Errorf("%w: nested .git marker at %q", errGitWorktreePreflight, child)
+					}
+					// Keep traversing every other directory. The filesystem fallback
+					// is safe only after this pass has proved that a later sibling is
+					// not a mount or traversable redirect.
+					continue
+				}
+				entryType := entry.Type()
+				if entryType&fs.ModeSymlink != 0 {
+					if runtime.GOOS == "windows" {
+						if fallbackReason == nil {
+							fallbackReason = fmt.Errorf("%w: symlink reparse point at %q", errGitWorktreePreflight, child)
+						}
+					}
+					// Git treats POSIX symlinks as leaf entries. Matching that
+					// no-follow behavior in the filesystem fallback preserves
+					// ordinary source symlinks on every platform. Windows junctions
+					// are ModeIrregular and fail closed under current semantics; the
+					// legacy ModeSymlink view is safely skipped by the same fallback.
+					continue
+				}
+				if runtime.GOOS == "windows" && entryType&fs.ModeIrregular != 0 {
+					_ = opened.Close()
+					return fmt.Errorf("%w: %w: reparse point at %q", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child)
+				}
+				if entryType.IsDir() {
+					if !budget.admitDirectory(child) {
+						_ = opened.Close()
+						return fmt.Errorf(
+							"%w: %w: more than %d directories or %d aggregate directory-path bytes",
+							errGitWorktreePreflight, errGitWorktreeFallbackUnsafe,
+							maxWorktreeWalkDirectories,
+							maxWorktreeWalkDirectoryBytes,
+						)
+					}
+					queue = append(queue, child)
+					continue
+				}
+				if entryType != 0 {
+					continue
+				}
+				// A zero type is either a regular file or a filesystem whose
+				// directory enumeration could not classify the entry. Only that
+				// ambiguity needs an Info call; known directories are enqueued
+				// above so sweepDirectoryRoot.Open performs the mount check before
+				// any child-path lookup.
+				info, infoErr := entry.Info()
+				if infoErr != nil {
+					if !worktreePreflightCanSkipLocalFailure(infoErr) {
+						_ = opened.Close()
+						return fmt.Errorf("%w: %w: inspect ambiguous directory entry %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child, infoErr)
+					}
+					if fallbackReason == nil {
+						fallbackReason = fmt.Errorf("%w: inspect ambiguous directory entry %q: %v", errGitWorktreePreflight, child, infoErr)
+					}
+					continue
+				}
+				if pathMayRedirect(info) {
+					if runtime.GOOS == "windows" {
+						_ = opened.Close()
+						return fmt.Errorf("%w: %w: reparse point at %q", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child)
+					}
+					continue
+				}
+				if !info.IsDir() {
+					continue
+				}
+				if !budget.admitDirectory(child) {
+					_ = opened.Close()
+					return fmt.Errorf(
+						"%w: %w: more than %d directories or %d aggregate directory-path bytes",
+						errGitWorktreePreflight, errGitWorktreeFallbackUnsafe,
+						maxWorktreeWalkDirectories,
+						maxWorktreeWalkDirectoryBytes,
+					)
+				}
+				queue = append(queue, child)
+			}
+			if readErr == nil {
+				continue
+			}
+			if !errors.Is(readErr, io.EOF) {
+				if !worktreePreflightCanSkipLocalFailure(readErr) {
+					_ = opened.Close()
+					return fmt.Errorf("%w: %w: read directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), readErr)
+				}
+				if fallbackReason == nil {
+					fallbackReason = fmt.Errorf("%w: read directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), readErr)
+				}
+			}
+			break
+		}
+		if err := opened.Close(); err != nil {
+			return fmt.Errorf("%w: %w: close directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), err)
+		}
+	}
+	return fallbackReason
+}
+
+func worktreeGitFallbackWarning(cause error) ProviderWarning {
+	detail := "Git worktree enumeration was unavailable"
+	if cause != nil {
+		detail += ": " + cause.Error()
+	}
+	return ProviderWarning{
+		Code:     "W_GIT_WORKTREE_FALLBACK",
+		Severity: "warning",
+		EffectOnCompleteness: "the filesystem fallback retains ambiguous vendored directories conservatively, but cannot reproduce every Git " +
+			"index and exclude decision; excluded files can therefore be present in the snapshot",
+		Detail: detail,
+	}
+}
+
+func walkWorktreeFilesAfterGitFailure(
+	ctx context.Context,
+	repo string,
+	ignores ignoreMatcher,
+	dirTracked func(string) bool,
+	cause error,
+) ([]string, []ProviderWarning, error) {
+	paths, warnings, err := walkWorktreeFiles(ctx, repo, ignores, dirTracked)
+	if err != nil {
+		return nil, nil, err
+	}
+	warnings = append(warnings, worktreeGitFallbackWarning(cause))
+	return paths, warnings, nil
 }
 
 func isVendoredScanFile(rel, name string) bool {
@@ -10103,13 +15115,72 @@ func isVendoredScanFile(rel, name string) bool {
 	return strings.HasSuffix(rel, ".map")
 }
 
+func repositoryHasGitMetadata(repo string) bool {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return true
+	}
+	spellingResolver, resolution := NewGitCeilingPathResolver(repoAbs)
+	if resolution != GitCeilingPathResolved {
+		return true
+	}
+	resolvedRepo, resolution := spellingResolver.Canonicalize(repoAbs)
+	if resolution != GitCeilingPathResolved {
+		_ = spellingResolver.Close()
+		return true
+	}
+	resolver := spellingResolver
+	if _, sameNamespace := spellingResolver.resolver.anchor.components(resolvedRepo); !sameNamespace {
+		// A SUBST path can canonicalize to a different Windows volume spelling.
+		// Re-anchor only for that namespace change; ordinary symlinks and junctions
+		// keep the first held root so the physical spelling is never reopened after
+		// a race window.
+		physicalResolver, physicalResolution := NewGitCeilingPathResolver(resolvedRepo)
+		if physicalResolution != GitCeilingPathResolved {
+			_ = spellingResolver.Close()
+			return true
+		}
+		if err := spellingResolver.Close(); err != nil {
+			_ = physicalResolver.Close()
+			return true
+		}
+		resolver = physicalResolver
+	}
+	defer resolver.Close()
+	entriesSeen, bytesSeen := 0, 0
+	discoveryRoot := filepath.Clean(resolver.resolver.anchor.root)
+	for directory := filepath.Clean(resolvedRepo); ; directory = filepath.Dir(directory) {
+		hasGitEntry, resolution := resolver.hasGitEntryWithBudget(directory, &entriesSeen, &bytesSeen)
+		if resolution != GitCeilingPathResolved || hasGitEntry {
+			// Resolution, permission, and other probe failures are metadata
+			// uncertainty, not evidence that this is safely a non-Git directory.
+			return true
+		}
+		atDiscoveryRoot := directory == discoveryRoot
+		if runtime.GOOS == "windows" {
+			atDiscoveryRoot = strings.EqualFold(directory, discoveryRoot)
+		}
+		if atDiscoveryRoot {
+			// Git's default discovery stops at the filesystem/volume boundary. The
+			// subprocess environment removes GIT_DISCOVERY_ACROSS_FILESYSTEM, so a
+			// marker above this guarded anchor cannot make the selection a worktree.
+			return false
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return false
+		}
+	}
+}
+
 // worktreeSourceFiles lists the working tree's source files.
 //
 // Git's own view of the working tree — tracked files plus untracked files no
-// exclude rule covers — is the listing, because only Git applies the whole
-// exclude stack: nested .gitignore files, .git/info/exclude, per-worktree
-// excludes and core.excludesFile. A reader that parses only the repository-root
-// .gitignore misses every one of those, which is how a vendored dependency tree
+// exclude rule covers — is the listing, because Git applies nested .gitignore
+// files, .git/info/exclude, and per-worktree excludes with its index semantics.
+// Configuration-derived core.excludesFile is intentionally disabled at the
+// subprocess boundary. A reader that parses only the repository-root .gitignore
+// misses the safe nested sources, which is how a vendored dependency tree
 // excluded by `backend/.gitignore` (a virtual environment, a checked-out package
 // cache) ended up listed, parsed, and read into memory while `--head` on the same
 // repository listed only the tracked source.
@@ -10117,48 +15188,158 @@ func isVendoredScanFile(rel, name string) bool {
 // The filesystem walk remains the fallback for a directory Git cannot enumerate
 // (not a repository at all, or no usable git binary), and it now applies nested
 // .gitignore files itself.
-func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool) ([]string, error) {
-	trackedDirs := trackedDirSet(ctx, repo)
+type worktreeFilesLister func(context.Context, string) ([]string, error)
+
+func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool) ([]string, []ProviderWarning, error) {
+	return worktreeSourceFilesWithLister(ctx, repo, ignores, hasIncludeFiles, gitutil.ListWorktreeFiles)
+}
+
+func worktreeSourceFilesWithLister(
+	ctx context.Context,
+	repo string,
+	ignores ignoreMatcher,
+	hasIncludeFiles bool,
+	listWorktreeFiles worktreeFilesLister,
+) ([]string, []ProviderWarning, error) {
+	if !gitMetadataSafeForSubprocessContext(ctx, repo) {
+		err := fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+		// No Git process is started. The fallback treats every ambiguous vendored
+		// directory as potentially tracked so unsafe metadata cannot cause source
+		// omissions, and the warning reports the Git-only policy that is unavailable.
+		dirTracked := func(string) bool { return true }
+		return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, err)
+	}
+	trackedDirs, trackedErr := trackedDirSet(ctx, repo)
+	if trackedErr != nil {
+		if errors.Is(trackedErr, gitutil.ErrWorktreeListingTruncated) || errors.Is(trackedErr, errTrackedDirectoryBound) {
+			return nil, nil, fmt.Errorf("list Git index paths: %w", trackedErr)
+		}
+		if repositoryHasGitMetadata(repo) {
+			dirTracked := func(string) bool { return true }
+			return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, trackedErr)
+		}
+		dirTracked := func(string) bool { return false }
+		return walkWorktreeFiles(ctx, repo, ignores, dirTracked)
+	}
 	dirTracked := func(rel string) bool {
 		_, ok := trackedDirs[rel]
 		return ok
 	}
-	listed, err := gitutil.ListWorktreeFiles(ctx, repo)
+	if err := gitWorktreeSafeBeforeListing(ctx, repo); err != nil {
+		if errors.Is(err, errGitWorktreeFallbackUnsafe) {
+			return nil, nil, err
+		}
+		return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, err)
+	}
+	listed, err := listWorktreeFiles(ctx, repo)
 	if err != nil {
-		return walkWorktreeFiles(repo, ignores, dirTracked)
+		if errors.Is(err, gitutil.ErrWorktreeListingTruncated) {
+			return nil, nil, fmt.Errorf("list Git worktree paths: %w", err)
+		}
+		if repositoryHasGitMetadata(repo) {
+			return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, err)
+		}
+		return walkWorktreeFiles(ctx, repo, ignores, dirTracked)
 	}
 	if hasIncludeFiles {
 		// An explicit include file's negations are allowed to reach into ignored
 		// content; nothing else is, so the ignored listing is only ever requested
 		// when such a file was supplied.
-		if ignored, ignoredErr := gitutil.ListIgnoredWorktreeFiles(ctx, repo); ignoredErr == nil {
-			for _, rel := range ignored {
-				if ignores.Reincluded(filepath.ToSlash(rel), false) {
-					listed = append(listed, rel)
-				}
+		ignored, ignoredErr := gitutil.ListIgnoredWorktreeFiles(ctx, repo)
+		if ignoredErr != nil {
+			return nil, nil, fmt.Errorf("list ignored Git worktree paths for explicit includes: %w", ignoredErr)
+		}
+		for _, rel := range ignored {
+			if ignores.Reincluded(filepath.ToSlash(rel), false) {
+				listed = append(listed, rel)
 			}
 		}
 	}
 	// The vendored-directory heuristic consults the project's own re-inclusion
 	// rules wherever they live, not only at the root, so a tree the project
 	// deliberately keeps under a vendored-looking name is not dropped.
-	vendorRules := worktreeVendorIgnoreRules(repo, ignores, listed)
+	// A .gitignore can itself be ignored while Git still applies its rules to
+	// sibling paths. Enumerate the bounded ignored-ignore stream as policy
+	// evidence instead of assuming every effective rule file appears in listed.
+	nestedIgnores, err := gitutil.BoundedWorktreeNestedIgnorePaths(
+		ctx, repo, maxNestedIgnoreFiles, includeEveryNestedIgnore,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list worktree nested ignore files: %w", err)
+	}
+	vendorRules, err := worktreeVendorIgnoreRules(repo, ignores, nestedIgnores)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Every `gitdir:` pointer this listing can reach is resolved before any
+	// verdict is asked, so the answer cannot depend on listing order.
+	// One lstat per listed path. Git lists index entries for files staged as
+	// deleted and can list a symlink or a gitlink directory; the snapshot reads
+	// only regular files, and the gitlink entries are exactly what the excluder
+	// must examine for a `.git` pointer.
+	kinds := make([]listedPathKind, len(listed))
+	var listedDirs []string
+	for index, entry := range listed {
+		info, statErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(entry)))
+		switch {
+		case statErr != nil:
+		case info.IsDir():
+			kinds[index] = listedPathDir
+			listedDirs = append(listedDirs, entry)
+		case info.Mode()&fs.ModeSymlink == 0 && info.Mode().IsRegular():
+			kinds[index] = listedPathRegular
+		}
+	}
+	gitDirs := newGitDirExcluder(ctx, repo)
+	// The directories git lists nothing under come from git itself, so the sweep
+	// for a suppressed `.git` pointer does not have to re-read the whole tree.
+	// An IGNORED tree is in neither of git's `--exclude-standard` listings, so no
+	// chain and no collapsed root reaches a `.git` pointer inside it — and that
+	// pointer names a git directory somewhere ELSE, which git does list.
+	// `.gitignore` is committed content in the repository being scanned, so
+	// leaving those trees unswept let the scanned repository choose which
+	// pointers this rule may read. Ask git for them by name.
+	gitDirs.unlistedRoots, gitDirs.gitAnsweredRoots = gitSweepRootsFromGit(ctx, repo, gitDirs)
+	gitDirs.observeListedPaths(listed, listedDirs)
+	if err := gitDirs.listedObservationError(); err != nil {
+		return nil, nil, err
+	}
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
-	for _, entry := range listed {
+	for index, entry := range listed {
 		rel := filepath.ToSlash(entry)
 		if _, exists := seen[rel]; exists {
 			continue
 		}
-		if !eligibleGitWorktreeSourcePath(repo, rel, ignores, vendorRules, dirTracked) {
+		// Git lists a `--separate-git-dir` target inside the worktree as ordinary
+		// untracked content, so its own listing carries the git directory here.
+		if gitDirs.excluded(rel) {
+			continue
+		}
+		if vendoredScanPath(rel, vendorRules, dirTracked) {
+			continue
+		}
+		// Explicit ignore/include rules still arbitrate: an include file may have
+		// pulled this path back in, and its own rules may then exclude part of
+		// what it re-included.
+		if ignores.Ignored(rel, false) {
+			continue
+		}
+		if kinds[index] != listedPathRegular {
 			continue
 		}
 		seen[rel] = struct{}{}
 		paths = append(paths, rel)
 	}
+	if err := gitDirs.listedObservationError(); err != nil {
+		return nil, nil, err
+	}
 	sort.Strings(paths)
-	return paths, nil
+	warnings := append(gitDirs.sweepWarnings(), gitDirs.sweepUnreadableDirWarning()...)
+	return paths, warnings, nil
 }
+
+func includeEveryNestedIgnore(string) bool { return true }
 
 // eligibleGitWorktreeSourcePath is the provider's final eligibility predicate
 // after Git has produced a tracked/unignored (or explicitly re-admitted) path.
@@ -10185,75 +15366,379 @@ func eligibleGitWorktreeSourcePath(
 	return err == nil && info.Mode()&fs.ModeSymlink == 0 && info.Mode().IsRegular()
 }
 
+// gitSweepRoots combines git's two `--directory` listings into the roots the
+// sweep descends from, and reports whether GIT ANSWERED — which is the whole
+// question, because "answered" is what makes observeUnlistedDirs trust those
+// roots instead of deriving them by walking the tree.
+//
+// Both listings must have succeeded. Trusting the pair on the strength of the
+// first alone was a leak with a bounded, one-sided cost: the non-ignored listing
+// is the one that nearly always works, so `gitAnsweredRoots` stayed true while
+// the ignored roots were silently missing, the sweep skipped the whole-tree
+// fallback it exists for, and a `.git` pointer inside an ignored tree went unread
+// — leaving its target, which git lists in full, indexed with its credentialed
+// config. The two commands differ by one flag, so anything that can fail the
+// second (a spawn refused under fd or memory pressure, a killed child, a git
+// that does not know the flag) fails it while the first has already succeeded.
+//
+// The price of the false answer is the sweep's entire purpose; the price of the
+// fallback is one whole-tree traversal on a path that already failed. So an
+// error on EITHER listing means git did not answer.
+func gitSweepRoots(dirEntries []string, dirErr error, ignoredEntries []string, ignoredErr error) ([]string, bool) {
+	if dirErr != nil || ignoredErr != nil {
+		return nil, false
+	}
+	roots := make([]string, 0, len(dirEntries)+len(ignoredEntries))
+	roots = append(roots, dirEntries...)
+	roots = append(roots, ignoredEntries...)
+	return roots, true
+}
+
+// gitSweepRootsFromGit is the production, bounded form of gitSweepRoots. The
+// slice-based helper remains useful for testing the two-command success rule;
+// production streams both listings and stops retaining roots when the sweep's
+// entry ledger is spent.
+func gitSweepRootsFromGit(ctx context.Context, repo string, gitDirs *gitDirExcluder) ([]string, bool) {
+	roots := make([]string, 0)
+	seen := make(map[string]struct{})
+	visit := func(entry string) bool {
+		if _, duplicate := seen[entry]; duplicate {
+			return true
+		}
+		if !gitDirs.admitSweepEntry() {
+			return false
+		}
+		seen[entry] = struct{}{}
+		roots = append(roots, entry)
+		return true
+	}
+	if err := gitutil.VisitWorktreeDirectoryEntries(ctx, repo, false, visit); err != nil {
+		return nil, false
+	}
+	if err := gitutil.VisitWorktreeDirectoryEntries(ctx, repo, true, visit); err != nil {
+		return nil, false
+	}
+	sort.Strings(roots)
+	return roots, true
+}
+
 // walkWorktreeFiles is the non-git fallback listing. It honours the ignore stack
 // per directory (root .gitignore plus every nested one on the path) so a
 // directory Git cannot enumerate is still filtered the way the project asked.
-func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(string) bool) ([]string, error) {
+func walkWorktreeFiles(ctx context.Context, repo string, ignores ignoreMatcher, dirTracked func(string) bool) ([]string, []ProviderWarning, error) {
+	// Every filesystem fallback enters through here, including paths selected
+	// before Git's index listing succeeds. Require the same complete held-root
+	// safety proof so an earlier Git failure cannot bypass mount detection.
+	if err := EnsureWorktreeSafeForFilesystemTraversal(ctx, repo); err != nil {
+		return nil, nil, err
+	}
 	var paths []string
-	err := visitWalkWorktreeFiles(repo, ignores, dirTracked, func(rel string) bool {
+	warnings, err := visitWalkWorktreeFiles(ctx, repo, ignores, dirTracked, func(rel string) bool {
 		paths = append(paths, rel)
 		return true
 	})
 	sort.Strings(paths)
-	return paths, err
+	return paths, warnings, err
 }
 
 // visitWalkWorktreeFiles is the non-Git provider walk with a streaming sink.
 // Returning false stops successfully, allowing replay observation to retain a
 // bounded corpus without changing the provider's eligibility or traversal.
 func visitWalkWorktreeFiles(
+	ctx context.Context,
 	repo string,
 	ignores ignoreMatcher,
 	dirTracked func(string) bool,
 	visit func(string) bool,
-) error {
+) ([]ProviderWarning, error) {
+	return visitWalkWorktreeFilesWithRawLimit(ctx, repo, ignores, dirTracked, 0, visit)
+}
+
+var errWorktreeRawPathLimit = errors.New("filesystem worktree raw path limit exceeded")
+
+const (
+	maxWorktreeWalkRawEntries     = 1_000_000
+	maxWorktreeWalkRawBytes       = 256 << 20
+	maxWorktreeWalkDirectories    = 200_000
+	maxWorktreeWalkDirectoryBytes = 64 << 20
+)
+
+var (
+	errWorktreeWalkEntryBound     = errors.New("filesystem worktree traversal exceeded a raw-entry resource bound")
+	errWorktreeWalkDirectoryBound = errors.New("filesystem worktree traversal exceeded a directory resource bound")
+)
+
+type worktreeWalkBudget struct {
+	rawEntries     int
+	rawBytes       int
+	directories    int
+	directoryBytes int
+}
+
+func (b *worktreeWalkBudget) admitRawEntry(rel string) bool {
+	if b.rawEntries >= maxWorktreeWalkRawEntries {
+		return false
+	}
+	remaining := maxWorktreeWalkRawBytes - b.rawBytes
+	// The delimiter is not present on disk, but charging it makes this the same
+	// aggregate accounting used for Git's NUL-delimited worktree listing.
+	if remaining <= 0 || len(rel) >= remaining {
+		return false
+	}
+	b.rawEntries++
+	b.rawBytes += len(rel) + 1
+	return true
+}
+
+func (b *worktreeWalkBudget) admitDirectory(rel string) bool {
+	if b.directories >= maxWorktreeWalkDirectories {
+		return false
+	}
+	remaining := maxWorktreeWalkDirectoryBytes - b.directoryBytes
+	if remaining <= 0 || len(rel) >= remaining {
+		return false
+	}
+	b.directories++
+	b.directoryBytes += len(rel) + 1
+	return true
+}
+
+type worktreeWalkFrame struct {
+	rel     string
+	entries []fs.DirEntry
+	next    int
+	ready   bool
+}
+
+// visitWalkWorktreeFilesWithRawLimit is visitWalkWorktreeFiles with an
+// optional conservative pre-filter ceiling. The replay observer uses it to
+// decline persistence as soon as the raw candidate set cannot fit its exact
+// corpus bound; the ordinary provider passes zero and retains its existing
+// complete late filter for pointers that name an earlier path.
+func visitWalkWorktreeFilesWithRawLimit(
+	ctx context.Context,
+	repo string,
+	ignores ignoreMatcher,
+	dirTracked func(string) bool,
+	rawPathLimit int,
+	visit func(string) bool,
+) ([]ProviderWarning, error) {
 	stack := newNestedIgnoreStack(repo, ignores)
-	return filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	defer stack.close()
+	gitDirs := newGitDirExcluder(ctx, repo)
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	var budget worktreeWalkBudget
+	if !budget.admitDirectory("") {
+		return nil, errWorktreeWalkDirectoryBound
+	}
+	var paths []string
+	frames := []worktreeWalkFrame{{rel: ""}}
+	var walkErr error
+	for len(frames) > 0 {
+		if err := ctx.Err(); err != nil {
+			walkErr = err
+			break
 		}
-		name := entry.Name()
-		if entry.IsDir() {
-			rel := ""
-			if path != repo {
-				relPath, relErr := filepath.Rel(repo, path)
-				if relErr != nil {
-					return relErr
-				}
-				rel = filepath.ToSlash(relPath)
+		frame := &frames[len(frames)-1]
+		if !frame.ready {
+			rel := frame.rel
+			name := path.Base(rel)
+			// A directory's own `.git` pointer is read on the way in, before any
+			// of its children are visited, so a `--separate-git-dir` target
+			// beside it is already known when the walk reaches it.
+			gitDirs.observe(rel)
+			// The git directory is refused before anything inside it is read,
+			// including its own .gitignore. Its DIRECTORIES are still read, for
+			// the reason descendObserving states: an exclusion means "do not
+			// index this tree", and a `.git` pointer inside one names a git
+			// directory somewhere else that git lists in full. Skipping the
+			// subtree unread leaked `.dep-git/config` from `vendorgit/dep/.git`
+			// on this path exactly as it did on the git-listing path.
+			if rel != "" && gitDirs.excluded(rel) {
+				gitDirs.observePrunedSubtree(rel)
+				frames = frames[:len(frames)-1]
+				continue
 			}
 			// Enter first: this directory's own .gitignore is part of the evidence
 			// for whether the project re-includes something inside it.
 			if err := stack.enter(rel); err != nil {
-				return err
+				// If the directory itself is unreadable, none of its source can be
+				// listed and a nested policy inside it cannot affect a sibling. Keep
+				// the repository available, but disclose the omission and make hidden
+				// pointer evidence fail closed. An unreadable .gitignore inside a
+				// READABLE directory remains a hard error: silently discarding policy
+				// there could admit content the policy excludes.
+				if errors.Is(err, fs.ErrPermission) && !stack.directoryReadable(rel) {
+					gitDirs.hiddenEvidence++
+					gitDirs.noteUnreadableWalkDir(rel)
+					frames = frames[:len(frames)-1]
+					continue
+				}
+				walkErr = err
+				break
+			}
+			// The ignore rules are consulted BEFORE the vendored name, but they
+			// prune the same way and no longer prune any harder: the project's
+			// exclude rules are attacker-controlled input in the repository
+			// being scanned, so `build/` in a committed `.gitignore` hid
+			// `build/dep/.git` -> `gitdir: ../../.dep-git` and the root-level,
+			// HEAD-damaged git directory it names was indexed in full. Read the
+			// directories for pointers, then stop. Both branches still return
+			// prune, so the set of walked FILES is unchanged.
+			if rel != "" && stack.Ignored(rel, true) && !stack.MayIncludeDescendant(rel) {
+				gitDirs.observePrunedSubtree(rel)
+				frames = frames[:len(frames)-1]
+				continue
 			}
 			if rel != "" && skipVendoredDir(rel, name, stack, dirTracked) {
-				return filepath.SkipDir
+				// Nothing in this tree is indexed, but a `.git` pointer in it
+				// names a git directory somewhere else — `vendor/dep/.git` ->
+				// `gitdir: ../../.dep-git` names a root-level directory that is
+				// indexed, and whose damaged HEAD puts it out of every other
+				// rule's reach. Read the directories, then stop.
+				gitDirs.observePrunedSubtree(rel)
+				frames = frames[:len(frames)-1]
+				continue
 			}
-			if rel != "" && stack.Ignored(rel, true) && !stack.MayIncludeDescendant(rel) {
-				return filepath.SkipDir
+
+			openPath := "."
+			if rel != "" {
+				openPath = filepath.FromSlash(rel)
 			}
-			return nil
+			opened, openErr := root.Open(openPath)
+			if openErr != nil {
+				if rel == "" {
+					walkErr = openErr
+					break
+				}
+				if !errors.Is(openErr, fs.ErrNotExist) {
+					gitDirs.hiddenEvidence++
+					gitDirs.noteUnreadableWalkDir(rel)
+				}
+				frames = frames[:len(frames)-1]
+				continue
+			}
+			var entries []fs.DirEntry
+			for {
+				batch, readErr := opened.ReadDir(256)
+				for _, entry := range batch {
+					child := entry.Name()
+					if rel != "" {
+						child = rel + "/" + child
+					}
+					if !budget.admitRawEntry(child) {
+						walkErr = fmt.Errorf(
+							"%w: more than %d entries or %d aggregate path bytes",
+							errWorktreeWalkEntryBound,
+							maxWorktreeWalkRawEntries,
+							maxWorktreeWalkRawBytes,
+						)
+						break
+					}
+					entries = append(entries, entry)
+				}
+				if walkErr != nil {
+					break
+				}
+				if readErr == nil {
+					continue
+				}
+				if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, fs.ErrNotExist) {
+					gitDirs.hiddenEvidence++
+					warningPath := rel
+					if warningPath == "" {
+						warningPath = "."
+					}
+					gitDirs.noteUnreadableWalkDir(warningPath)
+				}
+				break
+			}
+			_ = opened.Close()
+			if walkErr != nil {
+				break
+			}
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+			frame.entries = entries
+			frame.ready = true
+			continue
 		}
+
+		if frame.next >= len(frame.entries) {
+			frames = frames[:len(frames)-1]
+			continue
+		}
+		entry := frame.entries[frame.next]
+		frame.next++
+		rel := entry.Name()
+		if frame.rel != "" {
+			rel = frame.rel + "/" + rel
+		}
+		// Check the no-follow rule before IsDir. Go's Windows compatibility
+		// mode can report a mount-point reparse as ModeSymlink; regardless of
+		// any accompanying directory attribute, the fallback must not enter it.
 		if entry.Type()&fs.ModeSymlink != 0 {
-			return nil
+			continue
 		}
-		rel, err := filepath.Rel(repo, path)
-		if err != nil {
-			return err
+		if entry.IsDir() {
+			if !budget.admitDirectory(rel) {
+				walkErr = fmt.Errorf(
+					"%w: more than %d directories or %d aggregate path bytes",
+					errWorktreeWalkDirectoryBound,
+					maxWorktreeWalkDirectories,
+					maxWorktreeWalkDirectoryBytes,
+				)
+				break
+			}
+			frames = append(frames, worktreeWalkFrame{rel: rel})
+			continue
 		}
-		rel = filepath.ToSlash(rel)
+		name := entry.Name()
+		// A linked worktree's `.git` is a FILE, so the directory decision above
+		// never sees it; the same unconditional rule applies.
+		if gitDirs.excluded(rel) {
+			continue
+		}
 		if isVendoredScanFile(rel, name) {
-			return nil
+			continue
 		}
 		if stack.Ignored(rel, false) {
-			return nil
+			continue
 		}
+		if rawPathLimit > 0 && len(paths) >= rawPathLimit {
+			walkErr = errWorktreeRawPathLimit
+			break
+		}
+		paths = append(paths, rel)
+	}
+	// A pointer can name a directory the walk had already passed (`.aaa-git`
+	// sorts before the `.git` that names it), so the collected paths are filtered
+	// once more against every pointer the whole walk found — and against the
+	// candidates promoted for the pointers it could NOT read.
+	gitDirs.promoteUnverifiedGitDirs()
+	kept := paths[:0]
+	for _, rel := range paths {
+		if gitDirs.excluded(rel) {
+			continue
+		}
+		kept = append(kept, rel)
+	}
+	paths = kept
+	if boundErr := gitDirs.listedObservationError(); boundErr != nil && walkErr == nil {
+		walkErr = boundErr
+	}
+	sort.Strings(paths)
+	warnings := append(gitDirs.sweepWarnings(), gitDirs.unreadableWalkWarning()...)
+	warnings = append(warnings, gitDirs.sweepUnreadableDirWarning()...)
+	for _, rel := range paths {
 		if !visit(rel) {
-			return fs.SkipAll
+			return warnings, nil
 		}
-		return nil
-	})
+	}
+	return warnings, walkErr
 }
 
 func filterVendoredPaths(paths []string, ignores vendorIgnoreRules) []string {
@@ -10285,66 +15770,171 @@ func filterIgnoredPaths(paths []string, ignores ignoreMatcher) []string {
 // newer HEAD nor miss a project's re-inclusion rules because they sit beside the
 // tree they describe, which is where Git expects them. The tracked listing
 // already in hand is reused to find them, so this costs no extra listing.
-func headVendorIgnoreRules(ctx context.Context, repo, committedRevision string, paths []string) *nestedIgnoreRules {
-	rules := newNestedIgnoreRules(headIgnoreMatcher(ctx, repo, committedRevision))
+func headVendorIgnoreRules(
+	ctx context.Context,
+	repo, committedRevision string,
+	paths []string,
+	policyBase ignoreMatcher,
+) (*nestedIgnoreRules, error) {
+	candidates, err := nestedIgnorePathsFromListing(paths)
+	if err != nil {
+		return nil, err
+	}
+	return loadHeadNestedIgnoreRules(ctx, repo, committedRevision, candidates, policyBase)
+}
+
+// worktreeVendorIgnoreRules is headVendorIgnoreRules for the working tree. Its
+// bounded input combines ordinary Git-listed policy files with ignored policy
+// pathnames in directories Git still traverses; policies below a wholly ignored
+// directory are collapsed with that directory because Git never applies them.
+// Every selected file is read from disk and merged over the root rules.
+func worktreeVendorIgnoreRules(repo string, base ignoreMatcher, listed []string) (*nestedIgnoreRules, error) {
+	candidates, err := nestedIgnorePathsFromListing(listed)
+	if err != nil {
+		return nil, err
+	}
+	rules := newNestedIgnoreRules(base)
+	if len(candidates) == 0 {
+		return rules, nil
+	}
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return nil, fmt.Errorf("open repository for nested ignore files: %w", err)
+	}
+	defer root.Close()
+	for _, candidate := range candidates {
+		content, present, err := readWorktreeNestedIgnore(root, repo, candidate)
+		if err != nil {
+			return nil, err
+		}
+		if !present {
+			continue
+		}
+		if err := rules.addFile(candidate, content); err != nil {
+			return nil, err
+		}
+	}
+	return rules, nil
+}
+
+func nestedIgnorePathsFromListing(paths []string) ([]string, error) {
+	candidates := make([]string, 0, min(len(paths), maxNestedIgnoreFiles))
 	for _, entry := range paths {
 		rel := filepath.ToSlash(entry)
 		if path.Base(rel) != ".gitignore" || !strings.Contains(rel, "/") {
 			continue
 		}
-		if len(rules.levels) >= maxNestedIgnoreFiles {
-			break
+		if len(candidates) >= maxNestedIgnoreFiles {
+			return nil, tooManyNestedIgnoreFilesError()
 		}
-		content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, rel)
-		if err != nil || !ok || len(content) > maxNestedIgnoreFileBytes {
-			continue
-		}
-		rules.addFile(rel, content)
+		candidates = append(candidates, rel)
 	}
-	return rules
+	return candidates, nil
 }
 
-// worktreeVendorIgnoreRules is headVendorIgnoreRules for the working tree: the
-// per-directory .gitignore files Git's own listing reports (one inside an
-// excluded tree is not listed, and that tree is excluded anyway) are read from
-// disk and merged over the root rules.
-func worktreeVendorIgnoreRules(repo string, base ignoreMatcher, listed []string) *nestedIgnoreRules {
-	rules := newNestedIgnoreRules(base)
-	for _, entry := range listed {
-		rel := filepath.ToSlash(entry)
-		if path.Base(rel) != ".gitignore" || !strings.Contains(rel, "/") {
-			continue
-		}
-		if len(rules.levels) >= maxNestedIgnoreFiles {
-			break
-		}
-		full := filepath.Join(repo, filepath.FromSlash(rel))
-		info, err := os.Stat(full)
-		if err != nil || !info.Mode().IsRegular() || info.Size() > maxNestedIgnoreFileBytes {
-			continue
-		}
-		content, err := os.ReadFile(full)
+// loadHeadNestedIgnoreRules reads every committed ignore input through one
+// typed, bounded Git reader pinned to committedRevision. policyBase is not part
+// of the vendored matcher semantics, but its external rules draw from the same
+// operation allowance; without that charge committed mode had two independent
+// ledgers that a repository could fill separately.
+func loadHeadNestedIgnoreRules(
+	ctx context.Context,
+	repo, committedRevision string,
+	candidates []string,
+	policyBase ignoreMatcher,
+) (*nestedIgnoreRules, error) {
+	if len(candidates) > maxNestedIgnoreFiles {
+		return nil, tooManyNestedIgnoreFilesError()
+	}
+	prefix, err := gitutil.RepoPrefix(ctx, repo)
+	if err != nil {
+		return nil, fmt.Errorf("resolve committed ignore-file tree prefix: %w", err)
+	}
+	// Git listings are relative to the requested repository scope, while the
+	// limited reader addresses the repository-root tree. Map that coordinate
+	// boundary once; labels remain scope-relative for ignore semantics/errors.
+	labels := make([]string, 1, len(candidates)+1)
+	labels[0] = ".gitignore"
+	labels = append(labels, candidates...)
+	requested := make([]string, len(labels))
+	for index, label := range labels {
+		requested[index] = prefix + label
+	}
+	reader := gitutil.NewLimitedFileReader(
+		ctx,
+		repo,
+		committedRevision,
+		int64(maxNestedIgnoreFileBytes),
+	)
+	defer reader.Close()
+	if err := reader.Prime(requested); err != nil {
+		return nil, fmt.Errorf("inspect committed ignore files: %w", err)
+	}
+
+	budget := newIgnoreRuleBudget(policyBase)
+	rootMatcher := ignoreMatcher{}
+	rootContent, present, err := readCommittedIgnoreFile(reader, requested[0], labels[0], false)
+	if err != nil {
+		return nil, err
+	}
+	if present {
+		rootMatcher, err = loadNestedIgnoreMatcher(rootContent, budget)
 		if err != nil {
+			return nil, fmt.Errorf("read ignore file %q: %w", ".gitignore", err)
+		}
+	}
+	rules := newNestedIgnoreRulesWithBudget(rootMatcher, budget)
+	for index, candidate := range candidates {
+		content, present, err := readCommittedIgnoreFile(reader, requested[index+1], candidate, true)
+		if err != nil {
+			return nil, err
+		}
+		if !present {
 			continue
 		}
-		rules.addFile(rel, string(content))
+		if err := rules.addFile(candidate, content); err != nil {
+			return nil, err
+		}
 	}
-	return rules
+	return rules, nil
 }
 
-// headIgnoreMatcher parses the repository's root .gitignore at the same exact
-// committed revision used for listing and content reads, so the vendored-
-// directory heuristic cannot observe a newer HEAD.
-func headIgnoreMatcher(ctx context.Context, repo, committedRevision string) ignoreMatcher {
-	content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, ".gitignore")
-	if err != nil || !ok {
-		return ignoreMatcher{}
+func readCommittedIgnoreFile(
+	reader *gitutil.LimitedFileReader,
+	treePath, label string,
+	required bool,
+) (string, bool, error) {
+	result, err := reader.ReadFile(treePath)
+	if err != nil {
+		return "", false, fmt.Errorf("read committed ignore file %q: %w", label, err)
 	}
-	var matcher ignoreMatcher
-	if err := matcher.loadContent(content, false); err != nil {
-		return ignoreMatcher{}
+	switch result.Status {
+	case gitutil.LimitedFileContent:
+		return result.Content, true, nil
+	case gitutil.LimitedFileMissing:
+		if required {
+			return "", false, fmt.Errorf("committed ignore file %q is missing", label)
+		}
+		return "", false, nil
+	case gitutil.LimitedFileOversize:
+		return "", false, fmt.Errorf(
+			"read committed ignore file %q: file is %d bytes and exceeds %d bytes",
+			label,
+			result.Bytes,
+			maxNestedIgnoreFileBytes,
+		)
+	case gitutil.LimitedFileNonBlob:
+		return "", false, fmt.Errorf("committed ignore file %q is not a blob", label)
+	case gitutil.LimitedFileUnreadable:
+		return "", false, fmt.Errorf(
+			"read committed ignore file %q: Git blob object is unavailable or unreadable",
+			label,
+		)
+	case gitutil.LimitedFileUnaddressable:
+		return "", false, fmt.Errorf("committed ignore file %q cannot be addressed within Git metadata bounds", label)
+	default:
+		return "", false, fmt.Errorf("committed ignore file %q has unknown read status %d", label, result.Status)
 	}
-	return matcher
 }
 
 // vendoredPath filters a HEAD-tree path. Every path in the HEAD listing is
@@ -18022,9 +23612,11 @@ func externalID(kind, value string) string {
 }
 
 func repoKey(ctx context.Context, repo string) string {
-	for _, remoteURL := range githubRemoteURLs(ctx, repo) {
-		if key, ok := githubRepoKey(remoteURL); ok {
-			return key
+	if gitMetadataSafeForSubprocessContext(ctx, repo) {
+		for _, remoteURL := range githubRemoteURLs(ctx, repo) {
+			if key, ok := githubRepoKey(remoteURL); ok {
+				return key
+			}
 		}
 	}
 	return "local/" + filepath.Base(repo)

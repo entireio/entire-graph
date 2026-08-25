@@ -2,11 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/entire-graph/internal/sem"
 )
@@ -19,13 +24,14 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 	write(t, repo, "tracked.go", "committed\r\nline\r\n")
 	write(t, repo, "contains-nul.go", "before\x00after\n")
 	write(t, repo, "oversized.go", strings.Repeat("x", callSiteMaxFileBytes+1))
-	// A newline in a path is legal in Git and drives the one-shot `git show`
+	// A newline in a path is legal in Git and drives the bounded exact-object
 	// fallback, but Windows cannot create such a file at all. Everything else
 	// this test pins — CRLF, NUL, the size ceiling, worktree isolation — is
 	// cross-platform, so only the newline case is skipped rather than the test.
 	newlinePaths := runtime.GOOS != "windows"
 	if newlinePaths {
 		write(t, repo, "line\nbreak.go", "committed-newline-path\n")
+		write(t, repo, "trail.go\r", "committed-carriage-path\n")
 	}
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "committed reader fixture")
@@ -33,6 +39,7 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 	write(t, repo, "tracked.go", "dirty\nline\n")
 	if newlinePaths {
 		write(t, repo, "line\nbreak.go", "dirty-newline-path\n")
+		write(t, repo, "trail.go\r", "dirty-carriage-path\n")
 	}
 	write(t, repo, "dirty-only.go", "must not be visible from HEAD\n")
 
@@ -60,6 +67,10 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 		if !ok || strings.Join(lines, "|") != "committed-newline-path|" {
 			t.Fatalf("committed newline-path source = %q, ok=%v", lines, ok)
 		}
+		lines, ok = read("trail.go\r")
+		if !ok || strings.Join(lines, "|") != "committed-carriage-path|" {
+			t.Fatalf("committed trailing-CR path source = %q, ok=%v", lines, ok)
+		}
 	}
 	for _, path := range []string{"dirty-only.go", "contains-nul.go", "oversized.go"} {
 		if lines, ok := read(path); ok {
@@ -70,6 +81,123 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 		t.Fatalf("close committed reader: %v", err)
 	}
 	closeReader = nil
+}
+
+type deepSnapshotLineFile struct {
+	path    string
+	content string
+}
+
+func importDeepSnapshotLineFiles(t *testing.T, repo string, files []deepSnapshotLineFile) string {
+	t.Helper()
+	// Construct the tree from single components rather than giving fast-import
+	// each complete 16 KiB path. The latter exceeds Git for Windows' path parser
+	// limit even though the raw Git tree object can represent the fixture.
+	var scopeInput strings.Builder
+	for _, file := range files {
+		components := strings.Split(file.path, "/")
+		blob := gitSnapshotObjectInputOutput(t, repo, file.content, "hash-object", "-w", "--stdin")
+		tree := gitSnapshotObjectInputOutput(
+			t,
+			repo,
+			fmt.Sprintf("100644 blob %s\t%s%c", blob, components[len(components)-1], byte(0)),
+			"mktree", "-z",
+		)
+		for i := len(components) - 2; i >= 1; i-- {
+			tree = gitSnapshotObjectInputOutput(
+				t,
+				repo,
+				fmt.Sprintf("040000 tree %s\t%s%c", tree, components[i], byte(0)),
+				"mktree", "-z",
+			)
+		}
+		fmt.Fprintf(&scopeInput, "040000 tree %s\t%s%c", tree, components[0], byte(0))
+	}
+	scope := gitSnapshotObjectInputOutput(t, repo, scopeInput.String(), "mktree", "-z")
+	root := gitSnapshotObjectInputOutput(
+		t,
+		repo,
+		fmt.Sprintf("040000 tree %s\tscope%c", scope, byte(0)),
+		"mktree", "-z",
+	)
+	commit := gitSnapshotObjectInputOutput(
+		t,
+		repo,
+		"",
+		"-c", "user.name=Entire Graph Test",
+		"-c", "user.email=graph@example.com",
+		"commit-tree", root, "-m", "deep snapshot lines",
+	)
+	git(t, repo, "update-ref", "refs/heads/deep-snapshot-lines", commit)
+	return commit
+}
+
+func gitSnapshotObjectInputOutput(t *testing.T, repo, input string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func deepSnapshotLinePath(branch int) string {
+	component := strings.Repeat(string(rune('a'+branch)), 200)
+	components := make([]string, 80, 81)
+	for i := range components {
+		components[i] = component
+	}
+	components = append(components, fmt.Sprintf("unsafe\nsource_%d.go", branch))
+	return strings.Join(components, "/")
+}
+
+// TestSnapshotLineReaderSharesDeepUnsafeMetadataAllowance proves the
+// command-lifetime fallback does not reset its component-process allowance per
+// source record. The snapshot root is a repository subdirectory, so the same
+// fixture also pins conversion from caller-relative to tree-root coordinates.
+func TestSnapshotLineReaderSharesDeepUnsafeMetadataAllowance(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	files := make([]deepSnapshotLineFile, 4)
+	for i := range files {
+		files[i] = deepSnapshotLineFile{
+			path:    deepSnapshotLinePath(i),
+			content: fmt.Sprintf("source-%d\n", i),
+		}
+	}
+	head := importDeepSnapshotLineFiles(t, repo, files)
+	subdir := filepath.Join(repo, "scope")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+	read, closeReader, err := openSnapshotLineReader(ctx, sem.ProviderSnapshot{
+		Header: sem.SnapshotHeader{RepoRoot: subdir, Commit: head},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	for _, file := range files {
+		lines, ok := read(file.path)
+		if ok && len(lines) > 0 && lines[0]+"\n" == file.content {
+			reads++
+		}
+	}
+	if err := closeReader(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := reads, 3; got != want {
+		t.Fatalf("snapshot source reads before shared metadata cap = %d, want %d", got, want)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("snapshot line reader exceeded safety timeout: %v", err)
+	}
 }
 
 // A committed reader that cannot be opened must cost the answer its source

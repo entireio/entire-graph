@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 // Caller-named output files: `index --report` and `verify --record-baseline`
@@ -126,9 +127,11 @@ func confinementRoot(ctx context.Context, repoRoot string) string {
 	if repoRoot == "" {
 		return repoRoot
 	}
-	top, err := gitutil.RepoRoot(ctx, repoRoot)
-	if err == nil && strings.TrimSpace(top) != "" && containsByIdentity(top, repoRoot) {
-		return top
+	if sem.EnsureGitMetadataSafeForSubprocess(repoRoot) == nil {
+		top, err := gitutil.RepoRoot(ctx, repoRoot)
+		if err == nil && strings.TrimSpace(top) != "" && containsByIdentity(top, repoRoot) {
+			return top
+		}
 	}
 	if discovered, ok := discoverCheckoutRoot(repoRoot); ok && containsByIdentity(discovered, repoRoot) {
 		return discovered
