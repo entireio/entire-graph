@@ -782,6 +782,49 @@ func TestStatsMedianFallbackWhenTopHitUnresolvable(t *testing.T) {
 	}
 }
 
+func TestStatsFileSizeStaysInsideTheSelectedRepository(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	inside := filepath.Join(repo, "inside.go")
+	insideContent := []byte("package inside\n")
+	if err := os.WriteFile(inside, insideContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "outside.go")
+	if err := os.WriteFile(external, bytes.Repeat([]byte("x"), 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(repo, "linked.go")
+	linkedCreated := os.Symlink(external, linked) == nil
+	linkedDir := filepath.Join(repo, "linked-dir")
+	linkedDirCreated := os.Symlink(filepath.Dir(external), linkedDir) == nil
+
+	collector := newStatsCollector(t.Context(), repo)
+	if got := collector.fileSize("inside.go"); got != int64(len(insideContent)) {
+		t.Fatalf("in-repository file size = %d, want %d", got, len(insideContent))
+	}
+	if got := collector.fileSize(external); got != 0 {
+		t.Fatalf("out-of-repository file size = %d, want 0", got)
+	}
+	relativeExternal, err := filepath.Rel(repo, external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := collector.fileSize(relativeExternal); got != 0 {
+		t.Fatalf("relative out-of-repository file size = %d, want 0", got)
+	}
+	if linkedCreated {
+		if got := collector.fileSize("linked.go"); got != 0 {
+			t.Fatalf("symlinked file size = %d, want 0", got)
+		}
+	}
+	if linkedDirCreated {
+		if got := collector.fileSize("linked-dir/outside.go"); got != 0 {
+			t.Fatalf("file size through an intermediate symlink = %d, want 0", got)
+		}
+	}
+}
+
 func TestStatsTranscriptScopesToOneSession(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()

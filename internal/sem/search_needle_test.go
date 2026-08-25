@@ -127,6 +127,9 @@ func TestSearchNeedleLocateReportsExactTotalsAndSamplesPerFile(t *testing.T) {
 	if scan.occurrences != 4 || scan.files != 2 {
 		t.Fatalf("occurrences/files = %d/%d, want 4/2", scan.occurrences, scan.files)
 	}
+	if got := strings.Join(scan.matchingPaths, ","); got != "a.go,b.go" {
+		t.Fatalf("matching provenance paths = %q, want a.go,b.go", got)
+	}
 	// Three occurrences in a.go, sampled at two, so the sample spans files rather than one file.
 	if len(scan.hits) != 3 {
 		t.Fatalf("hits = %d, want 3 (2 from a.go + 1 from b.go)", len(scan.hits))
