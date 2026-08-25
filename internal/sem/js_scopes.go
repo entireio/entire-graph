@@ -186,6 +186,9 @@ func buildJSScanState(ctx context.Context, grammar *sitter.Language, parseSrc []
 	if walker.stopped {
 		return emptyJSScanState(content), fmt.Errorf("tree-sitter scope walk stopped by caller: %w", ctx.Err())
 	}
+	if ctx.Err() != nil {
+		return emptyJSScanState(content), fmt.Errorf("tree-sitter scope walk stopped by caller: %w", ctx.Err())
+	}
 	for _, scope := range state.namespaces {
 		state.namespaceSet[scope.Name] = true
 	}

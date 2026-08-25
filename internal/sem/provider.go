@@ -3074,7 +3074,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 			handledRoutes[r.Route] = struct{}{}
 		}
-		for _, r := range djangoRouteRelations(files, recordsByFile, readContent) {
+		for _, r := range djangoRouteRelations(files, recordsByFile, readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -14949,7 +14949,7 @@ func resolveRouteHandlerSymbol(handlers map[string]SymbolRecord, expr string) (S
 	return SymbolRecord{}, false
 }
 
-func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {
+func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []expressRouteRelation {
 	knownFiles := map[string]bool{}
 	for _, file := range files {
 		knownFiles[file.Path] = true
@@ -15032,6 +15032,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		})
 	}
 	for _, file := range files {
+		if stopped(stop) {
+			break
+		}
 		if !strings.EqualFold(filepath.Ext(file.Path), ".py") {
 			continue
 		}
@@ -15041,6 +15044,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		}
 		if !includedTargets[file.Path] {
 			for _, registration := range djangoRouteRegistrations(content) {
+				if stopped(stop) {
+					break
+				}
 				symbols := symbolsByFileAndName
 				if registration.AllowTypeHandler {
 					symbols = typeSymbolsByFileAndName
@@ -15053,6 +15059,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 			}
 		}
 		for _, mount := range djangoIncludeMounts(content) {
+			if stopped(stop) {
+				break
+			}
 			targetFile, ok := djangoResolveIncludeTarget(file.Path, mount, importsByFile[file.Path], moduleFiles, knownFiles)
 			if !ok {
 				continue
@@ -15062,6 +15071,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 				continue
 			}
 			for _, registration := range djangoRouteRegistrations(targetContent) {
+				if stopped(stop) {
+					break
+				}
 				symbols := symbolsByFileAndName
 				if registration.AllowTypeHandler {
 					symbols = typeSymbolsByFileAndName
@@ -16847,12 +16859,18 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 			break
 		}
 		for _, mount := range mountsByFile[file.Path] {
+			if stopped(stop) {
+				break
+			}
 			targetLocal, targetMember := splitJavaScriptMember(mount.Target)
 			localReceiver := targetLocal
 			if targetMember != "" {
 				localReceiver = targetMember
 			}
 			for _, route := range routesByFile[file.Path] {
+				if stopped(stop) {
+					break
+				}
 				if route.Receiver != localReceiver || route.Handler == "" {
 					continue
 				}
@@ -16891,6 +16909,9 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 				})
 			}
 			for _, binding := range importBindingsByFile[file.Path][targetLocal] {
+				if stopped(stop) {
+					break
+				}
 				routeFile, ok := resolveLocalImport(file.Path, binding.Module, knownFiles)
 				if !ok || routeFile == file.Path {
 					continue
@@ -16908,6 +16929,9 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 					routeReceiver = targetLocal
 				}
 				for _, route := range routesByFile[routeFile] {
+					if stopped(stop) {
+						break
+					}
 					if route.Receiver != routeReceiver || route.Handler == "" {
 						continue
 					}
@@ -16948,8 +16972,14 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 			}
 		}
 		for _, mount := range pluginMountsByFile[file.Path] {
+			if stopped(stop) {
+				break
+			}
 			targetLocal, targetMember := splitJavaScriptMember(mount.Target)
 			for _, binding := range importBindingsByFile[file.Path][targetLocal] {
+				if stopped(stop) {
+					break
+				}
 				routeFile, ok := resolveLocalImport(file.Path, binding.Module, knownFiles)
 				if !ok || routeFile == file.Path {
 					continue
@@ -16967,6 +16997,9 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 					pluginName = targetLocal
 				}
 				for _, route := range pluginRoutesByFile[routeFile][pluginName] {
+					if stopped(stop) {
+						break
+					}
 					if route.Handler == "" {
 						continue
 					}
@@ -17078,8 +17111,17 @@ func pythonIncludeRouterRelations(files []FileRecord, recordsByFile map[string][
 			continue
 		}
 		for _, mount := range mountsByFile[file.Path] {
+			if stopped(stop) {
+				break
+			}
 			for _, target := range pythonRouterTargetFiles(file.Path, mount.Target, importsByFile[file.Path], knownFiles) {
+				if stopped(stop) {
+					break
+				}
 				for _, route := range routesByFile[target.File] {
+					if stopped(stop) {
+						break
+					}
 					if route.Receiver != target.Receiver {
 						continue
 					}
