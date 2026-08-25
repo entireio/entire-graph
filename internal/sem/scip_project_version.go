@@ -21,6 +21,16 @@ type ManifestReader func(name string) (string, bool)
 // versions from Git tags -- and for tsconfig.json and setup.cfg.
 const ScipProjectVersionUnknown = "0"
 
+// ScipManifestReadLimit bounds a manifest read for the version lookup.
+//
+// The lookup runs before the provider's own blob caps apply, so without a bound
+// a repository carrying an enormous package.json could exhaust memory and abort
+// the export. A manifest is a small declaration -- 1 MiB is far above any real
+// one -- and exceeding the bound is treated as "no version declared" rather than
+// as an error, so a hostile manifest costs the export its version field and
+// nothing else.
+const ScipManifestReadLimit int64 = 1 << 20
+
 // scipProjectVersionManifests are the root manifests that can declare the
 // project's own version, in precedence order. go.mod, tsconfig.json and
 // setup.cfg are deliberately absent: none of them carries the version of the

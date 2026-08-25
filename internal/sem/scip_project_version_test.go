@@ -3,6 +3,7 @@ package sem
 import (
 	"bytes"
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -164,5 +165,69 @@ func TestSCIPOmissionNoteVersionIsPinned(t *testing.T) {
 	}
 	if note.RecordType != "scip_omissions" || note.Format != "scip" {
 		t.Fatalf("omission note identity changed: %#v", note)
+	}
+}
+
+// TestSCIPProjectRootIsAResolvableFileURI covers the platforms CI runs on but
+// whose path shapes no test asserted. url.URL takes Path verbatim, so a Windows
+// path used to go out as "file://C:%5Crepo" -- drive read as authority,
+// separators escaped -- which no consumer can resolve back to a directory.
+func TestSCIPProjectRootIsAResolvableFileURI(t *testing.T) {
+	tests := []struct{ root, want string }{
+		{"", ""},
+		{"/home/u/repo", "file:///home/u/repo"},
+		{`C:\repo`, "file:///C:/repo"},
+		{"C:/repo", "file:///C:/repo"},
+		{`c:\Users\me\src`, "file:///c:/Users/me/src"},
+		{`\\server\share\repo`, "file://server/share/repo"},
+		{"//server/share/repo", "file://server/share/repo"},
+		// Not UNC: no share component, so it stays an ordinary path.
+		{"//server", "file:////server"},
+	}
+	for _, test := range tests {
+		if got := scipProjectRoot(test.root); got != test.want {
+			t.Errorf("scipProjectRoot(%q) = %q, want %q", test.root, got, test.want)
+		}
+	}
+	// Whatever the shape, the result must parse and must not smuggle a
+	// backslash through as an escaped path byte.
+	for _, root := range []string{"/home/u/repo", `C:\repo`, `\\server\share\repo`} {
+		parsed, err := url.Parse(scipProjectRoot(root))
+		if err != nil {
+			t.Errorf("scipProjectRoot(%q) is not a URL: %v", root, err)
+			continue
+		}
+		if parsed.Scheme != "file" || strings.Contains(parsed.Path, `\`) {
+			t.Errorf("scipProjectRoot(%q) -> %#v", root, parsed)
+		}
+	}
+}
+
+// TestSCIPNoteCarriesTiersAndFailureRecords pins the two facts SCIP itself
+// cannot express: which languages were only inventoried, and which files failed
+// to parse. Every discovered file becomes a Document either way, so without
+// these the protobuf looks uniformly semantic.
+func TestSCIPNoteCarriesTiersAndFailureRecords(t *testing.T) {
+	note := SCIPOmissionNote{}
+	if note.LanguageTiers != nil || note.PartialFailures != nil {
+		t.Fatalf("zero note is not empty: %#v", note)
+	}
+	encoded, err := json.Marshal(note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "language_tiers") || strings.Contains(string(encoded), "partial_failures") {
+		t.Errorf("empty note carries the new fields: %s", encoded)
+	}
+	note.LanguageTiers = map[string]string{"Go": "semantic", "Zig": "inventory-only"}
+	note.PartialFailures = []PartialFailure{{Code: "E_UNPARSEABLE", FilePath: "weird.zig"}}
+	encoded, err = json.Marshal(note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"inventory-only", "E_UNPARSEABLE", "weird.zig"} {
+		if !strings.Contains(string(encoded), want) {
+			t.Errorf("note lost %q: %s", want, encoded)
+		}
 	}
 }

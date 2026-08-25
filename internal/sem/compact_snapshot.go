@@ -223,6 +223,22 @@ type SCIPOmissionNote struct {
 	// they can still be referenced, but they land in a synthetic document and
 	// carry no navigable definition location.
 	UnlocatedSymbols int `json:"unlocated_symbols,omitempty"`
+	// LanguageTiers classifies each language in the snapshot as "semantic" or
+	// "inventory-only", carried through from the summary.
+	//
+	// SCIP has no way to express the difference: every discovered file becomes a
+	// Document, so an inventory-only file -- discovered and listed, but never
+	// parsed for symbols or relations -- is indistinguishable from a
+	// semantically extracted one. A consumer deciding per language whether to
+	// trust this feed cannot make that decision from the protobuf alone, and
+	// this is the field that lets it.
+	LanguageTiers map[string]string `json:"language_tiers,omitempty"`
+	// PartialFailures carries the summary's failure records, not just their
+	// count. A count says something was skipped; only the records say which path
+	// and why, which is what the provider contract requires unparseable input to
+	// surface as. PartialFailureCount stays for consumers that only need the
+	// number.
+	PartialFailures []PartialFailure `json:"partial_failures,omitempty"`
 }
 
 // SCIPSnapshotEncoder writes an experimental SCIP Index protobuf for complete
@@ -768,7 +784,47 @@ func scipProjectRoot(root string) string {
 	if root == "" {
 		return ""
 	}
-	return (&url.URL{Scheme: "file", Path: root}).String()
+	// Normalize before building the URI. url.URL takes Path verbatim, so a
+	// Windows path went out malformed: "C:\\repo" became "file://C:%5Crepo",
+	// with the drive read as an authority and the separators percent-escaped,
+	// which no SCIP consumer can resolve back to a directory.
+	path := strings.ReplaceAll(root, "\\", "/")
+	if host, share, ok := scipUNCParts(path); ok {
+		// A UNC path's server is the URI authority: \\server\share\dir is
+		// file://server/share/dir.
+		return (&url.URL{Scheme: "file", Host: host, Path: share}).String()
+	}
+	if scipHasDriveLetter(path) {
+		// A drive letter is part of the path, not an authority, so it needs the
+		// leading slash that makes the authority empty: file:///C:/repo.
+		path = "/" + path
+	}
+	return (&url.URL{Scheme: "file", Path: path}).String()
+}
+
+// scipHasDriveLetter reports whether path begins with a Windows drive
+// specifier such as "C:".
+func scipHasDriveLetter(path string) bool {
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	letter := path[0]
+	return (letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z')
+}
+
+// scipUNCParts splits a slash-normalized UNC path into its server and the
+// remainder. It requires a non-empty server and share, so "//" alone is not a
+// UNC path.
+func scipUNCParts(path string) (string, string, bool) {
+	if !strings.HasPrefix(path, "//") {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(path, "//")
+	host, remainder, found := strings.Cut(rest, "/")
+	if host == "" || !found || remainder == "" {
+		return "", "", false
+	}
+	return host, "/" + remainder, true
 }
 
 func scipSortedKeys[V any](values map[string]V) []string {

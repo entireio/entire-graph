@@ -459,15 +459,25 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 func scipProjectVersion(ctx context.Context, repo string, worktree bool) string {
 	return sem.ScipProjectVersion(func(name string) (string, bool) {
 		if !worktree {
-			content, ok, err := gitutil.ShowFile(ctx, repo, "HEAD", name)
+			content, ok, err := gitutil.ShowFileLimited(ctx, repo, "HEAD", name, sem.ScipManifestReadLimit)
 			if err == nil {
 				return content, ok
 			}
 			// No HEAD, or Git unavailable. The snapshot itself falls back to
 			// the working tree in that case, so the version does too.
 		}
-		content, err := os.ReadFile(filepath.Join(repo, name))
+		file, err := os.Open(filepath.Join(repo, name))
 		if err != nil {
+			return "", false
+		}
+		defer func() { _ = file.Close() }()
+		// Bounded: a manifest is a small declaration, and this read happens
+		// before the provider's own blob caps are in play, so an enormous
+		// package.json must not be able to exhaust memory and take the export
+		// down with it. Reading one byte past the limit is what distinguishes
+		// "at the limit" from "over it".
+		content, err := io.ReadAll(io.LimitReader(file, sem.ScipManifestReadLimit+1))
+		if err != nil || int64(len(content)) > sem.ScipManifestReadLimit {
 			return "", false
 		}
 		return string(content), true
@@ -480,6 +490,14 @@ func scipOmissionNoteWithSummary(note sem.SCIPOmissionNote, summary *sem.Snapsho
 	}
 	note.WarningCount = len(summary.Warnings)
 	note.PartialFailureCount = len(summary.PartialFailures)
+	// The records themselves, not just how many. SCIP cannot represent a file
+	// that was discovered but not parsed, so without these the note is the only
+	// place that information could have survived, and it was being reduced to an
+	// integer.
+	note.PartialFailures = summary.PartialFailures
+	// Which languages were only inventoried, so a consumer can scope trust per
+	// language the way the feed contract expects.
+	note.LanguageTiers = summary.LanguageTiers
 	level := summary.Stats.CompletenessLevel
 	if level == "" || level == "ok" {
 		return note
