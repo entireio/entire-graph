@@ -284,6 +284,7 @@ func NewSCIPSnapshotEncoder(out io.Writer, projectVersion string) *SCIPSnapshotE
 	if strings.TrimSpace(projectVersion) == "" {
 		projectVersion = ScipProjectVersionUnknown
 	}
+	// SetProjectVersion may replace this before the summary; see its comment.
 	return &SCIPSnapshotEncoder{
 		out:            out,
 		projectVersion: projectVersion,
@@ -367,6 +368,18 @@ func (encoder *SCIPSnapshotEncoder) Encode(record any) error {
 		return nil
 	default:
 		return fmt.Errorf("unsupported scip snapshot record %T", record)
+	}
+}
+
+// SetProjectVersion supplies the SCIP package version after construction.
+//
+// The version comes from the snapshot build itself, through the provider's
+// validated content reader, so it arrives after the encoder exists but before
+// the summary that triggers marshalling -- which is the only deadline, since
+// nothing is written until then. A blank value leaves the fallback in place.
+func (encoder *SCIPSnapshotEncoder) SetProjectVersion(version string) {
+	if version = strings.TrimSpace(version); version != "" {
+		encoder.projectVersion = version
 	}
 }
 
@@ -853,6 +866,21 @@ func scipProjectRoot(root string) string {
 	// with the drive read as an authority and the separators percent-escaped,
 	// which no SCIP consumer can resolve back to a directory.
 	path := strings.ReplaceAll(root, "\\", "/")
+	// Extended-length and device prefixes ("\\\\?\\C:\\repo",
+	// "\\\\.\\C:\\repo") normalize to "//?/C:/repo", which the UNC branch below
+	// would otherwise read as a host of "?". Strip the prefix first and let the
+	// drive-letter branch handle what is left.
+	for _, prefix := range []string{"//?/UNC/", "//?/", "//./"} {
+		if strings.HasPrefix(path, prefix) {
+			rest := strings.TrimPrefix(path, prefix)
+			if prefix == "//?/UNC/" {
+				path = "//" + rest
+			} else {
+				path = rest
+			}
+			break
+		}
+	}
 	if host, share, ok := scipUNCParts(path); ok {
 		// A UNC path's server is the URI authority: \\server\share\dir is
 		// file://server/share/dir.

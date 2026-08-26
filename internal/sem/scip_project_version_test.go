@@ -78,6 +78,10 @@ func TestScipProjectVersionReadsRootManifests(t *testing.T) {
 		}, ""},
 		{"no manifest", map[string]string{}, ""},
 		{"go.mod is not consulted", map[string]string{"go.mod": "module example.com/demo\n\ngo 1.26\n"}, ""},
+		{"toml literal string", map[string]string{"Cargo.toml": "[package]\nversion = '2.5.0'\n"}, "2.5.0"},
+		{"literal string with trailing comment", map[string]string{"Cargo.toml": "[package]\nversion = '2.5.0' # pinned\n"}, "2.5.0"},
+		{"basic string with trailing comment", map[string]string{"Cargo.toml": "[package]\nversion = \"2.5.0\" # pinned\n"}, "2.5.0"},
+		{"unterminated string", map[string]string{"Cargo.toml": "[package]\nversion = \"2.5.0\n"}, ""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -184,6 +188,10 @@ func TestSCIPProjectRootIsAResolvableFileURI(t *testing.T) {
 		{"//server/share/repo", "file://server/share/repo"},
 		// Not UNC: no share component, so it stays an ordinary path.
 		{"//server", "file:////server"},
+		// Extended-length and device prefixes must not be read as a UNC host.
+		{`\\?\C:\repo`, "file:///C:/repo"},
+		{`\\.\C:\repo`, "file:///C:/repo"},
+		{`\\?\UNC\server\share\repo`, "file://server/share/repo"},
 	}
 	for _, test := range tests {
 		if got := scipProjectRoot(test.root); got != test.want {

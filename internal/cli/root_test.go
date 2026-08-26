@@ -1572,26 +1572,3 @@ func twoCommitRepo(t *testing.T) string {
 	git(t, repo, "commit", "-m", "two")
 	return repo
 }
-
-// TestSCIPProjectVersionIgnoresAnOversizedManifest covers the bound on the
-// version lookup. It runs before the provider's blob caps, so an enormous
-// manifest must cost the export its version field and nothing else, rather than
-// being read into memory whole.
-func TestSCIPProjectVersionIgnoresAnOversizedManifest(t *testing.T) {
-	repo := t.TempDir()
-	padding := strings.Repeat(" ", int(sem.ScipManifestReadLimit))
-	manifest := `{"name":"demo",` + padding + `"version":"4.5.6"}`
-	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte(manifest), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := scipProjectVersion(t.Context(), repo, true); got != "" {
-		t.Fatalf("oversized manifest yielded version %q, want none", got)
-	}
-	small := `{"name":"demo","version":"4.5.6"}`
-	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte(small), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := scipProjectVersion(t.Context(), repo, true); got != "4.5.6" {
-		t.Fatalf("ordinary manifest yielded version %q, want 4.5.6", got)
-	}
-}

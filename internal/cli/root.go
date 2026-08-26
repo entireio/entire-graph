@@ -307,7 +307,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			return sem.NewCompactSnapshotEncoder(out).Encode
 		}
 		if scip {
-			scipEncoder = sem.NewSCIPSnapshotEncoder(out, scipProjectVersion(ctx, repo, flags.Worktree))
+			scipEncoder = sem.NewSCIPSnapshotEncoder(out, "")
 			return scipEncoder.Encode
 		}
 		encoder := json.NewEncoder(out)
@@ -315,6 +315,13 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		return encoder.Encode
 	}
 	encodeRecord := newRecordEncoder(opts.Stdout)
+	if scipEncoder != nil {
+		// The version is read inside the snapshot build, through the reader that
+		// is already validated, bounded and pinned to this snapshot's revision.
+		// Reading it here instead would run Git before the metadata preflight and
+		// touch the filesystem without the provider's guards.
+		options.ProjectVersion = scipEncoder.SetProjectVersion
+	}
 
 	// Targeted edge query: when --to/--from/--relation is set, emit only matching
 	// relations (plus header/summary), never files/symbols. Turns "callers of X"
@@ -446,42 +453,6 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		_ = recordsCache.Store(recordBuf.Bytes(), summary, snapshotHeader)
 	}
 	return nil
-}
-
-// scipProjectVersion reads the project's own declared version for the SCIP
-// package field, from the same tree the snapshot describes.
-//
-// A committed-tree snapshot reads the manifest at HEAD, not from disk: a dirty
-// working tree must not put a version into an index that describes a commit.
-// A --worktree snapshot reads the working tree, which is what it describes.
-// Every failure is non-fatal and falls through to "not declared" -- a version
-// string cannot be allowed to fail an export.
-func scipProjectVersion(ctx context.Context, repo string, worktree bool) string {
-	return sem.ScipProjectVersion(func(name string) (string, bool) {
-		if !worktree {
-			content, ok, err := gitutil.ShowFileLimited(ctx, repo, "HEAD", name, sem.ScipManifestReadLimit)
-			if err == nil {
-				return content, ok
-			}
-			// No HEAD, or Git unavailable. The snapshot itself falls back to
-			// the working tree in that case, so the version does too.
-		}
-		file, err := os.Open(filepath.Join(repo, name))
-		if err != nil {
-			return "", false
-		}
-		defer func() { _ = file.Close() }()
-		// Bounded: a manifest is a small declaration, and this read happens
-		// before the provider's own blob caps are in play, so an enormous
-		// package.json must not be able to exhaust memory and take the export
-		// down with it. Reading one byte past the limit is what distinguishes
-		// "at the limit" from "over it".
-		content, err := io.ReadAll(io.LimitReader(file, sem.ScipManifestReadLimit+1))
-		if err != nil || int64(len(content)) > sem.ScipManifestReadLimit {
-			return "", false
-		}
-		return string(content), true
-	})
 }
 
 func scipOmissionNoteWithSummary(note sem.SCIPOmissionNote, summary *sem.SnapshotSummary) sem.SCIPOmissionNote {

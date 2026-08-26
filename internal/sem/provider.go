@@ -372,6 +372,17 @@ type ProviderSnapshotOptions struct {
 	// inventory, imports, shallow local calls, boundaries, IaC, no evidence), or
 	// syntax-only (file/symbol inventory and structure only). Empty means full.
 	Profile Profile
+	// ProjectVersion, when non-nil, receives the project's own declared version
+	// as read from the root manifest.
+	//
+	// It is delivered from inside the snapshot build, through the same validated
+	// content reader every other manifest read uses, because that is the only
+	// place the read is already safe: Git metadata has been validated, the read
+	// is bounded by MaxParseBytes, non-regular files are refused, and it is
+	// pinned to the revision this snapshot describes rather than to a HEAD that
+	// can move underneath it. A caller reading the manifest itself gets none of
+	// that. Called at most once, before the summary.
+	ProjectVersion func(string)
 	// Progress, when non-nil, receives coarse local-only indexing telemetry.
 	// Callbacks run synchronously and should return quickly.
 	Progress func(ProgressEvent)
@@ -1130,6 +1141,14 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 		}
 		emitErr = emit(r)
+	}
+	if options.ProjectVersion != nil {
+		// Read through the snapshot's own content reader: metadata already
+		// validated, bounded by MaxParseBytes, non-regular files refused, and
+		// pinned to this snapshot's revision rather than to a HEAD that can move
+		// underneath it. Above the profile branch so a syntax-only export, which
+		// resolves no relations, still reports a version.
+		options.ProjectVersion(ScipProjectVersion(ManifestReader(sc.read)))
 	}
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelationsCompact(sc.key, files, structuralByFile, func(r RelationRecord) {
