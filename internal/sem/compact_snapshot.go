@@ -378,7 +378,10 @@ func (encoder *SCIPSnapshotEncoder) Encode(record any) error {
 // the summary that triggers marshalling -- which is the only deadline, since
 // nothing is written until then. A blank value leaves the fallback in place.
 func (encoder *SCIPSnapshotEncoder) SetProjectVersion(version string) {
-	if version = strings.TrimSpace(version); version != "" {
+	// Bounded here too, not only at the source: this is exported, the value is
+	// repository-controlled, and it is copied into every emitted symbol, so an
+	// overlong one amplifies into the whole index rather than costing one field.
+	if version = strings.TrimSpace(version); version != "" && len(version) <= ScipProjectVersionMaxLen {
 		encoder.projectVersion = version
 	}
 }

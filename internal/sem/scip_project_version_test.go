@@ -78,6 +78,16 @@ func TestScipProjectVersionReadsRootManifests(t *testing.T) {
 		}, ""},
 		{"no manifest", map[string]string{}, ""},
 		{"go.mod is not consulted", map[string]string{"go.mod": "module example.com/demo\n\ngo 1.26\n"}, ""},
+		{"overlong version is not a version", map[string]string{
+			"package.json": `{"version":"` + strings.Repeat("9", ScipProjectVersionMaxLen+1) + `"}`,
+		}, ""},
+		{"version at the limit is kept", map[string]string{
+			"package.json": `{"version":"` + strings.Repeat("9", ScipProjectVersionMaxLen) + `"}`,
+		}, strings.Repeat("9", ScipProjectVersionMaxLen)},
+		{"overlong falls through to the next manifest", map[string]string{
+			"package.json": `{"version":"` + strings.Repeat("9", ScipProjectVersionMaxLen+1) + `"}`,
+			"Cargo.toml":   "[package]\nversion = \"1.0.0\"\n",
+		}, "1.0.0"},
 		{"toml literal string", map[string]string{"Cargo.toml": "[package]\nversion = '2.5.0'\n"}, "2.5.0"},
 		{"literal string with trailing comment", map[string]string{"Cargo.toml": "[package]\nversion = '2.5.0' # pinned\n"}, "2.5.0"},
 		{"basic string with trailing comment", map[string]string{"Cargo.toml": "[package]\nversion = \"2.5.0\" # pinned\n"}, "2.5.0"},
@@ -105,6 +115,22 @@ func TestScipProjectVersionUnknownIsUsedWhenNoneDeclared(t *testing.T) {
 	}
 	if got := parsed.GetPackage().GetVersion(); got != ScipProjectVersionUnknown {
 		t.Fatalf("package version = %q, want %q", got, ScipProjectVersionUnknown)
+	}
+}
+
+// TestSCIPSetProjectVersionRejectsAnAmplifyingVersion guards the exported
+// setter independently of the source. The version is copied into every symbol,
+// so an overlong one is not one bad field, it is the whole index: a 200 KB
+// version across 200 symbols produced an 80 MB export before this bound.
+func TestSCIPSetProjectVersionRejectsAnAmplifyingVersion(t *testing.T) {
+	encoder := NewSCIPSnapshotEncoder(nil, "1.2.3")
+	encoder.SetProjectVersion(strings.Repeat("9", ScipProjectVersionMaxLen+1))
+	if encoder.projectVersion != "1.2.3" {
+		t.Fatalf("overlong version was accepted: %d chars", len(encoder.projectVersion))
+	}
+	encoder.SetProjectVersion("4.5.6")
+	if encoder.projectVersion != "4.5.6" {
+		t.Fatalf("ordinary version was rejected: %q", encoder.projectVersion)
 	}
 }
 

@@ -21,6 +21,18 @@ type ManifestReader func(name string) (string, bool)
 // versions from Git tags -- and for tsconfig.json and setup.cfg.
 const ScipProjectVersionUnknown = "0"
 
+// ScipProjectVersionMaxLen bounds the declared version's LENGTH, which is a
+// separate concern from bounding the manifest read.
+//
+// The provider's reader caps the file, not the value pulled out of it, so a
+// manifest well under that cap can still declare a version of hundreds of
+// kilobytes -- and the version is copied into every emitted symbol, so it
+// amplifies. Measured: a 200 KB version across 200 symbols produced an 80 MB
+// index, roughly 400x. A real version is a handful of bytes; anything past this
+// is not one, and is treated as undeclared rather than truncated, because a
+// truncated version would silently name a different package.
+const ScipProjectVersionMaxLen = 256
+
 // scipProjectVersionManifests are the root manifests that can declare the
 // project's own version, in precedence order. go.mod, tsconfig.json and
 // setup.cfg are deliberately absent: none of them carries the version of the
@@ -54,9 +66,11 @@ func ScipProjectVersion(read ManifestReader) string {
 		if !ok {
 			continue
 		}
-		if version := strings.TrimSpace(manifest.parse(content)); version != "" {
-			return version
+		version := strings.TrimSpace(manifest.parse(content))
+		if version == "" || len(version) > ScipProjectVersionMaxLen {
+			continue
 		}
+		return version
 	}
 	return ""
 }
