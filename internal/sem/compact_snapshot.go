@@ -223,6 +223,9 @@ type SCIPOmissionNote struct {
 	// they can still be referenced, but they land in a synthetic document and
 	// carry no navigable definition location.
 	UnlocatedSymbols int `json:"unlocated_symbols,omitempty"`
+	// EmittedImplementations counts relationships emitted for the inheritance
+	// family, which SCIP answers "Find Implementations" from.
+	EmittedImplementations int `json:"emitted_implementations,omitempty"`
 	// LanguageTiers classifies each language in the snapshot as "semantic" or
 	// "inventory-only", carried through from the summary.
 	//
@@ -393,6 +396,7 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 	encoder.note.MissingEvidenceRelations = 0
 	encoder.note.EmittedDefinitions = 0
 	encoder.note.EmittedReferences = 0
+	encoder.note.EmittedImplementations = 0
 	encoder.note.UnlocatedSymbols = 0
 	encoder.note.WorktreeSnapshot = worktree
 	// header.Commit/Tree are blanked above for a worktree export, so this
@@ -440,6 +444,7 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 		externals[id] = scipExternalSymbol(header, encoder.projectVersion, encoder.externals[id])
 	}
 
+	infos := make(map[string]*scippb.SymbolInformation, len(symbolIDs))
 	for _, id := range symbolIDs {
 		record := encoder.symbols[id]
 		scipID := symbols[id]
@@ -459,9 +464,20 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 		if record.QualifiedName != "" && record.QualifiedName != record.Name {
 			info.Documentation = append(info.Documentation, record.QualifiedName)
 		}
+		infos[id] = info
 		doc.Symbols = append(doc.Symbols, info)
 		if record.StartLine > 0 {
-			doc.Occurrences = append(doc.Occurrences, scipOccurrenceFromLines(record.StartLine, record.EndLine, scipID, int32(scippb.SymbolRole_Definition)))
+			// The definition occurrence marks the DECLARATION, not the whole
+			// body. Spanning declaration-through-body made the definition
+			// overlap every call inside it, so a positional lookup anywhere in a
+			// multi-line function matched both the definition and whatever
+			// reference sat on that line. The full span is what enclosing_range
+			// is for.
+			occurrence := scipOccurrenceFromLines(record.StartLine, record.StartLine, scipID, int32(scippb.SymbolRole_Definition))
+			if record.EndLine > record.StartLine {
+				occurrence.SetEnclosingSourceRange(scipRangeFromLines(record.StartLine, record.EndLine))
+			}
+			doc.Occurrences = append(doc.Occurrences, occurrence)
 			encoder.note.EmittedDefinitions++
 		}
 	}
@@ -498,6 +514,21 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 			encoder.note.MissingTargetRelations++
 			continue
 		}
+		if scipImplementationRelation(relationType) {
+			// SCIP answers "Find Implementations" from SymbolInformation
+			// relationships, not from occurrences. Emitting these only as
+			// reference occurrences meant the navigation they exist for
+			// returned nothing, and because the types count as supported the
+			// loss was not reported either.
+			if info := infos[relation.FromID]; info != nil {
+				info.Relationships = append(info.Relationships, &scippb.Relationship{
+					Symbol:           target,
+					IsImplementation: true,
+					IsReference:      true,
+				})
+				encoder.note.EmittedImplementations++
+			}
+		}
 		emitted := false
 		for _, evidence := range relation.Evidence {
 			if evidence.FilePath == "" || evidence.StartLine <= 0 {
@@ -514,6 +545,11 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 	}
 
 	index := &scippb.Index{Metadata: scipMetadata(header, explicitWorktree)}
+	for _, info := range infos {
+		if len(info.Relationships) > 0 {
+			info.Relationships = scippb.CanonicalizeRelationships(info.Relationships)
+		}
+	}
 	for _, docPath := range scipSortedKeys(documents) {
 		doc := documents[docPath]
 		sortSCIPDocument(doc)
@@ -606,6 +642,17 @@ func scipReferenceRelation(relationType string) bool {
 	default:
 		return false
 	}
+}
+
+// scipImplementationRelation reports whether a relation is the kind SCIP
+// expresses as a SymbolInformation relationship rather than only as an
+// occurrence.
+func scipImplementationRelation(relationType string) bool {
+	switch relationType {
+	case "IMPLEMENTS", "INHERITS", "EXTENDS", "OVERRIDES":
+		return true
+	}
+	return false
 }
 
 func scipRoles(relationType string) int32 {

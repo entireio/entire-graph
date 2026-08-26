@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	scippb "github.com/scip-code/scip/bindings/go/scip"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestSCIPSymbolIdentityIsStableAcrossCommits is the regression test for the
@@ -261,5 +262,101 @@ func TestSCIPNoteCarriesRevisionProvenance(t *testing.T) {
 	)
 	if worktree.Commit != "" || worktree.Tree != "" || !worktree.WorktreeSnapshot {
 		t.Fatalf("worktree export carried a revision: %#v", worktree)
+	}
+}
+
+// TestSCIPEmitsImplementationRelationships covers the navigation SCIP answers
+// from SymbolInformation relationships rather than from occurrences. Emitting
+// the inheritance family only as reference occurrences made Find
+// Implementations return nothing.
+func TestSCIPEmitsImplementationRelationships(t *testing.T) {
+	var out bytes.Buffer
+	encoder := NewSCIPSnapshotEncoder(&out, "1.0.0")
+	push := func(record any) {
+		t.Helper()
+		if err := encoder.Encode(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	push(SnapshotHeader{RepoKey: "local/demo", Commit: "abc"})
+	push(FileRecord{Path: "a.go", Language: "Go"})
+	push(SymbolRecord{ID: "iface", Kind: "interface", Name: "Animal", FilePath: "a.go", StartLine: 1, EndLine: 3})
+	push(SymbolRecord{ID: "impl", Kind: "struct", Name: "Dog", FilePath: "a.go", StartLine: 5, EndLine: 9})
+	push(RelationRecord{Type: "IMPLEMENTS", FromID: "impl", ToID: "iface",
+		Evidence: []Evidence{{FilePath: "a.go", StartLine: 5, EndLine: 5}}})
+	push(SnapshotSummary{})
+
+	index := &scippb.Index{}
+	if err := proto.Unmarshal(out.Bytes(), index); err != nil {
+		t.Fatal(err)
+	}
+	var dog *scippb.SymbolInformation
+	for _, doc := range index.GetDocuments() {
+		for _, info := range doc.GetSymbols() {
+			if strings.Contains(info.GetSymbol(), "Dog") {
+				dog = info
+			}
+		}
+	}
+	if dog == nil {
+		t.Fatal("Dog symbol missing from the index")
+	}
+	if len(dog.GetRelationships()) != 1 {
+		t.Fatalf("Dog has %d relationships, want 1: %#v", len(dog.GetRelationships()), dog.GetRelationships())
+	}
+	rel := dog.GetRelationships()[0]
+	if !rel.GetIsImplementation() || !strings.Contains(rel.GetSymbol(), "Animal") {
+		t.Fatalf("relationship is not an implementation of Animal: %#v", rel)
+	}
+	if got := encoder.OmissionNote().EmittedImplementations; got != 1 {
+		t.Errorf("emitted_implementations = %d, want 1", got)
+	}
+}
+
+// TestSCIPDefinitionOccurrenceMarksTheDeclaration keeps a definition from
+// overlapping every reference inside its own body, which made positional
+// lookups inside a multi-line function ambiguous.
+func TestSCIPDefinitionOccurrenceMarksTheDeclaration(t *testing.T) {
+	var out bytes.Buffer
+	encoder := NewSCIPSnapshotEncoder(&out, "1.0.0")
+	for _, record := range []any{
+		SnapshotHeader{RepoKey: "local/demo", Commit: "abc"},
+		FileRecord{Path: "a.go", Language: "Go"},
+		SymbolRecord{ID: "fn", Kind: "function", Name: "Caller", FilePath: "a.go", StartLine: 10, EndLine: 20},
+		SnapshotSummary{},
+	} {
+		if err := encoder.Encode(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	index := &scippb.Index{}
+	if err := proto.Unmarshal(out.Bytes(), index); err != nil {
+		t.Fatal(err)
+	}
+	var def *scippb.Occurrence
+	for _, doc := range index.GetDocuments() {
+		for _, occ := range doc.GetOccurrences() {
+			if occ.GetSymbolRoles()&int32(scippb.SymbolRole_Definition) != 0 {
+				def = occ
+			}
+		}
+	}
+	if def == nil {
+		t.Fatal("no definition occurrence emitted")
+	}
+	span, ok := def.SourceRange()
+	if !ok {
+		t.Fatalf("definition has no range: %#v", def)
+	}
+	// Declaration line only: 0-based start 9, exclusive end 10.
+	if span.Start.Line != 9 || span.End.Line != 10 {
+		t.Errorf("definition range = %v, want the declaration line only", span)
+	}
+	enclosing, ok := def.EnclosingSourceRange()
+	if !ok {
+		t.Fatalf("definition carries no enclosing range: %#v", def)
+	}
+	if enclosing.Start.Line != 9 || enclosing.End.Line != 20 {
+		t.Errorf("enclosing range = %v, want the full declaration-through-body span", enclosing)
 	}
 }
