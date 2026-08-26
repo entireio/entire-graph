@@ -233,6 +233,19 @@ type SCIPOmissionNote struct {
 	// trust this feed cannot make that decision from the protobuf alone, and
 	// this is the field that lets it.
 	LanguageTiers map[string]string `json:"language_tiers,omitempty"`
+	// Commit and Tree are the revision this index describes.
+	//
+	// They used to ride inside every symbol as the SCIP package version, which
+	// gave a symbol a new identity on every commit. Removing them from the
+	// moniker was right, but they then survived nowhere: SCIP Metadata carries
+	// ToolInfo, ProjectRoot and an encoding and has no revision field, so two
+	// committed exports of the same repository at the same project version were
+	// indistinguishable from the artifacts alone. They belong here -- once per
+	// index, where they identify the export without touching symbol identity.
+	// Empty for a worktree export, which describes no commit; worktree_snapshot
+	// says so.
+	Commit string `json:"commit,omitempty"`
+	Tree   string `json:"tree,omitempty"`
 	// PartialFailures carries the summary's failure records, not just their
 	// count. A count says something was skipped; only the records say which path
 	// and why, which is what the provider contract requires unparseable input to
@@ -382,6 +395,10 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 	encoder.note.EmittedReferences = 0
 	encoder.note.UnlocatedSymbols = 0
 	encoder.note.WorktreeSnapshot = worktree
+	// header.Commit/Tree are blanked above for a worktree export, so this
+	// carries the revision exactly when there is one.
+	encoder.note.Commit = header.Commit
+	encoder.note.Tree = header.Tree
 
 	documents := map[string]*scippb.Document{}
 	documentFor := func(filePath, language string) *scippb.Document {

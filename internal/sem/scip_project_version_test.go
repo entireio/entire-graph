@@ -231,3 +231,35 @@ func TestSCIPNoteCarriesTiersAndFailureRecords(t *testing.T) {
 		}
 	}
 }
+
+// TestSCIPNoteCarriesRevisionProvenance pins the revision to the note.
+//
+// The commit used to ride inside every symbol as the package version. Removing
+// it from the moniker was right, but it then survived nowhere: SCIP Metadata has
+// no revision field, so two committed exports of the same repository at the same
+// project version were indistinguishable from the artifacts alone.
+func TestSCIPNoteCarriesRevisionProvenance(t *testing.T) {
+	encode := func(header SnapshotHeader, summary SnapshotSummary) SCIPOmissionNote {
+		t.Helper()
+		encoder := NewSCIPSnapshotEncoder(&bytes.Buffer{}, "1.0.0")
+		if err := encoder.Encode(header); err != nil {
+			t.Fatal(err)
+		}
+		if err := encoder.Encode(summary); err != nil {
+			t.Fatal(err)
+		}
+		return encoder.OmissionNote()
+	}
+	committed := encode(SnapshotHeader{RepoKey: "local/demo", Commit: "abc123", Tree: "def456"}, SnapshotSummary{})
+	if committed.Commit != "abc123" || committed.Tree != "def456" {
+		t.Fatalf("committed export lost its revision: %#v", committed)
+	}
+	// A worktree export describes no commit, and says so instead of inventing one.
+	worktree := encode(
+		SnapshotHeader{RepoKey: "local/demo", Commit: "abc123", Tree: "def456"},
+		SnapshotSummary{Warnings: []ProviderWarning{{Code: "W_WORKTREE_SNAPSHOT"}}},
+	)
+	if worktree.Commit != "" || worktree.Tree != "" || !worktree.WorktreeSnapshot {
+		t.Fatalf("worktree export carried a revision: %#v", worktree)
+	}
+}
