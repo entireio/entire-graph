@@ -31,6 +31,7 @@ authoritative in `entire graph capabilities --json`.
 | [ADR 0002](adr/0002-committed-tree-cache-key.md) | Accepted committed-tree cache-key decision; authoritative for committed-tree cache identity |
 | [ADR 0003](adr/0003-working-tree-search-snapshot-cache.md) | Superseded clean-tree search-snapshot reuse decision |
 | [ADR 0004](adr/0004-working-tree-cache-security-boundary.md) | Accepted working-tree cache bypass security decision; authoritative for working-tree eligibility |
+| [RFD 0006](adr/0006-reference-positions.md) | Proposed decision on SCIP reference-position fidelity; not yet decided, open for comment |
 
 Completed plans, superseded references, branch diaries, and point-in-time proof
 logs are listed in the [archive](archive/README.md). Archived documents are kept
