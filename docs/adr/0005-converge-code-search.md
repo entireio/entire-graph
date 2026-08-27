@@ -190,12 +190,32 @@ independently addressable and CRC32-checksummed (`:52-58`), so section 6 can be 
 **Freshness contract.**
 1. A feed is valid only for the exact `indexed_commit` being built. Any other commit is ignored,
    never approximated. Staleness is a hard miss.
-2. Per-language trust is driven by the omission note. A language reported skipped or degraded
-   falls back for that language only, not for the whole index.
+2. Per-language trust is driven by the omission note, which must carry more than aggregate
+   counts to do that job. Counts say something was skipped; only records say which language and
+   which file, and a consumer cannot fall back for one language on a number. The note now carries
+   `language_tiers` (each language as `semantic` or `inventory-only`) and `partial_failures` (the
+   failure records, with path and code, not just `partial_failure_count`), alongside `commit` and
+   `tree` for the revision. A language reported skipped or degraded falls back for that language
+   only, not for the whole index.
 3. Relation loss is expected and bounded: the feed supplies **symbols and resolution**, not
    relations. entire-graph's native snapshot stays the source of truth for the graph.
-4. The feed is advisory to availability. peregrine must build a complete, servable index with the
-   feed entirely absent.
+4. The feed is advisory to availability *while the native extractors remain*. peregrine must build
+   a complete, servable index with the feed entirely absent.
+
+   **This conflicts with step 9 and the RFD does not yet resolve it.** Step 9 removes peregrine's
+   extractors for every language at feed-on parity. Once they are gone, a feed outage or a rollback
+   by clearing the flag cannot produce a complete index for those languages -- it produces one
+   missing their symbols. "Feed-off is permanently supported" and "the duplicate extractors are
+   removed" cannot both hold for the same language. See open question 9.
+
+**Precision must follow the tier, not the transport.** The feed carries symbols for
+inventory-only languages too -- files that were discovered and listed but never parsed for symbols
+or relations -- and SCIP has no way to mark them, since every discovered file becomes a `Document`.
+Importing the symbol table wholesale as `Scip` / `Semantic` would advertise those as semantically
+parsed. The ingestion step must partition by the note's `language_tiers`: only `semantic` languages
+may be written as `Scip` / `Semantic`; an `inventory-only` language either keeps the native layer or
+is written with `Syntax` precision. Mixed-precision indexes are already legal here, so this costs
+nothing but the filter.
 
 **Fallback.** peregrine's native tree-sitter layer is retained and stays the default when no valid
 feed is present, emitting `TreeSitter` / `Syntax` exactly as today. `precision` becomes a queryable
@@ -250,7 +270,8 @@ Nothing is removed before step 7 has held for two release cycles. Then:
   ceiling agreed with Evis before the run, not after.
 - **Rollout**: per-repo flag, then per-language default, then global, each stage reversible by
   clearing the flag and falling back to the native layer with no reindex. Feed-off stays a
-  permanently supported configuration, not a transitional state.
+  supported configuration for as long as that language still has a native extractor -- which step 9
+  ends. See open question 9.
 
 ### Non-goals
 
@@ -317,6 +338,23 @@ Nothing is removed before step 7 has held for two release cycles. Then:
 8. **Staging to production.** peregrine is staging-only, single replica, no live autoscaling per
    `docs/go-live-plan.md`, no production cluster overlay in the repo. Convergence assumes it
    reaches production. If that slips, COR-786 lands on an engine no user can reach.
+
+9. **Does feed-off survive step 9, and if not, which promise goes?** The freshness contract says
+   peregrine must build a complete servable index with the feed absent, and the rollout section
+   calls feed-off permanently supported. Step 9 removes the native extractors for every language at
+   feed-on parity. Those cannot all be true at once: after removal, a feed outage degrades those
+   languages rather than falling back cleanly. Three ways out, and this RFD should pick one before
+   step 5 rather than discovering it at step 9:
+   - **Keep the extractors.** Feed-off stays real, but "deprecate duplicates" is not satisfied for
+     the languages that matter most, which is what COR-786 asked for.
+   - **Retire the feed-off contract explicitly.** Accept that a feed outage degrades a feed-on
+     language, and say so in the contract, with whatever availability commitment that implies for
+     the producer.
+   - **Scope it.** Keep the extractors only for languages where a degraded index is unacceptable,
+     and remove the rest, making the duplicate-removal per-language rather than global.
+
+   Deciding this late is the expensive option: step 9 is the irreversible one, and it is the step
+   that discovers the answer.
 
 ## Consequences
 
