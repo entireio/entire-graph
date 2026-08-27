@@ -103,6 +103,37 @@ semantic SHA-256 (normalized native records in record order) must equal the
 normal NDJSON snapshot. Matching only the hash is not sufficient evidence of
 losslessness.
 
+## Experimental SCIP snapshot protobuf
+
+`snapshot --format scip` is an experimental, complete-snapshot-only projection for SCIP consumers. It writes a single binary SCIP `Index` protobuf to stdout and a single JSON omission note to stderr. It is rejected for `symbols`, `edges`, targeted `--to`/`--from`/`--relation` output, and `--progress`, and it is not served from the NDJSON or compact snapshot caches. The SCIP package version is the project's own declared version, read from the root manifest (`package.json`, then `Cargo.toml`, then `pyproject.toml`'s `[project]` or `[tool.poetry]` table), falling back to `0` when none declares one -- which is the common case for Go, since `go.mod` carries a module path and not a version. It is deliberately **not** the commit: a commit there would give every symbol a new identity on every commit, so nothing downstream could match a symbol across commits, and cross-index linking (the reason SCIP has the field) could never work. Commit and worktree provenance are carried instead by the omission note's `commit` and `tree`, by `--worktree` in `ToolInfo.arguments`, and by `worktree_snapshot: true`. Note that SCIP `Metadata` has no revision field of its own -- it carries `ToolInfo`, `ProjectRoot` and an encoding -- so the note is where the revision lives, once per index rather than inside every symbol. The manifest is read from inside the snapshot build, through the same validated content reader every other manifest read uses, so it is bounded, refuses non-regular files, and is pinned to the revision the snapshot describes. A version bumped only in a dirty working tree therefore cannot reach an index that describes a commit, and the version cannot come from a different revision than the documents beside it. Consumers must therefore treat `(repo, commit)` as coming from the envelope, not from the symbol: two indexes of the same repository at different commits share symbol identities by design, and merging them into one flat store without keeping their commits distinct would conflate them. If the underlying snapshot is partial, the same stderr JSON object includes `partial_snapshot`, `completeness_level`, `warning_count`, and `partial_failure_count` instead of mixing human warning text into stderr. Unlike the NDJSON encoders, the SCIP encoder retains the complete graph until it can write the one protobuf message, because a SCIP `Index` is a single protobuf message and cannot be streamed. Its memory use therefore scales with snapshot size: measured on this repository (about 28 MB of native NDJSON, 9,770 definitions, 25,476 references) peak RSS was roughly 170 MB against roughly 115 MB for `ndjson` and roughly 119 MB for `compact-ndjson`, so about 1.5x the streaming formats. That multiplier is not a guarantee for a much larger repository, where the absolute figure is what matters; measure before exporting a monorepo.
+
+The note also carries what SCIP itself cannot express. Its `language_tiers` repeats the header's
+per-language `semantic` / `inventory-only` classification, because every discovered file becomes a
+`Document`: an inventory-only file -- listed but never parsed for symbols or relations -- is
+otherwise indistinguishable from a semantically extracted one, and a consumer scoping trust per
+language cannot tell them apart from the protobuf alone. Its `partial_failures` carries the
+summary's failure records rather than only their count, because a count says something was
+skipped while only the records say which path and why.
+
+The note carries its own contract version in `version`, currently
+`entire-graph-scip-omissions/v1`, independent of the snapshot `schema_version`. Within a
+version it evolves **additively only**, on the same tolerant-reader terms as
+[ADR 0001](adr/0001-ga-schema-contract.md): new optional fields may appear, a consumer must
+ignore fields it does not recognize, and it must not require any optional field to be present.
+An absent optional field means zero or false, never unknown -- the counters are omitted when
+they are zero precisely so a clean export stays quiet. Removing a field, renaming one, or
+changing what an existing one counts is a breaking change and bumps the version to `v2`.
+
+The stderr note also reports what the encoder could not carry. `unidentified_records` counts records it could not key at all (a file with no path, a symbol or external endpoint with no id), and `unlocated_symbols` counts symbols with no file path, which are emitted but land in a synthetic document with no navigable definition location. Both are omitted from the JSON when zero, and both are provider bugs rather than expected input, but this format reports them rather than letting an incomplete index look complete.
+
+The protobuf contains `Metadata`, one `Document` per source path, `SymbolInformation` for native symbol definitions, definition occurrences, and reference occurrences for supported reference-like relations: `IMPORTS`, `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `EXTENDS`, `INHERITS`, `IMPLEMENTS`, `OVERRIDES`, `USES_TYPE`, `PARAM_TYPE`, `RETURNS_TYPE`, `READS_FIELD`, `WRITES_FIELD`, and `ACCESSES`. Occurrence ranges cover the complete one-based inclusive line spans supplied by Entire Graph; the export does not invent unavailable columns. Native `DEFINES` and `CONTAINS` relations are represented by symbol metadata and definition occurrences rather than emitted as relation edges. The inheritance family -- `IMPLEMENTS`, `INHERITS`, `EXTENDS`, `OVERRIDES` -- additionally becomes `SymbolInformation.relationships` with `is_implementation`, because SCIP answers "Find Implementations" from relationships and not from occurrences; `emitted_implementations` in the note counts them. A definition occurrence marks the declaration line only, with the full declaration-through-body span carried as its `enclosing_range`, so a definition does not overlap every reference inside its own body and positional lookups stay unambiguous. Other relation families are omitted from the SCIP protobuf and counted by relation type in the stderr note:
+
+```json
+{"record_type":"scip_omissions","version":"entire-graph-scip-omissions/v1","format":"scip","unsupported_relation_counts":{"DATA_FLOWS":1},"missing_target_relations":0,"missing_evidence_relations":0,"emitted_definitions":2,"emitted_references":1}
+```
+
+The native NDJSON stream remains the lossless provider contract. The SCIP export is an interoperability artifact for navigation tools whose model is definitions and references, so consumers that need full Entire Graph relation semantics must keep using `--format ndjson` or `--format compact-ndjson`.
+
 ## Progress telemetry
 
 The optional provider progress callback (`--progress` on the stream commands)
