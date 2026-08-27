@@ -87,3 +87,53 @@ func newTreeFixture(t *testing.T) string {
 	git("commit", "-m", "fixture")
 	return repo
 }
+
+// TestTreeListingsRefuseOptionShapedRevisions is the regression Bugbot found.
+//
+// Git parses options anywhere ahead of the revision, so a token such as
+// "--help" in that slot was obeyed rather than resolved: the listing came back
+// empty at exit 0, which downstream reads as "this tree has no files" rather
+// than as a failure.
+func TestTreeListingsRefuseOptionShapedRevisions(t *testing.T) {
+	repo := newTreeFixture(t)
+	list := map[string]func(string) ([]string, error){
+		"ListFiles":        func(rev string) ([]string, error) { return ListFiles(t.Context(), repo, rev) },
+		"ListRegularFiles": func(rev string) ([]string, error) { return ListRegularFiles(t.Context(), repo, rev) },
+	}
+	for name, fn := range list {
+		t.Run(name, func(t *testing.T) {
+			// Option-shaped tokens must fail, not return an empty listing.
+			for _, rev := range []string{"--help", "--name-only", "-h"} {
+				files, err := fn(rev)
+				if err == nil {
+					t.Errorf("%s(%q) succeeded with %d files; an option-shaped revision must not resolve", name, rev, len(files))
+				}
+			}
+			// Unusable input is refused before git runs.
+			for _, rev := range []string{"", "HEAD\x00evil"} {
+				if _, err := fn(rev); err == nil {
+					t.Errorf("%s(%q) succeeded; want an error", name, rev)
+				}
+			}
+			// A dash-prefixed ref is VALID and must still resolve: rejecting the
+			// shape would trade real refs for a risk --end-of-options removes.
+			benchGitFixture(t, repo, "update-ref", "refs/heads/-dashy", "HEAD")
+			files, err := fn("-dashy")
+			if err != nil {
+				t.Fatalf("%s(%q): %v", name, "-dashy", err)
+			}
+			if len(files) == 0 {
+				t.Errorf("%s(%q) returned no files; the ref resolves and is not empty", name, "-dashy")
+			}
+		})
+	}
+}
+
+func benchGitFixture(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}

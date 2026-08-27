@@ -147,6 +147,24 @@ func FindCommitWithCheckpoint(ctx context.Context, repo, checkpointID string) (s
 	return commit, nil
 }
 
+// validateTreeish rejects a revision that cannot be passed to git as one.
+//
+// It refuses an empty string and an embedded NUL, and deliberately does NOT
+// refuse a leading '-'. A dash-prefixed ref is valid and resolvable -- `git
+// update-ref refs/heads/-evil` then `ls-tree --end-of-options -evil` lists that
+// tree -- so rejecting the shape would trade real refs for a risk
+// --end-of-options already removes. That is the trade this repository has made
+// wrongly before.
+func validateTreeish(rev string) error {
+	if rev == "" {
+		return errors.New("treeish is empty")
+	}
+	if strings.ContainsRune(rev, 0) {
+		return fmt.Errorf("invalid treeish %q: contains a NUL byte", rev)
+	}
+	return nil
+}
+
 // ListRegularFiles lists the REGULAR files in a committed tree, excluding
 // symlinks and gitlinks.
 //
@@ -165,7 +183,14 @@ func FindCommitWithCheckpoint(ctx context.Context, repo, checkpointID string) (s
 // ListFiles is deliberately left alone: its other caller enumerates paths for
 // git log co-change, where a symlink costs nothing.
 func ListRegularFiles(ctx context.Context, repo, rev string) ([]string, error) {
-	out, err := run(ctx, repo, "git", "ls-tree", "-r", "-z", rev)
+	if err := validateTreeish(rev); err != nil {
+		return nil, err
+	}
+	// --end-of-options so the revision can only be read as a revision. Git
+	// parses options anywhere ahead of it otherwise, and an option-shaped token
+	// such as "--help" would be obeyed rather than resolved -- yielding an empty
+	// listing at exit 0, which reads downstream as "this tree has no files".
+	out, err := run(ctx, repo, "git", "ls-tree", "-r", "-z", "--end-of-options", rev)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +234,10 @@ func isRegularTreeMode(mode string) bool {
 }
 
 func ListFiles(ctx context.Context, repo, rev string) ([]string, error) {
-	out, err := run(ctx, repo, "git", "ls-tree", "-r", "-z", "--name-only", rev)
+	if err := validateTreeish(rev); err != nil {
+		return nil, err
+	}
+	out, err := run(ctx, repo, "git", "ls-tree", "-r", "-z", "--name-only", "--end-of-options", rev)
 	if err != nil {
 		return nil, err
 	}
