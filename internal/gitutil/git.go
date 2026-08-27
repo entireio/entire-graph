@@ -147,6 +147,67 @@ func FindCommitWithCheckpoint(ctx context.Context, repo, checkpointID string) (s
 	return commit, nil
 }
 
+// ListRegularFiles lists the REGULAR files in a committed tree, excluding
+// symlinks and gitlinks.
+//
+// ListFiles cannot answer this, and not because it forgot a filter: it passes
+// --name-only, and a symlink is a blob, so no object-type test separates the
+// two. Only the mode does. A tracked symlink listed as a source file has its
+// TARGET PATH read as the blob's content and handed to a parser, so
+// `ln -s real.go link.go` makes a committed snapshot carry a file record whose
+// bytes are the string "real.go".
+//
+// The working-tree listing already refuses non-regular entries (see openSource's
+// worktree branch, which tests fs.ModeSymlink and IsRegular). This is the
+// committed-tree counterpart, so one repository stops giving two different
+// answers depending on --worktree.
+//
+// ListFiles is deliberately left alone: its other caller enumerates paths for
+// git log co-change, where a symlink costs nothing.
+func ListRegularFiles(ctx context.Context, repo, rev string) ([]string, error) {
+	out, err := run(ctx, repo, "git", "ls-tree", "-r", "-z", rev)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, entry := range strings.Split(out, "\x00") {
+		if entry == "" {
+			continue
+		}
+		// "<mode> SP <type> SP <object> TAB <path>". -z means the path is raw,
+		// never quoted, and a TAB cannot appear in the fields before it.
+		meta, path, found := strings.Cut(entry, "\t")
+		if !found || path == "" {
+			continue
+		}
+		mode, _, found := strings.Cut(meta, " ")
+		if !found {
+			continue
+		}
+		if !isRegularTreeMode(mode) {
+			continue
+		}
+		files = append(files, path)
+	}
+	return files, nil
+}
+
+// isRegularTreeMode reports whether a `git ls-tree` mode is a regular file:
+// 100644 or 100755. It excludes 120000 (symlink), 160000 (gitlink/submodule)
+// and 040000 (tree), testing the file-type bits rather than listing the two
+// permission spellings, so an unexpected mode is refused rather than admitted.
+func isRegularTreeMode(mode string) bool {
+	parsed, err := strconv.ParseUint(mode, 8, 32)
+	if err != nil {
+		return false
+	}
+	const (
+		typeMask = 0o170000
+		regular  = 0o100000
+	)
+	return parsed&typeMask == regular
+}
+
 func ListFiles(ctx context.Context, repo, rev string) ([]string, error) {
 	out, err := run(ctx, repo, "git", "ls-tree", "-r", "-z", "--name-only", rev)
 	if err != nil {

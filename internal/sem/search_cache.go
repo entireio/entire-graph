@@ -22,7 +22,7 @@ import (
 // v12 retires every entry produced before the final immutable-policy,
 // unconditional-worktree-bypass transaction checks, and shared nested-ignore
 // resource policy were complete.
-const searchSnapshotCacheVersion = "search-snapshot-v12"
+const searchSnapshotCacheVersion = "search-snapshot-v13"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`

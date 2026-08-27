@@ -9817,7 +9817,10 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		if err != nil {
 			return openedSource{}, err
 		}
-		paths, err := gitutil.ListFiles(ctx, repo, committedRevision)
+		// Regular files only. A tracked symlink is a blob whose content is its
+		// target path, so listing one as source hands that path to a parser as
+		// if it were code; the worktree branch below already refuses them.
+		paths, err := gitutil.ListRegularFiles(ctx, repo, committedRevision)
 		if err != nil {
 			return openedSource{}, err
 		}

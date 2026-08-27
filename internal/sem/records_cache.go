@@ -21,7 +21,7 @@ import (
 // the structured search cache, an opaque record stream cannot restamp commit
 // provenance on a same-tree hit. v8 additionally binds the shared nested-ignore
 // resource policy and surfaced refusals.
-const providerRecordsCacheVersion = "provider-records-v8"
+const providerRecordsCacheVersion = "provider-records-v9"
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+commit+tree+mode+profile+
