@@ -394,3 +394,67 @@ func TestSCIPDefinitionOccurrenceMarksTheDeclaration(t *testing.T) {
 		t.Errorf("enclosing range = %v, want the full declaration-through-body span", enclosing)
 	}
 }
+
+// TestSCIPLocalSymbolsAreInjectivePerDocument pins the property a hash could
+// only approximate. A collision would merge two unrelated closures' definitions,
+// references and relationships into one symbol, and both sides would still be
+// valid SCIP, so nothing downstream would notice.
+func TestSCIPLocalSymbolsAreInjectivePerDocument(t *testing.T) {
+	var out bytes.Buffer
+	encoder := NewSCIPSnapshotEncoder(&out, "1.0.0")
+	push := func(r any) {
+		t.Helper()
+		if err := encoder.Encode(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	push(SnapshotHeader{RepoKey: "local/demo", Commit: "abc"})
+	push(FileRecord{Path: "a.go", Language: "Go"})
+	push(FileRecord{Path: "b.go", Language: "Go"})
+	for i, spec := range []struct {
+		id, file string
+	}{
+		{"l1", "a.go"}, {"l2", "a.go"}, {"l3", "a.go"}, {"l4", "b.go"},
+	} {
+		push(SymbolRecord{ID: spec.id, Kind: "function", Name: "closure", FilePath: spec.file, Local: true, StartLine: i + 1, EndLine: i + 1})
+	}
+	push(SymbolRecord{ID: "g1", Kind: "function", Name: "Exported", FilePath: "a.go", StartLine: 9, EndLine: 9})
+	push(SnapshotSummary{})
+
+	index := &scippb.Index{}
+	if err := proto.Unmarshal(out.Bytes(), index); err != nil {
+		t.Fatal(err)
+	}
+	for _, doc := range index.GetDocuments() {
+		seen := map[string]bool{}
+		locals := 0
+		for _, info := range doc.GetSymbols() {
+			symbol := info.GetSymbol()
+			if !strings.HasPrefix(symbol, "local ") {
+				continue
+			}
+			locals++
+			if seen[symbol] {
+				t.Errorf("%s: duplicate local symbol %q", doc.GetRelativePath(), symbol)
+			}
+			seen[symbol] = true
+			if _, err := scippb.ParseSymbol(symbol); err != nil {
+				t.Errorf("%s: %q is not a valid SCIP symbol: %v", doc.GetRelativePath(), symbol, err)
+			}
+		}
+		switch doc.GetRelativePath() {
+		case "a.go":
+			if locals != 3 {
+				t.Errorf("a.go has %d locals, want 3", locals)
+			}
+		case "b.go":
+			if locals != 1 {
+				t.Errorf("b.go has %d locals, want 1", locals)
+			}
+		}
+	}
+	// Numbering restarts per document, which is what makes it document-scoped.
+	if !strings.Contains(out.String(), "local 0") {
+		t.Error("no local 0 emitted")
+	}
+}

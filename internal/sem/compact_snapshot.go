@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	scippb "github.com/scip-code/scip/bindings/go/scip"
@@ -281,9 +282,11 @@ type SCIPSnapshotEncoder struct {
 
 // NewSCIPSnapshotEncoder returns an encoder for one complete snapshot stream.
 func NewSCIPSnapshotEncoder(out io.Writer, projectVersion string) *SCIPSnapshotEncoder {
-	if strings.TrimSpace(projectVersion) == "" {
-		projectVersion = ScipProjectVersionUnknown
-	}
+	// Normalized through the same gate as SetProjectVersion. Bounding only the
+	// setter left this constructor accepting an unbounded repository-controlled
+	// version that is then copied into every symbol -- the same amplification the
+	// bound exists to stop, reachable through a different door.
+	projectVersion = normalizeSCIPProjectVersion(projectVersion, ScipProjectVersionUnknown)
 	// SetProjectVersion may replace this before the summary; see its comment.
 	return &SCIPSnapshotEncoder{
 		out:            out,
@@ -378,12 +381,24 @@ func (encoder *SCIPSnapshotEncoder) Encode(record any) error {
 // the summary that triggers marshalling -- which is the only deadline, since
 // nothing is written until then. A blank value leaves the fallback in place.
 func (encoder *SCIPSnapshotEncoder) SetProjectVersion(version string) {
-	// Bounded here too, not only at the source: this is exported, the value is
-	// repository-controlled, and it is copied into every emitted symbol, so an
-	// overlong one amplifies into the whole index rather than costing one field.
-	if version = strings.TrimSpace(version); version != "" && len(version) <= ScipProjectVersionMaxLen {
-		encoder.projectVersion = version
+	if normalized := normalizeSCIPProjectVersion(version, ""); normalized != "" {
+		encoder.projectVersion = normalized
 	}
+}
+
+// normalizeSCIPProjectVersion trims a version and rejects one too long to be a
+// version, returning fallback instead.
+//
+// One gate for both entry points: the value is repository-controlled and is
+// copied into every emitted symbol, so an unbounded one amplifies into the whole
+// index. Rejected rather than truncated -- a truncated version silently names a
+// different package.
+func normalizeSCIPProjectVersion(version, fallback string) string {
+	version = strings.TrimSpace(version)
+	if version == "" || len(version) > ScipProjectVersionMaxLen {
+		return fallback
+	}
+	return version
 }
 
 // OmissionNote returns a copy of the current export accounting.
@@ -451,8 +466,24 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 
 	symbolIDs := scipSortedKeys(encoder.symbols)
 	symbols := make(map[string]string, len(symbolIDs))
+	// Local symbols get an injective per-document counter, not a hash.
+	//
+	// A callable defined inside another function cannot be referenced outside its
+	// document, and SCIP says so with `local <id>`, scoped to the Document. The
+	// id only has to be unique within that document, so a counter over the sorted
+	// record ids is both deterministic and collision-free by construction. A
+	// truncated digest would not be: 12 hex is 48 bits, and a collision merges two
+	// unrelated closures' definitions, references and relationships into one
+	// symbol -- silently, because both sides remain valid SCIP.
+	localCounts := map[string]int{}
 	for _, id := range symbolIDs {
-		symbols[id] = scipSymbol(header, encoder.projectVersion, encoder.symbols[id])
+		record := encoder.symbols[id]
+		if record.Local {
+			symbols[id] = "local " + strconv.Itoa(localCounts[record.FilePath])
+			localCounts[record.FilePath]++
+			continue
+		}
+		symbols[id] = scipSymbol(header, encoder.projectVersion, record)
 	}
 	externalIDs := scipSortedKeys(encoder.externals)
 	externals := make(map[string]string, len(externalIDs))
