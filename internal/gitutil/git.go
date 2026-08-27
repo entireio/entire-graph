@@ -165,6 +165,43 @@ func validateTreeish(rev string) error {
 	return nil
 }
 
+// IndexNonRegularPaths returns the worktree paths whose INDEX mode is not a
+// regular file, keyed by slash-separated repo-relative path.
+//
+// lstat is not sufficient to answer this. With core.symlinks=false -- the
+// default wherever the filesystem cannot make symlinks, which is common on
+// Windows -- Git materializes a tracked mode-120000 entry as an ordinary file
+// whose contents are the link target. lstat then reports a regular file, and a
+// worktree listing that trusts it admits a symlink as source while the
+// committed listing excludes it by mode, so one repository yields two different
+// graphs on the same commit.
+//
+// Untracked paths have no index entry and are absent from the result, so a
+// caller still judges those by lstat alone.
+func IndexNonRegularPaths(ctx context.Context, repo string) (map[string]struct{}, error) {
+	out, err := run(ctx, repo, "git", "ls-files", "-s", "-z")
+	if err != nil {
+		return nil, err
+	}
+	paths := map[string]struct{}{}
+	for _, entry := range strings.Split(out, "\x00") {
+		if entry == "" {
+			continue
+		}
+		// "<mode> SP <object> SP <stage> TAB <path>"
+		meta, path, found := strings.Cut(entry, "\t")
+		if !found || path == "" {
+			continue
+		}
+		mode, _, found := strings.Cut(meta, " ")
+		if !found || isRegularTreeMode(mode) {
+			continue
+		}
+		paths[path] = struct{}{}
+	}
+	return paths, nil
+}
+
 // ListRegularFiles lists the REGULAR files in a committed tree, excluding
 // symlinks and gitlinks.
 //

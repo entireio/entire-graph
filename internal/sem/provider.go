@@ -15280,15 +15280,30 @@ func worktreeSourceFilesWithLister(
 	// deleted and can list a symlink or a gitlink directory; the snapshot reads
 	// only regular files, and the gitlink entries are exactly what the excluder
 	// must examine for a `.git` pointer.
+	// The index decides what a tracked entry IS, because lstat cannot. With
+	// core.symlinks=false Git writes a mode-120000 entry to disk as an ordinary
+	// file holding the link target, so lstat calls it regular and the worktree
+	// listing would admit a symlink the committed listing excludes by mode --
+	// the same divergence, reappearing from the other side. A failure here is
+	// not fatal: the lstat classification below still applies, which is the
+	// behaviour that existed before this consultation.
+	indexNonRegular, indexErr := gitutil.IndexNonRegularPaths(ctx, repo)
+	if indexErr != nil {
+		indexNonRegular = nil
+	}
 	kinds := make([]listedPathKind, len(listed))
 	var listedDirs []string
 	for index, entry := range listed {
 		info, statErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(entry)))
+		_, nonRegularInIndex := indexNonRegular[filepath.ToSlash(entry)]
 		switch {
 		case statErr != nil:
 		case info.IsDir():
 			kinds[index] = listedPathDir
 			listedDirs = append(listedDirs, entry)
+		case nonRegularInIndex:
+			// Tracked as a symlink or gitlink; not source, whatever it looks
+			// like on this filesystem.
 		case info.Mode()&fs.ModeSymlink == 0 && info.Mode().IsRegular():
 			kinds[index] = listedPathRegular
 		}
