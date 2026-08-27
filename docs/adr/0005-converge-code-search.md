@@ -306,8 +306,8 @@ Nothing is removed before step 7 has held for two release cycles. Then:
    `Metadata` and the omission note. Consumers must now take `(repo, commit)` from the
    envelope, never from the symbol.
 
-   **Still open.** Two things that must move together, because each rewrites every symbol's
-   identity and doing them separately churns consumers twice:
+   **Still open.** Four things that must move together, because each rewrites every symbol's
+   identity:
    - The scheme is `entire-graph` with package manager `.`, and the descriptor embeds
      `shortDigest(record.ID)`, an internal compound-v1 hash. SCIP parses that into the standard
      `disambiguator` field, so it is valid and stable, but it is not a moniker another indexer
@@ -315,8 +315,22 @@ Nothing is removed before step 7 has held for two release cycles. Then:
    - Package identity is per-repository: the package name is the repo key, so a monorepo whose
      sub-packages carry different versions cannot express that without also moving the name.
      Per-directory package identity is the same decision viewed from the other side.
+   - **External symbols are minted in the indexed repository's own package and version**, not in
+     the defining dependency's (`compact_snapshot.go`, `scipExternalSymbol`). SCIP links a
+     reference to a separately indexed dependency by symbol identity, so an id that names *our*
+     package can never match the id that dependency's own index exports. Cross-repository
+     go-to-definition therefore cannot work at all, however the scheme question above is settled.
+     This is the sharpest form of the identity decision, because it is the one the feed's stated
+     purpose depends on.
+   - **Descriptors omit the container ancestry.** A symbol carries a file descriptor and a leaf
+     descriptor and nothing between, so a nested type or a method does not spell out
+     namespace -> class -> member. SCIP expects non-local descriptors to form the fully qualified
+     hierarchy and reserves `enclosing_symbol` mainly for locals, so a standard consumer cannot
+     reconstruct the structure. `enclosing_symbol` is populated today and carries the parent, but
+     relying on it is a private convention, not the interchange contract.
 
-   Decide both before step 5.
+   Decide all four before step 5. They are one decision wearing four faces: each rewrites every
+   symbol's identity, so settling them separately churns consumers once per answer.
 3. **Index size and latency budgets.** Semantic symbols carry more data per symbol. peregrine's
    headline is 4.9x smaller than Zoekt; decide how much of that lead is for sale before spending it.
 4. **In-memory materialization.** PR #97 builds the full SCIP index in memory, which a SCIP
