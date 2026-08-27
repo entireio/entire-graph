@@ -86,7 +86,40 @@ func parsePackageJSONVersion(content string) string {
 }
 
 func parseCargoPackageVersion(content string) string {
-	return tomlTableString(content, "package", "version")
+	if version := tomlTableString(content, "package", "version"); version != "" {
+		return version
+	}
+	// Workspace inheritance. A root Cargo.toml commonly declares the version
+	// once in [workspace.package] and has each member write `version.workspace
+	// = true` (or `version = { workspace = true }`). Reading only a literal
+	// [package] version exported every such crate as "0", so distinct releases
+	// shared one SCIP package identity -- the identity confusion this whole
+	// field exists to avoid.
+	if !tomlTableInheritsFromWorkspace(content, "package", "version") {
+		return ""
+	}
+	return tomlTableString(content, "workspace.package", "version")
+}
+
+// tomlTableInheritsFromWorkspace reports whether a table defers a key to the
+// workspace, in either spelling TOML allows: a dotted key (`version.workspace =
+// true`) or an inline table (`version = { workspace = true }`).
+func tomlTableInheritsFromWorkspace(content, table, key string) bool {
+	if value := tomlTableRawValue(content, table, key+".workspace"); strings.EqualFold(value, "true") {
+		return true
+	}
+	value := tomlTableRawValue(content, table, key)
+	if !strings.HasPrefix(value, "{") {
+		return false
+	}
+	inner := strings.TrimSpace(strings.Trim(value, "{}"))
+	for _, field := range strings.Split(inner, ",") {
+		name, setting, found := strings.Cut(field, "=")
+		if found && strings.TrimSpace(name) == "workspace" && strings.EqualFold(strings.TrimSpace(setting), "true") {
+			return true
+		}
+	}
+	return false
 }
 
 func parsePyProjectVersion(content string) string {
@@ -105,6 +138,30 @@ func parsePyProjectVersion(content string) string {
 // multi-line string, or any shape it does not understand yields "", which the
 // caller reads as "not declared" and falls back from. Guessing would be worse
 // than falling back, because the value becomes part of every symbol's identity.
+// tomlTableRawValue returns a key's value inside a table, unquoted and
+// untrimmed of its own syntax, or "" when the table or key is absent.
+func tomlTableRawValue(content, table, key string) string {
+	inTable := false
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			inTable = strings.TrimSpace(strings.Trim(line, "[]")) == table
+			continue
+		}
+		if !inTable {
+			continue
+		}
+		name, value, found := strings.Cut(line, "=")
+		if found && strings.TrimSpace(name) == key {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func tomlTableString(content, table, key string) string {
 	inTable := false
 	for _, raw := range strings.Split(content, "\n") {

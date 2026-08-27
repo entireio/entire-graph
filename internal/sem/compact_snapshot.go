@@ -547,6 +547,21 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 	for _, relation := range encoder.relations {
 		relationType := strings.ToUpper(relation.Type)
 		if relationType == "DEFINES" || relationType == "CONTAINS" {
+			// These are normally redundant: symbol metadata already carries the
+			// membership through EnclosingSymbol. That only holds when the
+			// relation agrees with ContainerID. Extension members -- a method
+			// attached to a receiver declared elsewhere -- produce a CONTAINS
+			// whose parent is NOT the symbol's container, and that membership is
+			// in no other field, so skipping it silently made the note report a
+			// completeness the protobuf did not have.
+			// DEFINES is always represented: the definition occurrence and the
+			// symbol record carry it. Only CONTAINS can disagree, and only then
+			// is the membership genuinely absent from the protobuf.
+			if relationType == "CONTAINS" {
+				if child, ok := encoder.symbols[relation.ToID]; !ok || child.ContainerID != relation.FromID {
+					encoder.note.UnsupportedRelationCounts[relationType]++
+				}
+			}
 			continue
 		}
 		if !scipReferenceRelation(relationType) {
@@ -568,10 +583,17 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 			// returned nothing, and because the types count as supported the
 			// loss was not reported either.
 			if info := infos[relation.FromID]; info != nil {
+				// is_reference is not "this is a reference"; it tells a consumer
+				// to MERGE the related symbol's references into this one's. That
+				// is right for a member override -- Find References on the base
+				// method should reach the override's callers -- and wrong for a
+				// type relationship, where it makes Find References on a base
+				// type report every subtype's definition as a reference to it.
+				memberLevel := methodLikeSCIPKind(encoder.symbols[relation.FromID].Kind)
 				info.Relationships = append(info.Relationships, &scippb.Relationship{
 					Symbol:           target,
 					IsImplementation: true,
-					IsReference:      true,
+					IsReference:      memberLevel,
 				})
 				encoder.note.EmittedImplementations++
 			}

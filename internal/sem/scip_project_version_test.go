@@ -88,6 +88,21 @@ func TestScipProjectVersionReadsRootManifests(t *testing.T) {
 			"package.json": `{"version":"` + strings.Repeat("9", ScipProjectVersionMaxLen+1) + `"}`,
 			"Cargo.toml":   "[package]\nversion = \"1.0.0\"\n",
 		}, "1.0.0"},
+		{"cargo workspace inheritance, dotted key", map[string]string{
+			"Cargo.toml": "[workspace.package]\nversion = \"3.3.3\"\n\n[package]\nname = \"demo\"\nversion.workspace = true\n",
+		}, "3.3.3"},
+		{"cargo workspace inheritance, inline table", map[string]string{
+			"Cargo.toml": "[workspace.package]\nversion = \"4.4.4\"\n\n[package]\nname = \"demo\"\nversion = { workspace = true }\n",
+		}, "4.4.4"},
+		{"literal package version still wins over workspace", map[string]string{
+			"Cargo.toml": "[workspace.package]\nversion = \"3.3.3\"\n\n[package]\nversion = \"1.1.1\"\n",
+		}, "1.1.1"},
+		{"inheritance declared but workspace has no version", map[string]string{
+			"Cargo.toml": "[package]\nversion.workspace = true\n",
+		}, ""},
+		{"workspace version present but not inherited", map[string]string{
+			"Cargo.toml": "[workspace.package]\nversion = \"3.3.3\"\n\n[package]\nname = \"demo\"\n",
+		}, ""},
 		{"toml literal string", map[string]string{"Cargo.toml": "[package]\nversion = '2.5.0'\n"}, "2.5.0"},
 		{"literal string with trailing comment", map[string]string{"Cargo.toml": "[package]\nversion = '2.5.0' # pinned\n"}, "2.5.0"},
 		{"basic string with trailing comment", map[string]string{"Cargo.toml": "[package]\nversion = \"2.5.0\" # pinned\n"}, "2.5.0"},
