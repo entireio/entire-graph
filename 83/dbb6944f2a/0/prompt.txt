@@ -1,0 +1,40 @@
+You are advising on a Go SCIP exporter in this repo (internal/sem/compact_snapshot.go,
+scip_project_version.go, internal/cli/root.go). Read-only: do not modify files.
+
+I need judgement on two design questions and a skeptical check on two recent changes.
+Be concise and concrete. Prefer "measure it" over "reason about it".
+
+QUESTION 1 — symlinks become SCIP Documents.
+Every FileRecord becomes a scippb.Document. FileRecord has no mode field.
+internal/gitutil/git.go ListFiles uses `git ls-tree -r -z --name-only <rev>`, no mode
+filter, so committed-tree snapshots include symlinks (mode 120000) as if regular files.
+The worktree path DOES skip symlinks (internal/sem/provider.go ~9970: info.Mode()&fs.ModeSymlink).
+SCIP requires Document.relative_path to identify a regular file.
+Where should this be fixed?
+ (a) gitutil.ListFiles — filter non-blob modes. Correct at the source, but changes ALL
+     committed-tree snapshots (NDJSON, compact, cache keys), far beyond the SCIP export.
+ (b) SCIP encoder only — but it cannot currently tell a symlink from a regular file.
+ (c) something else.
+What is the smallest correct fix, and what is the blast radius of (a)?
+
+QUESTION 2 — no aggregate memory guard on the SCIP encoder.
+A SCIP Index is one protobuf message and cannot be streamed, so the encoder retains all
+files/symbols/externals/relations, then builds a second complete protobuf and marshals it.
+Measured ~1.5x peak RSS vs the streaming ndjson encoder on a 28MB-NDJSON repo.
+There is no aggregate cap. The stderr JSON "omission note" is written by the CLI AFTER
+StreamSnapshot returns, so if the encoder returns an error the note is never written.
+What is the right bounded-failure design? Options I see: cap retained entity count and
+fail fast with a clear error (no note); restructure so the note is emitted on that error;
+or emit a truncated-but-valid index (seems bad: silently partial). Which, and why?
+
+SKEPTICAL CHECK — I have twice shipped a HIGH-severity bug by reasoning about a bound
+instead of measuring it. Please look specifically for that class of error in:
+ (i) scip_project_version.go: ScipProjectVersionMaxLen=256 bounding the version string,
+     applied at the source AND in SCIPSnapshotEncoder.SetProjectVersion. The version is
+     copied into every emitted symbol. Is 256 the right place/limit? Anything unbounded
+     still reachable on this path?
+ (ii) compact_snapshot.go scipSymbol: records with SymbolRecord.Local now emit
+     "local <12-hex-digest>" instead of a package-scoped global symbol. SCIP local symbols
+     are document-scoped. Is uniqueness actually guaranteed within a Document? What breaks
+     if two local records in the same document collide, or if a local symbol is referenced
+     from relationships, EnclosingSymbol, or ExternalSymbols?
