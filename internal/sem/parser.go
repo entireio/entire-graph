@@ -4997,6 +4997,26 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 	case "block":
 		kind = "block"
 		name = hclBlockName(node, src)
+	case "attribute":
+		// HCL top-level attribute (`region = "us-west-2"`). A Terraform
+		// variables file (`.tfvars`, `*.auto.tfvars`) contains nothing else —
+		// the format rejects blocks — so extracting only `block` nodes left
+		// every such file with zero symbols and zero relations while HCL was
+		// advertised as a semantic language. Hand-written Consul/Nomad/Vault
+		// `.hcl` configs carry the same top-level settings. Attributes nested
+		// inside a block are that block's body and stay folded into the block
+		// symbol, which keeps a Terraform module from fanning out one symbol
+		// per argument. The node type is HCL-only in this grammar set, but the
+		// gate is explicit so another language's `attribute` node cannot leak
+		// into this case.
+		if language != "HCL" || !hclTopLevelAttribute(node) {
+			return Entity{}, false
+		}
+		name = hclAttributeName(node, src)
+		if name == "" {
+			return Entity{}, false
+		}
+		kind = "setting"
 	case "field":
 		kind = "field"
 		name = cueFieldName(node, src)
@@ -7747,6 +7767,29 @@ func hclBlockName(node *sitter.Node, src []byte) string {
 		}
 	}
 	return strings.Join(parts, ".")
+}
+
+// hclTopLevelAttribute reports whether an `attribute` node sits directly in the
+// file body rather than inside a block. tree-sitter-hcl nests every attribute
+// under a `body`, so the distinguishing parent is the body's own parent:
+// `config_file` for a top-level setting, `block` for a block argument.
+func hclTopLevelAttribute(node *sitter.Node) bool {
+	body := node.Parent()
+	if !validNode(body) || body.Type() != "body" {
+		return false
+	}
+	root := body.Parent()
+	return validNode(root) && root.Type() == "config_file"
+}
+
+// hclAttributeName returns the name an HCL attribute binds — the identifier on
+// the left of the `=`.
+func hclAttributeName(node *sitter.Node, src []byte) string {
+	identifier := firstNamedChildOfType(node, "identifier")
+	if !validNode(identifier) {
+		return ""
+	}
+	return strings.TrimSpace(identifier.Content(src))
 }
 
 func hclBlockPart(node *sitter.Node, src []byte) string {
