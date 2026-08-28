@@ -122,11 +122,23 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	// graph never indexes still produced entity changes here. A consumer that
 	// builds its index from `snapshot` and updates it from `diff` received
 	// symbols for files that its index has no record of and never will.
-	basePolicy, headPolicy, err := newDiffIndexPolicies(ctx, objectRepo, pinnedBase, pinnedHead, rootRelativeNames, changed)
+	basePolicy, headPolicy, err := newDiffIndexPolicies(ctx, objectRepo, pinnedBase, pinnedHead, rootRelativeNames, changed, overBudget)
 	if err != nil {
 		return Result{}, err
 	}
-	policyWarnings := indexPolicyChangeWarnings(changed, basePolicy)
+	policySource := changed
+	if len(paths) > 0 {
+		// A pathspec narrows what Git reports, but not what an exclusion rule
+		// decides: a root .gitignore edited outside the requested scope still
+		// changes membership inside it, and the scoped list cannot show that.
+		// Ask Git for the policy files directly, anchored at the repository root
+		// with :(top) so the caller's cwd does not narrow them a second time.
+		policySource, err = gitutil.ChangedFiles(ctx, repo, pinnedBase, pinnedHead, indexPolicyPathspecs)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	policyWarnings := indexPolicyChangeWarnings(policySource, basePolicy)
 	changed = admitChangedFiles(changed, basePolicy, headPolicy)
 	emitProgress("parse", 0, len(changed))
 	parser := TreeSitterParser{}
@@ -485,6 +497,11 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 // to apply and fires rules that were not, which silently drops indexed files.
 // There is no prefix to recover, because a tree object does not know its own
 // path, so the only correct answer for a subtree range is to apply no policy.
+// maxRevisionPeels bounds how many trailing ^{...} groups are stripped while
+// deciding whether a label bottoms out at a commit. Each step costs a git
+// subprocess, and no real revision expression stacks more than a couple.
+const maxRevisionPeels = 4
+
 // labelSelectsTreePath reports whether a revision label reaches INTO a tree
 // rather than naming a revision.
 //
@@ -553,18 +570,28 @@ func resolveDiffTrees(
 		if _, err := resolve(ctx, repo, objectID+"^{commit}"); err == nil {
 			return true
 		}
-		// A caller who wrote <commit-ish>^{tree} still named a root tree. Peel
-		// the suffix THEY wrote — adding none of our own — and ask again.
-		peeled, found := strings.CutSuffix(label, "^{tree}")
-		if !found {
-			return false
+		// A caller who wrote <commit-ish>^{tree} still named a root tree, and Git
+		// spells that several ways: ^{tree}, ^{tree}^{}, ^{tree}^{object}. Peel
+		// the trailing groups THEY wrote — adding none of our own — and ask again
+		// after each, so any spelling that bottoms out at a commit is recognized.
+		// The peel count is capped because each step costs a subprocess and a
+		// label can carry arbitrarily many groups.
+		peeled := label
+		for range maxRevisionPeels {
+			open := strings.LastIndex(peeled, "^{")
+			if open <= 0 || !strings.HasSuffix(peeled, "}") {
+				return false
+			}
+			peeled = peeled[:open]
+			peeledID, err := resolve(ctx, repo, peeled)
+			if err != nil {
+				continue
+			}
+			if _, err := resolve(ctx, repo, peeledID+"^{commit}"); err == nil {
+				return true
+			}
 		}
-		peeledID, err := resolve(ctx, repo, peeled)
-		if err != nil {
-			return false
-		}
-		_, err = resolve(ctx, repo, peeledID+"^{commit}")
-		return err == nil
+		return false
 	}
 	resolveTree := func(label string) (string, bool, error) {
 		// Resolve the caller's expression exactly before adding syntax of our
@@ -1091,6 +1118,12 @@ func indexPolicyChangeWarnings(changed []gitutil.ChangedFile, policy diffIndexPo
 	return warnings
 }
 
+// indexPolicyPathspecs names every committed file that can decide index
+// membership, anchored at the repository root so a caller's cwd cannot narrow
+// them. Git matches a wildcard pathspec at any depth, which is what nested
+// .gitignore files need.
+var indexPolicyPathspecs = []string{":(top)*.gitignore", ":(top)" + graphIgnoreFileName}
+
 // isIndexPolicyFile reports whether a path is one of the committed files whose
 // contents decide what the graph indexes.
 //
@@ -1131,8 +1164,13 @@ func newDiffIndexPolicies(
 	repo, baseTree, headTree string,
 	rootRelative bool,
 	changed []gitutil.ChangedFile,
+	overBudget func() bool,
 ) (diffIndexPolicy, diffIndexPolicy, error) {
-	if !rootRelative {
+	// Nothing has been parsed yet, so a range that is already over budget will
+	// return an empty result with its budget warnings whatever the policy says.
+	// Listing whole trees to build one would only make the command overshoot the
+	// budget it promised the caller.
+	if !rootRelative || overBudget() {
 		return diffIndexPolicy{}, diffIndexPolicy{}, nil
 	}
 	ignores, err := loadExplicitIgnoreMatcher(repo, nil, nil)
@@ -1153,6 +1191,11 @@ func newDiffIndexPolicies(
 	}
 	base.vendorRules = baseRules
 	base.vendorRulesLoaded = true
+	if overBudget() {
+		// The base listing alone spent what was left. Stop before the second one
+		// and let the caller's budget warnings describe the range.
+		return diffIndexPolicy{}, diffIndexPolicy{}, nil
+	}
 	if headTree == baseTree {
 		head.vendorRules = baseRules
 		head.vendorRulesLoaded = true

@@ -452,3 +452,68 @@ func TestAnalyzeGitRangeWarnsWhenAnIndexPolicyFileChanges(t *testing.T) {
 		}
 	}
 }
+
+// TestAnalyzeGitRangeWarnsAboutPolicyChangesOutsideThePathspec pins that a
+// pathspec narrows what Git reports, not what an exclusion rule decides. A root
+// rule edited outside the requested scope still changes membership inside it,
+// and the scoped changed-file list cannot show that.
+func TestAnalyzeGitRangeWarnsAboutPolicyChangesOutsideThePathspec(t *testing.T) {
+	repo := t.TempDir()
+	initDiffPolicyRepo(t, repo)
+	write(t, repo, ".gitignore", "vendor/*\n!vendor/rootpkg/\n!vendor/rootpkg/**\n")
+	write(t, repo, "vendor/rootpkg/root.go", "package rootpkg\n\nfunc Root() int { return 1 }\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, ".gitignore", "vendor/*\n")
+	write(t, repo, "vendor/rootpkg/root.go", "package rootpkg\n\nfunc Root() int { return 2 }\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "drop the re-inclusion and edit inside it")
+	head := rev(t, repo, "HEAD")
+
+	// Scoped to the subtree, so Git never reports the root rule file at all.
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, []string{"vendor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_INDEX_POLICY_CHANGED" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("scoped range went silent about a policy change: %#v", result.Warnings)
+	}
+}
+
+// TestAnalyzeGitRangeAcceptsEveryRootTreeSpelling pins the peel. Git spells "the
+// tree of this commit" several ways, and a spelling this failed to recognize
+// disabled every exclusion rule for the range.
+func TestAnalyzeGitRangeAcceptsEveryRootTreeSpelling(t *testing.T) {
+	repo := t.TempDir()
+	initDiffPolicyRepo(t, repo)
+	write(t, repo, ".graphignore", "vendored/\n")
+	write(t, repo, "keep/k.go", "package keep\n\nfunc Keep() int { return 1 }\n")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 1 }\n")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "initial")
+
+	write(t, repo, "keep/k.go", "package keep\n\nfunc Keep() int { return 2 }\n")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 2 }\n")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "edit both")
+
+	for _, spelling := range []string{"^{tree}", "^{tree}^{}", "^{tree}^{object}"} {
+		t.Run(spelling, func(t *testing.T) {
+			result, err := AnalyzeGitRange(context.Background(), repo, "HEAD~1"+spelling, "HEAD"+spelling, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if file := onlyFile(t, result); file.Path != "keep/k.go" {
+				t.Fatalf("file = %#v, want only keep/k.go", file)
+			}
+		})
+	}
+}
