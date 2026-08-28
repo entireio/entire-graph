@@ -384,3 +384,55 @@ func TestAdmitChangedFilesRewritesIndexCrossings(t *testing.T) {
 		})
 	}
 }
+
+// TestAnalyzeGitRangeWarnsWhenAnIndexPolicyFileChanges pins the one
+// incompleteness a change-based diff cannot filter its way out of. A committed
+// exclusion rule decides membership for files it never names, so dropping a
+// re-inclusion removes a whole subtree from the head snapshot while Git reports
+// only the rule file. The delta cannot contain those removals, so it must at
+// least say so rather than read as complete.
+func TestAnalyzeGitRangeWarnsWhenAnIndexPolicyFileChanges(t *testing.T) {
+	repo := t.TempDir()
+	initDiffPolicyRepo(t, repo)
+	write(t, repo, ".gitignore", "vendor/*\n!vendor/rootpkg/\n!vendor/rootpkg/**\n")
+	write(t, repo, "vendor/rootpkg/root.go", "package rootpkg\n\nfunc Root() int { return 1 }\n")
+	write(t, repo, "keep/k.go", "package keep\n\nfunc Keep() int { return 1 }\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	// The re-inclusion goes away. vendor/rootpkg/root.go does not change, but it
+	// leaves the graph.
+	write(t, repo, ".gitignore", "vendor/*\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "drop the re-inclusion")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_INDEX_POLICY_CHANGED" && warning.FilePath == ".gitignore" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %#v, want W_INDEX_POLICY_CHANGED for .gitignore", result.Warnings)
+	}
+
+	// An ordinary range must stay quiet; the warning is a real signal, not noise.
+	write(t, repo, "keep/k.go", "package keep\n\nfunc Keep() int { return 2 }\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "ordinary edit")
+	quiet, err := AnalyzeGitRange(context.Background(), repo, head, rev(t, repo, "HEAD"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, warning := range quiet.Warnings {
+		if warning.Code == "W_INDEX_POLICY_CHANGED" {
+			t.Fatalf("ordinary range warned about an index policy change: %#v", quiet.Warnings)
+		}
+	}
+}

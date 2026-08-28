@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -125,6 +126,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	if err != nil {
 		return Result{}, err
 	}
+	policyWarnings := indexPolicyChangeWarnings(changed, basePolicy)
 	changed = admitChangedFiles(changed, basePolicy, headPolicy)
 	emitProgress("parse", 0, len(changed))
 	parser := TreeSitterParser{}
@@ -140,6 +142,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	// constructed; every caller (AnalyzeGitRange, AnalyzeCheckpoint, and the
 	// diff/analyze CLI handlers that call through them) inherits it.
 	result := Result{Base: base, Head: head, SchemaVersion: SchemaVersion}
+	result.Warnings = append(result.Warnings, policyWarnings...)
 	var deltas []*fileDelta
 	appendBudgetWarnings := func(start int) {
 		for _, skipped := range changed[start:] {
@@ -1043,6 +1046,58 @@ func admitChangedFiles(changed []gitutil.ChangedFile, base, head diffIndexPolicy
 		}
 	}
 	return kept
+}
+
+// indexPolicyChangeWarnings discloses the one incompleteness a change-based diff
+// cannot close by filtering.
+//
+// A committed exclusion rule decides membership for files it never mentions in a
+// commit. Deleting a `!vendor/pkg/**` re-inclusion drops that whole subtree from
+// the head snapshot while Git reports only `.gitignore` as changed, so the
+// correct delta contains removals for files that appear nowhere in this
+// command's input. Synthesizing them would mean comparing the two trees' entire
+// corpora and could emit an entry per file in a vendored tree — a different and
+// unbounded operation, not a filter over a change list.
+//
+// What is not acceptable is letting a consumer believe the delta is complete
+// when it is not, so the range says so. The check runs on Git's original list,
+// before admission, because the policy file may itself be excluded.
+func indexPolicyChangeWarnings(changed []gitutil.ChangedFile, policy diffIndexPolicy) []ProviderWarning {
+	if !policy.enabled {
+		return nil
+	}
+	var warnings []ProviderWarning
+	for _, file := range changed {
+		for _, candidate := range [...]string{file.Path, file.OldPath} {
+			if candidate == "" || !isIndexPolicyFile(candidate) {
+				continue
+			}
+			warnings = append(warnings, indexPolicyChangedWarning(candidate))
+			break
+		}
+	}
+	return warnings
+}
+
+// isIndexPolicyFile reports whether a path is one of the committed files whose
+// contents decide what the graph indexes.
+func isIndexPolicyFile(rel string) bool {
+	switch path.Base(filepath.ToSlash(rel)) {
+	case ".gitignore", graphIgnoreFileName:
+		return true
+	}
+	return false
+}
+
+func indexPolicyChangedWarning(rel string) ProviderWarning {
+	return ProviderWarning{
+		Code:     "W_INDEX_POLICY_CHANGED",
+		Severity: "warning",
+		FilePath: rel,
+		EffectOnCompleteness: "files that did not change may have entered or left the graph in this range; " +
+			"this delta alone is not sufficient to update an index built from a snapshot",
+		Detail: "an exclusion policy file changed, and it decides index membership for files it does not name",
+	}
 }
 
 // newDiffIndexPolicies builds the base-side and head-side policies for one range.
