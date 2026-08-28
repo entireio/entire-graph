@@ -800,6 +800,12 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 // value back to a caller, so they have no re-stamping to do.
 func validCachedSearchSnapshot(cache cachedSearchSnapshot, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions) bool {
 	return cache.CacheVersion == searchSnapshotCacheVersion &&
+		// The stored header records the schema its records were serialized under, and
+		// nothing else here separates two schemas: searchSnapshotCacheVersion tracks
+		// the caching machinery, and providerVersion is the constant "dev" for every
+		// local build and "v0.0.0-ci" for every non-tag CI build. Without this clause
+		// a binary at schema N serves a snapshot built at schema N-1 as its own.
+		cache.Snapshot.Header.SchemaVersion == SchemaVersion &&
 		cache.ProviderVersion == providerVersion &&
 		cache.Tree == tree &&
 		cache.Profile == options.Profile &&

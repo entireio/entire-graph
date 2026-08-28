@@ -28,7 +28,12 @@ const providerRecordsCacheVersion = "provider-records-v8"
 // options+path-file contents), but we re-validate the discriminating fields on
 // read as defense-in-depth against a stale or hand-edited cache file.
 type cachedProviderRecords struct {
-	CacheVersion    string           `json:"cache_version"`
+	CacheVersion string `json:"cache_version"`
+	// SchemaVersion is the sem.SchemaVersion the stored record stream was
+	// serialized under. It is the only thing in this envelope that distinguishes
+	// two wire shapes; see validCachedProviderRecords. Entries written before this
+	// field existed decode as "" and are correctly rejected as a different schema.
+	SchemaVersion   string           `json:"schema_version"`
 	ProviderVersion string           `json:"provider_version"`
 	Commit          string           `json:"commit"`
 	Tree            string           `json:"tree"`
@@ -191,6 +196,7 @@ func (transaction *ProviderRecordsCacheTransaction) Store(records []byte, summar
 	}
 	cache := cachedProviderRecords{
 		CacheVersion:    providerRecordsCacheVersion,
+		SchemaVersion:   SchemaVersion,
 		ProviderVersion: transaction.providerVersion,
 		Commit:          transaction.commit,
 		Tree:            transaction.tree,
@@ -219,6 +225,14 @@ func LoadProviderRecords(ctx context.Context, repo, providerVersion, commit, tre
 
 func validCachedProviderRecords(cache cachedProviderRecords, providerVersion, commit, tree, mode string, options ProviderSnapshotOptions) bool {
 	return cache.CacheVersion == providerRecordsCacheVersion &&
+		// The record bytes are replayed VERBATIM, so the schema they were serialized
+		// under is the schema the caller receives. Nothing else here separates two
+		// schemas: providerRecordsCacheVersion tracks the caching machinery, and
+		// provider-version is the constant "dev" for every local build and the
+		// constant "v0.0.0-ci" for every non-tag CI build. Without this clause a
+		// binary at schema N serves entries written at schema N-1 as its own output —
+		// reproduced by renaming one wire field and diffing warm against cold.
+		cache.SchemaVersion == SchemaVersion &&
 		cache.ProviderVersion == providerVersion &&
 		cache.Commit == commit &&
 		cache.Tree == tree &&

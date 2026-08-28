@@ -194,6 +194,10 @@ func TestCacheWritesTolerateSymlinkedCacheDirectories(t *testing.T) {
 func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
 	options := ProviderSnapshotOptions{Profile: ProfileFull}
 	snapshot := ProviderSnapshot{Header: SnapshotHeader{
+		// Real snapshots always stamp the schema they were built under (see
+		// newProviderSnapshot); the cache validator now requires it, so a
+		// hand-built header has to carry it too.
+		SchemaVersion:   SchemaVersion,
 		RepoKey:         "github.com/example/repo",
 		Commit:          "old-commit",
 		Tree:            "tree",
@@ -267,7 +271,7 @@ func TestValidateBuiltSearchSnapshotPinsGraphProvenanceButNotCommit(t *testing.T
 
 func TestSearchSnapshotMatchesSelectionPinsRepositoryIdentityAndTree(t *testing.T) {
 	selection := searchFileSelection{repoKey: "github.com/example/repo", tree: "tree"}
-	snapshot := ProviderSnapshot{Header: SnapshotHeader{RepoKey: selection.repoKey, Tree: selection.tree}}
+	snapshot := ProviderSnapshot{Header: SnapshotHeader{SchemaVersion: SchemaVersion, RepoKey: selection.repoKey, Tree: selection.tree}}
 	if !searchSnapshotMatchesSelection(snapshot, selection) {
 		t.Fatal("matching snapshot and selection rejected")
 	}
