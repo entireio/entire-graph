@@ -2278,3 +2278,75 @@ func kernelReachesRawPath(t *testing.T, dir, name string) error {
 	}
 	return nil
 }
+
+// TestInitAgentsRefusesOversizeInstructionFileWithoutWrites pins the read bound on the only
+// repository-authored files init-agents reads. Their size is chosen by the repository, so an
+// unbounded read let a clone drive the command's memory to a multiple of the file it shipped.
+// The refusal has to land before anything is created or modified, and it has to be a refusal
+// rather than a truncation: a truncated instruction file would be written back over the user's
+// own text.
+func TestInitAgentsRefusesOversizeInstructionFileWithoutWrites(t *testing.T) {
+	for _, oversizeName := range []string{"AGENTS.md", "CLAUDE.md"} {
+		t.Run(oversizeName, func(t *testing.T) {
+			repo := t.TempDir()
+			counterpartName := "CLAUDE.md"
+			if oversizeName == "CLAUDE.md" {
+				counterpartName = "AGENTS.md"
+			}
+			oversize := bytes.Repeat([]byte("a"), maxInstructionFileBytes+1)
+			oversizePath := filepath.Join(repo, oversizeName)
+			if err := os.WriteFile(oversizePath, oversize, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+			if err == nil {
+				t.Fatalf("init-agents accepted a %d-byte %s", len(oversize), oversizeName)
+			}
+			for _, want := range []string{oversizeName, "larger than", "rerun init-agents"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q missing %q", err, want)
+				}
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before the size check completed: %q", stdout.String())
+			}
+			if got := readFileForTest(t, oversizePath); got != string(oversize) {
+				t.Fatalf("%s was rewritten despite the refusal (%d bytes read back)", oversizeName, len(got))
+			}
+			for _, path := range []string{
+				filepath.Join(repo, ".entire", "graph-agent.md"),
+				filepath.Join(repo, counterpartName),
+			} {
+				if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+					t.Fatalf("%s was created despite the refusal (stat error %v)", path, statErr)
+				}
+			}
+		})
+	}
+}
+
+// TestInitAgentsAcceptsInstructionFileExactlyAtTheLimit keeps the bound off by-one-safe: the
+// limit is the largest accepted size, not the smallest rejected one, so a file sitting exactly
+// on it is still installed into.
+func TestInitAgentsAcceptsInstructionFileExactlyAtTheLimit(t *testing.T) {
+	repo := t.TempDir()
+	atLimit := bytes.Repeat([]byte("a"), maxInstructionFileBytes)
+	agentsPath := filepath.Join(repo, "AGENTS.md")
+	if err := os.WriteFile(agentsPath, atLimit, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo}); err != nil {
+		t.Fatalf("init-agents refused a file exactly at the %d-byte limit: %v", maxInstructionFileBytes, err)
+	}
+	got := readFileForTest(t, agentsPath)
+	if !strings.HasPrefix(got, string(atLimit)) {
+		t.Fatal("AGENTS.md lost its original content")
+	}
+	if !strings.Contains(got, agentPointerBegin) {
+		t.Fatal("AGENTS.md did not receive the managed pointer block")
+	}
+}
