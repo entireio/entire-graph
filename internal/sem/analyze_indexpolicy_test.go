@@ -422,6 +422,22 @@ func TestAnalyzeGitRangeWarnsWhenAnIndexPolicyFileChanges(t *testing.T) {
 		t.Fatalf("warnings = %#v, want W_INDEX_POLICY_CHANGED for .gitignore", result.Warnings)
 	}
 
+	// A .graphignore outside the repository root decides nothing: the matcher only
+	// ever reads <repo>/.graphignore, so warning about it would be a false report.
+	write(t, repo, "pkg/.graphignore", "generated/\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "add a nested graphignore")
+	nested, err := AnalyzeGitRange(context.Background(), repo, head, rev(t, repo, "HEAD"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, warning := range nested.Warnings {
+		if warning.Code == "W_INDEX_POLICY_CHANGED" {
+			t.Fatalf("a non-root .graphignore warned about an index policy change: %#v", nested.Warnings)
+		}
+	}
+	head = rev(t, repo, "HEAD")
+
 	// An ordinary range must stay quiet; the warning is a real signal, not noise.
 	write(t, repo, "keep/k.go", "package keep\n\nfunc Keep() int { return 2 }\n")
 	git(t, repo, "add", "-A", "-f")

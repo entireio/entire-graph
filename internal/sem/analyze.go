@@ -1093,12 +1093,19 @@ func indexPolicyChangeWarnings(changed []gitutil.ChangedFile, policy diffIndexPo
 
 // isIndexPolicyFile reports whether a path is one of the committed files whose
 // contents decide what the graph indexes.
+//
+// The two files are scoped differently, and the warning must follow that rather
+// than match on name alone. Git applies a .gitignore to its own directory and
+// below, and the vendored-tree rules read every one of them in the tree, so any
+// of them can change membership. A .graphignore is only ever read from the
+// repository root (loadExplicitIgnoreMatcher), so `pkg/.graphignore` decides
+// nothing and warning about it would be a false report of incompleteness.
 func isIndexPolicyFile(rel string) bool {
-	switch path.Base(filepath.ToSlash(rel)) {
-	case ".gitignore", graphIgnoreFileName:
+	rel = filepath.ToSlash(rel)
+	if rel == graphIgnoreFileName {
 		return true
 	}
-	return false
+	return path.Base(rel) == ".gitignore"
 }
 
 func indexPolicyChangedWarning(rel string) ProviderWarning {
