@@ -23631,6 +23631,21 @@ func externalID(kind, value string) string {
 	return "external:" + kind + ":" + value
 }
 
+// RepoKey is the exported form of the provider repo_key rule. It is the
+// symbol-ID namespace stamped into every record of a snapshot, and it is
+// derived from the repository ALONE so that any process holding the repo path
+// can reproduce it: a github.com `origin` yields gh/<owner>/<name>, everything
+// else yields local/<basename>.
+//
+// Consumers (entire-brain) must be able to predict this value to tell a
+// snapshot of THIS repository apart from a foreign one. It is therefore a
+// published contract, not an internal detail: `graph doctor --json` reports it
+// and TestRepoKeyContractGoldenVectors pins the vectors that entire-brain
+// asserts on its side.
+func RepoKey(ctx context.Context, repo string) string {
+	return repoKey(ctx, repo)
+}
+
 func repoKey(ctx context.Context, repo string) string {
 	if gitMetadataSafeForSubprocessContext(ctx, repo) {
 		for _, remoteURL := range githubRemoteURLs(ctx, repo) {

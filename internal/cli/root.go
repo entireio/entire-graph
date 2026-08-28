@@ -227,6 +227,13 @@ func runDoctor(ctx context.Context, opts Options, args []string) error {
 		return nil
 	}
 	report["repo_root"] = repo
+	// The repo_key and schema_version this binary WILL use are part of the
+	// doctor report so a consumer can verify the seam contract up front. Brain
+	// runs doctor before every snapshot; discovering a repo_key rule mismatch or
+	// an unsupported schema major here costs milliseconds, whereas discovering
+	// it from the finished snapshot costs the whole (up to 30 minute) run.
+	report["repo_key"] = sem.RepoKey(ctx, repo)
+	report["schema_version"] = sem.SchemaVersion
 	if asJSON {
 		return json.NewEncoder(opts.Stdout).Encode(report)
 	}
