@@ -114,9 +114,24 @@ var ooRelationSupport = map[string][]string{
 	// emitted without a declaration.
 	"C": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	// C++ shares C's extraction path, so it reaches the same passes.
-	"C++":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	"Groovy":           {"USES_TYPE", "PARAM_TYPE", "READS_FIELD", "DATA_FLOWS"},
-	"Julia":            {"DATA_FLOWS"},
+	"C++":    {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	"Groovy": {"USES_TYPE", "PARAM_TYPE", "READS_FIELD", "DATA_FLOWS"},
+	// The ten entries below were the same omission one round later: the golden
+	// fixtures carry no annotated signature or forwarded argument for these
+	// languages, so nothing ever reported the relations they do emit and the
+	// report told agents to skip them. Each is what
+	// TestCapabilityMatrixDeclaresTypeAndFlowRelations observes on an annotated,
+	// argument-forwarding file per language.
+	"Clojure":          {"USES_TYPE"},
+	"Elixir":           {"DATA_FLOWS"},
+	"Erlang":           {"USES_TYPE", "PARAM_TYPE"},
+	"F#":               {"USES_TYPE", "PARAM_TYPE"},
+	"Haskell":          {"USES_TYPE", "PARAM_TYPE"},
+	"Julia":            {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
+	"Lua":              {"DATA_FLOWS"},
+	"Objective-C":      {"DATA_FLOWS"},
+	"Perl":             {"DATA_FLOWS"},
+	"R":                {"USES_TYPE", "DATA_FLOWS"},
 	"Scala":            {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	"Swift":            {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	"Zig":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "DATA_FLOWS"},
