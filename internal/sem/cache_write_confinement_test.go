@@ -3,6 +3,7 @@ package sem
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -199,8 +200,14 @@ func TestCacheEntryWriteFollowsSymlinkedCacheRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("artifact beneath the link target: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("artifact mode = %v, want 0600", mode)
+	// The artifact holds derivative repository content, so the explicit Chmod that overrides the
+	// umask has to survive the move to a confined create. Windows has no mode bits to assert:
+	// Go synthesizes FileMode there from the read-only attribute alone, so a file created 0600
+	// reads back 0666. Asserting it on the platforms that have it is the whole of the check.
+	if runtime.GOOS != "windows" {
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Errorf("artifact mode = %v, want 0600", mode)
+		}
 	}
 }
 
