@@ -176,7 +176,14 @@ these rules existed misses instead of re-emitting the paths it named.
 - Derivative caches, under `--cache-dir`, else `ENTIRE_PLUGIN_DATA_DIR`, else
   (for most query commands) the per-user cache directory. Cache entries are
   compressed snapshots rebuilt from repository state; deleting them costs a
-  rebuild, nothing else. Queries never modify repository source files.
+  rebuild, nothing else. Queries never modify repository source files. The
+  cache directory you name is resolved as you gave it and may itself be a
+  symlink, but everything below it is named by Entire Graph — a family, a
+  version, and a SHA-256 digest — and both reads and writes are confined to
+  the directory that was opened, so a symlink planted at one of those
+  components cannot redirect an entry out of the cache directory. That matters
+  when the cache directory resolves inside a scanned checkout, where the
+  planter would be the repository.
 - `init-agents` writes through exactly three repository paths, disclosed in
   [agent activation](agents.md): `.entire/graph-agent.md` and managed blocks
   in `AGENTS.md` and `CLAUDE.md`. A hard-linked pathname elsewhere names the

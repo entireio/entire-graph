@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 )
@@ -251,44 +250,5 @@ func readProviderRecords(entry cacheEntry) (cachedProviderRecords, error) {
 }
 
 func writeProviderRecords(entry cacheEntry, cache cachedProviderRecords) error {
-	path := entry.writePath()
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(dir, ".records-*.json.gz")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	removeTemporary := true
-	defer func() {
-		if removeTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	writer := gzip.NewWriter(temporary)
-	encoder := json.NewEncoder(writer)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(cache); err != nil {
-		_ = writer.Close()
-		_ = temporary.Close()
-		return err
-	}
-	if err := writer.Close(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return err
-	}
-	removeTemporary = false
-	return nil
+	return entry.write("records", cache)
 }
