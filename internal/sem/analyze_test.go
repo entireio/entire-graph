@@ -1819,3 +1819,118 @@ func TestAnalyzeGitRangeNoBudgetKeepsFullResult(t *testing.T) {
 		}
 	}
 }
+
+// TestAnalyzeGitRangeSkipsSymlinkTreeEntries pins that a symbolic link is never
+// analyzed as source. Git stores a symlink as a blob whose bytes are its target
+// path, so reading content alone cannot tell `alias.py` (holding "pkg/real.py")
+// apart from a one-line Python file: it used to yield a phantom module entity,
+// while `alias.go` used to report E_PARSE_ERROR against a file that is not
+// source at all.
+func TestAnalyzeGitRangeSkipsSymlinkTreeEntries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checkouts do not preserve symlink tree entries")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	write(t, repo, "pkg/real.go", "package pkg\n\nfunc Real() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	for _, link := range []struct{ name, target string }{
+		{name: "alias.py", target: "pkg/real.py"},
+		{name: "alias.go", target: "pkg/real.go"},
+	} {
+		if err := os.Symlink(link.target, filepath.Join(repo, link.name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "add symlinks")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("symlink tree entries produced entity deltas: %#v", result.Files)
+	}
+	marked := map[string]bool{}
+	for _, warning := range result.Warnings {
+		if warning.Code == "E_PARSE_ERROR" {
+			t.Fatalf("symlink reported as a parse failure: %#v", warning)
+		}
+		if warning.Code == "W_UNSUPPORTED_FILE" && strings.Contains(warning.EffectOnCompleteness, "symbolic link") {
+			marked[warning.FilePath] = true
+		}
+	}
+	for _, path := range []string{"alias.py", "alias.go"} {
+		if !marked[path] {
+			t.Fatalf("no symlink completeness marker for %s: %#v", path, result.Warnings)
+		}
+	}
+}
+
+// TestAnalyzeGitRangeSkipsDeletedSymlink covers the base side of the same
+// classification: removing a symlink must not be reported as removing source.
+func TestAnalyzeGitRangeSkipsDeletedSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checkouts do not preserve symlink tree entries")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	if err := os.Symlink("pkg/real.py", filepath.Join(repo, "alias.py")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	if err := os.Remove(filepath.Join(repo, "alias.py")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "drop symlink")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("deleted symlink produced entity deltas: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeStillAnalyzesRegularFiles guards the classification from
+// over-reaching: an ordinary blob must keep producing its entity delta.
+func TestAnalyzeGitRangeStillAnalyzesRegularFiles(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "pkg/real.py", "def only_once(value, strict=False):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change signature")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "pkg/real.py" {
+		t.Fatalf("regular file was skipped: %#v", result.Files)
+	}
+}

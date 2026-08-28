@@ -196,6 +196,35 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			continue
 		}
 
+		// A symbolic link is stored as a blob whose bytes are its target path,
+		// so it reaches the readers below indistinguishable from a one-line
+		// source file: `alias.py` holding "pkg/real.py" parses cleanly as
+		// Python and yields a phantom module entity, while `alias.go` holding
+		// "pkg/real.go" fails to parse and reports E_PARSE_ERROR against a file
+		// that is not source at all. Mode is the only signal that separates
+		// them, so classify here — alongside the gitlink handling below, which
+		// this mirrors — rather than reading content that cannot be analyzed.
+		beforeSymlink := file.Status != "A" && file.OldMode == gitutil.SymlinkMode
+		afterSymlink := file.Status != "D" && file.NewMode == gitutil.SymlinkMode
+		if beforeSymlink || afterSymlink {
+			warningPath := path
+			detail := "head version is a symbolic link, not file content"
+			if beforeSymlink && !afterSymlink {
+				warningPath = oldPath
+				detail = "base version is a symbolic link, not file content"
+			} else if beforeSymlink && afterSymlink {
+				detail = "base and head versions are symbolic links, not file content"
+			}
+			result.Warnings = append(result.Warnings, ProviderWarning{
+				Code:                 "W_UNSUPPORTED_FILE",
+				Severity:             "info",
+				FilePath:             warningPath,
+				EffectOnCompleteness: "file skipped; the Git tree entry is a symbolic link, so its changes are not analyzed",
+				Detail:               detail,
+			})
+			continue
+		}
+
 		var before, after string
 		var beforeOK, afterOK bool
 		// Fast-path: a file WITH a recognized-unsupported extension classifies without reading

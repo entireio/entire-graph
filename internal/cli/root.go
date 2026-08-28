@@ -789,7 +789,7 @@ func runAnalyze(ctx context.Context, opts Options, args []string) error {
 // validateRevision rejects a revision value that Git would read as an option instead.
 //
 // Every revision this package accepts is eventually spliced into a git argv — `git diff -z
-// --name-status --find-renames <base> <head> --` in gitutil.ChangedFiles, `git rev-parse
+// --raw --find-renames <base> <head> --` in gitutil.ChangedFiles, `git rev-parse
 // <rev>^` in gitutil.FirstParent, `git show <rev>^{tree}:<path>` in gitutil.ShowFile. Git
 // parses options anywhere ahead of `--`, so a value beginning with '-' stops being a revision
 // and becomes a flag of the command it lands in: `diff --base '--output=FILE'` exited 0 having
