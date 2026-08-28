@@ -12,8 +12,13 @@ type CompactSnapshotIndex struct {
 	Snapshot              ProviderSnapshot
 	Summary               SnapshotSummary
 	CanonicalSemanticHash string
-	symbolMatches         map[string][]int
-	relationsByFrom       map[string][]int
+	// SchemaWarnings carries the ADR 0001 tolerant-reader warnings for this
+	// artifact. An unreadable major is an error from LoadCompactSnapshot; a
+	// readable major written under a NEWER minor loads, and says so here, because
+	// the additive facts that minor introduced were not read.
+	SchemaWarnings  []ProviderWarning
+	symbolMatches   map[string][]int
+	relationsByFrom map[string][]int
 }
 
 type CompactSnapshotQuery struct {
@@ -38,6 +43,11 @@ func LoadCompactSnapshot(in io.Reader) (*CompactSnapshotIndex, error) {
 		case SnapshotHeader:
 			index.Snapshot.Header = typed
 			seenHeader = true
+			// DecodeCompactSnapshot already refused an unreadable major, so the
+			// only signal left is the newer-minor one the contract says to warn on.
+			if newerMinor, err := CheckReadableSchemaVersion(typed.SchemaVersion); err == nil && newerMinor {
+				index.SchemaWarnings = append(index.SchemaWarnings, newerSchemaMinorWarning(typed.SchemaVersion))
+			}
 		case FileRecord:
 			index.Snapshot.Files = append(index.Snapshot.Files, typed)
 		case ExternalRecord:

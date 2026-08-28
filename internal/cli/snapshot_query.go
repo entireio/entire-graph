@@ -32,6 +32,12 @@ func runSnapshotQuery(opts Options, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load compact snapshot: %w", err)
 	}
+	// ADR 0001: a newer minor of a readable major is served, not refused, but the
+	// caller has to learn that additive facts were skipped. stdout is the record
+	// stream a consumer parses, so the notice goes to stderr.
+	for _, warning := range index.SchemaWarnings {
+		fmt.Fprintf(opts.Stderr, "graph warning code=%s detail=%s\n", warning.Code, warning.Detail)
+	}
 	result := index.Query(sem.CompactSnapshotQuery{Symbol: flags.Symbol, FromID: flags.From, Relation: flags.Relation})
 	encoder := json.NewEncoder(opts.Stdout)
 	encoder.SetEscapeHTML(false)

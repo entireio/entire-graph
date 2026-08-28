@@ -17,7 +17,7 @@ import (
 
 func compactFixtureRecords() []any {
 	header := SnapshotHeader{
-		SchemaVersion: "snapshot-test", Provider: "provider", ProviderVersion: "v1",
+		SchemaVersion: SchemaVersion, Provider: "provider", ProviderVersion: "v1",
 		RepoRoot: "/tmp/repo", RepoKey: "local/repo", Commit: "commit", Tree: "tree",
 		Languages: []string{"Go"}, LanguageTiers: map[string]string{"Go": "semantic"},
 		Capabilities: []string{"ndjson"}, SchemaFeatures: []string{"feature"},
@@ -458,15 +458,15 @@ func TestCompactSnapshotDecoderRejectsUnknownVersion(t *testing.T) {
 	requireCompactDecodeError(t, "[\"h\",2,{}]\n", "unsupported compact snapshot version 2")
 }
 func TestCompactSnapshotDecoderRejectsWrongArity(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",1]\n", "dictionary has invalid placement or arity")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"d\",1]\n", "dictionary has invalid placement or arity")
 }
 func TestCompactSnapshotDecoderRequiresHeaderDictionaryThenSummary(t *testing.T) {
 	requireCompactDecodeError(t, "[\"d\",1,[\"x\"]]\n", "dictionary has invalid placement")
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",1,[\"x\"]]\n", "missing summary")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"d\",1,[\"x\"]]\n", "missing summary")
 }
 
 func TestCompactSnapshotDecoderAllowsIndexZeroOnlyDataWithoutDictionaryLine(t *testing.T) {
-	records := []any{SnapshotHeader{}, FileRecord{RecordType: "file", Bytes: 7}, SnapshotSummary{RecordType: "summary"}}
+	records := []any{SnapshotHeader{SchemaVersion: SchemaVersion}, FileRecord{RecordType: "file", Bytes: 7}, SnapshotSummary{RecordType: "summary"}}
 	data, _ := encodeCompactFixture(t, records)
 	if bytes.Contains(data, []byte(`["d",`)) {
 		t.Fatalf("index-zero-only record unexpectedly emitted dictionary: %s", data)
@@ -478,28 +478,36 @@ func TestCompactSnapshotDecoderAllowsIndexZeroOnlyDataWithoutDictionaryLine(t *t
 }
 
 func TestCompactSnapshotDecoderRejectsUnknownTag(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"z\"]\n", `unknown compact snapshot tag "z"`)
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"z\"]\n", `unknown compact snapshot tag "z"`)
 }
 func TestCompactSnapshotDecoderRejectsOutOfBoundsDictionaryIndex(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"f\",1,0,0,0,0]\n", "dictionary index 1 is out of range")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"f\",1,0,0,0,0]\n", "dictionary index 1 is out of range")
 }
 func TestCompactSnapshotDecoderRejectsDuplicateDictionaryString(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",1,[\"dup\"]]\n[\"d\",2,[\"dup\"]]\n", `dictionary duplicates "dup"`)
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"d\",1,[\"dup\"]]\n[\"d\",2,[\"dup\"]]\n", `dictionary duplicates "dup"`)
 }
 func TestCompactSnapshotDecoderRejectsNoncontiguousDictionaryBase(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",2,[\"value\"]]\n", "dictionary base 2 does not equal 1")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"d\",2,[\"value\"]]\n", "dictionary base 2 does not equal 1")
 }
 func TestCompactSnapshotDecoderRejectsDuplicateHeader(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"h\",1,{}]\n", "header must be first")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"h\",1,{}]\n", "header must be first")
 }
 func TestCompactSnapshotDecoderRejectsRecordAfterSummary(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"m\",{}]\n[\"f\",0,0,0,0,0]\n", "record after summary")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"m\",{}]\n[\"f\",0,0,0,0,0]\n", "record after summary")
 }
 func TestCompactSnapshotDecoderRejectsMissingSummary(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n", "missing summary")
+	requireCompactDecodeError(t, compactHeaderLine(), "missing summary")
 }
 func TestCompactSnapshotDecoderRejectsLineOverLimit(t *testing.T) {
 	requireCompactDecodeError(t, strings.Repeat("x", 16*1024*1024+1), "compact snapshot scan:")
+}
+
+// compactHeaderLine is the minimal valid header line: envelope version plus a
+// schema version this build can place against ADR 0001's compatibility
+// boundary. Cases below vary the lines AFTER it, so the header must not be the
+// thing that fails.
+func compactHeaderLine() string {
+	return "[\"h\",1,{\"schema_version\":\"" + SchemaVersion + "\"}]\n"
 }
 
 func requireCompactDecodeError(t *testing.T, input, want string) {

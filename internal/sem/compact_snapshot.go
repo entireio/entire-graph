@@ -1021,6 +1021,16 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) error {
 			if err := json.Unmarshal(fields[2], &header); err != nil {
 				return fmt.Errorf("compact snapshot header: %w", err)
 			}
+			// The envelope version above pins the ARRAY ENCODING; the header's
+			// schema_version pins the RECORD SHAPE, and the two move
+			// independently. ADR 0001 makes the major the compatibility
+			// boundary, so an artifact from another major — or one that does not
+			// declare a placeable version at all — is refused here rather than
+			// decoded into this build's structs, where every field the other
+			// major named differently would silently arrive as a zero value.
+			if _, err := CheckReadableSchemaVersion(header.SchemaVersion); err != nil {
+				return fmt.Errorf("compact snapshot header: %w", err)
+			}
 			seenHeader = true
 			if err := emit(header); err != nil {
 				return err
