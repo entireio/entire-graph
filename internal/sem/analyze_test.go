@@ -363,13 +363,19 @@ func TestLabelSelectsTreePath(t *testing.T) {
 		// A reflog date selector: commit-ish, and full of colons.
 		{"HEAD@{2026-08-27 12:34:56 +0000}", false},
 		{"main@{yesterday 09:00:00}", false},
-		// The commit-message search names a commit; colons after it are text.
+		// The commit-message searches name a commit; colons in them are text.
 		{":/fix: the bug", false},
+		{"HEAD^{/release: fix}", false},
+		{"main^{/colon: here}~2", false},
+		// The ordinary peels carry no colon but must stay revision-shaped.
+		{"HEAD^{tree}", false},
+		{"HEAD^{commit}", false},
 		// These do reach into a tree.
 		{"HEAD:sub", true},
 		{"HEAD~1:sub/dir", true},
 		{":0:conflicted.go", true},
 		{"HEAD@{2}:sub", true},
+		{"HEAD^{/release fix}:sub", true},
 	}
 	for _, test := range tests {
 		if got := labelSelectsTreePath(test.label); got != test.want {

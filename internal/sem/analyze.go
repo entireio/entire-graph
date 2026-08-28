@@ -445,9 +445,14 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 
 	// The dependents scan reads the whole head tree, so it needs the head tree's
 	// real rules rather than the ones the changed-file probe was allowed to skip.
-	// Resolve them only when there is something to count.
+	// Resolve them only when there is something to count, and only while the
+	// budget still allows work: resolving lists the whole head tree and reads its
+	// ignore files, and an exhausted range must return with its budget warning
+	// rather than spend more time than the caller asked for. The scan below
+	// re-checks the same deadline and stops immediately, so the policy it would
+	// have used cannot matter then.
 	dependentsPolicy := headPolicy
-	if len(result.Files) > 0 {
+	if len(result.Files) > 0 && !overBudget() {
 		dependentsPolicy, err = headPolicy.resolvedForTree(ctx, objectRepo, pinnedHead)
 		if err != nil {
 			return Result{}, err
@@ -494,11 +499,18 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 // happens to hold.
 //
 // `:` is the only object-name syntax that reaches into a tree (`<rev>:<path>`
-// and `:<stage>:<path>`), but not every colon is that syntax. `:/text` searches
-// commit messages, so it names a commit and every colon after it is part of the
-// text; and a colon inside an `@{...}` selector is data too, because a reflog
-// date such as `HEAD@{2026-08-27 12:34:56 +0000}` names a commit and reaches
-// into no tree. Only a colon outside every such block is the separator.
+// and `:<stage>:<path>`), but not every colon is that syntax. Three forms carry
+// colons that are data:
+//
+//	:/text                            a commit-message search; the colons are text
+//	HEAD@{2026-08-27 12:34:56 +0000}  a reflog date selector
+//	HEAD^{/release: fix}              a commit-message search from a starting point
+//
+// All three name a commit and reach into no tree, so only a colon outside every
+// `@{...}` and `^{...}` block is the separator. Both brace forms are tracked, not
+// just the one that happened to come up first: mistaking a commit for a subtree
+// loses no data, but it silently withdraws the exclusion guarantee for the whole
+// range, which is the kind of failure nothing downstream can notice.
 func labelSelectsTreePath(label string) bool {
 	if strings.HasPrefix(label, ":/") {
 		return false
@@ -506,7 +518,7 @@ func labelSelectsTreePath(label string) bool {
 	depth := 0
 	for index := 0; index < len(label); index++ {
 		switch label[index] {
-		case '@':
+		case '@', '^':
 			if index+1 < len(label) && label[index+1] == '{' {
 				depth++
 				index++
