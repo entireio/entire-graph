@@ -467,12 +467,38 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 // to apply and fires rules that were not, which silently drops indexed files.
 // There is no prefix to recover, because a tree object does not know its own
 // path, so the only correct answer for a subtree range is to apply no policy.
+// labelSelectsTreePath reports whether a revision label reaches INTO a tree
+// rather than naming a revision.
+//
+// Resolving to a commit object is not sufficient evidence that a label named a
+// commit: a gitlink resolves to one too. `HEAD:sub` on a submodule entry yields
+// that submodule's commit, and a range over its tree is named relative to the
+// SUBMODULE's root, not this repository's — so a superproject rule set matched
+// against those names is the same category error as a subtree range. The probe
+// happens to fail today because the submodule's objects usually are not in the
+// superproject's object database, but an absorbed or fetched submodule puts them
+// there, and correctness here should not rest on which objects a repository
+// happens to hold.
+//
+// `:` is the only object-name syntax that reaches into a tree (`<rev>:<path>`
+// and `:<stage>:<path>`). The single exception is `:/text`, which searches
+// commit messages and so names a commit and nothing else.
+func labelSelectsTreePath(label string) bool {
+	if strings.HasPrefix(label, ":/") {
+		return false
+	}
+	return strings.Contains(label, ":")
+}
+
 func resolveDiffTrees(
 	ctx context.Context,
 	repo, base, head string,
 	resolve func(context.Context, string, string) (string, error),
 ) (string, string, bool, error) {
 	rootRelative := func(label, objectID string) bool {
+		if labelSelectsTreePath(label) {
+			return false
+		}
 		// Probe the immutable OID rather than the caller's expression, for the
 		// same reason the tree peel below does: appending ^{commit} to
 		// HEAD:scope can select a repository path literally named
@@ -920,10 +946,12 @@ func (p diffIndexPolicy) admitFunc() func(string) bool {
 // than Git's — a rename out of the index IS a deletion of everything the index
 // held.
 //
-// A copy (status "C") is the one crossing that must never become a deletion: its
-// source still exists and is not part of this delta, so an unindexed destination
-// simply drops. ChangedFiles asks for --find-renames and not --find-copies, so
-// this is a guard against a future flag rather than a path exercised today.
+// A copy (status "C") is the one entry that is never a comparison at all: its
+// source still exists, so the destination is purely an addition and must never
+// be reported as a deletion of, or a change to, the file it was copied from.
+// ChangedFiles asks for --find-renames and not --find-copies, and Git emits "C"
+// only under --find-copies-harder, so this is a guard against a future flag
+// rather than a path exercised today.
 //
 // Files are omitted rather than warned about, exactly as the snapshot omits them:
 // an exclusion rule is a deliberate choice, not an input the provider failed to
@@ -937,13 +965,21 @@ func admitChangedFiles(changed []gitutil.ChangedFile, base, head diffIndexPolicy
 		}
 		inBase := file.Status != "A" && base.indexed(oldPath)
 		inHead := file.Status != "D" && head.indexed(file.Path)
+		if file.Status == "C" {
+			// A copy's source survives, so it is not part of this delta at all
+			// and the destination is simply new to the graph. That makes a copy
+			// an addition whenever its destination is indexed and nothing
+			// otherwise: never a deletion of a file that still exists, and never
+			// a comparison against a source this change did not touch.
+			if inHead {
+				kept = append(kept, gitutil.ChangedFile{Status: "A", Path: file.Path})
+			}
+			continue
+		}
 		switch {
 		case inBase && inHead:
 			kept = append(kept, file)
 		case inBase:
-			if file.Status == "C" {
-				continue
-			}
 			kept = append(kept, gitutil.ChangedFile{Status: "D", Path: oldPath})
 		case inHead:
 			kept = append(kept, gitutil.ChangedFile{Status: "A", Path: file.Path})

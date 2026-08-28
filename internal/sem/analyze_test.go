@@ -314,6 +314,38 @@ func TestResolveDiffTreesReusesResolutionForSameLabel(t *testing.T) {
 	}
 }
 
+// TestResolveDiffTreesRejectsTreePathLabels pins that resolving to a commit is
+// not on its own evidence that a label named one. A gitlink resolves to the
+// submodule's commit, and a range over its tree is named relative to the
+// SUBMODULE's root, so this repository's exclusion rules do not describe those
+// names. The probe happens to fail today only because a submodule's objects are
+// usually absent from the superproject; an absorbed or fetched submodule puts
+// them there, and this must not depend on that.
+func TestResolveDiffTreesRejectsTreePathLabels(t *testing.T) {
+	// Mimics a superproject that DOES hold the submodule's objects: every peel
+	// resolves cleanly, so only the label's shape can rule it out.
+	resolve := func(_ context.Context, _, revision string) (string, error) {
+		return "gitlink-commit", nil
+	}
+	_, _, rootRelative, err := resolveDiffTrees(t.Context(), "repo", "HEAD:sub", "HEAD:sub", resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootRelative {
+		t.Fatal("a gitlink label must not be treated as repository-root relative")
+	}
+
+	// The commit-message search is the one colon form that names a commit and
+	// reaches into no tree.
+	_, _, rootRelative, err = resolveDiffTrees(t.Context(), "repo", ":/fix the bug", ":/fix the bug", resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rootRelative {
+		t.Fatal(":/text names a commit, so its names are repository-root relative")
+	}
+}
+
 func TestAnalyzeGitRangeSurfacesModuleScopeChange(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")

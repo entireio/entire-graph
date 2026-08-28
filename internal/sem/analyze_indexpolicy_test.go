@@ -356,6 +356,14 @@ func TestAdmitChangedFilesRewritesIndexCrossings(t *testing.T) {
 			want: []gitutil.ChangedFile{{Status: "A", Path: "b.go"}},
 		},
 		{
+			// The source is untouched by a copy, so comparing the destination
+			// against it would report a change to a file that did not change.
+			name: "copy between indexed paths is still only an addition",
+			base: indexed, head: indexed,
+			in:   gitutil.ChangedFile{Status: "C", OldPath: "a.go", Path: "b.go"},
+			want: []gitutil.ChangedFile{{Status: "A", Path: "b.go"}},
+		},
+		{
 			name: "a disabled policy admits everything",
 			base: diffIndexPolicy{}, head: diffIndexPolicy{},
 			in:   gitutil.ChangedFile{Status: "M", Path: "a.go"},
