@@ -446,6 +446,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		},
 		deadline: deadline,
 		budget:   options.MaxDuration,
+		admit:    headPolicy.admitFunc(),
 	}); err != nil {
 		return Result{}, err
 	}
@@ -884,6 +885,15 @@ func (p diffIndexPolicy) indexed(rel string) bool {
 		return false
 	}
 	return !p.ignores.Ignored(rel, false)
+}
+
+// admitFunc exposes indexed to the dependents scan, or nil when this policy has
+// no opinion, which is the scan's own "admit everything" signal.
+func (p diffIndexPolicy) admitFunc() func(string) bool {
+	if !p.enabled {
+		return nil
+	}
+	return p.indexed
 }
 
 // admitChangedFiles rewrites Git's changed-file list into the delta the GRAPH
