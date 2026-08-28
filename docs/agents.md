@@ -77,7 +77,13 @@ content from that validated snapshot.
 Each path must be missing or resolve to a regular file. Symlinks to regular
 files are supported, with the target written either relatively or as an
 absolute path, as long as it stays inside the project root; a symlink that
-resolves outside is refused and nothing is installed. Hard links are also
+resolves outside is refused and nothing is installed. Staying inside the project
+root is necessary but not sufficient: a symlink that lands inside a git
+directory — `.git` at any depth, including a nested checkout's and a linked
+worktree's `.git` pointer — is refused as well. `.git` is inside the project root
+but is not project content, and no instruction file belongs there; writing a
+managed block into `config` or a hook would corrupt the repository rather than
+configure an agent. Hard links are also
 supported, but every hard-linked pathname names the same inode: an update
 through `AGENTS.md` or `CLAUDE.md` is therefore visible through any other hard
 link to that file, including one outside the project. A directory, named pipe,

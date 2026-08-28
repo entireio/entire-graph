@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 // agentGuide is the canonical, agent-agnostic operating guide for coding agents using the
@@ -345,6 +347,12 @@ func ensureContainedInRepo(root *os.Root, name, path string, createsParents bool
 			)
 		}
 		return nil
+	case errors.Is(err, errGitDirManagedTarget):
+		return fmt.Errorf(
+			"%s: %w; init-agents installs instruction files, and none of them belongs in the "+
+				"git directory, so repoint or remove the link, then rerun init-agents",
+			path, err,
+		)
 	case isRootEscape(err):
 		return fmt.Errorf(
 			"%s: refusing to write through a link that leaves the repository (%w); "+
@@ -553,7 +561,10 @@ func isRootEscape(err error) bool {
 	// kernel's answer as text rather than as a wrapped errno — so it reaches here looking
 	// syscall-free. It is a broken path, not an escape; saying otherwise would send the
 	// reader hunting a link that leaves when none does.
-	return !errors.Is(err, errUnresolvableAlias) &&
+	// errGitDirManagedTarget is likewise not an escape: it is raised for a link that stays
+	// comfortably inside the root and lands in `.git`. Classifying it as an escape would tell
+	// the reader the link leaves the repository when the whole point is that it does not.
+	return !errors.Is(err, errUnresolvableAlias) && !errors.Is(err, errGitDirManagedTarget) &&
 		!errors.Is(err, os.ErrClosed) && !errors.Is(err, os.ErrInvalid)
 }
 
@@ -664,7 +675,48 @@ func resolveContainedDirectoryName(root *os.Root, name string) (string, error) {
 	return resolveContainedNameWithOptions(root, name, true)
 }
 
+// resolveContainedNameWithOptions is resolveContainedLanding plus the one landing that
+// containment alone cannot refuse: a managed target that resolves INSIDE the repository's git
+// directory.
+//
+// os.Root keeps the write in the project root, and until now that was the whole argument — see
+// the os.OpenRoot comment in runInitAgents, which reasons that a link staying inside the
+// repository is safe to follow because the repository is where init-agents writes anyway. That
+// is true of repository CONTENT and false of `.git`, which is inside the root and is not content.
+// A hostile checkout that commits `CLAUDE.md -> .git/config` gets the managed block appended to
+// git's own config, and git then refuses to operate on the repository at all ("fatal: bad config
+// line N"); `.git/hooks/*` is the same primitive aimed somewhere worse. Nothing about the
+// documented alias needs it: docs/agents.md offers symlinks so AGENTS.md and CLAUDE.md can share
+// ONE INSTRUCTION FILE, and no instruction file lives in `.git`.
+//
+// It is also the boundary the rest of the tool already holds from the other side. The indexer
+// refuses to READ inside a git directory whatever its name or depth (hasGitDirComponent, which
+// this asks through sem.PathLandsInGitDir rather than restating); a writer that will not read
+// there must not write there either.
+//
+// This sits on the resolver rather than on the preflight because the preflight is not the
+// enforcement: ensureContainedInRepo is explicitly not atomic with the write, so a link swapped
+// in afterwards would pass a preflight-only check. Every stat, read and write of a managed target
+// resolves through here, so each one re-asks, and a link swapped between them is refused by the
+// operation that finds it.
 func resolveContainedNameWithOptions(root *os.Root, name string, allowMissingDirectory bool) (string, error) {
+	resolved, err := resolveContainedLanding(root, name, allowMissingDirectory)
+	if err != nil {
+		return "", err
+	}
+	if sem.PathLandsInGitDir(resolved) {
+		return "", fmt.Errorf(
+			"%w: %s resolves to %s, inside the repository's git directory, where init-agents must never write",
+			errGitDirManagedTarget, name, filepath.ToSlash(resolved),
+		)
+	}
+	return resolved, nil
+}
+
+// errGitDirManagedTarget marks a managed target whose resolution lands in the git directory.
+var errGitDirManagedTarget = errors.New("refusing to write into the git directory")
+
+func resolveContainedLanding(root *os.Root, name string, allowMissingDirectory bool) (string, error) {
 	pending := splitPathComponents(name)
 	var resolved []string
 	requiresDirectory := false
