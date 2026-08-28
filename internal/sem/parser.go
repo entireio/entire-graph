@@ -4664,18 +4664,17 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 		kind = "function"
 		name = nodeName(node, src)
-		if language == "Objective-C" || language == "C" {
-			// A C function routinely returns a typedef'd type
+		if language == "Objective-C" || language == "C" || language == "C++" {
+			// A C-family function routinely returns a named type
 			// (`CURLcode curl_easy_perform(...)`, `static NSString * Escape(...)`
-			// in a .m file), whose type_identifier is the first name node in
-			// pre-order, so nodeName would misname the function after its
-			// return type. Take the identifier from the declarator field
-			// instead. Gated to C and Objective-C so C++ extraction (qualified
-			// names, destructors) is unchanged.
-			if declarator := node.ChildByFieldName("declarator"); validNode(declarator) {
-				if id := firstDescendantOfType(declarator, "identifier"); validNode(id) {
-					name = strings.TrimSpace(id.Content(src))
-				}
+			// in a .m file, `std::string Config::name() const`), whose
+			// type_identifier is the first name node in pre-order, so nodeName
+			// would misname the function after its return type — collapsing
+			// every `std::string`-returning function in a repo onto the single
+			// name `string`. Take the declared name from the declarator field
+			// instead.
+			if declared := cFamilyDeclaratorName(node, src); declared != "" {
+				name = declared
 			}
 		}
 		if scope != "" {
@@ -7799,6 +7798,53 @@ func firstNamedChildOfType(node *sitter.Node, nodeType string) *sitter.Node {
 		}
 	}
 	return nil
+}
+
+// cFamilyDeclaratorName returns the name a C/C++/Objective-C function
+// definition declares, read from its `declarator` field rather than from the
+// first name node in pre-order. Pre-order finds the RETURN TYPE whenever the
+// return type is a named type, so `std::string Config::name() const` was
+// extracted as a symbol called `string` — and every other std::string-returning
+// function in the repository collapsed onto that same name.
+//
+// Pointer, reference, array and function declarators all nest their target
+// under the same `declarator` field, so the name is found by walking that
+// chain. C++ adds two name shapes C does not have: a member definition names
+// its method with `field_identifier`, and an out-of-line definition names it
+// with `qualified_identifier` (`Config::name`) or `destructor_name`
+// (`~Config`), both of which carry the bare name underneath. The bare name is
+// what is kept, matching the pre-existing extraction of primitive-returning
+// members. Anything this walk does not model falls back to the historical
+// pre-order identifier search so no declarator shape loses a name it had.
+func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
+	declarator := node.ChildByFieldName("declarator")
+	if !validNode(declarator) {
+		return ""
+	}
+	for cur := declarator; validNode(cur); {
+		switch cur.Type() {
+		case "identifier", "field_identifier":
+			return strings.TrimSpace(cur.Content(src))
+		case "qualified_identifier", "template_function":
+			if named := cur.ChildByFieldName("name"); validNode(named) {
+				cur = named
+				continue
+			}
+		case "destructor_name":
+			if id := firstDescendantOfType(cur, "identifier"); validNode(id) {
+				return strings.TrimSpace(id.Content(src))
+			}
+		}
+		next := cur.ChildByFieldName("declarator")
+		if !validNode(next) {
+			break
+		}
+		cur = next
+	}
+	if id := firstDescendantOfType(declarator, "identifier"); validNode(id) {
+		return strings.TrimSpace(id.Content(src))
+	}
+	return ""
 }
 
 func firstDescendantOfType(node *sitter.Node, nodeType string) *sitter.Node {

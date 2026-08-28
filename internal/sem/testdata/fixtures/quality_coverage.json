@@ -42,11 +42,11 @@
   },
   "relation_types": {
     "ASYNC_CALLS": 1,
-    "CALLS": 34,
+    "CALLS": 35,
     "CONFIGURES": 12,
     "CONSTRUCTS": 3,
     "CONTAINS": 73,
-    "DATA_FLOWS": 22,
+    "DATA_FLOWS": 23,
     "DEFINES": 178,
     "EMITS": 1,
     "EXTENDS": 9,
@@ -66,7 +66,7 @@
     "RETURNS_TYPE": 18,
     "SIMILAR_TO": 1,
     "TESTS": 1,
-    "USES_TYPE": 24,
+    "USES_TYPE": 26,
     "WRITES_FIELD": 4
   }
 }
