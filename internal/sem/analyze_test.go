@@ -1819,3 +1819,138 @@ func TestAnalyzeGitRangeNoBudgetKeepsFullResult(t *testing.T) {
 		}
 	}
 }
+
+// TestAnalyzeGitRangeHonorsGraphIgnore pins the documented contract that a
+// repo-root .graphignore is honored by every graph command. The snapshot and
+// search family already applied it; the diff family did not, so a tracked but
+// vendored or generated tree that the graph never indexes still produced entity
+// changes — symbols no snapshot of the repository contains.
+func TestAnalyzeGitRangeHonorsGraphIgnore(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, ".graphignore", "vendored/\n")
+	write(t, repo, "keep/keep.go", "package keep\n\nfunc Keep() int { return 1 }\n")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "keep/keep.go", "package keep\n\nfunc Keep() int { return 2 }\n")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 2 }\n\nfunc Extra() int { return 3 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "touch both trees")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "keep/keep.go" {
+		t.Fatalf("ignored tree reported in the diff: %#v", result.Files)
+	}
+
+	// The same repository's snapshot must agree: whatever the diff reports has
+	// to be something the graph would index.
+	snapshot, err := BuildProviderSnapshot(context.Background(), repo, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, symbol := range snapshot.Symbols {
+		if strings.HasPrefix(symbol.FilePath, "vendored/") {
+			t.Fatalf("snapshot indexed an ignored file, fixture is wrong: %#v", symbol)
+		}
+	}
+}
+
+// TestAnalyzeGitRangeHonorsGraphIgnoreForDeletions covers the base side: a
+// deletion has no head path, so the base path is what decides.
+func TestAnalyzeGitRangeHonorsGraphIgnoreForDeletions(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, ".graphignore", "vendored/\n")
+	write(t, repo, "keep/keep.go", "package keep\n\nfunc Keep() int { return 1 }\n")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	if err := os.Remove(filepath.Join(repo, "vendored/gen.go")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "drop the vendored tree")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("deleting an ignored file produced a delta: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeWithoutGraphIgnoreIsUnchanged guards against the filter
+// swallowing ordinary files when no ignore rule exists.
+func TestAnalyzeGitRangeWithoutGraphIgnoreIsUnchanged(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 2 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "edit")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "vendored/gen.go" {
+		t.Fatalf("file was dropped without an ignore rule: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeHonorsBuiltinSecretRules covers the other half of the same
+// matcher. The provider's built-in secret rules already keep committed
+// credential files out of the snapshot; the diff reported them as entity
+// changes, naming paths the rest of the provider refuses to index.
+func TestAnalyzeGitRangeHonorsBuiltinSecretRules(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "app.go", "package app\n\nfunc Run() int { return 1 }\n")
+	write(t, repo, ".env", "API_KEY=first\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "app.go", "package app\n\nfunc Run() int { return 2 }\n")
+	write(t, repo, ".env", "API_KEY=second\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "rotate")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range result.Files {
+		if file.Path == ".env" {
+			t.Fatalf("committed credential file reported in the diff: %#v", file)
+		}
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "app.go" {
+		t.Fatalf("files = %#v, want only app.go", result.Files)
+	}
+}

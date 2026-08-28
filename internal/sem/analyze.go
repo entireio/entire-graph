@@ -108,11 +108,24 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		return Result{}, err
 	}
 
+	// A repo-root .graphignore is honored by every graph command (see the
+	// `index` help text and docs/operations.md). The snapshot/search family
+	// applies it through loadExplicitIgnoreMatcher; the diff family did not, so
+	// a tracked-but-vendored or generated tree that the graph never indexes
+	// still produced entity changes here. A consumer that builds its index from
+	// `snapshot` and updates it from `diff` received symbols for files that its
+	// index has no record of and never will.
+	ignores, err := loadExplicitIgnoreMatcher(objectRepo, nil, nil)
+	if err != nil {
+		return Result{}, err
+	}
+
 	emitProgress("discover", 0, 0)
 	changed, err := gitutil.ChangedFiles(ctx, repo, pinnedBase, pinnedHead, paths)
 	if err != nil {
 		return Result{}, err
 	}
+	changed = dropIgnoredChangedFiles(changed, ignores)
 	emitProgress("parse", 0, len(changed))
 	parser := TreeSitterParser{}
 	baseReader := gitutil.NewLimitedFileReader(ctx, objectRepo, pinnedBase, maxDiffFileBytes)
@@ -797,6 +810,29 @@ const (
 	// rather than guessing.
 	ambiguityMargin = 0.05
 )
+
+// dropIgnoredChangedFiles removes the changed files the graph would never index.
+//
+// ChangedFile.Path is the deciding name for every status: Git's name-status
+// output carries the surviving path for an addition or a modification, the
+// removed path for a deletion, and the destination path for a rename, so it is
+// always the name the graph would hold a record under. A file the graph does
+// not index has no entities on either side, so reporting a change to it
+// describes symbols that no snapshot of this repository contains.
+//
+// Ignored files are omitted rather than warned about, exactly as the snapshot
+// omits them — an ignore rule is a deliberate exclusion, not an input the
+// provider failed to read.
+func dropIgnoredChangedFiles(changed []gitutil.ChangedFile, ignores ignoreMatcher) []gitutil.ChangedFile {
+	kept := changed[:0]
+	for _, file := range changed {
+		if ignores.Ignored(file.Path, false) {
+			continue
+		}
+		kept = append(kept, file)
+	}
+	return kept
+}
 
 // moduleScopeChange builds a synthetic change for a file whose contents changed
 // but where no named symbol changed. Attributing the edit to a module-level
