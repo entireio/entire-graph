@@ -1845,13 +1845,20 @@ func implicitReceiverLanguage(lang string) bool {
 // methods must NOT be excluded from name-match resolution for that language:
 //   - implicit-receiver languages: bare `name()` means `this.name()`;
 //   - Rust: `Type::name()` / `Trait::name()` path calls and associated
-//     functions are written explicitly and resolve to the method by name.
+//     functions are written explicitly and resolve to the method by name;
+//   - Julia: the "method" kind does not mean a receiver-dispatched member. A
+//     Julia definition inside `module M ... end` is namespace-qualified to
+//     `M.name` and therefore emitted as a method, but Julia has no receiver
+//     call form at all — `name(args...)` is the only way to call anything.
+//     Excluding methods here meant that idiomatic Julia (a package is a
+//     module) produced zero same-file CALLS while `capabilities --json`
+//     advertised CALLS for Julia.
 //
 // In Go/Python/JS/TS a method call always carries an explicit `.`-receiver and
 // is handled by receiverCallRelations instead, so methods stay excluded there.
 // (Ported from fix/rust-call-resolution ad6ca4d onto the current gate shape.)
 func nameCallMayTargetMethod(lang string) bool {
-	return implicitReceiverLanguage(lang) || lang == "Rust"
+	return implicitReceiverLanguage(lang) || lang == "Rust" || lang == "Julia"
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {

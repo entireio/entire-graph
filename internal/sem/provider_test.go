@@ -12435,6 +12435,49 @@ end
 	}
 }
 
+func TestJuliaModuleScopedCallsResolve(t *testing.T) {
+	// Idiomatic Julia wraps a package's definitions in `module ... end`, which
+	// makes every definition module-qualified and therefore emitted with kind
+	// "method" rather than "function". A bare `callee(...)` — the only call
+	// syntax Julia has — must still resolve to it: Julia has no receiver call
+	// form, so excluding methods from name resolution left real packages with
+	// zero same-file CALLS while `capabilities --json` advertised CALLS for
+	// Julia.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Geo.jl", `module Geo
+
+struct Point
+    x::Int
+    y::Int
+end
+
+function add(a, b)
+    return a + b
+end
+
+function point_sum(p::Point)
+    return add(p.x, p.y)
+end
+
+scaled(p::Point) = point_sum(p) * 2
+
+end
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range [][2]string{
+		{"Geo.point_sum", "Geo.add"},
+		{"Geo.scaled", "Geo.point_sum"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Fatalf("missing Julia module-scoped CALLS %s->%s: %#v", want[0], want[1], relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
 func TestClojureSemanticExtraction(t *testing.T) {
 	// Clojure was promoted from inventory to the semantic tier (vendored
 	// grammar). tree-sitter-clojure only produces generic list_lit nodes, so
