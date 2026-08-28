@@ -2023,6 +2023,14 @@ type aliasPlant struct {
 	name   string
 	target string
 	plant  func(t *testing.T, repo string) string
+	// refusedEvenIfTheKernelCanReachIt marks a landing init-agents refuses on purpose whatever
+	// the kernel says, because it is inside the git directory. The oracle below otherwise
+	// requires agreement with the kernel, and that requirement is exactly what this exception
+	// exists to bound: on a platform whose path rules make one of these spellings reachable —
+	// Windows, which collapses ".." lexically before opening anything — "agree with the
+	// kernel" means "install the managed block into .git/config", which is the bug, not the
+	// contract.
+	refusedEvenIfTheKernelCanReachIt bool
 }
 
 // untraversableAliasPlants are the in-repository alias spellings whose landing exists only after
@@ -2096,8 +2104,9 @@ var untraversableAliasPlants = []aliasPlant{
 		},
 	},
 	{
-		name:   "landing inside the git directory",
-		target: "AGENTS.md",
+		name:                             "landing inside the git directory",
+		target:                           "AGENTS.md",
+		refusedEvenIfTheKernelCanReachIt: true,
 		plant: func(t *testing.T, repo string) string {
 			t.Helper()
 			victim := filepath.Join(repo, ".git", "config")
@@ -2166,7 +2175,9 @@ func TestInitAgentsRefusesAliasCollapsingUntraversableComponent(t *testing.T) {
 // than restate the kernel's path rules — restating them is how the collapse came to be written —
 // it asks the filesystem what each spelling does and requires init-agents to agree: install
 // exactly when the kernel can open that path, refuse when it cannot, and, when both succeed, land
-// on the file the kernel's own resolution reaches. Every alias here stays inside the repository,
+// on the file the kernel's own resolution reaches. The single exception is a landing inside the
+// git directory, which is refused whatever the kernel answers; see
+// refusedEvenIfTheKernelCanReachIt. Every alias here stays inside the repository,
 // which is what makes the two comparable; an alias that leaves is refused by design and is covered
 // by TestInitAgentsRefusesAbsoluteAliasLeavingRepository.
 func TestInitAgentsAliasResolutionMatchesTheKernel(t *testing.T) {
@@ -2224,6 +2235,18 @@ func TestInitAgentsAliasResolutionMatchesTheKernel(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
 
+			if tt.refusedEvenIfTheKernelCanReachIt {
+				// The one deliberate divergence. Reachability is the kernel's to answer and
+				// it is not the question here: a landing in the git directory is refused
+				// whether the kernel could take the path or not.
+				if err == nil {
+					t.Fatalf("init-agents installed into the git directory; the kernel reaching it (%v) does not make it a legal landing", kernelErr)
+				}
+				if !strings.Contains(err.Error(), "git directory") && !strings.Contains(err.Error(), "cannot resolve") {
+					t.Fatalf("refusal named neither the git directory nor an unresolvable path: %v", err)
+				}
+				return
+			}
 			if (kernelErr == nil) != (err == nil) {
 				t.Fatalf("init-agents disagreed with the filesystem about %s:\nkernel: %v\n  init: %v", tt.target, kernelErr, err)
 			}
@@ -2481,12 +2504,7 @@ func TestInitAgentsRefusesManagedTargetInsideGitDirectory(t *testing.T) {
 
 			var out bytes.Buffer
 			runErr := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
-			if runErr == nil {
-				t.Fatalf("init-agents wrote through a link into the git directory; output:\n%s", out.String())
-			}
-			if !strings.Contains(runErr.Error(), "git directory") {
-				t.Fatalf("error does not name the git directory: %v", runErr)
-			}
+			requireGitDirRefusal(t, runErr, out.String())
 
 			after, err := os.ReadFile(victimPath)
 			if err != nil {
@@ -2562,12 +2580,7 @@ func TestInitAgentsRefusesIndirectRoutesIntoGitDirectory(t *testing.T) {
 
 			var out bytes.Buffer
 			err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
-			if err == nil {
-				t.Fatalf("init-agents wrote through an indirect route into the git directory; output:\n%s", out.String())
-			}
-			if !strings.Contains(err.Error(), "git directory") {
-				t.Fatalf("error does not name the git directory: %v", err)
-			}
+			requireGitDirRefusal(t, err, out.String())
 			after, readErr := os.ReadFile(configPath)
 			if readErr != nil {
 				t.Fatal(readErr)
@@ -2596,12 +2609,7 @@ func TestInitAgentsRefusesGuideDirectoryAliasedToGitDirectory(t *testing.T) {
 
 	var out bytes.Buffer
 	err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
-	if err == nil {
-		t.Fatalf("init-agents installed the guide into the git directory; output:\n%s", out.String())
-	}
-	if !strings.Contains(err.Error(), "git directory") {
-		t.Fatalf("error does not name the git directory: %v", err)
-	}
+	requireGitDirRefusal(t, err, out.String())
 	if _, statErr := os.Lstat(filepath.Join(gitDir, "graph-agent.md")); !os.IsNotExist(statErr) {
 		t.Fatalf("guide written inside the git directory (%v)", statErr)
 	}
@@ -2670,4 +2678,19 @@ func caseInsensitiveFilesystem(t *testing.T, dir string) bool {
 	defer func() { _ = os.Remove(probe) }()
 	_, err := os.Stat(filepath.Join(dir, ".CASE-PROBE"))
 	return err == nil
+}
+
+// requireGitDirRefusal asserts the refusal without over-fitting its wording to one platform. The
+// landing is what matters; the ROUTE to it can fail first for a reason that is not this rule.
+// Windows decides a symlink's type when it is created and cannot traverse a file link as a
+// directory, so a multi-hop or directory-valued spelling can be refused as unresolvable there and
+// as a git-directory landing everywhere else. Both are refusals of the same write.
+func requireGitDirRefusal(t *testing.T, err error, out string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("init-agents wrote into the git directory; output:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "git directory") && !strings.Contains(err.Error(), "cannot resolve") {
+		t.Fatalf("refusal named neither the git directory nor an unresolvable path: %v", err)
+	}
 }
