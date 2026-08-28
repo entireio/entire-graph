@@ -4039,9 +4039,6 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 	if scope == "" {
 		return nil, false
 	}
-	if node.Type() == "field_declaration" && (language == "C" || language == "C++") {
-		return nil, false
-	}
 	switch node.Type() {
 	case "field_declaration", // Go/Rust/Java/C#/C/C++ struct & class fields
 		"public_field_definition", "field_definition", // TS/JS class fields
@@ -4140,6 +4137,16 @@ func fieldDeclNames(node *sitter.Node, src []byte) []string {
 		switch child.Type() {
 		case "field_identifier":
 			names = append(names, child.Content(src))
+		case "pointer_declarator", "array_declarator", "function_declarator":
+			// C/C++ members whose declarator carries the pointer or array part
+			// (`char *name;`, `char name[32];`, `int (*handler)(int);`). The
+			// name sits under the declarator chain rather than beside the type.
+			// A plain function declarator names nothing here: `int Add(int);`
+			// in a class body is a method declaration, not data, and is left to
+			// the entity walk.
+			if name := cFamilyMemberDeclaratorName(child, src); name != "" {
+				names = append(names, name)
+			}
 		case "variable_declarator":
 			if name := variableDeclaratorName(child, src); name != "" {
 				names = append(names, name)
@@ -4155,6 +4162,56 @@ func fieldDeclNames(node *sitter.Node, src []byte) []string {
 		}
 	}
 	return names
+}
+
+// cPlusPlusInitialisedMemberName returns the member name when a
+// function_definition node is really an in-class data member with an
+// initialiser. tree-sitter-cpp reads the `= 0` of `int total_ = 0;` as a
+// pure_virtual_clause and the whole declaration as a function definition. The
+// tell is that there is no function_declarator at all: the declarator is a bare
+// field_identifier, which no real function definition has.
+func cPlusPlusInitialisedMemberName(node *sitter.Node, src []byte) string {
+	if !validNode(firstNamedChildOfType(node, "pure_virtual_clause")) {
+		return ""
+	}
+	if validNode(firstDescendantOfType(node, "function_declarator")) {
+		return ""
+	}
+	name := firstNamedChildOfType(node, "field_identifier")
+	if !validNode(name) {
+		return ""
+	}
+	return strings.TrimSpace(name.Content(src))
+}
+
+// cFamilyMemberDeclaratorName unwraps the pointer/array declarator chain of a
+// C-family data member down to the declared name, stopping at a function
+// declarator: `int (*handler)(int)` is a function-pointer member and names
+// `handler`, but `int Add(int)` is a method declaration and names nothing here.
+func cFamilyMemberDeclaratorName(node *sitter.Node, src []byte) string {
+	for depth := 0; validNode(node) && depth < 8; depth++ {
+		switch node.Type() {
+		case "field_identifier", "identifier":
+			return strings.TrimSpace(node.Content(src))
+		case "pointer_declarator", "array_declarator", "parenthesized_declarator", "reference_declarator":
+			next := node.ChildByFieldName("declarator")
+			if !validNode(next) {
+				next = firstDescendantOfType(node, "field_identifier")
+			}
+			node = next
+		case "function_declarator":
+			inner := node.ChildByFieldName("declarator")
+			if validNode(inner) && inner.Type() == "parenthesized_declarator" {
+				// A function-pointer member: the name is inside the parens.
+				node = inner
+				continue
+			}
+			return ""
+		default:
+			return ""
+		}
+	}
+	return ""
 }
 
 func variableDeclaratorName(node *sitter.Node, src []byte) string {
@@ -4661,6 +4718,26 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		// the symbol.
 		if pythonOverloadStub(node, src) {
 			return Entity{}, false
+		}
+		// tree-sitter-cpp parses an in-class data member with an initialiser
+		// (`int total_ = 0;`) as a function_definition whose "body" is a
+		// pure_virtual_clause — `= 0` is the pure-virtual marker, and the
+		// grammar cannot tell the two apart. Extracted as-is it produced a
+		// METHOD named after a data member, with the member's declaration as
+		// its signature, which then joined the class's method inventory and
+		// competed for receiver call resolution.
+		if language == "C++" && scope != "" {
+			if member := cPlusPlusInitialisedMemberName(node, src); member != "" {
+				return Entity{
+					Kind:        "field",
+					Name:        qualify(scope, member),
+					Signature:   signatureFromNode(node, src),
+					StartLine:   int(node.StartPoint().Row) + 1,
+					EndLine:     int(node.EndPoint().Row) + 1,
+					BodyHash:    hash(normalize(node.Content(src))),
+					Fingerprint: hash(normalize(signatureFromNode(node, src))),
+				}, true
+			}
 		}
 		kind = "function"
 		name = nodeName(node, src)
