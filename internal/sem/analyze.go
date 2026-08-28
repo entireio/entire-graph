@@ -440,13 +440,23 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		})
 	}
 
+	// The dependents scan reads the whole head tree, so it needs the head tree's
+	// real rules rather than the ones the changed-file probe was allowed to skip.
+	// Resolve them only when there is something to count.
+	dependentsPolicy := headPolicy
+	if len(result.Files) > 0 {
+		dependentsPolicy, err = headPolicy.resolvedForTree(ctx, objectRepo, pinnedHead)
+		if err != nil {
+			return Result{}, err
+		}
+	}
 	if err := addDependentCountsWithProgress(ctx, objectRepo, pinnedHead, &result, dependentsScanOptions{
 		progress: func(done, total int, path string) {
 			emitProgressEvent("dependents", done, total, path, path == "")
 		},
 		deadline: deadline,
 		budget:   options.MaxDuration,
-		admit:    headPolicy.admitFunc(),
+		admit:    dependentsPolicy.admitFunc(),
 	}); err != nil {
 		return Result{}, err
 	}
@@ -481,13 +491,34 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 // happens to hold.
 //
 // `:` is the only object-name syntax that reaches into a tree (`<rev>:<path>`
-// and `:<stage>:<path>`). The single exception is `:/text`, which searches
-// commit messages and so names a commit and nothing else.
+// and `:<stage>:<path>`), but not every colon is that syntax. `:/text` searches
+// commit messages, so it names a commit and every colon after it is part of the
+// text; and a colon inside an `@{...}` selector is data too, because a reflog
+// date such as `HEAD@{2026-08-27 12:34:56 +0000}` names a commit and reaches
+// into no tree. Only a colon outside every such block is the separator.
 func labelSelectsTreePath(label string) bool {
 	if strings.HasPrefix(label, ":/") {
 		return false
 	}
-	return strings.Contains(label, ":")
+	depth := 0
+	for index := 0; index < len(label); index++ {
+		switch label[index] {
+		case '@':
+			if index+1 < len(label) && label[index+1] == '{' {
+				depth++
+				index++
+			}
+		case '}':
+			if depth > 0 {
+				depth--
+			}
+		case ':':
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func resolveDiffTrees(
@@ -893,7 +924,33 @@ const (
 type diffIndexPolicy struct {
 	ignores     ignoreMatcher
 	vendorRules vendorIgnoreRules
-	enabled     bool
+	// vendorRulesLoaded distinguishes "this tree really re-includes nothing"
+	// from "nobody has needed the rules yet", which is what makes it safe to
+	// skip loading them for a range that touches nothing vendorable.
+	vendorRulesLoaded bool
+	enabled           bool
+}
+
+// resolvedForTree returns a copy of p holding this tree's real vendored-tree
+// rules, loading them if the changed-file probe skipped them.
+//
+// That probe licenses one question only: whether any of the paths GIT reported
+// could be vendored. The dependents scan asks a different and much larger one —
+// it walks the whole head tree — so a `vendor/...` path the project re-included
+// can turn up there even when nothing vendorable changed. Reusing the probe's
+// policy would then judge that caller by empty rules, drop it, and undercount a
+// dependent the graph really holds.
+func (p diffIndexPolicy) resolvedForTree(ctx context.Context, repo, tree string) (diffIndexPolicy, error) {
+	if !p.enabled || p.vendorRulesLoaded {
+		return p, nil
+	}
+	rules, err := treeVendorIgnoreRules(ctx, repo, tree, p.ignores)
+	if err != nil {
+		return diffIndexPolicy{}, err
+	}
+	p.vendorRules = rules
+	p.vendorRulesLoaded = true
+	return p, nil
 }
 
 // indexed reports whether the graph would hold records for rel in this tree.
@@ -1021,8 +1078,10 @@ func newDiffIndexPolicies(
 		return diffIndexPolicy{}, diffIndexPolicy{}, err
 	}
 	base.vendorRules = baseRules
+	base.vendorRulesLoaded = true
 	if headTree == baseTree {
 		head.vendorRules = baseRules
+		head.vendorRulesLoaded = true
 		return base, head, nil
 	}
 	headRules, err := treeVendorIgnoreRules(ctx, repo, headTree, ignores)
@@ -1030,6 +1089,7 @@ func newDiffIndexPolicies(
 		return diffIndexPolicy{}, diffIndexPolicy{}, err
 	}
 	head.vendorRules = headRules
+	head.vendorRulesLoaded = true
 	return base, head, nil
 }
 

@@ -346,6 +346,38 @@ func TestResolveDiffTreesRejectsTreePathLabels(t *testing.T) {
 	}
 }
 
+// TestLabelSelectsTreePath pins which colons are the <rev>:<path> separator and
+// which are data. Rejecting a colon that is not that separator does not lose
+// data, but it silently disables every exclusion rule for the range, so a
+// reflog date selector must not be mistaken for a subtree expression.
+func TestLabelSelectsTreePath(t *testing.T) {
+	tests := []struct {
+		label string
+		want  bool
+	}{
+		{"HEAD", false},
+		{"main", false},
+		{"HEAD~1", false},
+		{"refs/tags/v1.0.0", false},
+		{"HEAD@{2}", false},
+		// A reflog date selector: commit-ish, and full of colons.
+		{"HEAD@{2026-08-27 12:34:56 +0000}", false},
+		{"main@{yesterday 09:00:00}", false},
+		// The commit-message search names a commit; colons after it are text.
+		{":/fix: the bug", false},
+		// These do reach into a tree.
+		{"HEAD:sub", true},
+		{"HEAD~1:sub/dir", true},
+		{":0:conflicted.go", true},
+		{"HEAD@{2}:sub", true},
+	}
+	for _, test := range tests {
+		if got := labelSelectsTreePath(test.label); got != test.want {
+			t.Errorf("labelSelectsTreePath(%q) = %v, want %v", test.label, got, test.want)
+		}
+	}
+}
+
 func TestAnalyzeGitRangeSurfacesModuleScopeChange(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
