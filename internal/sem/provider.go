@@ -3282,6 +3282,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					for name := range fsharpDottedCallIdentifiers(callBlock) {
 						callNames[name] = struct{}{}
 					}
+					// Forward pipes (`value |> normalize`) apply a function by
+					// juxtaposition, with no dot and no parentheses, so neither
+					// scanner above nor the generic `name(` one sees them.
+					for name := range fsharpPipelineCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
 				}
 				if file.Language == "Lua" {
 					// Lua table/module calls (`vim.split(...)`, `M.joinpath(...)`)

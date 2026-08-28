@@ -11,9 +11,15 @@ var (
 	objectiveCMessageSendRe = regexp.MustCompile(`\[\s*([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)`)
 	fsharpDottedCallRe      = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_']*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_']*)+)\s*\(`)
 	fsharpDottedApplyRe     = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_']*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_']*)+)\s+[A-Za-z_({\["'0-9]`)
-	juliaCallRe             = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:!)?)\s*(?:\{[^{}\n;()]*\})?\s*\(`)
-	luaDottedCallRe         = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:(?:\s*[.:]\s*)[A-Za-z_][A-Za-z0-9_]*)+)\s*\(`)
-	zigDottedCallRe         = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*\(`)
+	// The token immediately to the right of a forward pipe is, by the
+	// operator's definition, the function being applied — `|>`, `||>` and
+	// `|||>` all differ only in how many arguments they feed it. That makes the
+	// position unambiguous in a way bare juxtaposition (`add 1 2`) is not, so it
+	// is scanned on its own rather than waiting on a full F# application parser.
+	fsharpPipelineCallRe = regexp.MustCompile(`\|>\s*([A-Za-z_][A-Za-z0-9_']*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_']*)*)`)
+	juliaCallRe          = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:!)?)\s*(?:\{[^{}\n;()]*\})?\s*\(`)
+	luaDottedCallRe      = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:(?:\s*[.:]\s*)[A-Za-z_][A-Za-z0-9_]*)+)\s*\(`)
+	zigDottedCallRe      = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*\(`)
 )
 
 func clojureCallIdentifiers(content string) map[string]struct{} {
@@ -238,6 +244,51 @@ func fsharpDottedCallIdentifiers(content string) map[string]struct{} {
 		out[name] = struct{}{}
 	}
 	return out
+}
+
+// fsharpPipelineCallIdentifiers returns the functions applied by F# forward
+// pipes (`value |> normalize`, `(a, b) ||> combine`, `xs |> List.map f`).
+//
+// The forward pipe is the dominant F# call idiom, and only module-qualified and
+// parenthesised calls had a scanner: `fsharpDottedCallRe`/`fsharpDottedApplyRe`
+// both require a dot, and the generic scanner requires `name(`. A bare piped
+// function matched neither, so idiomatic pipelines produced no CALLS edge while
+// `capabilities --json` advertises CALLS for F#.
+//
+// Only the pipe position is read. Bare juxtaposition elsewhere (`add 1 2`)
+// needs the kind of application parser Haskell and OCaml have and is not
+// guessed at here — an over-eager head-position heuristic would trade the
+// precision the call graph is built on for recall.
+func fsharpPipelineCallIdentifiers(content string) map[string]struct{} {
+	stripped := stripCodeLiteralsAndComments(content)
+	out := map[string]struct{}{}
+	for _, match := range fsharpPipelineCallRe.FindAllStringSubmatch(stripped, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		if fsharpPipelineTargetIgnored(match[1]) {
+			continue
+		}
+		name := lastDottedCallSegment(match[1])
+		if name == "" {
+			continue
+		}
+		out[name] = struct{}{}
+	}
+	return out
+}
+
+// fsharpPipelineTargetIgnored drops the keywords that can follow a pipe and
+// introduce an inline function rather than name one (`xs |> fun x -> x`,
+// `xs |> function _ -> 1`, `xs |> match ...`). They are language syntax, not
+// call targets, and would otherwise resolve against any same-named symbol.
+func fsharpPipelineTargetIgnored(target string) bool {
+	switch strings.TrimSpace(target) {
+	case "fun", "function", "match", "if", "let", "try", "while", "for", "new", "do", "then", "else", "async", "task":
+		return true
+	default:
+		return false
+	}
 }
 
 func fsharpDottedApplyIgnored(content string, start int) bool {

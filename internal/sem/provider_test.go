@@ -13191,6 +13191,82 @@ type Dependencies() =
 	}
 }
 
+func TestFSharpPipelineCallExtraction(t *testing.T) {
+	// The forward pipe is the dominant F# call idiom, and the token right after
+	// `|>` is definitionally the function being applied. Only module-qualified
+	// (`Mod.fn ...`) and parenthesised (`fn(...)`) forms had a scanner, so a
+	// bare piped function produced no CALLS edge at all while
+	// `capabilities --json` advertises CALLS for F#.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Pipeline.fs", `module Pipeline
+
+let normalize (value: string) = value.Trim()
+
+let validate (value: string) = value.Length > 0
+
+let describe (label: string) (value: string) = label + value
+
+let run (input: string) =
+    input
+    |> normalize
+    |> describe "value: "
+
+let check (input: string) =
+    input |> normalize |> validate
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range [][2]string{
+		{"run", "normalize"},
+		{"run", "describe"},
+		{"check", "normalize"},
+		{"check", "validate"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Fatalf("missing F# pipeline CALLS %s->%s: %#v", want[0], want[1], relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+func TestFSharpPipelineScannerSkipsLambdasAndLiterals(t *testing.T) {
+	// The scanner must not turn the keyword introducing an inline lambda, or a
+	// pipe that only appears inside a string or comment, into a call.
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{"lambda keyword", "let f xs = xs |> fun x -> x", nil},
+		{"function keyword", "let f xs = xs |> function _ -> 1", nil},
+		{"string literal", "let f () = \"a |> helper b\"", nil},
+		{"line comment", "let f () = 1 // xs |> helper", nil},
+		// F# block comments are not masked by stripCodeLiteralsAndComments, so
+		// a pipe inside `(* ... *)` still reads as a call. That is pre-existing
+		// and shared with fsharpDottedCallIdentifiers (which already reports
+		// `List.map` from inside a block comment); the pipeline scanner matches
+		// its sibling rather than diverging from it here.
+		{"block comment matches the dotted scanner", "let f () = 1 (* xs |> helper *)", []string{"helper"}},
+		{"qualified pipe", "let f xs = xs |> List.map g", []string{"map"}},
+		{"bare pipe", "let f xs = xs |> helper", []string{"helper"}},
+		{"double pipe", "let f a b = (a, b) ||> helper", []string{"helper"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fsharpPipelineCallIdentifiers(tc.content)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for _, name := range tc.want {
+				if _, ok := got[name]; !ok {
+					t.Fatalf("missing %q in %v", name, got)
+				}
+			}
+		})
+	}
+}
+
 func TestSwiftProtocolDeclarationsEmitted(t *testing.T) {
 	// tree-sitter-swift emits protocol_declaration; an Objective-C-only gate
 	// on that node type silently dropped every Swift protocol (regression
