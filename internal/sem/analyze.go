@@ -379,6 +379,15 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			// it as a synthetic module-level change instead of dropping it.
 			mod, ok := moduleScopeChange(path, before, after, beforeOK, afterOK)
 			if !ok {
+				// A pure rename reaches here: both sides parse to the same
+				// entities and the bytes are identical, so there is no content
+				// change to report. The path still changed, and the path is a
+				// component of every compound-v1 symbol ID in the file, so
+				// every entity in it was re-identified. Report the path move so
+				// the file is never absent from the diff.
+				mod, ok = pathScopeChange(oldPath, path)
+			}
+			if !ok {
 				continue
 			}
 			changes = append(changes, mod)
@@ -797,6 +806,32 @@ const (
 	// rather than guessing.
 	ambiguityMargin = 0.05
 )
+
+// pathScopeChange builds a synthetic change for a file that Git reported as a
+// rename or copy but whose content is byte-identical on both sides, so
+// moduleScopeChange found nothing to report. Without it the file is dropped and
+// a 100%-similarity rename produces an empty diff — indistinguishable from "no
+// change at all". That is wrong for the command's own contract: the file path
+// is a component of every compound-v1 symbol ID (see symbolID), so moving a
+// file re-identifies every entity in it. The change reuses the module-scope
+// entity and the existing "moved" reconciliation shape, which already carries
+// OldPath/NewPath, rather than adding a new change type.
+func pathScopeChange(oldPath, path string) (EntityChange, bool) {
+	if oldPath == "" || oldPath == path {
+		return EntityChange{}, false
+	}
+	return EntityChange{
+		Type:            "moved",
+		Kind:            moduleKind,
+		Name:            path,
+		OldPath:         oldPath,
+		NewPath:         path,
+		BeforeStartLine: 1,
+		AfterStartLine:  1,
+		Similarity:      1,
+		Reconciliation:  "MOVED",
+	}, true
+}
 
 // moduleScopeChange builds a synthetic change for a file whose contents changed
 // but where no named symbol changed. Attributing the edit to a module-level

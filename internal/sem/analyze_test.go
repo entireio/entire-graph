@@ -1819,3 +1819,124 @@ func TestAnalyzeGitRangeNoBudgetKeepsFullResult(t *testing.T) {
 		}
 	}
 }
+
+// TestAnalyzeGitRangePureRenameIsReported pins the contract that a file Git
+// classified as a rename is never absent from the diff. A 100%-similarity
+// rename has no content change to report, but the file path is a component of
+// every compound-v1 symbol ID, so the rename re-identifies every entity in the
+// file. Dropping the file made a pure rename indistinguishable from an empty
+// diff for any consumer that keys on the output.
+func TestAnalyzeGitRangePureRenameIsReported(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "old/sample.go", "package sample\n\nfunc Run() int { return 1 }\n\ntype W struct{ N int }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	if err := os.MkdirAll(filepath.Join(repo, "new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "mv", "old/sample.go", "new/sample.go")
+	git(t, repo, "commit", "-m", "pure rename")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("pure rename produced %d files, want 1: %#v", len(result.Files), result.Files)
+	}
+	file := result.Files[0]
+	if file.Path != "new/sample.go" || file.OldPath != "old/sample.go" {
+		t.Fatalf("rename metadata = %q -> %q", file.OldPath, file.Path)
+	}
+	if file.Status != "R" {
+		t.Fatalf("status = %q, want R", file.Status)
+	}
+	if file.Language != "Go" {
+		t.Fatalf("language = %q, want Go", file.Language)
+	}
+	if len(file.Changes) != 1 {
+		t.Fatalf("changes = %#v, want exactly one path-scope change", file.Changes)
+	}
+	change := file.Changes[0]
+	if change.Type != "moved" || change.Kind != moduleKind {
+		t.Fatalf("change type/kind = %q/%q, want moved/%s", change.Type, change.Kind, moduleKind)
+	}
+	if change.OldPath != "old/sample.go" || change.NewPath != "new/sample.go" {
+		t.Fatalf("change paths = %q -> %q", change.OldPath, change.NewPath)
+	}
+	if change.Name != "new/sample.go" {
+		t.Fatalf("change name = %q, want the new path", change.Name)
+	}
+	if change.Reconciliation != "MOVED" {
+		t.Fatalf("reconciliation = %q, want MOVED", change.Reconciliation)
+	}
+}
+
+// TestAnalyzeGitRangeUnchangedFileStaysAbsent guards the other side of the same
+// boundary: a file with neither a content change nor a path change must still
+// produce nothing, so the fix above cannot start emitting empty deltas.
+func TestAnalyzeGitRangeUnchangedFileStaysAbsent(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "sample.go", "package sample\n\nfunc Run() int { return 1 }\n")
+	write(t, repo, "other.go", "package sample\n\nfunc Other() int { return 2 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "other.go", "package sample\n\nfunc Other() int { return 3 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "touch other only")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range result.Files {
+		if file.Path == "sample.go" {
+			t.Fatalf("untouched file appeared in the diff: %#v", file)
+		}
+	}
+}
+
+// TestAnalyzeGitRangeModeOnlyChangeStaysAbsent covers the one case where a file
+// reaches the path-scope fallback with identical content and an unchanged path:
+// Git reports a mode-only change (chmod) as a modification. It must not be
+// reported as a move.
+func TestAnalyzeGitRangeModeOnlyChangeStaysAbsent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file mode bits are not tracked on Windows checkouts")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "sample.go", "package sample\n\nfunc Run() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	if err := os.Chmod(filepath.Join(repo, "sample.go"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "chmod only")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("mode-only change produced a delta: %#v", result.Files)
+	}
+}
