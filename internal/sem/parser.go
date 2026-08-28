@@ -7099,8 +7099,24 @@ func objectiveCMethodEntities(content string) []Entity {
 	}
 
 	var entities []Entity
+	scope := ""
 	for i := 0; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
+		// Track the enclosing @interface/@implementation/@protocol so a
+		// recovered method carries the same qualified name the tree-sitter walk
+		// gives it. Without the scope every method the walk DID find gained an
+		// unqualified twin here: appendMissingEntities keys on kind+name, so
+		// `Ledger.add` and `add` were two different symbols at one source
+		// location, duplicating the method in the symbol table, duplicating
+		// every call edge into it, and pairing it with itself as SIMILAR_TO.
+		if declared, ok := objectiveCContainerName(trimmed); ok {
+			scope = declared
+			continue
+		}
+		if trimmed == "@end" {
+			scope = ""
+			continue
+		}
 		if !strings.HasPrefix(trimmed, "- (") && !strings.HasPrefix(trimmed, "+ (") {
 			continue
 		}
@@ -7129,7 +7145,7 @@ func objectiveCMethodEntities(content string) []Entity {
 			continue
 		}
 		header := strings.Join(headerParts, " ")
-		name := objectiveCMethodHeaderName(header)
+		name := qualify(scope, objectiveCMethodHeaderName(header))
 		if name == "" {
 			continue
 		}
@@ -7156,6 +7172,33 @@ func objectiveCMethodEntities(content string) []Entity {
 	}
 	return entities
 }
+
+// objectiveCContainerName returns the type an @interface, @implementation or
+// @protocol line declares, matching how the tree-sitter walk names the same
+// node: a category (`@implementation Foo (Bar)`) still names Foo, and a
+// superclass or protocol conformance list is not part of the name.
+func objectiveCContainerName(trimmed string) (string, bool) {
+	for _, keyword := range []string{"@interface", "@implementation", "@protocol"} {
+		if !strings.HasPrefix(trimmed, keyword) {
+			continue
+		}
+		rest := strings.TrimSpace(trimmed[len(keyword):])
+		if rest == "" {
+			// `@interface` with the name on the next line is not a shape the
+			// recovery scanner can attribute; leave the scope untouched rather
+			// than guessing at it.
+			return "", false
+		}
+		name := objectiveCContainerNamePattern.FindString(rest)
+		if name == "" {
+			return "", false
+		}
+		return name, true
+	}
+	return "", false
+}
+
+var objectiveCContainerNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*`)
 
 func objectiveCMethodHeaderName(header string) string {
 	closeReturnType := strings.IndexByte(header, ')')

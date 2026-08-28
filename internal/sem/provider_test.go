@@ -13924,8 +13924,21 @@ func TestObjectiveCMethodFallbackExtractsColonSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshotHasSymbol(snapshot, "invalidateSessionCancelingTasks") {
+	// The method is qualified by its @implementation, exactly as the
+	// tree-sitter walk names it. The recovery scanner used to emit an
+	// unqualified twin instead, so this method existed twice at one source
+	// location; count the records so that cannot come back.
+	if !snapshotHasSymbol(snapshot, "AFURLSessionManager.invalidateSessionCancelingTasks") {
 		t.Fatalf("missing Objective-C colon selector method: %#v", snapshot.Symbols)
+	}
+	records := 0
+	for _, symbol := range snapshot.Symbols {
+		if strings.HasSuffix(symbol.QualifiedName, "invalidateSessionCancelingTasks") {
+			records++
+		}
+	}
+	if records != 1 {
+		t.Fatalf("expected exactly one record for invalidateSessionCancelingTasks, got %d: %#v", records, snapshot.Symbols)
 	}
 }
 
