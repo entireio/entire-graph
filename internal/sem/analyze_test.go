@@ -294,12 +294,20 @@ func TestResolveDiffTreesReusesResolutionForSameLabel(t *testing.T) {
 			return "new-tree", nil
 		}
 	}
-	base, head, err := resolveDiffTrees(t.Context(), "repo", "moving", "moving", resolve)
+	base, head, rootRelative, err := resolveDiffTrees(t.Context(), "repo", "moving", "moving", resolve)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(revisions) != 2 || revisions[0] != "moving" || revisions[1] != "moving-object^{tree}" {
-		t.Fatalf("same ref resolutions = %#v, want exact label then one immutable tree peel", revisions)
+	// The moving label is still resolved exactly once; the two follow-ups both
+	// address the immutable object it resolved to, never the label again.
+	if len(revisions) != 3 ||
+		revisions[0] != "moving" ||
+		revisions[1] != "moving-object^{tree}" ||
+		revisions[2] != "moving-object^{commit}" {
+		t.Fatalf("same ref resolutions = %#v, want exact label then immutable tree and commit peels", revisions)
+	}
+	if !rootRelative {
+		t.Fatal("a commit-ish label must report repository-root relative names")
 	}
 	if base != "old-tree" || head != "old-tree" {
 		t.Fatalf("same ref pinned to %q..%q, want old-tree..old-tree", base, head)

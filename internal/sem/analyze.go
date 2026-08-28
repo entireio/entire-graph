@@ -6,6 +6,7 @@ import (
 	"math"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
@@ -94,7 +95,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	// When both labels are byte-identical, reuse the first resolution so a ref
 	// advance between subprocesses cannot turn an intended empty diff into an
 	// old-tree/new-tree comparison. Keep the labels below for result provenance.
-	pinnedBase, pinnedHead, err := resolveDiffTrees(ctx, repo, base, head, gitutil.RevParse)
+	pinnedBase, pinnedHead, rootRelativeNames, err := resolveDiffTrees(ctx, repo, base, head, gitutil.RevParse)
 	if err != nil {
 		return Result{}, err
 	}
@@ -108,24 +109,23 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		return Result{}, err
 	}
 
-	// A repo-root .graphignore is honored by every graph command (see the
-	// `index` help text and docs/operations.md). The snapshot/search family
-	// applies it through loadExplicitIgnoreMatcher; the diff family did not, so
-	// a tracked-but-vendored or generated tree that the graph never indexes
-	// still produced entity changes here. A consumer that builds its index from
-	// `snapshot` and updates it from `diff` received symbols for files that its
-	// index has no record of and never will.
-	ignores, err := loadExplicitIgnoreMatcher(objectRepo, nil, nil)
-	if err != nil {
-		return Result{}, err
-	}
-
 	emitProgress("discover", 0, 0)
 	changed, err := gitutil.ChangedFiles(ctx, repo, pinnedBase, pinnedHead, paths)
 	if err != nil {
 		return Result{}, err
 	}
-	changed = dropIgnoredChangedFiles(changed, ignores)
+	// Every graph command honors a repo-root .graphignore and the vendored-tree
+	// heuristic (see the `index` help text and docs/operations.md). The
+	// snapshot/search family applies both through openSource; the diff family
+	// applied neither, so a tracked-but-vendored or generated tree that the
+	// graph never indexes still produced entity changes here. A consumer that
+	// builds its index from `snapshot` and updates it from `diff` received
+	// symbols for files that its index has no record of and never will.
+	basePolicy, headPolicy, err := newDiffIndexPolicies(ctx, objectRepo, pinnedBase, pinnedHead, rootRelativeNames, changed)
+	if err != nil {
+		return Result{}, err
+	}
+	changed = admitChangedFiles(changed, basePolicy, headPolicy)
 	emitProgress("parse", 0, len(changed))
 	parser := TreeSitterParser{}
 	baseReader := gitutil.NewLimitedFileReader(ctx, objectRepo, pinnedBase, maxDiffFileBytes)
@@ -453,35 +453,74 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	return result, nil
 }
 
+// resolveDiffTrees pins both revision labels to immutable trees and reports
+// whether ChangedFiles' names for the resulting range are repository-root
+// relative.
+//
+// That last question decides whether any exclusion policy may be applied at all.
+// ChangedFiles passes --no-relative, so a range between two COMMITS is named
+// from the repository root, which is the namespace the root .graphignore and the
+// vendored-tree rules are written in. A tree expression such as HEAD:scope names
+// a subtree, and every emitted name is then relative to THAT tree: matching
+// root-relative rules against those names both misses the rules that were meant
+// to apply and fires rules that were not, which silently drops indexed files.
+// There is no prefix to recover, because a tree object does not know its own
+// path, so the only correct answer for a subtree range is to apply no policy.
 func resolveDiffTrees(
 	ctx context.Context,
 	repo, base, head string,
 	resolve func(context.Context, string, string) (string, error),
-) (string, string, error) {
-	resolveTree := func(label string) (string, error) {
+) (string, string, bool, error) {
+	rootRelative := func(label, objectID string) bool {
+		// Probe the immutable OID rather than the caller's expression, for the
+		// same reason the tree peel below does: appending ^{commit} to
+		// HEAD:scope can select a repository path literally named
+		// scope^{commit}. A commit-ish label resolves through ^{commit}; a tree
+		// expression does not.
+		if _, err := resolve(ctx, repo, objectID+"^{commit}"); err == nil {
+			return true
+		}
+		// A caller who wrote <commit-ish>^{tree} still named a root tree. Peel
+		// the suffix THEY wrote — adding none of our own — and ask again.
+		peeled, found := strings.CutSuffix(label, "^{tree}")
+		if !found {
+			return false
+		}
+		peeledID, err := resolve(ctx, repo, peeled)
+		if err != nil {
+			return false
+		}
+		_, err = resolve(ctx, repo, peeledID+"^{commit}")
+		return err == nil
+	}
+	resolveTree := func(label string) (string, bool, error) {
 		// Resolve the caller's expression exactly before adding syntax of our
 		// own. Appending ^{tree} directly to HEAD:scope can select a different
 		// repository path literally named scope^{tree}; an immutable OID has no
 		// such revision/path ambiguity.
 		objectID, err := resolve(ctx, repo, label)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
-		return resolve(ctx, repo, objectID+"^{tree}")
+		tree, err := resolve(ctx, repo, objectID+"^{tree}")
+		if err != nil {
+			return "", false, err
+		}
+		return tree, rootRelative(label, objectID), nil
 	}
 
-	pinnedBase, err := resolveTree(base)
+	pinnedBase, baseFromCommit, err := resolveTree(base)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve diff base %q: %w", base, err)
+		return "", "", false, fmt.Errorf("resolve diff base %q: %w", base, err)
 	}
 	if head == base {
-		return pinnedBase, pinnedBase, nil
+		return pinnedBase, pinnedBase, baseFromCommit, nil
 	}
-	pinnedHead, err := resolveTree(head)
+	pinnedHead, headFromCommit, err := resolveTree(head)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve diff head %q: %w", head, err)
+		return "", "", false, fmt.Errorf("resolve diff head %q: %w", head, err)
 	}
-	return pinnedBase, pinnedHead, nil
+	return pinnedBase, pinnedHead, baseFromCommit && headFromCommit, nil
 }
 
 // budgetSkippedFileWarning marks one changed file that was never analyzed
@@ -811,27 +850,174 @@ const (
 	ambiguityMargin = 0.05
 )
 
-// dropIgnoredChangedFiles removes the changed files the graph would never index.
+// diffIndexPolicy answers, for ONE compared tree, the question the committed-tree
+// snapshot asks of its own listing (openSource in provider.go): would the graph
+// index this path? It applies the same two filters in the same order — the
+// vendored-tree heuristic, then the explicit .graphignore and built-in secret
+// matcher — so the diff can neither report an entity for a file no snapshot of
+// that tree contains nor omit one a snapshot does contain.
 //
-// ChangedFile.Path is the deciding name for every status: Git's name-status
-// output carries the surviving path for an addition or a modification, the
-// removed path for a deletion, and the destination path for a rename, so it is
-// always the name the graph would hold a record under. A file the graph does
-// not index has no entities on either side, so reporting a change to it
-// describes symbols that no snapshot of this repository contains.
+// The policy is per-tree rather than per-range because its two halves answer
+// differently on the two sides. The matcher is read from the working tree and so
+// is common to both, but the vendored-tree rules come from each compared tree's
+// own .gitignore files: a project can re-include part of a vendored tree in one
+// revision and not the other, which makes an otherwise unremarkable edit an
+// entry into, or an exit from, the graph.
+type diffIndexPolicy struct {
+	ignores     ignoreMatcher
+	vendorRules vendorIgnoreRules
+	enabled     bool
+}
+
+// indexed reports whether the graph would hold records for rel in this tree.
 //
-// Ignored files are omitted rather than warned about, exactly as the snapshot
-// omits them — an ignore rule is a deliberate exclusion, not an input the
-// provider failed to read.
-func dropIgnoredChangedFiles(changed []gitutil.ChangedFile, ignores ignoreMatcher) []gitutil.ChangedFile {
+// A disabled policy admits everything. That is not a weaker guess, it is the
+// only correct answer available: the names it would be asked about are relative
+// to some subtree, and neither rule set describes that namespace (see
+// resolveDiffTrees).
+func (p diffIndexPolicy) indexed(rel string) bool {
+	if !p.enabled {
+		return true
+	}
+	rel = filepath.ToSlash(rel)
+	if vendoredPath(rel, p.vendorRules) {
+		return false
+	}
+	return !p.ignores.Ignored(rel, false)
+}
+
+// admitChangedFiles rewrites Git's changed-file list into the delta the GRAPH
+// saw, which is not always the delta Git saw.
+//
+// Git reports what happened to a path; this command reports what happened to the
+// index. The two diverge whenever a change crosses the boundary between indexed
+// and unindexed — a rename into a vendored tree, a rename out of one, or a file
+// whose tree re-includes it on one side only. Deciding that from the destination
+// path alone gets both crossings wrong: it discards the removals the base side
+// still owes a consumer, and it reports a body change against a base file that
+// no snapshot contains while never naming the head file's other symbols at all.
+//
+// So each side is decided independently and the status is rewritten to match:
+//
+//	base yes, head yes   unchanged
+//	base yes, head no    a deletion of the base path; its symbols leave the graph
+//	base no,  head yes   an addition of the head path; all of its symbols are new
+//	base no,  head no    dropped
+//
+// Rewriting to "D" and "A" needs no new emission code: both are ordinary
+// name-status inputs, and the loop above already derives its read plan from
+// Status alone. The emitted FileChange.Status is then the graph's truth rather
+// than Git's — a rename out of the index IS a deletion of everything the index
+// held.
+//
+// A copy (status "C") is the one crossing that must never become a deletion: its
+// source still exists and is not part of this delta, so an unindexed destination
+// simply drops. ChangedFiles asks for --find-renames and not --find-copies, so
+// this is a guard against a future flag rather than a path exercised today.
+//
+// Files are omitted rather than warned about, exactly as the snapshot omits them:
+// an exclusion rule is a deliberate choice, not an input the provider failed to
+// read.
+func admitChangedFiles(changed []gitutil.ChangedFile, base, head diffIndexPolicy) []gitutil.ChangedFile {
 	kept := changed[:0]
 	for _, file := range changed {
-		if ignores.Ignored(file.Path, false) {
-			continue
+		oldPath := file.OldPath
+		if oldPath == "" {
+			oldPath = file.Path
 		}
-		kept = append(kept, file)
+		inBase := file.Status != "A" && base.indexed(oldPath)
+		inHead := file.Status != "D" && head.indexed(file.Path)
+		switch {
+		case inBase && inHead:
+			kept = append(kept, file)
+		case inBase:
+			if file.Status == "C" {
+				continue
+			}
+			kept = append(kept, gitutil.ChangedFile{Status: "D", Path: oldPath})
+		case inHead:
+			kept = append(kept, gitutil.ChangedFile{Status: "A", Path: file.Path})
+		}
 	}
 	return kept
+}
+
+// newDiffIndexPolicies builds the base-side and head-side policies for one range.
+//
+// rootRelative gates the whole thing: when the compared trees were not named by
+// commit-ish expressions, ChangedFiles' names are relative to some subtree while
+// both rule sets are written against repository-root paths, and applying one to
+// the other silently omits indexed files. Admitting everything there is exactly
+// what this command did before the policy existed.
+func newDiffIndexPolicies(
+	ctx context.Context,
+	repo, baseTree, headTree string,
+	rootRelative bool,
+	changed []gitutil.ChangedFile,
+) (diffIndexPolicy, diffIndexPolicy, error) {
+	if !rootRelative {
+		return diffIndexPolicy{}, diffIndexPolicy{}, nil
+	}
+	ignores, err := loadExplicitIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		return diffIndexPolicy{}, diffIndexPolicy{}, err
+	}
+	// ignoreMatcher{} re-includes nothing, which is the correct starting rule set
+	// for a range that touches no vendorable path and the exact set the probe
+	// below is proved against.
+	base := diffIndexPolicy{ignores: ignores, vendorRules: ignoreMatcher{}, enabled: true}
+	head := base
+	if !changedFilesMayBeVendored(changed) {
+		return base, head, nil
+	}
+	baseRules, err := treeVendorIgnoreRules(ctx, repo, baseTree, ignores)
+	if err != nil {
+		return diffIndexPolicy{}, diffIndexPolicy{}, err
+	}
+	base.vendorRules = baseRules
+	if headTree == baseTree {
+		head.vendorRules = baseRules
+		return base, head, nil
+	}
+	headRules, err := treeVendorIgnoreRules(ctx, repo, headTree, ignores)
+	if err != nil {
+		return diffIndexPolicy{}, diffIndexPolicy{}, err
+	}
+	head.vendorRules = headRules
+	return base, head, nil
+}
+
+// changedFilesMayBeVendored reports whether any changed path could be excluded by
+// the vendored-tree heuristic, evaluated against EMPTY re-inclusion rules.
+//
+// The probe is exact rather than approximate. Rules reach the heuristic only
+// through ReincludesDescendant in skipVendoredDir, which can only ever
+// un-vendor a path, so empty rules yield the maximal candidate set and "no
+// candidate here" proves that loading the real rules would change no verdict.
+// That keeps the two tree listings they cost off the overwhelmingly common range
+// that touches nothing vendorable.
+func changedFilesMayBeVendored(changed []gitutil.ChangedFile) bool {
+	for _, file := range changed {
+		if vendoredPath(filepath.ToSlash(file.Path), ignoreMatcher{}) {
+			return true
+		}
+		if file.OldPath != "" && vendoredPath(filepath.ToSlash(file.OldPath), ignoreMatcher{}) {
+			return true
+		}
+	}
+	return false
+}
+
+// treeVendorIgnoreRules loads one compared tree's nested .gitignore rules the way
+// the snapshot loads its own: from that exact tree, through the same bounded
+// reader, so the diff and a snapshot of the same revision cannot disagree about
+// which vendored trees a project meant to keep.
+func treeVendorIgnoreRules(ctx context.Context, repo, tree string, policyBase ignoreMatcher) (vendorIgnoreRules, error) {
+	paths, err := gitutil.ListFiles(ctx, repo, tree)
+	if err != nil {
+		return nil, err
+	}
+	return headVendorIgnoreRules(ctx, repo, tree, paths, policyBase)
 }
 
 // moduleScopeChange builds a synthetic change for a file whose contents changed
