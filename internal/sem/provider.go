@@ -92,7 +92,12 @@ var relationTypes = []string{
 var ooRelationSupport = map[string][]string{
 	"Java":       {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
 	"TypeScript": {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
-	"JavaScript": {"EXTENDS", "INHERITS", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
+	// JavaScript has no type annotations, but the USES_TYPE pass reads type
+	// names out of the signature TEXT, and a default argument that constructs a
+	// local class (`function draw(p = new Point())`) puts one there. The
+	// relation is reachable without an annotation syntax existing at all, which
+	// is why declaring it was missed.
+	"JavaScript": {"EXTENDS", "INHERITS", "USES_TYPE", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
 	"Kotlin":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "DATA_FLOWS"},
 	"C#":         {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
 	"PHP":        {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
@@ -105,7 +110,9 @@ var ooRelationSupport = map[string][]string{
 	// Ruby states member acquisition with `include`/`prepend`/`extend` in the
 	// class body, which the provider now reads; header inheritance
 	// (`class A < B`) is not parsed yet, so only INHERITS is advertised.
-	"Ruby": {"INHERITS", "DATA_FLOWS"},
+	// USES_TYPE for the same reason as JavaScript: `def draw(p = Point.new)`
+	// names a local class in the signature text.
+	"Ruby": {"INHERITS", "USES_TYPE", "DATA_FLOWS"},
 	// Languages below reach the generic type, field and data-flow passes the
 	// same way the listed ones do; they were simply never added here, so
 	// `capabilities --json` under-reported them. Each entry is what the
@@ -134,24 +141,37 @@ var ooRelationSupport = map[string][]string{
 	// foreign type.
 	"C": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	// C++ shares C's extraction path, so it reaches the same passes.
-	"C++":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	"Clojure":          {"USES_TYPE"},
-	"Dart":             {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "ASYNC_CALLS", "DATA_FLOWS"},
-	"Elixir":           {"DATA_FLOWS"},
-	"Erlang":           {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
-	"F#":               {"USES_TYPE", "PARAM_TYPE"},
-	"Groovy":           {"USES_TYPE", "PARAM_TYPE", "READS_FIELD", "DATA_FLOWS"},
-	"Haskell":          {"USES_TYPE", "PARAM_TYPE"},
-	"Julia":            {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
-	"Lua":              {"DATA_FLOWS"},
-	"OCaml":            {"USES_TYPE", "PARAM_TYPE"},
-	"Objective-C":      {"DATA_FLOWS"},
-	"Perl":             {"DATA_FLOWS"},
-	"R":                {"DATA_FLOWS"},
-	"SQL":              {"DATA_FLOWS"},
-	"Scala":            {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	"Swift":            {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	"Zig":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "DATA_FLOWS"},
+	"C++":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	"Clojure": {"USES_TYPE"},
+	// ClojureScript reads .cljs with the Clojure grammar and so reaches the same
+	// `^Point` type hint, but it was not a key of this map at all -- the
+	// language was advertised as structural-only.
+	"ClojureScript": {"USES_TYPE"},
+	"Dart":          {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Elixir":        {"DATA_FLOWS"},
+	"Erlang":        {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
+	"F#":            {"USES_TYPE", "PARAM_TYPE"},
+	"Groovy":        {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "DATA_FLOWS"},
+	"Haskell":       {"USES_TYPE", "PARAM_TYPE"},
+	"Julia":         {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
+	"Lua":           {"DATA_FLOWS"},
+	"OCaml":         {"USES_TYPE", "PARAM_TYPE"},
+	"Objective-C":   {"DATA_FLOWS"},
+	"Perl":          {"DATA_FLOWS"},
+	"R":             {"DATA_FLOWS"},
+	"SQL":           {"DATA_FLOWS"},
+	"Scala":         {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	// Swift resolves a write through a local constructor binding (`let q =
+	// Point(); q.x = a`) but not a read through a parameter -- `_ p: Point` is
+	// not a shape parameterVarTypes recognises -- so WRITES_FIELD is reachable
+	// and READS_FIELD is not.
+	"Swift": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "WRITES_FIELD", "DATA_FLOWS"},
+	// Zig extracts the struct but none of its fields as symbols, so no field
+	// symbol exists for a READS_FIELD edge to resolve onto however the body is
+	// written; the relation was declared and is unreachable. An over-declared
+	// relation fails an agent the same way an under-declared one does: it
+	// feature-detects, queries, and gets nothing back.
+	"Zig":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	"HCL":              {"CONFIGURES", "RESOURCE_DEPENDS_ON"},
 	"GraphQL":          {"HANDLES_GRAPHQL"},
 	"Protocol Buffers": {"HANDLES_GRPC"},

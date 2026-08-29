@@ -24,10 +24,18 @@ import (
 var capabilityRelationProbes = map[string]struct {
 	path   string
 	source string
+	// exhaustive marks a probe rich enough to reach every relation the language
+	// declares, so its expectation is checked as full equality. A probe that is
+	// not exhaustive is checked only over genericRelationTypes: the language
+	// also declares framework-shaped relations (a GraphQL schema, a tRPC
+	// router, an async call site, a resolved supertype) that no single
+	// self-contained file can produce, and inventing one here would pin the
+	// framework detector rather than the language's extractor.
+	exhaustive bool
 }{
 	// A type hint in the signature is Clojure's only route to USES_TYPE; the
 	// bare `[p]` parameter of an idiomatic accessor carries no type at all.
-	"Clojure": {"src/fixture/core.clj", `(ns fixture.core)
+	"Clojure": {path: "src/fixture/core.clj", source: `(ns fixture.core)
 
 (defrecord Point [x y])
 
@@ -36,8 +44,8 @@ var capabilityRelationProbes = map[string]struct {
 (defn make-point [x y] (Point. x y))
 
 (defn point-sum [^Point p] (add (:x p) (:y p)))
-`},
-	"Dart": {"lib/flow.dart", `class Point {
+`, exhaustive: true},
+	"Dart": {path: "lib/flow.dart", source: `class Point {
   int x = 0;
   int y = 0;
   Point(this.x, this.y);
@@ -52,8 +60,8 @@ Point make(int a, int b) { return Point(a, b); }
 int usePoint(Point p) { return add(p.x, p.y); }
 
 Future<int> later(int a) async { return await add(a, 1); }
-`},
-	"Elixir": {"lib/point.ex", `defmodule Fixture.Point do
+`, exhaustive: true},
+	"Elixir": {path: "lib/point.ex", source: `defmodule Fixture.Point do
   def add(a, b) do
     a + b
   end
@@ -62,11 +70,11 @@ Future<int> later(int a) async { return await add(a, 1); }
     add(x, y)
   end
 end
-`},
+`, exhaustive: true},
 	// Erlang reaches the signature passes through a record pattern in the head
 	// and the flow pass through a forwarded argument, and it needs both in one
 	// file: a fixture with only one of them under-reports the language.
-	"Erlang": {"src/flow.erl", `-module(flow).
+	"Erlang": {path: "src/flow.erl", source: `-module(flow).
 -export([add/2, total/2, sum/1]).
 
 -record(point, {x = 0, y = 0}).
@@ -76,16 +84,16 @@ add(A, B) -> A + B.
 total(A, B) -> add(A, B).
 
 sum(#point{x = X, y = Y}) -> add(X, Y).
-`},
-	"F#": {"src/Flow.fs", `module Fixture
+`, exhaustive: true},
+	"F#": {path: "src/Flow.fs", source: `module Fixture
 
 type Point = { X: int; Y: int }
 
 let add a b = a + b
 
 let sum (p: Point) = add p.X p.Y
-`},
-	"Haskell": {"src/Flow.hs", `module Fixture where
+`, exhaustive: true},
+	"Haskell": {path: "src/Flow.hs", source: `module Fixture where
 
 data Point = Point
   { px :: Int
@@ -100,8 +108,8 @@ pointSum p = add (px p) (py p)
 
 main :: IO ()
 main = print (pointSum (Point 1 2))
-`},
-	"Julia": {"src/flow.jl", `struct Point
+`, exhaustive: true},
+	"Julia": {path: "src/flow.jl", source: `struct Point
     x::Int
     y::Int
 end
@@ -113,8 +121,8 @@ end
 function pointsum(p::Point)
     return add(p.x, p.y)
 end
-`},
-	"Lua": {"src/flow.lua", `local function add(a, b)
+`, exhaustive: true},
+	"Lua": {path: "src/flow.lua", source: `local function add(a, b)
   return a + b
 end
 
@@ -123,10 +131,10 @@ local function total(x, y)
 end
 
 return total
-`},
+`, exhaustive: true},
 	// OCaml annotates parameters and returns positionally, which the
 	// signature-type pass reads like any other annotation.
-	"OCaml": {"src/flow.ml", `type point = { px : int; py : int }
+	"OCaml": {path: "src/flow.ml", source: `type point = { px : int; py : int }
 
 let add (a : int) (b : int) : int = a + b
 
@@ -135,8 +143,8 @@ let total (a : int) (b : int) : int = add a b
 let make (a : int) (b : int) : point = { px = a; py = b }
 
 let point_sum (p : point) : int = add p.px p.py
-`},
-	"Objective-C": {"src/Flow.m", `#import <Foundation/Foundation.h>
+`, exhaustive: true},
+	"Objective-C": {path: "src/Flow.m", source: `#import <Foundation/Foundation.h>
 
 static NSInteger addValues(NSInteger a, NSInteger b) {
     return a + b;
@@ -145,8 +153,8 @@ static NSInteger addValues(NSInteger a, NSInteger b) {
 static NSInteger total(NSInteger x, NSInteger y) {
     return addValues(x, y);
 }
-`},
-	"Perl": {"lib/flow.pl", `use strict;
+`, exhaustive: true},
+	"Perl": {path: "lib/flow.pl", source: `use strict;
 use warnings;
 
 sub add {
@@ -160,11 +168,11 @@ sub total {
 }
 
 1;
-`},
+`, exhaustive: true},
 	// R declares no type symbols -- `setClass` produces none -- so USES_TYPE is
 	// unreachable here however the signature is written, and only DATA_FLOWS is
 	// declared for it.
-	"R": {"R/flow.R", `add <- function(a, b) {
+	"R": {path: "R/flow.R", source: `add <- function(a, b) {
   a + b
 }
 
@@ -175,10 +183,10 @@ make_point <- function(x, y) {
 point_sum <- function(p) {
   add(p$x, p$y)
 }
-`},
+`, exhaustive: true},
 	// A SQL function body forwards its arguments into another function, and the
 	// call pass already resolves it.
-	"SQL": {"db/flow.sql", `CREATE FUNCTION add_nums(a integer, b integer) RETURNS integer AS $$
+	"SQL": {path: "db/flow.sql", source: `CREATE FUNCTION add_nums(a integer, b integer) RETURNS integer AS $$
 BEGIN
   RETURN a + b;
 END;
@@ -189,7 +197,342 @@ BEGIN
   RETURN add_nums(a, b);
 END;
 $$ LANGUAGE plpgsql;
+`, exhaustive: true},
+	// -- languages below were added when the declaration/emission equality was
+	// extended from the thirteen probed above to every language the provider
+	// runs call extraction for. Each carries the same five constructs so the
+	// generic passes are all reachable from one file: a type declaration, a
+	// parameter annotated with it, a return annotated with it, a field read, a
+	// field write, and an argument forwarded into another call.
+
+	// Bash and Zsh parse and yield callables, but their function headers carry
+	// no parameter list at all, so no signature exists for a type to be read
+	// out of and no generic relation is reachable. The probes pin that empty
+	// expectation: a future grammar change that starts emitting one has to
+	// declare it.
+	"Bash": {path: "src/flow.sh", source: `#!/usr/bin/env bash
+add() {
+  echo $(( $1 + $2 ))
+}
+
+total() {
+  add "$1" "$2"
+}
+`, exhaustive: true},
+	"Zsh": {path: "src/flow.zsh", source: `#!/usr/bin/env zsh
+add() {
+  echo $(( $1 + $2 ))
+}
+
+total() {
+  add "$1" "$2"
+}
+`, exhaustive: true},
+
+	"C": {path: "src/flow.c", source: `struct Point {
+  int x;
+  int y;
+};
+
+int add(int a, int b) { return a + b; }
+
+int total(int a, int b) { return add(a, b); }
+
+int point_sum(struct Point p) { return add(p.x, p.y); }
+
+struct Point make(int a, int b) {
+  struct Point q;
+  q.x = a;
+  q.y = b;
+  return q;
+}
+`, exhaustive: true},
+	// C++ shares C's extraction path; the probe is kept separate so a divergence
+	// between the two grammars shows up as a C++ failure rather than silence.
+	"C++": {path: "src/flow.cpp", source: `struct Point {
+  int x;
+  int y;
+};
+
+int add(int a, int b) { return a + b; }
+
+int total(int a, int b) { return add(a, b); }
+
+int pointSum(Point p) { return add(p.x, p.y); }
+
+Point make(int a, int b) {
+  Point q;
+  q.x = a;
+  q.y = b;
+  return q;
+}
+`, exhaustive: true},
+
+	// ClojureScript reads .cljs with the same grammar Clojure reads .clj with,
+	// so it reaches USES_TYPE through the same `^Point` hint -- but it was not a
+	// key of ooRelationSupport at all, so `capabilities --json` advertised only
+	// the structural relations for it.
+	"ClojureScript": {path: "src/fixture/core.cljs", source: `(ns fixture.core)
+
+(defrecord Point [x y])
+
+(defn add [a b] (+ a b))
+
+(defn make-point [x y] (Point. x y))
+
+(defn point-sum [^Point p] (add (:x p) (:y p)))
+`, exhaustive: true},
+
+	"C#": {path: "src/Flow.cs", source: `namespace Fixture {
+  public class Point { public int X; public int Y; }
+
+  public class Flow {
+    public int Add(int a, int b) { return a + b; }
+    public int Total(int a, int b) { return Add(a, b); }
+    public int PointSum(Point p) { return Add(p.X, p.Y); }
+    public Point Make(int a, int b) { var q = new Point(); q.X = a; q.Y = b; return q; }
+  }
+}
 `},
+	"Go": {path: "flow.go", source: `package fixture
+
+type Point struct {
+	X int
+	Y int
+}
+
+func Add(a, b int) int { return a + b }
+
+func Total(a, b int) int { return Add(a, b) }
+
+func PointSum(p Point) int { return Add(p.X, p.Y) }
+
+func Make(a, b int) Point {
+	q := Point{}
+	q.X = a
+	q.Y = b
+	return q
+}
+`},
+	"Groovy": {path: "src/flow.groovy", source: `class Point {
+  int x
+  int y
+}
+
+class Flow {
+  int add(int a, int b) { return a + b }
+  int total(int a, int b) { return add(a, b) }
+  int pointSum(Point p) { return add(p.x, p.y) }
+  Point make(int a, int b) { Point q = new Point(); q.x = a; q.y = b; return q }
+}
+`, exhaustive: true},
+	"Java": {path: "src/Flow.java", source: `public class Flow {
+  static class Point { int x; int y; }
+
+  int add(int a, int b) { return a + b; }
+
+  int total(int a, int b) { return add(a, b); }
+
+  int pointSum(Point p) { return add(p.x, p.y); }
+
+  Point make(int a, int b) { Point q = new Point(); q.x = a; q.y = b; return q; }
+}
+`},
+	// JavaScript has no type annotations, but a default argument that constructs
+	// a local class puts the type name in the signature, which is exactly what
+	// the USES_TYPE pass reads -- so the language reaches a relation its
+	// declaration did not list.
+	"JavaScript": {path: "src/flow.js", source: `class Point {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+}
+
+function add(a, b) { return a + b; }
+
+function total(a, b) { return add(a, b); }
+
+function pointSum(p = new Point(0, 0)) { return add(p.x, p.y); }
+
+function make(a, b) {
+  const q = new Point(a, b);
+  q.x = a;
+  return q;
+}
+`},
+	"Kotlin": {path: "src/Flow.kt", source: `class Point(var x: Int, var y: Int)
+
+fun add(a: Int, b: Int): Int { return a + b }
+
+fun total(a: Int, b: Int): Int { return add(a, b) }
+
+fun pointSum(p: Point): Int { return add(p.x, p.y) }
+
+fun make(a: Int, b: Int): Point {
+    val q = Point(a, b)
+    q.x = a
+    return q
+}
+`, exhaustive: true},
+	"PHP": {path: "src/Flow.php", source: `<?php
+class Point {
+  public int $x = 0;
+  public int $y = 0;
+}
+
+function add(int $a, int $b): int { return $a + $b; }
+
+function total(int $a, int $b): int { return add($a, $b); }
+
+function pointSum(Point $p): int { return add($p->x, $p->y); }
+
+function make(int $a, int $b): Point { $q = new Point(); $q->x = $a; return $q; }
+`},
+	"Python": {path: "src/flow.py", source: `class Point:
+    def __init__(self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+
+
+def add(a: int, b: int) -> int:
+    return a + b
+
+
+def total(a: int, b: int) -> int:
+    return add(a, b)
+
+
+def point_sum(p: Point) -> int:
+    return add(p.x, p.y)
+
+
+def make(a: int, b: int) -> Point:
+    q = Point(a, b)
+    q.x = a
+    return q
+`},
+	// Ruby is annotation-free like JavaScript and reaches USES_TYPE the same
+	// way, through a default argument that names a local class. INHERITS comes
+	// from the `include` in the class body -- Ruby's header form (`class A < B`)
+	// is not parsed, which is why the declaration lists INHERITS and not
+	// EXTENDS.
+	"Ruby": {path: "lib/flow.rb", source: `module Summable
+  def describe
+    "summable"
+  end
+end
+
+class Point
+  attr_accessor :x, :y
+
+  def initialize(x, y)
+    @x = x
+    @y = y
+  end
+end
+
+class Flow
+  include Summable
+
+  def add(a, b)
+    a + b
+  end
+
+  def total(a, b)
+    add(a, b)
+  end
+
+  def point_sum(p = Point.new(0, 0))
+    add(p.x, p.y)
+  end
+end
+`, exhaustive: true},
+	"Rust": {path: "src/flow.rs", source: `pub struct Point {
+    pub x: i32,
+    pub y: i32,
+}
+
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+
+pub fn total(a: i32, b: i32) -> i32 { add(a, b) }
+
+pub fn point_sum(p: Point) -> i32 { add(p.x, p.y) }
+
+pub fn make(a: i32, b: i32) -> Point {
+    let mut q = Point { x: 0, y: 0 };
+    q.x = a;
+    q.y = b;
+    q
+}
+`},
+	"Scala": {path: "src/Flow.scala", source: `class Point(var x: Int, var y: Int)
+
+object Flow {
+  def add(a: Int, b: Int): Int = a + b
+  def total(a: Int, b: Int): Int = add(a, b)
+  def pointSum(p: Point): Int = add(p.x, p.y)
+  def make(a: Int, b: Int): Point = { val q = new Point(a, b); q.x = a; q }
+}
+`, exhaustive: true},
+	// Swift resolves the assignment through a local constructor binding, so the
+	// write to `q.x` is attributed, while the read of a parameter's field is not
+	// -- `_ p: Point` is not a shape parameterVarTypes recognises. The
+	// expectation records that asymmetry rather than papering over it.
+	"Swift": {path: "Sources/Flow.swift", source: `class Point {
+    var x: Int = 0
+    var y: Int = 0
+}
+
+func add(_ a: Int, _ b: Int) -> Int { return a + b }
+
+func total(_ a: Int, _ b: Int) -> Int { return add(a, b) }
+
+func pointSum(_ p: Point) -> Int { return add(p.x, p.y) }
+
+func make(_ a: Int, _ b: Int) -> Point {
+    let q = Point()
+    q.x = a
+    return q
+}
+`, exhaustive: true},
+	"TypeScript": {path: "src/flow.ts", source: `export class Point {
+  x: number = 0;
+  y: number = 0;
+}
+
+export function add(a: number, b: number): number { return a + b; }
+
+export function total(a: number, b: number): number { return add(a, b); }
+
+export function pointSum(p: Point): number { return add(p.x, p.y); }
+
+export function make(a: number, b: number): Point {
+  const q = new Point();
+  q.x = a;
+  return q;
+}
+`},
+	// Zig extracts the struct but not its fields, so no field symbol exists for
+	// a READS_FIELD/WRITES_FIELD edge to land on however the body is written.
+	"Zig": {path: "src/flow.zig", source: `const Point = struct {
+    x: i32,
+    y: i32,
+};
+
+pub fn add(a: i32, b: i32) i32 { return a + b; }
+
+pub fn total(a: i32, b: i32) i32 { return add(a, b); }
+
+pub fn pointSum(p: Point) i32 { return add(p.x, p.y); }
+
+pub fn make(a: i32, b: i32) Point {
+    var q = Point{ .x = 0, .y = 0 };
+    q.x = a;
+    q.y = b;
+    return q;
+}
+`, exhaustive: true},
 }
 
 // structuralRelationTypes are the relations mergeLanguageSupport adds to every
@@ -203,9 +546,90 @@ var structuralRelationTypes = map[string]bool{
 	"IMPORTS":    true,
 }
 
+// genericRelationTypes are the relations produced by passes that run over every
+// extracted symbol with no per-language gate: usesTypeRelations,
+// signatureTypeRelations, fieldAccessRelations and the data-flow pass are each
+// reached from buildRelations under a `spec.emits(...)` check on the PROFILE
+// alone. CONFIGURES and RESOURCE_DEPENDS_ON, by contrast, are filtered through
+// recordsByRelationSupport, so for those the declaration gates the emission and
+// the two cannot drift apart.
+//
+// That asymmetry is what makes this set the one worth pinning per language: a
+// language reaches these relations by having the right symbol shapes, never by
+// being listed anywhere, so ooRelationSupport can fall out of step with what
+// the provider actually emits without any code path noticing.
+//
+// ACCESSES is deliberately excluded. Its only trigger is the `&` in
+// fieldAccessRe, which is address-of in C, C++, C#, Go and Rust but plain
+// bitwise-and in Java, Kotlin and TypeScript, where `return m &p.x;` is
+// classified as an address-of and yields an ACCESSES edge. Pinning it per
+// language would enshrine that misclassification as a capability.
+var genericRelationTypes = map[string]bool{
+	"USES_TYPE":    true,
+	"PARAM_TYPE":   true,
+	"RETURNS_TYPE": true,
+	"READS_FIELD":  true,
+	"WRITES_FIELD": true,
+	"DATA_FLOWS":   true,
+}
+
+// callExtractionLanguages is every language the provider runs the generic
+// relation passes for, derived from the same predicate buildRelations consults
+// rather than from a second hand-maintained list.
+func callExtractionLanguages() []string {
+	set := map[string]bool{}
+	for _, spec := range supportedLanguageSpecs() {
+		if supportsCallExtraction(spec) {
+			set[spec.language] = true
+		}
+	}
+	languages := make([]string, 0, len(set))
+	for language := range set {
+		languages = append(languages, language)
+	}
+	sort.Strings(languages)
+	return languages
+}
+
+// TestCapabilityRelationProbesCoverEveryCallExtractionLanguage fails when a
+// language reaches the generic relation passes with no probe pinning what it
+// emits. Without it the equality check below is only as good as whoever
+// remembered to add an entry, which is the same weakness --
+// coverage-by-coincidence -- that let the declarations drift in the first
+// place.
+func TestCapabilityRelationProbesCoverEveryCallExtractionLanguage(t *testing.T) {
+	t.Parallel()
+
+	var missing []string
+	for _, language := range callExtractionLanguages() {
+		if _, ok := capabilityRelationProbes[language]; !ok {
+			missing = append(missing, language)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("no isolated relation probe for %v; every language supportsCallExtraction admits reaches the generic type, field and data-flow passes, so its declaration has to be pinned against extraction", missing)
+	}
+
+	for language := range capabilityRelationProbes {
+		if len(ooRelationSupport[language]) == 0 {
+			continue
+		}
+		found := false
+		for _, candidate := range callExtractionLanguages() {
+			if candidate == language {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s has a call-extraction probe but supportsCallExtraction does not admit it", language)
+		}
+	}
+}
+
 // TestCapabilityRelationDeclarationsMatchIsolatedExtraction asserts, per
-// language, that ooRelationSupport is exactly the set of non-structural
-// relations that language's extractor emits over a single-language fixture.
+// language, that ooRelationSupport agrees with what that language's extractor
+// emits over a single-language fixture.
 //
 // TestCapabilityMatrixCoversEmittedRelations checks only one direction --
 // emitted implies declared -- over whichever relations the golden fixtures
@@ -221,6 +645,13 @@ var structuralRelationTypes = map[string]bool{
 // declares a relation the fixture cannot produce. Both directions are checked
 // against extraction rather than against a second copy of the table, so the
 // test cannot drift into agreeing with a wrong declaration.
+//
+// The comparison is over genericRelationTypes for every language, and over the
+// full non-structural set for the probes marked exhaustive. Restricting the
+// rest is not a loosening of the invariant so much as an admission of what a
+// self-contained file can prove: a language that also declares HANDLES_GRAPHQL
+// or ASYNC_CALLS needs a framework or a runtime construct to reach it, and the
+// golden fixtures already carry those.
 func TestCapabilityRelationDeclarationsMatchIsolatedExtraction(t *testing.T) {
 	t.Parallel()
 
@@ -273,21 +704,49 @@ func TestCapabilityRelationDeclarationsMatchIsolatedExtraction(t *testing.T) {
 				emitted[relation.Type] = true
 			}
 
+			// A cross-language edge is the failure mode this test exists to
+			// avoid measuring: USES_TYPE resolves a signature identifier
+			// against every type symbol in the repository by short name, so an
+			// edge landing outside the probe's language would credit the
+			// language with a capability it does not have.
+			for _, relation := range snapshot.Relations {
+				if languageByID[relation.FromID] != language {
+					continue
+				}
+				if to, ok := languageByID[relation.ToID]; ok && to != language {
+					t.Fatalf("%s emitted %s into %s; the probe repository is no longer single-language", language, relation.Type, to)
+				}
+			}
+
+			keep := func(relation string) bool { return genericRelationTypes[relation] }
+			scope := "generic"
+			if probe.exhaustive {
+				keep = func(string) bool { return true }
+				scope = "non-structural"
+			}
+
 			got := make([]string, 0, len(emitted))
 			for relation := range emitted {
-				got = append(got, relation)
+				if keep(relation) {
+					got = append(got, relation)
+				}
 			}
 			sort.Strings(got)
 
-			want := append([]string(nil), ooRelationSupport[language]...)
+			want := make([]string, 0, len(ooRelationSupport[language]))
+			for _, relation := range ooRelationSupport[language] {
+				if keep(relation) {
+					want = append(want, relation)
+				}
+			}
 			sort.Strings(want)
 
 			if len(got) != len(want) {
-				t.Fatalf("%s declares %v but emits %v", language, want, got)
+				t.Fatalf("%s declares %v but emits %v (%s relations)", language, want, got, scope)
 			}
 			for i := range want {
 				if got[i] != want[i] {
-					t.Fatalf("%s declares %v but emits %v", language, want, got)
+					t.Fatalf("%s declares %v but emits %v (%s relations)", language, want, got, scope)
 				}
 			}
 		})
