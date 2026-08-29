@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
 )
@@ -103,6 +104,28 @@ func verifyCompactPreflight(native snapshotProjection, compact []byte, nativeHas
 	loaded, err := sem.LoadCompactSnapshot(bytes.NewReader(compact))
 	if err != nil {
 		return compactPreflight{}, fmt.Errorf("load compact preflight snapshot: %w", err)
+	}
+	// ADR 0001 clause 3 makes a newer minor of a readable major a WARNING for a
+	// consumer reading an artifact somebody else wrote; snapshot-query is that
+	// consumer and prints it. This is not that. The preflight validates a compact
+	// artifact THIS build just produced, whose header carries this build's own
+	// sem.SchemaVersion, so a newer-minor signal here cannot mean "a newer
+	// producer wrote it" — it means the writer and the reader inside one binary
+	// disagree about the schema, and facts the artifact carries went unread. That
+	// is the same class of self-inconsistency as the hash and projection
+	// mismatches below, so it gets the same treatment: refuse, rather than
+	// certify an artifact whose additive facts were never checked. It is raised
+	// before the hash comparison so the diagnosis names the schema rather than
+	// the downstream mismatch it would cause.
+	if len(loaded.SchemaWarnings) > 0 {
+		details := make([]string, 0, len(loaded.SchemaWarnings))
+		for _, warning := range loaded.SchemaWarnings {
+			details = append(details, fmt.Sprintf("%s: %s", warning.Code, warning.Detail))
+		}
+		return compactPreflight{}, fmt.Errorf(
+			"compact preflight snapshot did not load losslessly: %s",
+			strings.Join(details, "; "),
+		)
 	}
 	if loaded.CanonicalSemanticHash != nativeHash {
 		return compactPreflight{}, fmt.Errorf("compact canonical semantic hash %s does not match native %s", loaded.CanonicalSemanticHash, nativeHash)
