@@ -23637,11 +23637,29 @@ func externalID(kind, value string) string {
 // can reproduce it: a github.com `origin` yields gh/<owner>/<name>, everything
 // else yields local/<basename>.
 //
-// Consumers (entire-brain) must be able to predict this value to tell a
-// snapshot of THIS repository apart from a foreign one. It is therefore a
-// published contract, not an internal detail: `graph doctor --json` reports it
-// and TestRepoKeyContractGoldenVectors pins the vectors that entire-brain
-// asserts on its side.
+// It is a published contract, not an internal detail: `graph doctor --json`
+// reports it and TestRepoKeyContractGoldenVectors pins the vectors that
+// entire-brain asserts on its side. A consumer predicts it to check the seam
+// BEFORE paying for a snapshot, and to reject a snapshot built by a binary
+// whose rule has drifted from its own.
+//
+// IT IS A NAMESPACE, NOT A REPOSITORY IDENTITY, AND ONLY THE gh/ HALF IS
+// GLOBALLY UNIQUE. `local/<basename>` is derived from the directory name, so
+// every repository named `tools` with no github.com origin — different owners
+// on gitlab, two unrelated checkouts, a fork beside its upstream — publishes
+// the same key. Two colliding snapshots are byte-distinguishable only by
+// `repo_root`, `commit` and `tree`. A consumer must therefore treat repo_key
+// as a necessary and not a sufficient identity test: `repo_key` mismatch
+// proves a foreign snapshot, `repo_key` match does not prove a native one.
+// TestRepoKeyLocalIsNotGloballyUnique pins that boundary.
+//
+// The discriminator every side already carries is the absolute repository
+// path. This provider hashes it into both persistent cache keys beside the
+// repo key (searchSnapshotKey, providerRecordsKey), which is why two colliding
+// repositories sharing a cache directory never share an entry even at an
+// identical tree — TestCollidingRepoKeysDoNotShareCacheEntries. `doctor --json`
+// reports `repo_root` beside `repo_key` for the same reason: it is what makes
+// the pair unique.
 func RepoKey(ctx context.Context, repo string) string {
 	return repoKey(ctx, repo)
 }
