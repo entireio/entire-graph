@@ -3401,6 +3401,76 @@ func cFamilyTypedefAliasName(node *sitter.Node, src []byte) string {
 	return name
 }
 
+// cFamilyTypedefDeclaratorNames returns every name a C/C++ typedef binds, in
+// source order. One typedef can declare several — `typedef struct {…} A, B;`
+// is ordinary C, and so are `typedef int I1, I2;` and mixed forms like
+// `typedef struct {…} *H1, H2[4];`. Each declarator is an independent type
+// name that code refers to on its own, so each needs its own symbol.
+//
+// The grammar puts every one of them on a `declarator` field of the
+// type_definition, so this reads the AST rather than extending
+// cFamilyTypedefNameRe, whose `$` anchor can only ever see the last one. The
+// declarator is not always a bare identifier (`*H1`, `H2[4]`, `(*F1)(int)`),
+// so the name comes from firstNameDescendant, which unwraps pointer, array and
+// function declarators alike.
+func cFamilyTypedefDeclaratorNames(node *sitter.Node, src []byte) []string {
+	if !validNode(node) || node.Type() != "type_definition" {
+		return nil
+	}
+	var names []string
+	seen := map[string]bool{}
+	for i := 0; i < int(node.ChildCount()); i++ {
+		if node.FieldNameForChild(i) != "declarator" {
+			continue
+		}
+		name := firstNameDescendant(node.Child(i), src)
+		if name == "" || cFamilyNonFunctionNames[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
+}
+
+// cFamilyTypedefAliasEntities returns the typedef names entityFromNode did not
+// emit. entityFromNode returns a single Entity, so a multi-declarator typedef
+// kept exactly one name and silently dropped the rest: `typedef struct {int v;}
+// A, B;` produced only `type:B`, so a search for `A` found nothing and a
+// parameter typed `A` had no definition to resolve against.
+//
+// The name entityFromNode chose stays the primary entity — it is what scopes
+// the struct's fields — and these are emitted as its peers, so no existing
+// symbol moves and only the missing names are added.
+func cFamilyTypedefAliasEntities(node *sitter.Node, src []byte, language string, primary Entity) []Entity {
+	if language != "C" && language != "C++" {
+		return nil
+	}
+	if primary.Kind != "type" || !validNode(node) || node.Type() != "type_definition" {
+		return nil
+	}
+	names := cFamilyTypedefDeclaratorNames(node, src)
+	if len(names) < 2 {
+		return nil
+	}
+	block := node.Content(src)
+	var aliases []Entity
+	for _, name := range names {
+		if name == primary.Name {
+			continue
+		}
+		alias := primary
+		alias.Name = name
+		// Recompute rather than copy: for a single-line declaration the
+		// fingerprint is the signature with the entity's own name blanked out,
+		// so sharing the primary's would make every alias look like the same
+		// entity to change detection.
+		alias.Fingerprint = hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: primary.Signature}, block)))
+		aliases = append(aliases, alias)
+	}
+	return aliases
+}
+
 func fastCFamilyEntities(path, content, language string) []Entity {
 	_ = path
 	_ = language
@@ -3695,6 +3765,9 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			entity.Local = true // nested inside another function
 		}
 		*entities = append(*entities, entity)
+		// A C/C++ typedef can bind several names at once; entityFromNode
+		// returns one entity, so the remaining declarators are emitted here.
+		*entities = append(*entities, cFamilyTypedefAliasEntities(node, src, language, entity)...)
 		if scopesChildren(language, entity.Kind) {
 			childScope = entity.Name
 		}
