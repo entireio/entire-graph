@@ -3679,6 +3679,15 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		}
 		return
 	}
+	// In-class C++ method declarations. Emitted here rather than through
+	// entityFromNode because one declaration can declare several methods
+	// (`void Start(), Stop();`), which one-entity-per-node cannot express. The
+	// walk still descends: a declaration has no body, but a default argument can
+	// hold one.
+	for _, member := range cPlusPlusMemberDeclarationEntities(node, src, language, scope) {
+		setEntitySourceRange(&member, node, language, src)
+		*entities = append(*entities, member)
+	}
 	entity, ok := entityFromNode(node, src, language, scope)
 	childScope := scope
 	childInFunc := inFunc
@@ -4194,40 +4203,82 @@ func cPlusPlusInitialisedMemberName(node *sitter.Node, src []byte) string {
 	return strings.TrimSpace(name.Content(src))
 }
 
-// cPlusPlusMemberDeclarationName returns the declared name when node is an
-// in-class C++ method DECLARATION — a member declared in the class body and
+// cPlusPlusMemberDeclaration is one method declared by an in-class declaration,
+// paired with the declarator that declares it: one declaration can declare
+// several methods, and each carries its own signature text.
+type cPlusPlusMemberDeclaration struct {
+	name       string
+	declarator *sitter.Node
+}
+
+// cPlusPlusMemberDeclarations returns the methods declared when node is an
+// in-class C++ method DECLARATION — members declared in the class body and
 // defined elsewhere. tree-sitter-cpp gives that no node type of its own:
 // `int Add(int) const;` is a field_declaration, the same node type as
 // `int total_;`, and a constructor or destructor declaration is a bare
 // `declaration`, the same node type as a local variable.
 //
 // Two things separate a member method declaration from everything that shares
-// those node types. It sits directly in a field_declaration_list, which is the
-// class body — that excludes locals, namespace-scope prototypes, and the
-// declaration nested inside a friend_declaration, none of which are members of
-// the class. And its declarator resolves to a function_declarator whose own
-// declarator is a NAME: a function-POINTER data member (`int (*handler_)(int);`)
-// reaches a parenthesized_declarator instead, and stays the field that #174
+// those node types. It sits in a field_declaration_list, which is the class
+// body — that excludes locals, namespace-scope prototypes, and the declaration
+// nested inside a friend_declaration, none of which are members of the class. A
+// member function TEMPLATE is one step further out, because the
+// template_declaration is what the class body holds, so that wrapper is stepped
+// through rather than treated as a different scope. And each declarator must
+// resolve to a function_declarator whose own declarator is a NAME: a
+// function-POINTER data member (`int (*handler_)(int);`) reaches a
+// parenthesized_declarator instead, and stays the field that the member pass
 // classifies it as.
-func cPlusPlusMemberDeclarationName(node *sitter.Node, src []byte) string {
+func cPlusPlusMemberDeclarations(node *sitter.Node, src []byte) []cPlusPlusMemberDeclaration {
 	switch node.Type() {
 	case "field_declaration", "declaration":
 	default:
-		return ""
+		return nil
 	}
-	if parent := node.Parent(); !validNode(parent) || parent.Type() != "field_declaration_list" {
-		return ""
+	parent := node.Parent()
+	// `template<class T> T Get();` in a class body is a declaration wrapped in a
+	// template_declaration; the class body holds the wrapper, not the
+	// declaration. Requiring the class body to be the DIRECT parent dropped
+	// every member function template.
+	if validNode(parent) && parent.Type() == "template_declaration" {
+		parent = parent.Parent()
 	}
-	declarator := node.ChildByFieldName("declarator")
+	if !validNode(parent) || parent.Type() != "field_declaration_list" {
+		return nil
+	}
+	// C++ allows several declarators in one declaration (`void Start(), Stop();`),
+	// so read every declarator child, not just the first. The field pass ignores
+	// plain function declarators, so anything missed here is missed everywhere.
+	var out []cPlusPlusMemberDeclaration
+	for i := 0; i < int(node.ChildCount()); i++ {
+		if node.FieldNameForChild(i) != "declarator" {
+			continue
+		}
+		child := node.Child(i)
+		if name := cPlusPlusMemberDeclaratorName(child, src); name != "" {
+			out = append(out, cPlusPlusMemberDeclaration{name: name, declarator: child})
+		}
+	}
+	return out
+}
+
+// cPlusPlusMemberDeclaratorName resolves one declarator of an in-class
+// declaration to the method name it declares, or "" when it declares something
+// that is not a method.
+func cPlusPlusMemberDeclaratorName(declarator *sitter.Node, src []byte) string {
 	// A reference or pointer return type wraps the declarator
-	// (`Ledger& operator=(...)`, `Ledger* Clone();`).
-	for depth := 0; validNode(declarator) && depth < 8; depth++ {
+	// (`Ledger& operator=(...)`, `Ledger* Clone();`). The parse tree bounds the
+	// walk: every step moves to a strictly smaller span.
+	for validNode(declarator) {
 		if declarator.Type() != "reference_declarator" && declarator.Type() != "pointer_declarator" {
 			break
 		}
 		inner := declarator.ChildByFieldName("declarator")
 		if !validNode(inner) {
 			inner = firstNamedChildOfType(declarator, "function_declarator")
+		}
+		if !descendsStrictly(declarator, inner) {
+			return ""
 		}
 		declarator = inner
 	}
@@ -4258,6 +4309,54 @@ func cPlusPlusMemberDeclarationName(node *sitter.Node, src []byte) string {
 		return ""
 	}
 	return ""
+}
+
+// cPlusPlusMemberDeclarationEntities returns the method symbols an in-class C++
+// declaration declares. It is where a header's interface lives: a class that
+// declares its members and defines them out of line contributed no method
+// symbols at all — nothing to search for, no CONTAINS edge, and nothing for a
+// typed receiver to resolve a call to. The members are bodyless in exactly the
+// sense the field means: the declaration is real (it is where the parameter
+// types are written) but the out-of-line `Type::method` is the definition.
+//
+// This sits beside the walk rather than in entityFromNode because entityFromNode
+// yields at most one entity per node, and `void Start(), Stop();` is one node
+// declaring two methods.
+func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language, scope string) []Entity {
+	if language != "C++" || scope == "" {
+		return nil
+	}
+	members := cPlusPlusMemberDeclarations(node, src)
+	if len(members) == 0 {
+		return nil
+	}
+	declarationSignature := signatureFromNode(node, src)
+	typeText := ""
+	if declaredType := node.ChildByFieldName("type"); validNode(declaredType) {
+		typeText = declaredType.Content(src)
+	}
+	out := make([]Entity, 0, len(members))
+	for _, member := range members {
+		signature := declarationSignature
+		if len(members) > 1 {
+			// Several methods share one declaration, so each takes its own
+			// declarator text: a shared signature would give two members of one
+			// class the same fingerprint, which rename matching reads as one
+			// symbol.
+			signature = strings.Join(strings.Fields(typeText+" "+member.declarator.Content(src)), " ")
+		}
+		out = append(out, Entity{
+			Kind:        "method",
+			Name:        qualify(scope, member.name),
+			Signature:   signature,
+			StartLine:   int(node.StartPoint().Row) + 1,
+			EndLine:     int(node.EndPoint().Row) + 1,
+			BodyHash:    hash(normalize(node.Content(src))),
+			Fingerprint: hash(normalize(signature)),
+			bodyless:    true,
+		})
+	}
+	return out
 }
 
 // cFamilyNameEndsAtTokenBoundary reports whether a name node's range still ends
@@ -4536,27 +4635,6 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 	// TypeScript overload signature or ambient declaration — never for a Dart
 	// declaration head, whose body is a sibling node the walk re-attaches below.
 	var bodyless bool
-	// An in-class C++ method declaration is where a header's interface lives,
-	// and it reached no case below: a class that declares its members and
-	// defines them out of line contributed no method symbols at all — nothing to
-	// search for, no CONTAINS edge, and nothing for a typed receiver to resolve
-	// a call to. It is bodyless in exactly the sense the field means: the
-	// declaration is real (it is where the parameter types are written) but the
-	// out-of-line `Type::method` definition is the definition.
-	if language == "C++" && scope != "" {
-		if member := cPlusPlusMemberDeclarationName(node, src); member != "" {
-			return Entity{
-				Kind:        "method",
-				Name:        qualify(scope, member),
-				Signature:   signatureFromNode(node, src),
-				StartLine:   int(node.StartPoint().Row) + 1,
-				EndLine:     int(node.EndPoint().Row) + 1,
-				BodyHash:    hash(normalize(node.Content(src))),
-				Fingerprint: hash(normalize(signatureFromNode(node, src))),
-				bodyless:    true,
-			}, true
-		}
-	}
 	switch node.Type() {
 	case "class", "class_definition", "class_declaration", "class_specifier", "mixin_declaration",
 		"abstract_class_declaration":

@@ -143,6 +143,85 @@ func TestCStructMembersAreNotMethods(t *testing.T) {
 	}
 }
 
+// TestCPlusPlusMemberFunctionTemplatesAreExtracted covers a declaration the
+// class body does not hold directly. `template<class T> T Get();` parses as a
+// declaration inside a template_declaration, and the template_declaration is
+// what sits in the class body — so a scanner that required the class body to be
+// the DIRECT parent dropped every member function template, which is most of
+// the interface of a container or a traits class.
+func TestCPlusPlusMemberFunctionTemplatesAreExtracted(t *testing.T) {
+	t.Parallel()
+	got := memberIndex(t, "box.hpp", `template<class T> T FreeGet();
+
+class Box {
+public:
+    template<class U> U Get();
+    template<class U> U* GetPtr();
+    template<class U> U& GetRef();
+    int Plain();
+};
+`)
+	for _, want := range []string{"method:Box.Get", "method:Box.GetPtr", "method:Box.GetRef", "method:Box.Plain"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("missing %q: %#v", want, mapKeys(got))
+		}
+	}
+	// A namespace-scope function template is not a member of anything; stepping
+	// through the template wrapper must not reach outside a class body.
+	if _, ok := got["method:Box.FreeGet"]; ok {
+		t.Errorf("namespace-scope template extracted as a member: %#v", mapKeys(got))
+	}
+}
+
+// TestCPlusPlusCommaSeparatedMemberDeclarations covers a declaration that
+// declares more than one method. C++ allows `void Start(), Stop();` and
+// tree-sitter hangs both declarators off the one node; reading only the node's
+// first `declarator` field kept `Start` and lost `Stop` entirely — the field
+// pass deliberately ignores plain function declarators, so nothing else would
+// have picked it up.
+func TestCPlusPlusCommaSeparatedMemberDeclarations(t *testing.T) {
+	t.Parallel()
+	got := memberIndex(t, "runner.hpp", `class Runner {
+public:
+    void Start(), Stop();
+    int a, b;
+};
+`)
+	for _, want := range []string{"method:Runner.Start", "method:Runner.Stop", "field:Runner.a", "field:Runner.b"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("missing %q: %#v", want, mapKeys(got))
+		}
+	}
+	// Methods sharing a declaration must not share a fingerprint: rename
+	// matching reads two symbols with one fingerprint as one symbol moving.
+	start, stop := got["method:Runner.Start"], got["method:Runner.Stop"]
+	if start.Fingerprint == stop.Fingerprint {
+		t.Errorf("Start and Stop share fingerprint %q (signatures %q / %q)", start.Fingerprint, start.Signature, stop.Signature)
+	}
+}
+
+// TestCPlusPlusDeeplyPointedReturnTypeIsExtracted covers the same fixed-budget
+// trap on the other declarator walk. A pointer return type wraps the
+// function_declarator once per `*`, so a method returning `int********` nests
+// eight levels and a walk bounded by a picked number never reaches the
+// function_declarator — the method disappears with no diagnostic. The parse
+// tree is the bound.
+func TestCPlusPlusDeeplyPointedReturnTypeIsExtracted(t *testing.T) {
+	t.Parallel()
+	got := memberIndex(t, "deep.hpp", `class Deep {
+public:
+    int *One();
+    int ********Eight();
+    int *********Nine();
+};
+`)
+	for _, want := range []string{"method:Deep.One", "method:Deep.Eight", "method:Deep.Nine"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("missing %q: %#v", want, mapKeys(got))
+		}
+	}
+}
+
 func mapKeys(in map[string]Entity) []string {
 	out := make([]string, 0, len(in))
 	for key := range in {
