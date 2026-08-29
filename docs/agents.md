@@ -88,7 +88,14 @@ by its name, so a repository whose administrative directory is not called `.git`
 — `git init --separate-git-dir=admin`, or a checkout driven by `GIT_DIR` — is
 covered by the same refusal.
 
-Hard links are also
+The landing must also be an agent-instruction file. An alias exists so that
+`AGENTS.md` and `CLAUDE.md` can share one instruction file, so a target that is
+markdown by extension, or a rules file such as `.cursorrules`, is written; a
+target that is some other existing file — a `Makefile`, `.envrc`, or
+`.github/workflows/ci.yml` — is refused rather than having a managed block
+appended to it. A target that does not exist yet is still created, which is what
+the dangling-alias case below relies on, and a target this command wrote on an
+earlier run stays writable whatever it is named. Hard links are also
 supported, but every hard-linked pathname names the same inode: an update
 through `AGENTS.md` or `CLAUDE.md` is therefore visible through any other hard
 link to that file, including one outside the project. A directory, named pipe,

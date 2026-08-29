@@ -353,6 +353,15 @@ func ensureContainedInRepo(root *os.Root, name, path string, createsParents bool
 				"git directory, so repoint or remove the link, then rerun init-agents",
 			path, err,
 		)
+	case errors.Is(err, errNonInstructionManagedTarget):
+		// Named before isRootEscape for the same reason the case above is: this refusal is
+		// raised by the resolver rather than by os.Root, so it carries no syscall errno and
+		// would otherwise be reported as a repository escape — sending the reader to hunt a
+		// link that leaves the root when the link never left it.
+		return fmt.Errorf(
+			"%s: %w, then rerun init-agents",
+			path, err,
+		)
 	case isRootEscape(err):
 		return fmt.Errorf(
 			"%s: refusing to write through a link that leaves the repository (%w); "+
@@ -716,6 +725,14 @@ func resolveContainedNameWithOptions(root *os.Root, name string, allowMissingDir
 			errGitDirManagedTarget, name, filepath.ToSlash(resolved), filepath.ToSlash(administrative),
 		)
 	}
+	// Directory resolutions are excluded because the landing they name is a directory, and the
+	// question below is about the FILE a managed instruction target is written into. The guide
+	// directory's own containment is settled by the refusals above.
+	if !allowMissingDirectory {
+		if err := refuseNonInstructionLanding(root, name, resolved); err != nil {
+			return "", err
+		}
+	}
 	return resolved, nil
 }
 
@@ -791,6 +808,101 @@ func isGitAdministrativeDirectory(root *os.Root, dir string) bool {
 		}
 	}
 	return false
+}
+
+// errNonInstructionManagedTarget marks a managed target whose resolved landing is not an
+// agent-instruction file.
+var errNonInstructionManagedTarget = errors.New("refusing to write outside an agent-instruction file")
+
+// maxManagedLandingBytes bounds how much of a landing is read to recognise it. It bounds the READ,
+// not the file: an instruction file larger than this is recognised by its name like any other, and
+// only a landing whose name is unrecognised is read at all.
+const maxManagedLandingBytes = 4 << 20
+
+// agentInstructionFileNames are agent-instruction files that carry no markdown extension. Every
+// entry only ever ADMITS a landing, so the list being incomplete costs a refusal a user can work
+// around by renaming, never a corrupted file — which is the whole reason this is a list of what
+// may be written rather than a list of what may not.
+var agentInstructionFileNames = map[string]struct{}{
+	".cursorrules":   {},
+	".clinerules":    {},
+	".windsurfrules": {},
+	".goosehints":    {},
+}
+
+// agentGuideHeading is the guide's own first line, which is what identifies a file this command
+// previously wrote the guide into. Deriving it from the guide keeps the two from drifting apart.
+var agentGuideHeading = strings.SplitN(agentGuide, "\n", 2)[0]
+
+// isInstructionFileName reports whether a landing's base name is an agent-instruction file.
+//
+// Markdown is the test because markdown is what init-agents writes. The comparison folds case for
+// the same reason PathLandsInGitDir folds: macOS and Windows resolve these names
+// case-insensitively, so `README.MD` and `readme.md` are one file there.
+func isInstructionFileName(base string) bool {
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".md", ".markdown", ".mdown", ".mkd":
+		return true
+	}
+	_, known := agentInstructionFileNames[strings.ToLower(base)]
+	return known
+}
+
+// refuseNonInstructionLanding refuses a managed target that resolves onto an EXISTING file which is
+// not an agent-instruction file.
+//
+// The git-directory refusals above name one destination each. That is a denylist, and a denylist of
+// destinations cannot be finished: `CLAUDE.md -> Makefile`, `-> .github/workflows/ci.yml` and
+// `-> .envrc` were all measured on this branch appending the managed block to the victim's real
+// build, CI and environment files, exit 0 — and every build system, task runner and shell
+// initialisation file yet to be invented is another entry someone has to remember to add. The list
+// that CAN be finished is the list of things init-agents is for: docs/agents.md offers the alias so
+// that AGENTS.md and CLAUDE.md may share ONE INSTRUCTION FILE, so an alias that lands anywhere else
+// is not a use of the feature, and refusing it costs the documented case nothing.
+//
+// Three landings are deliberately not refused, and each is a case where there is nothing to
+// protect:
+//
+//   - A landing that DOES NOT EXIST. init-agents creates all of its targets, and the documented
+//     dangling alias (CLAUDE.md -> AGENTS.md before AGENTS.md exists) depends on it. Nothing is
+//     destroyed: the file this command creates holds this command's own markdown, mode 0644, and
+//     shows up untracked in `git status` — the harm this refusal exists for is the SILENT rewrite
+//     of a file that was already doing a job.
+//   - A landing that already carries this command's own output. A file init-agents wrote once must
+//     stay writable on the next run whatever it is named, or a first run would succeed and every
+//     later one fail.
+//   - A landing that is not a regular file, or cannot be stat'ed. Those are not this refusal's
+//     question; the operation that follows reports them for what they are.
+func refuseNonInstructionLanding(root *os.Root, name, resolved string) error {
+	if isInstructionFileName(filepath.Base(resolved)) {
+		return nil
+	}
+	info, err := root.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	if landingCarriesManagedContent(root, resolved) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: %s resolves to %s, which is not an agent-instruction file; init-agents installs its managed block only into instruction files, so alias it to one",
+		errNonInstructionManagedTarget, name, filepath.ToSlash(resolved),
+	)
+}
+
+// landingCarriesManagedContent reports whether a landing already holds output this command wrote:
+// the managed pointer block, or the guide's own heading.
+func landingCarriesManagedContent(root *os.Root, resolved string) bool {
+	file, err := root.Open(resolved)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, maxManagedLandingBytes))
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(content, []byte(agentPointerBegin)) || bytes.Contains(content, []byte(agentGuideHeading))
 }
 
 func resolveContainedLanding(root *os.Root, name string, allowMissingDirectory bool) (string, error) {

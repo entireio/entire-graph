@@ -2896,3 +2896,161 @@ func TestInitAgentsRefusesGitDirectoryNotNamedDotGit(t *testing.T) {
 		})
 	}
 }
+
+// TestInitAgentsRefusesLandingThatIsNotAnInstructionFile pins the write to the kind of file
+// init-agents exists to write.
+//
+// The git-directory refusals name one destination each, which is a denylist, and a denylist of
+// destinations cannot be finished. Measured on this branch before the fix, each of these exited 0
+// with the managed block appended to the victim's real build, CI, environment or package file. The
+// rule that replaces the list is the one thing that IS bounded: docs/agents.md offers the alias so
+// AGENTS.md and CLAUDE.md may share one INSTRUCTION FILE, so a landing that is not an instruction
+// file is not a use of the feature.
+func TestInitAgentsRefusesLandingThatIsNotAnInstructionFile(t *testing.T) {
+	t.Parallel()
+	skipIfSymlinksUnrepresentable(t)
+
+	for _, testCase := range []struct {
+		name    string
+		managed string
+		victim  string
+		content string
+	}{
+		{name: "workflow", managed: "CLAUDE.md", victim: filepath.Join(".github", "workflows", "ci.yml"), content: "name: ci\non: [push]\n"},
+		{name: "makefile", managed: "CLAUDE.md", victim: "Makefile", content: "all:\n\techo hi\n"},
+		{name: "direnv", managed: "CLAUDE.md", victim: ".envrc", content: "export FOO=bar\n"},
+		{name: "package manifest", managed: "AGENTS.md", victim: "package.json", content: "{\"scripts\":{\"build\":\"tsc\"}}\n"},
+		{name: "shell profile", managed: "AGENTS.md", victim: ".bashrc", content: "export PATH=$PATH:/bin\n"},
+		{name: "guide alias", managed: filepath.Join(".entire", "graph-agent.md"), victim: "Makefile", content: "all:\n\techo hi\n"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+			victimPath := filepath.Join(repo, testCase.victim)
+			mkdirAllForTest(t, filepath.Dir(victimPath))
+			writeFileForTest(t, victimPath, testCase.content)
+
+			managedPath := filepath.Join(repo, testCase.managed)
+			mkdirAllForTest(t, filepath.Dir(managedPath))
+			relativeVictim, err := filepath.Rel(filepath.Dir(managedPath), victimPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			symlinkForTest(t, relativeVictim, managedPath)
+
+			var out bytes.Buffer
+			runErr := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+			if runErr == nil {
+				t.Fatalf("init-agents wrote its managed block into %s; output:\n%s", testCase.victim, out.String())
+			}
+			if !strings.Contains(runErr.Error(), "agent-instruction file") {
+				t.Fatalf("the refusal did not name the instruction-file rule: %v", runErr)
+			}
+			// The refusal comes from the resolver, so it carries no syscall errno and is
+			// indistinguishable from os.Root's own escape sentinel unless the classifier
+			// names it. Every link here stays inside the repository.
+			if strings.Contains(runErr.Error(), "leaves the repository") {
+				t.Fatalf("a link that never left the root was reported as a repository escape: %v", runErr)
+			}
+			if got := readFileForTest(t, victimPath); got != testCase.content {
+				t.Fatalf("%s was written through:\nwant: %q\n got: %q", testCase.victim, testCase.content, got)
+			}
+			for _, unwritten := range []string{"AGENTS.md", "CLAUDE.md", filepath.Join(".entire", "graph-agent.md")} {
+				if unwritten == testCase.managed {
+					continue
+				}
+				if _, statErr := os.Lstat(filepath.Join(repo, unwritten)); !os.IsNotExist(statErr) {
+					t.Fatalf("partial install: %s exists after the refusal (%v)", unwritten, statErr)
+				}
+			}
+		})
+	}
+}
+
+// TestInitAgentsAllowsInstructionFileLandings bounds the refusal above from the other side. Each of
+// these is a landing the documented alias is FOR, and each must keep working: a markdown file the
+// repository already had, an agent rules file that carries no markdown extension, and — twice — a
+// landing this command itself created, because a rule that admitted a target on the first run and
+// refused it on the second would be worse than no rule.
+func TestInitAgentsAllowsInstructionFileLandings(t *testing.T) {
+	t.Parallel()
+	skipIfSymlinksUnrepresentable(t)
+
+	t.Run("existing markdown target", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		shared := filepath.Join(repo, "docs", "shared.md")
+		mkdirAllForTest(t, filepath.Dir(shared))
+		writeFileForTest(t, shared, "# Shared rules\n")
+		symlinkForTest(t, filepath.Join("docs", "shared.md"), filepath.Join(repo, "AGENTS.md"))
+		symlinkForTest(t, "AGENTS.md", filepath.Join(repo, "CLAUDE.md"))
+
+		runInitAgentsForTest(t, repo)
+
+		got := readFileForTest(t, shared)
+		if !strings.Contains(got, "# Shared rules") || !strings.Contains(got, testAgentPointerBlock) {
+			t.Fatalf("the shared instruction file lost content or the pointer:\n%s", got)
+		}
+	})
+
+	t.Run("rules file without a markdown extension", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		rules := filepath.Join(repo, ".cursorrules")
+		writeFileForTest(t, rules, "# Cursor rules\n")
+		symlinkForTest(t, ".cursorrules", filepath.Join(repo, "CLAUDE.md"))
+
+		runInitAgentsForTest(t, repo)
+
+		got := readFileForTest(t, rules)
+		if !strings.Contains(got, "# Cursor rules") || !strings.Contains(got, testAgentPointerBlock) {
+			t.Fatalf("the rules file lost content or the pointer:\n%s", got)
+		}
+	})
+
+	t.Run("landing this command created is writable again", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		// No markdown extension and not on any list: admitted the first time because it
+		// does not exist, and the second time because it now carries this command's block.
+		symlinkForTest(t, "NOTES", filepath.Join(repo, "AGENTS.md"))
+
+		runInitAgentsForTest(t, repo)
+		runInitAgentsForTest(t, repo)
+
+		got := readFileForTest(t, filepath.Join(repo, "NOTES"))
+		if strings.Count(got, agentPointerBegin) != 1 {
+			t.Fatalf("the second run did not update the block in place:\n%s", got)
+		}
+	})
+
+	t.Run("guide landing this command created is writable again", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		mkdirAllForTest(t, filepath.Join(repo, ".entire"))
+		symlinkForTest(t, filepath.Join("..", "GUIDE"), filepath.Join(repo, ".entire", "graph-agent.md"))
+
+		runInitAgentsForTest(t, repo)
+		runInitAgentsForTest(t, repo)
+
+		if got := readFileForTest(t, filepath.Join(repo, "GUIDE")); got != agentGuide {
+			t.Fatalf("the guide landing did not hold the guide after two runs:\n%s", got)
+		}
+	})
+}
+
+// TestAgentGuideHeadingIdentifiesTheGuide guards the derivation the re-run case above depends on. A
+// heading that went empty, or that stopped appearing in the guide, would make
+// landingCarriesManagedContent either admit every file or admit none.
+func TestAgentGuideHeadingIdentifiesTheGuide(t *testing.T) {
+	t.Parallel()
+	if len(agentGuideHeading) < len("# entire-graph") {
+		t.Fatalf("the guide heading is too short to identify anything: %q", agentGuideHeading)
+	}
+	if !strings.Contains(agentGuide, agentGuideHeading) {
+		t.Fatalf("the guide no longer contains its own heading %q", agentGuideHeading)
+	}
+	if strings.Contains("all:\n\techo hi\n", agentGuideHeading) {
+		t.Fatalf("the guide heading matches unrelated file content: %q", agentGuideHeading)
+	}
+}
