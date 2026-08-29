@@ -1,6 +1,9 @@
 package sem
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestCPlusPlusDefaultConstructedReceiverResolvesCalls covers the most common
 // way a C++ local is created. `Ledger ledger;` is default construction — no
@@ -122,5 +125,86 @@ func TestCPlusPlusDeclaredLocalScannerStaysNarrow(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCPlusPlusNestedShadowDoesNotRetypeAParameter is the regression test for
+// the one way a receiver-typing scanner can do real damage: producing a
+// confidently WRONG edge instead of a missing one.
+//
+// localTypes is function-wide and overwrites varTypes unconditionally, so a
+// declared local anywhere in the body retypes a parameter of the same name for
+// the WHOLE function. C++ forbids redeclaring a parameter at function-body
+// scope, so such a local is necessarily inside a nested block and shadows the
+// parameter only there — but the scanner had no scope to know that. Measured
+// before the guard: `ledger.Commit(amount)` on a `Ledger ledger` parameter
+// resolved to Account.Commit at confidence 0.85 with resolution=type_inferred,
+// and the correct edge was gone. `main`, which has no C++ declared-local
+// scanner at all, resolved the same fixture correctly — so this was a
+// regression introduced by the scanner, not a pre-existing gap.
+//
+// Both classes deliberately declare Commit, so the wrong edge is a real symbol
+// and cannot be caught by the target simply not existing.
+func TestCPlusPlusNestedShadowDoesNotRetypeAParameter(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "shadow.cpp", `class Ledger {
+public:
+    int Commit(int a) const { return a; }
+};
+
+class Account {
+public:
+    int Commit(int a) const { return a; }
+    int Deposit(int a) const { return a; }
+};
+
+int Post(Ledger ledger, int amount) {
+    if (amount > 0) {
+        Account ledger;
+        ledger.Deposit(amount);
+    }
+    return ledger.Commit(amount);
+}
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "Post", "Ledger.Commit", "type_inferred") {
+		t.Fatalf("the parameter's declared type must win over a nested-scope shadow: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	// The wrong edge must be absent, not merely outranked. A shadowing local
+	// cannot retype the parameter for the region the parameter governs.
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		if strings.HasSuffix(relation.ToID, "method:Account.Commit") {
+			t.Fatalf("a nested-scope shadow retyped the parameter and produced a confidently wrong edge: %#v", relation)
+		}
+	}
+}
+
+// TestCPlusPlusDeclaredLocalStillTypesNonParameterNames keeps the guard honest:
+// it must suppress ONLY names that collide with a parameter. A guard that
+// skipped every declared local would silently undo the scanner this PR adds and
+// still pass the shadowing test above.
+func TestCPlusPlusDeclaredLocalStillTypesNonParameterNames(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "narrow.cpp", `class Ledger {
+public:
+    int Commit(int a) const { return a; }
+};
+
+int Post(int amount) {
+    Ledger ledger;
+    return ledger.Commit(amount);
+}
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "Post", "Ledger.Commit", "type_inferred") {
+		t.Fatalf("a declared local whose name is not a parameter must still be typed: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 	}
 }
