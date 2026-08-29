@@ -27,6 +27,11 @@ type dependentsScanOptions struct {
 	// count.
 	deadline time.Time
 	budget   time.Duration
+	// admit reports whether a candidate file is part of the graph at head, so a
+	// dependent count means "references the graph holds" rather than "textual
+	// references anywhere in the tree". nil admits every candidate, which is
+	// what every caller that has no index policy to offer wants.
+	admit func(rel string) bool
 }
 
 func addDependentCounts(ctx context.Context, repo, head string, result *Result) error {
@@ -94,6 +99,19 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	files, prefiltered, warnings, err := referenceCandidateFiles(ctx, repo, head, names)
 	if err != nil {
 		return nil, nil, err
+	}
+	// Drop candidates the graph does not index before any of them is read. A
+	// caller inside a vendored or .graphignore'd tree is not a dependent the
+	// graph can show: after the diff stopped naming those files, counting them
+	// left a number nothing in the output accounted for.
+	if options.admit != nil {
+		admitted := files[:0]
+		for _, file := range files {
+			if options.admit(file) {
+				admitted = append(admitted, file)
+			}
+		}
+		files = admitted
 	}
 	if options.progress != nil {
 		options.progress(0, len(files), "")
@@ -474,6 +492,11 @@ func grepFallbackWarning(err error) ProviderWarning {
 // file in the tree so a git-grep quirk never silently zeroes out dependent
 // counts, and surface exactly one warning noting the prefilter failure so the
 // fallback (much slower) scan is not silent.
+//
+// The superset guarantee is about TEXT, and the caller may narrow the result
+// afterwards by index membership (dependentsScanOptions.admit). Nothing dropped
+// there is a dependent the graph could ever show, so the guarantee still holds
+// where it is claimed: relative to the files the graph indexes.
 //
 // The prefiltered return reports whether the grep preselection actually ran:
 // true means every returned file already matched a changed name; false means
