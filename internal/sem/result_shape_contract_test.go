@@ -1,7 +1,11 @@
 package sem
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -203,5 +207,63 @@ func TestResultCarriesThisBuildsSchemaVersion(t *testing.T) {
 	t.Parallel()
 	if !strings.HasPrefix(SchemaVersion, "1.") {
 		t.Fatalf("SchemaVersion = %q; resultWireShape is the frozen 1.x shape and a major bump must revisit it", SchemaVersion)
+	}
+}
+
+// resultWireShapeDigest is a stable content hash of the frozen shape above. It
+// is what BINDS the shape to the version.
+//
+// Freezing the shape and stamping a version are two separate assertions, and on
+// their own they do not add up to a contract: resultWireShape could be edited
+// and SchemaVersion left at "1.1", and everything stayed green -- a reader would
+// then receive 1.1 bytes whose shape is not the 1.1 shape. Pinning the digest
+// NEXT TO the exact version string means the shape cannot move without someone
+// editing the version line in the same test, which is the moment ADR 0001's
+// question gets asked: additive (minor bump) or breaking (major bump plus a
+// migration note)?
+func resultWireShapeDigest() string {
+	names := make([]string, 0, len(resultWireShape))
+	for name := range resultWireShape {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	h := sha256.New()
+	for _, name := range names {
+		fmt.Fprintf(h, "%s\n", name)
+		for _, field := range resultWireShape[name] {
+			fmt.Fprintf(h, "\t%s\n", field)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// TestResultWireShapeIsBoundToTheSchemaVersion is the half that makes the
+// version stamp mean something. See ADR 0001: the persisted Result is
+// INTERCHANGE, so its shape is governed by the major and may only grow within it.
+//
+// Note that this is a deliberately DIFFERENT rule from the one the on-disk
+// caches apply to the same constant. A cache entry is bytes this build wrote for
+// its own later reuse: there is no compatibility promise to keep and no
+// migration path, and the cheap always-correct answer to "was this written by a
+// different schema" is to rebuild. So cache validity is EXACT equality, while
+// interchange readability is per-major with a warning on a newer minor
+// (CheckReadableSchemaVersion). One string, two questions, two answers, both
+// intentional -- see the amendment in docs/adr/0001-ga-schema-contract.md.
+func TestResultWireShapeIsBoundToTheSchemaVersion(t *testing.T) {
+	t.Parallel()
+	const (
+		pinnedSchemaVersion = "1.1"
+		pinnedShapeDigest   = "a6dd2da89fa5a369"
+	)
+	if SchemaVersion != pinnedSchemaVersion || resultWireShapeDigest() != pinnedShapeDigest {
+		t.Fatalf(
+			"the persisted Result wire shape and SchemaVersion have moved apart.\n"+
+				"  SchemaVersion: have %q, pinned %q\n"+
+				"  shape digest:  have %q, pinned %q\n\n"+
+				"Per ADR 0001, decide which happened and update BOTH constants here:\n"+
+				"  - an added OPTIONAL field is additive -> bump the MINOR of SchemaVersion\n"+
+				"  - a removed, renamed, retyped, or newly-required field is BREAKING -> major bump (2.0) + migration note\n"+
+				"  - a pure SchemaVersion bump with an unchanged shape is fine; just re-pin the version here.",
+			SchemaVersion, pinnedSchemaVersion, resultWireShapeDigest(), pinnedShapeDigest)
 	}
 }
