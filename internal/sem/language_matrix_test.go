@@ -73,6 +73,22 @@ var languageMatrix = []languageFixture{
 		// to receiver typing.
 		relations: []string{"DEFINES", "CONTAINS", "USES_TYPE"},
 		callsGap:  "a C++ method declared in the class body and defined out of line as `Type::method` produces no container-qualified method symbol, so a typed receiver has nothing to resolve to",
+		// The cause reduces to a MISSING SYMBOL, so it is read from the
+		// fixture's own extraction rather than from a predicate over the
+		// provider: while the class's declared `Add` yields no method symbol,
+		// the typed receiver has nothing to resolve to and the gap holds.
+		//
+		// This is what keeps the entry order-independent. The commit that
+		// extracts in-class method declarations makes `method:Add` appear and
+		// retires this entry by doing so, on whatever branch it lands, without
+		// having to edit this file. Measured: on this branch the fixture yields
+		// class:Ledger, function:Add, function:LedgerDouble, method:total_ and
+		// no CALLS; with in-class declarations extracted it yields method:Add
+		// and CALLS. Naming the missing symbol rather than the missing CALLS is
+		// deliberate — it claims the cause, so a change that produced CALLS by
+		// some other route would fail here instead of quietly retiring a gap
+		// whose stated reason had not been addressed.
+		callsGapHolds: func(got languageMatrixResult) bool { return !got.symbols["method:Add"] },
 	},
 	{dir: "csharp", symbols: []string{"class:Ledger", "class:LedgerHelper", "field:Total", "method:Add", "method:Double"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "cue", symbols: []string{"field:#Ledger", "field:#Add", "field:ledger"}, relations: []string{"DEFINES", "CONTAINS"}},
