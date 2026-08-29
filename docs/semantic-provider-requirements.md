@@ -180,6 +180,11 @@ The first stable symbol ID version should use a documented compound identity:
 <repo-key>:<language>:<file-path>:<kind>:<qualified-name>
 ```
 
+The fields are joined, not escaped: the `local/<basename>` half of a repo key and
+a file path may each contain a `:`, so the ID is addressable and comparable but
+is **not** positionally parseable. See "Symbol ID fields are not escaped" in
+`docs/snapshot-format.md` for the reads a consumer may rely on.
+
 This is stable across ordinary content edits. Duplicate same-name symbols are
 disambiguated by signature hash plus a definition ordinal
 (`...#sig:<hash>[#<n>]`) rather than source line ranges, so overloads keep

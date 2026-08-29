@@ -67,6 +67,22 @@ snapshot, a match does not prove a native one. Pair it with `repo_root`,
 `graph doctor --json` advertises the same `repo_key` and `repo_root` before a
 snapshot is built, so the pair can be checked up front.
 
+**Symbol ID fields are not escaped, so an ID must never be split positionally.**
+An ID is `<repo_key>:<language>:<file_path>:<kind>:<qualified_name>` joined with
+`:`, and nothing escapes the fields. Two of them can carry a `:` of their own: a
+`local/<basename>` key inherits whatever the directory is called, and a file path
+may contain one on any POSIX filesystem. `local/weird:name:Python:od:d/mod.py:class:Cache`
+is a well-formed ID that splits into seven fields, not five. The trailing fields
+already do this routinely — `external:import:std::collections::HashMap`. A
+consumer that reads `split(id, ":")[2]` as the path therefore mis-attributes
+every record in such a repository, silently and without an error.
+
+The four safe reads, all of which entire-graph uses internally and pins in its
+own tests: compare a whole ID; anchor on the LAST separator for a trailing
+segment; cut at the FIRST separator only inside the `external:<kind>:<value>`
+namespace, whose kind cannot contain a `:`; and take a file path from the
+record's own `file_path` field rather than from the ID.
+
 **The final `summary` record is authoritative for aggregate metadata.** It
 carries the real `languages`, `language_tiers` (each present language
 classified `semantic` or `inventory-only`), `warnings`, `partial_failures`,
