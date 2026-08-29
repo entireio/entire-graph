@@ -2092,43 +2092,54 @@ func TestAnalyzeGitRangePureRenameIsReported(t *testing.T) {
 }
 
 // TestAnalyzeGitRangeUnchangedFileStaysAbsent guards the other side of the same
-// boundary: a file with neither a content change nor a path change must still
-// produce nothing, so the fix above cannot start emitting empty deltas.
+// contract: reporting a rename must not start reporting files nothing touched.
+//
+// The range deliberately CONTAINS a pure rename, so the path-scope fallback is
+// actually exercised while sample.go sits still. An earlier version of this test
+// changed only an unrelated file, which never put anything through the new
+// branch at all and passed identically without the fix.
 func TestAnalyzeGitRangeUnchangedFileStaysAbsent(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, "sample.go", "package sample\n\nfunc Run() int { return 1 }\n")
-	write(t, repo, "other.go", "package sample\n\nfunc Other() int { return 2 }\n")
+	write(t, repo, "moved.go", "package sample\n\nfunc Moved() int { return 2 }\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
 	base := rev(t, repo, "HEAD")
 
-	write(t, repo, "other.go", "package sample\n\nfunc Other() int { return 3 }\n")
-	git(t, repo, "add", ".")
-	git(t, repo, "commit", "-m", "touch other only")
+	git(t, repo, "mv", "moved.go", "renamed.go")
+	git(t, repo, "commit", "-m", "rename one file, touch nothing else")
 	head := rev(t, repo, "HEAD")
 
 	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The rename is reported...
+	if len(result.Files) != 1 || result.Files[0].Path != "renamed.go" {
+		t.Fatalf("files = %#v, want only the renamed file", result.Files)
+	}
+	// ...and the file that did not move is not.
 	for _, file := range result.Files {
-		if file.Path == "sample.go" {
+		if file.Path == "sample.go" || file.OldPath == "sample.go" {
 			t.Fatalf("untouched file appeared in the diff: %#v", file)
 		}
 	}
 }
 
-// TestAnalyzeGitRangeModeOnlyChangeStaysAbsent covers the one case where a file
-// reaches the path-scope fallback with identical content and an unchanged path:
-// Git reports a mode-only change (chmod) as a modification. It must not be
-// reported as a move.
+// TestAnalyzeGitRangeModeOnlyChangeStaysAbsent covers a file that reaches the
+// path-scope fallback with identical content and an unchanged path: Git reports
+// a mode-only change as a modification, and it must not be reported as a move.
+//
+// The mode is set through the index rather than the filesystem. os.Chmod does
+// nothing on Windows, where core.fileMode is false, so a filesystem chmod made
+// this test skip on the one platform it could not be checked on — and it is the
+// only guard on this branch, so a skip there was a hole rather than a gap.
+// `git update-index --chmod` writes the index entry directly and behaves the
+// same everywhere.
 func TestAnalyzeGitRangeModeOnlyChangeStaysAbsent(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("file mode bits are not tracked on Windows checkouts")
-	}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -2138,12 +2149,15 @@ func TestAnalyzeGitRangeModeOnlyChangeStaysAbsent(t *testing.T) {
 	git(t, repo, "commit", "-m", "initial")
 	base := rev(t, repo, "HEAD")
 
-	if err := os.Chmod(filepath.Join(repo, "sample.go"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	git(t, repo, "add", "-A")
-	git(t, repo, "commit", "-m", "chmod only")
+	git(t, repo, "update-index", "--chmod=+x", "sample.go")
+	git(t, repo, "commit", "-m", "mode only")
 	head := rev(t, repo, "HEAD")
+
+	// The fixture is only meaningful if Git really reported the file with both
+	// sides pointing at the same blob.
+	if before, after := blobAt(t, repo, base, "sample.go"), blobAt(t, repo, head, "sample.go"); before != after {
+		t.Fatalf("fixture is wrong: content changed (%s -> %s), this is not a mode-only change", before, after)
+	}
 
 	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
 	if err != nil {
@@ -2151,5 +2165,42 @@ func TestAnalyzeGitRangeModeOnlyChangeStaysAbsent(t *testing.T) {
 	}
 	if len(result.Files) != 0 {
 		t.Fatalf("mode-only change produced a delta: %#v", result.Files)
+	}
+}
+
+// blobAt returns the blob OID a path resolves to at a revision, so a fixture can
+// assert it really did leave the content alone.
+func blobAt(t *testing.T, repo, revision, path string) string {
+	t.Helper()
+	return rev(t, repo, revision+":"+path)
+}
+
+// TestAnalyzeGitRangeRenameAcrossLanguagesReportsTheHeadLanguage pins the label
+// on a rename that crosses extensions. The graph indexes the head path with the
+// head parser's language, so reporting the base one contradicts every snapshot
+// of that tree.
+func TestAnalyzeGitRangeRenameAcrossLanguagesReportsTheHeadLanguage(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "mod.js", "export function run() {\n  return 1;\n}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "mv", "mod.js", "mod.ts")
+	git(t, repo, "commit", "-m", "js to ts, byte-identical")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("files = %#v, want one", result.Files)
+	}
+	if got := result.Files[0].Language; got != "TypeScript" {
+		t.Fatalf("language = %q, want TypeScript: the head path is what the graph indexes", got)
 	}
 }

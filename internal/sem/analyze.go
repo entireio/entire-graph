@@ -361,10 +361,17 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			continue
 		}
 
-		beforeEntities, language, beforeStatus := parser.ParseWithStatus(oldPath, before)
+		beforeEntities, beforeLanguage, beforeStatus := parser.ParseWithStatus(oldPath, before)
 		afterEntities, afterLanguage, afterStatus := parser.ParseWithStatus(path, after)
-		if language == "" {
-			language = afterLanguage
+		// The head side names the file as it now is, and a rename can cross
+		// extensions: mod.js -> mod.ts is one file whose language changed with
+		// its path. The graph indexes the head path under the head parser's
+		// language, so reporting the base label here would disagree with every
+		// snapshot of that tree. Fall back to the base label only when there is
+		// no head version to ask — a deletion — or when it has no opinion.
+		language := afterLanguage
+		if (file.Status == "D" || language == "") && beforeLanguage != "" {
+			language = beforeLanguage
 		}
 		// A parse failure on either side degrades the diff. A TOTAL failure
 		// (ParseError with ZERO recovered entities) gives compareEntities no
@@ -1261,6 +1268,9 @@ func treeVendorIgnoreRules(ctx context.Context, repo, tree string, policyBase ig
 // file re-identifies every entity in it. The change reuses the module-scope
 // entity and the existing "moved" reconciliation shape, which already carries
 // OldPath/NewPath, rather than adding a new change type.
+// The caller normalizes an empty OldPath to path before calling, so the empty
+// check below cannot fire today; it is kept so a second caller passing Git's raw
+// OldPath cannot turn "not a rename" into a move with no source.
 func pathScopeChange(oldPath, path string) (EntityChange, bool) {
 	if oldPath == "" || oldPath == path {
 		return EntityChange{}, false
