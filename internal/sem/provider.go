@@ -112,12 +112,27 @@ var ooRelationSupport = map[string][]string{
 	// multilang-relations / julia-r-basic fixtures actually emit — see
 	// TestCapabilityMatrixCoversEmittedRelations, which fails on any relation
 	// emitted without a declaration.
+	//
+	// Dart, Erlang, OCaml and SQL were found the same way one round later, but
+	// by probing the passes directly rather than waiting for a fixture to
+	// happen to contain the construct: the signature-type pass reads any
+	// language whose parameters carry annotations (Dart `int a`, OCaml
+	// `(a : int)`), and the data-flow pass is regex-driven over a callable's
+	// body, so it fires wherever a parameter is forwarded into a call — which
+	// includes languages with no `return` keyword at all (Erlang
+	// `total(A, B) -> add(A, B).`) and SQL function bodies. Their entries are
+	// pinned by TestCapabilityMatrixDeclaresDartErlangOCamlAndSQLRelations,
+	// which builds those constructs instead of relying on fixture coverage.
 	"C": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	// C++ shares C's extraction path, so it reaches the same passes.
 	"C++":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	"Dart":             {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Erlang":           {"DATA_FLOWS"},
 	"Groovy":           {"USES_TYPE", "PARAM_TYPE", "READS_FIELD", "DATA_FLOWS"},
 	"Julia":            {"DATA_FLOWS"},
+	"OCaml":            {"USES_TYPE", "PARAM_TYPE"},
 	"Scala":            {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	"SQL":              {"DATA_FLOWS"},
 	"Swift":            {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	"Zig":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "DATA_FLOWS"},
 	"HCL":              {"CONFIGURES", "RESOURCE_DEPENDS_ON"},
