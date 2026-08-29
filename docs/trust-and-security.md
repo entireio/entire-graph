@@ -182,8 +182,10 @@ these rules existed misses instead of re-emitting the paths it named.
   in `AGENTS.md` and `CLAUDE.md`. A repository-committed symlink at one of
   those paths may redirect the write to another file, which is what makes the
   alias support in the activation guide work; the redirection is confined to
-  the project root, and additionally refused when it lands in a git directory,
-  so a hostile checkout cannot aim a managed block at `.git/config` or a hook.
+  the project root, and additionally refused when it lands in a git directory —
+  recognised by structure, so an administrative directory not named `.git` is
+  covered too — so a hostile checkout cannot aim a managed block at
+  `.git/config` or a hook.
   A hard-linked pathname elsewhere names the same inode and therefore observes
   the same update; the activation guide calls out that filesystem property
   explicitly.

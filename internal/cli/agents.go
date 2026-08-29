@@ -710,11 +710,88 @@ func resolveContainedNameWithOptions(root *os.Root, name string, allowMissingDir
 			errGitDirManagedTarget, name, filepath.ToSlash(resolved),
 		)
 	}
+	if administrative, inside := landsInGitAdministrativeDirectory(root, resolved); inside {
+		return "", fmt.Errorf(
+			"%w: %s resolves to %s, inside %s, which is this repository's git directory whatever it is named",
+			errGitDirManagedTarget, name, filepath.ToSlash(resolved), filepath.ToSlash(administrative),
+		)
+	}
 	return resolved, nil
 }
 
 // errGitDirManagedTarget marks a managed target whose resolution lands in the git directory.
 var errGitDirManagedTarget = errors.New("refusing to write into the git directory")
+
+// landsInGitAdministrativeDirectory reports the git administrative directory a resolved landing is
+// inside, whatever that directory is NAMED, and whether it found one.
+//
+// sem.PathLandsInGitDir above answers a question about a NAME: it refuses a landing that spells a
+// `.git` component. That is the only shape it can see, and git does not require that shape. A
+// repository created with `git init --separate-git-dir=admin` keeps a `.git` POINTER FILE holding
+// `gitdir: <path>` and its real administrative directory somewhere else; a repository initialised
+// under GIT_DIR has no `.git` entry at all. In both, `git rev-parse --absolute-git-dir` names a
+// directory whose components spell nothing the name rule recognises, so every route the name rule
+// closes reopens. Measured on this branch before this check, in a `--separate-git-dir` repository
+// whose administrative directory is `admin/`: a committed `CLAUDE.md -> admin/config` exited 0 with
+// the managed block appended to git's real config, after which every git command failed with
+// "fatal: bad config line 9"; `.entire -> admin/refs/heads` wrote the guide into the real ref store
+// and git reported "ignoring broken ref refs/heads/graph-agent.md"; and `AGENTS.md ->
+// admin/hooks/pre-commit` appended to an executable hook.
+//
+// The question is put to the FILESYSTEM rather than to `git rev-parse`, and re-asked at every
+// resolution rather than answered once at startup. Both follow from the rule the rest of this file
+// already holds itself to: the preflight is not the enforcement, so a directory that becomes a git
+// directory between two operations must be refused by the operation that finds it, which a value
+// cached at startup cannot do. Asking git would also make the answer depend on a binary being
+// installed, on $GIT_DIR in this process's environment, and on the current working directory —
+// none of which describe the repository named by --repo.
+//
+// What is asked is git's own is_git_directory(): a HEAD, plus objects/ and refs/. The
+// commondir/gitdir alternative admits a linked worktree's administrative directory, which keeps
+// those two pointer files in place of its own object and ref stores.
+//
+// The `.git` pointer file's TEXT is deliberately not consulted. sem's gitDirExcluder — the READ
+// side of this same boundary, which already resolves separate-git-dir pointers — records why: the
+// pointer is attacker-controlled input, so git resolves it and then asks is_git_directory() of the
+// target anyway, and a `gitdir:` naming an ordinary directory is "fatal: not a git repository" to
+// git rather than a git directory. Once that structure test is applied, the pointer says nothing
+// this walk has not already asked: a landing inside the target has the target among its own
+// ancestors, and a target outside the repository is refused by os.Root before it gets here. Reading
+// the text without the structure test would only add a way for a repository to make an ordinary
+// directory of its own unwritable.
+func landsInGitAdministrativeDirectory(root *os.Root, resolved string) (string, bool) {
+	components := splitPathComponents(resolved)
+	for i := 1; i <= len(components); i++ {
+		prefix := filepath.Join(components[:i]...)
+		if prefix == "" || prefix == "." {
+			continue
+		}
+		if isGitAdministrativeDirectory(root, prefix) {
+			return prefix, true
+		}
+	}
+	return "", false
+}
+
+// isGitAdministrativeDirectory applies git's own is_git_directory() test to a repo-relative
+// directory: a HEAD, plus either the object and ref stores or the commondir/gitdir pointers a
+// linked worktree keeps instead of them.
+func isGitAdministrativeDirectory(root *os.Root, dir string) bool {
+	if info, err := root.Stat(filepath.Join(dir, "HEAD")); err != nil || info.IsDir() {
+		return false
+	}
+	objects, objectsErr := root.Stat(filepath.Join(dir, "objects"))
+	refs, refsErr := root.Stat(filepath.Join(dir, "refs"))
+	if objectsErr == nil && refsErr == nil && objects.IsDir() && refs.IsDir() {
+		return true
+	}
+	for _, pointer := range []string{"commondir", "gitdir"} {
+		if info, err := root.Stat(filepath.Join(dir, pointer)); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
 
 func resolveContainedLanding(root *os.Root, name string, allowMissingDirectory bool) (string, error) {
 	pending := splitPathComponents(name)

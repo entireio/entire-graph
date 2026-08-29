@@ -2771,3 +2771,128 @@ func TestInitAgentsWritesAnOrdinaryInstructionFile(t *testing.T) {
 		t.Fatalf("the user's own text must survive:\n%s", body)
 	}
 }
+
+// plantGitAdministrativeDirectory builds a git administrative directory at dir that is NOT named
+// `.git`, so the name rule cannot see it. It is written by hand rather than by shelling out to
+// `git init --separate-git-dir`, so the test states exactly which structure the refusal keys on and
+// needs no git binary; the layout is the one `git init` produces and the one git's own
+// is_git_directory() recognises.
+func plantGitAdministrativeDirectory(t *testing.T, dir string) {
+	t.Helper()
+	mkdirAllForTest(t, filepath.Join(dir, "objects"))
+	mkdirAllForTest(t, filepath.Join(dir, "refs", "heads"))
+	mkdirAllForTest(t, filepath.Join(dir, "hooks"))
+	writeFileForTest(t, filepath.Join(dir, "HEAD"), "ref: refs/heads/main\n")
+	writeFileForTest(t, filepath.Join(dir, "config"), gitAdministrativeConfig)
+}
+
+const gitAdministrativeConfig = "[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
+
+// TestInitAgentsRefusesGitDirectoryNotNamedDotGit pins the git-directory refusal to the directory
+// git actually uses rather than to the name `.git`.
+//
+// sem.PathLandsInGitDir judges a repo-relative STRING, so it refuses a landing that SPELLS a `.git`
+// component and nothing else. Git does not require that spelling: `git init --separate-git-dir=admin`
+// leaves a `.git` POINTER FILE and puts the real administrative directory at `admin/`, and a
+// repository initialised under GIT_DIR has no `.git` entry at all. Measured on this branch before
+// the fix, in a `--separate-git-dir` repository: `CLAUDE.md -> admin/config` exited 0 with the
+// managed block appended to git's real config, after which every git command failed with "fatal:
+// bad config line 9".
+//
+// The `.entire` case is the one no filename rule can catch. Its landing is `graph-agent.md`, an
+// ordinary markdown name that the instruction-file allowlist admits — it is refused only because of
+// WHERE it lands, which is inside the real ref store.
+func TestInitAgentsRefusesGitDirectoryNotNamedDotGit(t *testing.T) {
+	t.Parallel()
+	skipIfSymlinksUnrepresentable(t)
+
+	for _, testCase := range []struct {
+		name string
+		// build plants the repository and returns the file that must not be written.
+		build func(t *testing.T, repo string) string
+	}{
+		{
+			name: "gitlink pointer to an in-tree administrative directory",
+			build: func(t *testing.T, repo string) string {
+				t.Helper()
+				plantGitAdministrativeDirectory(t, filepath.Join(repo, "admin"))
+				writeFileForTest(t, filepath.Join(repo, ".git"), "gitdir: admin\n")
+				symlinkForTest(t, filepath.Join("admin", "config"), filepath.Join(repo, "CLAUDE.md"))
+				return filepath.Join(repo, "admin", "config")
+			},
+		},
+		{
+			name: "administrative directory with no gitlink at all",
+			build: func(t *testing.T, repo string) string {
+				t.Helper()
+				plantGitAdministrativeDirectory(t, filepath.Join(repo, "admin"))
+				hook := filepath.Join(repo, "admin", "hooks", "pre-commit")
+				writeFileForTest(t, hook, "#!/bin/sh\nexit 0\n")
+				symlinkForTest(t, filepath.Join("admin", "hooks", "pre-commit"), filepath.Join(repo, "AGENTS.md"))
+				return hook
+			},
+		},
+		{
+			name: "guide directory alias into the real ref store",
+			build: func(t *testing.T, repo string) string {
+				t.Helper()
+				plantGitAdministrativeDirectory(t, filepath.Join(repo, "admin"))
+				writeFileForTest(t, filepath.Join(repo, ".git"), "gitdir: admin\n")
+				symlinkForTest(t, filepath.Join("admin", "refs", "heads"), filepath.Join(repo, ".entire"))
+				return filepath.Join(repo, "admin", "refs", "heads", "graph-agent.md")
+			},
+		},
+		{
+			name: "administrative directory with no object or ref store",
+			build: func(t *testing.T, repo string) string {
+				t.Helper()
+				// A linked worktree's administrative directory keeps commondir and gitdir
+				// in place of its own object and ref stores, so a test that asked only for
+				// those two would not recognise it.
+				worktreeAdmin := filepath.Join(repo, "wt")
+				mkdirAllForTest(t, worktreeAdmin)
+				writeFileForTest(t, filepath.Join(worktreeAdmin, "HEAD"), "ref: refs/heads/main\n")
+				writeFileForTest(t, filepath.Join(worktreeAdmin, "commondir"), "../..\n")
+				victim := filepath.Join(worktreeAdmin, "gitdir")
+				writeFileForTest(t, victim, "/elsewhere/.git\n")
+				writeFileForTest(t, filepath.Join(repo, ".git"), "gitdir: wt\n")
+				symlinkForTest(t, filepath.Join("wt", "gitdir"), filepath.Join(repo, "CLAUDE.md"))
+				return victim
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+			victim := testCase.build(t, repo)
+			before, existed := "", false
+			if content, err := os.ReadFile(victim); err == nil {
+				before, existed = string(content), true
+			}
+
+			var out bytes.Buffer
+			runErr := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+			requireGitDirRefusal(t, runErr, out.String())
+
+			if existed {
+				if got := readFileForTest(t, victim); got != before {
+					t.Fatalf("%s was written through:\nwant: %q\n got: %q", victim, before, got)
+				}
+			} else if _, statErr := os.Lstat(victim); !os.IsNotExist(statErr) {
+				t.Fatalf("%s was created inside the git directory (stat error %v)", victim, statErr)
+			}
+			for _, unwritten := range []string{"AGENTS.md", "CLAUDE.md", filepath.Join(".entire", "graph-agent.md")} {
+				path := filepath.Join(repo, unwritten)
+				info, statErr := os.Lstat(path)
+				if os.IsNotExist(statErr) {
+					continue
+				}
+				if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+					// The planted alias itself, untouched.
+					continue
+				}
+				t.Fatalf("partial install: %s exists after the refusal (%v)", unwritten, statErr)
+			}
+		})
+	}
+}
