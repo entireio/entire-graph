@@ -9259,10 +9259,19 @@ func typeNameOccursBare(signature, name string) bool {
 // resolution. An ambiguous name with no import evidence resolves to nothing —
 // picking the lexically-first same-name type poisons the graph with
 // cross-crate/cross-package edges.
+//
+// Candidates are restricted to languages that genuinely share type
+// declarations with the referring symbol (see languagesShareTypes). The
+// workspace short-name index is keyed by name alone, so without that filter a
+// workspace-unique name bound across any language boundary — an Erlang record
+// became the resolved parameter type of an R function that happened to reuse
+// the name. Filtering candidates rather than filtering emitted edges also
+// removes those impossible declarations from the ambiguity count, so a foreign
+// same-name declaration no longer suppresses the real, resolvable edge.
 func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecord, symbolsByShortName map[string][]SymbolRecord, importsByName, qualifiedImportsByName map[string][]string) (SymbolRecord, string, string, float64, bool) {
 	var candidates []SymbolRecord
 	for _, sym := range symbolsByShortName[name] {
-		if sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind) {
+		if sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind) && languagesShareTypes(from.Language, sym.Language) {
 			candidates = append(candidates, sym)
 		}
 	}
