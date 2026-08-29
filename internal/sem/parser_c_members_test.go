@@ -87,3 +87,101 @@ private:
 		t.Errorf("pure virtual method Total should stay a method: %#v", got)
 	}
 }
+
+// TestCFamilyReferenceMembersAreExtracted covers members whose declarator is a
+// reference: `int &value;` and `Widget &&item;`. The declarator chain unwrapper
+// already knew how to reach through a reference_declarator, but the member pass
+// never dispatched to it, so reference members — the ordinary way a C++ class
+// holds a non-owning collaborator — stayed missing from the symbol graph.
+func TestCFamilyReferenceMembersAreExtracted(t *testing.T) {
+	t.Parallel()
+	got := memberIndex(t, "window.hpp", `class Window {
+    int &value;
+    Widget &&item;
+    int plain;
+};
+`)
+	for _, want := range []string{"field:Window.value", "field:Window.item", "field:Window.plain"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("missing %q: %#v", want, got)
+		}
+	}
+}
+
+// TestCFamilyInlineTypeDefinitionSurvivesMemberExtraction pins that extracting
+// a member does not swallow a type DEFINED in the same declaration. The member
+// pass stops the walk at the declaration, so `struct Inner { int value; }
+// inner;` lost the `Inner` symbol that the walk used to reach by falling
+// through — a type disappearing is a worse regression than the member was a
+// fix.
+func TestCFamilyInlineTypeDefinitionSurvivesMemberExtraction(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct{ name, path, source string }{
+		{"C", "outer.c", `struct Outer {
+    struct Inner { int value; } inner;
+    int other;
+};
+`},
+		{"C++", "outer.cpp", `class Outer {
+    class Inner { public: int value; } inner;
+    int other;
+};
+`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got := memberIndex(t, testCase.path, testCase.source)
+			for _, want := range []string{"field:Outer.inner", "field:Outer.other", "field:Inner.value"} {
+				if _, ok := got[want]; !ok {
+					t.Errorf("missing %q: %#v", want, got)
+				}
+			}
+			if _, structOK := got["struct:Inner"]; !structOK {
+				if _, classOK := got["class:Inner"]; !classOK {
+					t.Errorf("inline type Inner lost its symbol: %#v", got)
+				}
+			}
+		})
+	}
+}
+
+// TestCFamilyAnonymousInlineAggregateIsNotHoisted is the other half of the
+// rule: an anonymous aggregate declares no type, and its members are reached
+// through the member that holds it (`outer.u.i`), so they must not be filed as
+// members of the enclosing type.
+func TestCFamilyAnonymousInlineAggregateIsNotHoisted(t *testing.T) {
+	t.Parallel()
+	got := memberIndex(t, "packet.c", `struct Packet {
+    union { int i; float f; } value;
+};
+`)
+	if _, ok := got["field:Packet.value"]; !ok {
+		t.Errorf("missing field:Packet.value: %#v", got)
+	}
+	for _, unwanted := range []string{"field:Packet.i", "field:Packet.f"} {
+		if _, ok := got[unwanted]; ok {
+			t.Errorf("anonymous union member hoisted as %q: %#v", unwanted, got)
+		}
+	}
+}
+
+// TestCFamilyDeeplyNestedDeclaratorIsExtracted covers a declarator that nests
+// deeper than any fixed step budget. tree-sitter models each `*` as its own
+// pointer_declarator, so `int ********deep;` is eight levels; a walk bounded by
+// a picked number stops one short and drops the member with no diagnostic. The
+// parse tree is the bound: every step narrows the span, so the walk terminates
+// on its own.
+func TestCFamilyDeeplyNestedDeclaratorIsExtracted(t *testing.T) {
+	t.Parallel()
+	got := memberIndex(t, "deep.c", `struct Deep {
+    int *one;
+    int ********eight;
+    int *********nine;
+};
+`)
+	for _, want := range []string{"field:Deep.one", "field:Deep.eight", "field:Deep.nine"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("missing %q: %#v", want, got)
+		}
+	}
+}

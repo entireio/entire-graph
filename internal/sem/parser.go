@@ -3667,6 +3667,16 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		for _, body := range initializerTypeBodies(node) {
 			walkEntitiesScoped(body, src, language, scope, true, entities)
 		}
+		// A C/C++ member can also DEFINE its type inline:
+		// `struct Inner { int value; } inner;`. Before members were extracted
+		// the walk fell through the declaration and reached that definition, so
+		// `Inner` had a symbol; now that the declaration stops here, the type
+		// would vanish along with it. Descend into the definition itself, at the
+		// same scope and the same inFunc — the path the walk already took — so
+		// the type keeps its symbol and gains its own members.
+		for _, definition := range cFamilyInlineTypeDefinitions(node, language) {
+			walkEntitiesScoped(definition, src, language, scope, inFunc, entities)
+		}
 		return
 	}
 	entity, ok := entityFromNode(node, src, language, scope)
@@ -4137,13 +4147,13 @@ func fieldDeclNames(node *sitter.Node, src []byte) []string {
 		switch child.Type() {
 		case "field_identifier":
 			names = append(names, child.Content(src))
-		case "pointer_declarator", "array_declarator", "function_declarator":
-			// C/C++ members whose declarator carries the pointer or array part
-			// (`char *name;`, `char name[32];`, `int (*handler)(int);`). The
-			// name sits under the declarator chain rather than beside the type.
-			// A plain function declarator names nothing here: `int Add(int);`
-			// in a class body is a method declaration, not data, and is left to
-			// the entity walk.
+		case "pointer_declarator", "array_declarator", "reference_declarator", "function_declarator":
+			// C/C++ members whose declarator carries the pointer, reference or
+			// array part (`char *name;`, `int &ref;`, `Widget &&item;`,
+			// `char name[32];`, `int (*handler)(int);`). The name sits under the
+			// declarator chain rather than beside the type. A plain function
+			// declarator names nothing here: `int Add(int);` in a class body is
+			// a method declaration, not data, and is left to the entity walk.
 			if name := cFamilyMemberDeclaratorName(child, src); name != "" {
 				names = append(names, name)
 			}
@@ -4184,34 +4194,57 @@ func cPlusPlusInitialisedMemberName(node *sitter.Node, src []byte) string {
 	return strings.TrimSpace(name.Content(src))
 }
 
-// cFamilyMemberDeclaratorName unwraps the pointer/array declarator chain of a
-// C-family data member down to the declared name, stopping at a function
-// declarator: `int (*handler)(int)` is a function-pointer member and names
-// `handler`, but `int Add(int)` is a method declaration and names nothing here.
+// cFamilyMemberDeclaratorName unwraps the pointer/reference/array declarator
+// chain of a C-family data member down to the declared name, stopping at a
+// function declarator: `int (*handler)(int)` is a function-pointer member and
+// names `handler`, but `int Add(int)` is a method declaration and names nothing
+// here.
+//
+// The walk is bounded by the parse tree, not by a step budget. Every step moves
+// to a node whose byte range is strictly inside the current one, and a parse
+// tree is finite, so the loop terminates on any input; a fixed budget would
+// instead drop a member whose declarator merely nests deeper than the number
+// picked (`int ********deep;` is eight nested pointer_declarators). The
+// containment check is what makes that guarantee explicit: a step that fails to
+// narrow the range is not progress, and gives up rather than spinning.
 func cFamilyMemberDeclaratorName(node *sitter.Node, src []byte) string {
-	for depth := 0; validNode(node) && depth < 8; depth++ {
+	for validNode(node) {
+		var next *sitter.Node
 		switch node.Type() {
 		case "field_identifier", "identifier":
 			return strings.TrimSpace(node.Content(src))
 		case "pointer_declarator", "array_declarator", "parenthesized_declarator", "reference_declarator":
-			next := node.ChildByFieldName("declarator")
+			next = node.ChildByFieldName("declarator")
 			if !validNode(next) {
 				next = firstDescendantOfType(node, "field_identifier")
 			}
-			node = next
 		case "function_declarator":
+			// A function-pointer member: the name is inside the parens. A plain
+			// function declarator is a method declaration and names nothing.
 			inner := node.ChildByFieldName("declarator")
-			if validNode(inner) && inner.Type() == "parenthesized_declarator" {
-				// A function-pointer member: the name is inside the parens.
-				node = inner
-				continue
+			if !validNode(inner) || inner.Type() != "parenthesized_declarator" {
+				return ""
 			}
-			return ""
+			next = inner
 		default:
 			return ""
 		}
+		if !descendsStrictly(node, next) {
+			return ""
+		}
+		node = next
 	}
 	return ""
+}
+
+// descendsStrictly reports whether next is a strictly smaller span than node,
+// which is what guarantees an unbounded declarator walk terminates.
+func descendsStrictly(node, next *sitter.Node) bool {
+	if !validNode(next) {
+		return false
+	}
+	return next.StartByte() >= node.StartByte() && next.EndByte() <= node.EndByte() &&
+		(next.StartByte() > node.StartByte() || next.EndByte() < node.EndByte())
 }
 
 func variableDeclaratorName(node *sitter.Node, src []byte) string {
@@ -7468,6 +7501,37 @@ func initializerTypeBodies(node *sitter.Node) []*sitter.Node {
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		walk(node.NamedChild(i))
+	}
+	return out
+}
+
+// cFamilyInlineTypeDefinitions returns the type definitions written inline in a
+// C/C++ member declaration (`struct Inner { int value; } inner;`), which the
+// member pass would otherwise swallow along with the member.
+//
+// Only a definition — it must have a body, so `struct Node *next;` names no new
+// type — and only a NAMED one. An anonymous aggregate (`union { int i; float
+// f; } u;`) declares no type symbol at all, and walking its body would file `i`
+// and `f` as members of the enclosing type, which is not where they are reached
+// from.
+func cFamilyInlineTypeDefinitions(node *sitter.Node, language string) []*sitter.Node {
+	if language != "C" && language != "C++" {
+		return nil
+	}
+	if node.Type() != "field_declaration" {
+		return nil
+	}
+	var out []*sitter.Node
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "struct_specifier", "union_specifier", "enum_specifier", "class_specifier":
+		default:
+			continue
+		}
+		if validNode(child.ChildByFieldName("body")) && validNode(child.ChildByFieldName("name")) {
+			out = append(out, child)
+		}
 	}
 	return out
 }
