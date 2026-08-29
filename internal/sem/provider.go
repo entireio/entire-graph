@@ -3282,6 +3282,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					for name := range fsharpDottedCallIdentifiers(callBlock) {
 						callNames[name] = struct{}{}
 					}
+					// Plain juxtaposition (`add ledger amount`) is F#'s ordinary
+					// call syntax and has neither a dot, a pipe nor parentheses
+					// to mark it. Whitespace alone does not say which of several
+					// adjacent names is the one being applied, so the scan is
+					// restricted to names that are callable bindings in this
+					// file — an unrecognized name is never guessed into a call.
+					for name := range fsharpJuxtapositionCallIdentifiers(callBlock, fsharpFileCallableNames(currentFileSymbols)) {
+						callNames[name] = struct{}{}
+					}
 				}
 				if file.Language == "Lua" {
 					// Lua table/module calls (`vim.split(...)`, `M.joinpath(...)`)
