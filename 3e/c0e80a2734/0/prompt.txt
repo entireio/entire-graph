@@ -1,0 +1,31 @@
+Review a change in this worktree. `git diff origin/main` shows it: PR 159, "report a pure file
+rename in the semantic diff", reconstructed on top of current main (which already contains PR 167's
+index-policy work). It adds pathScopeChange() and calls it when moduleScopeChange() declines.
+
+REFUTE the claims below. I may be wrong. Per claim: WRONG (cite file:line) or CONFIRMED with
+evidence. Then a MISSED-DEFECTS section for anything I have not listed.
+
+CLAIM 1: The fix is correct in principle - a pure rename re-identifies every symbol in the file
+because the path is a component of the compound-v1 symbol ID, so an empty diff is wrong.
+
+CLAIM 2: The guard `oldPath == "" || oldPath == path` is right, and `oldPath == ""` is DEAD code
+because the call site substitutes path for an empty OldPath before calling.
+
+CLAIM 3: The only realistic inputs reaching the new branch are (a) a rename/copy with identical
+bytes and (b) a chmod-only change. Oversized, missing, unreadable, non-blob, unaddressable and
+unsupported-extension files all `continue` earlier, and a typechange with identical bytes either
+parse-errors or is excluded from the graph.
+
+CLAIM 4: (type="moved", kind="module") is a NEW pair. Before this change, "moved" was only produced
+with a real entity kind, and moduleKind only with added/removed/body_changed.
+
+CLAIM 5: The FileChange.language for a byte-identical cross-extension rename (mod.js -> mod.ts) is
+wrong - it reports JavaScript while the head snapshot calls mod.ts TypeScript - but this is
+PRE-EXISTING, not introduced here: current main mislabels the same rename when it carries an edit.
+The root cause is the `if language == "" { language = afterLanguage }` fallback, not the new branch.
+
+CLAIM 6: The change cannot cause double-reporting or interfere with PR 167's admitChangedFiles
+rewrites (which convert cross-policy-boundary renames into D/A entries with OldPath cleared).
+
+Constraints: read-only. Do NOT run the Go test suite (>10 min). Use rg/sed/git to read.
+Concise: verdict + evidence per claim, then MISSED-DEFECTS.

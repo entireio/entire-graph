@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "3ec0e80a2734",
+  "strategy": "manual-commit",
+  "branch": "pr159-work",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/analyze.go",
+    "internal/sem/analyze_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3e/c0e80a2734/0/metadata.json",
+      "transcript": "/3e/c0e80a2734/0/full.jsonl",
+      "compact_transcript": "/3e/c0e80a2734/0/transcript.jsonl",
+      "content_hash": "/3e/c0e80a2734/0/content_hash.txt",
+      "prompt": "/3e/c0e80a2734/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 110479,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1281280,
+    "output_tokens": 15741,
+    "api_call_count": 23
+  }
+}
