@@ -3384,6 +3384,19 @@ var cFamilyNonFunctionNames = map[string]bool{
 	"while":   true,
 }
 
+// cFamilyTypedefLanguage reports whether a language's grammar spells a typedef
+// as C does, so that a `type_definition` node's name must be read from its
+// declarator rather than by descending to the first identifier. Objective-C is
+// a strict C superset and shares the node, so it shares the naming rule.
+func cFamilyTypedefLanguage(language string) bool {
+	switch language {
+	case "C", "C++", "Objective-C":
+		return true
+	default:
+		return false
+	}
+}
+
 func cFamilyTypedefAliasName(node *sitter.Node, src []byte) string {
 	text := strings.TrimSpace(stripCodeLiteralsAndComments(node.Content(src)))
 	if !strings.HasPrefix(text, "typedef ") {
@@ -4852,7 +4865,19 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			// *_type_defn child; the generic name descent would instead latch onto
 			// a leading attribute ([<CustomEquality>] type SemVerInfo -> "CustomEquality").
 			name = fsharpTypeName(node, src)
-		} else if (language == "C" || language == "C++") && node.Type() == "type_definition" {
+		} else if cFamilyTypedefLanguage(language) && node.Type() == "type_definition" {
+			// Objective-C belongs here with C and C++: its grammar is a C
+			// superset and emits the same type_definition node. Left out of
+			// this branch it fell through to nodeName, which finds no `name`
+			// field on a typedef and descends to the first identifier in
+			// pre-order — the SOURCE of the alias, never the alias. So every
+			// Objective-C typedef was published under the wrong name:
+			// `typedef struct {int v;} A, B;` became `type:v` (a field),
+			// `typedef struct Node {int q;} NodeAlias;` became `type:Node`
+			// (the tag), `typedef enum {RED, GREEN} Color;` became `type:RED`
+			// (an enum constant), and `typedef NSInteger MyInt;` became
+			// `type:NSInteger` — a phantom definition of a framework type this
+			// file does not define, while `MyInt` was not a symbol at all.
 			if alias := cFamilyTypedefAliasName(node, src); alias != "" {
 				name = alias
 			} else {
