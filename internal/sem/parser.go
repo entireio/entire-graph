@@ -4933,7 +4933,7 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		if language == "Objective-C" && node.Type() == "struct_declaration" {
 			return Entity{}, false
 		}
-		if cFamilyTagReference(node, language) {
+		if cFamilyTagReference(node, language) || cFamilyAnonymousSpecifier(node, language) {
 			return Entity{}, false
 		}
 		kind = "struct"
@@ -4944,7 +4944,7 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		if language == "Zig" {
 			return Entity{}, false
 		}
-		if cFamilyTagReference(node, language) {
+		if cFamilyTagReference(node, language) || cFamilyAnonymousSpecifier(node, language) {
 			return Entity{}, false
 		}
 		kind = "enum"
@@ -7865,6 +7865,29 @@ func cFamilyTagReference(node *sitter.Node, language string) bool {
 		return false
 	}
 	return !validNode(node.ChildByFieldName("body"))
+}
+
+// cFamilyAnonymousSpecifier reports whether a C-family struct/enum specifier
+// defines a body under NO tag of its own: `typedef struct {int x;} Point;`, or
+// an anonymous struct nested in another type. That is the ordinary way a C type
+// is declared — the type's only name is the typedef's, which the enclosing
+// type_definition already emits.
+//
+// The specifier itself must not be emitted, because it has no name to be
+// emitted under. nodeName finds no name node and falls through to the first
+// identifier in pre-order, which is the first FIELD, so the anonymous struct of
+// `typedef struct {int x; int y;} Point;` was emitted as a struct definition
+// called `x`. That symbol names nothing that exists: a search for the type finds
+// a field name, and a search for the field finds a struct. Skipping it also
+// leaves the fields correctly scoped, since "type" scopes its children and the
+// typedef is their nearest named container.
+func cFamilyAnonymousSpecifier(node *sitter.Node, language string) bool {
+	switch language {
+	case "C", "C++", "Objective-C":
+	default:
+		return false
+	}
+	return !validNode(node.ChildByFieldName("name"))
 }
 
 func qualify(scope, name string) string {
