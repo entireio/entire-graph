@@ -1789,7 +1789,9 @@ func TestCapabilityMatrixDeclaresTypeAndFlowRelations(t *testing.T) {
 
 (defn add [a b] (+ a b))
 
-(defn point-sum [p] (add (:x p) (:y p)))
+(defn make-point [x y] (Point. x y))
+
+(defn point-sum [^Point p] (add (:x p) (:y p)))
 `)
 	writeFile(t, repo, "ex/point.ex", `defmodule Fixture.Point do
   def add(a, b) do
@@ -1801,15 +1803,20 @@ func TestCapabilityMatrixDeclaresTypeAndFlowRelations(t *testing.T) {
   end
 end
 `)
+	// The record is named `coord`, not `point`: USES_TYPE resolves signature
+	// identifiers against every type symbol in the repository by short name, so
+	// a record named `point` here was resolving the `point` in this file's R
+	// and Clojure signatures too, crediting those languages with a type edge
+	// that pointed at Erlang.
 	writeFile(t, repo, "erl/fix.erl", `-module(fix).
 -export([sum/1, add/2]).
 
--record(point, {x = 0, y = 0}).
+-record(coord, {x = 0, y = 0}).
 
 add(A, B) ->
     A + B.
 
-sum(#point{x = X, y = Y}) ->
+sum(#coord{x = X, y = Y}) ->
     add(X, Y).
 `)
 	writeFile(t, repo, "fs/Fix.fs", `module Fixture
