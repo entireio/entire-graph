@@ -4194,6 +4194,97 @@ func cPlusPlusInitialisedMemberName(node *sitter.Node, src []byte) string {
 	return strings.TrimSpace(name.Content(src))
 }
 
+// cPlusPlusMemberDeclarationName returns the declared name when node is an
+// in-class C++ method DECLARATION — a member declared in the class body and
+// defined elsewhere. tree-sitter-cpp gives that no node type of its own:
+// `int Add(int) const;` is a field_declaration, the same node type as
+// `int total_;`, and a constructor or destructor declaration is a bare
+// `declaration`, the same node type as a local variable.
+//
+// Two things separate a member method declaration from everything that shares
+// those node types. It sits directly in a field_declaration_list, which is the
+// class body — that excludes locals, namespace-scope prototypes, and the
+// declaration nested inside a friend_declaration, none of which are members of
+// the class. And its declarator resolves to a function_declarator whose own
+// declarator is a NAME: a function-POINTER data member (`int (*handler_)(int);`)
+// reaches a parenthesized_declarator instead, and stays the field that #174
+// classifies it as.
+func cPlusPlusMemberDeclarationName(node *sitter.Node, src []byte) string {
+	switch node.Type() {
+	case "field_declaration", "declaration":
+	default:
+		return ""
+	}
+	if parent := node.Parent(); !validNode(parent) || parent.Type() != "field_declaration_list" {
+		return ""
+	}
+	declarator := node.ChildByFieldName("declarator")
+	// A reference or pointer return type wraps the declarator
+	// (`Ledger& operator=(...)`, `Ledger* Clone();`).
+	for depth := 0; validNode(declarator) && depth < 8; depth++ {
+		if declarator.Type() != "reference_declarator" && declarator.Type() != "pointer_declarator" {
+			break
+		}
+		inner := declarator.ChildByFieldName("declarator")
+		if !validNode(inner) {
+			inner = firstNamedChildOfType(declarator, "function_declarator")
+		}
+		declarator = inner
+	}
+	if !validNode(declarator) || declarator.Type() != "function_declarator" {
+		return ""
+	}
+	name := declarator.ChildByFieldName("declarator")
+	if !validNode(name) {
+		return ""
+	}
+	switch name.Type() {
+	case "identifier", // a constructor
+		"field_identifier",     // an ordinary member
+		"destructor_name",      // ~Ledger
+		"qualified_identifier": // a member of a nested or templated scope
+		if !cFamilyNameEndsAtTokenBoundary(name, src) {
+			return ""
+		}
+		return strings.TrimSpace(name.Content(src))
+	case "operator_name":
+		// An operator overload is deliberately left out. maskCPlusPlusOperatorCall
+		// rewrites `operator=(` to `op(` before tree-sitter sees it, so the name
+		// in the parsed source is not the name in the file — and every masked
+		// operator collapses onto the same `op`, so `operator=` and `operator==`
+		// on one class would produce two symbols with one name. Extracting these
+		// correctly means recovering the name from the unmasked content, which
+		// belongs with the mask, not here.
+		return ""
+	}
+	return ""
+}
+
+// cFamilyNameEndsAtTokenBoundary reports whether a name node's range still ends
+// at a token boundary in the ENTITY source. The C++ masks rewrite constructs
+// tree-sitter cannot parse into same-length stand-ins before parsing
+// (`operator=(` becomes `op(`), while entity text is read back from the
+// unmasked file. Where a mask shortened an identifier the two disagree: the
+// node covers `op` and the file has `operator=`, so the name read back is a
+// prefix of a longer token. Rejecting that is what keeps a masked construct
+// from being named after an arbitrary slice of itself — and, because every
+// masked operator shortens to the same stand-in, from putting two members of
+// one class under one name.
+func cFamilyNameEndsAtTokenBoundary(name *sitter.Node, src []byte) bool {
+	isIdent := func(b byte) bool {
+		return b == '_' || ('0' <= b && b <= '9') || ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z')
+	}
+	end := int(name.EndByte())
+	if end > 0 && end < len(src) && isIdent(src[end]) && isIdent(src[end-1]) {
+		return false
+	}
+	start := int(name.StartByte())
+	if start > 0 && start < len(src) && isIdent(src[start]) && isIdent(src[start-1]) {
+		return false
+	}
+	return true
+}
+
 // cFamilyMemberDeclaratorName unwraps the pointer/reference/array declarator
 // chain of a C-family data member down to the declared name, stopping at a
 // function declarator: `int (*handler)(int)` is a function-pointer member and
@@ -4445,6 +4536,27 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 	// TypeScript overload signature or ambient declaration — never for a Dart
 	// declaration head, whose body is a sibling node the walk re-attaches below.
 	var bodyless bool
+	// An in-class C++ method declaration is where a header's interface lives,
+	// and it reached no case below: a class that declares its members and
+	// defines them out of line contributed no method symbols at all — nothing to
+	// search for, no CONTAINS edge, and nothing for a typed receiver to resolve
+	// a call to. It is bodyless in exactly the sense the field means: the
+	// declaration is real (it is where the parameter types are written) but the
+	// out-of-line `Type::method` definition is the definition.
+	if language == "C++" && scope != "" {
+		if member := cPlusPlusMemberDeclarationName(node, src); member != "" {
+			return Entity{
+				Kind:        "method",
+				Name:        qualify(scope, member),
+				Signature:   signatureFromNode(node, src),
+				StartLine:   int(node.StartPoint().Row) + 1,
+				EndLine:     int(node.EndPoint().Row) + 1,
+				BodyHash:    hash(normalize(node.Content(src))),
+				Fingerprint: hash(normalize(signatureFromNode(node, src))),
+				bodyless:    true,
+			}, true
+		}
+	}
 	switch node.Type() {
 	case "class", "class_definition", "class_declaration", "class_specifier", "mixin_declaration",
 		"abstract_class_declaration":
