@@ -365,3 +365,63 @@ driver2 <- function() {
 		}
 	}
 }
+
+// TestBareNameCallDoesNotCrossLanguages covers the one resolution path the
+// receiver-based test above cannot reach: a bare free-function call with no
+// receiver at all.
+//
+// That path ends at the globally-unique gate in resolveCallTargets
+// ("direct call expression matched globally unique symbol name", name_only,
+// confidence 0.68). The gate fires when exactly ONE symbol in the whole
+// workspace carries the called name — so a name defined only in a foreign
+// language is, by construction, globally unique, and used to resolve straight
+// across the boundary.
+//
+// The fixture is built so the two halves discriminate independently:
+//   - alpha_only exists ONLY in Python and is called from Python, in a
+//     DIFFERENT file. It must resolve, which proves the gate is reachable and
+//     that the filter has not simply disabled cross-file resolution.
+//   - beta_only exists ONLY in Ruby and is called from Python. It must NOT
+//     resolve, because Python cannot call a Ruby function.
+//
+// Without the second half a filter that broke all cross-file bare-name calls
+// would pass; without the first half a filter that did nothing would pass.
+func TestBareNameCallDoesNotCrossLanguages(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "py/caller.py", `def driver_py():
+    return alpha_only(1)
+`)
+	writeFile(t, repo, "py/defs.py", `def alpha_only(x):
+    return x + 1
+`)
+	writeFile(t, repo, "py/caller2.py", `def driver2_py():
+    return beta_only(1)
+`)
+	writeFile(t, repo, "rb/defs.rb", `def beta_only(x)
+  x + 1
+end
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	language := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		language[symbol.ID] = symbol.Language
+	}
+
+	// The gate must still work within one language, across files.
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "driver_py", "alpha_only") {
+		t.Fatalf("a cross-file bare-name call inside one language must still resolve: %#v",
+			relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	// And must not reach across a boundary the languages cannot cross.
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		fromLanguage, toLanguage := language[relation.FromID], language[relation.ToID]
+		if fromLanguage != "" && toLanguage != "" && !languagesShareTypes(fromLanguage, toLanguage) {
+			t.Fatalf("a bare-name call resolved across a language boundary: %s (%s) -> %s (%s), resolution %s",
+				relation.FromID, fromLanguage, relation.ToID, toLanguage, relation.Resolution)
+		}
+	}
+}

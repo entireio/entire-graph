@@ -1855,9 +1855,11 @@ func nameCallMayTargetMethod(lang string) bool {
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
-	// candidates come from the workspace-wide short-name index, which is keyed by
-	// name alone; sameFile cannot cross a language boundary and is left alone.
-	candidates = sharedTypeCandidates(from, candidates)
+	// candidates arrive ALREADY filtered to languages the caller can name: every
+	// call site wraps its symbolsByShortName lookup in sharedTypeCandidates,
+	// because that is where the referring symbol is known. Re-filtering here
+	// would be a second application of an idempotent function and, worse, would
+	// look like the guard when the call sites are the guard.
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
 		// A bare `name()` call resolves to a function, not a class method (methods
