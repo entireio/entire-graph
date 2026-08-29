@@ -188,7 +188,11 @@ func TestSearchSnapshotCacheMissesPersistedEntryFromAnotherSchemaVersion(t *test
 		t.Fatal("control: the entry this build persisted must round-trip as valid")
 	}
 
-	rewriteCachedJSON(t, entry.writePath(), func(object map[string]any) {
+	// Addressed by the entry's own root and relative path rather than through a
+	// writePath() accessor: #160 removes that accessor and rewrites its other
+	// callers to this idiom, so a new caller of it here would make package sem
+	// fail to compile whichever of the two lands second.
+	rewriteCachedJSON(t, filepath.Join(entry.root, entry.relative), func(object map[string]any) {
 		snapshot, ok := object["snapshot"].(map[string]any)
 		if !ok {
 			t.Fatalf("persisted search snapshot has no snapshot object: %v", object)
