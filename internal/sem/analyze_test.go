@@ -294,15 +294,93 @@ func TestResolveDiffTreesReusesResolutionForSameLabel(t *testing.T) {
 			return "new-tree", nil
 		}
 	}
-	base, head, err := resolveDiffTrees(t.Context(), "repo", "moving", "moving", resolve)
+	base, head, rootRelative, err := resolveDiffTrees(t.Context(), "repo", "moving", "moving", resolve)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(revisions) != 2 || revisions[0] != "moving" || revisions[1] != "moving-object^{tree}" {
-		t.Fatalf("same ref resolutions = %#v, want exact label then one immutable tree peel", revisions)
+	// The moving label is still resolved exactly once; the two follow-ups both
+	// address the immutable object it resolved to, never the label again.
+	if len(revisions) != 3 ||
+		revisions[0] != "moving" ||
+		revisions[1] != "moving-object^{tree}" ||
+		revisions[2] != "moving-object^{commit}" {
+		t.Fatalf("same ref resolutions = %#v, want exact label then immutable tree and commit peels", revisions)
+	}
+	if !rootRelative {
+		t.Fatal("a commit-ish label must report repository-root relative names")
 	}
 	if base != "old-tree" || head != "old-tree" {
 		t.Fatalf("same ref pinned to %q..%q, want old-tree..old-tree", base, head)
+	}
+}
+
+// TestResolveDiffTreesRejectsTreePathLabels pins that resolving to a commit is
+// not on its own evidence that a label named one. A gitlink resolves to the
+// submodule's commit, and a range over its tree is named relative to the
+// SUBMODULE's root, so this repository's exclusion rules do not describe those
+// names. The probe happens to fail today only because a submodule's objects are
+// usually absent from the superproject; an absorbed or fetched submodule puts
+// them there, and this must not depend on that.
+func TestResolveDiffTreesRejectsTreePathLabels(t *testing.T) {
+	// Mimics a superproject that DOES hold the submodule's objects: every peel
+	// resolves cleanly, so only the label's shape can rule it out.
+	resolve := func(_ context.Context, _, revision string) (string, error) {
+		return "gitlink-commit", nil
+	}
+	_, _, rootRelative, err := resolveDiffTrees(t.Context(), "repo", "HEAD:sub", "HEAD:sub", resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootRelative {
+		t.Fatal("a gitlink label must not be treated as repository-root relative")
+	}
+
+	// The commit-message search is the one colon form that names a commit and
+	// reaches into no tree.
+	_, _, rootRelative, err = resolveDiffTrees(t.Context(), "repo", ":/fix the bug", ":/fix the bug", resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rootRelative {
+		t.Fatal(":/text names a commit, so its names are repository-root relative")
+	}
+}
+
+// TestLabelSelectsTreePath pins which colons are the <rev>:<path> separator and
+// which are data. Rejecting a colon that is not that separator does not lose
+// data, but it silently disables every exclusion rule for the range, so a
+// reflog date selector must not be mistaken for a subtree expression.
+func TestLabelSelectsTreePath(t *testing.T) {
+	tests := []struct {
+		label string
+		want  bool
+	}{
+		{"HEAD", false},
+		{"main", false},
+		{"HEAD~1", false},
+		{"refs/tags/v1.0.0", false},
+		{"HEAD@{2}", false},
+		// A reflog date selector: commit-ish, and full of colons.
+		{"HEAD@{2026-08-27 12:34:56 +0000}", false},
+		{"main@{yesterday 09:00:00}", false},
+		// The commit-message searches name a commit; colons in them are text.
+		{":/fix: the bug", false},
+		{"HEAD^{/release: fix}", false},
+		{"main^{/colon: here}~2", false},
+		// The ordinary peels carry no colon but must stay revision-shaped.
+		{"HEAD^{tree}", false},
+		{"HEAD^{commit}", false},
+		// These do reach into a tree.
+		{"HEAD:sub", true},
+		{"HEAD~1:sub/dir", true},
+		{":0:conflicted.go", true},
+		{"HEAD@{2}:sub", true},
+		{"HEAD^{/release fix}:sub", true},
+	}
+	for _, test := range tests {
+		if got := labelSelectsTreePath(test.label); got != test.want {
+			t.Errorf("labelSelectsTreePath(%q) = %v, want %v", test.label, got, test.want)
+		}
 	}
 }
 
@@ -1817,5 +1895,140 @@ func TestAnalyzeGitRangeNoBudgetKeepsFullResult(t *testing.T) {
 		if warning.Code == "W_ANALYSIS_BUDGET_EXCEEDED" {
 			t.Fatalf("no budget warning expected without MaxDuration, got %#v", warning)
 		}
+	}
+}
+
+// TestAnalyzeGitRangeHonorsGraphIgnore pins the documented contract that a
+// repo-root .graphignore is honored by every graph command. The snapshot and
+// search family already applied it; the diff family did not, so a tracked but
+// vendored or generated tree that the graph never indexes still produced entity
+// changes — symbols no snapshot of the repository contains.
+func TestAnalyzeGitRangeHonorsGraphIgnore(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, ".graphignore", "vendored/\n")
+	write(t, repo, "keep/keep.go", "package keep\n\nfunc Keep() int { return 1 }\n")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "keep/keep.go", "package keep\n\nfunc Keep() int { return 2 }\n")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 2 }\n\nfunc Extra() int { return 3 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "touch both trees")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "keep/keep.go" {
+		t.Fatalf("ignored tree reported in the diff: %#v", result.Files)
+	}
+
+	// The same repository's snapshot must agree: whatever the diff reports has
+	// to be something the graph would index.
+	snapshot, err := BuildProviderSnapshot(context.Background(), repo, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, symbol := range snapshot.Symbols {
+		if strings.HasPrefix(symbol.FilePath, "vendored/") {
+			t.Fatalf("snapshot indexed an ignored file, fixture is wrong: %#v", symbol)
+		}
+	}
+}
+
+// TestAnalyzeGitRangeHonorsGraphIgnoreForDeletions covers the base side: a
+// deletion has no head path, so the base path is what decides.
+func TestAnalyzeGitRangeHonorsGraphIgnoreForDeletions(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, ".graphignore", "vendored/\n")
+	write(t, repo, "keep/keep.go", "package keep\n\nfunc Keep() int { return 1 }\n")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	if err := os.Remove(filepath.Join(repo, "vendored/gen.go")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "drop the vendored tree")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("deleting an ignored file produced a delta: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeWithoutGraphIgnoreIsUnchanged guards against the filter
+// swallowing ordinary files when no ignore rule exists.
+func TestAnalyzeGitRangeWithoutGraphIgnoreIsUnchanged(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 2 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "edit")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "vendored/gen.go" {
+		t.Fatalf("file was dropped without an ignore rule: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeHonorsBuiltinSecretRules covers the other half of the same
+// matcher. The provider's built-in secret rules already keep committed
+// credential files out of the snapshot; the diff reported them as entity
+// changes, naming paths the rest of the provider refuses to index.
+func TestAnalyzeGitRangeHonorsBuiltinSecretRules(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "app.go", "package app\n\nfunc Run() int { return 1 }\n")
+	write(t, repo, ".env", "API_KEY=first\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "app.go", "package app\n\nfunc Run() int { return 2 }\n")
+	write(t, repo, ".env", "API_KEY=second\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "rotate")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range result.Files {
+		if file.Path == ".env" {
+			t.Fatalf("committed credential file reported in the diff: %#v", file)
+		}
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "app.go" {
+		t.Fatalf("files = %#v, want only app.go", result.Files)
 	}
 }
