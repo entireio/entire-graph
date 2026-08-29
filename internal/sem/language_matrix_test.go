@@ -40,13 +40,19 @@ var languageMatrix = []languageFixture{
 	{
 		dir:     "cpp",
 		symbols: []string{"class:Ledger", "function:LedgerDouble"},
-		// A stack-allocated receiver (`Ledger ledger;` — C++'s default
-		// construction syntax) is not type-inferred, so `ledger.Add(amount)`
-		// resolves to nothing. `Ledger l = Ledger();` and `new Ledger()` both do
-		// resolve, so this is a hole in declaration parsing, not in C++ receiver
-		// resolution as a whole.
+		// The stack-allocated receiver (`Ledger ledger;`) is now typed, but this
+		// fixture is laid out the way C++ is normally written: the method is
+		// DECLARED in the class body and DEFINED out of line as
+		// `int Ledger::Add(...)`. Neither half yields a container-qualified
+		// `Ledger.Add` method — the in-class declaration is not extracted at
+		// all, and the out-of-line definition is emitted as a top-level
+		// `function:Add` — so the typed receiver has no method to resolve to.
+		// A class with an inline method body does resolve
+		// (TestCPlusPlusDefaultConstructedReceiverResolvesCalls), which is what
+		// isolates the remaining gap to method-symbol qualification rather than
+		// to receiver typing.
 		relations: []string{"DEFINES", "CONTAINS", "USES_TYPE"},
-		callsGap:  "a default-constructed C++ stack receiver (`Ledger ledger;`) carries no inferred type, so its method calls resolve to nothing",
+		callsGap:  "a C++ method declared in the class body and defined out of line as `Type::method` produces no container-qualified method symbol, so a typed receiver has nothing to resolve to",
 	},
 	{dir: "csharp", symbols: []string{"class:Ledger", "class:LedgerHelper", "field:Total", "method:Add", "method:Double"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "cue", symbols: []string{"field:#Ledger", "field:#Add", "field:ledger"}, relations: []string{"DEFINES", "CONTAINS"}},

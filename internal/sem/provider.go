@@ -4765,6 +4765,17 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
+	if from.Language == "C++" {
+		// Declared locals (`Ledger ledger;`, `Ledger ledger(seed);`), which
+		// C++ writes far more often than the constructor-assignment forms the
+		// generic scanner understands. Without this a stack-allocated receiver
+		// carries no type and every method call on it resolves to nothing.
+		for name, typeName := range cppLocalVarTypes(block) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
 	if from.Language == "TypeScript" {
 		// Declared-type and Angular-DI locals (`const router: Router = ...`,
 		// `const ref = inject(ViewContainerRef)`), which the generic
