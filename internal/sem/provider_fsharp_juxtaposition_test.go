@@ -5,10 +5,10 @@ import "testing"
 // TestFSharpJuxtapositionCallExtraction covers F#'s ordinary call syntax.
 // `add ledger amount` — a function applied by writing its arguments beside it,
 // with no dot and no parentheses — is how F# calls a function. The dotted
-// scanners need a `.`, the pipeline scanner needs a `|>`, and the generic
-// scanner needs `name(`, so plain application matched nothing: a module of
-// functions calling each other produced no CALLS edge at all while
-// `capabilities --json` advertises CALLS for F#.
+// scanners need a `.` and the generic scanner needs `name(`, so plain
+// application matched nothing: a module of functions calling each other
+// produced no CALLS edge at all while `capabilities --json` advertises CALLS
+// for F#.
 func TestFSharpJuxtapositionCallExtraction(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/Ledger.fs", `module Fixtures.Ledger
@@ -49,8 +49,8 @@ let report (amount: int) : string =
 // TestFSharpJuxtapositionScannerStaysNarrow pins the shapes that look like an
 // application and are not one. Every entry names something that IS a known
 // callable in the file, so only position and context can reject it — which is
-// the whole difficulty of reading juxtaposition, and the reason #163 scanned
-// only the unambiguous pipe position.
+// the whole difficulty of reading juxtaposition, and the reason a scanner
+// restricted to the unambiguous pipe position needs none of this.
 func TestFSharpJuxtapositionScannerStaysNarrow(t *testing.T) {
 	t.Parallel()
 	callables := map[string]bool{"add": true, "scale": true, "helper": true}
@@ -97,5 +97,98 @@ func TestFSharpJuxtapositionScannerStaysNarrow(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFSharpJuxtapositionRespectsLayout pins the offside rule. F# separates
+// expressions by indentation, so whitespace cannot be skipped over blindly when
+// deciding whether a name is applied: skipping newlines fused adjacent
+// expressions, which both invented an edge (a bare value reference on one line
+// read the next line's head as its argument) and lost one (a real application
+// read the previous line's last name as the head it was an argument to).
+func TestFSharpJuxtapositionRespectsLayout(t *testing.T) {
+	t.Parallel()
+	callables := map[string]bool{"add": true, "scale": true, "helper": true, "double": true}
+	for _, tc := range []struct {
+		name  string
+		block string
+		want  []string
+	}{
+		{
+			// `double` ends its line and applies nothing; `add` opens the next
+			// expression at the same column and applies `shown`.
+			"expression ends at the line",
+			"let report amount =\n    let shown = double\n    add shown 1",
+			[]string{"add"},
+		},
+		{
+			"head after a line ending in a callable",
+			"let report amount =\n    let shown = helper\n    add shown 1",
+			[]string{"add"},
+		},
+		{
+			// Indented past its head, so it really is one application.
+			"argument continued on an indented line",
+			"let report amount =\n    add\n        amount\n        1",
+			[]string{"add"},
+		},
+		{
+			// Indented past the previous line, so it stays a trailing argument.
+			"trailing argument continued on an indented line",
+			"let f xs =\n    List.map helper\n        add",
+			nil,
+		},
+		{
+			"consecutive applications at the same column",
+			"let f x =\n    add x 1\n    scale x 2",
+			[]string{"add", "scale"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertFSharpJuxtapositionCalls(t, tc.block, callables, tc.want)
+		})
+	}
+}
+
+// TestFSharpJuxtapositionRespectsLocalBindings pins lexical shadowing. The
+// callable set is file-wide, so without this a parameter or local binding that
+// shares a file-level function's name resolved to that function: in
+// `let apply add ledger = add ledger 1` the applied `add` is the parameter, and
+// an edge to a module-level `add` is invented. Bindings that take arguments
+// keep their name callable so recursion still resolves.
+func TestFSharpJuxtapositionRespectsLocalBindings(t *testing.T) {
+	t.Parallel()
+	callables := map[string]bool{"add": true, "scale": true, "helper": true, "run": true, "fact": true}
+	for _, tc := range []struct {
+		name  string
+		block string
+		want  []string
+	}{
+		{"parameter shadows a file-level callable", "let apply add ledger = add ledger 1", nil},
+		{"lambda parameter shadows", "let f = fun add x -> add x 1", nil},
+		{"local value binding shadows", "let report amount =\n    let add = helper\n    add amount 1", nil},
+		{"a unit-argument binding stays callable", "let run () =\n    run ()", []string{"run"}},
+		{"recursion stays callable", "let rec fact n =\n    fact (n - 1)", []string{"fact"}},
+		{"a member's own name is not a qualifier", "member this.Add x =\n    add x 1", []string{"add"}},
+		{"an annotated parameter shadows, its type does not", "let f (helper: int) = helper", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertFSharpJuxtapositionCalls(t, tc.block, callables, tc.want)
+		})
+	}
+}
+
+func assertFSharpJuxtapositionCalls(t *testing.T, block string, callables map[string]bool, want []string) {
+	t.Helper()
+	got := fsharpJuxtapositionCallIdentifiers(block, callables)
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for _, name := range want {
+		if _, ok := got[name]; !ok {
+			t.Fatalf("got %v, want %v", got, want)
+		}
 	}
 }
