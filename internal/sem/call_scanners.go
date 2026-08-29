@@ -262,20 +262,39 @@ func fsharpDottedCallIdentifiers(content string) map[string]struct{} {
 func fsharpPipelineCallIdentifiers(content string) map[string]struct{} {
 	stripped := stripCodeLiteralsAndComments(content)
 	out := map[string]struct{}{}
-	for _, match := range fsharpPipelineCallRe.FindAllStringSubmatch(stripped, -1) {
-		if len(match) < 2 {
+	for _, match := range fsharpPipelineCallRe.FindAllStringSubmatchIndex(stripped, -1) {
+		if len(match) < 4 || match[2] < 0 {
 			continue
 		}
-		if fsharpPipelineTargetIgnored(match[1]) {
+		if fsharpBackwardAlternative(stripped, match[0]) {
 			continue
 		}
-		name := lastDottedCallSegment(match[1])
+		target := stripped[match[2]:match[3]]
+		if fsharpPipelineTargetIgnored(target) {
+			continue
+		}
+		name := lastDottedCallSegment(target)
 		if name == "" {
 			continue
 		}
 		out[name] = struct{}{}
 	}
 	return out
+}
+
+// fsharpBackwardAlternative reports whether the `|>` starting at pipeStart is
+// really the tail of `<|>`, the alternative combinator FParsec and FSharpPlus
+// define (`digit <|> letter`). It contains a literal `|>` but applies nothing:
+// its right operand is an alternative value, not a function being handed the
+// left one, so reading it as a pipe invents a call. `||>` and `|||>` are
+// genuine forward pipes and differ only in arity, so the leading run of `|` is
+// walked back over before the preceding byte is judged.
+func fsharpBackwardAlternative(s string, pipeStart int) bool {
+	i := pipeStart
+	for i > 0 && s[i-1] == '|' {
+		i--
+	}
+	return i > 0 && s[i-1] == '<'
 }
 
 // fsharpPipelineTargetIgnored drops the keywords that can follow a pipe and

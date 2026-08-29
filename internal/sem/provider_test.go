@@ -13252,6 +13252,15 @@ func TestFSharpPipelineScannerSkipsLambdasAndLiterals(t *testing.T) {
 		{"qualified pipe", "let f xs = xs |> List.map g", []string{"map"}},
 		{"bare pipe", "let f xs = xs |> helper", []string{"helper"}},
 		{"double pipe", "let f a b = (a, b) ||> helper", []string{"helper"}},
+		{"triple pipe", "let f a b c = (a, b, c) |||> helper", []string{"helper"}},
+		// `<|>` is FParsec's and FSharpPlus's alternative combinator. It
+		// contains a literal `|>` but applies nothing — the right operand is an
+		// alternative, not a function being handed the left one — so reading it
+		// as a forward pipe invents a call.
+		{"alternative combinator is not a pipe", "let p = digit <|> helper", nil},
+		{"alternative combinator without spaces", "let p = digit<|>helper", nil},
+		{"backward pipe", "let f x = helper <| x", nil},
+		{"pipes chained without spaces", "let f xs = xs|>helper|>g", []string{"helper", "g"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := fsharpPipelineCallIdentifiers(tc.content)
