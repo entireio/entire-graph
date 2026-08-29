@@ -2147,3 +2147,92 @@ func TestAnalyzeGitRangeStillAnalyzesRegularFiles(t *testing.T) {
 		t.Fatalf("regular file was skipped: %#v", result.Files)
 	}
 }
+
+// TestAnalyzeGitRangeClassifiesSymlinkFromTreeModeAlone pins that the symlink
+// classification is decided by the Git tree entry mode and nothing else.
+//
+// The two tests above build real symlinks and so skip on Windows, which leaves
+// the classification untested on the one platform that cannot create them. They
+// are also blind to `core.symlinks=false`, where Git materializes a tracked
+// symlink as an ordinary file holding its target path — a checkout in which an
+// lstat-based check reports "regular file" on a machine perfectly capable of
+// making symlinks.
+//
+// This builds the symlink straight into the index with `update-index --cacheinfo
+// 120000`, so no filesystem link exists anywhere and the mode is the only
+// available signal. It runs on every platform.
+//
+// Addition and deletion are measured over separate ranges on purpose. Both
+// travel through admitChangedFiles rewrites that rebuild the entry rather than
+// forwarding it, and each rewrite has to carry its own side's mode; a single
+// range holding both would let --find-renames pair them into one "R" that keeps
+// the original entry intact and exercises neither rewrite.
+func TestAnalyzeGitRangeClassifiesSymlinkFromTreeModeAlone(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "core.symlinks", "false")
+
+	// The blob of a symlink is its target path. "pkg/real.py" parses cleanly as
+	// Python, so a content-based reader sees a module here rather than a link.
+	target := gitInput(t, repo, "pkg/real.py", "hash-object", "-w", "--stdin")
+
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	git(t, repo, "add", "pkg/real.py")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+target+",gone.py")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "update-index", "--force-remove", "gone.py")
+	git(t, repo, "commit", "-m", "remove symlink")
+	removed := rev(t, repo, "HEAD")
+
+	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+target+",added.py")
+	git(t, repo, "commit", "-m", "add symlink")
+	added := rev(t, repo, "HEAD")
+
+	for _, testCase := range []struct {
+		name string
+		base string
+		head string
+		path string
+		raw  string
+	}{
+		{name: "deleted", base: base, head: removed, path: "gone.py", raw: ":120000 000000"},
+		{name: "added", base: removed, head: added, path: "added.py", raw: ":000000 120000"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			// Guard the fixture: without a 120000 tree entry of the expected
+			// status this would pass for the wrong reason.
+			raw := gitInput(t, repo, "", "diff", "--raw", "--find-renames", testCase.base, testCase.head)
+			if !strings.Contains(raw, testCase.raw) || !strings.Contains(raw, testCase.path) {
+				t.Fatalf("fixture did not produce a %s symlink tree entry for %s: %s", testCase.name, testCase.path, raw)
+			}
+
+			result, err := AnalyzeGitRange(context.Background(), repo, testCase.base, testCase.head, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range result.Files {
+				if file.Path == testCase.path {
+					t.Fatalf("symlink classified as source from mode alone: %#v", file)
+				}
+			}
+			marked := false
+			for _, warning := range result.Warnings {
+				if warning.Code == "E_PARSE_ERROR" {
+					t.Fatalf("symlink reported as a parse failure: %#v", warning)
+				}
+				if warning.Code == "W_UNSUPPORTED_FILE" &&
+					warning.FilePath == testCase.path &&
+					strings.Contains(warning.EffectOnCompleteness, "symbolic link") {
+					marked = true
+				}
+			}
+			if !marked {
+				t.Fatalf("no symlink completeness marker for %s: %#v", testCase.path, result.Warnings)
+			}
+		})
+	}
+}
