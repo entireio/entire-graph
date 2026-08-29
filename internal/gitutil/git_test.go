@@ -97,24 +97,37 @@ func TestFindCommitWithCheckpointIncludesDetachedOtherWorktreeHEAD(t *testing.T)
 	}
 }
 
+// stageTreePath puts one path into the index with the given content, without
+// creating it in the working tree.
+//
+// Some paths a Git tree can hold cannot exist as files on every host: Windows
+// filenames cannot contain a newline or a carriage return. The code those paths
+// exercise here is not filesystem code, though — it parses Git's own NUL
+// terminated output, and that parsing is identical on every platform. Building
+// the fixture in the index rather than on disk keeps the input representable
+// everywhere, so the protocol handling is tested on the platform where a
+// line-framing bug would otherwise be invisible.
+//
+// `update-index -z --index-info` is the only stdin form that can carry such a
+// path: its records are NUL terminated, so a newline inside a name is data.
+func stageTreePath(t *testing.T, repo, path, content string) {
+	t.Helper()
+	blob := gitInputOutput(t, repo, content, "hash-object", "-w", "--stdin")
+	record := fmt.Sprintf("100644 %s 0\t%s%c", blob, path, byte(0))
+	gitInputOutput(t, repo, record, "update-index", "-z", "--index-info")
+}
+
 func TestListFilesHandlesNewlinesInPaths(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows filenames cannot contain newlines")
-	}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
 
+	// Staged into the index, never written to disk: the name is unrepresentable
+	// on Windows as a file but perfectly representable in a tree, and it is the
+	// tree ListFiles reads.
 	path := "dir/line\nbreak.py"
-	full := filepath.Join(repo, path)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(full, []byte("def ok():\n    return True\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git(t, repo, "add", ".")
+	stageTreePath(t, repo, path, "def ok():\n    return True\n")
 	git(t, repo, "commit", "-m", "add newline path")
 
 	files, err := ListFiles(t.Context(), repo, "HEAD")
@@ -213,24 +226,17 @@ func TestGrepTreeMatchesUsesCommittedTreeAndStripsTreeishPrefix(t *testing.T) {
 }
 
 func TestGrepTreePathsMatchesTextAPIAndHandlesUnusualPaths(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows filenames cannot contain newlines")
-	}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
+	// The colon is what separates path from text in grep's own output, and the
+	// newline is what separates its records; both are staged into the tree so
+	// the parsing is checked on every host.
 	paths := []string{"src/ordinary.go", "src/line\nbreak:target.go"}
 	for _, path := range paths {
-		full := filepath.Join(repo, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte("package source\n// ExactTreeNeedle\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		stageTreePath(t, repo, path, "package source\n// ExactTreeNeedle\n")
 	}
-	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
 	commit := gitOutput(t, repo, "rev-parse", "HEAD")
 
@@ -417,30 +423,20 @@ func TestTreeGrepsIgnoreReplaceRefsAndOverrideHostileEnvironment(t *testing.T) {
 }
 
 func TestChangedFilesHandlesNewlinesAndTabsInPaths(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows filenames cannot contain newlines")
-	}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
 
+	// A tab is what --name-status uses to separate status from path, and a
+	// newline is what it would use to separate records without -z. Both are
+	// staged into the tree, so the fixture is representable on every host.
 	path := "dir/line\nbreak\tfile.py"
-	full := filepath.Join(repo, path)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(full, []byte("def ok():\n    return True\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git(t, repo, "add", ".")
+	stageTreePath(t, repo, path, "def ok():\n    return True\n")
 	git(t, repo, "commit", "-m", "add path")
 	base := gitOutput(t, repo, "rev-parse", "HEAD")
 
-	if err := os.WriteFile(full, []byte("def ok():\n    return False\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git(t, repo, "add", ".")
+	stageTreePath(t, repo, path, "def ok():\n    return False\n")
 	git(t, repo, "commit", "-m", "update path")
 	head := gitOutput(t, repo, "rev-parse", "HEAD")
 
@@ -515,9 +511,6 @@ func TestChangedFilesDoesNotIgnoreGitlinkChanges(t *testing.T) {
 }
 
 func TestFileCochangesHandlesQuotedPaths(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip(`Windows filenames cannot contain '"' or '\'`)
-	}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -528,18 +521,14 @@ func TestFileCochangesHandlesQuotedPaths(t *testing.T) {
 	// yields the raw path that matches the snapshot's file keys.
 	special := "dir/wéird\"na\\me.py"
 	other := "dir/other.py"
+	// Staged into the tree: '"' and '\' are unrepresentable in a Windows
+	// filename but perfectly representable in a Git tree, which is what the
+	// -z listing being tested here actually reads.
 	writeBoth := func(content string) {
 		t.Helper()
 		for _, p := range []string{special, other} {
-			full := filepath.Join(repo, p)
-			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			stageTreePath(t, repo, p, content)
 		}
-		git(t, repo, "add", ".")
 	}
 	// Two commits touching both files so the pair's co-change count reaches 2.
 	writeBoth("v1\n")
@@ -1258,9 +1247,6 @@ func TestBlobSizeAtRevProbeSucceedsFromARepoSubdirectory(t *testing.T) {
 }
 
 func TestBatchFileReaderRejectsLineUnsafePathsWithoutDesync(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows filenames cannot contain newlines or carriage returns")
-	}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -1270,12 +1256,15 @@ func TestBatchFileReaderRejectsLineUnsafePathsWithoutDesync(t *testing.T) {
 		"name.go\r":     "package carriage\n",
 		"line\nname.go": "package newline\n",
 	}
+	// This is the test that matters most on a host where such names cannot be
+	// created: it pins that a line-unsafe path is refused BEFORE it is written
+	// to cat-file's line-framed stdin, and that the shared process stays in
+	// sync afterwards. Staging into the tree makes the fixture portable, so the
+	// desync guard is exercised everywhere rather than only where the names
+	// happen to be creatable.
 	for path, content := range files {
-		if err := os.WriteFile(filepath.Join(repo, path), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		stageTreePath(t, repo, path, content)
 	}
-	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "line protocol fixture")
 
 	batch, err := NewBatchFileReader(t.Context(), repo, "HEAD")
@@ -1388,9 +1377,6 @@ func TestShowFileClassifiesErrorsByStderrNotPath(t *testing.T) {
 // must keep every other ShowFile behavior: absent is absent, a real failure is
 // an error, and a blob at exactly the ceiling still reads.
 func TestShowFileLimitedBoundsTheReadNotTheAnswer(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows filenames cannot contain newlines")
-	}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -1408,11 +1394,8 @@ func TestShowFileLimitedBoundsTheReadNotTheAnswer(t *testing.T) {
 		"small.txt":   "small\n",
 	}
 	for path, content := range files {
-		if err := os.WriteFile(filepath.Join(repo, path), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		stageTreePath(t, repo, path, content)
 	}
-	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "size fixture")
 
 	if out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", oversizedPath, ceiling); err != nil || ok || out != "" {
@@ -1690,9 +1673,6 @@ func TestLimitedFileReaderReusesBatchesAndRefusesByMetadata(t *testing.T) {
 }
 
 func TestLimitedFileReaderUsesObjectIDsForLineTerminators(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows filenames cannot contain newlines or carriage returns")
-	}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -1705,16 +1685,11 @@ func TestLimitedFileReaderUsesObjectIDsForLineTerminators(t *testing.T) {
 	plainContent := "package plain\n"
 	carriageContent := "package carriage\n"
 	newlineContent := "package newline\n"
-	if err := os.WriteFile(filepath.Join(repo, plainPath), []byte(plainContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, carriagePath), []byte(carriageContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, newlinePath), []byte(newlineContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git(t, repo, "add", ".")
+	// Staged into the tree so a host that cannot name these files still exercises
+	// the object-ID route they force.
+	stageTreePath(t, repo, plainPath, plainContent)
+	stageTreePath(t, repo, carriagePath, carriageContent)
+	stageTreePath(t, repo, newlinePath, newlineContent)
 	git(t, repo, "commit", "-m", "carriage return siblings")
 
 	reader := NewLimitedFileReader(t.Context(), repo, "HEAD", 1024)

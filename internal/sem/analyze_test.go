@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -236,26 +235,32 @@ func TestAnalyzeGitRangeWarnsForSingleComponentBeyondArgvBound(t *testing.T) {
 }
 
 func TestAnalyzeGitRangeDependentsAvoidLineProtocolPaths(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows filenames cannot contain newlines or carriage returns")
-	}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
-	write(t, repo, "a\nunsafe.py", "def first(token):\n    return validate_token(token)\n")
-	// This path is also returned by git grep, but its trailing CR makes it an
-	// unsupported parser path. It must never enter the line-framed reader.
-	write(t, repo, "b.py\r", "def second(token):\n    return validate_token(token)\n")
-	const oversizeUnsafePath = "c\nover.py"
-	write(t, repo, oversizeUnsafePath, "validate_token\n"+strings.Repeat("#", defaultMaxParseBytes))
 	write(t, repo, "z_plain.py", "def third(token):\n    return validate_token(token)\n")
 	git(t, repo, "add", ".")
+	// The line-unsafe siblings are staged rather than written: Win32 rejects
+	// them as file names, but they are exactly the paths the dependents scan
+	// must keep out of its line-framed reader, so the guard has to be checked
+	// on Windows too. They are staged AFTER `git add .`, which records
+	// deletions for pathspec entries missing from the working tree and would
+	// otherwise take them straight back out of the index.
+	stageTreePath(t, repo, "a\nunsafe.py", "def first(token):\n    return validate_token(token)\n")
+	// This path is also returned by git grep, but its trailing CR makes it an
+	// unsupported parser path. It must never enter the line-framed reader.
+	stageTreePath(t, repo, "b.py\r", "def second(token):\n    return validate_token(token)\n")
+	const oversizeUnsafePath = "c\nover.py"
+	stageTreePath(t, repo, oversizeUnsafePath, "validate_token\n"+strings.Repeat("#", defaultMaxParseBytes))
 	git(t, repo, "commit", "-m", "base")
 	base := rev(t, repo, "HEAD")
 	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
-	git(t, repo, "add", ".")
+	// Scoped to the file that changed: `git add .` would record deletions for
+	// the staged-only siblings, which exist in the tree but not on disk, and
+	// they would drop out of the head tree entirely.
+	git(t, repo, "add", "auth.py")
 	git(t, repo, "commit", "-m", "head")
 	head := rev(t, repo, "HEAD")
 
@@ -1697,6 +1702,26 @@ func git(t *testing.T, repo string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+}
+
+// stageTreePath puts one path into the index with the given content, without
+// creating it in the working tree.
+//
+// A Git tree can hold names no Windows filesystem can: a newline or a carriage
+// return in a path is legal in a tree and rejected by Win32. The code such paths
+// exercise is not filesystem code — it is the framing of Git's own NUL
+// terminated output and the line-based cat-file protocol — and that framing is
+// identical everywhere. Staging the fixture instead of writing it keeps the
+// input representable on every host, so a desync bug cannot hide on the one
+// platform that could not construct the input.
+//
+// `update-index -z --index-info` is the only stdin form that can carry such a
+// path, because its records are NUL terminated.
+func stageTreePath(t *testing.T, repo, path, content string) {
+	t.Helper()
+	blob := gitInput(t, repo, content, "hash-object", "-w", "--stdin")
+	gitInput(t, repo, fmt.Sprintf("100644 %s 0\t%s%c", blob, path, byte(0)),
+		"update-index", "-z", "--index-info")
 }
 
 func gitInput(t *testing.T, repo, input string, args ...string) string {
