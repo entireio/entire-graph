@@ -2694,3 +2694,80 @@ func requireGitDirRefusal(t *testing.T, err error, out string) {
 		t.Fatalf("refusal named neither the git directory nor an unresolvable path: %v", err)
 	}
 }
+
+// TestInitAgentsRefusesManagedTargetHardLinkedIntoGitDirectory covers the route
+// the git-directory refusal cannot see.
+//
+// Every guard around it reasons about a PATH — its components, what it resolves
+// to, whether a component is a symlink. A hard link has no path to reason about:
+// `ln .git/config CLAUDE.md` gives git's config a second name in the working
+// tree, so it resolves to "CLAUDE.md", carries no `.git` component, and Lstat
+// reports an ordinary regular file. PathLandsInGitDir is structurally unable to
+// refuse it.
+//
+// Measured on this branch before the guard: `init-agents` exited 0 (nil error)
+// and `.git/config` was rewritten with the managed block appended — the exact
+// corruption this PR exists to prevent, reached by a route it did not cover.
+func TestInitAgentsRefusesManagedTargetHardLinkedIntoGitDirectory(t *testing.T) {
+	t.Parallel()
+
+	for _, managed := range []string{"CLAUDE.md", "AGENTS.md"} {
+		t.Run(managed, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+
+			victimPath := filepath.Join(repo, ".git", "config")
+			if err := os.MkdirAll(filepath.Dir(victimPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			const victimContent = "[core]\n\tbare = false\n"
+			if err := os.WriteFile(victimPath, []byte(victimContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(victimPath, filepath.Join(repo, managed)); err != nil {
+				t.Skipf("hard links unavailable on this filesystem: %v", err)
+			}
+
+			var out bytes.Buffer
+			runErr := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+			if runErr == nil {
+				t.Fatalf("init-agents succeeded while writing through a hard link into the git directory:\n%s", out.String())
+			}
+			if !errors.Is(runErr, errSharedInodeManagedTarget) {
+				t.Fatalf("want a hard-link refusal, got %v\n%s", runErr, out.String())
+			}
+
+			after, err := os.ReadFile(victimPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != victimContent {
+				t.Fatalf(".git/config was written through a hard link:\n%s", after)
+			}
+		})
+	}
+}
+
+// TestInitAgentsWritesAnOrdinaryInstructionFile keeps the hard-link guard from
+// becoming a blanket refusal. A guard that rejected every managed target would
+// pass the test above and break the command, so the ordinary path is asserted
+// beside it.
+func TestInitAgentsWritesAnOrdinaryInstructionFile(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("# house rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo}); err != nil {
+		t.Fatalf("init-agents on an ordinary file: %v\n%s", err, out.String())
+	}
+	body, err := os.ReadFile(filepath.Join(repo, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "house rules") {
+		t.Fatalf("the user's own text must survive:\n%s", body)
+	}
+}

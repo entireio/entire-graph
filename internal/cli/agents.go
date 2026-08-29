@@ -252,7 +252,7 @@ func runInitAgents(opts Options, args []string) error {
 	if guideWasMissing {
 		guideCreated, err = writeNewContainedFile(repoRoot, guideName, []byte(agentGuide), 0o644)
 	} else {
-		err = writeContainedFile(repoRoot, guideName, []byte(agentGuide), 0o644)
+		err = writeContainedFile(repoRoot, guideName, []byte(agentGuide), 0o644, guideName, agentsName, claudeName)
 	}
 	if err != nil {
 		return rollback(err, guideCreated)
@@ -265,7 +265,7 @@ func runInitAgents(opts Options, args []string) error {
 	}
 	fmt.Fprintf(opts.Stdout, "wrote %s\n", guidePath)
 
-	if err := writeContainedFile(repoRoot, agentsName, agentsContent, 0o644); err != nil {
+	if err := writeContainedFile(repoRoot, agentsName, agentsContent, 0o644, guideName, agentsName, claudeName); err != nil {
 		return fmt.Errorf("init-agents: AGENTS.md: %w", err)
 	}
 	fmt.Fprintf(opts.Stdout, "updated %s\n", agentsPath)
@@ -289,7 +289,7 @@ func runInitAgents(opts Options, args []string) error {
 	if err == nil && os.SameFile(agentsInfo, claudeInfo) {
 		return nil
 	}
-	if err := writeContainedFile(repoRoot, claudeName, claudeContent, 0o644); err != nil {
+	if err := writeContainedFile(repoRoot, claudeName, claudeContent, 0o644, guideName, agentsName, claudeName); err != nil {
 		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
 	}
 	fmt.Fprintf(opts.Stdout, "updated %s\n", claudePath)
@@ -1365,13 +1365,34 @@ func readContainedFile(root *os.Root, name string, limit int64) ([]byte, error) 
 
 // writeContainedFile is os.WriteFile confined to root. The perm argument applies only when the
 // file is created, matching os.WriteFile, so an existing file keeps its mode.
-func writeContainedFile(root *os.Root, name string, content []byte, perm os.FileMode) error {
+func writeContainedFile(root *os.Root, name string, content []byte, perm os.FileMode, managed ...string) error {
 	resolved, err := resolveContainedName(root, name)
 	if err != nil {
 		return err
 	}
-	file, err := root.OpenFile(resolved, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	// O_TRUNC is deliberately NOT in this open, and the file is judged from the
+	// HANDLE rather than from the resolved name.
+	//
+	// Both follow from the same gap. resolveContainedName decides on a path, and
+	// the path is not the thing written: OpenFile re-resolves it, so a link
+	// swapped in between the two is followed (os.Root refuses a link that
+	// ESCAPES the root, atomically, but follows one that stays inside — and
+	// `.git` is inside). Judging the open handle removes the window, because the
+	// handle IS what the write lands on.
+	//
+	// And truncation is already the damage. Opening `.git/config` with O_TRUNC
+	// destroys it before any guard below can object, so the truncate happens
+	// only after the handle has been accepted.
+	file, err := root.OpenFile(resolved, os.O_WRONLY|os.O_CREATE, perm)
 	if err != nil {
+		return err
+	}
+	if err := refuseSharedInode(root, file, name, resolved, managed); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Truncate(0); err != nil {
+		_ = file.Close()
 		return err
 	}
 	_, writeErr := file.Write(content)
@@ -1381,6 +1402,75 @@ func writeContainedFile(root *os.Root, name string, content []byte, perm os.File
 	}
 	return closeErr
 }
+
+// refuseSharedInode rejects an open managed target that is a HARD link.
+//
+// Every other guard here reasons about a path, and a hard link has no path to
+// reason about. `ln .git/config CLAUDE.md` gives git's config a second name in
+// the working tree: it resolves to "CLAUDE.md", carries no `.git` component, and
+// Lstat reports an ordinary regular file, so PathLandsInGitDir cannot see it.
+// Writing the managed block through that name appends to git's own config —
+// exactly the corruption the git-directory refusal exists to prevent, reached by
+// a route it does not cover. Measured before this guard: `init-agents` exited 0
+// and `.git/config` was rewritten.
+//
+// The rule is link count rather than "is it inside .git", because the handle
+// cannot be asked where else its inode is named. That means it also refuses a
+// hard link to a harmless file. An instruction file with a second name is
+// vanishingly rare, sharing one is what the DOCUMENTED alias (a symlink) is for,
+// and the failure mode on the other side is silent corruption of the repository
+// — so this fails closed, on the same reasoning as the case-folded `.GIT`
+// refusal above.
+func refuseSharedInode(root *os.Root, file *os.File, name, resolved string, managed []string) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	links, known := fileLinkCount(info)
+	if !known || links <= 1 {
+		return nil
+	}
+	// A shared inode is only dangerous if one of its OTHER names is somewhere
+	// this command must not write. Hard-linking two managed instruction files
+	// together is documented and supported, so the question is not "is this
+	// file linked" but "is every one of its names a managed target".
+	//
+	// Counting is what answers that without being able to enumerate an inode's
+	// names: if as many managed targets share this inode as the inode has
+	// names, then all of its names are accounted for and all of them are ours.
+	// One unaccounted name means some other path — `.git/config`, a hook —
+	// reaches the same bytes, and the write must be refused.
+	device, inode, identified := fileIdentity(info)
+	if !identified {
+		return nil
+	}
+	accounted := uint64(0)
+	for _, candidate := range managed {
+		candidateResolved, resolveErr := resolveContainedName(root, candidate)
+		if resolveErr != nil {
+			continue
+		}
+		candidateInfo, statErr := root.Stat(candidateResolved)
+		if statErr != nil {
+			continue
+		}
+		candidateDevice, candidateInode, candidateIdentified := fileIdentity(candidateInfo)
+		if candidateIdentified && candidateDevice == device && candidateInode == inode {
+			accounted++
+		}
+	}
+	if accounted >= links {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: %s resolves to %s, which has %d names but only %d of them are managed instruction files; an unaccounted name may reach a file this command must never write, such as one in the git directory",
+		errSharedInodeManagedTarget, name, filepath.ToSlash(resolved), links, accounted,
+	)
+}
+
+// errSharedInodeManagedTarget marks a managed target that shares its inode with
+// another directory entry.
+var errSharedInodeManagedTarget = errors.New("refusing to write through a hard link")
 
 // writeNewContainedFile is the create-only counterpart to writeContainedFile. The returned
 // FileInfo identifies the entry this call acquired even if writing or closing it subsequently
