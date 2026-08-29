@@ -258,7 +258,7 @@ func TestDisambiguationSelectorsAreUniqueAndUsable(t *testing.T) {
 func TestAmbiguityRemedyEndToEnd(t *testing.T) {
 	t.Parallel()
 	snapshot := ambiguitySnapshot()
-	ambiguous := buildImpactResponse(snapshot, impactFlags{Symbol: "State", Depth: 2, Limit: 15})
+	ambiguous := buildImpactResponseOnDisk(snapshot, impactFlags{Symbol: "State", Depth: 2, Limit: 15})
 	if !ambiguous.DisambiguationRequired || ambiguous.FocusMatchesTotal != 3 {
 		t.Fatalf("ambiguous response = %#v", ambiguous)
 	}
@@ -276,7 +276,7 @@ func TestAmbiguityRemedyEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved := buildImpactResponse(snapshot, flags)
+	resolved := buildImpactResponseOnDisk(snapshot, flags)
 	if resolved.DisambiguationRequired {
 		t.Fatalf("printed selector did not disambiguate: %#v", resolved)
 	}
@@ -298,7 +298,7 @@ func TestNeighborsAcceptsSameEscapeHatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := buildNeighborResponse(snapshot, flags)
+	response := buildNeighborResponseOnDisk(snapshot, flags)
 	if response.DisambiguationRequired || len(response.Matches) != 1 {
 		t.Fatalf("neighbors did not disambiguate: %#v", response)
 	}

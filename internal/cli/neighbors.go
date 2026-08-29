@@ -327,10 +327,6 @@ func parseNeighborFlags(args []string) (neighborFlags, error) {
 	return flags, nil
 }
 
-func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) neighborResponse {
-	return buildNeighborResponseFromReader(snapshot, flags, newRepoLineReader(snapshot.Header.RepoRoot))
-}
-
 func buildNeighborResponseFromReader(
 	snapshot sem.ProviderSnapshot,
 	flags neighborFlags,

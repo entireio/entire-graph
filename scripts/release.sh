@@ -66,7 +66,15 @@ build_target() {
 	mkdir -p "$work"
 
 	printf 'building %s/%s\n' "$goos" "$goarch" >&2
-	GOOS="$goos" GOARCH="$goarch" CGO_ENABLED="${CGO_ENABLED:-1}" \
+	cgo_ldflags=$(go env CGO_LDFLAGS)
+	if [ "$goos" = "windows" ]; then
+		# Release archives cannot assume a MinGW runtime is installed beside the binary.
+		case " $cgo_ldflags " in
+			*" -static "*) ;;
+			*) cgo_ldflags="${cgo_ldflags:+$cgo_ldflags }-static" ;;
+		esac
+	fi
+	GOOS="$goos" GOARCH="$goarch" CGO_ENABLED="${CGO_ENABLED:-1}" CGO_LDFLAGS="$cgo_ldflags" \
 		go build -trimpath -ldflags "-s -w -X main.version=$version" \
 		-o "$work/$bin" ./cmd/entire-graph
 

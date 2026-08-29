@@ -43,7 +43,7 @@ func impactFixtureSnapshot() sem.ProviderSnapshot {
 
 func TestImpactBuildsAllSectionsFromSnapshot(t *testing.T) {
 	t.Parallel()
-	response := buildImpactResponse(impactFixtureSnapshot(), impactFlags{
+	response := buildImpactResponseOnDisk(impactFixtureSnapshot(), impactFlags{
 		Symbol: "Orders", Depth: 2, Limit: defaultImpactSectionLimit,
 	})
 	if response.DisambiguationRequired || response.FocusMatchesTotal != 1 {
@@ -93,7 +93,7 @@ func TestImpactBuildsAllSectionsFromSnapshot(t *testing.T) {
 
 func TestImpactDepthOneSkipsTransitiveCallers(t *testing.T) {
 	t.Parallel()
-	response := buildImpactResponse(impactFixtureSnapshot(), impactFlags{
+	response := buildImpactResponseOnDisk(impactFixtureSnapshot(), impactFlags{
 		Symbol: "Orders", Depth: 1, Limit: defaultImpactSectionLimit,
 	})
 	if response.Callers.Total != 1 || response.Callers.Transitive != 0 {
@@ -103,7 +103,7 @@ func TestImpactDepthOneSkipsTransitiveCallers(t *testing.T) {
 
 func TestImpactContainerFocusListsMembers(t *testing.T) {
 	t.Parallel()
-	response := buildImpactResponse(impactFixtureSnapshot(), impactFlags{
+	response := buildImpactResponseOnDisk(impactFixtureSnapshot(), impactFlags{
 		Symbol: "Service", Depth: 2, Limit: defaultImpactSectionLimit,
 	})
 	if response.Siblings.Total != 2 {
@@ -128,7 +128,7 @@ func TestImpactAmbiguousSymbolListsDefinitionsAndFileDisambiguates(t *testing.T)
 			{FromID: "caller", ToID: "a-target", Type: "CALLS"},
 		},
 	}
-	ambiguous := buildImpactResponse(snapshot, impactFlags{Symbol: "Target", Depth: 2, Limit: 15})
+	ambiguous := buildImpactResponseOnDisk(snapshot, impactFlags{Symbol: "Target", Depth: 2, Limit: 15})
 	if !ambiguous.DisambiguationRequired || ambiguous.FocusMatchesTotal != 2 {
 		t.Fatalf("ambiguous response = %#v", ambiguous)
 	}
@@ -148,7 +148,7 @@ func TestImpactAmbiguousSymbolListsDefinitionsAndFileDisambiguates(t *testing.T)
 		t.Fatalf("ambiguous text output:\n%s", text.String())
 	}
 
-	resolved := buildImpactResponse(snapshot, impactFlags{Symbol: "Target", File: "a.go", Depth: 2, Limit: 15})
+	resolved := buildImpactResponseOnDisk(snapshot, impactFlags{Symbol: "Target", File: "a.go", Depth: 2, Limit: 15})
 	if resolved.DisambiguationRequired || resolved.Focus == nil || resolved.Focus.ID != "a-target" {
 		t.Fatalf("--file did not disambiguate: %#v", resolved)
 	}
@@ -159,7 +159,7 @@ func TestImpactAmbiguousSymbolListsDefinitionsAndFileDisambiguates(t *testing.T)
 
 func TestImpactNoMatchTextSuggestsFile(t *testing.T) {
 	t.Parallel()
-	response := buildImpactResponse(sem.ProviderSnapshot{}, impactFlags{Symbol: "Missing", Depth: 2, Limit: 15})
+	response := buildImpactResponseOnDisk(sem.ProviderSnapshot{}, impactFlags{Symbol: "Missing", Depth: 2, Limit: 15})
 	var text bytes.Buffer
 	writeImpactText(&text, response)
 	if !strings.Contains(text.String(), `No symbols matched "Missing"`) {
@@ -182,7 +182,7 @@ func TestImpactSectionCapEmitsMoreMarker(t *testing.T) {
 			{FromID: "c3", ToID: "focus", Type: "CALLS"},
 		},
 	}
-	response := buildImpactResponse(snapshot, impactFlags{Symbol: "Focus", Depth: 1, Limit: 2})
+	response := buildImpactResponseOnDisk(snapshot, impactFlags{Symbol: "Focus", Depth: 1, Limit: 2})
 	if response.Callers.Total != 3 || len(response.Callers.Entries) != 2 {
 		t.Fatalf("capped callers = %#v", response.Callers)
 	}
@@ -207,7 +207,7 @@ func TestImpactBoundedOutputStaysUnderBudget(t *testing.T) {
 		})
 		relations = append(relations, sem.RelationRecord{FromID: id, ToID: "focus", Type: "CALLS"})
 	}
-	response := buildImpactResponse(
+	response := buildImpactResponseOnDisk(
 		sem.ProviderSnapshot{Symbols: symbols, Relations: relations},
 		impactFlags{Symbol: "Focus", Depth: 1, Limit: defaultImpactSectionLimit},
 	)

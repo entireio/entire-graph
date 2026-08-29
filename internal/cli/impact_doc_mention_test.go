@@ -60,7 +60,7 @@ func docMentionSnapshot() sem.ProviderSnapshot {
 
 func TestImpactExcludesDocMentionsFromTransitiveExpansion(t *testing.T) {
 	t.Parallel()
-	response := buildImpactResponse(docMentionSnapshot(), impactFlags{
+	response := buildImpactResponseOnDisk(docMentionSnapshot(), impactFlags{
 		Symbol: "buildGroupIndex", Depth: 2, Limit: defaultImpactSectionLimit,
 	})
 	if response.Focus == nil || response.Focus.ID != "s-group" {
@@ -92,7 +92,7 @@ func TestImpactExcludesDocMentionsFromTransitiveExpansion(t *testing.T) {
 
 func TestImpactRanksDocMentionsLastAndLabelsThem(t *testing.T) {
 	t.Parallel()
-	response := buildImpactResponse(docMentionSnapshot(), impactFlags{
+	response := buildImpactResponseOnDisk(docMentionSnapshot(), impactFlags{
 		Symbol: "buildGroupIndex", Depth: 2, Limit: defaultImpactSectionLimit,
 	})
 	sawResolvedAfterMention := false
@@ -156,7 +156,7 @@ func TestImpactDocMentionsDoNotCrowdOutRealCallersUnderLimit(t *testing.T) {
 		FromID: "real", ToID: "focus", Type: "CALLS", Resolution: "import_resolved",
 	})
 
-	response := buildImpactResponse(snapshot, impactFlags{Symbol: "Target", Depth: 2, Limit: 3})
+	response := buildImpactResponseOnDisk(snapshot, impactFlags{Symbol: "Target", Depth: 2, Limit: 3})
 	if len(response.Callers.Entries) != 3 {
 		t.Fatalf("entries = %#v", response.Callers.Entries)
 	}

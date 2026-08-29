@@ -1,0 +1,20 @@
+--- a/benchmarks/common/mem0_client.py
++++ b/benchmarks/common/mem0_client.py
+@@ -138,6 +138,17 @@
+         """Add via OSS server — synchronous endpoint, no event polling."""
+         session = await self._get_session()
+ 
++        if os.getenv("MEM0_DATE_INJECT") == "1" and messages:
++            _ets = timestamp
++            if _ets is None and observation_date is not None:
++                try:
++                    _ets = int(datetime.strptime(observation_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
++                except ValueError:
++                    _ets = None
++            if _ets is not None:
++                _ds = datetime.fromtimestamp(_ets, timezone.utc).strftime("%Y-%m-%d")
++                messages = [dict(m) for m in messages]
++                messages[0] = {**messages[0], "content": f"[Current date: {_ds}. Resolve all relative time references (today, this week, recently, last month, etc.) against {_ds}, and date every extracted fact accordingly.]\n" + str(messages[0].get("content", ""))}
+         payload: dict[str, Any] = {"messages": messages, "user_id": user_id}
+         if timestamp is not None:
+             payload["timestamp"] = timestamp

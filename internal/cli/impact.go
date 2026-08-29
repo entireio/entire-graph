@@ -327,10 +327,6 @@ func impactNonCodeMention(relation sem.RelationRecord, endpoint neighborEndpoint
 	return sem.InventoryOnlyLanguage(languages[endpoint.ID])
 }
 
-func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impactResponse {
-	return buildImpactResponseFromReader(snapshot, flags, newRepoLineReader(snapshot.Header.RepoRoot))
-}
-
 func buildImpactResponseFromReader(
 	snapshot sem.ProviderSnapshot,
 	flags impactFlags,

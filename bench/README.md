@@ -2,8 +2,9 @@
 
 `graph-bench` clones popular real-world repositories per language and measures the
 semantic provider over them, emitting a machine-readable performance and quality
-report. It is the WP10 harness from the v2-plan and is meant to be re-run each
-work phase to track regressions and quality gains.
+report. It originated as the WP10 harness in the
+[archived v2 implementation plan](../docs/archive/2026-06-18-entire-graph-v2-implementation-plan.md)
+and is meant to be re-run each work phase to track regressions and quality gains.
 
 ## Design
 

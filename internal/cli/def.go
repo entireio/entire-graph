@@ -174,8 +174,13 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	// Only the source-quoting formats read source. Opening before the format
-	// switch spawned a git cat-file child that `--format json` never touched, and
-	// charged its setup to index_latency_ms.
+	// switch spawned a git cat-file child that `--format json` never touched.
+	//
+	// That is all this gate fixes. The open still happens before indexLatency is
+	// taken below, so text and agent runs continue to report the spawn as index
+	// time — as do impact and neighbors, which open unconditionally. Changing
+	// that is a change to what a published latency field MEANS, so it belongs in
+	// its own commit across all three verbs rather than as a side effect here.
 	var readSource lineReader
 	if flags.Format == "text" || flags.Format == "agent" {
 		var closeSource func() error
@@ -226,18 +231,12 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	return nil
 }
 
-// writeDefBodies prints the SOURCE of each declaration the card describes, numbered.
+// writeDefBodiesFromReader prints the SOURCE of each declaration the card describes, numbered,
+// through the reader the command owns.
 //
 // The card answers "what can I do with this"; agents call `def` to answer "show me the code". Measured
 // on carbon: the agent got a body it could not navigate, cut it with `head -80`, lost the line it
 // needed and spent 87 turns grepping instead. The card alone was never the whole answer.
-func writeDefBodies(out io.Writer, response defResponse, repoRoot string, from int) {
-	if repoRoot == "" {
-		return
-	}
-	writeDefBodiesFromReader(out, response, newRepoLineReader(repoRoot), from)
-}
-
 func writeDefBodiesFromReader(out io.Writer, response defResponse, read lineReader, from int) {
 	if len(response.Declarations) == 0 || read == nil {
 		return

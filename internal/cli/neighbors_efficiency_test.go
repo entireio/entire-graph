@@ -92,7 +92,7 @@ func TestNeighborsLimitBoundsAmbiguousFocusMatchesDeterministically(t *testing.T
 			{FromID: "focus-a-early", ToID: "callee", Type: "CALLS"},
 		},
 	}
-	response := buildNeighborResponse(snapshot, neighborFlags{
+	response := buildNeighborResponseOnDisk(snapshot, neighborFlags{
 		Symbol: "Target", Relation: "CALLS", Direction: "both", Depth: 1, Limit: 2,
 	})
 	if !response.Truncated || !response.FocusMatchesTruncated || response.FocusMatchesTotal != 3 {
@@ -152,7 +152,7 @@ func TestNeighborsExactSymbolIDDisambiguatesSameFileOverloads(t *testing.T) {
 		{id: "process-int", callee: "int-callee"},
 	} {
 		t.Run(test.id, func(t *testing.T) {
-			response := buildNeighborResponse(snapshot, neighborFlags{
+			response := buildNeighborResponseOnDisk(snapshot, neighborFlags{
 				Symbol: test.id, Relation: "CALLS", Direction: "out", Depth: 1, Limit: 20,
 			})
 			if response.DisambiguationRequired || response.FocusMatchesTotal != 1 || len(response.Matches) != 1 {
@@ -167,7 +167,7 @@ func TestNeighborsExactSymbolIDDisambiguatesSameFileOverloads(t *testing.T) {
 	// The ID already encodes the defining file, so a stale or mismatched
 	// --file must not turn a valid ID lookup into an empty result.
 	for _, staleFile := range []string{"other.go", "./service.go", `sub\service.go`, "/somewhere/else/service.go"} {
-		mismatchedFile := buildNeighborResponse(snapshot, neighborFlags{
+		mismatchedFile := buildNeighborResponseOnDisk(snapshot, neighborFlags{
 			Symbol: "process-string", File: staleFile, Relation: "CALLS", Direction: "out", Depth: 1, Limit: 20,
 		})
 		if mismatchedFile.FocusMatchesTotal != 1 || len(mismatchedFile.Matches) != 1 ||
@@ -176,7 +176,7 @@ func TestNeighborsExactSymbolIDDisambiguatesSameFileOverloads(t *testing.T) {
 		}
 	}
 
-	ambiguous := buildNeighborResponse(snapshot, neighborFlags{
+	ambiguous := buildNeighborResponseOnDisk(snapshot, neighborFlags{
 		Symbol: "Service.Process", Relation: "CALLS", Direction: "out", Depth: 1, Limit: 20,
 	})
 	var out bytes.Buffer
@@ -201,7 +201,7 @@ func TestNeighborsExactSymbolIDDisambiguatesSameFileOverloads(t *testing.T) {
 		line int
 		want string
 	}{{line: 10, want: "process-string"}, {line: 20, want: "process-int"}} {
-		resolved := buildNeighborResponse(snapshot, neighborFlags{
+		resolved := buildNeighborResponseOnDisk(snapshot, neighborFlags{
 			Symbol: "Service.Process", File: "service.go", Line: selector.line,
 			Relation: "CALLS", Direction: "out", Depth: 1, Limit: 20,
 		})
@@ -224,7 +224,7 @@ func TestNeighborsFileFilterNormalizesPathSpellings(t *testing.T) {
 	for _, file := range []string{
 		"src/one.py", "./src/one.py", "src//one.py", `src\one.py`, "/repo/root/src/one.py",
 	} {
-		response := buildNeighborResponse(snapshot, neighborFlags{
+		response := buildNeighborResponseOnDisk(snapshot, neighborFlags{
 			Symbol: "Target", File: file, Relation: "CALLS", Direction: "both", Depth: 1, Limit: 20,
 		})
 		if response.DisambiguationRequired || len(response.Matches) != 1 ||
@@ -252,7 +252,7 @@ func TestNeighborsHighDegreeFocusKeepsOnlyDeterministicTopLimit(t *testing.T) {
 			{FromID: "caller-a", ToID: "focus", Type: "CALLS"},
 		},
 	}
-	response := buildNeighborResponse(snapshot, neighborFlags{
+	response := buildNeighborResponseOnDisk(snapshot, neighborFlags{
 		Symbol: "Focus", Relation: "CALLS", Direction: "in", Depth: 1, Limit: 2,
 	})
 	if !response.Truncated || !response.endpointTruncated || len(response.Matches) != 1 {
@@ -285,7 +285,7 @@ func TestNeighborsHighDegreeRankingKeepsProductionCallerAheadOfTwentyTests(t *te
 		})
 	}
 
-	response := buildNeighborResponse(snapshot, neighborFlags{
+	response := buildNeighborResponseOnDisk(snapshot, neighborFlags{
 		Symbol: "Focus", Relation: "CALLS", Direction: "in", Depth: 1, Limit: 1,
 	})
 	if len(response.Matches) != 1 || len(response.Matches[0].Incoming) != 1 ||
@@ -391,7 +391,7 @@ func TestNeighborsScopeFiltersExternalAndTestEndpoints(t *testing.T) {
 			{FromID: "focus", ToID: "constructor", Type: "CONSTRUCTS"},
 		},
 	}
-	response := buildNeighborResponse(snapshot, neighborFlags{
+	response := buildNeighborResponseOnDisk(snapshot, neighborFlags{
 		Symbol: "Focus", Relation: "CALLS", Direction: "both", Depth: 2, Limit: 20,
 		InternalOnly: true, ExcludeTests: true,
 	})
@@ -421,7 +421,7 @@ func TestNeighborsExcludeTestsPreservesFocusInTestFile(t *testing.T) {
 		},
 		Relations: []sem.RelationRecord{{FromID: "caller", ToID: "focus", Type: "CALLS"}},
 	}
-	response := buildNeighborResponse(snapshot, neighborFlags{
+	response := buildNeighborResponseOnDisk(snapshot, neighborFlags{
 		Symbol: "Focus", Relation: "CALLS", Direction: "both", Depth: 1, Limit: 20,
 		ExcludeTests: true,
 	})
