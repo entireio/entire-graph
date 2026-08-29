@@ -24,8 +24,28 @@ type languageFixture struct {
 	// callsGap documents a language whose capability report advertises CALLS
 	// while this fixture's idiomatic call form produces none. It is an audited
 	// defect list, not a licence: closing one of these fails this test until the
-	// entry is removed, and adding a new one requires justifying it here.
+	// entry retires (by removal, or by callsGapHolds below reporting the gap's
+	// cause gone), and adding a new one requires justifying it here.
 	callsGap string
+	// callsGapHolds, when non-nil, is the condition callsGap's stated cause
+	// reduces to, evaluated against the extractor on every run: the gap is
+	// claimed only while it reports true. It makes an audited gap
+	// self-verifying rather than a hand-maintained literal, and it tightens the
+	// assertion in both directions. The entry then claims a cause rather than
+	// restating its effect, so naming the wrong cause fails here; and the commit
+	// that closes the gap retires the entry by flipping the condition, which is
+	// what keeps this test order-independent. A literal gap silently disagrees
+	// with an extractor fix that lands on a different branch — the two merge
+	// cleanly and only the merged tree fails — whereas a condition read from the
+	// extractor at run time cannot go stale that way.
+	//
+	// It receives the fixture's own extraction result, because the two shapes a
+	// cause takes need different evidence: a resolution rule is a predicate over
+	// the provider, while a missing symbol is only visible in what the fixture
+	// produced. Leave it nil for a gap that reduces to neither — an absent
+	// scanner or an uninferred type has no witness beyond the missing CALLS
+	// itself — and that gap is asserted unconditionally, exactly as before.
+	callsGapHolds func(got languageMatrixResult) bool
 }
 
 // languageMatrix covers every language in Capabilities().SemanticLanguages.
@@ -83,6 +103,11 @@ var languageMatrix = []languageFixture{
 		// method, so a module-scoped package produces no same-file CALLS.
 		relations: []string{"DEFINES", "CONTAINS", "CONSTRUCTS", "PARAM_TYPE", "USES_TYPE"},
 		callsGap:  "a Julia definition inside `module ... end` is emitted as a method, and bare calls are barred from resolving to methods",
+		// The whole gap reduces to one rule: bare-call resolution skips method
+		// targets for Julia. Reading it here rather than restating its
+		// consequence means the fix that admits Julia retires this entry on its
+		// own, and that a wrong diagnosis is caught instead of recorded.
+		callsGapHolds: func(languageMatrixResult) bool { return !nameCallMayTargetMethod("Julia") },
 	},
 	{dir: "kotlin", symbols: []string{"class:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "lua", symbols: []string{"function:new", "function:add", "function:ledger_double"}, relations: []string{"DEFINES", "CALLS"}},
@@ -214,6 +239,13 @@ func TestLanguageExtractionMatrix(t *testing.T) {
 // call site. Both directions are failures worth knowing about: a new entry
 // means a language went dark, and a stale entry means a fix landed without the
 // audited gap list being retired with it.
+//
+// The audit is read from the extractor wherever a gap reduces to a checkable
+// condition (see callsGapHolds), so a gap closes itself in the same commit that
+// closes it in the extractor. That is what makes the assertion safe to state
+// exactly: a gap pinned only as a literal disagrees with a fix that lands on a
+// different branch, and because the two touch different files they merge
+// cleanly and fail only afterwards, on a tree neither author tested.
 func TestLanguageMatrixCallsGapsAreExactlyAsAudited(t *testing.T) {
 	t.Parallel()
 	claimsCalls := map[string]bool{}
@@ -235,10 +267,20 @@ func TestLanguageMatrixCallsGapsAreExactlyAsAudited(t *testing.T) {
 				return
 			}
 			got := runLanguageFixture(t, fixture.dir)
+			auditedGap := fixture.callsGap
+			if auditedGap != "" && fixture.callsGapHolds != nil && !fixture.callsGapHolds(got) {
+				// The gap's stated cause no longer holds, so the entry has
+				// retired itself and the language is now held to the same
+				// standard as every other language that advertises CALLS.
+				auditedGap = ""
+			}
 			switch {
-			case got.relations["CALLS"] && fixture.callsGap != "":
-				t.Fatalf("%s now extracts CALLS; remove its audited gap (%s) from languageMatrix", language, fixture.callsGap)
-			case !got.relations["CALLS"] && fixture.callsGap == "":
+			case got.relations["CALLS"] && auditedGap != "":
+				t.Fatalf("%s now extracts CALLS; remove its audited gap (%s) from languageMatrix", language, auditedGap)
+			case !got.relations["CALLS"] && auditedGap == "":
+				if fixture.callsGap != "" {
+					t.Fatalf("%s still extracts no CALLS, but its audited gap (%s) reports itself closed; callsGapHolds names the wrong cause", language, fixture.callsGap)
+				}
 				t.Fatalf("%s advertises CALLS but extracted none from its fixture; relations seen: %v", language, matrixSortedKeys(got.relations))
 			}
 		})
