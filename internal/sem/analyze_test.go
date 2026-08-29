@@ -2175,6 +2175,50 @@ func blobAt(t *testing.T, repo, revision, path string) string {
 	return rev(t, repo, revision+":"+path)
 }
 
+// TestAnalyzeGitRangeCaseOnlyRenameIsReported pins the one rename whose handling
+// genuinely differs by platform. Correcting a file's capitalization changes the
+// path, so it re-identifies every symbol in the file exactly as any other rename
+// does — but Linux sees two distinct names while macOS and Windows fold them onto
+// one, and Go's string comparison in the same-path guard is case-sensitive
+// regardless. Making that guard case-insensitive to "fix" Windows would silently
+// drop a real re-identification, so the behaviour is pinned here.
+//
+// The rename is staged through the index rather than the filesystem, so the
+// fixture cannot depend on whether the host folds case: no file is ever renamed
+// on disk, and the test needs no platform guard to run everywhere.
+func TestAnalyzeGitRangeCaseOnlyRenameIsReported(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "Sample.go", "package sample\n\nfunc Run() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	blob := blobAt(t, repo, base, "Sample.go")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "100644,"+blob+",sample.go")
+	git(t, repo, "update-index", "--force-remove", "Sample.go")
+	git(t, repo, "commit", "-m", "correct the capitalization")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := result.Files[0]
+	if len(result.Files) != 1 || file.Path != "sample.go" || file.OldPath != "Sample.go" {
+		t.Fatalf("files = %#v, want one Sample.go -> sample.go rename", result.Files)
+	}
+	if len(file.Changes) != 1 || file.Changes[0].Type != "moved" || file.Changes[0].Kind != moduleKind {
+		t.Fatalf("changes = %#v, want one module moved", file.Changes)
+	}
+	if file.Changes[0].OldPath != "Sample.go" || file.Changes[0].NewPath != "sample.go" {
+		t.Fatalf("change paths = %q -> %q, want the capitalization preserved on both sides",
+			file.Changes[0].OldPath, file.Changes[0].NewPath)
+	}
+}
+
 // TestAnalyzeGitRangeRenameAcrossLanguagesReportsTheHeadLanguage pins the label
 // on a rename that crosses extensions. The graph indexes the head path with the
 // head parser's language, so reporting the base one contradicts every snapshot
