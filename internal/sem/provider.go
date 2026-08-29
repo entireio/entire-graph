@@ -1855,6 +1855,9 @@ func nameCallMayTargetMethod(lang string) bool {
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
+	// candidates come from the workspace-wide short-name index, which is keyed by
+	// name alone; sameFile cannot cross a language boundary and is left alone.
+	candidates = sharedTypeCandidates(from, candidates)
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
 		// A bare `name()` call resolves to a function, not a class method (methods
@@ -2135,7 +2138,7 @@ func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []Symb
 	}
 	receiver := name[:strings.LastIndex(name, ".")]
 	var related []resolvedCallTarget
-	for _, to := range symbolsByShortName[terminal] {
+	for _, to := range sharedTypeCandidates(from, symbolsByShortName[terminal]) {
 		if to.ID == from.ID || to.FilePath == from.FilePath || !callableTargetKind(to.Kind) || to.Kind == "method" || !localReachable(from, to) {
 			continue
 		}
@@ -2808,7 +2811,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				for _, edge := range supertypesFromSignature(symbol.Language, symbol.Signature) {
 					sup, ok := firstTypeLikeNamed(symbolsByFile[symbol.FilePath], edge.Super)
 					if !ok || sup.ID == symbol.ID {
-						sup, ok = firstTypeLikeNamed(symbolsByShortName[edge.Super], edge.Super)
+						sup, ok = firstTypeLikeNamed(sharedTypeCandidates(symbol, symbolsByShortName[edge.Super]), edge.Super)
 					}
 					if !ok || sup.ID == symbol.ID {
 						continue
@@ -3356,7 +3359,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
 					} else {
-						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
+						targets = resolveCallTargets(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), currentFileSymbols, callImportsByName, false)
 					}
 					for _, to := range targets {
 						// A bare identifier passed as an argument may be a callback, but
@@ -3441,7 +3444,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
+					for _, to := range resolveCallTargets(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), currentFileSymbols, importsByName, false) {
 						if typeLikeKind(to.Kind) {
 							continue // construction, not an async call
 						}
@@ -3472,7 +3475,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if flow.Name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName, true) {
+					for _, to := range resolveCallTargets(flow.Name, from, sharedTypeCandidates(from, symbolsByShortName[flow.Name]), currentFileSymbols, importsByName, true) {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}
@@ -3761,7 +3764,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else {
-						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false)
+						targets = resolveCallTargets(name, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[name]), currentFileSymbols, importsByName, false)
 					}
 					for _, to := range targets {
 						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
@@ -4111,7 +4114,7 @@ func buildMixinRelation(repoKey string, anchor SymbolRecord, edge rawSupertype, 
 		}
 	}
 	if targetKind == "external" {
-		for _, symbol := range symbolsByShortName[edge.Super] {
+		for _, symbol := range sharedTypeCandidates(anchor, symbolsByShortName[edge.Super]) {
 			if accepts(symbol) {
 				toID, targetKind, resolution, scope, confidence = symbol.ID, "symbol", "name_only", "module", minFloat(edge.Confidence, 0.85)
 				break
@@ -4260,7 +4263,7 @@ func buildTypeRelation(repoKey string, anchor SymbolRecord, super, relation stri
 	confidence := minFloat(baseConfidence, 0.8)
 	if sym, ok := firstTypeLikeNamed(sameFileSymbols, super); ok && sym.ID != anchor.ID {
 		toID, targetKind, resolution, scope, confidence = sym.ID, "symbol", "exact", "file", baseConfidence
-	} else if sym, ok := firstTypeLikeNamed(symbolsByShortName[super], super); ok && sym.ID != anchor.ID {
+	} else if sym, ok := firstTypeLikeNamed(sharedTypeCandidates(anchor, symbolsByShortName[super]), super); ok && sym.ID != anchor.ID {
 		toID, targetKind, resolution, scope, confidence = sym.ID, "symbol", "name_only", "module", minFloat(baseConfidence, 0.85)
 	}
 	return RelationRecord{
@@ -4317,7 +4320,7 @@ func typeScriptReceiverTypeResolvesElsewhere(typeName string, from SymbolRecord,
 	if len(importsByName[typeName]) > 0 {
 		return true
 	}
-	for _, candidate := range symbolsByShortName[typeName] {
+	for _, candidate := range sharedTypeCandidates(from, symbolsByShortName[typeName]) {
 		if !typeLikeKind(candidate.Kind) || candidate.FilePath != from.FilePath {
 			continue
 		}
@@ -4730,7 +4733,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// the package's own file (perlSymbolFileMatchesType), which is how the
 		// fluent gate distinguishes a same-object chain from getter navigation.
 		hopResolvable := func(hop, pkgType string) bool {
-			for _, candidate := range symbolsByShortName[hop] {
+			for _, candidate := range sharedTypeCandidates(from, symbolsByShortName[hop]) {
 				if candidate.Language != "Perl" {
 					continue
 				}
@@ -4957,7 +4960,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	var relations []RelationRecord
 	methodResolved := map[string]bool{}
 	for _, call := range calls {
-		method, confidence, reason, resolution, scope, ok := receiverQualifiedMethodTarget(from, call, symbolsByShortName[call.Method], returnTypesBySymbolNameAndFile)
+		method, confidence, reason, resolution, scope, ok := receiverQualifiedMethodTarget(from, call, sharedTypeCandidates(from, symbolsByShortName[call.Method]), returnTypesBySymbolNameAndFile)
 		if !ok {
 			continue
 		}
@@ -5005,7 +5008,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if typeName == "" {
 				continue
 			}
-			target, ok := perlCallableForType(typeName, call.Method, symbolsByShortName[call.Method])
+			target, ok := perlCallableForType(typeName, call.Method, sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || target.ID == from.ID {
 				continue
 			}
@@ -5067,13 +5070,13 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 					confidence = 0.75
 					reason = "method call resolved via property-chain-typed local receiver"
 				}
-				sym, ok := typeLikeNamedWithMethod(symbolsByShortName[typeName], typeName, from.FilePath, call.Method, methodsByContainer, superContainerByID)
+				sym, ok := typeLikeNamedWithMethod(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath, call.Method, methodsByContainer, superContainerByID)
 				if !ok {
 					continue
 				}
 				targetID = sym.ID
 				receiverTypeKind = sym.Kind
-			} else if cls, ok := typeLikeNamedWithMethod(symbolsByShortName[call.Receiver], call.Receiver, from.FilePath, call.Method, methodsByContainer, superContainerByID); ok {
+			} else if cls, ok := typeLikeNamedWithMethod(sharedTypeCandidates(from, symbolsByShortName[call.Receiver]), call.Receiver, from.FilePath, call.Method, methodsByContainer, superContainerByID); ok {
 				// ClassName.method(): the receiver is itself a type name, not a
 				// variable, so this is a static (class-qualified) call and the
 				// target is that class's own method.
@@ -5109,7 +5112,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// C# class-level member receiver: `Dependencies.Method(...)`
 				// where `Dependencies` is a typed property or field of the
 				// enclosing class (or a base class).
-				sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+				sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath)
 				if !ok {
 					continue
 				}
@@ -5137,7 +5140,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			// last-declared accessor (getter or setter), so resolve the setter
 			// explicitly and prefer it — otherwise the edge lands on the getter
 			// about half the time (declaration-order dependent).
-			if setter, setterInherited, found := dartSetterAccessor(targetID, call.Method, symbolsByShortName[call.Method], superContainerByID); found {
+			if setter, setterInherited, found := dartSetterAccessor(targetID, call.Method, sharedTypeCandidates(from, symbolsByShortName[call.Method]), superContainerByID); found {
 				method, inherited = setter, setterInherited
 			}
 		}
@@ -5156,7 +5159,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			// exactly one method in the workspace carries the name, resolve to
 			// that sole implementation — the same unique-name stance as the Go
 			// interface fallback.
-			method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+			method, ok = uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if ok {
 				confidence = minFloat(confidence, 0.7)
 				reason = "protocol-typed receiver call resolved to the unique implementing method"
@@ -5249,7 +5252,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				continue
 			}
 			unique := 0
-			for _, candidate := range symbolsByShortName[call.Method] {
+			for _, candidate := range sharedTypeCandidates(from, symbolsByShortName[call.Method]) {
 				if candidate.Language == from.Language && candidate.Kind == "method" && candidate.FilePath == from.FilePath {
 					unique++
 				}
@@ -5295,7 +5298,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if _, external := importedReceiverVars[call.Receiver]; external {
 			continue
 		}
-		m, ok := uniqueMethodByShortName(symbolsByShortName[call.Method])
+		m, ok := uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 		if !ok || m.ID == from.ID {
 			continue
 		}
@@ -5331,7 +5334,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if methodResolved[call.Receiver+"."+call.Method] {
 			continue
 		}
-		m, ok := uniqueMethodByShortName(symbolsByShortName[call.Method])
+		m, ok := uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 		if !ok || m.ID == from.ID || m.FilePath != from.FilePath {
 			continue
 		}
@@ -5361,7 +5364,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if methodResolved[call.Receiver+"."+call.Method] {
 				continue
 			}
-			target, ok := uniqueCallableByShortName(symbolsByShortName[call.Method], from.Language)
+			target, ok := uniqueCallableByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]), from.Language)
 			if !ok || target.ID == from.ID {
 				continue
 			}
@@ -5467,7 +5470,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 			var target SymbolRecord
 			resolved := false
-			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, from.FilePath); ok {
+			if sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[propType]), propType, from.FilePath); ok {
 				if method, _, ok := lookupMethodUpChain(sym.ID, chain.Method, methodsByContainer, superContainerByID); ok {
 					target, resolved = method, true
 				}
@@ -5540,7 +5543,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 			var target SymbolRecord
 			resolved := false
-			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, from.FilePath); ok {
+			if sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[propType]), propType, from.FilePath); ok {
 				if method, _, ok := lookupMethodUpChain(sym.ID, chain.Method, methodsByContainer, superContainerByID); ok {
 					target, resolved = method, true
 				}
@@ -5637,7 +5640,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if methodResolved[key] || swiftChainTails[key] {
 				continue
 			}
-			target, ok := swiftReceiverMethodByArgumentLabels(call, symbolsByShortName[call.Method])
+			target, ok := swiftReceiverMethodByArgumentLabels(call, sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || target.ID == from.ID {
 				continue
 			}
@@ -5782,7 +5785,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			confidence = 0.85
 			reason = "PHP parent:: call resolved to the superclass"
 		default:
-			cls, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[call.Class], call.Class, from.FilePath)
+			cls, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[call.Class]), call.Class, from.FilePath)
 			if !ok {
 				continue
 			}
@@ -5831,7 +5834,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if !ok {
 			continue
 		}
-		sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+		sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath)
 		if !ok {
 			continue
 		}
@@ -5881,7 +5884,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if typeName == "" {
 			continue
 		}
-		sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+		sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath)
 		if !ok {
 			continue
 		}
@@ -5946,7 +5949,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if !ok {
 				continue
 			}
-			receiverSym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[receiverType], receiverType, from.FilePath)
+			receiverSym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[receiverType]), receiverType, from.FilePath)
 			if !ok {
 				continue
 			}
@@ -5959,7 +5962,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if !ok {
 			continue
 		}
-		propSym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, propFile)
+		propSym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[propType]), propType, propFile)
 		if !ok {
 			continue
 		}
@@ -6013,7 +6016,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if methodResolved[call.Receiver+"."+call.Method] {
 				continue
 			}
-			method, ok := csharpUniqueExtensionMethod(symbolsByShortName[call.Method])
+			method, ok := csharpUniqueExtensionMethod(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || method.ID == from.ID {
 				continue
 			}
@@ -6044,7 +6047,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 	}
 	for _, call := range chainedCalls {
-		sym, ok := firstTypeLikeNamed(symbolsByShortName[call.TypeName], call.TypeName)
+		sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[call.TypeName]), call.TypeName)
 		if !ok {
 			continue
 		}
@@ -6061,7 +6064,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			// method in the workspace carries the name, resolve to that sole
 			// implementation — the same unique-name tier as the receiver-call
 			// fallback.
-			method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+			method, ok = uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			confidence = 0.7
 			reason = "interface method call resolved to the unique implementing method"
 			resolution = "name_only"
@@ -6105,7 +6108,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			returnTypes = returnTypesBySymbolNameAndDir[call.Factory][filepath.ToSlash(filepath.Dir(from.FilePath))]
 		}
 		if len(returnTypes) == 0 && from.Language == "Rust" {
-			method, ok := uniqueMethodByShortName(symbolsByShortName[call.Method])
+			method, ok := uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || method.ID == from.ID || method.Language != "Rust" {
 				continue
 			}
@@ -6135,7 +6138,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			continue
 		}
 		for _, typeName := range returnTypes {
-			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 			if !ok {
 				continue
 			}
@@ -6151,7 +6154,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// one method in the workspace carries the name, resolve to that
 				// sole implementation — the same unique-name tier as the
 				// receiver-call fallback.
-				method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+				method, ok = uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 				confidence = 0.7
 				reason = "interface-typed return resolved to the unique implementing method"
 				resolution = "name_only"
@@ -6187,7 +6190,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	}
 	for _, call := range chainedReturnCalls {
 		for _, typeName := range methodReturnChainTypes(call.TypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 			if !ok {
 				continue
 			}
@@ -6228,7 +6231,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		intermediateMethods := call.Methods[:len(call.Methods)-1]
 		finalMethod := call.Methods[len(call.Methods)-1]
 		for _, typeName := range methodReturnChainTypes(call.TypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 			if !ok {
 				continue
 			}
@@ -6265,7 +6268,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	for _, call := range returnedChainCalls {
 		for _, factoryTypeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
 			for _, typeName := range methodReturnChainTypes(factoryTypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-				sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+				sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 				if !ok {
 					continue
 				}
@@ -6309,7 +6312,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		finalMethod := call.Methods[len(call.Methods)-1]
 		for _, factoryTypeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
 			for _, typeName := range methodReturnChainTypes(factoryTypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-				sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+				sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 				if !ok {
 					continue
 				}
@@ -6442,13 +6445,13 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 	}
 	sort.Strings(requirements)
 	if len(requirements) == 1 {
-		if _, unique := uniqueGoConcreteMethodByShortName(symbolsByShortName[ifaceMethod.Name]); !unique {
+		if _, unique := uniqueGoConcreteMethodByShortName(sharedTypeCandidates(ifaceMethod, symbolsByShortName[ifaceMethod.Name])); !unique {
 			return nil
 		}
 	}
 	byContainer := map[string]SymbolRecord{}
 	var order []string
-	for _, candidate := range symbolsByShortName[ifaceMethod.Name] {
+	for _, candidate := range sharedTypeCandidates(ifaceMethod, symbolsByShortName[ifaceMethod.Name]) {
 		if candidate.Language != "Go" || candidate.Kind != "method" || candidate.ContainerID == "" {
 			continue
 		}
@@ -6763,7 +6766,7 @@ func importedReceiverCallRelations(from SymbolRecord, block string, importsByNam
 	seen := map[string]bool{}
 	for _, call := range receiverCalls(block) {
 		var localTargets []resolvedCallTarget
-		for _, to := range symbolsByShortName[call.Method] {
+		for _, to := range sharedTypeCandidates(from, symbolsByShortName[call.Method]) {
 			if to.ID == from.ID || to.Kind == "field" {
 				continue
 			}
@@ -8981,7 +8984,7 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 			if subject == "" {
 				continue
 			}
-			target, resolution, ok := resolveTestSubject(subject, symbol, symbolsByShortName[subject], resolvedImportsByFile[path])
+			target, resolution, ok := resolveTestSubject(subject, symbol, sharedTypeCandidates(symbol, symbolsByShortName[subject]), resolvedImportsByFile[path])
 			if !ok {
 				continue
 			}
@@ -9270,7 +9273,7 @@ func typeNameOccursBare(signature, name string) bool {
 // same-name declaration no longer suppresses the real, resolvable edge.
 func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecord, symbolsByShortName map[string][]SymbolRecord, importsByName, qualifiedImportsByName map[string][]string) (SymbolRecord, string, string, float64, bool) {
 	var candidates []SymbolRecord
-	for _, sym := range symbolsByShortName[name] {
+	for _, sym := range sharedTypeCandidates(from, symbolsByShortName[name]) {
 		if sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind) && languagesShareTypes(from.Language, sym.Language) {
 			candidates = append(candidates, sym)
 		}
@@ -9435,7 +9438,7 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 			// Nearest-package preference, not first-match: a module that declares
 			// one `SDConfig` per sibling package would otherwise attribute every
 			// field read to whichever package sorted first.
-			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath); ok {
+			if sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath); ok {
 				containerID = sym.ID
 				confidence = 0.85
 				if _, ok := paramTypes[access.Receiver]; ok {

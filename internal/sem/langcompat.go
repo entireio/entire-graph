@@ -86,3 +86,34 @@ func languagesShareTypes(from, target string) bool {
 	}
 	return typeSharingLanguages[from][target]
 }
+
+// sharedTypeCandidates filters a candidate list from the WORKSPACE-WIDE
+// short-name index down to declarations the referring symbol could actually
+// name.
+//
+// The index is keyed by name alone, so every lookup into it is a cross-language
+// lookup by construction. resolveTypeReference was filtered first because the
+// Erlang-record-becomes-an-R-type case was found there, but the same index feeds
+// call, constructor, inheritance and test resolution, and each of those selects
+// a target the same way: take the candidates with this name, pick one. Measured
+// before this filter, a Ruby `Point.new.process` resolved to a GO method
+// (`Ruby/make -> Go/Point.process`, resolution=type_inferred) purely because Go
+// declared the only other `Point`.
+//
+// Filtering the CANDIDATES rather than the emitted edges matters for the same
+// reason it did in resolveTypeReference: an impossible foreign declaration must
+// not count towards ambiguity either, or it suppresses the real edge instead of
+// merely adding a false one.
+//
+// Same-file and same-package candidate lists are NOT routed through here. They
+// cannot cross a language boundary in the first place, and filtering them would
+// cost a pass over every lookup for no possible change in result.
+func sharedTypeCandidates(from SymbolRecord, candidates []SymbolRecord) []SymbolRecord {
+	filtered := candidates[:0:0]
+	for _, candidate := range candidates {
+		if languagesShareTypes(from.Language, candidate.Language) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
+}

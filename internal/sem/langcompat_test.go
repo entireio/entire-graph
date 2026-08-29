@@ -258,3 +258,110 @@ func treeSitterLanguageNames() map[string]struct{} {
 	}
 	return names
 }
+
+// TestCallResolutionStaysInsideCompatibleLanguages is the second half of the
+// cross-language repair. resolveTypeReference was filtered first because that is
+// where the Erlang-record-becomes-an-R-type case surfaced, but the same
+// name-keyed index feeds call, constructor, inheritance and test resolution, and
+// each of those picks a target the same way.
+//
+// Measured on origin/main over the corpus below, all four CALLS edges resolve by
+// type_inferred and two of them are wrong:
+//
+//	Go/run     -> Go/Point.process        correct
+//	Kotlin/... -> Java/Shape.area         correct (compatible languages)
+//	Python/run -> Go/Point.process        WRONG — Python has its own Point.process
+//	Ruby/run   -> Go/Point.process        WRONG — Ruby has its own Point.process
+//
+// The edges are not merely low-confidence: Python and Ruby each declare the
+// method the call actually reaches, and the resolver chose Go's because the
+// index is keyed by bare name. Filtering CANDIDATES rather than emitted edges is
+// what turns this into a repair instead of a deletion — with the impossible
+// declarations out of the candidate set, the real ones resolve, so the edge
+// count is unchanged and two edges move from a wrong target to the right one.
+func TestCallResolutionStaysInsideCompatibleLanguages(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "go/a.go", `package a
+
+type Point struct{ X int }
+
+func (p Point) process() int { return 1 }
+func run(point Point) int    { return point.process() }
+`)
+	writeFile(t, repo, "py/a.py", `class Point:
+    def process(self):
+        return 1
+
+def run(point: Point):
+    return Point().process()
+`)
+	writeFile(t, repo, "rb/a.rb", `class Point
+  def process
+    1
+  end
+end
+
+def run
+  Point.new.process
+end
+`)
+	// A BARE-NAME call (no receiver) takes a different resolution path from the
+	// receiver-typed calls above — resolveCallTargets rather than the type
+	// helpers — so it is covered explicitly. Lua defines `helper` and calls it;
+	// nothing else may claim that call, and Lua must not claim R's.
+	writeFile(t, repo, "lua/a.lua", `function helper(x)
+  return x
+end
+
+function driver()
+  return helper(1)
+end
+`)
+	writeFile(t, repo, "r/a.R", `helper <- function(x) {
+  x
+}
+
+driver2 <- function() {
+  helper(1)
+}
+`)
+	// Kotlin naming a Java type is a REAL cross-language edge and must survive;
+	// a same-language-only rule would delete it.
+	writeFile(t, repo, "java/Shape.java", `public class Shape { public int area() { return 1; } }
+`)
+	writeFile(t, repo, "kt/use.kt", `fun useShape(s: Shape): Int { return s.area() }
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	language := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		language[symbol.ID] = symbol.Language
+	}
+
+	// Every relation must join languages that can actually name each other.
+	for _, relation := range snapshot.Relations {
+		fromLanguage, okFrom := language[relation.FromID]
+		toLanguage, okTo := language[relation.ToID]
+		if !okFrom || !okTo {
+			continue
+		}
+		if !languagesShareTypes(fromLanguage, toLanguage) {
+			t.Errorf("%s edge crosses a language boundary that cannot be crossed: %s (%s) -> %s (%s)",
+				relation.Type, relation.FromID, fromLanguage, relation.ToID, toLanguage)
+		}
+	}
+
+	// And the edges that should exist still do — including the compatible
+	// cross-language one, whose loss is the failure mode of a naive fix.
+	for _, want := range [][2]string{
+		{"run", "Point.process"},
+		{"useShape", "Shape.area"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Errorf("missing CALLS %s->%s: %#v", want[0], want[1], relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
