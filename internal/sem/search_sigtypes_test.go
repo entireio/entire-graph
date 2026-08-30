@@ -1,6 +1,8 @@
 package sem
 
 import (
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -225,6 +227,65 @@ func TestSearchSignatureTypeSurfaceResolvesTheDeclaringType(t *testing.T) {
 				t.Errorf("entry %q leaked a body or another type's member: %q", entry.Name, member)
 			}
 		}
+	}
+}
+
+func TestSearchSignatureTypeRetainsEveryCountedMemberFile(t *testing.T) {
+	t.Parallel()
+
+	anchor := SymbolRecord{
+		ID: "use", Kind: "function", Name: "Use", FilePath: "src/use.go",
+		Signature: "func Use(value Edit)", Language: "Go",
+	}
+	declaration := SymbolRecord{
+		ID: "edit", Kind: "struct", Name: "Edit", FilePath: "types/edit.go",
+		StartLine: 10, Signature: "type Edit struct",
+	}
+	byID := map[string]SymbolRecord{anchor.ID: anchor, declaration.ID: declaration}
+	byFile := map[string][]SymbolRecord{
+		anchor.FilePath:      {anchor},
+		declaration.FilePath: {declaration},
+	}
+	var relations []RelationRecord
+	wantPaths := []string{declaration.FilePath}
+	for index := 1; index <= searchSignatureTypeMemberLimit+1; index++ {
+		number := strconv.Itoa(index)
+		if index < 10 {
+			number = "0" + number
+		}
+		member := SymbolRecord{
+			ID: "extension:" + number, Kind: "method", Name: "Method" + number,
+			FilePath: "extensions/member_" + number + ".go", StartLine: 1,
+			Signature: "func Method" + number + "()", Language: "Go",
+		}
+		byID[member.ID] = member
+		relations = append(relations, RelationRecord{
+			FromID: declaration.ID, ToID: member.ID, Type: "CONTAINS", RelationScope: "extension",
+		})
+		wantPaths = append(wantPaths, member.FilePath)
+	}
+	sort.Strings(wantPaths)
+
+	block := searchSignatureTypeSurface(anchor, byID, byFile, relations, searchSignatureTypeLimit)
+	if len(block) != 1 {
+		t.Fatalf("signature type entries = %d, want 1", len(block))
+	}
+	entry := block[0]
+	if entry.MethodsTotal != searchSignatureTypeMemberLimit+1 || len(entry.Methods) != searchSignatureTypeMemberLimit {
+		t.Fatalf("methods shown/total = %d/%d, want %d/%d",
+			len(entry.Methods), entry.MethodsTotal,
+			searchSignatureTypeMemberLimit, searchSignatureTypeMemberLimit+1)
+	}
+	if strings.Contains(strings.Join(entry.Methods, ","), "Method16") {
+		t.Fatal("fixture did not truncate the last extension member")
+	}
+	if strings.Join(entry.provenancePaths, "\n") != strings.Join(wantPaths, "\n") {
+		t.Fatalf("signature-type provenance = %v, want %v", entry.provenancePaths, wantPaths)
+	}
+
+	shrunk := shrinkSearchSignatureTypes(block, 2)
+	if strings.Join(shrunk[0].provenancePaths, "\n") != strings.Join(wantPaths, "\n") {
+		t.Fatalf("funding shrink dropped signature-type provenance: %v", shrunk[0].provenancePaths)
 	}
 }
 

@@ -1,7 +1,10 @@
 package sem
 
 import (
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestLanguageForShebang(t *testing.T) {
@@ -119,6 +122,161 @@ if __name__ == "__main__":
 	}
 	if _, ok := filesByPath["node_modules/pkg/cli"]; ok {
 		t.Fatalf("vendored node_modules script must stay skipped")
+	}
+}
+
+// TestSnapshotRoutesOversizedCommittedShebangScriptsByCapturedPrefix
+// reproduces two trail findings: a committed, extensionless shebang script
+// that is ALSO oversized cannot satisfy the ordinary bounded prefix read at
+// all (Git blob reads are all-or-nothing, so the git-tree source's
+// readPrefix has to fully read the blob first), so routing used to fail
+// before the oversize registry was ever consulted and the file vanished
+// with no file record and no partial failure. It must instead be routed
+// from the prefix already captured for free while streaming the blob's
+// digest, and reported as E_FILE_TOO_LARGE like any other oversized file.
+func TestSnapshotRoutesOversizedCommittedShebangScriptsByCapturedPrefix(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+
+	// Longer than shebangSniffLimit so the language check never reaches the
+	// zero-filled padding writeSparseFile adds beyond this header, and small
+	// enough to stay well under the oversize cap chosen below.
+	header := "#!/usr/bin/env bash\n" + strings.Repeat("# padding line to clear the shebang sniff window\n", 30)
+	if len(header) <= shebangSniffLimit {
+		t.Fatalf("fixture header is %d bytes, want more than shebangSniffLimit (%d)", len(header), shebangSniffLimit)
+	}
+	const maxParseBytes = 2048
+	const totalSize = maxParseBytes * 4
+	if len(header) >= maxParseBytes {
+		t.Fatalf("fixture header is %d bytes, want under maxParseBytes (%d)", len(header), maxParseBytes)
+	}
+
+	const batchSafePath = "bin/pytool-big"
+	writeSparseFile(t, repo, batchSafePath, totalSize, header)
+
+	const newlinePath = "bin/py\ntool-big"
+	if runtime.GOOS != "windows" {
+		writeSparseFile(t, repo, newlinePath, totalSize, header)
+	}
+
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "oversized extensionless shebang scripts")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{MaxParseBytes: maxParseBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	filesByPath := map[string]FileRecord{}
+	for _, file := range snapshot.Files {
+		filesByPath[file.Path] = file
+	}
+	failuresByPath := map[string]PartialFailure{}
+	for _, failure := range snapshot.Header.PartialFailures {
+		failuresByPath[failure.FilePath] = failure
+	}
+
+	paths := []string{batchSafePath}
+	if runtime.GOOS != "windows" {
+		paths = append(paths, newlinePath)
+	}
+	for _, path := range paths {
+		file, ok := filesByPath[path]
+		if !ok {
+			t.Fatalf("oversized shebang script %q missing from snapshot files (silently dropped): %#v", path, snapshot.Files)
+		}
+		if file.Language != "Bash" {
+			t.Fatalf("oversized shebang script %q language = %q, want Bash", path, file.Language)
+		}
+		failure, ok := failuresByPath[path]
+		if !ok || failure.Code != "E_FILE_TOO_LARGE" {
+			t.Fatalf("oversized shebang script %q partial failure = %#v (ok=%v), want E_FILE_TOO_LARGE", path, failure, ok)
+		}
+	}
+}
+
+func TestProcessProviderFileDoesNotRestreamKnownOversizedShebang(t *testing.T) {
+	const path = "bin/large-script"
+	reads := 0
+	read := func(string) (string, bool) {
+		reads++
+		return "", false
+	}
+	source := sourceContext{
+		key:  "test-repo",
+		read: read,
+		readPrefix: func(path string, limit int) (string, bool) {
+			return read(path)
+		},
+		oversize: func(string) (oversizeFile, bool) {
+			return oversizeFile{
+				Bytes:  8192,
+				Hash:   "sha256:test",
+				Lines:  2,
+				Prefix: "#!/usr/bin/env bash\necho ok\n",
+			}, true
+		},
+	}
+
+	result := processProviderFile(t.Context(), newBudgetGate(t.Context(), time.Time{}, nil), source, profileSpec{}, 1024, 0, path)
+	if result.file == nil || result.file.Language != "Bash" {
+		t.Fatalf("oversized shebang result = %#v, want Bash file record", result)
+	}
+	if reads != 1 {
+		t.Fatalf("oversized shebang content reads = %d, want 1 streamed refusal", reads)
+	}
+}
+
+func TestSnapshotPreservesWorkingTreeShebangLanguageWhenOversized(t *testing.T) {
+	const path = "large-worktree-script"
+	source := sourceContext{
+		key: "test-repo",
+		read: func(string) (string, bool) {
+			return "", false
+		},
+		readPrefix: func(string, int) (string, bool) {
+			return "#!/usr/bin/env bash\necho ok\n", true
+		},
+		// Worktree oversize records intentionally retain no content prefix:
+		// routing already obtained one through the bounded filesystem read above.
+		oversize: func(string) (oversizeFile, bool) {
+			return oversizeFile{Bytes: 8192, Hash: "sha256:test", Lines: 2}, true
+		},
+	}
+
+	result := processProviderFile(t.Context(), newBudgetGate(t.Context(), time.Time{}, nil), source, profileSpec{}, 2048, 0, path)
+	if result.file == nil || result.file.Language != "Bash" {
+		t.Fatalf("oversized working-tree shebang result = %#v, want Bash file record", result)
+	}
+	if len(result.failures) != 1 || result.failures[0].Code != "E_FILE_TOO_LARGE" {
+		t.Fatalf("oversized working-tree shebang failures = %#v, want E_FILE_TOO_LARGE", result.failures)
+	}
+}
+
+func TestFallbackOversizeRegistryConsumesCachedPrefix(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	const path = "odd\nscript"
+	content := "#!/usr/bin/env bash\n" + strings.Repeat("echo oversized\n", 256)
+	blob := gitObjectInputOutput(t, repo, content, "hash-object", "-w", "--stdin")
+	tree := gitObjectInputOutput(t, repo, "100644 blob "+blob+"\t"+path+string(byte(0)), "mktree", "-z")
+	commit := gitObjectInputOutput(
+		t, repo, "", "-c", "user.name=Entire Graph Test", "-c", "user.email=graph@example.com",
+		"commit-tree", tree, "-m", "oversized shebang",
+	)
+
+	registry := newFallbackOversizeRegistry(repo, commit, 128)
+	registry.note(path)
+	first, ok := registry.lookup(t.Context(), path)
+	if !ok || !strings.HasPrefix(first.Prefix, "#!/usr/bin/env bash") {
+		t.Fatalf("first fallback oversize lookup = %#v (ok=%v), want captured shebang prefix", first, ok)
+	}
+	if cached := registry.resolved[path]; cached == nil || cached.Prefix != "" || cached.Hash == "" {
+		t.Fatalf("cached fallback oversize record = %#v, want metadata with consumed Prefix", cached)
+	}
+	second, ok := registry.lookup(t.Context(), path)
+	if !ok || second.Prefix != "" || second.Hash != first.Hash || second.Bytes != first.Bytes {
+		t.Fatalf("second fallback oversize lookup = %#v (ok=%v), want cached metadata without Prefix", second, ok)
 	}
 }
 

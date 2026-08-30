@@ -195,11 +195,12 @@ func TestCacheWritesTolerateSymlinkedCacheDirectories(t *testing.T) {
 func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
 	options := ProviderSnapshotOptions{Profile: ProfileFull}
 	snapshot := ProviderSnapshot{Header: SnapshotHeader{
-		RepoKey:  "github.com/example/repo",
-		Commit:   "old-commit",
-		Tree:     "tree",
-		Provider: ProviderName,
-		Profile:  string(ProfileFull),
+		RepoKey:         "github.com/example/repo",
+		Commit:          "old-commit",
+		Tree:            "tree",
+		Provider:        ProviderName,
+		ProviderVersion: "test-version",
+		Profile:         string(ProfileFull),
 	}}
 	cache := newCachedSearchSnapshot("test-version", "old-commit", "tree", options, snapshot)
 	if !validCachedSearchSnapshot(cache, snapshot.Header.RepoKey, "test-version", "tree", options) {
@@ -208,10 +209,81 @@ func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
 	if validCachedSearchSnapshot(cache, "github.com/example/other", "test-version", "tree", options) {
 		t.Fatal("cache entry from another repository identity must not be reused")
 	}
+	cache.Snapshot.Header.ProviderVersion = "other-version"
+	if validCachedSearchSnapshot(cache, snapshot.Header.RepoKey, "test-version", "tree", options) {
+		t.Fatal("cache entry with mismatched snapshot provider version must not be reused")
+	}
+	cache.Snapshot.Header.ProviderVersion = "test-version"
 	cache.Commit = "different-commit"
 	cache.Snapshot.Header.Commit = "different-commit"
 	if !validCachedSearchSnapshot(cache, snapshot.Header.RepoKey, "test-version", "tree", options) {
 		t.Fatal("commit-only drift must not invalidate a tree-keyed cache entry")
+	}
+}
+
+func TestValidateBuiltSearchSnapshotPinsGraphProvenanceButNotCommit(t *testing.T) {
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+	want := SnapshotHeader{
+		Provider:        ProviderName,
+		ProviderVersion: "test-version",
+		RepoKey:         "github.com/example/repo",
+		Commit:          "commit-built-mid-transaction",
+		Tree:            "tree",
+		Profile:         string(ProfileFull),
+	}
+	validate := func(header SnapshotHeader) error {
+		return validateBuiltSearchSnapshot(
+			ProviderSnapshot{Header: header}, want.RepoKey, want.ProviderVersion, want.Tree, options,
+		)
+	}
+	if err := validate(want); err != nil {
+		t.Fatalf("matching snapshot rejected: %v", err)
+	}
+	sameTreeDifferentCommit := want
+	sameTreeDifferentCommit.Commit = "another-commit"
+	if err := validate(sameTreeDifferentCommit); err != nil {
+		t.Fatalf("commit-only drift rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*SnapshotHeader)
+	}{
+		{"repository key", func(header *SnapshotHeader) { header.RepoKey = "github.com/example/other" }},
+		{"tree", func(header *SnapshotHeader) { header.Tree = "other-tree" }},
+		{"provider", func(header *SnapshotHeader) { header.Provider = "other-provider" }},
+		{"provider version", func(header *SnapshotHeader) { header.ProviderVersion = "other-version" }},
+		{"profile", func(header *SnapshotHeader) { header.Profile = string(ProfileFast) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			header := want
+			test.mutate(&header)
+			if err := validate(header); err == nil {
+				t.Fatalf("mismatched %s was accepted: %#v", test.name, header)
+			}
+		})
+	}
+}
+
+func TestSearchSnapshotMatchesSelectionPinsRepositoryIdentityAndTree(t *testing.T) {
+	selection := searchFileSelection{repoKey: "github.com/example/repo", tree: "tree"}
+	snapshot := ProviderSnapshot{Header: SnapshotHeader{RepoKey: selection.repoKey, Tree: selection.tree}}
+	if !searchSnapshotMatchesSelection(snapshot, selection) {
+		t.Fatal("matching snapshot and selection rejected")
+	}
+	snapshot.Header.Commit = "commit-drift-does-not-matter"
+	if !searchSnapshotMatchesSelection(snapshot, selection) {
+		t.Fatal("commit-only drift rejected")
+	}
+	snapshot.Header.RepoKey = "github.com/example/other"
+	if searchSnapshotMatchesSelection(snapshot, selection) {
+		t.Fatal("repository-identity drift accepted")
+	}
+	snapshot.Header.RepoKey = selection.repoKey
+	snapshot.Header.Tree = "other-tree"
+	if searchSnapshotMatchesSelection(snapshot, selection) {
+		t.Fatal("tree drift accepted")
 	}
 }
 
@@ -844,6 +916,11 @@ func TestWarmNoHitSearchPreservesCachedGraphHealth(t *testing.T) {
 func TestWarmCommittedSearchMatchesExhaustiveResultsWithoutFullContentRescan(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
+	// Git 2.55 runs the geometric maintenance strategy in a detached process
+	// after this repository's larger commit. Keep the fixture deterministic:
+	// the production metadata preflight must continue to fail closed while a
+	// separate process is actively rewriting the Git administrative tree.
+	git(t, repo, "config", "maintenance.auto", "false")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, "src/policy.ts", "export const durableCacheRefreshPolicy = 'eager'\n")
@@ -1236,6 +1313,60 @@ func IdentitySensitiveTarget() bool { return true }
 	assertNewRepoKeyResult("full", full)
 }
 
+func TestSearchRejectsPreindexWhenRepoKeyChangesAfterCacheLoad(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "remote", "add", "origin", "https://github.com/acme/legacy.git")
+	write(t, repo, "target.go", `package target
+
+func IdentityRaceTarget() bool { return true }
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileSyntaxOnly,
+	}, cacheDir); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("first preindex unexpectedly hit cache")
+	}
+
+	mutated := false
+	response, err := SearchRepository(t.Context(), repo, "test-version", "IdentityRaceTarget", SearchOptions{
+		Profile:       ProfileSyntaxOnly,
+		TopK:          5,
+		IndexAllFiles: true,
+		CacheDir:      cacheDir,
+		afterPreindexLoad: func() {
+			mutated = true
+			git(t, repo, "remote", "set-url", "origin", "https://github.com/acme/renamed.git")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mutated {
+		t.Fatal("test did not mutate repository identity after loading the complete preindex")
+	}
+	if response.Stats.IndexCacheHit {
+		t.Fatalf("search reported the old-identity preindex as a hit: %#v", response.Stats)
+	}
+	for _, result := range response.Results {
+		if result.SymbolName != "IdentityRaceTarget" {
+			continue
+		}
+		if !strings.HasPrefix(result.SymbolID, "gh/acme/renamed:") {
+			t.Fatalf("search returned stale repository identity in symbol ID %q", result.SymbolID)
+		}
+		return
+	}
+	t.Fatalf("search lost IdentityRaceTarget: %#v", response.Results)
+}
+
 func TestSearchSnapshotCacheKeyPreservesIgnoreFileOrder(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -1290,6 +1421,106 @@ func TestSearchSnapshotCacheKeyPreservesIgnoreFileOrder(t *testing.T) {
 	}
 	if !snapshotHasSymbol(second, "Control") {
 		t.Fatalf("reversed-rule snapshot lost control symbol: %#v", second.Symbols)
+	}
+}
+
+func TestSearchCacheTransactionPinsPolicyAcrossCompleteAndSelectiveSnapshots(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, ".search-policy", "denied.go\n")
+	write(t, repo, "denied.go", `package sample
+
+func PolicyTransactionNeedle() bool { return true }
+`)
+	write(t, repo, "control.go", `package sample
+
+// Control documents the cache transaction fallback.
+func Control() bool { return true }
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	providerOptions := ProviderSnapshotOptions{
+		Profile:     ProfileSyntaxOnly,
+		IgnoreFiles: []string{".search-policy"},
+	}
+	preindexed, hit, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", providerOptions, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit {
+		t.Fatal("first policy-A preindex unexpectedly hit cache")
+	}
+	if snapshotHasSymbol(preindexed, "PolicyTransactionNeedle") {
+		t.Fatal("policy-A preindex retained the denied symbol")
+	}
+
+	policyMutated := false
+	searchOptions := SearchOptions{
+		Profile:         ProfileSyntaxOnly,
+		TopK:            5,
+		MaxIndexedFiles: 1,
+		CacheDir:        cacheDir,
+		IgnoreFiles:     []string{".search-policy"},
+		afterCachePolicyCapture: func() {
+			policyMutated = true
+			write(t, repo, ".search-policy", "# policy B includes every source file\n")
+		},
+	}
+	policyAResponse, err := SearchRepository(
+		t.Context(), repo, "test-version", "PolicyTransactionNeedle cache transaction", searchOptions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policyMutated {
+		t.Fatal("test did not mutate the policy after transaction capture")
+	}
+	if !policyAResponse.Stats.IndexCacheHit {
+		t.Fatal("policy-A search did not load the preindexed complete snapshot")
+	}
+	if policyAResponse.Stats.FilesIndexed == 0 {
+		t.Fatalf("policy-A search skipped selective derivation: %#v", policyAResponse.Stats)
+	}
+	if len(policyAResponse.Results) == 0 || policyAResponse.Results[0].FilePath != "control.go" {
+		t.Fatalf("policy-A search did not derive the matching control file: %#v", policyAResponse.Results)
+	}
+	for _, result := range policyAResponse.Results {
+		if result.FilePath == "denied.go" {
+			t.Fatalf("policy-A transaction admitted a file enabled only by policy B: %#v", policyAResponse.Results)
+		}
+	}
+
+	// The first transaction must not derive the missing policy-A symbol from
+	// its complete snapshot and persist that omission under policy B's selective
+	// key. Two B searches prove both the cold build and its direct cache replay.
+	searchOptions.afterCachePolicyCapture = nil
+	for attempt := 0; attempt < 2; attempt++ {
+		response, searchErr := SearchRepository(
+			t.Context(), repo, "test-version", "PolicyTransactionNeedle cache transaction", searchOptions,
+		)
+		if searchErr != nil {
+			t.Fatal(searchErr)
+		}
+		found := false
+		for _, result := range response.Results {
+			if result.SymbolName == "PolicyTransactionNeedle" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("policy-B search %d replayed a policy-A omission: %#v", attempt+1, response.Results)
+		}
+		if attempt == 0 && response.Stats.IndexCacheHit {
+			t.Fatal("first policy-B search unexpectedly hit a poisoned selective entry")
+		}
+		if attempt == 1 && !response.Stats.IndexCacheHit {
+			t.Fatal("second policy-B search did not reuse its correct selective entry")
+		}
 	}
 }
 

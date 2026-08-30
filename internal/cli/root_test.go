@@ -15,7 +15,157 @@ import (
 	"testing"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	scippb "github.com/scip-code/scip/bindings/go/scip"
+	"google.golang.org/protobuf/proto"
 )
+
+func TestResolveRepoHonorsInheritedGitCeiling(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	ceiling := filepath.Join(repo, "discovery-boundary")
+	child := filepath.Join(ceiling, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", ceiling)
+	t.Chdir(child)
+	// Repository discovery with a ceiling is deliberately in-process. If this
+	// regresses to Git, an empty PATH makes the test fail for the right reason.
+	t.Setenv("PATH", t.TempDir())
+
+	if discovered, err := resolveRepo(t.Context(), EntireEnv{}, ""); err == nil {
+		t.Fatalf("resolveRepo = %q, nil; want no implicit repository above ceiling %q", discovered, ceiling)
+	}
+
+	// A repository selected by the trusted Entire environment is not discovery
+	// and remains authoritative even when a caller also supplied a ceiling.
+	selected, err := resolveRepo(t.Context(), EntireEnv{RepoRoot: repo}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != repo {
+		t.Fatalf("resolveRepo with ENTIRE_REPO_ROOT = %q, want %q", selected, repo)
+	}
+}
+
+func TestDiscoverImplicitCheckoutRootStopsAtGitCeiling(t *testing.T) {
+	outer := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outer, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ceiling := filepath.Join(outer, "discovery-boundary")
+	blockedChild := filepath.Join(ceiling, "blocked", "child")
+	insideRepo := filepath.Join(ceiling, "inside-repo")
+	insideChild := filepath.Join(insideRepo, "child")
+	for _, dir := range []string{blockedChild, filepath.Join(insideRepo, ".git"), insideChild} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", ceiling)
+
+	if root, ok := discoverImplicitCheckoutRoot(blockedChild); ok {
+		t.Fatalf("filesystem fallback discovered %q above ceiling %q", root, ceiling)
+	}
+	root, ok := discoverImplicitCheckoutRoot(insideChild)
+	if !ok || root != insideRepo {
+		t.Fatalf("filesystem fallback below ceiling = (%q, %v), want (%q, true)", root, ok, insideRepo)
+	}
+}
+
+func TestDiscoverImplicitCheckoutRootCanonicalizesGitCeilingsBeforeEmptyMarker(t *testing.T) {
+	requireSymlinkSupport(t)
+
+	outer := t.TempDir()
+	boundary := filepath.Join(outer, "discovery-boundary")
+	child := filepath.Join(boundary, "nested", "child")
+	for _, dir := range []string{filepath.Join(outer, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(t.TempDir(), "boundary-alias")
+	if err := os.Symlink(boundary, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("before marker", func(t *testing.T) {
+		t.Setenv("GIT_CEILING_DIRECTORIES", alias)
+		if root, ok := discoverImplicitCheckoutRoot(child); ok {
+			t.Fatalf("filesystem fallback discovered %q above symlinked ceiling %q", root, alias)
+		}
+	})
+
+	t.Run("after marker", func(t *testing.T) {
+		t.Setenv("GIT_CEILING_DIRECTORIES", string(os.PathListSeparator)+alias)
+		root, ok := discoverImplicitCheckoutRoot(child)
+		if !ok || root != outer {
+			t.Fatalf("filesystem fallback with non-canonicalized ceiling = (%q, %v), want (%q, true)", root, ok, outer)
+		}
+	})
+}
+
+func TestDiscoverImplicitCheckoutRootDoesNotExcludeStartingDirectory(t *testing.T) {
+	outer := t.TempDir()
+	child := filepath.Join(outer, "child")
+	for _, dir := range []string{filepath.Join(outer, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", child)
+
+	root, ok := discoverImplicitCheckoutRoot(child)
+	if !ok || root != outer {
+		t.Fatalf("filesystem fallback from the ceiling directory = (%q, %v), want (%q, true)", root, ok, outer)
+	}
+
+	if err := os.Mkdir(filepath.Join(child, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, ok = discoverImplicitCheckoutRoot(child)
+	if !ok || root != child {
+		t.Fatalf("filesystem fallback for repository at the ceiling = (%q, %v), want (%q, true)", root, ok, child)
+	}
+}
+
+func TestDiscoverImplicitCheckoutRootDiscardsUnresolvableGitCeilings(t *testing.T) {
+	outer := t.TempDir()
+	child := filepath.Join(outer, "nested", "child")
+	for _, dir := range []string{filepath.Join(outer, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	missing := filepath.Join(t.TempDir(), "missing-ceiling")
+	t.Setenv("GIT_CEILING_DIRECTORIES", "relative-ceiling"+string(os.PathListSeparator)+missing)
+
+	root, ok := discoverImplicitCheckoutRoot(child)
+	if !ok || root != outer {
+		t.Fatalf("filesystem fallback with unusable ceilings = (%q, %v), want (%q, true)", root, ok, outer)
+	}
+}
+
+func TestResolveRepoIgnoresUnrelatedGitCeilingsWithoutStartingGit(t *testing.T) {
+	repo := t.TempDir()
+	child := filepath.Join(repo, "nested", "child")
+	for _, dir := range []string{filepath.Join(repo, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	t.Chdir(child)
+
+	got, err := resolveRepo(t.Context(), EntireEnv{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != repo {
+		t.Fatalf("resolveRepo with unrelated ceiling = %q, want %q", got, repo)
+	}
+}
 
 func TestDoctorPrintsEntireEnvironment(t *testing.T) {
 	var out bytes.Buffer
@@ -110,6 +260,9 @@ func TestProviderJSONCommands(t *testing.T) {
 	}
 	if !strings.Contains(capabilitiesOut.String(), `"compact_snapshot_ndjson_v1":true`) {
 		t.Fatalf("capabilities omit compact snapshot support:\n%s", capabilitiesOut.String())
+	}
+	if !strings.Contains(capabilitiesOut.String(), `"scip_snapshot_experimental":true`) {
+		t.Fatalf("capabilities omit scip snapshot support:\n%s", capabilitiesOut.String())
 	}
 }
 
@@ -253,6 +406,50 @@ func TestSnapshotAcceptsWorktree(t *testing.T) {
 	}
 }
 
+func TestProviderRecordsCacheDoesNotReplaySameTreeCommitHeader(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "main.go", "package sample\n\nfunc Main() {}\n")
+	git(t, repo, "add", "main.go")
+	git(t, repo, "commit", "-m", "initial")
+	cacheDir := t.TempDir()
+
+	run := func() string {
+		t.Helper()
+		var out bytes.Buffer
+		err := Run(t.Context(), Options{
+			Version: "commit-cache-test",
+			Env:     EntireEnv{RepoRoot: repo},
+			Stdout:  &out,
+			Stderr:  io.Discard,
+		}, []string{"snapshot", "--repo", repo, "--format", "ndjson", "--cache-dir", cacheDir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		line, _, ok := bytes.Cut(out.Bytes(), []byte{'\n'})
+		if !ok {
+			t.Fatalf("snapshot omitted header line: %q", out.Bytes())
+		}
+		var header sem.SnapshotHeader
+		if err := json.Unmarshal(line, &header); err != nil {
+			t.Fatalf("decode snapshot header: %v\n%s", err, line)
+		}
+		return header.Commit
+	}
+
+	first := run()
+	git(t, repo, "commit", "--allow-empty", "-m", "same tree, new provenance")
+	second := run()
+	if want := rev(t, repo, "HEAD^{commit}"); second != want {
+		t.Fatalf("same-tree cache replayed commit %q, want current commit %q (first %q)", second, want, first)
+	}
+	if second == first {
+		t.Fatal("empty commit reused the previous snapshot header")
+	}
+}
+
 func TestSnapshotCompactNDJSONRoundTripsToNativeRecords(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "main.go", "package sample\n\nfunc caller() { callee() }\nfunc callee() {}\n")
@@ -312,22 +509,126 @@ func TestSnapshotNDJSONRemainsDefaultObjectFormat(t *testing.T) {
 }
 
 func TestCompactNDJSONIsSnapshotOnly(t *testing.T) {
+	testSnapshotFormatIsSnapshotOnly(t, "compact-ndjson")
+}
+
+func TestSnapshotSCIPIsSnapshotOnly(t *testing.T) {
+	testSnapshotFormatIsSnapshotOnly(t, "scip")
+}
+
+func testSnapshotFormatIsSnapshotOnly(t *testing.T, format string) {
+	t.Helper()
 	repo := t.TempDir()
 	write(t, repo, "main.go", "package sample\nfunc main() {}\n")
 	for _, command := range []string{"symbols", "edges"} {
-		err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard}, []string{command, "--repo", repo, "--worktree", "--format", "compact-ndjson"})
+		err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard}, []string{command, "--repo", repo, "--worktree", "--format", format})
 		if err == nil || !strings.Contains(err.Error(), "only valid for snapshot") {
-			t.Fatalf("%s compact format error = %v", command, err)
+			t.Fatalf("%s %s format error = %v", command, format, err)
 		}
 	}
 }
 
 func TestCompactNDJSONRejectsTargetedRelationFilters(t *testing.T) {
+	testSnapshotFormatRejectsTargetedRelationFilters(t, "compact-ndjson")
+}
+
+func TestSnapshotSCIPRejectsTargetedRelationFilters(t *testing.T) {
+	testSnapshotFormatRejectsTargetedRelationFilters(t, "scip")
+}
+
+func testSnapshotFormatRejectsTargetedRelationFilters(t *testing.T, format string) {
+	t.Helper()
 	repo := t.TempDir()
 	write(t, repo, "main.go", "package sample\nfunc caller() { callee() }\nfunc callee() {}\n")
-	err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard}, []string{"snapshot", "--repo", repo, "--worktree", "--format", "compact-ndjson", "--from", "caller"})
+	err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard}, []string{"snapshot", "--repo", repo, "--worktree", "--format", format, "--from", "caller"})
 	if err == nil || !strings.Contains(err.Error(), "requires a complete snapshot") {
-		t.Fatalf("targeted compact format error = %v", err)
+		t.Fatalf("targeted %s format error = %v", format, err)
+	}
+}
+
+func TestSnapshotSCIPReservesStderrForOmissionNote(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package sample\nfunc main() {}\n")
+	err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard, Stderr: io.Discard}, []string{"snapshot", "--repo", repo, "--worktree", "--format", "scip", "--progress"})
+	if err == nil || !strings.Contains(err.Error(), "stderr is reserved for the JSON omission note") {
+		t.Fatalf("scip progress error = %v", err)
+	}
+}
+
+func TestSnapshotSCIPEmitsBinaryIndexAndOmissionNote(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package sample\n\nfunc caller() { callee() }\nfunc callee() {}\n")
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), Options{Version: "scip-test", Env: EntireEnv{RepoRoot: repo}, Stdout: &stdout, Stderr: &stderr}, []string{"snapshot", "--repo", repo, "--worktree", "--format", "scip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() == 0 || bytes.HasPrefix(stdout.Bytes(), []byte("{")) || bytes.HasPrefix(stdout.Bytes(), []byte(`["h"`)) {
+		t.Fatalf("scip output does not look binary: %q", stdout.Bytes())
+	}
+	var index scippb.Index
+	if err := proto.Unmarshal(stdout.Bytes(), &index); err != nil {
+		t.Fatalf("scip output is not a valid Index protobuf: %v", err)
+	}
+	if got := index.GetMetadata().GetToolInfo().GetName(); got != sem.ProviderName {
+		t.Fatalf("tool name = %q, want %q", got, sem.ProviderName)
+	}
+	if got := index.GetMetadata().GetToolInfo().GetArguments(); !strings.Contains(strings.Join(got, " "), "--worktree") {
+		t.Fatalf("scip metadata omits worktree provenance: %#v", got)
+	}
+	documents := map[string]*scippb.Document{}
+	displayNames := map[string]bool{}
+	references := 0
+	// This fixture declares no manifest version, so every symbol must carry the
+	// unversioned fallback. Worktree provenance is asserted through the omission
+	// note below, not through the package version, which no longer encodes it.
+	unversionedSymbols := 0
+	for _, doc := range index.GetDocuments() {
+		documents[doc.GetRelativePath()] = doc
+		for _, info := range doc.GetSymbols() {
+			displayNames[info.GetDisplayName()] = true
+			parsed, err := scippb.ParseSymbol(info.GetSymbol())
+			if err != nil {
+				t.Fatalf("invalid SCIP symbol %q: %v", info.GetSymbol(), err)
+			}
+			if parsed.GetPackage().GetVersion() == sem.ScipProjectVersionUnknown {
+				unversionedSymbols++
+			}
+		}
+		for _, occurrence := range doc.GetOccurrences() {
+			if occurrence.GetSymbolRoles()&int32(scippb.SymbolRole_Definition) == 0 {
+				references++
+			}
+		}
+	}
+	if documents["main.go"] == nil || documents["main.go"].GetLanguage() != "Go" || !displayNames["caller"] || !displayNames["callee"] || references == 0 || unversionedSymbols == 0 {
+		t.Fatalf("scip index omitted expected navigation facts: docs=%v names=%v references=%d unversioned_symbols=%d", documents, displayNames, references, unversionedSymbols)
+	}
+	var note sem.SCIPOmissionNote
+	if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &note); err != nil {
+		t.Fatalf("stderr omission note is not JSON: %q: %v", stderr.String(), err)
+	}
+	if note.RecordType != "scip_omissions" || note.Format != "scip" || note.EmittedDefinitions == 0 || !note.WorktreeSnapshot || note.WarningCount == 0 {
+		t.Fatalf("unexpected scip omission note: %#v", note)
+	}
+}
+
+func TestSCIPOmissionNoteWithSummaryCapturesPartialState(t *testing.T) {
+	ok := &sem.SnapshotSummary{Stats: sem.ProviderStats{CompletenessLevel: "ok"}}
+	note := scipOmissionNoteWithSummary(sem.SCIPOmissionNote{Format: "scip"}, ok)
+	if note.PartialSnapshot {
+		t.Fatalf("clean summary marked partial: %#v", note)
+	}
+
+	partial := &sem.SnapshotSummary{
+		Warnings:        []sem.ProviderWarning{{Code: "W"}},
+		PartialFailures: []sem.PartialFailure{{Code: "E"}},
+		Stats:           sem.ProviderStats{CompletenessLevel: "degraded"},
+	}
+	note = scipOmissionNoteWithSummary(sem.SCIPOmissionNote{Format: "scip"}, partial)
+	if !note.PartialSnapshot || note.CompletenessLevel != "degraded" || note.WarningCount != 1 || note.PartialFailureCount != 1 {
+		t.Fatalf("partial summary not captured in scip note: %#v", note)
 	}
 }
 
@@ -1103,6 +1404,11 @@ func TestParseDiffFlagsSeparatesUnknownFlagsFromPaths(t *testing.T) {
 			base: "HEAD~1", head: "HEAD",
 			paths: []string{"--base"},
 		},
+		{
+			name: "tag ref beginning with hyphen",
+			args: []string{"--base", "-foo", "--head", "HEAD"},
+			base: "-foo", head: "HEAD",
+		},
 	}
 
 	for _, test := range tests {
@@ -1148,4 +1454,131 @@ func TestDiffRejectsUnknownFlag(t *testing.T) {
 	if !strings.Contains(err.Error(), "--jsonn") {
 		t.Errorf("error %q does not name the offending flag", err)
 	}
+}
+
+// TestParseDiffFlagsRejectsOptionShapedRevision is the unit half of the argument-injection
+// fix (CWE-88). --base/--head values used to be copied into `git diff`'s argv verbatim, so a
+// value beginning with '-' stopped being a revision and became an option of git itself.
+func TestParseDiffFlagsRejectsOptionShapedRevision(t *testing.T) {
+	for _, args := range [][]string{
+		{"--base", "--output=/tmp/entire-graph-victim", "--head", "HEAD"},
+		{"--base", "HEAD~1", "--head", "--output=/tmp/entire-graph-victim"},
+		{"--base", "-"},
+		{"--head", ""},
+	} {
+		if _, _, err := parseDiffFlags(args); err == nil {
+			t.Errorf("parseDiffFlags(%q) accepted an option-shaped revision, want an error", args)
+		}
+	}
+	// Ordinary path-shaped refs with a single leading hyphen are valid Git revisions.
+	if _, _, err := parseDiffFlags([]string{"--base", "-foo", "--head", "HEAD"}); err != nil {
+		t.Errorf("parseDiffFlags([--base -foo --head HEAD]) = %v, want nil (-foo is a valid ref)", err)
+	}
+}
+
+// TestOptionShapedRevisionCannotWriteFiles is the end-to-end half. Before the fix,
+//
+//	entire graph diff --repo . --base '--output=FILE' --head HEAD
+//
+// exited 0 and left FILE truncated and replaced by git's own `-z --name-status` output,
+// because git parses options anywhere ahead of `--`. The `commit` verb had the same reach:
+// `git rev-parse '--output=FILE^'` does not fail, so FirstParent let the value through to the
+// same `git diff` argv. The revision here is an ordinary path with a '-' prefix, so nothing
+// about the fixture is platform-specific.
+func TestOptionShapedRevisionCannotWriteFiles(t *testing.T) {
+	repo := twoCommitRepo(t)
+	const secret = "victim contents that must survive\n"
+	victim := filepath.Join(t.TempDir(), "victim.txt")
+
+	tests := []struct {
+		name string
+		args func(target string) []string
+	}{
+		{"diff --base", func(target string) []string {
+			return []string{"diff", "--repo", repo, "--base", "--output=" + target, "--head", "HEAD"}
+		}},
+		{"diff --head", func(target string) []string {
+			return []string{"diff", "--repo", repo, "--base", "HEAD~1", "--head", "--output=" + target}
+		}},
+		{"analyze --base", func(target string) []string {
+			return []string{"analyze", "--repo", repo, "--base", "--output=" + target}
+		}},
+		{"commit revision", func(target string) []string {
+			return []string{"commit", "--repo", repo, "--output=" + target}
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(victim, []byte(secret), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out, errOut bytes.Buffer
+			err := Run(t.Context(), Options{Stdout: &out, Stderr: &errOut, Version: "test-version"}, test.args(victim))
+			if err == nil {
+				t.Errorf("%s accepted an option-shaped revision; stdout:\n%s", test.name, out.String())
+			} else if !strings.Contains(err.Error(), "revision") {
+				t.Errorf("error %q does not explain that the value is not a revision", err)
+			}
+			got, readErr := os.ReadFile(victim)
+			if readErr != nil {
+				t.Fatalf("read victim file: %v", readErr)
+			}
+			if string(got) != secret {
+				t.Fatalf("%s let git rewrite a file outside the repository; victim now holds %q", test.name, string(got))
+			}
+		})
+	}
+}
+
+// TestDiffAcceptsOrdinaryRevisions is the over-rejection guard for the same fix: every shape
+// of revision a caller legitimately passes must still resolve.
+func TestDiffAcceptsOrdinaryRevisions(t *testing.T) {
+	repo := twoCommitRepo(t)
+	git(t, repo, "branch", "feature", "HEAD~1")
+	git(t, repo, "tag", "-a", "v1", "-m", "release", "HEAD~1")
+	full := rev(t, repo, "HEAD~1")
+
+	for _, base := range []string{"HEAD~1", "feature", "v1", full, full[:7]} {
+		var out, errOut bytes.Buffer
+		err := Run(t.Context(), Options{Stdout: &out, Stderr: &errOut, Version: "test-version"},
+			[]string{"diff", "--repo", repo, "--base", base, "--head", "HEAD", "--json"})
+		if err != nil {
+			t.Errorf("diff --base %q: %v\n%s", base, err, errOut.String())
+			continue
+		}
+		if !strings.Contains(out.String(), "\"files\"") {
+			t.Errorf("diff --base %q produced no result payload:\n%s", base, out.String())
+		}
+	}
+}
+
+// twoCommitRepo builds a git repository whose HEAD~1..HEAD range contains one real semantic
+// change, so a diff over it exercises the analysis rather than an empty file list.
+func twoCommitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	// An explicit initial branch, not whatever the user's global
+	// init.defaultBranch names: this fixture creates a branch literally
+	// called "feature", and `git branch feature HEAD~1` fails with "a branch
+	// named 'feature' already exists" whenever init.defaultBranch=feature.
+	git(t, repo, "init", "-b", "twocommitrepo-trunk")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	// A developer's global signing config would otherwise fail this fixture with
+	// "gpg failed to sign the data", the same class of global-config dependence
+	// as the init.defaultBranch collision above. Both keys are needed and they
+	// are independent: commit.gpgsign covers the two commits below, and
+	// tag.gpgSign covers the annotated tag TestDiffAcceptsOrdinaryRevisions
+	// creates in this repository ("git tag -a" signs under its own key, so
+	// pinning only commit.gpgsign still aborts with "unable to sign the tag").
+	git(t, repo, "config", "commit.gpgsign", "false")
+	git(t, repo, "config", "tag.gpgSign", "false")
+	write(t, repo, "a.go", "package main\n\nfunc validate() bool { return true }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "one")
+	write(t, repo, "a.go", "package main\n\nfunc validate() bool { return true }\n\nfunc audit() bool { return true }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "two")
+	return repo
 }

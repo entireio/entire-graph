@@ -78,10 +78,10 @@ func TestF06FixRecordCacheWriterRejectsTruncatedSummary(t *testing.T) {
 		RecordType:      "summary",
 		PartialFailures: []PartialFailure{analysisBudgetFailure(time.Second)},
 	}
-	if err := StoreProviderRecords(t.Context(), repo, "test", tree, "symbols", cacheDir, options, []byte("{}\n"), summary); err != nil {
+	if err := storeProviderRecordsForTest(t.Context(), repo, "test", tree, "symbols", cacheDir, options, []byte("{}\n"), summary); err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	_, _, hit, err := LoadProviderRecords(t.Context(), repo, "test", tree, "symbols", cacheDir, options)
+	_, _, hit, err := LoadProviderRecords(t.Context(), repo, "test", tree, tree, "symbols", cacheDir, options)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
