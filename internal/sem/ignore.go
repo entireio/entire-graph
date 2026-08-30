@@ -1141,6 +1141,35 @@ func (m *ignoreMatcher) loadOptionalSameVolume(base, file string, includeMode bo
 	return nil
 }
 
+// repoIgnoreFileIsRegular is the no-follow gate for a REPOSITORY-controlled
+// ignore file, and it is a function rather than a rule written out at each
+// reader because the two readers that need it sit in different files: the
+// uncached matcher builds through loadPath, and a cache-enabled search captures
+// the same file in captureIgnorePolicy. A second copy of the rule is how the two
+// came to disagree -- capture stat'd THROUGH the link and handed the target's
+// bytes on as repository-controlled rules, so a symlinked .graphignore turned
+// the repo_ignored disclosure into an arbitrary local-file read on exactly the
+// runs that use the cache.
+//
+// It reports whether the file is present and readable as a regular file. Lstat,
+// not Stat: the link itself must fail IsRegular here so the target is never
+// opened.
+func repoIgnoreFileIsRegular(file, label string, required bool) (bool, error) {
+	info, err := os.Lstat(file)
+	switch {
+	case isMissingPathError(err):
+		if required {
+			return false, fmt.Errorf("%s %q does not exist", label, file)
+		}
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read %s %q: %w", label, file, err)
+	case !info.Mode().IsRegular():
+		return false, fmt.Errorf("%s %q is not a regular file", label, file)
+	}
+	return true, nil
+}
+
 func (m *ignoreMatcher) loadRequired(file string, includeMode bool, origin ignoreOrigin) error {
 	return m.loadPath(file, includeMode, true, origin)
 }
@@ -1164,17 +1193,12 @@ func (m *ignoreMatcher) loadPath(file string, includeMode, required bool, origin
 	// is ever disclosed, so a symlink there carries none of the leak above, and Git
 	// follows one itself. Unchanged for that branch.
 	if !origin.callerControlled {
-		info, err := os.Lstat(file)
-		switch {
-		case isMissingPathError(err):
-			if required {
-				return fmt.Errorf("%s %q does not exist", label, file)
-			}
+		present, err := repoIgnoreFileIsRegular(file, label, required)
+		if err != nil {
+			return err
+		}
+		if !present {
 			return nil
-		case err != nil:
-			return fmt.Errorf("read %s %q: %w", label, file, err)
-		case !info.Mode().IsRegular():
-			return fmt.Errorf("%s %q is not a regular file", label, file)
 		}
 	}
 	content, present, err := readBoundedRegularFile(file, label, required, maxIgnoreFileBytes)

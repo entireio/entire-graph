@@ -121,6 +121,14 @@ func captureIgnorePolicy(absRepo string, ignoreFiles, includeFiles []string) (*c
 		return nil, err
 	}
 	graphIgnorePath := filepath.Join(absRepo, graphIgnoreFileName)
+	// The same no-follow gate loadPath applies to a repository-controlled ignore
+	// file. Without it a cache-enabled search follows a symlinked .graphignore
+	// that an uncached search refuses, so the two enforce different policies and
+	// the cached one echoes an outside file's lines through
+	// repo_ignored.sample[].rule as though the repository had written them.
+	if _, err := repoIgnoreFileIsRegular(graphIgnorePath, ignoreFileLabel(false), false); err != nil {
+		return nil, err
+	}
 	content, present, err := readBoundedRegularFile(
 		graphIgnorePath,
 		ignoreFileLabel(false),
