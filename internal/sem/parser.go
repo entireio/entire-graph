@@ -4156,15 +4156,20 @@ func fieldDeclNames(node *sitter.Node, src []byte) []string {
 		switch child.Type() {
 		case "field_identifier":
 			names = append(names, child.Content(src))
-		case "pointer_declarator", "array_declarator", "reference_declarator", "function_declarator":
-			// C/C++ members whose declarator carries the pointer, reference or
-			// array part (`char *name;`, `int &ref;`, `Widget &&item;`,
-			// `char name[32];`, `int (*handler)(int);`). The name sits under the
-			// declarator chain rather than beside the type. A plain function
-			// declarator names nothing here: `int Add(int);` in a class body is
-			// a method declaration, not data, and is left to the entity walk.
-			// Neither does `int (*Factory())(double);`, a METHOD returning a
-			// function pointer, which the member-declaration pass extracts.
+		case "pointer_declarator", "array_declarator", "reference_declarator",
+			"parenthesized_declarator", "function_declarator":
+			// C/C++ members whose declarator carries the pointer, reference,
+			// array or parenthesis part (`char *name;`, `int &ref;`,
+			// `Widget &&item;`, `char name[32];`, `int (value);`,
+			// `int (*handler)(int);`). The name sits under the declarator chain
+			// rather than beside the type. Redundant parentheses are legal
+			// around any declarator, so `parenthesized_declarator` is a shape
+			// the declaration itself can carry, not only one reached through a
+			// pointer or a function declarator. A plain function declarator
+			// names nothing here: `int Add(int);` in a class body is a method
+			// declaration, not data, and is left to the entity walk. Neither
+			// does `int (*Factory())(double);`, a METHOD returning a function
+			// pointer, which the member-declaration pass extracts.
 			if name := cFamilyMemberDeclaratorName(child, src); name != "" {
 				names = append(names, name)
 			}
@@ -4188,21 +4193,29 @@ func fieldDeclNames(node *sitter.Node, src []byte) []string {
 // cPlusPlusInitialisedMemberName returns the member name when a
 // function_definition node is really an in-class data member with an
 // initialiser. tree-sitter-cpp reads the `= 0` of `int total_ = 0;` as a
-// pure_virtual_clause and the whole declaration as a function definition. The
-// tell is that there is no function_declarator at all: the declarator is a bare
-// field_identifier, which no real function definition has.
+// pure_virtual_clause and the whole declaration as a function definition.
+//
+// What separates the two is the DECLARATOR, not the presence of a
+// function_declarator anywhere below: `int (*cb)(int) = 0;` is a
+// function-pointer member and `virtual int *Get() = 0;` is a pure virtual, and
+// both contain one. So the declarator is walked with the same unwrapper the
+// member pass uses, which names a function-pointer declarator and refuses a
+// plain function declarator. A bare field_identifier — `int total_ = 0;` —
+// needs no unwrapping and is taken directly.
 func cPlusPlusInitialisedMemberName(node *sitter.Node, src []byte) string {
 	if !validNode(firstNamedChildOfType(node, "pure_virtual_clause")) {
 		return ""
 	}
-	if validNode(firstDescendantOfType(node, "function_declarator")) {
-		return ""
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		switch child := node.NamedChild(i); child.Type() {
+		case "field_identifier":
+			return strings.TrimSpace(child.Content(src))
+		case "pointer_declarator", "array_declarator", "reference_declarator",
+			"parenthesized_declarator", "function_declarator":
+			return cFamilyMemberDeclaratorName(child, src)
+		}
 	}
-	name := firstNamedChildOfType(node, "field_identifier")
-	if !validNode(name) {
-		return ""
-	}
-	return strings.TrimSpace(name.Content(src))
+	return ""
 }
 
 // cPlusPlusMemberDeclaration is one method declared by an in-class declaration,
@@ -4463,7 +4476,7 @@ func cFamilyMemberDeclaratorName(node *sitter.Node, src []byte) string {
 			}
 			next = node.ChildByFieldName("declarator")
 			if !validNode(next) {
-				next = firstDescendantOfType(node, "field_identifier")
+				next = firstChildDeclarator(node)
 			}
 		case "function_declarator":
 			// A function-pointer member: the name is inside the parens. A plain
@@ -4482,6 +4495,27 @@ func cFamilyMemberDeclaratorName(node *sitter.Node, src []byte) string {
 		node = next
 	}
 	return ""
+}
+
+// firstChildDeclarator returns the declarator a wrapping declarator encloses,
+// for the shapes tree-sitter-c/cpp leave unlabelled: `parenthesized_declarator`
+// and `reference_declarator` hold their inner declarator as a plain child, with
+// no `declarator` field to ask for.
+//
+// Only a DIRECT child counts. Reaching for the first field_identifier anywhere
+// below instead steps over a nested function_declarator, and with it the rule
+// that a plain function declarator names no data: `virtual int &Get() = 0;`
+// would name `Get` and file a pure virtual method as a data member.
+func firstChildDeclarator(node *sitter.Node) *sitter.Node {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		switch child := node.NamedChild(i); child.Type() {
+		case "field_identifier", "identifier",
+			"pointer_declarator", "array_declarator", "reference_declarator",
+			"parenthesized_declarator", "function_declarator":
+			return child
+		}
+	}
+	return nil
 }
 
 // descendsStrictly reports whether next is a strictly smaller span than node,
