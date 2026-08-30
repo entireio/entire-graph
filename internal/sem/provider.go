@@ -1243,7 +1243,10 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// Phase 1: workers independently read, classify, and parse files. Only this
 	// reducer mutates graph indexes or calls emit, and it consumes the original
 	// path order, so worker timing cannot change snapshot bytes.
-	err = runProviderFilePipeline(workCtx, sc.paths, workers,
+	// gate.err rather than workCtx alone: a clock-triggered expiry is true
+	// before the context's deadline timer fires, and reducing one more result
+	// means emitting a whole file's symbol list into the caller's sink.
+	err = runProviderFilePipeline(workCtx, gate.err, sc.paths, workers,
 		func(workerCtx context.Context, index int, path string) providerFileResult {
 			return processProviderFile(workerCtx, gate, sc, spec, maxParseBytes, index, path)
 		},

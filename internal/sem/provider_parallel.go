@@ -323,8 +323,20 @@ func processProviderFile(
 // runProviderFilePipeline processes paths concurrently but reduces results in
 // the exact input order. The coordinator admits at most twice the worker count
 // of results that have not yet been reduced.
+//
+// stop is polled immediately before every reduction and may be nil, which means
+// "the context is the only ceiling". It exists because reducing is not free:
+// the provider's reducer emits one file record plus that file's entire symbol
+// list into the caller's sink, so a wall-clock budget that only governs the
+// workers can still be overrun by the results already in the pipeline when it
+// expires -- the cancellation branch below deliberately drains and reduces
+// every buffered result, and a clock-triggered expiry is not visible on ctx at
+// all until its timer fires. Polling here keeps a symbol-heavy file, or a slow
+// sink, from carrying the run past the ceiling. Reduction stays atomic per
+// file: the check is between results, never inside one.
 func runProviderFilePipeline(
 	ctx context.Context,
+	stop func() error,
 	paths []string,
 	workers int,
 	process func(context.Context, int, string) providerFileResult,
@@ -332,6 +344,15 @@ func runProviderFilePipeline(
 ) error {
 	if len(paths) == 0 {
 		return ctx.Err()
+	}
+	reduceOne := reduce
+	if stop != nil {
+		reduceOne = func(result providerFileResult) error {
+			if err := stop(); err != nil {
+				return err
+			}
+			return reduce(result)
+		}
 	}
 	if workers < 1 {
 		workers = 1
@@ -391,7 +412,7 @@ func runProviderFilePipeline(
 					if !ok {
 						break
 					}
-					if err := reduce(ordered); err != nil {
+					if err := reduceOne(ordered); err != nil {
 						return err
 					}
 					delete(pending, nextReduce)
@@ -421,7 +442,7 @@ func runProviderFilePipeline(
 				if !ok {
 					break
 				}
-				if err := reduce(ordered); err != nil {
+				if err := reduceOne(ordered); err != nil {
 					return err
 				}
 				delete(pending, nextReduce)
