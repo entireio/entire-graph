@@ -204,6 +204,23 @@ func runInitAgents(opts Options, args []string) error {
 		claudeContent = renderPointerBlock(claudeSource, claudeBegin, claudeEnd, claudeBlock)
 	}
 
+	// The read bound accepts a file sitting exactly on the limit, but the managed
+	// block is APPENDED to it, so the rendered result can land past the bound the
+	// read enforces. Writing that would leave the repository holding an instruction
+	// file this command itself produced and will refuse on the next run, telling
+	// the user to shrink a file whose excess bytes are the block init-agents added.
+	// The bound therefore has to hold for what is WRITTEN, not only for what was
+	// read, and the refusal has to land here — every byte is computed and nothing
+	// has been created or modified yet.
+	if err := ensureRenderedInstructionFits(agentsPath, agentsSource, agentsContent); err != nil {
+		return fmt.Errorf("init-agents: %w", err)
+	}
+	if !sharedInstructions {
+		if err := ensureRenderedInstructionFits(claudePath, claudeSource, claudeContent); err != nil {
+			return fmt.Errorf("init-agents: %w", err)
+		}
+	}
+
 	guideResolvedName, guideInfo, err := resolvedManagedTarget(repoRoot, guideName, false)
 	if err != nil {
 		return fmt.Errorf("init-agents: %w", err)
@@ -1407,6 +1424,22 @@ func readAndValidateInstructionFile(root *os.Root, name, path string) ([]byte, i
 		return nil, -1, -1, err
 	}
 	return content, begin, end, nil
+}
+
+// ensureRenderedInstructionFits keeps init-agents from writing an instruction file
+// it would refuse to read. It reports the source and rendered sizes because the
+// difference between them is the block this command adds, which is the part the
+// user cannot shrink.
+func ensureRenderedInstructionFits(path string, source, rendered []byte) error {
+	if len(rendered) <= maxInstructionFileBytes {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s: the file is %d bytes and the Entire Graph managed block would take it to %d, "+
+			"past the %d-byte limit init-agents will read back on its next run; "+
+			"reduce it (or move its bulk into a file it imports) and rerun init-agents",
+		path, len(source), len(rendered), maxInstructionFileBytes,
+	)
 }
 
 // validatePointerMarkers intentionally counts the raw marker tokens. Markers in examples,
