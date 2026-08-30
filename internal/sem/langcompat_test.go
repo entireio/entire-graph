@@ -120,8 +120,11 @@ func TestTypeReferenceKeepsSharedDeclarationLanguages(t *testing.T) {
 	writeFile(t, repo, "ship.ts", "export function shipOrder(o: Order): void { }\n")
 	writeFile(t, repo, "cart.ts", "export class CartX { n: number = 0 }\n")
 	writeFile(t, repo, "use_cart.js", "export function takeCart(/** @type {CartX} */ CartX) { return CartX }\n")
-	// Clojure dialects.
-	writeFile(t, repo, "tick.clj", "(defrecord Ticket [id])\n")
+	// Clojure dialects. The declaration is `.cljc` because that is the only
+	// Clojure source both readers accept: `.clj` is JVM-only, so a `.cljs`
+	// consumer genuinely cannot name it, and asserting that it could would pin
+	// the defect rather than the contract.
+	writeFile(t, repo, "tick.cljc", "(defrecord Ticket [id])\n")
 	writeFile(t, repo, "usetick.cljs", "(defn use-ticket [Ticket] Ticket)\n")
 	// CLR: F# naming a C# class.
 	writeFile(t, repo, "Basket.cs", "public class Basket { public int N; }\n")
