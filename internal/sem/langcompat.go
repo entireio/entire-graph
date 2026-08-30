@@ -1,5 +1,10 @@
 package sem
 
+import (
+	"path"
+	"strings"
+)
+
 // Cross-language type resolution.
 //
 // A bare type name in a signature is resolved against the workspace-wide
@@ -42,8 +47,10 @@ var typeSharingLanguageGroups = [][]string{
 	// The JVM. All of these compile to JVM classes and name Java types
 	// directly in signatures and type hints.
 	{"Java", "Kotlin", "Scala", "Groovy", "Clojure"},
-	// Clojure dialects: `.cljc` is read by both the Clojure and the
-	// ClojureScript reader.
+	// Clojure dialects. The sharing here is narrower than the language pair
+	// suggests and is refined by file extension in candidateSharesDeclarations:
+	// `.clj` and `.cljc` are BOTH the "Clojure" language, but only `.cljc` is
+	// read by the ClojureScript reader.
 	{"Clojure", "ClojureScript"},
 	// TypeScript is a superset of JavaScript, declaration files describe
 	// JavaScript, and JSDoc annotations in JavaScript name TypeScript types.
@@ -111,9 +118,48 @@ func languagesShareTypes(from, target string) bool {
 func sharedTypeCandidates(from SymbolRecord, candidates []SymbolRecord) []SymbolRecord {
 	filtered := candidates[:0:0]
 	for _, candidate := range candidates {
-		if languagesShareTypes(from.Language, candidate.Language) {
+		if candidateSharesDeclarations(from, candidate) {
 			filtered = append(filtered, candidate)
 		}
 	}
 	return filtered
+}
+
+// clojurePortableExt is the only Clojure source extension both readers accept.
+const clojurePortableExt = ".cljc"
+
+// candidateSharesDeclarations is languagesShareTypes plus the refinements that
+// a language name alone cannot express.
+//
+// Clojure is the case that forces this. `.clj` (JVM-only) and `.cljc`
+// (portable) are both the "Clojure" language, so a language-pair rule lets
+// ClojureScript bind a declaration it can never actually name. Measured before
+// this refinement, a `.cljs` consumer resolved USES_TYPE to BOTH:
+//
+//	ClojureScript(src/app.cljs) -> Clojure(src/jvmonly.clj)    WRONG
+//	ClojureScript(src/app.cljs) -> Clojure(src/portable.cljc)  correct
+//
+// The extension is consulted only for a CROSS-language pair. Within one
+// language the question does not arise, and a same-language `.clj` to `.clj`
+// reference is exactly what should resolve.
+//
+// The rule is symmetric and lands correctly in both directions: a ClojureScript
+// symbol always comes from `.cljs`, so a Clojure referrer never binds one,
+// which is right — a JVM Clojure file cannot name a ClojureScript-only
+// declaration either.
+func candidateSharesDeclarations(from, candidate SymbolRecord) bool {
+	if !languagesShareTypes(from.Language, candidate.Language) {
+		return false
+	}
+	if from.Language == candidate.Language {
+		return true
+	}
+	if isClojureDialect(from.Language) && isClojureDialect(candidate.Language) {
+		return strings.EqualFold(path.Ext(candidate.FilePath), clojurePortableExt)
+	}
+	return true
+}
+
+func isClojureDialect(language string) bool {
+	return language == "Clojure" || language == "ClojureScript"
 }

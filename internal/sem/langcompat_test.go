@@ -425,3 +425,65 @@ end
 		}
 	}
 }
+
+// TestClojureScriptOnlyBindsPortableClojureDeclarations covers the case a
+// language-pair rule cannot express.
+//
+// `.clj` (JVM-only) and `.cljc` (portable) are BOTH the "Clojure" language —
+// parser.go maps them to the same name — so allowing the Clojure/ClojureScript
+// pair wholesale lets a `.cljs` consumer bind a declaration it can never name.
+// Measured before the refinement, this fixture produced both:
+//
+//	ClojureScript(src/app.cljs) -> Clojure(src/jvmonly.clj)    WRONG
+//	ClojureScript(src/app.cljs) -> Clojure(src/portable.cljc)  correct
+//
+// The test asserts both halves, because a refinement that simply severed the
+// dialect pair would remove the wrong edge and the right one together.
+func TestClojureScriptOnlyBindsPortableClojureDeclarations(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/jvmonly.clj", `(ns jvmonly)
+
+(defrecord JvmOnlyThing [x])
+`)
+	writeFile(t, repo, "src/portable.cljc", `(ns portable)
+
+(defrecord PortableThing [y])
+`)
+	writeFile(t, repo, "src/app.cljs", `(ns app)
+
+(defn use-jvm [^JvmOnlyThing a] a)
+
+(defn use-portable [^PortableThing b] b)
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileOf := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		fileOf[symbol.ID] = symbol.FilePath
+	}
+
+	// Only edges FROM the ClojureScript consumer are the question here. The
+	// .clj file's own DEFINES/CONTAINS edges point into itself and are correct;
+	// counting those would fail the test for the right behaviour.
+	portable, jvmOnly := false, false
+	for _, relation := range snapshot.Relations {
+		if fileOf[relation.FromID] != "src/app.cljs" {
+			continue
+		}
+		switch fileOf[relation.ToID] {
+		case "src/portable.cljc":
+			portable = true
+		case "src/jvmonly.clj":
+			jvmOnly = true
+		}
+	}
+	if jvmOnly {
+		t.Errorf("ClojureScript bound a JVM-only .clj declaration it cannot name: %#v", snapshot.Relations)
+	}
+	if !portable {
+		t.Errorf("the portable .cljc declaration must still resolve; severing the dialect pair is not the fix: %#v", snapshot.Relations)
+	}
+}
