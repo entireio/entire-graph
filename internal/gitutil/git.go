@@ -2028,6 +2028,17 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 		if msg == "" {
 			msg = err.Error()
 		}
+		// A subprocess killed because THIS context ended reports the signal, not
+		// the reason: exec.CommandContext kills the child and Wait returns
+		// "signal: killed" (or the platform's equivalent), so a caller that set a
+		// deadline cannot tell its own expiry from a Git failure. The context's
+		// error is carried alongside Git's message rather than replacing it, so
+		// errors.Is(err, context.DeadlineExceeded) holds while the argv and
+		// stderr a reader needs stay in the text. Only added when the context
+		// actually ended, so an ordinary Git failure is unchanged.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("%s %s: %s: %w", name, strings.Join(args, " "), msg, ctxErr)
+		}
 		return "", fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
 	}
 	return stdout, nil
