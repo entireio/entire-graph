@@ -431,13 +431,27 @@ type SearchStats struct {
 	PreselectLatencyMS int64 `json:"preselect_latency_ms"`
 }
 
+// SearchFormatVersion versions the search RESPONSE ENVELOPE, the same axis
+// impact, def, neighbors, index and stats already emit as format_version. It is
+// deliberately not sem.SchemaVersion: this is a query response, not one of the
+// persisted 1.x record artifacts ADR 0001 freezes, and conflating the two would
+// make every search-payload change look like a change to the ingestion schema.
+const SearchFormatVersion = 1
+
 type SearchResponse struct {
-	Query    string         `json:"query"`
-	RepoRoot string         `json:"repo_root"`
-	Commit   string         `json:"commit,omitempty"`
-	Tree     string         `json:"tree,omitempty"`
-	Profile  string         `json:"profile"`
-	Results  []SearchResult `json:"results"`
+	// FormatVersion leads the payload so a consumer can branch on it before
+	// reading anything else. Search was the only machine-readable surface with no
+	// version discriminator at all: its five sibling query commands emit
+	// format_version and the record/snapshot surfaces emit schema_version, but a
+	// consumer parsing search JSON had nothing to tell one payload shape from the
+	// next.
+	FormatVersion int            `json:"format_version"`
+	Query         string         `json:"query"`
+	RepoRoot      string         `json:"repo_root"`
+	Commit        string         `json:"commit,omitempty"`
+	Tree          string         `json:"tree,omitempty"`
+	Profile       string         `json:"profile"`
+	Results       []SearchResult `json:"results"`
 	// The three blocks below live outside `results`, and they are declared in the order they
 	// are rendered — see the section order documented in search_blocks.go.
 	//
@@ -908,7 +922,22 @@ var sparseSearchStopWords = map[string]bool{
 
 // SearchRepository performs local hybrid lexical/semantic retrieval. It uses
 // no qrels, hosted models, embeddings, or network access.
+// SearchRepository stamps the response envelope version at the ONE place a
+// content-bearing SearchResponse leaves this package, rather than at each
+// construction site. searchRepository has two success returns and error returns
+// throughout; stamping per site means a third success path added later silently
+// emits format_version 0, which a consumer cannot tell from "field absent".
+// This mirrors how AnalyzeGitRangeWithOptions stamps SchemaVersion.
 func SearchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {
+	response, err := searchRepository(ctx, repo, providerVersion, query, options)
+	if err != nil {
+		return SearchResponse{}, err
+	}
+	response.FormatVersion = SearchFormatVersion
+	return response, nil
+}
+
+func searchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {
 	q := buildSearchQuery(query)
 	if len(q.terms) == 0 {
 		return SearchResponse{}, errors.New("search query has no meaningful terms")
