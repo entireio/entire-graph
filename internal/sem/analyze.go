@@ -377,6 +377,14 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			// emitted an added/removed module for a path no snapshot indexes —
 			// the same invented record this branch exists to prevent, reached by
 			// forgetting that an absent side is not an unsupported one.
+			//
+			// Mutation-checking shows the restatement below happens to neutralize
+			// the added/deleted shape on its own, so this guard changes no output
+			// today. It is kept because that neutralization is an accident of
+			// three other decisions lining up — the restatement empties both
+			// sides, moduleScopeChange declines an empty pair, pathScopeChange
+			// declines an unchanged path — and any one of them moving would put
+			// the invented record back with nothing to catch it.
 			if !(beforeOK && afterOK && beforeUnsupported != afterUnsupported) {
 				continue
 			}
