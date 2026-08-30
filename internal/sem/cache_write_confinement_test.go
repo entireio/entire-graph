@@ -1,11 +1,18 @@
 package sem
 
 import (
+	"crypto/rand"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+	"testing/iotest"
+	"time"
 )
 
 // The cache directory's descendants are named by this program — two constants and a SHA-256
@@ -268,3 +275,120 @@ func TestCacheEntryWriteLeavesOnlyTheArtifact(t *testing.T) {
 		t.Errorf("cache directory holds %v, want only the artifact", names)
 	}
 }
+
+// stubDirEntryInfo is an os.FileInfo whose only interesting field is the mode, so
+// a redirecting entry can be presented to the guard on a platform that cannot
+// create one. Windows directory junctions are the case in point: they need
+// privileges and an mklink subprocess to make, and they are reported through a
+// mode bit the guard either honours or does not.
+type stubDirEntryInfo struct{ mode os.FileMode }
+
+func (stubDirEntryInfo) Name() string        { return "cache" }
+func (stubDirEntryInfo) Size() int64         { return 0 }
+func (i stubDirEntryInfo) Mode() os.FileMode { return i.mode }
+func (stubDirEntryInfo) ModTime() time.Time  { return time.Time{} }
+func (i stubDirEntryInfo) IsDir() bool       { return i.mode.IsDir() }
+func (stubDirEntryInfo) Sys() any            { return nil }
+
+// TestCacheComponentRedirectErrorHonoursEveryRedirectingMode pins the guard to the
+// platform's own notion of "this entry redirects". A ModeSymlink-only comparison
+// is right on Unix and wrong on Windows, which reports a symlink as ModeSymlink
+// but a directory junction or mount point as ModeIrregular — so a junction planted
+// at the family or version component passed the check and was then descended into
+// and followed. The ModeIrregular row therefore expects a refusal only on Windows,
+// where it is also the only place it can be exercised; elsewhere it must NOT
+// refuse, or an ordinary irregular entry would break writes on platforms that
+// have no reparse points at all.
+func TestCacheComponentRedirectErrorHonoursEveryRedirectingMode(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name       string
+		mode       os.FileMode
+		wantRefuse bool
+	}{
+		{name: "plain directory", mode: os.ModeDir | 0o700, wantRefuse: false},
+		{name: "symlink", mode: os.ModeSymlink | 0o777, wantRefuse: true},
+		{name: "windows reparse point", mode: os.ModeIrregular | os.ModeDir, wantRefuse: runtime.GOOS == "windows"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			err := cacheComponentRedirectError("family", stubDirEntryInfo{mode: testCase.mode})
+			if testCase.wantRefuse && err == nil {
+				t.Fatalf("mode %s was descended into; it can redirect the write on %s", testCase.mode, runtime.GOOS)
+			}
+			if !testCase.wantRefuse && err != nil {
+				t.Fatalf("mode %s was refused on %s: %v", testCase.mode, runtime.GOOS, err)
+			}
+		})
+	}
+}
+
+// TestCacheTempNameSuffixReportsRandomnessFailure pins that a randomness failure
+// is REPORTED. crypto/rand.Text, the obvious way to write this, routes such a
+// failure through runtime.fatal — an unrecoverable process kill, not a panic a
+// caller can recover — so a cache write whose errors every best-effort caller
+// already discards would instead tear down the whole index run.
+func TestCacheTempNameSuffixReportsRandomnessFailure(t *testing.T) {
+	t.Parallel()
+	sentinel := errors.New("randomness source unavailable")
+	if _, err := cacheTempNameSuffix(iotest.ErrReader(sentinel)); !errors.Is(err, sentinel) {
+		t.Fatalf("cacheTempNameSuffix error = %v, want it to report %v", err, sentinel)
+	}
+	// A source that ends early must be reported too, not silently shorten the name.
+	if _, err := cacheTempNameSuffix(strings.NewReader("too short")); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("cacheTempNameSuffix error = %v, want %v", err, io.ErrUnexpectedEOF)
+	}
+}
+
+// TestCacheTempNameSuffixIsUnpredictable keeps the replacement drawing from the
+// CSPRNG rather than from a counter: the O_EXCL create is only a race guard if no
+// one can name the file first.
+func TestCacheTempNameSuffixIsUnpredictable(t *testing.T) {
+	t.Parallel()
+	seen := map[string]bool{}
+	for i := 0; i < 64; i++ {
+		suffix, err := cacheTempNameSuffix(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(suffix) != 32 {
+			t.Fatalf("suffix %q is %d characters, want 32 hexadecimal ones", suffix, len(suffix))
+		}
+		for _, r := range suffix {
+			if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+				t.Fatalf("suffix %q is not lowercase hexadecimal; a case-insensitive filesystem could alias two names", suffix)
+			}
+		}
+		if seen[suffix] {
+			t.Fatalf("suffix %q repeated within 64 draws", suffix)
+		}
+		seen[suffix] = true
+	}
+}
+
+// TestCreateRootTempNamesTheFileFromTheReportedRandomSource ties the call site to
+// the reporting draw. It is the only thing that distinguishes it from
+// crypto/rand.Text, whose 26-character uppercase base32 name is visibly different
+// from the 32 lowercase hexadecimal characters cacheTempNameSuffix produces — and
+// whose randomness failure would kill the process instead of returning here.
+func TestCreateRootTempNamesTheFileFromTheReportedRandomSource(t *testing.T) {
+	t.Parallel()
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	file, name, err := createRootTemp(root, "snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^\.snapshot-[0-9a-f]{32}\.json\.gz$`).MatchString(name) {
+		t.Fatalf("temporary cache file named %q, want .snapshot-<32 hexadecimal>.json.gz", name)
+	}
+}
+
+var _ fs.FileInfo = stubDirEntryInfo{}

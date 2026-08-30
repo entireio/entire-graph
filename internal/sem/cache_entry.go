@@ -4,9 +4,11 @@ import (
 	"compress/gzip"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -180,10 +182,42 @@ func openCacheComponent(parent *os.Root, name string) (*os.Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		return nil, fmt.Errorf("cache directory component %q is a symlink", name)
+	if err := cacheComponentRedirectError(name, info); err != nil {
+		return nil, err
 	}
 	return parent.OpenRoot(name)
+}
+
+// cacheComponentRedirectError refuses a cache directory component that can send a
+// write somewhere other than the directory this loop just checked.
+//
+// The test is pathMayRedirect, not a bare ModeSymlink comparison, because the
+// mode that means "this entry redirects" is platform-specific: Windows reports a
+// symlink as ModeSymlink but a directory junction or mount point as
+// ModeIrregular, so a ModeSymlink-only check descends into a junction planted at
+// the family or version component and follows it opaquely. pathMayRedirect is the
+// same predicate the provider already applies at its other redirect boundaries.
+func cacheComponentRedirectError(name string, info os.FileInfo) error {
+	if !pathMayRedirect(info) {
+		return nil
+	}
+	return fmt.Errorf("cache directory component %q is a symlink or other redirecting entry (%s)", name, info.Mode().Type())
+}
+
+// cacheTempNameSuffix draws the unpredictable half of a temporary artifact name.
+//
+// crypto/rand.Text is the obvious call and is deliberately not used: it reports a
+// randomness failure through runtime.fatal, which is not a panic a caller can
+// recover but an unrecoverable process kill. Tearing down an index run because a
+// temporary file could not be named is the wrong failure mode for a best-effort
+// cache write, whose callers already discard errors. Reading rand.Reader directly
+// keeps exactly the same CSPRNG and returns the failure instead.
+func cacheTempNameSuffix(source io.Reader) (string, error) {
+	var raw [16]byte
+	if _, err := io.ReadFull(source, raw[:]); err != nil {
+		return "", fmt.Errorf("draw a random cache file name: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 // createRootTemp is os.CreateTemp confined to an opened directory. The name is a cryptographically
@@ -191,7 +225,11 @@ func openCacheComponent(parent *os.Root, name string) (*os.Root, error) {
 // and it keeps the visible `.<prefix>-*.json.gz` shape that operator cleanup globs already match.
 func createRootTemp(directory *os.Root, prefix string) (*os.File, string, error) {
 	for attempt := 0; attempt < 16; attempt++ {
-		name := "." + prefix + "-" + rand.Text() + ".json.gz"
+		suffix, err := cacheTempNameSuffix(rand.Reader)
+		if err != nil {
+			return nil, "", err
+		}
+		name := "." + prefix + "-" + suffix + ".json.gz"
 		file, err := directory.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, fs.ErrExist) {
 			continue
