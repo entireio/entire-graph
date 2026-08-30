@@ -131,7 +131,7 @@ func verifyCompactPreflight(native snapshotProjection, compact []byte, nativeHas
 		return compactPreflight{}, fmt.Errorf("compact canonical semantic hash %s does not match native %s", loaded.CanonicalSemanticHash, nativeHash)
 	}
 	var decoded []any
-	if err := sem.DecodeCompactSnapshot(bytes.NewReader(compact), func(record any) error {
+	if _, err := sem.DecodeCompactSnapshot(bytes.NewReader(compact), func(record any) error {
 		decoded = append(decoded, record)
 		return nil
 	}); err != nil {

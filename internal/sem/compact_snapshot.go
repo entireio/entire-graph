@@ -978,7 +978,26 @@ func shortDigest(value string) string {
 
 // DecodeCompactSnapshot validates and decodes records incrementally. It retains
 // only the string dictionary; callers that need materialization use the loader.
-func DecodeCompactSnapshot(in io.Reader, emit func(any) error) error {
+// DecodeCompactSnapshot streams a compact snapshot, calling emit for each
+// record, and RETURNS the ADR 0001 tolerant-reader warnings rather than
+// discarding them.
+//
+// The newer-minor signal used to be computed here and thrown away, so every
+// caller that needed it had to re-derive it by calling
+// CheckReadableSchemaVersion on the header a second time — which
+// LoadCompactSnapshot did, and which a direct caller could simply forget, with
+// nothing to remind it. Clause 3 of the ADR makes that warning mandatory for a
+// reader, so a decoder that computes it and drops it is handing every caller
+// the same bug to rediscover.
+//
+// The warnings are returned rather than emitted through the record stream on
+// purpose: emit feeds SnapshotSemanticHasher and the preflight's public
+// projection, both of which type-switch over the record kinds, so a warning
+// pushed through that channel would change the canonical semantic hash and
+// break the projection comparison. A warning is metadata ABOUT the stream, not
+// a record in it.
+func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarning, error) {
+	var warnings []ProviderWarning
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	dictionary := []string{""}
@@ -989,37 +1008,37 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) error {
 		lineNumber++
 		line := scanner.Bytes()
 		if len(line) == 0 {
-			return fmt.Errorf("compact snapshot line %d is blank", lineNumber)
+			return warnings, fmt.Errorf("compact snapshot line %d is blank", lineNumber)
 		}
 		if seenSummary {
-			return fmt.Errorf("compact snapshot has record after summary at line %d", lineNumber)
+			return warnings, fmt.Errorf("compact snapshot has record after summary at line %d", lineNumber)
 		}
 		var fields []json.RawMessage
 		if err := json.Unmarshal(line, &fields); err != nil {
-			return fmt.Errorf("compact snapshot line %d: %w", lineNumber, err)
+			return warnings, fmt.Errorf("compact snapshot line %d: %w", lineNumber, err)
 		}
 		if len(fields) == 0 {
-			return fmt.Errorf("compact snapshot line %d has no tag", lineNumber)
+			return warnings, fmt.Errorf("compact snapshot line %d has no tag", lineNumber)
 		}
 		var tag string
 		if err := json.Unmarshal(fields[0], &tag); err != nil {
-			return fmt.Errorf("compact snapshot line %d tag: %w", lineNumber, err)
+			return warnings, fmt.Errorf("compact snapshot line %d tag: %w", lineNumber, err)
 		}
 		switch tag {
 		case "h":
 			if seenHeader || lineNumber != 1 || len(fields) != 3 {
-				return fmt.Errorf("compact snapshot header must be first and have arity 3")
+				return warnings, fmt.Errorf("compact snapshot header must be first and have arity 3")
 			}
 			var version int
 			if err := json.Unmarshal(fields[1], &version); err != nil {
-				return fmt.Errorf("compact snapshot header version: %w", err)
+				return warnings, fmt.Errorf("compact snapshot header version: %w", err)
 			}
 			if version != CompactSnapshotFormatVersion {
-				return fmt.Errorf("unsupported compact snapshot version %d", version)
+				return warnings, fmt.Errorf("unsupported compact snapshot version %d", version)
 			}
 			var header SnapshotHeader
 			if err := json.Unmarshal(fields[2], &header); err != nil {
-				return fmt.Errorf("compact snapshot header: %w", err)
+				return warnings, fmt.Errorf("compact snapshot header: %w", err)
 			}
 			// The envelope version above pins the ARRAY ENCODING; the header's
 			// schema_version pins the RECORD SHAPE, and the two move
@@ -1028,78 +1047,82 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) error {
 			// declare a placeable version at all — is refused here rather than
 			// decoded into this build's structs, where every field the other
 			// major named differently would silently arrive as a zero value.
-			if _, err := CheckReadableSchemaVersion(header.SchemaVersion); err != nil {
-				return fmt.Errorf("compact snapshot header: %w", err)
+			newerMinor, err := CheckReadableSchemaVersion(header.SchemaVersion)
+			if err != nil {
+				return warnings, fmt.Errorf("compact snapshot header: %w", err)
+			}
+			if newerMinor {
+				warnings = append(warnings, newerSchemaMinorWarning(header.SchemaVersion))
 			}
 			seenHeader = true
 			if err := emit(header); err != nil {
-				return err
+				return warnings, err
 			}
 		case "d":
 			if !seenHeader || seenSummary || len(fields) != 3 {
-				return fmt.Errorf("compact snapshot dictionary has invalid placement or arity")
+				return warnings, fmt.Errorf("compact snapshot dictionary has invalid placement or arity")
 			}
 			var base int
 			var stringsToAdd []string
 			if err := json.Unmarshal(fields[1], &base); err != nil {
-				return fmt.Errorf("compact snapshot dictionary base: %w", err)
+				return warnings, fmt.Errorf("compact snapshot dictionary base: %w", err)
 			}
 			if err := json.Unmarshal(fields[2], &stringsToAdd); err != nil {
-				return fmt.Errorf("compact snapshot dictionary values: %w", err)
+				return warnings, fmt.Errorf("compact snapshot dictionary values: %w", err)
 			}
 			if base != len(dictionary) {
-				return fmt.Errorf("compact snapshot dictionary base %d does not equal %d", base, len(dictionary))
+				return warnings, fmt.Errorf("compact snapshot dictionary base %d does not equal %d", base, len(dictionary))
 			}
 			if len(stringsToAdd) == 0 {
-				return errors.New("compact snapshot dictionary update is empty")
+				return warnings, errors.New("compact snapshot dictionary update is empty")
 			}
 			for _, value := range stringsToAdd {
 				if value == "" {
-					return errors.New("compact snapshot dictionary repeats empty string")
+					return warnings, errors.New("compact snapshot dictionary repeats empty string")
 				}
 				if known[value] {
-					return fmt.Errorf("compact snapshot dictionary duplicates %q", value)
+					return warnings, fmt.Errorf("compact snapshot dictionary duplicates %q", value)
 				}
 				known[value] = true
 				dictionary = append(dictionary, value)
 			}
 		case "f", "x", "s", "r":
 			if !seenHeader {
-				return errors.New("compact snapshot data requires header")
+				return warnings, errors.New("compact snapshot data requires header")
 			}
 			record, err := decodeCompactData(tag, fields, dictionary)
 			if err != nil {
-				return fmt.Errorf("compact snapshot line %d: %w", lineNumber, err)
+				return warnings, fmt.Errorf("compact snapshot line %d: %w", lineNumber, err)
 			}
 			if err := emit(record); err != nil {
-				return err
+				return warnings, err
 			}
 		case "m":
 			if !seenHeader || len(fields) != 2 {
-				return fmt.Errorf("compact snapshot summary has invalid placement or arity")
+				return warnings, fmt.Errorf("compact snapshot summary has invalid placement or arity")
 			}
 			var summary SnapshotSummary
 			if err := json.Unmarshal(fields[1], &summary); err != nil {
-				return fmt.Errorf("compact snapshot summary: %w", err)
+				return warnings, fmt.Errorf("compact snapshot summary: %w", err)
 			}
 			seenSummary = true
 			if err := emit(summary); err != nil {
-				return err
+				return warnings, err
 			}
 		default:
-			return fmt.Errorf("unknown compact snapshot tag %q", tag)
+			return warnings, fmt.Errorf("unknown compact snapshot tag %q", tag)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("compact snapshot scan: %w", err)
+		return warnings, fmt.Errorf("compact snapshot scan: %w", err)
 	}
 	if !seenHeader {
-		return errors.New("compact snapshot is missing header")
+		return warnings, errors.New("compact snapshot is missing header")
 	}
 	if !seenSummary {
-		return errors.New("compact snapshot is missing summary")
+		return warnings, errors.New("compact snapshot is missing summary")
 	}
-	return nil
+	return warnings, nil
 }
 
 func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string) (any, error) {

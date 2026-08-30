@@ -35,7 +35,7 @@ func LoadCompactSnapshot(in io.Reader) (*CompactSnapshotIndex, error) {
 	index := &CompactSnapshotIndex{symbolMatches: map[string][]int{}, relationsByFrom: map[string][]int{}}
 	hasher := NewSnapshotSemanticHasher()
 	seenHeader, seenSummary := false, false
-	err := DecodeCompactSnapshot(in, func(record any) error {
+	warnings, err := DecodeCompactSnapshot(in, func(record any) error {
 		if err := hasher.Add(record); err != nil {
 			return err
 		}
@@ -43,11 +43,6 @@ func LoadCompactSnapshot(in io.Reader) (*CompactSnapshotIndex, error) {
 		case SnapshotHeader:
 			index.Snapshot.Header = typed
 			seenHeader = true
-			// DecodeCompactSnapshot already refused an unreadable major, so the
-			// only signal left is the newer-minor one the contract says to warn on.
-			if newerMinor, err := CheckReadableSchemaVersion(typed.SchemaVersion); err == nil && newerMinor {
-				index.SchemaWarnings = append(index.SchemaWarnings, newerSchemaMinorWarning(typed.SchemaVersion))
-			}
 		case FileRecord:
 			index.Snapshot.Files = append(index.Snapshot.Files, typed)
 		case ExternalRecord:
@@ -67,6 +62,10 @@ func LoadCompactSnapshot(in io.Reader) (*CompactSnapshotIndex, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The decoder is the single place the tolerant-reader warnings are derived,
+	// so this consumes them rather than recomputing the same condition from the
+	// header a second time.
+	index.SchemaWarnings = append(index.SchemaWarnings, warnings...)
 	if !seenHeader || !seenSummary {
 		return nil, errorsNewCompactLoad()
 	}

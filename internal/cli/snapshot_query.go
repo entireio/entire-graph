@@ -35,8 +35,15 @@ func runSnapshotQuery(opts Options, args []string) error {
 	// ADR 0001: a newer minor of a readable major is served, not refused, but the
 	// caller has to learn that additive facts were skipped. stdout is the record
 	// stream a consumer parses, so the notice goes to stderr.
+	// The write is checked because ADR 0001 clause 3 makes this warning
+	// MANDATORY for a reader: if it cannot be delivered, serving the records as
+	// though the consumer had been told is the failure the clause exists to
+	// prevent. A dropped warning is silent by construction — nothing downstream
+	// can tell it was owed one — so the only place it can be caught is here.
 	for _, warning := range index.SchemaWarnings {
-		fmt.Fprintf(opts.Stderr, "graph warning code=%s detail=%s\n", warning.Code, warning.Detail)
+		if _, err := fmt.Fprintf(opts.Stderr, "graph warning code=%s detail=%s\n", warning.Code, warning.Detail); err != nil {
+			return fmt.Errorf("write schema compatibility warning: %w", err)
+		}
 	}
 	result := index.Query(sem.CompactSnapshotQuery{Symbol: flags.Symbol, FromID: flags.From, Relation: flags.Relation})
 	encoder := json.NewEncoder(opts.Stdout)

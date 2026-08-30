@@ -302,7 +302,7 @@ func callee() {}
 		t.Fatal(err)
 	}
 	decoded := make([]any, 0, len(records))
-	if err := DecodeCompactSnapshot(bytes.NewReader(first), func(record any) error {
+	if _, err := DecodeCompactSnapshot(bytes.NewReader(first), func(record any) error {
 		decoded = append(decoded, record)
 		return nil
 	}); err != nil {

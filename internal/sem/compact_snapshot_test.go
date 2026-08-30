@@ -99,7 +99,7 @@ func publicRecordJSON(t *testing.T, records []any) []json.RawMessage {
 func decodedCompactRecords(t *testing.T, data []byte) []any {
 	t.Helper()
 	var records []any
-	if err := DecodeCompactSnapshot(bytes.NewReader(data), func(record any) error { records = append(records, record); return nil }); err != nil {
+	if _, err := DecodeCompactSnapshot(bytes.NewReader(data), func(record any) error { records = append(records, record); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	return records
@@ -512,7 +512,7 @@ func compactHeaderLine() string {
 
 func requireCompactDecodeError(t *testing.T, input, want string) {
 	t.Helper()
-	err := DecodeCompactSnapshot(strings.NewReader(input), func(any) error { return nil })
+	_, err := DecodeCompactSnapshot(strings.NewReader(input), func(any) error { return nil })
 	if err == nil {
 		t.Fatalf("expected %q error", want)
 	}

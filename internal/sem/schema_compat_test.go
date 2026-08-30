@@ -104,7 +104,7 @@ func TestLoadCompactSnapshotEnforcesSchemaMajor(t *testing.T) {
 func TestDecodeCompactSnapshotEnforcesSchemaMajor(t *testing.T) {
 	t.Parallel()
 	encoded := compactWithSchemaVersion(t, "2.0", true)
-	err := DecodeCompactSnapshot(bytes.NewReader(encoded), func(any) error { return nil })
+	_, err := DecodeCompactSnapshot(bytes.NewReader(encoded), func(any) error { return nil })
 	if err == nil {
 		t.Fatal("decoder streamed records from a snapshot declaring schema 2.0")
 	}
@@ -135,4 +135,64 @@ func TestCheckReadableSchemaVersionClassifiesAgainstThisBuild(t *testing.T) {
 
 func formatSchemaVersion(major, minor int) string {
 	return strconv.Itoa(major) + "." + strconv.Itoa(minor)
+}
+
+// TestDecodeCompactSnapshotReturnsTheNewerMinorWarning pins the half of ADR 0001
+// clause 3 the streaming decoder used to drop.
+//
+// The decoder computed the newer-minor signal in order to decide whether the
+// artifact was readable at all, and then discarded it — so every caller that
+// owed the reader a warning had to re-derive it from the header. LoadCompactSnapshot
+// did; a direct caller had nothing to remind it. Returning the warnings makes
+// the obligation part of the signature.
+func TestDecodeCompactSnapshotReturnsTheNewerMinorWarning(t *testing.T) {
+	t.Parallel()
+	major, minor, err := schemaMajorMinor(SchemaVersion)
+	if err != nil {
+		t.Fatalf("this build's SchemaVersion must parse: %v", err)
+	}
+	newerMinor := strconv.Itoa(major) + "." + strconv.Itoa(minor+1)
+
+	encoded := compactWithSchemaVersion(t, newerMinor, true)
+	warnings, err := DecodeCompactSnapshot(bytes.NewReader(encoded), func(any) error { return nil })
+	if err != nil {
+		t.Fatalf("a newer minor of a readable major must still decode: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("want exactly one tolerant-reader warning for a newer minor, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0].Detail, newerMinor) {
+		t.Fatalf("the warning must name the version it saw: %#v", warnings[0])
+	}
+
+	// The current version is not newer than itself, so it must warn about nothing.
+	same := compactWithSchemaVersion(t, SchemaVersion, true)
+	warnings, err = DecodeCompactSnapshot(bytes.NewReader(same), func(any) error { return nil })
+	if err != nil {
+		t.Fatalf("this build's own version must decode: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("this build's own version must produce no warning, got %#v", warnings)
+	}
+}
+
+// TestLoadCompactSnapshotSurfacesTheDecoderWarning keeps the two paths agreeing:
+// the index's SchemaWarnings must be exactly what the decoder returned, now that
+// LoadCompactSnapshot consumes them instead of recomputing the condition.
+func TestLoadCompactSnapshotSurfacesTheDecoderWarning(t *testing.T) {
+	t.Parallel()
+	major, minor, err := schemaMajorMinor(SchemaVersion)
+	if err != nil {
+		t.Fatalf("this build's SchemaVersion must parse: %v", err)
+	}
+	newerMinor := strconv.Itoa(major) + "." + strconv.Itoa(minor+1)
+	encoded := compactWithSchemaVersion(t, newerMinor, true)
+
+	index, err := LoadCompactSnapshot(bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(index.SchemaWarnings) != 1 || !strings.Contains(index.SchemaWarnings[0].Detail, newerMinor) {
+		t.Fatalf("the loader must surface the decoder's warning: %#v", index.SchemaWarnings)
+	}
 }
