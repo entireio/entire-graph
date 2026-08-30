@@ -330,10 +330,18 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		}
 
 		// Support is content-aware: extensionless executables can still route to a
-		// parser through their shebang. Classify each existing side independently
-		// so a rename across the parser boundary cannot become a one-sided phantom
-		// remove/add. Any unsupported side suppresses the delta and leaves a
-		// machine-readable completeness marker instead.
+		// parser through their shebang, so each existing side is classified
+		// independently.
+		//
+		// A side with no parser holds nothing in the graph — that is what "the
+		// graph does not index .txt" means — so a rename across the parser
+		// boundary is a file leaving or entering the index, and the honest delta
+		// is the removals or additions that a snapshot of each side would show.
+		// This used to suppress the whole record to avoid a "one-sided phantom
+		// remove/add", but the removals are not phantom: `x.go` -> `x.txt` really
+		// does take Run out of every snapshot, and suppressing it left a consumer
+		// unable to retire the old compound-v1 IDs while the warning named only
+		// the head path. The marker below still says the comparison is one-sided.
 		_, beforeSupported := languageForContent(oldPath, before)
 		_, afterSupported := languageForContent(path, after)
 		beforeUnsupported := beforeOK && !beforeSupported
@@ -349,7 +357,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			}
 			effect := "file skipped; no parser for this file type, so its changes are not analyzed"
 			if beforeOK && afterOK && beforeUnsupported != afterUnsupported {
-				effect = "file diff suppressed; one side has no parser, so changes cannot be compared safely"
+				effect = "one side has no parser, so its symbols are reported as leaving or entering the graph rather than compared"
 			}
 			result.Warnings = append(result.Warnings, ProviderWarning{
 				Code:                 "W_UNSUPPORTED_FILE",
@@ -358,13 +366,53 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				EffectOnCompleteness: effect,
 				Detail:               detail,
 			})
-			continue
+			// Only a change with BOTH sides present, exactly one of them parseable,
+			// says anything about the graph: the file crossed the boundary and
+			// its symbols entered or left the index.
+			//
+			// Every other shape must stop here. Two unsupported sides are in no
+			// snapshot at either end. An ADDED or DELETED unsupported file has
+			// only one side at all, so `beforeUnsupported && afterUnsupported` was
+			// false for it and it fell through to moduleScopeChange, which happily
+			// emitted an added/removed module for a path no snapshot indexes —
+			// the same invented record this branch exists to prevent, reached by
+			// forgetting that an absent side is not an unsupported one.
+			//
+			// Mutation-checking shows the restatement below happens to neutralize
+			// the added/deleted shape on its own, so this guard changes no output
+			// today. It is kept because that neutralization is an accident of
+			// three other decisions lining up — the restatement empties both
+			// sides, moduleScopeChange declines an empty pair, pathScopeChange
+			// declines an unchanged path — and any one of them moving would put
+			// the invented record back with nothing to catch it.
+			if !(beforeOK && afterOK && beforeUnsupported != afterUnsupported) {
+				continue
+			}
+			// The unparseable side is not in the graph, so the range did not
+			// rename a file the graph holds: it removed one or added one. Restate
+			// it as that, exactly as the index policy restates a rename across the
+			// exclusion boundary, so the reported path and language are the
+			// indexed side's and no consumer is handed `sample.ps1` labelled Go.
+			if afterUnsupported {
+				path, after, afterOK = oldPath, "", false
+				file.Status, file.OldPath = "D", ""
+			} else {
+				oldPath, before, beforeOK = path, "", false
+				file.Status, file.OldPath = "A", ""
+			}
 		}
 
-		beforeEntities, language, beforeStatus := parser.ParseWithStatus(oldPath, before)
+		beforeEntities, beforeLanguage, beforeStatus := parser.ParseWithStatus(oldPath, before)
 		afterEntities, afterLanguage, afterStatus := parser.ParseWithStatus(path, after)
-		if language == "" {
-			language = afterLanguage
+		// The head side names the file as it now is, and a rename can cross
+		// extensions: mod.js -> mod.ts is one file whose language changed with
+		// its path. The graph indexes the head path under the head parser's
+		// language, so reporting the base label here would disagree with every
+		// snapshot of that tree. Fall back to the base label only when there is
+		// no head version to ask — a deletion — or when it has no opinion.
+		language := afterLanguage
+		if (file.Status == "D" || language == "") && beforeLanguage != "" {
+			language = beforeLanguage
 		}
 		// A parse failure on either side degrades the diff. A TOTAL failure
 		// (ParseError with ZERO recovered entities) gives compareEntities no
@@ -378,6 +426,12 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		// never suppressed or flagged, so its real removed changes stand.
 		afterParseFailed := afterStatus.ParseError && len(afterEntities) == 0
 		beforeParseFailed := beforeStatus.ParseError && len(beforeEntities) == 0
+		// A failed parse is this provider failing to READ the file, not evidence
+		// that the file is empty. The symbols are most likely still there, so
+		// reporting them as removed would state a deletion that did not happen —
+		// the phantom the suppression here exists to prevent, and a different
+		// situation from a side the graph does not index at all (above), where
+		// their absence is a fact rather than a blind spot.
 		if afterParseFailed || beforeParseFailed {
 			status, warnPath := afterStatus, path
 			if !afterParseFailed {
@@ -385,6 +439,15 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			}
 			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, true))
 			continue
+		}
+		// A side with no parser holds nothing in the graph, so emptying it turns
+		// the comparison below into the removals or additions a snapshot of each
+		// side would show.
+		if beforeUnsupported {
+			beforeEntities = nil
+		}
+		if afterUnsupported {
+			afterEntities = nil
 		}
 		if afterStatus.ParseError || beforeStatus.ParseError {
 			status, warnPath := afterStatus, path
@@ -406,6 +469,15 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			// module scope (top-level statements, imports, comments). Surface
 			// it as a synthetic module-level change instead of dropping it.
 			mod, ok := moduleScopeChange(path, before, after, beforeOK, afterOK)
+			if !ok {
+				// A pure rename reaches here: both sides parse to the same
+				// entities and the bytes are identical, so there is no content
+				// change to report. The path still changed, and the path is a
+				// component of every compound-v1 symbol ID in the file, so
+				// every entity in it was re-identified. Report the path move so
+				// the file is never absent from the diff.
+				mod, ok = pathScopeChange(oldPath, path)
+			}
 			if !ok {
 				continue
 			}
@@ -1241,6 +1313,35 @@ func treeVendorIgnoreRules(ctx context.Context, repo, tree string, policyBase ig
 		return nil, err
 	}
 	return headVendorIgnoreRules(ctx, repo, tree, paths, policyBase)
+}
+
+// pathScopeChange builds a synthetic change for a file that Git reported as a
+// rename or copy but whose content is byte-identical on both sides, so
+// moduleScopeChange found nothing to report. Without it the file is dropped and
+// a 100%-similarity rename produces an empty diff — indistinguishable from "no
+// change at all". That is wrong for the command's own contract: the file path
+// is a component of every compound-v1 symbol ID (see symbolID), so moving a
+// file re-identifies every entity in it. The change reuses the module-scope
+// entity and the existing "moved" reconciliation shape, which already carries
+// OldPath/NewPath, rather than adding a new change type.
+// The caller normalizes an empty OldPath to path before calling, so the empty
+// check below cannot fire today; it is kept so a second caller passing Git's raw
+// OldPath cannot turn "not a rename" into a move with no source.
+func pathScopeChange(oldPath, path string) (EntityChange, bool) {
+	if oldPath == "" || oldPath == path {
+		return EntityChange{}, false
+	}
+	return EntityChange{
+		Type:            "moved",
+		Kind:            moduleKind,
+		Name:            path,
+		OldPath:         oldPath,
+		NewPath:         path,
+		BeforeStartLine: 1,
+		AfterStartLine:  1,
+		Similarity:      1,
+		Reconciliation:  "MOVED",
+	}, true
 }
 
 // moduleScopeChange builds a synthetic change for a file whose contents changed
