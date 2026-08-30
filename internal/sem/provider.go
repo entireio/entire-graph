@@ -3207,6 +3207,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// and let receiverCallRelations apply the usual shadowing rules.
 			typeScriptPropTypes = typeScriptPropertyTypes(content, recordsByFile[file.Path])
 		}
+		var fsharpCallableNames map[string]bool
+		if file.Language == "F#" && fileNeedsCallScan {
+			// The names a bare juxtaposition call may name: this file's own
+			// callables, plus those an `open` brings into scope unqualified.
+			// Computed once per file rather than per symbol.
+			fsharpCallableNames = fsharpFileCallableNames(currentFileSymbols)
+			for name := range fsharpOpenedCallableNames(fsharpOpenedModules(content), symbolsByShortName) {
+				fsharpCallableNames[name] = true
+			}
+		}
 		var jsSymbolNamespaces map[string]string
 		var jsScan *jsScanState
 		if fileNeedsCallScan && (file.Language == "JavaScript" || file.Language == "TypeScript") {
@@ -3361,6 +3371,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// `LoadingScripts.ScriptGeneration.constructScriptsFromData(...)`)
 					// hide the target behind a dotted path.
 					for name := range fsharpDottedCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+					// Plain juxtaposition (`add ledger amount`) is F#'s ordinary
+					// call syntax and has neither a dot, a pipe nor parentheses
+					// to mark it. Whitespace alone does not say which of several
+					// adjacent names is the one being applied, so the scan is
+					// restricted to names that are callable bindings in this
+					// file — an unrecognized name is never guessed into a call.
+					for name := range fsharpJuxtapositionCallIdentifiers(callBlock, fsharpCallableNames) {
 						callNames[name] = struct{}{}
 					}
 				}
@@ -4846,6 +4865,35 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// against `fun status(..., handler: suspend (ApplicationCall,
 		// HttpStatusCode) -> Unit)`) or by an explicit annotation.
 		for name, typeName := range kotlinLambdaParamVarTypes(block, from, symbolsByShortName) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
+	if from.Language == "C++" {
+		// Declared locals (`Ledger ledger;`, `Ledger ledger(seed);`), which
+		// C++ writes far more often than the constructor-assignment forms the
+		// generic scanner understands. Without this a stack-allocated receiver
+		// carries no type and every method call on it resolves to nothing.
+		//
+		// A name that is already a PARAMETER is skipped, and the reason is a
+		// rule of the language rather than a heuristic: C++ forbids redeclaring
+		// a parameter in the function body's top-level scope, so a declared
+		// local sharing a parameter's name is NECESSARILY inside a nested block
+		// and shadows the parameter only there. localTypes is function-wide and
+		// overwrites varTypes unconditionally below, so without this guard one
+		// nested `Account ledger;` retypes a `Ledger ledger` parameter for the
+		// whole function: `ledger.Commit()` after the block resolved to
+		// Account.Commit at confidence 0.85 with resolution=type_inferred, and
+		// the correct edge to Ledger.Commit disappeared. That is a confidently
+		// WRONG edge, which is worse than the missing one this scanner exists
+		// to fix — so the parameter, whose type is declared rather than
+		// inferred, wins. The cost is that calls on the shadowing local inside
+		// the block go unresolved until receiver typing is scope-aware.
+		for name, typeName := range cppLocalVarTypes(block) {
+			if _, isParameter := varTypes[name]; isParameter {
+				continue
+			}
 			if _, exists := localTypes[name]; !exists {
 				localTypes[name] = typeName
 			}
