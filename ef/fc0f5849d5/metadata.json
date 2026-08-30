@@ -2,8 +2,11 @@
   "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
   "checkpoint_id": "effc0f5849d5",
   "strategy": "manual-commit",
-  "checkpoints_count": 30,
-  "files_touched": null,
+  "branch": "docs/scratch-worktree-checkpoints",
+  "checkpoints_count": 31,
+  "files_touched": [
+    "AGENTS.md"
+  ],
   "sessions": [
     {
       "metadata": "/ef/fc0f5849d5/0/metadata.json",
@@ -14,10 +17,10 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 850,
-    "cache_creation_tokens": 4049116,
-    "cache_read_tokens": 169735694,
-    "output_tokens": 454574,
-    "api_call_count": 425
+    "input_tokens": 864,
+    "cache_creation_tokens": 4056628,
+    "cache_read_tokens": 174748232,
+    "output_tokens": 459678,
+    "api_call_count": 432
   }
 }

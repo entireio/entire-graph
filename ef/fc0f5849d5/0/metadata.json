@@ -3,17 +3,48 @@
   "checkpoint_id": "effc0f5849d5",
   "session_id": "5cd65790-57b7-4cde-b499-c3530b55792b",
   "strategy": "manual-commit",
-  "created_at": "2026-08-30T14:48:24.837331Z",
-  "checkpoints_count": 30,
-  "files_touched": null,
+  "created_at": "2026-08-30T14:51:45.4951Z",
+  "branch": "docs/scratch-worktree-checkpoints",
+  "checkpoints_count": 31,
+  "files_touched": [
+    "AGENTS.md"
+  ],
   "agent": "Claude Code",
   "model": "claude-opus-5",
+  "turn_id": "2b5b67811a96",
   "compact_transcript_start": 0,
   "token_usage": {
-    "input_tokens": 850,
-    "cache_creation_tokens": 4049116,
-    "cache_read_tokens": 169735694,
-    "output_tokens": 454574,
-    "api_call_count": 425
-  }
+    "input_tokens": 864,
+    "cache_creation_tokens": 4056628,
+    "cache_read_tokens": 174748232,
+    "output_tokens": 459678,
+    "api_call_count": 432
+  },
+  "session_metrics": {
+    "turn_count": 31
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-30T14:51:45.211912Z",
+    "agent_lines": 31,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 31,
+    "total_lines_changed": 31,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 21,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 21
+      }
+    }
+  ]
 }
