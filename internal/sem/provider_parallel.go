@@ -57,32 +57,70 @@ func processProviderFile(
 	if ctx.Err() != nil {
 		return result
 	}
+	var routedLanguage languageSpec
+	var routedLanguageOK bool
+	var routedOversize *oversizeFile
 	// Path-based routing first; files the path cannot classify (extensionless
 	// executables like pyenv's libexec/* scripts) get one bounded prefix read
-	// to route by shebang before being declared unsupported.
-	if !Supported(path) && !shebangRoutable(sc.readPrefix, path) {
-		if hint := unsupportedLanguageHint(path); hint != "" {
-			result.failures = append(result.failures, PartialFailure{
-				Code:                 "E_UNSUPPORTED_LANGUAGE",
-				Severity:             "warning",
-				FilePath:             path,
-				EffectOnCompleteness: "file omitted because no parser is available",
-				Detail:               hint,
-			})
+	// to route by shebang before being declared unsupported. Git blob reads
+	// are all-or-nothing, so an oversized committed blob can never satisfy
+	// that bounded prefix read directly; route it instead from the prefix
+	// already captured for free while streaming its digest, when the source
+	// kept one, so it does not fall through to "unsupported" purely because
+	// of its size.
+	if !Supported(path) {
+		if sc.readPrefix != nil {
+			if prefix, prefixOK := sc.readPrefix(path, shebangSniffLimit); prefixOK {
+				routedLanguage, routedLanguageOK = languageForShebang(prefix)
+			}
 		}
-		return result
+		if !routedLanguageOK {
+			if over, isOversize := sc.oversizeAt(path); isOversize && over.Prefix != "" {
+				routedLanguage, routedLanguageOK = languageForShebang(over.Prefix)
+				if routedLanguageOK {
+					routedOversize = &over
+				}
+			}
+		}
+		if !routedLanguageOK {
+			if hint := unsupportedLanguageHint(path); hint != "" {
+				result.failures = append(result.failures, PartialFailure{
+					Code:                 "E_UNSUPPORTED_LANGUAGE",
+					Severity:             "warning",
+					FilePath:             path,
+					EffectOnCompleteness: "file omitted because no parser is available",
+					Detail:               hint,
+				})
+			}
+			return result
+		}
 	}
 
-	content, ok := sc.read(path)
+	var content string
+	var ok bool
+	if routedOversize == nil {
+		content, ok = sc.read(path)
+	}
 	if !ok {
 		// A refused read is not a failed one: the reader declines files above
 		// the byte cap so no single file can set the snapshot's memory ceiling.
-		if over, isOversize := sc.oversizeAt(path); isOversize {
+		var over oversizeFile
+		var isOversize bool
+		if routedOversize != nil {
+			over, isOversize = *routedOversize, true
+		} else {
+			over, isOversize = sc.oversizeAt(path)
+		}
+		if isOversize {
 			langSpec, langOK := languageForPath(path)
-			if !langOK {
-				if prefix, prefixOK := sc.readPrefix(path, shebangSniffLimit); prefixOK {
-					langSpec, langOK = languageForShebang(prefix)
-				}
+			if !langOK && routedLanguageOK {
+				langSpec, langOK = routedLanguage, true
+			} else if !langOK && over.Prefix != "" {
+				// The ordinary bounded prefix read is doomed here for the same
+				// reason the read above was refused (Git blob reads are
+				// all-or-nothing); reuse the prefix already captured while
+				// streaming this blob's digest instead of retrying it.
+				langSpec, langOK = languageForShebang(over.Prefix)
 			}
 			if !langOK {
 				result.failures = append(result.failures, PartialFailure{

@@ -109,6 +109,10 @@ type SearchClosedSet struct {
 	Sites []SearchClosedSetSite `json:"sites"`
 	// Warning is the consequence, stated. Empty when no site is at runtime risk.
 	Warning string `json:"warning,omitempty"`
+	// provenancePaths retains the declaration and every site file used to
+	// derive the emitted set and warning, including sites removed by the byte
+	// fitter. Unexported so the public response schema stays unchanged.
+	provenancePaths []string
 }
 
 // SearchClosedSetSite is one switch/match over the set.
@@ -163,12 +167,24 @@ func buildSearchClosedSet(
 	if len(sites) == 0 {
 		return nil
 	}
+	return buildSearchClosedSetBlock(set, sites, maxBytes)
+}
+
+func buildSearchClosedSetBlock(
+	set searchClosedVariantSet,
+	sites []SearchClosedSetSite,
+	maxBytes int,
+) *SearchClosedSet {
 	block := &SearchClosedSet{
 		Type:     set.name,
 		Kind:     set.kind,
 		Variants: len(set.members),
 		Sites:    sites,
 		Warning:  searchClosedSetWarning(sites),
+		provenancePaths: searchClosedSetProvenancePaths(
+			set.declaredIn,
+			sites,
+		),
 	}
 	// A set with no runtime-risk site is a set the compiler already guards. Saying so costs bytes
 	// and prevents nothing, so it is not said.
@@ -182,6 +198,24 @@ func buildSearchClosedSet(
 		return nil
 	}
 	return block
+}
+
+func searchClosedSetProvenancePaths(declaredIn string, sites []SearchClosedSetSite) []string {
+	seen := make(map[string]struct{}, len(sites)+1)
+	if declaredIn != "" {
+		seen[declaredIn] = struct{}{}
+	}
+	for _, site := range sites {
+		if site.FilePath != "" {
+			seen[site.FilePath] = struct{}{}
+		}
+	}
+	paths := make([]string, 0, len(seen))
+	for filePath := range seen {
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // searchClosedVariantSetFor resolves the closed set the anchor is, is a member of, or is declared

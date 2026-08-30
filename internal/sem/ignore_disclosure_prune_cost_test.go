@@ -55,7 +55,7 @@ func TestPrunedExclusionAccountingBoundsTheIgnoreFilesItReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger := &repoIgnoreLedger{}
-	if _, err := walkWorktreeFiles(root, ignores, func(string) bool { return false }, ledger); err != nil {
+	if _, _, err := walkWorktreeFiles(t.Context(), root, ignores, func(string) bool { return false }, ledger); err != nil {
 		t.Fatal(err)
 	}
 	if ledger.ignoreBytesRead > maxRepoExclusionIgnoreBytes {
@@ -90,7 +90,7 @@ func TestOrdinaryNestedIgnoresInAPrunedTreeStayExact(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger := &repoIgnoreLedger{}
-	if _, err := walkWorktreeFiles(root, ignores, func(string) bool { return false }, ledger); err != nil {
+	if _, _, err := walkWorktreeFiles(t.Context(), root, ignores, func(string) bool { return false }, ledger); err != nil {
 		t.Fatal(err)
 	}
 	report := ledger.report()
@@ -141,7 +141,7 @@ func TestPrunedTreeGitSwallowAdmitsTheBlindSpot(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger := &repoIgnoreLedger{}
-	if _, err := walkWorktreeFiles(root, ignores, func(string) bool { return false }, ledger); err != nil {
+	if _, _, err := walkWorktreeFiles(t.Context(), root, ignores, func(string) bool { return false }, ledger); err != nil {
 		t.Fatal(err)
 	}
 	report := ledger.report()

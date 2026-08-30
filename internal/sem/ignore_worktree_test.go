@@ -78,6 +78,37 @@ func TestGitInfoExcludePath(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := filepath.Join(repo, ".git", "info", "exclude")
+		resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(want))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = filepath.Join(resolvedParent, filepath.Base(want))
+		if got := gitInfoExcludePath(repo); got != want {
+			t.Errorf("got %q want %q", got, want)
+		}
+	})
+
+	t.Run("directory gitdir with commondir", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		repo := filepath.Join(root, "repo")
+		gitDir := filepath.Join(repo, ".git")
+		commonDir := filepath.Join(root, "common")
+		if err := os.MkdirAll(filepath.Join(commonDir, "info"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(gitDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(gitDir, "commondir"), []byte(commonDir+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Join(commonDir, "info", "exclude")
+		resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(want))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = filepath.Join(resolvedParent, filepath.Base(want))
 		if got := gitInfoExcludePath(repo); got != want {
 			t.Errorf("got %q want %q", got, want)
 		}
@@ -143,11 +174,15 @@ func TestGitInfoExcludePath(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(gitDir, "commondir"), oversized, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		// commondir is refused, so gitDir itself (with its own info/exclude,
-		// which does not exist here) is what falls out — not an error.
-		want := filepath.Join(gitDir, "info", "exclude")
-		if got := gitInfoExcludePath(repo); got != want {
-			t.Errorf("oversized commondir: got %q, want fallback to gitdir itself %q", got, want)
+		// An oversized commondir refuses the git directory outright: no
+		// info/exclude is applied at all. That is gitCommonDir's documented rule
+		// and git's own — file_exists() decides presence, so an ABSENT commondir
+		// resolves inside gitDir while a PRESENT but unreadable one refuses the
+		// directory. Refusing is also the safe direction for this branch: no
+		// exclude list is loaded, so no path can be removed from the corpus by
+		// one, which is the failure this disclosure exists to catch.
+		if got := gitInfoExcludePath(repo); got != "" {
+			t.Errorf("oversized commondir: got %q, want refusal (\"\")", got)
 		}
 	})
 }

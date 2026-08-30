@@ -29,7 +29,8 @@ authoritative in `entire graph capabilities --json`.
 | [Benchmarks](benchmarks.md) | Quantitative methodology, results, corrections, and caveats; `bench/README.md` documents the harness layout and flags |
 | [ADR 0001](adr/0001-ga-schema-contract.md) | Accepted `1.x` schema compatibility contract |
 | [ADR 0002](adr/0002-committed-tree-cache-key.md) | Accepted committed-tree cache-key decision; authoritative for committed-tree cache identity |
-| [ADR 0003](adr/0003-working-tree-search-snapshot-cache.md) | Accepted working-tree search-snapshot cache decision; authoritative for working-tree eligibility |
+| [ADR 0003](adr/0003-working-tree-search-snapshot-cache.md) | Superseded clean-tree search-snapshot reuse decision |
+| [ADR 0004](adr/0004-working-tree-cache-security-boundary.md) | Accepted working-tree cache bypass security decision; authoritative for working-tree eligibility |
 
 Completed plans, superseded references, branch diaries, and point-in-time proof
 logs are listed in the [archive](archive/README.md). Archived documents are kept
@@ -47,6 +48,6 @@ revision and will move to the archive when done.
 | Languages, profiles, and relation types | `entire graph capabilities --json` |
 | Provider schema | [ADR 0001](adr/0001-ga-schema-contract.md), [snapshot format](snapshot-format.md), and `internal/sem/provider.go` |
 | Committed-tree cache identity | [ADR 0002](adr/0002-committed-tree-cache-key.md) and the cache implementations under `internal/sem/` |
-| Working-tree cache eligibility | [ADR 0003](adr/0003-working-tree-search-snapshot-cache.md) and `internal/sem/search_cache.go` |
+| Working-tree cache eligibility | [ADR 0004](adr/0004-working-tree-cache-security-boundary.md) and `internal/sem/search_cache.go` |
 | Agent activation behavior | [Agent activation](agents.md), verified against the installed release |
 | Benchmark behavior | [Benchmarks](benchmarks.md), `bench/README.md`, and `cmd/graph-bench` |

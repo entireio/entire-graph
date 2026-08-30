@@ -84,12 +84,13 @@ for p in <kit>/patches/000[1-4]-*.patch <kit>/patches/0006-*.patch; do git apply
 `patches/0005` is excluded from that glob on purpose: it targets `codebase-memory-mcp`'s own repo,
 not this harness, and is applied separately (see §3 below).
 
-Five upstream files are modified: provider timeouts, optional date injection, retry and drop
-accounting, a server-side fix, and `requirements.txt` for the BM25 arm's two declared dependencies
-(`rank-bm25`, `PyStemmer`; the arm's stopword list is inlined, not an NLTK dependency). Each patch is
-apply-checked against the pinned commit. Everything else is unmodified upstream code, **including
-the reader and judge prompts**. See [`UPSTREAM.md`](UPSTREAM.md) for the file-level provenance
-manifest.
+Five upstream files are modified: provider/authentication and timeout handling, optional date
+injection, retry and drop accounting, a server-side fix, and `requirements.txt`. The requirements
+patch pins the tested OpenAI client and Azure Identity library and declares the BM25 arm's two
+dependencies (`rank-bm25`, `PyStemmer`; the stopword list is inlined, not an NLTK dependency).
+Each patch is apply-checked against the pinned commit. Everything else is unmodified upstream code,
+**including the reader and judge prompts**. See [`UPSTREAM.md`](UPSTREAM.md) for the file-level
+provenance manifest and the full hash-locked environment.
 
 ### 3. Copy in the adapters
 
@@ -99,18 +100,45 @@ cp -r <kit>/benchmarks/common/*.py benchmarks/common/
 
 New files only. Per-system adapters plus the fairness guard. No upstream source is touched.
 
-### 4. Credentials, by name
+### 4. Install the locked Python environment
 
 ```bash
-export AZURE_AI_API_KEY=...
+KIT_DIR=/absolute/path/to/entire-graph/bench/memory
+cp "$KIT_DIR/requirements-lock-py312.txt" .
+python3.12 -m venv .venv
+.venv/bin/python -m pip install \
+  --require-hashes --only-binary=:all: --no-deps \
+  -r requirements-lock-py312.txt
+.venv/bin/python -m pip check
+```
+
+Do not replace this with `pip install -r requirements.txt` or upgrade pip during the run. The
+committed lock fixes the complete dependency graph and every accepted artifact; `--no-deps`
+prevents an undeclared package fetch. Copying the lock into the reconstructed harness lets
+`runmeta.code_hashes()` bind its exact contents to every result artifact. See
+[`UPSTREAM.md`](UPSTREAM.md) for its source digest, regeneration command, and platform scope.
+
+### 5. Keyless authentication
+
+```bash
+az login
 export AZURE_AI_ENDPOINT=...
 export AZURE_AI_API_VERSION=2024-05-01-preview
 ```
 
-The launcher refuses to start without these. Never commit the values, and prefer a key you can
-rotate afterwards.
+The launcher requires the endpoint and has no API-key input. The patched harness
+uses `DefaultAzureCredential` outside GitHub Actions, so a local Azure CLI login, managed identity,
+or another supported Azure Identity credential supplies short-lived bearer tokens and refreshes
+them during the run. Grant that identity the MaaS-only custom role documented below on the specific
+Foundry resource. Microsoft's built-in `Cognitive Services User` role also works, but is broader:
+it can list account keys and grants all Cognitive Services data actions. Owner or Contributor alone
+does not grant data-plane inference access.
 
-### 5. Run an arm
+In GitHub Actions the harness instead exchanges fresh runner OIDC assertions directly with Entra.
+The workflow supplies the application and tenant identifiers; there is no model key, static bearer
+token, Key Vault lookup, or Azure CLI login in the job.
+
+### 6. Run an arm
 
 ```bash
 bash <kit>/run_locomo.sh cmm
@@ -215,3 +243,183 @@ the comparison not subject to a tie, and it is the one that recurs on every docu
 Full spec in [`FAIR-CONFIG.md`](FAIR-CONFIG.md). Results, retractions and disclosures in
 [`LOCOMO-COMPARISON.md`](LOCOMO-COMPARISON.md). Every quoted number traces to an artifact via
 [`RUN-INDEX.md`](RUN-INDEX.md).
+
+---
+
+## Nightly CI
+
+`.github/workflows/locomo-nightly.yml` runs the **entire-graph arm only**, nightly at 06:00 UTC,
+over the full 1,540 questions. It reconstructs the pinned upstream harness from
+[`UPSTREAM.md`](UPSTREAM.md)'s commit plus this repo's patches, so CI runs the published
+configuration rather than a CI-specific variant.
+
+### What the run costs
+
+At Foundry list prices for `gpt-5.6-sol` ($5/M input, $30/M output) and the launcher's
+`--top-k-cutoffs 200`, one run is roughly **$190** — call it **$5.7k/month**. Ingest is $0: the
+entire-graph arm makes no model calls to build its index. Widening `--top-k-cutoffs` back to
+`200,50,20,10` quadruples the answerer and judge calls and takes a run to roughly $475, which is
+why the launcher does not.
+
+### Why the job does not fail on a score change
+
+It fails on **integrity**, never on a delta. Run-to-run noise here is **0.65pp**, and an identical
+entire-graph configuration re-run 26 hours apart drifted **2.21pt**
+([`LOCOMO-COMPARISON.md`](LOCOMO-COMPARISON.md) §7). A nightly threshold inside that band would
+alert on noise every few nights and be ignored within a week. `ci/summarize_run.py` therefore gates
+on: all 1,540 question records present and internally reconciled, the captured command selecting
+the `entire` backend, `FAIR_MODE` active, the canonical LLM controls, no non-baseline `EG_*`,
+`ENTIRE_*`, `MEM0_*`, or `HARNESS_*` retrieval overrides, zero dropped or empty-context searches,
+and source hashes that match the reconstructed harness. A plausibility floor treats a collapse as
+a broken harness rather than a regression. Read the score as a trend across runs, not against last
+night's.
+
+### Security model
+
+- **`schedule` only fires on this repository's default branch.** A fork cannot schedule a workflow
+  upstream, so the nightly path is not reachable from outside.
+- **`pull_request_target` is absent, deliberately.** It is the trigger that hands repository
+  secrets to fork code. Do not add it to that workflow.
+- **`workflow_dispatch` requires write access** and uses the `benchmark` environment, whose
+  required reviewers gate manual runs. Scheduled runs use the separate `benchmark-nightly`
+  environment, restricted to `main` but intentionally configured without required reviewers, so
+  the nightly schedule does not wait for manual approval.
+- **No model key or long-lived credential is stored in GitHub.** The harness obtains a GitHub OIDC
+  assertion only in the benchmark job, exchanges it directly for a Foundry data-plane bearer token,
+  and refreshes the assertion and access token during the multi-hour run. There is no
+  `azure/login`, Azure CLI session, Key Vault, or static bearer token.
+- **The federated principal is data-plane only.** It has a custom role containing only
+  `Microsoft.CognitiveServices/accounts/MaaS/*`, scoped to one Foundry resource, and no control-plane,
+  subscription, resource-group, deployment-management, key-listing, or Key Vault action.
+- **Stated limit:** `id-token: write` is a job-level permission, so code in any step can request a
+  GitHub OIDC assertion. The workflow scopes the Entra application and tenant identifiers to the
+  benchmark step and installs dependencies before that step, but installed dependency code executes
+  later with those identifiers. OIDC removes the reusable model key; it does not make trusted
+  runtime code harmless. As a separate supply-chain control, CI installs the committed complete
+  dependency graph from `requirements-lock-py312.txt` with exact versions, artifact hashes,
+  binary-only enforcement, and dependency discovery disabled, then runs `pip check`. This prevents
+  a newly published or modified package from entering a scheduled run without a reviewed lockfile
+  change; it cannot protect against malicious behavior already present in an intentionally locked
+  dependency or in the benchmark code itself.
+
+### One-time setup (an operator does this once; it is not in the repo)
+
+1. **Create one Entra application and service principal for this workflow.** Record the application
+   (client) ID and directory (tenant) ID; neither is a credential.
+
+   ```bash
+   TENANT_ID=$(az account show --query tenantId -o tsv)
+   APP_ID=$(az ad app create --display-name entire-graph-locomo --query appId -o tsv)
+   az ad sp create --id "$APP_ID"
+   APP_OBJECT_ID=$(az ad app show --id "$APP_ID" --query id -o tsv)
+   SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
+   ```
+
+2. **Opt this repository into GitHub's immutable OIDC subject format.** Its stable owner ID is
+   `33188652` and repository ID is `1252350673`; keeping those IDs in the `sub` prevents a renamed,
+   transferred, or later recreated namespace from inheriting this trust. Before changing this
+   repository-wide setting, inventory any other OIDC consumers and add their immutable subjects to
+   the corresponding cloud trust policies so the migration does not break them.
+
+   ```bash
+   gh api repos/entireio/entire-graph --jq '{owner_id: .owner.id, repository_id: .id}'
+   gh api repos/entireio/entire-graph/actions/oidc/customization/sub
+   gh api --method PUT \
+     -H "X-GitHub-Api-Version: 2026-03-10" \
+     repos/entireio/entire-graph/actions/oidc/customization/sub \
+     -F use_default=true \
+     -F use_immutable_subject=true
+   gh api repos/entireio/entire-graph/actions/oidc/customization/sub
+   ```
+
+   The last command must report `"use_immutable_subject": true`. See
+   [GitHub's immutable OIDC subject guidance](https://docs.github.com/actions/reference/security/oidc#immutable-subject-claims).
+
+3. **Add exactly two federated identity credentials.** The exact immutable environment subjects,
+   rather than a broad branch or mutable repository-name subject, make each GitHub environment part
+   of the trust boundary. The manual credential names `benchmark`; the unattended schedule names
+   `benchmark-nightly`. Both use the `api://AzureADTokenExchange` audience requested by the harness.
+
+   ```bash
+   az ad app federated-credential create \
+     --id "$APP_OBJECT_ID" \
+     --parameters '{
+       "name": "github-entire-graph-benchmark",
+       "issuer": "https://token.actions.githubusercontent.com",
+       "subject": "repo:entireio@33188652/entire-graph@1252350673:environment:benchmark",
+       "audiences": ["api://AzureADTokenExchange"]
+     }'
+
+   az ad app federated-credential create \
+     --id "$APP_OBJECT_ID" \
+     --parameters '{
+       "name": "github-entire-graph-benchmark-nightly",
+       "issuer": "https://token.actions.githubusercontent.com",
+       "subject": "repo:entireio@33188652/entire-graph@1252350673:environment:benchmark-nightly",
+       "audiences": ["api://AzureADTokenExchange"]
+     }'
+   ```
+
+4. **Grant only MaaS data-plane access on the target Foundry resource.** Microsoft documents
+   `Microsoft.CognitiveServices/accounts/MaaS/*` as the custom-role permission for this multi-model
+   inference endpoint. Use that instead of the built-in `Cognitive Services User` role: despite its
+   name, that built-in role can list account keys and grants every Cognitive Services data action.
+   Make the custom role assignable only in the containing resource group, then scope its assignment
+   to the `Microsoft.CognitiveServices/accounts` resource itself.
+
+   ```bash
+   FOUNDRY_RESOURCE_ID=$(az cognitiveservices account show \
+     --resource-group <resource-group> \
+     --name <foundry-resource-name> \
+     --query id -o tsv)
+   FOUNDRY_RESOURCE_GROUP_ID=$(az group show \
+     --name <resource-group> \
+     --query id -o tsv)
+
+   jq -n --arg scope "$FOUNDRY_RESOURCE_GROUP_ID" '{
+     Name: "Entire Graph LoCoMo Inference",
+     IsCustom: true,
+     Description: "Invoke MaaS models for the LoCoMo benchmark; no keys or control plane",
+     Actions: [],
+     NotActions: [],
+     DataActions: ["Microsoft.CognitiveServices/accounts/MaaS/*"],
+     NotDataActions: [],
+     AssignableScopes: [$scope]
+   }' > locomo-inference-role.json
+
+   ROLE_ID=$(az role definition create \
+     --role-definition locomo-inference-role.json \
+     --query name -o tsv)
+   az role assignment create \
+     --assignee-object-id "$SP_OBJECT_ID" \
+     --assignee-principal-type ServicePrincipal \
+     --role "$ROLE_ID" \
+     --scope "$FOUNDRY_RESOURCE_ID"
+   ```
+
+   The `/models/chat/completions` API used here requests
+   `https://cognitiveservices.azure.com/.default`. Do not grant `Cognitive Services User`,
+   Contributor, Owner, Key Vault access, or a subscription-level role, and do not create or store a
+   model API key for CI. See
+   [Foundry keyless authentication](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/configure-entra-id)
+   and [Entra workload identity federation](https://learn.microsoft.com/entra/workload-id/workload-identity-federation-create-trust).
+
+5. **Create both GitHub environments.** Restrict `benchmark` and `benchmark-nightly` to deployment
+   branch `main`. Add required reviewers to `benchmark` for manual dispatches. Do not add required
+   reviewers to `benchmark-nightly`; GitHub would otherwise queue every scheduled run for approval.
+6. **Set three GitHub repository variables:** `AZURE_CLIENT_ID` to `APP_ID`, `AZURE_TENANT_ID` to
+   `TENANT_ID`, and `AZURE_AI_ENDPOINT` to
+   `https://<foundry-resource-name>.services.ai.azure.com`. They are identifiers, not secrets.
+
+Verify the wiring with a `workflow_dispatch` run before trusting the schedule.
+
+### Runner sizing
+
+The published runs took 2.5–3.5h on a 32-vCPU host. GitHub's hosted `ubuntu-latest` is far smaller.
+The workflow gives the benchmark command 270 minutes, sends SIGINT at that boundary, allows a
+10-minute forced-shutdown backstop, and keeps the step/job ceilings at 285/330 minutes. That reserve
+lets the `always()` diagnostics, fail-closed summary, and partial-result upload run before GitHub's
+hard job ceiling. The query phase is network-bound on the Foundry deployment and the launcher
+throttles itself (`--max-workers 3 --question-workers 10 --rpm 60`), so the runner's core count
+mostly affects index build, not the 1,540 questions. If runs start timing out, move to a larger
+runner before touching those throttles — they are load-bearing for fairness, not performance tuning.

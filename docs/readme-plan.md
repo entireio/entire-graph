@@ -164,9 +164,8 @@ produces four requirements:
 
 - Tell the reader to review the three generated or updated files. Recommend
   committing them as one setup change when the instructions should apply to the
-  team. Make the cache consequence explicit: while any of these indexable
-  Markdown files remains dirty or untracked, default working-tree queries bypass
-  cache reuse for the repository.
+  team. Do not tie that recommendation to cache reuse: default working-tree
+  queries bypass the cache whether those files are committed or uncommitted.
 - Link the guide emitted by `entire graph agent-guide`, but do not imply that every
   client imports the referenced file the same way.
 - Require a fresh client task/session after activation. Use tested client-specific
@@ -206,8 +205,8 @@ produces four requirements:
 
 - Capture the concrete transcript in a clean consuming fixture with no pre-existing
   Entire Graph instructions. Pin the fixture commit and commit the generated
-  activation files before recording so the example is reproducible and does not
-  confound instruction adoption with dirty-tree cache bypass.
+  activation files before recording so the example is reproducible and its
+  instruction inputs stay fixed.
 - Show only visible events: the prompt, instruction-file discovery, the graph
   shell command and abbreviated result, the focused source read, any purposeful
   relation or impact query, and the sourced answer. Do not expose or fabricate
@@ -245,12 +244,10 @@ Follow the table with a short cache explanation:
   `impact`) reads the working tree by default, so current edits are visible.
   Whole-graph streams and ref-based analysis have different defaults; link their
   exact semantics instead of generalizing.
-- Working-tree snapshot reuse is conservative and repository-wide. A dirty path
-  with a supported extension, an extensionless path that could be a shebang
-  script, or a root manifest used for import resolution bypasses reuse for that
-  query. Other dirty paths with known unsupported extensions do not; `.graphignore`
-  content is part of the cache key, and a changed committed tree selects a
-  different entry.
+- Working-tree snapshots always bypass cache reuse because Git's status/diff
+  machinery may execute repository-selected conversion filters. Committed-tree
+  cache keys include `.graphignore` content, and a changed committed tree selects
+  a different entry.
 - Cache writes are derivative local state, so “repository-source-read-only” does
   not mean “writes nothing.”
 - The installed guide's default `search` output is JSON and exposes
@@ -330,8 +327,9 @@ for the same subject.
 | `docs/brain-and-graph-boundaries.md` | Retain and link | Ownership boundary between the repository-local provider and durable Brain/MCP surfaces |
 | `docs/semantic-provider-requirements.md` | Rewrite and narrow | Graph owns repository-local parsing, indexing, queries, cache freshness, and instruction distribution; Brain owns durable and cross-repository state and presentation |
 | `docs/adr/0001-ga-schema-contract.md` | Retain | `1.x` schema compatibility contract |
-| `docs/adr/0002-committed-tree-cache-key.md` | Retain in place; add a reciprocal partial-supersession notice to ADR 0003 without rewriting its decision body | The committed-tree key-totality decision remains accepted; only its working-tree search-snapshot no-cache conclusion is superseded |
-| `docs/adr/0003-working-tree-search-snapshot-cache.md` | Create as Accepted; declare that it partially supersedes ADR 0002 | Working-tree search-snapshot eligibility and isolation; provider-record caching remains committed-tree-only |
+| `docs/adr/0002-committed-tree-cache-key.md` | Retain in place with reciprocal ADR notices | The committed-tree key-totality decision remains accepted and its working-tree bypass is restored by ADR 0004 |
+| `docs/adr/0003-working-tree-search-snapshot-cache.md` | Retain as superseded | Historical clean-tree working-tree reuse decision |
+| `docs/adr/0004-working-tree-cache-security-boundary.md` | Retain as Accepted | Working-tree search-snapshot bypass; authoritative for current eligibility |
 | `docs/archive/` | Retain | Non-normative provenance only |
 
 Historical plans, validation reports, and implemented design records belong in
@@ -357,7 +355,7 @@ Create a small claim ledger during implementation:
 | Claim | Exact scope | Product version or commit | Corpus/environment | Evidence link | Root README? |
 | --- | --- | --- | --- | --- | --- |
 | Local/no-egress analysis | Built-in analyzer only | Pinned release | Not applicable | Implementation, contract, and tests | Yes |
-| Cache reuse and freshness | Clean working tree, dirty supported-extension or extensionless path, dirty resolver manifest, dirty non-manifest path with a known unsupported extension, changed `.graphignore`, and explicit `--head` are distinct cases | Pinned release | Deterministic repository fixture | Cache tests and ADR | Yes |
+| Cache reuse and freshness | Working-tree queries always bypass; changed `.graphignore` and explicit `--head` select committed-tree variants | Pinned release | Deterministic repository fixture | Cache tests and ADR | Yes |
 | Language counts | Semantic versus inventory-only | TBD | Generated capabilities | Language reference | Maybe |
 | Code-query quality | TBD after audit | TBD | TBD | Reproducible result | Maybe |
 | Prose-memory comparison | Public-protocol reimplementation | Pinned | LOCOMO/LongMemEval-S | GraphMark bundle | Docs only by default |
@@ -408,14 +406,13 @@ Rules:
   topology, and visible evidence that the client loaded the guide once.
 - [x] Select a clean consuming fixture, pin its commit, install and commit the
   generated instruction files, and record a source-grounded agent task.
-- [x] Verify cache behavior for a clean working tree; a dirty supported-extension,
-  extensionless, or resolver-manifest path; a dirty non-manifest path with a known
-  unsupported extension; a changed `.graphignore`; explicit `--head`; and
-  committed-tree prewarming with both matching and mismatched profiles and ordered
-  ignore/include inputs. Using isolated cache state for each case, confirm that the
-  matching query reuses the prewarmed entry and that the first query for each
-  mismatched variant misses it. Record the exact cache fields or headers exposed
-  by the formats used in the README and agent guide.
+- [x] Verify that working-tree queries bypass cache reuse regardless of checkout
+  cleanliness; verify changed `.graphignore`, explicit `--head`, and committed-tree
+  prewarming with both matching and mismatched profiles and ordered ignore/include
+  inputs. Using isolated cache state for each case, confirm that only the matching
+  committed-tree query reuses the prewarmed entry and that each mismatched variant
+  misses it. Record the exact cache fields or headers exposed by the formats used
+  in the README and agent guide.
 - [ ] Build the quantitative claim ledger and audit local reads, writes,
   execution, cache, and network boundaries against implementation and tests.
 - [x] Reconcile stale documentation authorities before drafting: repository-agent
@@ -433,17 +430,10 @@ Rules:
 - [x] Rewrite `docs/semantic-provider-requirements.md` so its ownership boundary
   matches the repository-local query, cache, and agent-instruction behavior that
   Entire Graph actually implements.
-- [ ] Create `docs/adr/0003-working-tree-search-snapshot-cache.md` with
-  `Status: Accepted` and reciprocal metadata that partially supersedes ADR 0002
-  only for working-tree search-snapshot eligibility. Document the separate
-  working-tree cache identity and provenance; bypass for dirty supported-extension
-  paths, extensionless paths, or root resolver manifests; continued eligibility
-  for other dirty non-manifest paths with known unsupported extensions;
-  `.graphignore` contents selecting a different cache entry; fail-closed behavior
-  when worktree or HEAD inspection fails, including when no HEAD exists; and the
-  continued working-tree bypass in the provider-record cache. Add the reciprocal
-  notice to ADR 0002, update `docs/README.md` to scope each ADR's authority, and
-  correct the stale `LoadOrBuildProviderSnapshot` source comment.
+- [x] Retain ADR 0003 as the superseded clean-tree reuse decision and add ADR 0004
+  as the authoritative security boundary: working-tree queries always bypass the
+  search-snapshot cache, while committed-tree key identity remains governed by
+  ADR 0002. Keep reciprocal status notices and the documentation index aligned.
 - [ ] Consolidate benchmark content and preserve archived material as explicitly
   non-normative provenance.
 - [x] Reconcile `AGENTS.md`, `CLAUDE.md`, and `.entire/graph-agent.md` together;
@@ -507,18 +497,16 @@ Rules:
   relation or impact query, and a sourced answer.
 - [x] Example output is captured from the pinned binary and fixture, not invented.
 - [x] The README scopes working-tree defaults to the interactive query family and
-  explains clean reuse, repository-wide bypass for dirty supported-extension,
-  extensionless, or resolver-manifest paths, continued cache eligibility for
-  other dirty paths with known unsupported extensions, `.graphignore` keying,
-  derivative cache writes, and the exact observable cache field/header used in
-  the example.
+  explains unconditional working-tree cache bypass, committed-tree
+  `.graphignore` keying, derivative cache writes, and the exact observable cache
+  field/header used in the example.
 - [x] `index` is not presented as warming the default working-tree agent path or
   a committed-tree query with a different profile, cache location, ordered
   ignore/include inputs, or changed `.graphignore`; the default `full`/`fast`
   mismatch is explicit.
-- [x] ADR 0002 and ADR 0003 link to each other, and `docs/README.md` identifies
-  ADR 0002 as authoritative for committed-tree cache identity and ADR 0003 as
-  authoritative for working-tree search-snapshot eligibility.
+- [x] ADR 0002, ADR 0003, and ADR 0004 carry reciprocal status notices, and
+  `docs/README.md` identifies ADR 0002 as authoritative for committed-tree cache
+  identity and ADR 0004 as authoritative for working-tree eligibility.
 - [x] Trust documentation distinguishes built-in analysis, installation network
   activity, derivative cache writes, repository instruction writes, and
   caller-provided command execution.

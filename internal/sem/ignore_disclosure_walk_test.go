@@ -410,7 +410,7 @@ func TestPrunedExclusionAccountingBoundsWhatItReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger := &repoIgnoreLedger{}
-	if _, err := walkWorktreeFiles(root, matcher, nil, ledger); err != nil {
+	if _, _, err := walkWorktreeFiles(t.Context(), root, matcher, nil, ledger); err != nil {
 		t.Fatal(err)
 	}
 	// +1: the read distinguishes "the whole directory" from "as much of it as the

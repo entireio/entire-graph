@@ -39,7 +39,7 @@ func walkPrunedCapTree(t *testing.T, root string, limit int) *repoIgnoreLedger {
 		t.Fatal(err)
 	}
 	ledger := &repoIgnoreLedger{listingLimit: limit}
-	if _, err := walkWorktreeFiles(root, ignores, func(string) bool { return false }, ledger); err != nil {
+	if _, _, err := walkWorktreeFiles(t.Context(), root, ignores, func(string) bool { return false }, ledger); err != nil {
 		t.Fatal(err)
 	}
 	return ledger

@@ -50,7 +50,7 @@ func TestPrunedDescendantsKeepTheDirectoryRulesAttribution(t *testing.T) {
 			t.Fatal(err)
 		}
 		ledger := &repoIgnoreLedger{}
-		paths, err := walkWorktreeFiles(repo, ignores, func(string) bool { return false }, ledger)
+		paths, _, err := walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false }, ledger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +121,7 @@ func TestCallerIncludeFileKeepsAPrunedDescendantOutOfTheDisclosure(t *testing.T)
 		t.Fatal(err)
 	}
 	ledger := &repoIgnoreLedger{}
-	paths, err := walkWorktreeFiles(repo, ignores, func(string) bool { return false }, ledger)
+	paths, _, err := walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false }, ledger)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -41,7 +41,7 @@ func TestPruneAccountingRefusesToDescendPastAnUnreadableNestedIgnore(t *testing.
 		t.Fatal(err)
 	}
 	ledger := &repoIgnoreLedger{}
-	if _, err := walkWorktreeFiles(repo, ignores, func(string) bool { return false }, ledger); err != nil {
+	if _, _, err := walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false }, ledger); err != nil {
 		t.Fatal(err)
 	}
 	report := ledger.report()
@@ -88,7 +88,7 @@ func TestPruneAccountingRefusesToDescendPastAnOversizedNestedIgnore(t *testing.T
 		t.Fatal(err)
 	}
 	ledger := &repoIgnoreLedger{}
-	if _, err := walkWorktreeFiles(repo, ignores, func(string) bool { return false }, ledger); err != nil {
+	if _, _, err := walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false }, ledger); err != nil {
 		t.Fatal(err)
 	}
 	report := ledger.report()

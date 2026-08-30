@@ -250,7 +250,7 @@ func TestWalkFallbackStatesWhatItCannotSeeInARealCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger := &repoIgnoreLedger{}
-	paths, err := walkWorktreeFiles(repo, ignores, func(string) bool { return false }, ledger)
+	paths, _, err := walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false }, ledger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestWalkFallbackOutsideACheckoutStaysSilent(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger := &repoIgnoreLedger{}
-	if _, err := walkWorktreeFiles(repo, ignores, func(string) bool { return false }, ledger); err != nil {
+	if _, _, err := walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false }, ledger); err != nil {
 		t.Fatal(err)
 	}
 	if report := ledger.report(); report != nil {

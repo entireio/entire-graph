@@ -69,7 +69,11 @@ func TestSymlinkedNestedGitignoreIsSkippedNotFollowed(t *testing.T) {
 	}
 
 	stack := &nestedIgnoreStack{repo: repo}
-	if ok := stack.enterCharged(nil, "sub"); !ok {
+	ok, err := stack.enterCharged(nil, "sub")
+	if err != nil {
+		t.Fatalf("a symlinked nested .gitignore must be treated as absent, not as a hard error: %v", err)
+	}
+	if !ok {
 		t.Fatal("a symlinked nested .gitignore must be treated as absent (continue descending), not as an unreadable-path stop")
 	}
 	for _, level := range stack.levels {
