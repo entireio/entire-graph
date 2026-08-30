@@ -520,11 +520,15 @@ func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem
 		encoder.SetEscapeHTML(false)
 		if err := encoder.Encode(map[string]any{
 			"record_type": "search_header",
-			"query":       response.Query,
-			"repo_root":   response.RepoRoot,
-			"commit":      response.Commit,
-			"tree":        response.Tree,
-			"profile":     response.Profile,
+			// The header record carries the envelope version for the same reason
+			// the JSON payload does: a consumer reading the stream must be able to
+			// branch on the shape before it parses a single result record.
+			"format_version": response.FormatVersion,
+			"query":          response.Query,
+			"repo_root":      response.RepoRoot,
+			"commit":         response.Commit,
+			"tree":           response.Tree,
+			"profile":        response.Profile,
 		}); err != nil {
 			return err
 		}
