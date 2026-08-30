@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -53,20 +52,29 @@ func TestChangedFilesParsesEveryTwoTreeDiffShape(t *testing.T) {
 	}
 	w("a.go", "package a\n")
 	w("with space.go", "package b\n")
-	// A double quote is legal in a Git tree entry and in a POSIX filename, and it
-	// is precisely the shape `--name-status` would C-quote while `-z --raw` emits
-	// verbatim, so the parser has to be walked over it. Windows cannot hold the
-	// name at all: the file cannot be created, and neither can any later checkout
-	// of a tree that contains it — which would take the branch/merge half of this
-	// walk down with it. The shape is therefore covered wherever the OS permits
-	// it, and every other shape below runs on all three platforms.
-	quoted := "quote\".go"
-	if runtime.GOOS == "windows" {
-		quoted = ""
-	}
-	if quoted != "" {
-		w(quoted, "package c\n")
-	}
+	// The discriminating shape for this parser is a pathname `--name-status`
+	// C-QUOTES while `-z --raw` emits verbatim. A double quote is one such name
+	// and was used here first, but Windows cannot hold it at all — the file
+	// cannot be created, nor can any later checkout of a tree containing it,
+	// which took the branch/merge half of this walk down with it. Guarding it
+	// behind GOOS kept the suite green and gave the case up on the one platform
+	// whose path rules differ most.
+	//
+	// A NON-ASCII name has the identical property and every platform accepts it,
+	// because core.quotePath defaults to true:
+	//
+	//	git diff --name-status  ->  D  "\346\227\245\346\234\254.go"   (C-quoted)
+	//	git diff -z --raw       ->  D  日本.go                          (verbatim)
+	//
+	// It is deliberately CJK rather than an accented Latin name. macOS and
+	// Windows normalize filenames differently (NFD vs NFC), so a decomposable
+	// character like the e-acute in "café" can come back from the filesystem
+	// with different bytes than were written, and this test compares the
+	// pathname the parser returns. CJK ideographs have no canonical
+	// decomposition, so the two normal forms are identical and the comparison is
+	// stable everywhere.
+	quoted := "日本.go"
+	w(quoted, "package c\n")
 	gitx(t, repo, "add", "-A")
 	gitx(t, repo, "commit", "-qm", "base")
 	base := gitx(t, repo, "rev-parse", "HEAD")[:40]
@@ -76,9 +84,7 @@ func TestChangedFilesParsesEveryTwoTreeDiffShape(t *testing.T) {
 	w("exec.sh", "#!/bin/sh\n")
 	gitx(t, repo, "add", "-A")
 	gitx(t, repo, "update-index", "--chmod=+x", "exec.sh")
-	if quoted != "" {
-		_ = os.Remove(filepath.Join(repo, quoted))
-	}
+	_ = os.Remove(filepath.Join(repo, quoted))
 	gitx(t, repo, "add", "-A")
 	gitx(t, repo, "commit", "-qm", "churn")
 	head := gitx(t, repo, "rev-parse", "HEAD")[:40]
