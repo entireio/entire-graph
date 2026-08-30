@@ -1074,9 +1074,10 @@ func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 		fromPath string
 		toPath   string
 		warnPath string
+		wantType string
 	}{
-		{name: "supported to unsupported", fromPath: "sample.go", toPath: "sample.ps1", warnPath: "sample.ps1"},
-		{name: "unsupported to supported", fromPath: "sample.ps1", toPath: "sample.go", warnPath: "sample.ps1"},
+		{name: "supported to unsupported", fromPath: "sample.go", toPath: "sample.ps1", warnPath: "sample.ps1", wantType: "removed"},
+		{name: "unsupported to supported", fromPath: "sample.ps1", toPath: "sample.go", warnPath: "sample.ps1", wantType: "added"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := t.TempDir()
@@ -1099,8 +1100,21 @@ func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(result.Files) != 0 {
-				t.Fatalf("mixed-support rename produced a one-sided delta: %#v", result.Files)
+			// A side with no parser holds nothing in the graph, so this rename is
+			// the file leaving or entering the index and the honest delta is the
+			// removals or additions a snapshot of each side would show. This used
+			// to assert no record at all, to avoid a "one-sided phantom": but the
+			// removals are not phantom, because .ps1 is genuinely absent from
+			// every snapshot, and suppressing them left a consumer unable to
+			// retire the old compound-v1 IDs while the marker named only one path.
+			// A failed PARSE is still suppressed, and for the opposite reason:
+			// there the absence is this provider's blind spot, not a fact.
+			if len(result.Files) != 1 {
+				t.Fatalf("mixed-support rename = %#v, want the indexed side reported", result.Files)
+			}
+			changes := result.Files[0].Changes
+			if len(changes) != 1 || changes[0].Type != tc.wantType || changes[0].Name != "Run" {
+				t.Fatalf("changes = %#v, want a single %q for Run", changes, tc.wantType)
 			}
 			var marker *ProviderWarning
 			for i, warning := range result.Warnings {
@@ -1109,7 +1123,7 @@ func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 					break
 				}
 			}
-			if marker == nil || marker.FilePath != tc.warnPath || !strings.Contains(marker.EffectOnCompleteness, "diff suppressed") {
+			if marker == nil || marker.FilePath != tc.warnPath || !strings.Contains(marker.EffectOnCompleteness, "no parser") {
 				t.Fatalf("missing mixed-support marker: %#v", result.Warnings)
 			}
 		})

@@ -330,10 +330,18 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		}
 
 		// Support is content-aware: extensionless executables can still route to a
-		// parser through their shebang. Classify each existing side independently
-		// so a rename across the parser boundary cannot become a one-sided phantom
-		// remove/add. Any unsupported side suppresses the delta and leaves a
-		// machine-readable completeness marker instead.
+		// parser through their shebang, so each existing side is classified
+		// independently.
+		//
+		// A side with no parser holds nothing in the graph — that is what "the
+		// graph does not index .txt" means — so a rename across the parser
+		// boundary is a file leaving or entering the index, and the honest delta
+		// is the removals or additions that a snapshot of each side would show.
+		// This used to suppress the whole record to avoid a "one-sided phantom
+		// remove/add", but the removals are not phantom: `x.go` -> `x.txt` really
+		// does take Run out of every snapshot, and suppressing it left a consumer
+		// unable to retire the old compound-v1 IDs while the warning named only
+		// the head path. The marker below still says the comparison is one-sided.
 		_, beforeSupported := languageForContent(oldPath, before)
 		_, afterSupported := languageForContent(path, after)
 		beforeUnsupported := beforeOK && !beforeSupported
@@ -349,7 +357,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			}
 			effect := "file skipped; no parser for this file type, so its changes are not analyzed"
 			if beforeOK && afterOK && beforeUnsupported != afterUnsupported {
-				effect = "file diff suppressed; one side has no parser, so changes cannot be compared safely"
+				effect = "one side has no parser, so its symbols are reported as leaving or entering the graph rather than compared"
 			}
 			result.Warnings = append(result.Warnings, ProviderWarning{
 				Code:                 "W_UNSUPPORTED_FILE",
@@ -358,7 +366,11 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				EffectOnCompleteness: effect,
 				Detail:               detail,
 			})
-			continue
+			// Neither side is in the graph, so there is nothing to add or retire
+			// and a record here would invent one for a path no snapshot holds.
+			if beforeUnsupported && afterUnsupported {
+				continue
+			}
 		}
 
 		beforeEntities, beforeLanguage, beforeStatus := parser.ParseWithStatus(oldPath, before)
@@ -385,6 +397,12 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		// never suppressed or flagged, so its real removed changes stand.
 		afterParseFailed := afterStatus.ParseError && len(afterEntities) == 0
 		beforeParseFailed := beforeStatus.ParseError && len(beforeEntities) == 0
+		// A failed parse is this provider failing to READ the file, not evidence
+		// that the file is empty. The symbols are most likely still there, so
+		// reporting them as removed would state a deletion that did not happen —
+		// the phantom the suppression here exists to prevent, and a different
+		// situation from a side the graph does not index at all (above), where
+		// their absence is a fact rather than a blind spot.
 		if afterParseFailed || beforeParseFailed {
 			status, warnPath := afterStatus, path
 			if !afterParseFailed {
@@ -392,6 +410,15 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			}
 			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, true))
 			continue
+		}
+		// A side with no parser holds nothing in the graph, so emptying it turns
+		// the comparison below into the removals or additions a snapshot of each
+		// side would show.
+		if beforeUnsupported {
+			beforeEntities = nil
+		}
+		if afterUnsupported {
+			afterEntities = nil
 		}
 		if afterStatus.ParseError || beforeStatus.ParseError {
 			status, warnPath := afterStatus, path
