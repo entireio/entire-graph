@@ -12478,6 +12478,89 @@ end
 	}
 }
 
+func TestJuliaBareCallsStayInsideTheirModule(t *testing.T) {
+	// `module M ... end` is a hard namespace boundary in Julia: from outside M,
+	// its definitions are reachable only as `M.name(...)`. Resolving bare calls
+	// to module-scoped definitions must therefore stay inside the caller's own
+	// module, or one file holding two modules resolves a bare call to whichever
+	// same-named definition happens to be declared nearest, and a top-level call
+	// reaches into a module it cannot see.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Two.jl", `module A
+
+function target(x)
+    return 1
+end
+
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+# padding
+
+function caller(y)
+    return target(y)
+end
+
+end
+
+module B
+
+function target(x)
+    return 2
+end
+
+end
+
+function toplevel(z)
+    return target(z)
+end
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	// The call sits nearer to B's declaration than to its own module's, so the
+	// lexically-nearest tiebreak picks B without a module-scope gate.
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "A.caller", "A.target") {
+		t.Fatalf("missing in-module Julia CALLS A.caller->A.target: %#v", calls)
+	}
+	for _, forbidden := range [][2]string{
+		{"A.caller", "B.target"},
+		{"toplevel", "A.target"},
+		{"toplevel", "B.target"},
+	} {
+		if hasRelationByLastSegment(snapshot.Relations, "CALLS", forbidden[0], forbidden[1]) {
+			t.Fatalf("cross-module Julia CALLS %s->%s must not resolve: %#v", forbidden[0], forbidden[1], calls)
+		}
+	}
+}
+
 func TestClojureSemanticExtraction(t *testing.T) {
 	// Clojure was promoted from inventory to the semantic tier (vendored
 	// grammar). tree-sitter-clojure only produces generic list_lit nodes, so

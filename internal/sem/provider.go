@@ -1861,13 +1861,42 @@ func nameCallMayTargetMethod(lang string) bool {
 	return implicitReceiverLanguage(lang) || lang == "Rust" || lang == "Julia"
 }
 
+// juliaCallerScope returns the ID of the scope a symbol's own code is written
+// in. For an ordinary definition that is its container; for a container symbol
+// itself — a `module M ... end` block — it is the symbol, because the calls
+// attributed to it are the ones written in its body.
+func juliaCallerScope(from SymbolRecord) string {
+	if from.Kind == "module" {
+		return from.ID
+	}
+	return from.ContainerID
+}
+
+// juliaModuleScopedTargetReachable keeps the Julia arm of nameCallMayTargetMethod
+// honest. Admitting methods let bare `name(args...)` — Julia's only call form —
+// reach module-scoped definitions, but `module M ... end` is a hard namespace
+// boundary: from outside M, its definitions are reachable only as `M.name(...)`.
+// Without this, one file holding two modules resolved a bare call to whichever
+// same-named definition happened to be declared nearest, and a top-level call
+// reached into a module it cannot see.
+//
+// The gate is deliberately narrow — same file, method kind — so it can only
+// withdraw candidates the method arm itself introduced, never a target that
+// resolved before it.
+func juliaModuleScopedTargetReachable(from, to SymbolRecord) bool {
+	if from.Language != "Julia" || to.Kind != "method" || to.FilePath != from.FilePath {
+		return true
+	}
+	return to.ContainerID == juliaCallerScope(from)
+}
+
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
 		// A bare `name()` call resolves to a function, not a class method (methods
 		// require a receiver and are resolved by receiverCallRelations) — matching
 		// a same-named method here is a false edge.
-		if to.ID == from.ID || to.Name != name || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+		if to.ID == from.ID || to.Name != name || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) || !juliaModuleScopedTargetReachable(from, to) {
 			continue
 		}
 		local = append(local, resolvedCallTarget{
@@ -1959,7 +1988,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var remaining []SymbolRecord
 	for _, to := range candidates {
-		if to.ID != from.ID && callableTargetKind(to.Kind) && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) {
+		if to.ID != from.ID && callableTargetKind(to.Kind) && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) && juliaModuleScopedTargetReachable(from, to) {
 			remaining = append(remaining, to)
 		}
 	}
