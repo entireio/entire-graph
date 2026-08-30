@@ -2122,6 +2122,114 @@ func TestAnalyzeGitRangeSkipsDeletedSymlink(t *testing.T) {
 	}
 }
 
+// TestAnalyzeGitRangeReportsTheFileSideOfASymlinkTypeChange covers the shape
+// where a path changes TYPE. Git reports it as status `T` with one mode 100644
+// and the other 120000, and the symlink guard's two conditions are independent,
+// so a `T` entry satisfied one of them and skipped BOTH sides. The side that is
+// not a link is ordinary source: replacing a file with a link really does remove
+// its symbols, and replacing a link with a file really does add them. Skipping
+// it made a symbol that genuinely left the tree invisible in the diff.
+func TestAnalyzeGitRangeReportsTheFileSideOfASymlinkTypeChange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checkouts do not preserve symlink tree entries")
+	}
+	newRepo := func(t *testing.T) string {
+		t.Helper()
+		repo := t.TempDir()
+		git(t, repo, "init")
+		git(t, repo, "config", "user.name", "Entire Graph Test")
+		git(t, repo, "config", "user.email", "graph@example.com")
+		write(t, repo, "pkg/real.py", "def real(value):\n    return value\n")
+		return repo
+	}
+	changeNames := func(t *testing.T, result Result) (string, []string) {
+		t.Helper()
+		if len(result.Files) != 1 {
+			t.Fatalf("want exactly one changed file, got %#v", result.Files)
+		}
+		var names []string
+		for _, change := range result.Files[0].Changes {
+			names = append(names, change.Type+":"+change.Name)
+		}
+		return result.Files[0].Status, names
+	}
+
+	t.Run("regular file replaced by a symlink removes its symbols", func(t *testing.T) {
+		repo := newRepo(t)
+		write(t, repo, "alias.py", "def will_vanish(value):\n    return value\n")
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "initial")
+		base := rev(t, repo, "HEAD")
+
+		if err := os.Remove(filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("pkg/real.py", filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "replace the file with a link")
+
+		result, err := AnalyzeGitRange(context.Background(), repo, base, rev(t, repo, "HEAD"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, names := changeNames(t, result)
+		if status != "T" {
+			t.Errorf("status %q, want the type change Git reported (T)", status)
+		}
+		if len(names) != 1 || names[0] != "removed:will_vanish" {
+			t.Errorf("changes %v, want [removed:will_vanish]", names)
+		}
+		// The link side is still unanalyzable and must say so.
+		if !hasSymlinkWarning(result, "alias.py") {
+			t.Errorf("no symbolic-link warning for the head side: %#v", result.Warnings)
+		}
+	})
+
+	t.Run("symlink replaced by a regular file adds its symbols", func(t *testing.T) {
+		repo := newRepo(t)
+		if err := os.Symlink("pkg/real.py", filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "initial")
+		base := rev(t, repo, "HEAD")
+
+		if err := os.Remove(filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		write(t, repo, "alias.py", "def now_real(value):\n    return value\n")
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "replace the link with a file")
+
+		result, err := AnalyzeGitRange(context.Background(), repo, base, rev(t, repo, "HEAD"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, names := changeNames(t, result)
+		if status != "T" {
+			t.Errorf("status %q, want the type change Git reported (T)", status)
+		}
+		if len(names) != 1 || names[0] != "added:now_real" {
+			t.Errorf("changes %v, want [added:now_real]", names)
+		}
+		if !hasSymlinkWarning(result, "alias.py") {
+			t.Errorf("no symbolic-link warning for the base side: %#v", result.Warnings)
+		}
+	})
+}
+
+func hasSymlinkWarning(result Result, path string) bool {
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_UNSUPPORTED_FILE" && warning.FilePath == path &&
+			strings.Contains(warning.Detail, "symbolic link") {
+			return true
+		}
+	}
+	return false
+}
+
 // TestAnalyzeGitRangeStillAnalyzesRegularFiles guards the classification from
 // over-reaching: an ordinary blob must keep producing its entity delta.
 func TestAnalyzeGitRangeStillAnalyzesRegularFiles(t *testing.T) {

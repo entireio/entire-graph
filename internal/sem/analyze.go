@@ -209,6 +209,12 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		if oldPath == "" {
 			oldPath = path
 		}
+		// The status this file is REPORTED under. A one-sided symlink type
+		// change is read below as if it were an addition or a deletion, because
+		// only one side holds analyzable content, but the path itself was
+		// neither added nor deleted — it changed type — so the delta keeps the
+		// status Git gave it.
+		reportedStatus := file.Status
 		beforeInvalidPath := file.Status != "A" && !gitutil.IsCanonicalGitTreePath(oldPath)
 		afterInvalidPath := file.Status != "D" && !gitutil.IsCanonicalGitTreePath(path)
 		if beforeInvalidPath || afterInvalidPath {
@@ -243,14 +249,37 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			} else if beforeSymlink && afterSymlink {
 				detail = "base and head versions are symbolic links, not file content"
 			}
+			// A path can change TYPE between a regular file and a symbolic
+			// link, which Git reports as status `T` with one mode 100644 and the
+			// other 120000. Only the symlink side is unanalyzable; the other
+			// side is ordinary source whose symbols genuinely appear or
+			// disappear at this commit. Skipping BOTH sides discarded that:
+			// replacing a source file with a link reported no removals, and
+			// replacing a link with a source file reported no additions, so a
+			// symbol that really left the tree was invisible in the diff. Read
+			// the file side as the one-sided change it is and skip only the
+			// link side. `A` and `D` are excluded because they have only one
+			// side to begin with, and it is the symlink.
+			effect := "file skipped; the Git tree entry is a symbolic link, so its changes are not analyzed"
+			typeChange := beforeSymlink != afterSymlink && file.Status != "A" && file.Status != "D"
+			if typeChange {
+				effect = "symbolic-link side skipped; the file side is analyzed as a one-sided change"
+				if afterSymlink {
+					file.Status = "D"
+				} else {
+					file.Status = "A"
+				}
+			}
 			result.Warnings = append(result.Warnings, ProviderWarning{
 				Code:                 "W_UNSUPPORTED_FILE",
 				Severity:             "info",
 				FilePath:             warningPath,
-				EffectOnCompleteness: "file skipped; the Git tree entry is a symbolic link, so its changes are not analyzed",
+				EffectOnCompleteness: effect,
 				Detail:               detail,
 			})
-			continue
+			if !typeChange {
+				continue
+			}
 		}
 
 		var before, after string
@@ -443,7 +472,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		deltas = append(deltas, &fileDelta{
 			path:     path,
 			oldPath:  file.OldPath,
-			status:   file.Status,
+			status:   reportedStatus,
 			language: language,
 			changes:  changes,
 			removed:  removed,
