@@ -783,7 +783,25 @@ func supportsCallExtraction(spec languageSpec) bool {
 	if spec.inventoryOnly {
 		return false
 	}
-	switch spec.language {
+	return callExtractionLanguage(spec.language)
+}
+
+// callExtractionLanguage is the single source of truth for "this language's
+// call syntax is extracted". It backs BOTH the capability report and the
+// runtime gate on the call scan (fileNeedsCallScan), so the two cannot drift:
+// a language the report says has no CALLS is a language the scanner does not
+// run on.
+//
+// They used to be independent. The report was this list; the scanner ran on
+// every file with any symbol, including the single `document` symbol an
+// inventory-only filetype gets, whose block is the whole file. A `.patch`, a
+// `.coffee` or a `.ino` therefore emitted CALLS into unrelated languages'
+// symbols through the globally-unique-name fallback — false edges in
+// `neighbors`, `impact` and search ranking, from filetypes
+// docs/language-support.md promises are "without claiming call/type/data-flow
+// analysis".
+func callExtractionLanguage(language string) bool {
+	switch language {
 	case "Bash", "C", "C++", "C#", "Clojure", "ClojureScript", "Dart", "Elixir", "Erlang", "F#", "Go", "Groovy", "Haskell", "Java", "JavaScript", "Julia", "Kotlin", "Lua", "Objective-C", "OCaml", "Perl", "PHP", "Python", "R", "Ruby", "Rust", "Scala", "SQL", "Swift", "TypeScript", "Zig", "Zsh":
 		return true
 	default:
@@ -3123,7 +3141,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 		lines := strings.Split(content, "\n")
 		currentFileSymbols := recordsByFile[file.Path]
-		fileNeedsCallScan := needsCallScan && !skipFastCFamilyCallScan(spec, file.Language)
+		// callExtractionLanguage keeps the scan inside the set `capabilities
+		// --json` declares CALLS for. Without it the scan also ran over
+		// inventory-only `document` symbols (whose block is the whole file) and
+		// over data/markup languages, inventing cross-language call edges.
+		fileNeedsCallScan := needsCallScan && callExtractionLanguage(file.Language) && !skipFastCFamilyCallScan(spec, file.Language)
 		fileNeedsRouteScan := spec.emits("HANDLES_ROUTE") && routeScanLanguage(file.Language)
 		fileNeedsHTTPScan := spec.emits("HTTP_CALLS") && httpScanLanguage(file.Language)
 		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language)
@@ -3701,7 +3723,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 			}
-			if spec.callResolution == "full" {
+			// The receiver pass resolves `recv.method(...)` and is a second
+			// producer of CALLS, so it takes the same language gate as the
+			// bare-name scan above: without it an inventory-only `document`
+			// symbol still reached it and matched a `x.y(...)` shape anywhere
+			// in the file against another language's methods.
+			if spec.callResolution == "full" && callExtractionLanguage(file.Language) {
 				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, implementersByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, typeScriptPropTypes, fieldsByContainer, swiftTypes) {
 					emit(r)
 				}

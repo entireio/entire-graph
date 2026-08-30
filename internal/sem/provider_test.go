@@ -1771,6 +1771,69 @@ fn main() {}
 	}
 }
 
+func TestInventoryOnlyFilesEmitNoCallRelations(t *testing.T) {
+	// An inventory-only filetype gets a single `document` symbol whose block is
+	// the whole file. The generic `name(` call scanner ran over it like any
+	// other symbol body, so a unified diff, a CoffeeScript file or an Arduino
+	// sketch could emit a CALLS edge into an unrelated language's symbol
+	// through the globally-unique-name fallback. docs/language-support.md
+	// promises the opposite: inventory-only coverage is file and document
+	// symbols "without claiming call/type/data-flow analysis", and
+	// `capabilities --json` declares only CONTAINS/DEFINES for these languages.
+	repo := t.TempDir()
+	writeFile(t, repo, "svc/service.go", `package svc
+
+type Stage struct{}
+
+func (s Stage) Advance() int {
+	return 1
+}
+
+func RunPipeline() int {
+	return 1
+}
+`)
+	writeFile(t, repo, "notes/change.patch", `--- a/x
++++ b/x
+@@ -1 +1 @@
+-old
++RunPipeline()
+`)
+	writeFile(t, repo, "sketch/blink.ino", `void loop() {
+  RunPipeline();
+}
+`)
+	// A receiver-shaped call exercises the second CALLS producer
+	// (receiverCallRelations), which is gated separately from the bare-name scan.
+	writeFile(t, repo, "web/app.coffee", `run = -> Stage.Advance()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	languageByID := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		languageByID[symbol.ID] = symbol.Language
+	}
+	inventory := map[string]bool{"Patch": true, "Diff": true, "Arduino": true, "CoffeeScript": true}
+	for _, relation := range snapshot.Relations {
+		switch relation.Type {
+		case "CALLS", "CONSTRUCTS", "ASYNC_CALLS":
+		default:
+			continue
+		}
+		if inventory[languageByID[relation.FromID]] {
+			t.Fatalf("inventory-only %s symbol emitted %s: %s -> %s",
+				languageByID[relation.FromID], relation.Type, relation.FromID, relation.ToID)
+		}
+	}
+	// The semantic side of the same repository is untouched.
+	if !hasSymbolNamed(snapshot.Symbols, "RunPipeline") {
+		t.Fatalf("Go symbol missing: %#v", snapshot.Symbols)
+	}
+}
+
 func TestCapabilityMatrixDeclaresTypeAndFlowRelations(t *testing.T) {
 	// Companion to TestCapabilityMatrixCoversEmittedRelations, which reads the
 	// golden fixtures. Those fixtures do not exercise annotated signatures or
@@ -1980,6 +2043,60 @@ resource "aws_subnet" "web" {
 	}
 	if deps[0][0] != "resource.aws_subnet.web" || deps[0][1] != "resource.aws_vpc.main" {
 		t.Fatalf("unexpected dependency %v", deps[0])
+	}
+}
+
+func TestHCLTopLevelAttributesEmitSymbols(t *testing.T) {
+	// A Terraform variables file (`.tfvars`, `*.auto.tfvars`) is by definition
+	// nothing but top-level attribute assignments: the format rejects blocks.
+	// Extracting only `block` nodes therefore made every .tfvars file in every
+	// repository produce zero symbols and zero relations, silently — the file
+	// was parsed, HCL is advertised as a semantic language, and nothing was
+	// reported as missing. Top-level attributes in hand-written .hcl configs
+	// (Consul/Nomad/Vault `datacenter = "dc1"`) were invisible for the same
+	// reason. Attributes INSIDE a block stay folded into the block symbol.
+	repo := t.TempDir()
+	writeFile(t, repo, "prod.tfvars", `region         = "us-west-2"
+instance_count = 3
+
+tags = {
+  env = "prod"
+}
+`)
+	writeFile(t, repo, "main.tf", `datacenter = "dc1"
+
+resource "aws_s3_bucket" "logs" {
+  bucket = "app-logs"
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		if symbol.Language == "HCL" {
+			got[symbol.FilePath+":"+symbol.Name] = symbol.Kind
+		}
+	}
+	for _, want := range []string{
+		"prod.tfvars:region",
+		"prod.tfvars:instance_count",
+		"prod.tfvars:tags",
+		"main.tf:datacenter",
+	} {
+		if got[want] != "setting" {
+			t.Fatalf("HCL top-level attribute %q not extracted as a setting: %#v", want, got)
+		}
+	}
+	if got["main.tf:logs"] != "block" {
+		t.Fatalf("HCL block symbol regressed: %#v", got)
+	}
+	// A nested attribute is part of its block's body, not a symbol of its own.
+	if _, nested := got["main.tf:bucket"]; nested {
+		t.Fatalf("attribute nested in a block must not be extracted: %#v", got)
 	}
 }
 
@@ -14106,8 +14223,21 @@ func TestObjectiveCMethodFallbackExtractsColonSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshotHasSymbol(snapshot, "invalidateSessionCancelingTasks") {
+	// The method is qualified by its @implementation, exactly as the
+	// tree-sitter walk names it. The recovery scanner used to emit an
+	// unqualified twin instead, so this method existed twice at one source
+	// location; count the records so that cannot come back.
+	if !snapshotHasSymbol(snapshot, "AFURLSessionManager.invalidateSessionCancelingTasks") {
 		t.Fatalf("missing Objective-C colon selector method: %#v", snapshot.Symbols)
+	}
+	records := 0
+	for _, symbol := range snapshot.Symbols {
+		if strings.HasSuffix(symbol.QualifiedName, "invalidateSessionCancelingTasks") {
+			records++
+		}
+	}
+	if records != 1 {
+		t.Fatalf("expected exactly one record for invalidateSessionCancelingTasks, got %d: %#v", records, snapshot.Symbols)
 	}
 }
 

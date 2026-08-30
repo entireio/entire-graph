@@ -207,6 +207,13 @@ When a move has multiple equally similar destinations (within 0.05), the
 provider reports the pair as remove/add and emits a `W_MOVE_AMBIGUOUS` warning
 in the diff `warnings` array rather than guessing.
 
+A file rename whose content is byte-identical on both sides has no entity-level
+delta to reconcile, but the file path is a component of every symbol ID in it,
+so the rename still re-identifies every symbol. Such a file is reported with a
+single module-scope `moved` change carrying `old_path`/`new_path` and
+`reconciliation: MOVED`, so a pure rename is never indistinguishable from an
+empty diff.
+
 ## Relations
 
 Relations should include:
