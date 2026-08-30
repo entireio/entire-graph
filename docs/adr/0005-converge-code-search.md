@@ -238,12 +238,34 @@ is a header change and would need one.
 1. A feed is valid only for the exact `indexed_commit` being built. Any other commit is ignored,
    never approximated. Staleness is a hard miss.
 2. Per-language trust is driven by the omission note, which must carry more than aggregate
-   counts to do that job. Counts say something was skipped; only records say which language and
-   which file, and a consumer cannot fall back for one language on a number. The note now carries
+   counts to do that job. A count says something was skipped; only the records say which file and
+   why, and a consumer cannot fall back for one language on a number. The note carries
    `language_tiers` (each language as `semantic` or `inventory-only`) and `partial_failures` (the
-   failure records, with path and code, not just `partial_failure_count`), alongside `commit` and
-   `tree` for the revision. A language reported skipped or degraded falls back for that language
-   only, not for the whole index.
+   failure records, not just `partial_failure_count`), alongside `commit` and `tree` for the
+   revision. A language reported skipped or degraded falls back for that language only, not for
+   the whole index.
+
+   **A failure record carries no language, and the fallback is a join, not a field read.** The
+   record is `code`, `severity`, `file_path`, `effect_on_semantic_completeness`, `detail`
+   (`internal/sem/provider.go:255-261`) -- there is no `language`. That is deliberate rather than
+   an omission to correct: `PartialFailure` is one shared record type across every entire-graph
+   surface, and several of its producers have no language in hand at all (an ignored subtree that
+   could not be read, a git listing that failed). A language field on it would be blank often
+   enough that a consumer routing per-language fallback on it would fall back for nothing, which
+   is worse than an explicit join. So the consumer resolves the language by joining
+   `partial_failures[].file_path` to the SCIP `Document` with the same `relative_path`; the export
+   emits a Document for every discovered file, including one whose parse was skipped, and sets its
+   `language` from the same file record the tier was derived from
+   (`internal/sem/compact_snapshot.go:451-464`).
+
+   One wrinkle the ingestion step must be told rather than left to discover: `Document.language` is
+   the SCIP enum name while `language_tiers` is keyed by entire-graph's own language name, and the
+   two differ for a fixed, closed set (`C++`/`CPP`, `C#`/`CSharp`, `F#`/`FSharp`,
+   `Objective-C`/`Objective_C`, `Protocol Buffers`/`Protobuf`, `Starlark`/`Skylark`, `Bash`/
+   `ShellScript`, and the rest, enumerated in full at
+   `internal/sem/compact_snapshot.go:852-892`). The mapping is total and one-way, so it belongs in
+   the written contract of open question 2 next to the moniker scheme, not re-derived in each
+   consumer.
 3. Relation loss is expected and bounded: the feed supplies **symbols and resolution**, not
    relations. entire-graph's native snapshot stays the source of truth for the graph.
 4. The feed is advisory to availability *while the native extractors remain*. peregrine must build
