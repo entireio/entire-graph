@@ -115,7 +115,7 @@ func TestNewPublicCommandsRenderSpecificHelp(t *testing.T) {
 		},
 		{
 			name: "snapshot",
-			want: []string{"--format ndjson|compact-ndjson"},
+			want: []string{"--format ndjson|compact-ndjson|scip"},
 		},
 	}
 
