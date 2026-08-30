@@ -1,6 +1,9 @@
 package sem
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func memberIndex(t *testing.T, path, content string) map[string]Entity {
 	t.Helper()
@@ -182,6 +185,102 @@ func TestCFamilyDeeplyNestedDeclaratorIsExtracted(t *testing.T) {
 	for _, want := range []string{"field:Deep.one", "field:Deep.eight", "field:Deep.nine"} {
 		if _, ok := got[want]; !ok {
 			t.Errorf("missing %q: %#v", want, got)
+		}
+	}
+}
+
+// TestCFamilyParenthesizedMemberIsExtracted covers a member whose declarator is
+// wrapped in redundant parentheses: `int (value);`. Parentheses are legal
+// around any C/C++ declarator, and inside a struct or class body tree-sitter
+// hangs a parenthesized_declarator directly off the field_declaration — there
+// is no pointer or function declarator above it to reach it through. The
+// declarator unwrapper already knew the shape; the member pass never dispatched
+// it, so the member had no symbol at all.
+func TestCFamilyParenthesizedMemberIsExtracted(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct{ name, path, source string }{
+		{"C", "paren.c", `struct Wrapped {
+    int (value);
+    int (*(indirect));
+    int plain;
+};
+`},
+		{"C++", "paren.cpp", `class Wrapped {
+    int (value);
+    int (*(indirect));
+    int plain;
+};
+`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got := memberIndex(t, testCase.path, testCase.source)
+			for _, want := range []string{"field:Wrapped.value", "field:Wrapped.indirect", "field:Wrapped.plain"} {
+				if _, ok := got[want]; !ok {
+					t.Errorf("missing %q: %#v", want, got)
+				}
+			}
+		})
+	}
+}
+
+// TestCPlusPlusInitialisedNonBareMembersAreFields covers the other half of the
+// `= 0` ambiguity. tree-sitter-cpp parses every initialised in-class member as
+// a function_definition with a pure_virtual_clause, and the C++ mask rewrites
+// `= {}` to `= 0` as well, so array and brace-initialised members land there
+// too. Requiring a BARE field_identifier recognised only `int total_ = 0;`:
+// every member whose declarator wraps the name — pointer, array, parenthesis,
+// function pointer — fell through and was published as a METHOD named after a
+// data member.
+func TestCPlusPlusInitialisedNonBareMembersAreFields(t *testing.T) {
+	t.Parallel()
+	got := memberIndex(t, "config.cpp", `class Config {
+    int *pointer_ = 0;
+    int **deep_ = 0;
+    int array_[3] = {};
+    int (parens_) = 0;
+    int (*callback_)(int) = 0;
+    int bare_ = 0;
+};
+`)
+	for _, want := range []string{
+		"field:Config.pointer_", "field:Config.deep_", "field:Config.array_",
+		"field:Config.parens_", "field:Config.callback_", "field:Config.bare_",
+	} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("missing %q: %#v", want, got)
+		}
+		if _, ok := got["method:"+strings.TrimPrefix(want, "field:")]; ok {
+			t.Errorf("data member published as a method: %q: %#v", want, got)
+		}
+	}
+}
+
+// TestCPlusPlusPureVirtualWithWrappedDeclaratorStaysAMethod is the guard on the
+// other side. A pure virtual whose RETURN type is a pointer, a reference or a
+// function pointer also carries a wrapped declarator, so the declarator walk —
+// not the mere presence of a function_declarator somewhere below — has to be
+// what tells the two apart. A walk that reached for the first field_identifier
+// anywhere below would step over the inner function_declarator and file every
+// one of these as a data member.
+func TestCPlusPlusPureVirtualWithWrappedDeclaratorStaysAMethod(t *testing.T) {
+	t.Parallel()
+	got := memberIndex(t, "iface.cpp", `class Iface {
+    virtual int Plain() const = 0;
+    virtual int *Pointer() = 0;
+    virtual int &Reference() = 0;
+    virtual int (*Callback())(int) = 0;
+};
+`)
+	for _, want := range []string{
+		"method:Iface.Plain", "method:Iface.Pointer",
+		"method:Iface.Reference", "method:Iface.Callback",
+	} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("pure virtual lost its method kind, missing %q: %#v", want, got)
+		}
+		if _, ok := got["field:"+strings.TrimPrefix(want, "method:")]; ok {
+			t.Errorf("pure virtual published as a field: %q: %#v", want, got)
 		}
 	}
 }
