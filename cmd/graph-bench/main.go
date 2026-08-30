@@ -45,6 +45,22 @@ type repoSpec struct {
 	ref      string // optional manifest-pinned ref
 }
 
+// refOrigin records which file a ref came from, which decides whether Git may
+// read it as a ref name at all.
+//
+// The two origins are not interchangeable. A manifest entry is a name a person
+// wrote (`owner/name@<ref>`) and may be a branch, a tag or a commit, so a
+// hex-shaped one has to be asked about at the remote. A lock entry is a value
+// graph-bench itself wrote from `git rev-parse HEAD`: an object id, and only
+// ever an object id. Resolving a lock entry as a ref of the same name is how a
+// pin stops pinning -- see ensureRepo.
+type refOrigin int
+
+const (
+	refFromManifest refOrigin = iota
+	refFromLock
+)
+
 func parseProfile(value string) (sem.Profile, error) {
 	switch value {
 	case "", "full":
@@ -60,6 +76,14 @@ func parseProfile(value string) (sem.Profile, error) {
 
 func (r repoSpec) cloneURL() string { return "https://github.com/" + r.repoPath + ".git" }
 func (r repoSpec) dirName() string  { return strings.ReplaceAll(r.repoPath, "/", "__") }
+
+// cachePath is the checkout this spec owns. The language is part of the path,
+// so a repository listed under two languages has two independent clones, and
+// anything said about one checkout -- above all whether its clone succeeded --
+// says nothing about the other.
+func (r repoSpec) cachePath(cacheRoot string) string {
+	return filepath.Join(cacheRoot, r.language, r.dirName())
+}
 
 func main() {
 	var (
@@ -132,10 +156,11 @@ func runWithWorkerCommand(manifestPath, cacheDir, outDir, lockPath, languages, p
 	ctx := context.Background()
 	resolved := map[string]string{} // repoPath -> sha
 	var resolvedMu sync.Mutex
+	cloneFailures := map[string]error{}
 
 	if !skipClone {
 		fmt.Fprintf(os.Stderr, "Cloning %d repositories into %s...\n", len(specs), cacheDir)
-		cloneAll(ctx, specs, cacheDir, lock, depth, updateLock, jobs, func(repoPath, sha string) {
+		cloneFailures = cloneAll(ctx, specs, cacheDir, lock, depth, updateLock, jobs, func(repoPath, sha string) {
 			resolvedMu.Lock()
 			resolved[repoPath] = sha
 			resolvedMu.Unlock()
@@ -154,7 +179,17 @@ func runWithWorkerCommand(manifestPath, cacheDir, outDir, lockPath, languages, p
 	fmt.Fprintf(os.Stderr, "Measuring (no-egress, profile=%s)...\n", profile)
 	var metrics []bench.RepoMetrics
 	for _, spec := range specs {
-		dir := filepath.Join(cacheDir, spec.language, spec.dirName())
+		dir := spec.cachePath(cacheDir)
+		// A repository whose clone failed keeps whatever an earlier run left in
+		// the cache, and that checkout is at some other commit than the one this
+		// run asked for. Measuring it would report a number for the wrong tree
+		// under this run's provider version and lock, so the failure is carried
+		// into the report instead.
+		if cloneErr, failed := cloneFailures[dir]; failed {
+			metrics = append(metrics, bench.RepoMetrics{Name: spec.repoPath, Language: spec.language, Profile: string(profile), Error: "clone failed: " + cloneErr.Error()})
+			fmt.Fprintf(os.Stderr, "  skip %-40s (clone failed)\n", spec.repoPath)
+			continue
+		}
 		if _, statErr := os.Stat(dir); statErr != nil {
 			metrics = append(metrics, bench.RepoMetrics{Name: spec.repoPath, Language: spec.language, Profile: string(profile), Error: "not cloned"})
 			fmt.Fprintf(os.Stderr, "  skip %-40s (not cloned)\n", spec.repoPath)
@@ -253,10 +288,28 @@ func loadSpecs(manifestPath, languages string, limit int) ([]repoSpec, error) {
 	return specs, nil
 }
 
-func cloneAll(ctx context.Context, specs []repoSpec, cacheDir string, lock map[string]string, depth int, updateLock bool, jobs int, record func(repoPath, sha string)) {
+// cloneAll puts every selected repository in the cache at the ref the lock or
+// the manifest asks for, and returns the ones it could not, keyed by the cache
+// directory that clone would have refreshed.
+//
+// The key is the directory rather than the repo path because a repository may
+// be listed under several languages, and each language clones it into its own
+// directory. Keying by repo path made one language's failure skip every other
+// language's copy of that repository, including clones that had just
+// succeeded, and report them as clone failures.
+//
+// The failures are a return value rather than a log line because the cache
+// outlives a run: a repository that fails to clone usually still has the
+// directory an earlier run left behind, and the measurement loop cannot tell a
+// fresh checkout from a stale one by looking at it. Reporting the failure is
+// what stops the caller measuring the stale checkout and printing it as an
+// ordinary result.
+func cloneAll(ctx context.Context, specs []repoSpec, cacheDir string, lock map[string]string, depth int, updateLock bool, jobs int, record func(repoPath, sha string)) map[string]error {
 	if jobs < 1 {
 		jobs = 1
 	}
+	failures := map[string]error{}
+	var failuresMu sync.Mutex
 	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
 	for _, spec := range specs {
@@ -265,33 +318,202 @@ func cloneAll(ctx context.Context, specs []repoSpec, cacheDir string, lock map[s
 		go func(spec repoSpec) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			ref := spec.ref
+			ref, origin := spec.ref, refFromManifest
 			if !updateLock {
 				if pinned, ok := lock[spec.repoPath]; ok && pinned != "" {
-					ref = pinned
+					ref, origin = pinned, refFromLock
 				}
 			}
-			dir := filepath.Join(cacheDir, spec.language, spec.dirName())
-			sha, err := ensureRepo(ctx, spec.cloneURL(), ref, dir, depth)
+			dir := spec.cachePath(cacheDir)
+			sha, err := ensureRepo(ctx, spec.cloneURL(), ref, dir, depth, origin)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  clone FAIL %-40s %v\n", spec.repoPath, err)
+				failuresMu.Lock()
+				failures[dir] = err
+				failuresMu.Unlock()
 				return
 			}
 			record(spec.repoPath, sha)
 		}(spec)
 	}
 	wg.Wait()
+	return failures
 }
 
-func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, error) {
+// validateRef rejects refs Git would parse as command-line options or as a
+// fetch refspec.
+//
+// Git's parse-options permutes arguments, so a value in a positional slot is
+// still parsed as an option if it looks like one. ensureRepo puts the ref in a
+// positional slot of git fetch and git checkout, so an option-shaped ref was
+// applied as an option instead of being fetched: the fetch error is discarded
+// here, and a ref such as --detach is then accepted by the checkout, leaving
+// the cached repo on something other than the requested commit while the run
+// reports success.
+//
+// The classic escalation of this shape, --upload-pack=<cmd>, executes <cmd>
+// only when the remote uses a transport that runs upload-pack on this machine
+// (a filesystem path or file:// URL). cloneURL always builds an https URL, for
+// which Git ignores the option, so the reachable impact here is a wrong
+// checkout rather than command execution.
+//
+// The same slot is also a *refspec* slot. `git fetch origin <ref>` treats
+// `+refs/heads/evil:refs/heads/injected` as a write: the fetch succeeds and
+// creates refs/heads/injected inside the cached clone, only the checkout of the
+// literal string fails, and the FETCH_HEAD fallback below then reports success
+// for whatever that refspec happened to fetch (verified against git 2.54.0:
+// `ls .git/refs/heads` gains `injected`, and HEAD lands on the evil branch tip
+// while ensureRepo returns a nil error). A wildcard refspec such as
+// `refs/heads/*:refs/remotes/origin/*` does the same for every branch at once.
+// Git ref names cannot contain `:` or `*` at all (git check-ref-format), so
+// refusing those two costs no legitimate ref and leaves `git fetch origin <ref>`
+// able to fetch exactly one ref -- which is what makes FETCH_HEAD trustworthy
+// afterwards.
+//
+// A leading `+` or `-` is not in that class and is not refused here. Both are
+// legal ref characters in any position: `git check-ref-format refs/heads/+release`
+// and `git check-ref-format refs/heads/-release` both exit 0, and
+// `git clone --branch +release` / `git clone --branch -release` both check that
+// branch out (verified against git 2.54.0), so refusing them outright rejected
+// refs Git itself accepts -- and because cloneAll only logs a refused clone, a
+// cache from an earlier run then carried the benchmark on a stale checkout.
+// What is unsafe about a leading `+` or `-` is narrower and lives in the slots
+// ensureRepo does not put them in raw: `git fetch origin +release` reads the
+// `+` as a refspec's force marker and fetches `release` instead, with exit 0
+// (verified against git 2.54.0: FETCH_HEAD held release's tip while `+release`
+// pointed elsewhere), and a bare `git checkout -release` risks the option
+// parsing this whole guard exists to avoid on a git old enough to lack
+// --end-of-options. ensureRepo therefore resolves such a name against the
+// remote and fetches/checks it out fully qualified through FETCH_HEAD (see
+// refNeedsRemoteResolution), and refuses it when the remote publishes no ref
+// by that name -- so the raw name never reaches a positional git argument
+// either way.
+//
+// Refs reach ensureRepo from two ordinary repo files -- the manifest
+// (`owner/name@<ref>`) and the commit lock -- so their contents are argv input
+// to validate, not trusted configuration. Mirrors the NUL guard in
+// internal/gitutil (git.go:168, :237, :419).
+func validateRef(ref string) error {
+	if strings.ContainsRune(ref, '\x00') {
+		return fmt.Errorf("invalid git ref %q", ref)
+	}
+	if strings.ContainsAny(ref, ":*") {
+		return fmt.Errorf("invalid git ref %q: refspec syntax is not a ref", ref)
+	}
+	return nil
+}
+
+// gitEndOfOptions returns the --end-of-options argument when the git on PATH
+// understands it, and nothing when it does not.
+//
+// parse-options learned --end-of-options in Git 2.24 (2019-11). On 2.23 and
+// earlier every invocation carrying it dies with "unknown option", which would
+// break every benchmark clone, including ordinary trusted refs, on those
+// versions. So the flag is defence in depth that is applied only where it
+// exists; validateRef is the guard that always runs and is what actually stops
+// an option-shaped ref.
+//
+// `--` is not a substitute. For git checkout it means "everything after this is
+// a pathspec", so `git checkout --quiet -- main` looks for a *file* named main
+// and fails with "pathspec 'main' did not match any file(s) known to git"
+// (verified against git 2.54.0). --end-of-options exists precisely because `--`
+// already has that meaning.
+func gitEndOfOptions(ctx context.Context) []string {
+	out, err := runGit(ctx, "", "version")
+	if err != nil || !gitVersionHasEndOfOptions(out) {
+		return nil
+	}
+	return []string{"--end-of-options"}
+}
+
+// gitVersionHasEndOfOptions reports whether `git version <v>` output names a Git
+// that has --end-of-options, i.e. 2.24 or newer. It tolerates the suffixed forms
+// distributions ship, such as "git version 2.39.5 (Apple Git-154)" and
+// "git version 2.45.2.windows.1", and treats anything it cannot parse as too old
+// so an unrecognised git still gets a working command line.
+func gitVersionHasEndOfOptions(out string) bool {
+	fields := strings.Fields(strings.TrimSpace(out))
+	if len(fields) < 3 || fields[0] != "git" || fields[1] != "version" {
+		return false
+	}
+	parts := strings.Split(fields[2], ".")
+	if len(parts) < 2 {
+		return false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false
+	}
+	return major > 2 || (major == 2 && minor >= 24)
+}
+
+func ensureRepo(ctx context.Context, url, ref, dir string, depth int, origin refOrigin) (string, error) {
+	if err := validateRef(ref); err != nil {
+		return "", err
+	}
+	endOfOptions := gitEndOfOptions(ctx)
+	// A lock entry is an object id by construction -- writeLock stores what
+	// `git rev-parse HEAD` printed -- so for it the object *is* the answer and
+	// there is nothing to ask the remote. Asking anyway is how the pin stops
+	// pinning: a repository that publishes a branch named after the pinned
+	// commit gets that branch fetched and its tip checked out instead, with
+	// every command exiting 0 (this is what the hex-shaped-manifest-ref
+	// resolution below did to lock entries before this guard existed).
+	pinnedObject := origin == refFromLock && looksLikeSHA(ref)
+	// looksLikeSHA only guesses, and a lowercase-hex string can name an object
+	// *and* a branch in the same repository, pointing at different commits. Ask
+	// the remote which it actually publishes, so the clone and the checkout
+	// cannot resolve the same ref two different ways.
+	remoteRef := ""
+	if ref != "" && !pinnedObject && refNeedsRemoteResolution(ref) {
+		var err error
+		if remoteRef, err = remoteRefFor(ctx, url, ref, endOfOptions); err != nil {
+			// A failed lookup is not an answer. Treating it as "the remote
+			// publishes no such ref" silently reinstates the guess this call
+			// exists to remove, and the guess can then be checked out as a
+			// success: with the object already in a warm cache, `git checkout
+			// <ref>` resolves it locally and ensureRepo returns that commit
+			// with a nil error even though the ref names a branch pointing
+			// elsewhere. Offline measurement has its own flag, -skip-clone,
+			// which never reaches ensureRepo, so failing here costs no
+			// supported workflow.
+			return "", err
+		}
+		if remoteRef == "" && strings.HasPrefix(ref, "+") {
+			// Nothing downstream can carry this name safely. The fetch slot
+			// reads a bare leading `+` as a refspec force marker, so `git fetch
+			// origin +release` fetches `release` and exits 0; the checkout by
+			// name then fails in a cache that has no local branch of that name,
+			// and the single-entry FETCH_HEAD fallback would return the wrong
+			// branch's tip as a success. Only the fully-qualified form the
+			// remote publishes escapes that reading, and here there is none.
+			return "", fmt.Errorf("invalid git ref %q: the remote publishes no branch or tag by that name, and a leading + is a fetch refspec's force marker", ref)
+		}
+		if remoteRef == "" && strings.HasPrefix(ref, "-") {
+			// Nothing downstream can carry this name safely either. The
+			// clone/checkout slots below would otherwise pass this name
+			// through raw and positionally, which is exactly the
+			// option-shaped-argument risk validateRef used to reject
+			// outright (at the cost of every legitimate ref shaped like one).
+			// Only the fully-qualified form the remote publishes -- resolved
+			// through FETCH_HEAD, never as a bare positional argument --
+			// escapes that risk, and here there is none.
+			return "", fmt.Errorf("invalid git ref %q: the remote publishes no branch or tag by that name, and a leading - is option-shaped", ref)
+		}
+	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", err
 		}
 		args := []string{"clone", "--quiet", "--depth", strconv.Itoa(depth)}
-		if ref != "" && !looksLikeSHA(ref) {
+		if ref != "" && (!looksLikeSHA(ref) || remoteRef != "") {
 			args = append(args, "--branch", ref)
 		}
+		args = append(args, endOfOptions...)
 		args = append(args, url, dir)
 		if out, err := runGit(ctx, "", args...); err != nil {
 			return "", fmt.Errorf("%v: %s", err, out)
@@ -299,27 +521,234 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 	}
 	if ref != "" {
 		// Best-effort fetch of the exact ref so a pinned SHA is available even
-		// when it is not on the default branch; ignore fetch errors and let the
-		// checkout surface a real failure.
-		_, _ = runGit(ctx, dir, "fetch", "--quiet", "--depth", strconv.Itoa(depth), "origin", ref)
-		if out, err := runGit(ctx, dir, "checkout", "--quiet", ref); err != nil {
-			return "", fmt.Errorf("checkout %s: %v: %s", ref, err, out)
+		// when it is not on the default branch; a fetch failure is not fatal on
+		// its own, the checkout below surfaces the real failure.
+		// --end-of-options stops Git parsing anything after it as an option, so
+		// the ref can only ever be a refspec/revision even if the shape guard
+		// above is ever relaxed.
+		fetchRef := ref
+		if remoteRef != "" {
+			// Fully qualified, so the remote resolves it as the ref it is and
+			// never as the object that shares its name.
+			fetchRef = remoteRef
+		}
+		fetchArgs := append([]string{"fetch", "--quiet", "--depth", strconv.Itoa(depth)}, endOfOptions...)
+		fetchArgs = append(fetchArgs, "origin", fetchRef)
+		fetchOut, fetchErr := runGit(ctx, dir, fetchArgs...)
+		if pinnedObject {
+			// `git checkout --detach <id>` is not object semantics. With a ref
+			// of that name in the clone Git warns "refname is ambiguous" and
+			// takes the *ref*; the `^{commit}` suffix is what forces the object
+			// reading (verified against git 2.54.0: with a local branch named
+			// after commit A pointing at commit B, `git checkout --detach <A>`
+			// landed on B and `git checkout --detach <A>^{commit}` landed on A).
+			// Such a branch is exactly what a cache poisoned by an earlier
+			// `clone --branch <pinned id>` carries.
+			detachArgs := append([]string{"checkout", "--quiet", "--detach"}, endOfOptions...)
+			detachArgs = append(detachArgs, ref+"^{commit}")
+			if out, err := runGit(ctx, dir, detachArgs...); err != nil {
+				return "", fmt.Errorf("checkout pinned commit %s: %v: %s (fetch: %v: %s)", ref, err, out, fetchErr, fetchOut)
+			}
+			head, err := runGit(ctx, dir, "rev-parse", "HEAD")
+			if err != nil {
+				return "", err
+			}
+			head = strings.TrimSpace(head)
+			// Belt to the suffix's braces, and the check that does not depend on
+			// Git's ambiguity rules: the lock names this commit, so HEAD must be
+			// it. Git prints object ids in lowercase; a lock entry may be
+			// uppercase (looksLikeSHA accepts A-F) and may be an abbreviation.
+			if !strings.HasPrefix(head, strings.ToLower(ref)) {
+				return "", fmt.Errorf("checkout pinned commit %s: HEAD is %s, which is not that commit", ref, head)
+			}
+			return head, nil
+		}
+		if remoteRef != "" {
+			// The remote publishes this name as a ref, so FETCH_HEAD is that
+			// ref's tip. Checking the name out instead would resolve it to the
+			// object of the same name -- a different commit, reported as a
+			// success. Only the fetch can fail here, and it is fatal.
+			if fetchErr != nil {
+				return "", fmt.Errorf("fetch %s: %v: %s", fetchRef, fetchErr, fetchOut)
+			}
+			detachArgs := append([]string{"checkout", "--quiet", "--detach"}, endOfOptions...)
+			detachArgs = append(detachArgs, "FETCH_HEAD")
+			if out, err := runGit(ctx, dir, detachArgs...); err != nil {
+				return "", fmt.Errorf("checkout %s: %v: %s", fetchRef, err, out)
+			}
+			sha, err := runGit(ctx, dir, "rev-parse", "HEAD")
+			return strings.TrimSpace(sha), err
+		}
+		// A hex-shaped manifest ref that reaches this branch was confirmed NOT
+		// to be a remote branch or tag (remoteRef == ""), so it is being
+		// treated as a raw object id here -- but a plain name is still
+		// ambiguous against any *local* branch of that name a warm cache
+		// happens to carry (from an earlier run, or from the clone step's own
+		// `--branch <ref>` before this ref was known not to be a remote ref).
+		// Git resolves an ambiguous name to the ref, not the object
+		// (verified against git 2.54.0, same ambiguity the pinned-object
+		// branch above forces with `^{commit}`), so an unrelated commit can
+		// be checked out with the command still exiting 0. Force object
+		// semantics the same way here.
+		checkoutTarget := ref
+		if looksLikeSHA(ref) {
+			checkoutTarget = ref + "^{commit}"
+		}
+		checkoutArgs := append([]string{"checkout", "--quiet"}, endOfOptions...)
+		checkoutArgs = append(checkoutArgs, checkoutTarget)
+		if out, err := runGit(ctx, dir, checkoutArgs...); err != nil {
+			// A ref the remote publishes but this clone does not carry a
+			// local branch for -- a cached clone made for a different ref,
+			// say -- fails checkout by name even though the fetch just
+			// resolved it. The fetch asked for exactly one ref, so FETCH_HEAD
+			// is exactly that ref's tip: check it out detached rather than
+			// failing a manifest that names a valid ref. Any other checkout
+			// failure keeps its original error.
+			if fetchErr != nil {
+				return "", fmt.Errorf("checkout %s: %v: %s", ref, err, out)
+			}
+			// validateRef rejects `:` and `*`, and a leading `+` reaches here
+			// only as a ref the remote published (which takes the branch
+			// above), so the fetch asked for exactly one ref and FETCH_HEAD
+			// holds exactly that ref's tip.
+			// Re-check the file rather than trusting that reasoning: a
+			// multi-entry FETCH_HEAD means the ref was not a single ref, and
+			// its first entry is not what the manifest asked for.
+			if n, err := fetchHeadEntries(ctx, dir); err != nil || n != 1 {
+				return "", fmt.Errorf("checkout %s: %v: %s (FETCH_HEAD holds %d entries, want 1: %v)", ref, err, out, n, err)
+			}
+			fallbackArgs := append([]string{"checkout", "--quiet", "--detach"}, endOfOptions...)
+			fallbackArgs = append(fallbackArgs, "FETCH_HEAD")
+			if fallbackOut, fallbackErr := runGit(ctx, dir, fallbackArgs...); fallbackErr != nil {
+				return "", fmt.Errorf("checkout %s: %v: %s (FETCH_HEAD fallback: %v: %s)", ref, err, out, fallbackErr, fallbackOut)
+			}
 		}
 	}
 	sha, err := runGit(ctx, dir, "rev-parse", "HEAD")
 	return strings.TrimSpace(sha), err
 }
 
+// looksLikeSHA reports whether a ref is an object id rather than a branch name,
+// which decides whether ensureRepo may pass it to `git clone --branch`.
+//
+// Git has two object formats: SHA-1 (40 hex chars) and SHA-256 (64), the latter
+// selected by `git init --object-format=sha256`, init.defaultObjectFormat or
+// GIT_DEFAULT_HASH. Capping the length at 40 misclassified a pinned full
+// SHA-256 commit id as a branch name, so the clone became
+// `git clone --branch <64 hex>` and died with
+// "fatal: Remote branch <id> not found in upstream origin" (verified against
+// git 2.54.0). The upper bound is therefore the longer format's width, which
+// keeps every previously accepted abbreviation accepted.
+//
+// Git also parses an object name case-insensitively, so A-F is as valid as a-f:
+// `git rev-parse`, `git cat-file -t` and `git checkout` all accept an uppercase
+// or mixed-case id and answer with the lowercase one (verified against git
+// 2.54.0). Recognising only a-f misclassified an uppercase pinned commit id as
+// a branch name and produced the same
+// "fatal: Remote branch <id> not found in upstream origin" as the width bug.
+//
+// The classification is a guess in both directions: a hex-shaped branch name
+// looks exactly like an object id, and the two can coexist in one repository
+// pointing at different commits. For a *manifest* ref it is therefore not
+// load-bearing -- ensureRepo asks the remote (remoteRefFor) whenever this
+// returns true, and a name the remote publishes as a branch or tag is treated
+// as that ref, not as an object. For a *lock* ref there is nothing to guess:
+// the value is an object id by construction, and this reports whether it still
+// looks like one.
 func looksLikeSHA(ref string) bool {
-	if len(ref) < 7 || len(ref) > 40 {
+	if len(ref) < 7 || len(ref) > 64 {
 		return false
 	}
 	for _, r := range ref {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
 			return false
 		}
 	}
 	return true
+}
+
+// refNeedsRemoteResolution reports whether ensureRepo must ask the remote what a
+// manifest ref is before handing it to git as written, rather than letting git's
+// own parsing decide. It is not consulted for a lock entry, which is an object
+// id and must stay one whatever the remote publishes under that name.
+//
+// Three shapes need it, for the same reason: git resolves them differently in
+// different slots, so the clone and the checkout can land on different commits
+// (or the checkout can fail as option parsing) while every command exits 0.
+//
+//   - A hex-shaped name may be an object id or a branch of that name, and both
+//     can exist in one repository pointing at different commits (looksLikeSHA
+//     only guesses which).
+//   - A name starting with `+` is a ref to `git clone --branch` and to `git
+//     checkout`, but a force-marked refspec for the *rest* of the name to `git
+//     fetch` (verified against git 2.54.0: with `release` and `+release` at
+//     different commits, `git fetch origin +release` put release's tip in
+//     FETCH_HEAD and exited 0).
+//   - A name starting with `-` is a ref everywhere in git, but option-shaped to
+//     any argv parser that reads it from a positional slot without
+//     --end-of-options (validateRef's own comment; the guard this call
+//     replaces used to reject such a name outright).
+//
+// In all three cases the answer is the fully-qualified ref from remoteRefFor,
+// which no slot can re-read as something else, and ensureRepo refuses the name
+// when the remote publishes nothing by it rather than falling back to using it
+// raw.
+func refNeedsRemoteResolution(ref string) bool {
+	return looksLikeSHA(ref) || strings.HasPrefix(ref, "+") || strings.HasPrefix(ref, "-")
+}
+
+// remoteRefFor returns the fully-qualified ref the remote publishes under name,
+// preferring a branch over a tag, and "" when the remote publishes neither (the
+// ordinary case for a pinned commit id). ls-remote is a read-only query, so a
+// name that is not a ref costs one listing and nothing else.
+//
+// A transport or authentication failure is returned as an error rather than as
+// "the remote publishes neither": the two are not the same answer, and only one
+// of them is safe to act on. See the caller for what collapsing them costs.
+func remoteRefFor(ctx context.Context, url, name string, endOfOptions []string) (string, error) {
+	args := append([]string{"ls-remote", "--quiet"}, endOfOptions...)
+	args = append(args, url, "refs/heads/"+name, "refs/tags/"+name)
+	out, err := runGit(ctx, "", args...)
+	if err != nil {
+		return "", fmt.Errorf("ls-remote %s %q: %v: %s", url, name, err, out)
+	}
+	tag := ""
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		switch {
+		case fields[1] == "refs/heads/"+name:
+			return fields[1], nil
+		case fields[1] == "refs/tags/"+name && tag == "":
+			tag = fields[1]
+		}
+	}
+	return tag, nil
+}
+
+// fetchHeadEntries counts the refs the last fetch recorded in FETCH_HEAD.
+func fetchHeadEntries(ctx context.Context, dir string) (int, error) {
+	path, err := runGit(ctx, dir, "rev-parse", "--git-path", "FETCH_HEAD")
+	if err != nil {
+		return 0, fmt.Errorf("locate FETCH_HEAD: %w", err)
+	}
+	path = strings.TrimSpace(path)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read FETCH_HEAD: %w", err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {

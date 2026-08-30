@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -252,17 +254,21 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	}
 	filterActive := flags.To != "" || flags.From != "" || len(flags.Relation) > 0
 	compact := flags.Format == "compact-ndjson"
-	if flags.Format != "ndjson" && !compact {
+	scip := flags.Format == "scip"
+	if flags.Format != "ndjson" && !compact && !scip {
 		if mode == "snapshot" {
-			return fmt.Errorf("%s requires --format ndjson or compact-ndjson", mode)
+			return fmt.Errorf("%s requires --format ndjson, compact-ndjson, or scip", mode)
 		}
 		return fmt.Errorf("%s requires --format ndjson", mode)
 	}
-	if compact && mode != "snapshot" {
-		return errors.New("--format compact-ndjson is only valid for snapshot")
+	if (compact || scip) && mode != "snapshot" {
+		return fmt.Errorf("--format %s is only valid for snapshot", flags.Format)
 	}
-	if compact && filterActive {
-		return errors.New("--format compact-ndjson requires a complete snapshot; remove --to/--from/--relation")
+	if (compact || scip) && filterActive {
+		return fmt.Errorf("--format %s requires a complete snapshot; remove --to/--from/--relation", flags.Format)
+	}
+	if scip && flags.Progress {
+		return errors.New("--format scip cannot be combined with --progress; stderr is reserved for the JSON omission note")
 	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {
@@ -293,9 +299,21 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			)
 		}
 	}
-	// Stream records straight to stdout so peak memory does not scale with the
-	// relation count on large repositories.
+	// Native and compact encoders stream records directly. SCIP must collect the
+	// complete graph before writing its single protobuf Index message.
+	var scipEncoder *sem.SCIPSnapshotEncoder
 	newRecordEncoder := func(out io.Writer) func(any) error {
+		if scip {
+			// NOT wrapped. `--format scip` writes a binary protobuf Index, and the C1
+			// rewrite is defined over a TEXT stream: it would rewrite any 0xc2 0x8X
+			// pair the wire format happens to contain -- a varint, a length prefix, a
+			// UTF-8 name -- into six ASCII bytes, and the result no longer parses as
+			// an Index at all. A hostile pathname in this stream reaches a terminal
+			// only after a consumer has decoded the protobuf and chosen to render it,
+			// which is that consumer's escape to apply, not this encoder's.
+			scipEncoder = sem.NewSCIPSnapshotEncoder(out, "")
+			return scipEncoder.Encode
+		}
 		// Wrapped once here rather than in either branch below: both encoders write
 		// repository-controlled pathnames and entity names, and a snapshot carries no
 		// source text, so a hostile PATHNAME is the only C1 these streams can hold.
@@ -308,6 +326,13 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		return encoder.Encode
 	}
 	encodeRecord := newRecordEncoder(opts.Stdout)
+	if scipEncoder != nil {
+		// The version is read inside the snapshot build, through the reader that
+		// is already validated, bounded and pinned to this snapshot's revision.
+		// Reading it here instead would run Git before the metadata preflight and
+		// touch the filesystem without the provider's guards.
+		options.ProjectVersion = scipEncoder.SetProjectVersion
+	}
 
 	// Targeted edge query: when --to/--from/--relation is set, emit only matching
 	// relations (plus header/summary), never files/symbols. Turns "callers of X"
@@ -318,9 +343,13 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// parse. Without this the CLI discards the summary and a run that silently
 	// parsed only a fraction of the repo (e.g. a mis-scoped subdir) looks clean.
 	var summary *sem.SnapshotSummary
+	var snapshotHeader sem.SnapshotHeader
 	capture := func(record any) {
-		if s, ok := record.(sem.SnapshotSummary); ok {
-			s := s
+		switch r := record.(type) {
+		case sem.SnapshotHeader:
+			snapshotHeader = r
+		case sem.SnapshotSummary:
+			s := r
 			summary = &s
 		}
 	}
@@ -353,16 +382,28 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		return nil
 	}
 
-	// Whole-graph dump (no targeted filter): serve from the tree-hash record
-	// cache when possible. The cache is keyed on the HEAD tree, the mode, and the
-	// output-affecting options, so a repeat call on an unchanged HEAD skips the
-	// expensive re-index. It is deliberately bypassed for --worktree (the working
-	// tree may differ from HEAD) and, by returning above, for targeted queries.
+	// Whole-graph dump (no targeted filter): serve from the committed-record
+	// cache when possible. The cache is keyed on the exact HEAD commit and tree,
+	// the mode, and output-affecting options, so an unchanged HEAD skips the
+	// expensive re-index. It is deliberately bypassed for --worktree and, by
+	// returning above, for targeted queries.
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
-	useCache := !flags.DisableCache && !flags.Worktree && cacheDir != ""
-	var tree string
+	useCache := !flags.DisableCache && !flags.Worktree && !scip && cacheDir != ""
+	var commit, tree string
+	cacheContext := ctx
 	if useCache {
-		if t, err := gitutil.RevParse(ctx, repo, "HEAD^{tree}"); err == nil && t != "" {
+		var validationErr error
+		cacheContext, validationErr = sem.WithGitMetadataValidationForSetup(ctx, repo)
+		if validationErr != nil {
+			// Cache probing is optional and runs before provider construction. Unsafe
+			// metadata disables the probe; the provider below selects its warned,
+			// filesystem-only fallback without starting Git.
+			useCache = false
+		}
+	}
+	if useCache {
+		if c, t, headErr := gitutil.HeadCommitAndTree(cacheContext, repo); headErr == nil && c != "" && t != "" {
+			commit = c
 			tree = t
 		} else {
 			useCache = false
@@ -372,9 +413,23 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if compact {
 		cacheMode = "snapshot:compact-ndjson-v1"
 	}
+	var recordsCache *sem.ProviderRecordsCacheTransaction
 	if useCache {
-		if records, cachedSummary, hit, err := sem.LoadProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options); err == nil && hit {
-			// Replayed bytes need the same wrap the encoder above gets. This path does
+		recordsCache, err = sem.BeginProviderRecordsCache(cacheContext, repo, opts.Version, commit, tree, cacheMode, cacheDir, options)
+		if err != nil {
+			// Cache setup is optional. The uncached stream below will surface any
+			// policy-input error that also prevents a correct build.
+			useCache = false
+			recordsCache = nil
+		} else {
+			// Pin matcher construction to the exact policy bytes that keyed this
+			// lookup, and carry the same transaction through storage below.
+			options = recordsCache.Options()
+		}
+	}
+	if recordsCache != nil {
+		if records, cachedSummary, hit := recordsCache.Load(); hit {
+			// Replayed bytes need the same wrap the encoder below gets. This path does
 			// not go through encodeRecord at all, so a cache entry written before the
 			// C1 rule existed — or by any build that predates it — would stream the
 			// repository's raw control straight to the terminal on every hit. Escaping
@@ -390,7 +445,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// On a miss, tee the serialized record stream into a buffer so we can persist it after
 	// a successful run without a second pass over the graph.
 	var recordBuf bytes.Buffer
-	if useCache {
+	if recordsCache != nil {
 		encodeRecord = newRecordEncoder(io.MultiWriter(opts.Stdout, &recordBuf))
 	}
 	if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
@@ -402,12 +457,47 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	}); err != nil {
 		return err
 	}
-	warnIfPartial(opts.Stderr, flags.Worktree, summary)
-	if useCache {
+	if scipEncoder != nil {
+		if err := writeSCIPOmissionNote(opts.Stderr, scipOmissionNoteWithSummary(scipEncoder.OmissionNote(), summary)); err != nil {
+			return err
+		}
+	} else {
+		warnIfPartial(opts.Stderr, flags.Worktree, summary)
+	}
+	if recordsCache != nil {
 		// Best effort: a failed cache write never fails the command.
-		_ = sem.StoreProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options, recordBuf.Bytes(), summary)
+		_ = recordsCache.Store(recordBuf.Bytes(), summary, snapshotHeader)
 	}
 	return nil
+}
+
+func scipOmissionNoteWithSummary(note sem.SCIPOmissionNote, summary *sem.SnapshotSummary) sem.SCIPOmissionNote {
+	if summary == nil {
+		return note
+	}
+	note.WarningCount = len(summary.Warnings)
+	note.PartialFailureCount = len(summary.PartialFailures)
+	// The records themselves, not just how many. SCIP cannot represent a file
+	// that was discovered but not parsed, so without these the note is the only
+	// place that information could have survived, and it was being reduced to an
+	// integer.
+	note.PartialFailures = summary.PartialFailures
+	// Which languages were only inventoried, so a consumer can scope trust per
+	// language the way the feed contract expects.
+	note.LanguageTiers = summary.LanguageTiers
+	level := summary.Stats.CompletenessLevel
+	if level == "" || level == "ok" {
+		return note
+	}
+	note.PartialSnapshot = true
+	note.CompletenessLevel = level
+	return note
+}
+
+func writeSCIPOmissionNote(w io.Writer, note sem.SCIPOmissionNote) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(note)
 }
 
 // warnIfPartial prints a loud stderr banner when the snapshot did not fully cover
@@ -488,7 +578,7 @@ type providerFlags struct {
 	To       string
 	From     string
 	Relation []string
-	// CacheDir/DisableCache control the tree-hash record cache. Empty CacheDir
+	// CacheDir/DisableCache control the committed-record cache. Empty CacheDir
 	// falls back to ENTIRE_PLUGIN_DATA_DIR; --no-cache disables it entirely.
 	CacheDir     string
 	DisableCache bool
@@ -666,8 +756,14 @@ func runCommit(ctx context.Context, opts Options, args []string) error {
 	if len(rest) > 1 {
 		return errors.New("commit accepts at most one revision")
 	}
+	if err := validateRevision("commit", rev); err != nil {
+		return err
+	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {
+		return err
+	}
+	if err := sem.EnsureGitMetadataSafeForSubprocess(repo); err != nil {
 		return err
 	}
 	base, err := gitutil.FirstParent(ctx, repo, rev)
@@ -704,6 +800,37 @@ func runCheckpoint(ctx context.Context, opts Options, args []string) error {
 
 func runAnalyze(ctx context.Context, opts Options, args []string) error {
 	return runDiff(ctx, opts, args)
+}
+
+// validateRevision rejects a revision value that Git would read as an option instead.
+//
+// Every revision this package accepts is eventually spliced into a git argv — `git diff -z
+// --name-status --find-renames <base> <head> --` in gitutil.ChangedFiles, `git rev-parse
+// <rev>^` in gitutil.FirstParent, `git show <rev>^{tree}:<path>` in gitutil.ShowFile. Git
+// parses options anywhere ahead of `--`, so a value beginning with '-' stops being a revision
+// and becomes a flag of the command it lands in: `diff --base '--output=FILE'` exited 0 having
+// truncated FILE and replaced it with git's own name-status output (CWE-88), and `commit
+// '--output=FILE'` reached the same argv because `git rev-parse '--output=FILE^'` does not
+// fail first.
+//
+// Refusing at the boundary costs nothing legitimate. Values beginning with "--" are always
+// Git options; bare "-" is ambiguous with git's path/option syntax. Single-hyphen refs such as
+// "-foo" are valid and must not be rejected here — gitutil uses "--end-of-options" elsewhere
+// when splicing user paths into git argv.
+func validateRevision(name, rev string) error {
+	if rev == "" {
+		return fmt.Errorf("%s requires a revision", name)
+	}
+	if strings.HasPrefix(rev, "--") {
+		return fmt.Errorf("%s %q is not a revision: a revision cannot begin with %q, which Git would read as an option", name, rev, "--")
+	}
+	if rev == "-" {
+		return fmt.Errorf("%s %q is not a revision: bare %q is ambiguous with git's path/option syntax", name, rev, "-")
+	}
+	if strings.ContainsRune(rev, '\x00') {
+		return fmt.Errorf("%s %q is not a revision: a revision cannot contain a NUL byte", name, rev)
+	}
+	return nil
 }
 
 // diffFlags is the parsed argument set for `diff` and its `analyze` alias.
@@ -754,11 +881,17 @@ func parseDiffFlags(args []string) (diffFlags, []string, error) {
 			if i >= len(rest) {
 				return diffFlags{}, nil, errors.New("--base requires a value")
 			}
+			if err := validateRevision("--base", rest[i]); err != nil {
+				return diffFlags{}, nil, err
+			}
 			parsed.base = rest[i]
 		case "--head":
 			i++
 			if i >= len(rest) {
 				return diffFlags{}, nil, errors.New("--head requires a value")
+			}
+			if err := validateRevision("--head", rest[i]); err != nil {
+				return diffFlags{}, nil, err
 			}
 			parsed.head = rest[i]
 		default:
@@ -796,7 +929,177 @@ func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, e
 	if env.RepoRoot != "" {
 		return env.RepoRoot, nil
 	}
+	if os.Getenv("GIT_CEILING_DIRECTORIES") != "" {
+		// Git canonicalizes ceiling entries before discovery. A caller-controlled
+		// Windows UNC entry can therefore perform network I/O before Git looks for
+		// repository metadata. Apply the boundary in-process with the provider's
+		// same-volume resolver and never pass its raw path list to a subprocess.
+		if root, ok := discoverImplicitCheckoutRoot("."); ok {
+			return root, nil
+		}
+		return "", errors.New("no Git repository found below GIT_CEILING_DIRECTORIES")
+	}
+	if err := sem.EnsureGitMetadataSafeForSubprocess("."); err != nil {
+		// Preserve the provider's warned filesystem-only fallback without asking
+		// Git to discover the checkout. Analyze entry points apply their own strict
+		// guard before resolving revisions.
+		if root, ok := discoverImplicitCheckoutRoot("."); ok {
+			return root, nil
+		}
+		return ".", nil
+	}
 	return gitutil.RepoRoot(ctx, ".")
+}
+
+// discoverImplicitCheckoutRoot applies an inherited ceiling without a Git
+// subprocess. With no usable ceiling it keeps the established two-spelling
+// filesystem fallback. Git canonicalizes entries before the first empty list
+// element, while an empty element promises that subsequent entries contain no
+// symlinks and can stay lexical. Canonicalization uses the provider's guarded
+// same-volume walk, which refuses off-volume and UNC redirects before probing
+// them. Unresolvable entries are discarded just as Git discards them.
+func discoverImplicitCheckoutRoot(dir string) (string, bool) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	abs = filepath.Clean(abs)
+
+	type ceilingEntry struct {
+		path         string
+		canonicalize bool
+	}
+	var entries []ceilingEntry
+	canonicalize := true
+	for _, entry := range strings.Split(os.Getenv("GIT_CEILING_DIRECTORIES"), string(os.PathListSeparator)) {
+		// Git documents ceiling entries as absolute paths. The first empty
+		// entry disables canonicalization for every subsequent entry.
+		if entry == "" {
+			canonicalize = false
+			continue
+		}
+		absoluteEntry, absolute := sem.GitAbsolutePath(abs, entry)
+		if !absolute {
+			if sem.GitAbsolutePathNeedsFailClosed(entry) {
+				return "", false
+			}
+			continue
+		}
+		entries = append(entries, ceilingEntry{path: filepath.Clean(absoluteEntry), canonicalize: canonicalize})
+	}
+	if len(entries) == 0 {
+		return discoverCheckoutRoot(dir)
+	}
+
+	resolver, resolution := sem.NewGitCeilingPathResolver(abs)
+	if resolution != sem.GitCeilingPathResolved {
+		if resolution != sem.GitCeilingPathUnsupported {
+			return "", false
+		}
+		// Platforms without a safe mount inventory retain the prior lexical
+		// behavior only when the caller put every usable entry after the
+		// empty marker and therefore promised that none needs resolution.
+		var ceilings []string
+		for _, entry := range entries {
+			if entry.canonicalize {
+				return "", false
+			}
+			ceilings = append(ceilings, entry.path)
+		}
+		return discoverImplicitCheckoutRootBelowCeilings(abs, abs, ceilings, nil)
+	}
+	defer resolver.Close()
+
+	physicalAbs, resolution := resolver.Canonicalize(abs)
+	if resolution != sem.GitCeilingPathResolved {
+		return "", false
+	}
+	ceilings := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		ceiling := entry.path
+		if entry.canonicalize {
+			resolved, resolution := resolver.Canonicalize(ceiling)
+			switch resolution {
+			case sem.GitCeilingPathResolved:
+				ceiling = resolved
+			case sem.GitCeilingPathUnresolvable:
+				continue
+			default:
+				// Exact Git parity would require following the unsafe path to
+				// learn whether it aliases an ancestor. Refuse implicit
+				// discovery rather than risk either network I/O or walking
+				// through a boundary whose canonical spelling is unknown.
+				return "", false
+			}
+		}
+		ceilings = append(ceilings, ceiling)
+	}
+	return discoverImplicitCheckoutRootBelowCeilings(abs, physicalAbs, ceilings, resolver)
+}
+
+func discoverImplicitCheckoutRootBelowCeilings(namedStart, physicalStart string, ceilings []string, resolver *sem.GitCeilingPathResolver) (string, bool) {
+	applicable := ceilings[:0]
+	for _, ceiling := range ceilings {
+		rel, err := filepath.Rel(ceiling, physicalStart)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			applicable = append(applicable, ceiling)
+		}
+	}
+	abs := physicalStart
+	for {
+		for _, ceiling := range applicable {
+			equal := abs == ceiling
+			if runtime.GOOS == "windows" {
+				equal = strings.EqualFold(abs, ceiling)
+			}
+			if equal {
+				return "", false
+			}
+		}
+		if resolver == nil {
+			if _, err := os.Lstat(filepath.Join(abs, ".git")); err == nil {
+				return abs, true
+			}
+		} else {
+			exists, resolution := resolver.HasGitEntry(abs)
+			if resolution != sem.GitCeilingPathResolved {
+				return "", false
+			}
+			if exists {
+				return preferredCheckoutRootSpelling(resolver, namedStart, abs)
+			}
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return "", false
+		}
+		abs = parent
+	}
+}
+
+// preferredCheckoutRootSpelling preserves the caller-visible spelling used by
+// the filesystem fallback when it names the physical checkout Git discovery
+// found. This matters on systems such as macOS where /var is an alias for
+// /private/var: ceilings must be compared physically, but an unrelated ceiling
+// must not silently change the checkout path returned to existing callers.
+func preferredCheckoutRootSpelling(resolver *sem.GitCeilingPathResolver, namedStart, physicalRoot string) (string, bool) {
+	for candidate := namedStart; ; candidate = filepath.Dir(candidate) {
+		resolved, resolution := resolver.Canonicalize(candidate)
+		if resolution == sem.GitCeilingPathUnsafe {
+			return "", false
+		}
+		equal := resolved == physicalRoot
+		if runtime.GOOS == "windows" {
+			equal = strings.EqualFold(resolved, physicalRoot)
+		}
+		if resolution == sem.GitCeilingPathResolved && equal {
+			return candidate, true
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return physicalRoot, true
+		}
+	}
 }
 
 func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string, paths []string, flags commonFlags) error {

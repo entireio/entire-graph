@@ -50,7 +50,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v6
         with: { go-version: "1.26.x" }
-      - run: go test ./...
+      # internal/sem runs ~550s on the Windows runner against Go's 600s default
+      # per-package wall, with run-to-run swings of about 40s. That is 92% of an
+      # unset budget: the suite was one ordinary new test away from failing for a
+      # reason unrelated to the change that tripped it, which is what happened.
+      # Name a budget with headroom instead of inheriting one nobody chose.
+      - run: go test -timeout 30m ./...
 
   bm25-adapter:
     runs-on: ubuntu-latest

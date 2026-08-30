@@ -68,45 +68,82 @@ func TestSearchReplayEscapesC1(t *testing.T) {
 
 	t.Run("EG_SEARCH_SESSION", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "tf135-session.json")
-		// Repo and Tree are what a real recorder stored. The echo refuses a payload
-		// it cannot tie to the tree in front of it, so a state file without them
-		// would exercise searchSessionState.matches, not the replay.
-		absolute, err := filepath.Abs(repo)
-		if err != nil {
-			t.Fatal(err)
-		}
-		state, err := json.Marshal(searchSessionState{
-			Searches: 1,
-			Query:    "merge",
-			Payload:  stale,
-			Repo:     absolute,
-			Tree:     rev(t, repo, "HEAD^{tree}"),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, state, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		stdout, stderr := runVerbWithEnv(t, repo, EntireEnv{
+		// The session echo admits only the text and agent formats
+		// (searchFormatSupportsReplay), so this case is recorded as text. The sink
+		// is the same one the JSON cases above exercise -- stored bytes handed to
+		// stdout without passing through any encoder -- and a state file written by
+		// a build predating the C1 rule holds that build's raw controls.
+		//
+		// The state file is produced by a real recording run rather than hand-built.
+		// The echo brackets its candidate with a replay-schema, policy-fingerprint,
+		// format, repo, tree and payload-path check, and a fixture that misses any
+		// one of them silently degrades to a fresh search, which would prove
+		// nothing about the replay sink.
+		// --head because a worktree view is deliberately non-replayable
+		// (ResolveSearchReplayPolicy returns an empty policy for it) and search
+		// defaults to --worktree, so the echo would never be reached otherwise.
+		argv := []string{"search", "--query", "merge", "--format", "text", "--head"}
+		env := EntireEnv{
 			RepoRoot:      repo,
 			PluginDataDir: cacheDir,
 			SearchSession: path,
 			MaxSearches:   "1",
-		}, []string{"search", "--query", "merge"})
+		}
+		_, _ = runVerbWithEnv(t, repo, env, argv)
+		recorded, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("the recording run wrote no session state: %v", err)
+		}
+		var state searchSessionState
+		if err := json.Unmarshal(recorded, &state); err != nil {
+			t.Fatal(err)
+		}
+		if state.Payload == "" || state.PayloadPaths == nil {
+			t.Fatalf("the recording run stored no replayable payload: %s", recorded)
+		}
+		// Escaping is idempotent and lossless, so replaying the poisoned bytes must
+		// reproduce the recorded ones exactly.
+		wantPayload := state.Payload
+		state.Payload = staleTextPayload(t, wantPayload)
+		poisoned, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, poisoned, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr := runVerbWithEnv(t, repo, env, argv)
 		header, payload, found := strings.Cut(stdout, "\n")
 		if !found || !strings.HasPrefix(header, "(one search per task:") {
 			t.Fatalf("the echo did not fire, so this case proves nothing:\n%s", stdout)
 		}
 		assertNoRawC1(t, stdout)
 		assertNoRawC1(t, stderr)
-		// The header is a %q-quoted line rather than a record, so only the payload
-		// below it is decodable JSON.
-		assertCarriesC1AfterDecoding(t, payload)
-		if payload != escaped {
-			t.Errorf("replayed payload differs from the stream that was recorded:\n got  %q\n want %q", payload, escaped)
+		// The losslessness half, in the form a text payload can carry it: the
+		// controls survive as the same \u00XX escapes the live renderer writes.
+		if !strings.Contains(payload, "\\u009d") || !strings.Contains(payload, "\\u009c") {
+			t.Errorf("the replayed text dropped the repository's C1 code points instead of escaping them:\n%q", payload)
+		}
+		if payload != wantPayload {
+			t.Errorf("replayed payload differs from the stream that was recorded:\n got  %q\n want %q", payload, wantPayload)
 		}
 	})
+}
+
+// staleTextPayload is stalePayload for a text payload: the same escape-to-raw
+// inversion, without the JSON decodability check a rendered text stream cannot
+// satisfy. It fails rather than return an unpoisoned copy, so a case built on it
+// can never pass vacuously.
+func staleTextPayload(t *testing.T, escaped string) string {
+	t.Helper()
+	stale := strings.NewReplacer("\\u009d", c1OSC, "\\u009c", c1ST).Replace(escaped)
+	if stale == escaped {
+		t.Fatal("recorded stream held no escape to turn back into a raw control")
+	}
+	if indexC1(stale) < 0 {
+		t.Fatal("stale payload holds no raw C1, so replaying it would prove nothing")
+	}
+	return stale
 }
 
 // stalePayload turns this build's escaped stream back into the bytes a build

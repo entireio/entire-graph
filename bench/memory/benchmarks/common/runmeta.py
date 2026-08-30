@@ -20,7 +20,7 @@ from pathlib import Path
 _CAPTURE_PREFIXES = (
     "EG_", "ENTIRE_", "MEM0_", "QDRANT_", "SUPERMEMORY_", "SM_", "LETTA_",
     "COGNEE_", "GRAPHITI_", "NEO4J_", "REDIS_", "EMBED_", "OPENAI_", "AZURE_",
-    "ANTHROPIC_", "FAIR_", "BENCH_", "HARNESS_", "COLLECTION_",
+    "ANTHROPIC_", "LLM_", "FAIR_", "BENCH_", "HARNESS_", "COLLECTION_",
 )
 # Never emit these values in cleartext; emit a stable fingerprint instead.
 _SECRET_RE = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API)", re.I)
@@ -65,7 +65,14 @@ def code_hashes(root: Path | str | None = None) -> dict:
         root / "longmemeval" / "prompts.py",
     ]
     targets += sorted((root / "common").glob("*_client.py"))
-    targets += [root / "common" / "llm_client.py", root / "common" / "runmeta.py"]
+    targets += [
+        root / "common" / "entra_auth.py",
+        root / "common" / "llm_client.py",
+        root / "common" / "metrics.py",
+        root / "common" / "runmeta.py",
+        root / "common" / "utils.py",
+        root.parent / "requirements-lock-py312.txt",
+    ]
     out = {}
     for p in targets:
         if not p.is_file():

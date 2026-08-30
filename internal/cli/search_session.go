@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 // The search echo: one real search per task. The second and later search of the same task returns
@@ -50,12 +53,27 @@ type searchSession struct {
 	limit int
 }
 
+// searchSessionReplaySchema changes whenever the persisted replay-safety contract changes. A
+// session written without the current schema must run a real search: its opaque payload cannot be
+// upgraded or inspected safely after the fact.
+const (
+	searchSessionReplaySchema = 2
+	// A normal search payload is budgeted in kilobytes. Keep a generous ceiling for callers that
+	// deliberately widen it, but never let an untrusted/stale session file allocate without bound.
+	maxSearchSessionStateBytes = 8 << 20
+)
+
 // searchSessionState is the whole persisted record: how many searches ran, the first one's
-// question and answer, and the tree that answer describes.
+// question and answer, the repository/tree and render format that answer describes, and the corpus
+// policy that admitted every path contributing to it.
 type searchSessionState struct {
-	Searches int    `json:"searches"`
-	Query    string `json:"query"`
-	Payload  string `json:"payload"`
+	Searches          int      `json:"searches"`
+	Query             string   `json:"query"`
+	Payload           string   `json:"payload"`
+	ReplaySchema      int      `json:"replay_schema,omitempty"`
+	PolicyFingerprint string   `json:"policy_fingerprint,omitempty"`
+	PayloadPaths      []string `json:"payload_paths"`
+	Format            string   `json:"format,omitempty"`
 	// Repo and Tree are the scope the payload was recorded against. See searchSessionScope: the
 	// state file is what makes an echo possible, and these are what stop it answering for the
 	// wrong repository.
@@ -63,7 +81,7 @@ type searchSessionState struct {
 	Tree string `json:"tree,omitempty"`
 }
 
-// searchSessionScope identifies the tree a payload describes.
+// searchSessionScope identifies the repository view and wire format a payload describes.
 //
 // EG_SEARCH_SESSION is scoped to a task BY THE CALLER — the file path is the only thing that says
 // "this is the same task as last time", and nothing in the environment checks that claim. A harness
@@ -74,35 +92,49 @@ type searchSessionState struct {
 // broken and stops calling it — which costs the retrieval, the resolve, and every token the tool
 // was there to save, for the whole remainder of the run.
 //
-// So the payload carries the tree it answered for, and an echo only fires when that still matches.
-// HEAD's tree hash is the right key: it is what the record cache already keys on
-// (see the RevParse pair in the provider's snapshot path), it is stable across a task because
-// agents edit the working tree without committing, and it differs across instances because they
-// are different checkouts.
+// So the payload carries both the resolved repository path and the tree it answered for, and an
+// echo only fires when both still match. HEAD's tree hash is what the record cache already keys on
+// (see the RevParse pair in the provider's snapshot path), and it is stable across ordinary
+// worktree edits. It is not sufficient by itself: sibling --repo subdirectories share one root
+// tree while interpreting every response path in a different namespace. The render format is part
+// of the identity too because the persisted payload is already-rendered opaque bytes.
 //
-// Both fields degrade rather than fail. A repository git cannot describe still gets a scope from
-// its resolved path, and a scope that cannot be computed at all compares equal to nothing — which
-// refuses the echo and runs a real search. Every ambiguous case resolves toward answering the
-// question that was asked.
+// These observations degrade rather than fail. A repository git cannot describe still gets a
+// scope from its resolved path, and an identity that cannot be computed compares equal to nothing
+// — which refuses the echo and runs a real search. Every ambiguous case resolves toward answering
+// the question that was asked.
 type searchSessionScope struct {
-	Repo string
-	Tree string
+	Repo              string
+	Tree              string
+	PolicyFingerprint string
+	Format            string
 }
 
 // matches reports whether a recorded scope may answer for the live one.
 //
-// A state file written before this field existed has an empty scope, and that is treated as a
-// mismatch rather than a wildcard: the whole point is that an unscoped payload is exactly the one
-// that might belong to another repository. The cost of being wrong is one real search; the cost of
-// the wildcard is a session answered from the wrong tree.
+// A state file written before these fields existed has an incomplete scope, and that is treated as
+// a mismatch rather than a wildcard: an unscoped payload is exactly the one that might belong to
+// another repository or wire format. The cost of being wrong is one real search; the cost of the
+// wildcard is serving opaque bytes under the wrong identity.
 func (recorded searchSessionState) matches(live searchSessionScope) bool {
-	if recorded.Repo == "" && recorded.Tree == "" {
+	if recorded.ReplaySchema != searchSessionReplaySchema ||
+		recorded.PolicyFingerprint == "" ||
+		live.PolicyFingerprint == "" ||
+		recorded.PolicyFingerprint != live.PolicyFingerprint ||
+		recorded.Format == "" ||
+		live.Format == "" ||
+		recorded.Format != live.Format {
+		return false
+	}
+	// The tree hash alone is not a repository identity: sibling --repo subdirectories share the
+	// same root tree while interpreting every response path relative to different directories.
+	if recorded.Repo == "" || live.Repo == "" || recorded.Repo != live.Repo {
 		return false
 	}
 	if recorded.Tree != "" || live.Tree != "" {
 		return recorded.Tree == live.Tree
 	}
-	return recorded.Repo == live.Repo
+	return true
 }
 
 // newSearchSession returns nil when the echo is off, which is the default for every caller that
@@ -148,40 +180,115 @@ func (s *searchSession) echo(live searchSessionScope) (searchSessionState, bool)
 	if !state.matches(live) {
 		return searchSessionState{}, false
 	}
+	// Nil means the JSON member was absent or null. A genuine zero-path response is recorded as an
+	// explicit empty array, so omission cannot masquerade as complete provenance and bypass the path
+	// gate for a non-empty opaque payload. Return the state so the caller replaces it after the live
+	// search instead of leaving an unreplayable payload stuck forever.
+	if state.PayloadPaths == nil {
+		return state, false
+	}
 	return state, true
 }
 
 func (s *searchSession) load() (searchSessionState, error) {
 	var state searchSessionState
-	data, err := os.ReadFile(s.path)
+	root, err := os.OpenRoot(filepath.Dir(s.path))
 	if err != nil {
 		return searchSessionState{}, err
+	}
+	defer root.Close()
+	name := filepath.Base(s.path)
+	info, err := root.Lstat(name)
+	if err != nil {
+		return searchSessionState{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return searchSessionState{}, fmt.Errorf("search session %q is not a regular file", s.path)
+	}
+	if info.Size() > maxSearchSessionStateBytes {
+		return searchSessionState{}, fmt.Errorf("search session %q exceeds %d bytes", s.path, maxSearchSessionStateBytes)
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return searchSessionState{}, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return searchSessionState{}, err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return searchSessionState{}, fmt.Errorf("search session %q changed while opening", s.path)
+	}
+	if openedInfo.Size() > maxSearchSessionStateBytes {
+		return searchSessionState{}, fmt.Errorf("search session %q exceeds %d bytes", s.path, maxSearchSessionStateBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxSearchSessionStateBytes+1))
+	if err != nil {
+		return searchSessionState{}, err
+	}
+	if len(data) > maxSearchSessionStateBytes {
+		return searchSessionState{}, fmt.Errorf("search session %q exceeds %d bytes", s.path, maxSearchSessionStateBytes)
 	}
 	if err := json.Unmarshal(data, &state); err != nil {
 		return searchSessionState{}, err
 	}
+	if state.Searches < 0 {
+		return searchSessionState{}, fmt.Errorf("search session %q has a negative search count", s.path)
+	}
+	if state.PayloadPaths != nil {
+		if err := sem.ValidateSearchReplayPaths(state.PayloadPaths); err != nil {
+			return searchSessionState{}, err
+		}
+	}
 	return state, nil
 }
 
-// record counts a search that actually ran and keeps the FIRST payload: the echo replays the answer
-// the ranking gave the original question, not the last rephrasing of it. Persisting is best-effort
-// for the same reason echo is — a session file that cannot be written costs the cap, not the search.
-func (s *searchSession) record(query string, payload []byte, live searchSessionScope) {
+// record counts a search that actually ran and, when replayable is true, keeps the FIRST payload:
+// the echo replays the answer the ranking gave the original question, not the last rephrasing of
+// it. Counting is separate from storing bytes so a response that is too large or whose policy
+// changed mid-search cannot leave a rejected old payload stuck on disk. forceReplace is set when a
+// matching state failed its path-policy check. Persisting is best-effort for the same reason echo is
+// — a session file that cannot be written costs the cap, not the search.
+func (s *searchSession) record(
+	query string,
+	payload []byte,
+	payloadPaths []string,
+	live searchSessionScope,
+	forceReplace bool,
+	replayable bool,
+) {
 	state, _ := s.load()
 	// A state file that belongs to another tree is replaced rather than counted into: its search
 	// count describes a different task, and carrying it over would cap this one before it ran.
-	if !state.matches(live) {
+	if forceReplace || !state.matches(live) {
 		state = searchSessionState{}
 	}
-	state.Searches++
-	if state.Payload == "" {
+	if state.Searches < math.MaxInt {
+		state.Searches++
+	}
+	state.ReplaySchema = searchSessionReplaySchema
+	state.PolicyFingerprint = live.PolicyFingerprint
+	state.Repo, state.Tree, state.Format = live.Repo, live.Tree, live.Format
+	if state.Payload == "" && replayable && len(payload) <= maxSearchSessionStateBytes {
 		state.Query = query
 		state.Payload = string(payload)
-		state.Repo, state.Tree = live.Repo, live.Tree
+		state.PayloadPaths = append([]string{}, payloadPaths...)
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
 		return
+	}
+	if len(data) > maxSearchSessionStateBytes {
+		// Preserve the bounded count/scope, but never a payload that cannot itself fit inside the
+		// state ceiling. A later safe search can populate the empty replay slot.
+		state.Query = ""
+		state.Payload = ""
+		state.PayloadPaths = nil
+		data, err = json.Marshal(state)
+		if err != nil || len(data) > maxSearchSessionStateBytes {
+			return
+		}
 	}
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
