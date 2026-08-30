@@ -65,16 +65,27 @@ for p in <path-to-this-dir>/patches/000[1-4]-*.patch <path-to-this-dir>/patches/
 # 3. Our adapters and the fairness guard (new files, no upstream code touched)
 cp -r <path-to-this-dir>/benchmarks/common/*.py benchmarks/common/
 
-# 4. Credentials, by NAME only — never commit values
-#    AZURE_AI_API_KEY, AZURE_AI_ENDPOINT, AZURE_AI_API_VERSION
-export AZURE_AI_API_KEY=... AZURE_AI_ENDPOINT=... AZURE_AI_API_VERSION=2024-05-01-preview
+# 4. Install only the reviewed, hash-locked CPython 3.12 dependency graph.
+#    Copying the lock into the harness also makes runmeta fingerprint it.
+cp <path-to-this-dir>/requirements-lock-py312.txt .
+python3.12 -m venv .venv
+.venv/bin/python -m pip install \
+  --require-hashes --only-binary=:all: --no-deps \
+  -r requirements-lock-py312.txt
+.venv/bin/python -m pip check
 
-# 5. Run an arm
+# 5. Authenticate to Foundry with Microsoft Entra ID (no model API key).
+#    In GitHub Actions the harness exchanges fresh GitHub OIDC assertions;
+#    elsewhere it uses DefaultAzureCredential (for example, a local Azure login
+#    or managed identity). Only the endpoint and API version are configuration.
+export AZURE_AI_ENDPOINT=... AZURE_AI_API_VERSION=2024-05-01-preview
+
+# 6. Run an arm
 bash <path-to-this-dir>/run_locomo.sh cmm
 ```
 
-[`run_locomo.sh`](run_locomo.sh) is the launcher the published runs actually used, with the
-credential-sourcing line replaced by the env-var names.
+[`run_locomo.sh`](run_locomo.sh) preserves the published launch configuration while replacing the
+model-key input with refreshable Microsoft Entra authentication.
 
 Full per-arm spec, state-root rules, load envelope, and the pre-run verification checklist are in
 [`FAIR-CONFIG.md`](FAIR-CONFIG.md). Results and retractions are in [`RESULTS.md`](RESULTS.md);
@@ -201,9 +212,11 @@ in `cmm_client.py`). They are all overridable by the env vars documented in each
 the files are vendored **verbatim** so that their md5s match the fingerprints recorded in the run
 artifacts by `runmeta.code_hashes()`.
 
-**No credential values appear anywhere in this directory.** Credentials are referenced by env-var
-name only (`AZURE_AI_API_KEY`, `AZURE_AI_ENDPOINT`, `AZURE_AI_API_VERSION`, `ANTHROPIC_OAUTH_TOKEN`,
-`CMM_BIN`, …).
+**No credential values appear anywhere in this directory.** Foundry inference uses Microsoft Entra
+ID rather than a model API key. Its non-secret configuration is referenced by env-var name only
+(`AZURE_AI_ENDPOINT`, `AZURE_AI_API_VERSION`, and, in GitHub Actions, the federated identity's
+`AZURE_CLIENT_ID` / `AZURE_TENANT_ID`). Other optional adapters still reference their own
+credential env-var names (`ANTHROPIC_OAUTH_TOKEN`, `CMM_BIN`, …), never values.
 
 ## 5. Which comparisons are orderable, and which are not
 

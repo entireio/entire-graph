@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -138,7 +137,7 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	results, parser, parsed := parseVerifyOutput(output)
 
 	if flags.RecordBaseline != "" {
-		return writeVerifyBaseline(opts, repo, flags, results, parser, parsed, exitCode)
+		return writeVerifyBaseline(ctx, opts, repo, flags, results, parser, parsed, exitCode)
 	}
 	baseline, err := readVerifyBaseline(flags.PreEditBaseline)
 	if err != nil {
@@ -215,7 +214,7 @@ func errorsAs(err error, target **exec.ExitError) bool {
 }
 
 func writeVerifyBaseline(
-	opts Options, repo string, flags verifyFlags,
+	ctx context.Context, opts Options, repo string, flags verifyFlags,
 	results verifyResults, parser string, parsed bool, exitCode int,
 ) error {
 	baseline := verifyBaseline{
@@ -235,12 +234,12 @@ func writeVerifyBaseline(
 	if err != nil {
 		return err
 	}
-	if directory := filepath.Dir(flags.RecordBaseline); directory != "" && directory != "." {
-		if err := os.MkdirAll(directory, 0o755); err != nil {
-			return err
-		}
-	}
-	if err := os.WriteFile(flags.RecordBaseline, append(encoded, '\n'), 0o644); err != nil {
+	// writeOutputFile, not MkdirAll+os.WriteFile: --record-baseline names a path
+	// anywhere on the machine (the help advertises /tmp/base.json), but a path
+	// inside the scanned repository is repository-controlled and may be a
+	// committed symlink. --repo need not be a git repository here at all, which
+	// outputpath.go's fallback preserves. See outputpath.go.
+	if err := writeOutputFile(ctx, repo, flags.RecordBaseline, append(encoded, '\n'), 0o644, true); err != nil {
 		return err
 	}
 	passed, failed := verifyCountByStatus(baseline.Results)

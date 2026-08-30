@@ -85,6 +85,41 @@ func TestDeriveSearchVerifyGoKeepsPackageScopeWhenNoTestNameMatches(t *testing.T
 	}
 }
 
+func TestBuildSearchVerifyCommandTracksRepositoryProvenancePaths(t *testing.T) {
+	t.Parallel()
+	evidence := searchVerifyTestEvidence(map[string]string{
+		"go.mod":                  "module example.com/app\n",
+		"internal/widget.go":      "package internal\n",
+		"internal/widget_test.go": "package internal\n\nfunc TestWidget(t *testing.T) {}\n",
+	})
+	results := []SearchResult{
+		{Rank: 1, FilePath: "internal/widget.go", SymbolName: "Widget", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "internal/widget_test.go", SymbolName: "TestWidget", Section: SearchSectionCoveringTest},
+	}
+	command := buildSearchVerifyCommand(results, evidence)
+	if command == nil {
+		t.Fatal("expected a command")
+	}
+	if got, want := strings.Join(command.provenancePaths, ","),
+		"go.mod,internal/widget.go,internal/widget_test.go"; got != want {
+		t.Fatalf("ordered provenance paths = %q, want %q", got, want)
+	}
+	got := SearchResponsePaths(SearchResponse{VerifyCommand: command})
+	want := map[string]bool{
+		"go.mod":                  true,
+		"internal/widget.go":      true,
+		"internal/widget_test.go": true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("provenance paths = %v, want %v", got, want)
+	}
+	for _, filePath := range got {
+		if !want[filePath] {
+			t.Fatalf("unexpected provenance path %q in %v", filePath, got)
+		}
+	}
+}
+
 func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
