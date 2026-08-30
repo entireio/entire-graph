@@ -7807,13 +7807,15 @@ func firstNamedChildOfType(node *sitter.Node, nodeType string) *sitter.Node {
 // extracted as a symbol called `string` — and every other std::string-returning
 // function in the repository collapsed onto that same name.
 //
-// Pointer, reference, array and function declarators all nest their target
-// under the same `declarator` field, so the name is found by walking that
-// chain. C++ adds two name shapes C does not have: a member definition names
-// its method with `field_identifier`, and an out-of-line definition names it
-// with `qualified_identifier` (`Config::name`) or `destructor_name`
-// (`~Config`), both of which carry the bare name underneath. The bare name is
-// what is kept, matching the pre-existing extraction of primitive-returning
+// Pointer, array and function declarators nest their target under the same
+// `declarator` field, so the name is found by walking that chain; a reference
+// declarator nests its target as a plain child instead, so the walk drops to
+// firstDeclaratorChild there. C++ adds name shapes C does not have: a member
+// definition names its method with `field_identifier`, an out-of-line
+// definition names it with `qualified_identifier` (`Config::name`) or
+// `destructor_name` (`~Config`), and an overload names it with `operator_name`
+// (`operator new`) or `operator_cast` (`operator const char*`). The bare name
+// is what is kept, matching the pre-existing extraction of primitive-returning
 // members. Anything this walk does not model falls back to the historical
 // pre-order identifier search so no declarator shape loses a name it had.
 func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
@@ -7825,6 +7827,30 @@ func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
 		switch cur.Type() {
 		case "identifier", "field_identifier":
 			return strings.TrimSpace(cur.Content(src))
+		case "operator_name":
+			// An overloaded operator declares its name with `operator_name`
+			// (`void *operator new(size_t n)`, `operator delete[]`), whose
+			// operator token is anonymous, so the node holds no identifier at
+			// all. Without this case the walk drops out to the pre-order
+			// identifier search below, which steps straight past the
+			// identifier-free operator_name into the parameter list and names
+			// the function after its FIRST PARAMETER — `operator new` became
+			// `n`, `operator delete` became `p`. The whole spelling is the
+			// name, exactly as C++ writes it.
+			return normalize(cur.Content(src))
+		case "operator_cast":
+			// A conversion operator (`operator const char*() const`) is named
+			// for the type it converts to, and carries no identifier either;
+			// previously it produced no name at all. Its text runs up to the
+			// (always present) parameter list, so cutting at the first `(`
+			// keeps `operator const char*` and drops `() const`.
+			text := cur.Content(src)
+			if paren := strings.IndexByte(text, '('); paren >= 0 {
+				text = text[:paren]
+			}
+			if name := normalize(text); name != "" {
+				return name
+			}
 		case "qualified_identifier", "template_function":
 			if named := cur.ChildByFieldName("name"); validNode(named) {
 				cur = named
@@ -7837,6 +7863,15 @@ func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
 		}
 		next := cur.ChildByFieldName("declarator")
 		if !validNode(next) {
+			// A `reference_declarator` (`Cell &at(int i)`) hangs the declarator
+			// it wraps off an UNNAMED child instead of a `declarator` field, so
+			// a field-only walk stops at the `&`. The fallback below then reads
+			// the first identifier under it, which for a member function is the
+			// first parameter (the method's own name is a `field_identifier`,
+			// which that search skips): `Cell &at(int i)` was named `i`.
+			next = firstDeclaratorChild(cur)
+		}
+		if !validNode(next) {
 			break
 		}
 		cur = next
@@ -7845,6 +7880,23 @@ func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
 		return strings.TrimSpace(id.Content(src))
 	}
 	return ""
+}
+
+// firstDeclaratorChild returns the declarator a C-family declarator wraps when
+// the grammar attaches it as a plain child rather than under a `declarator`
+// field, as tree-sitter-cpp does for `reference_declarator` and
+// `abstract_reference_declarator`.
+func firstDeclaratorChild(node *sitter.Node) *sitter.Node {
+	if !validNode(node) {
+		return nil
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if validNode(child) && strings.HasSuffix(child.Type(), "declarator") {
+			return child
+		}
+	}
+	return nil
 }
 
 func firstDescendantOfType(node *sitter.Node, nodeType string) *sitter.Node {

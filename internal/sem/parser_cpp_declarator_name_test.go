@@ -123,3 +123,65 @@ void Widget::reset() {}
 		}
 	}
 }
+
+// An overload declares its name with `operator_name` (`operator new`) or, for a
+// conversion, `operator_cast` (`operator const char *`) — neither of which
+// contains an identifier node. A declarator walk that does not model them drops
+// out to the pre-order identifier search, which steps past the operator into
+// the parameter list, so `void *operator new(size_t n)` was named `n` and
+// `void operator delete(void *p, size_t n)` was named `p`.
+//
+// A reference return type is the same class of miss: tree-sitter-cpp hangs the
+// declarator a `reference_declarator` wraps off an unnamed child rather than a
+// `declarator` field, so the field walk stops at the `&`. For a member function
+// the fallback then skips the method's own `field_identifier` and returns the
+// first parameter instead — `Cell &at(int i)` was named `i`.
+//
+// (Note: `operator==`, `operator+`, `operator[]`, `operator()` and `operator<<`
+// never reach this walk. maskCPlusPlusOperatorCall rewrites `operator<op>(` to
+// `op(` before the source is parsed, so tree-sitter sees an ordinary function
+// named `op` and every such overload in a repository collapses onto that one
+// name. That is a separate pre-existing defect in the C++ pre-parse mask, not
+// in the declarator walk, and is unchanged by this test.)
+func TestCPlusPlusOperatorNamesComeFromDeclarator(t *testing.T) {
+	src := `#include <cstddef>
+
+struct Cell { int v; };
+
+class Grid {
+public:
+  int &at(int i) { return v; }
+  const Cell &cell(int r) const { return c; }
+  Cell *ptr(int i) { return &c; }
+  void *operator new(size_t n) { return nullptr; }
+  void operator delete(void *p, size_t n) {}
+  void *operator new[](size_t n) { return nullptr; }
+  operator const char *() const { return ""; }
+  int v;
+  Cell c;
+};
+
+void *operator new(size_t sz) { return nullptr; }
+`
+	kinds := parseCPlusPlus(t, src)
+	for name, want := range map[string]string{
+		"Grid.at":                    "method",
+		"Grid.cell":                  "method",
+		"Grid.ptr":                   "method",
+		"Grid.operator new":          "method",
+		"Grid.operator delete":       "method",
+		"Grid.operator new[]":        "method",
+		"Grid.operator const char *": "method",
+		"operator new":               "function",
+	} {
+		if kinds[name] != want {
+			t.Fatalf("C++ %q not extracted as a %s: %#v", name, want, kinds)
+		}
+	}
+	// Parameter names must never become the callable's name.
+	for _, leaked := range []string{"Grid.i", "Grid.r", "Grid.n", "Grid.p", "n", "sz"} {
+		if _, ok := kinds[leaked]; ok {
+			t.Fatalf("parameter name %q leaked in as a symbol name: %#v", leaked, kinds)
+		}
+	}
+}
