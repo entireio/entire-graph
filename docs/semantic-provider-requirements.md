@@ -239,11 +239,19 @@ unknown fields):
   source pointers. Several facts can justify one edge — forwarding three caller
   parameters into the same callee is three `DATA_FLOWS` flows on one relation —
   and the array holds all of them, in a canonical order, not one representative.
-  It is capped per relation; a relation whose array was cut off at the cap
-  carries an `EVIDENCE_TRUNCATED` warning code, so a partial list is never
-  reported as an exhaustive one. `reason` is a single field, so it names one of
-  those facts rather than all of them — where several evidence kinds justify one
-  edge, `evidence[].kind` is the complete set and `reason` is one member of it.
+  Two bounds qualify that. It is capped per relation, and a relation whose array
+  was cut off carries an `EVIDENCE_TRUNCATED` warning code, so a partial list is
+  never reported as an exhaustive one. Separately, the array is exhaustive per
+  *producing* symbol: an edge two symbols can each justify — mutual recursion,
+  where `A` forwards a parameter into `B` and `B` returns `A()` — keeps the
+  first producer's evidence and drops the other's, unmarked, because the
+  producers are emitted in different passes and a streamed record cannot be
+  revisited once written. Measured at 4 of 5,240 `DATA_FLOWS` edges on this
+  repository.
+  `reason` is a single field, so it names one of those facts rather than all of
+  them. Absent `EVIDENCE_TRUNCATED`, `evidence[].kind` is the complete set of
+  kinds for that producer and `reason` is one member of it; past the cap, a kind
+  occurring only after the cutoff is not represented at all.
 
 The snapshot header also carries optional `schema_features` (features present in
 the stream), `language_versions` (parser/grammar versions), and `completeness`

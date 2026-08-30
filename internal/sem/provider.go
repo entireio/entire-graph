@@ -3530,6 +3530,17 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				// one — that reported one real flow as if it were the only one.
 				// Grouping at emit keeps the streaming path's bounded memory (the
 				// map lives for one symbol) and needs no dedupe-side merge.
+				//
+				// The residual this cannot reach: an edge two symbols each
+				// justify (A forwards a parameter into B, B returns A()) is
+				// produced twice from different `from` symbols, and the dedupe
+				// keeps the first, unmarked. Merging those needs a boundary that
+				// sees every producer, which on the streaming path means buffering
+				// all DATA_FLOWS records to the end of the pass -- memory that
+				// grows with the edge count, and output reordered out of the
+				// canonical order this change exists to guarantee. Measured at 4
+				// of 5,240 edges here; documented in the schema rather than paid
+				// for. Revisit if a corpus shows it is not rare.
 				edgeOrder := []string{}
 				flowsByEdge := map[string]*RelationRecord{}
 				for _, flow := range returnFlowCalls(block, symbolFlowParameterNames(from)) {
