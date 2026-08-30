@@ -144,9 +144,29 @@ const writeBytesChunkSize = 64 * 1024
 // contextChunkWriter wraps w so each Write honors ctx cancellation. Large
 // writes are chunked the same way writeBytesWithContext does, so a blocked
 // stdout pipe cannot prevent SIGINT/SIGTERM from stopping the command.
+//
+// The write itself runs on a goroutine because a write to a full pipe blocks in
+// the kernel and no context can interrupt it. Abandoning that goroutine is the
+// only way to return on cancellation, which forces two rules on this type:
+//
+//   - The goroutine must never hold the CALLER's buffer. io.Writer forbids
+//     retaining p past Write's return, and the callers here reuse theirs
+//     between calls (json.Encoder keeps one encodeState buffer; io.MultiWriter
+//     hands the same slice to every sink). An abandoned goroutine reading p
+//     while the caller refills it is a data race that writes torn records.
+//     Each chunk is therefore copied into a buffer this writer owns.
+//   - At most one goroutine may ever be abandoned per writer. Once the context
+//     is done the loop below returns at its first check without starting
+//     another, so a permanently blocked sink strands one goroutine and one
+//     scratch buffer for the rest of the process, not one per Write.
 type contextChunkWriter struct {
 	ctx context.Context
 	w   io.Writer
+	// scratch is the buffer handed to the write goroutine. Only one write is
+	// ever in flight per writer, so it is reused across chunks; on abandonment
+	// it is released rather than reused, because the goroutine that outlived
+	// the Write still owns it.
+	scratch []byte
 }
 
 func (cw *contextChunkWriter) Write(b []byte) (int, error) {
@@ -162,7 +182,11 @@ func (cw *contextChunkWriter) Write(b []byte) (int, error) {
 		if n > len(b) {
 			n = len(b)
 		}
-		chunk := b[:n]
+		if cap(cw.scratch) < n {
+			cw.scratch = make([]byte, writeBytesChunkSize)
+		}
+		chunk := cw.scratch[:n]
+		copy(chunk, b[:n])
 		type writeResult struct {
 			n   int
 			err error
@@ -174,6 +198,10 @@ func (cw *contextChunkWriter) Write(b []byte) (int, error) {
 		}()
 		select {
 		case <-cw.ctx.Done():
+			// The goroutine is still inside cw.w.Write and still owns chunk.
+			// Drop this writer's claim on the backing array so nothing can
+			// reuse it underneath that write.
+			cw.scratch = nil
 			return written, cw.ctx.Err()
 		case res := <-done:
 			if res.err != nil {
@@ -1364,15 +1392,40 @@ func printResult(ctx context.Context, out io.Writer, result sem.Result, asJSON b
 	// (Options.Version), which the sem package that builds the rest of the
 	// Result has no access to.
 	result.ProducerVersion = producerVersion
-	out = &contextChunkWriter{ctx: ctx, w: out}
+	// The context wrapper can stop mid-stream, and sem.WriteText has no error
+	// return at all, so both render paths need somewhere for a write failure to
+	// land. Without it a canceled or broken stdout produced truncated output and
+	// a nil error, which the process then reports as exit status 0 -- a partial
+	// answer indistinguishable from a complete one.
+	sink := &errCapturingWriter{w: &contextChunkWriter{ctx: ctx, w: out}}
 	if asJSON {
 		encoded, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(out, string(encoded))
-		return nil
+		fmt.Fprintln(sink, string(encoded))
+		return sink.err
 	}
-	sem.WriteText(out, result)
-	return nil
+	sem.WriteText(sink, result)
+	return sink.err
+}
+
+// errCapturingWriter keeps the first write error for a sink whose caller
+// discards it (fmt.Fprintln) or has no way to report it (sem.WriteText).
+// Subsequent writes are dropped rather than re-attempted, so one failure does
+// not turn into a burst of them against an already-broken stdout.
+type errCapturingWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (ew *errCapturingWriter) Write(b []byte) (int, error) {
+	if ew.err != nil {
+		return 0, ew.err
+	}
+	n, err := ew.w.Write(b)
+	if err != nil {
+		ew.err = err
+	}
+	return n, err
 }
