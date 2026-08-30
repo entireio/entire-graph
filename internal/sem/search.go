@@ -546,24 +546,64 @@ const repoIgnoreDisclosureCode = "W_REPO_IGNORED_SOURCE"
 // repository's own ignore rules narrowed the corpus, and returns warnings
 // unchanged otherwise.
 func withRepoIgnoreDisclosure(warnings []ProviderWarning, report *RepoIgnoreReport) []ProviderWarning {
-	if report == nil || report.Files == 0 {
+	// A count of zero is not "nothing was excluded" whenever the report also says
+	// the count is short. An ignored directory that was unreadable before its
+	// first descendant was reached removes an unknown number of files and lands
+	// here with Files == 0 and CountIncomplete set, and guarding on Files alone
+	// silenced this warning in exactly that case — the total shortfall, not the
+	// partial one. That is this disclosure's own failure mode reached through its
+	// own guard: the field doc promises "a caller that only parses warnings still
+	// learns that this answer was assembled from a narrowed corpus", and the text
+	// renderer already draws the line here (see RenderRepoIgnoreDisclosure), so
+	// the two channels disagreed about the same report.
+	if report == nil || (report.Files == 0 && !report.CountIncomplete && !report.GitListingUnavailable) {
 		return warnings
 	}
 	names := make([]string, 0, len(report.Sources))
 	for _, source := range report.Sources {
 		names = append(names, termsafe.Line(source.File))
 	}
+	// With no file counted there is also no Sources entry to attribute it to —
+	// attribution is recorded per counted path — so the sentence has to name the
+	// rules generically rather than render "0 files excluded by " with an empty
+	// list where the reader expects a filename.
 	detail := fmt.Sprintf("%d file%s excluded by %s", report.Files, pluralS(report.Files), strings.Join(names, ", "))
-	if len(report.Sample) > 0 {
+	if report.Files == 0 {
+		detail = "an unknown number of files excluded by the repository's own ignore rules"
+		if len(names) > 0 {
+			detail = "an unknown number of files excluded by " + strings.Join(names, ", ")
+		}
+	}
+	switch {
+	case len(report.Sample) > 0:
 		detail += "; including " + termsafe.Line(report.Sample[0].Path)
+	case len(report.Unreadable) > 0:
+		detail += "; unreadable: " + termsafe.Line(report.Unreadable[0])
 	}
 	// FilePath carries the first excluded path so the disclosure survives every
 	// renderer that prints only a warning's code and file — which is the compact
 	// agent payload, i.e. the exact reader this finding is about. "Something is
 	// hidden" is a shrug; "internal/auth/auth.go is hidden" is a next action.
 	first := ""
-	if len(report.Sample) > 0 {
+	switch {
+	case len(report.Sample) > 0:
 		first = report.Sample[0].Path
+	case len(report.Unreadable) > 0:
+		// Nothing was counted, so there is no sample path to name. The path that
+		// stopped the count is the only actionable one left, and a renderer that
+		// prints just a warning's code and file is the reader this field exists
+		// for — leaving it empty there is "something is hidden" with no next step.
+		first = report.Unreadable[0]
+	}
+	effect := "files git lists were excluded from the corpus by the repository's own ignore rules; " +
+		"the coverage figures describe what remained, not what the repository contains"
+	if report.Files == 0 {
+		// Stats.RepoIgnoredFiles is 0 here, so the coverage line and the compact
+		// form's X<n> show no exclusion at all. Saying "the coverage figures
+		// describe what remained" would invite the reader to subtract a number
+		// that was never disclosed; what is true is that the size is unknown.
+		effect = "the repository's own ignore rules removed content from the corpus and how much could not be " +
+			"determined; the coverage figures describe what remained, not what the repository contains"
 	}
 	// FIRST, not appended. Every renderer that caps the diagnostics it prints
 	// takes them from the head of the list — the agent payload prints three and
@@ -572,12 +612,11 @@ func withRepoIgnoreDisclosure(warnings []ProviderWarning, report *RepoIgnoreRepo
 	// holding only the count knows something is hidden without knowing what to
 	// open. The existing warnings keep their order behind it.
 	return append([]ProviderWarning{{
-		Code:     repoIgnoreDisclosureCode,
-		Severity: "warning",
-		FilePath: first,
-		EffectOnCompleteness: "files git lists were excluded from the corpus by the repository's own ignore rules; " +
-			"the coverage figures describe what remained, not what the repository contains",
-		Detail: detail,
+		Code:                 repoIgnoreDisclosureCode,
+		Severity:             "warning",
+		FilePath:             first,
+		EffectOnCompleteness: effect,
+		Detail:               detail,
 	}}, warnings...)
 }
 

@@ -115,3 +115,92 @@ func TestReadablePrunedTreeAdmitsNothing(t *testing.T) {
 			response.PartialFailures)
 	}
 }
+
+// TestTotallyUnreadablePruneStillWarns is the same honesty one step further in.
+//
+// TestPrunedTreeDisclosureAdmitsWhatItCouldNotRead covers the PARTIAL shortfall:
+// some descendants were counted, so Files > 0 and the disclosure warning fires.
+// When the unreadable directory is reached before any descendant is counted the
+// report comes back Files == 0 with CountIncomplete set — the TOTAL shortfall —
+// and withRepoIgnoreDisclosure's `report.Files == 0` guard returned the caller's
+// warnings untouched, so the one channel whose documented job is "a caller that
+// only parses warnings still learns that this answer was assembled from a
+// narrowed corpus" said nothing in the worst case it has.
+//
+// The text renderer already distinguishes the two (RenderRepoIgnoreDisclosure
+// prints "how much could not be determined" for Files == 0), so before the fix
+// the same report rendered as an exclusion on one channel and as silence on the
+// other.
+func TestTotallyUnreadablePruneStillWarns(t *testing.T) {
+	t.Parallel()
+	report := &RepoIgnoreReport{Files: 0, CountIncomplete: true, Unreadable: []string{"hidden/sub"}}
+	got := withRepoIgnoreDisclosure([]ProviderWarning{{Code: "W_ONE"}}, report)
+	if len(got) != 2 || got[0].Code != repoIgnoreDisclosureCode {
+		t.Fatalf("an ignored tree that was unreadable before its first descendant was counted disclosed "+
+			"nothing on the warnings channel: %+v", got)
+	}
+	if got[0].FilePath != "hidden/sub" {
+		t.Errorf("FilePath = %q, want the path that stopped the count — a renderer that prints only a "+
+			"warning's code and file has nothing else to act on", got[0].FilePath)
+	}
+	if strings.Contains(got[0].Detail, "0 files excluded") {
+		t.Errorf("Detail = %q, but zero is a lower bound here, not a count", got[0].Detail)
+	}
+	if !strings.Contains(got[0].Detail, "unknown number") {
+		t.Errorf("Detail = %q, want it to say the number is unknown", got[0].Detail)
+	}
+	if got[1].Code != "W_ONE" {
+		t.Errorf("the caller's warnings lost their order: %+v", got)
+	}
+}
+
+// TestNothingExcludedStillWarnsNothing is the kind-(b) guard on the widened
+// condition above: a report with nothing to disclose must stay silent, or the
+// widening buys the disclosure at the price of the noise that teaches readers to
+// skip it.
+func TestNothingExcludedStillWarnsNothing(t *testing.T) {
+	t.Parallel()
+	existing := []ProviderWarning{{Code: "W_ONE"}}
+	if got := withRepoIgnoreDisclosure(existing, nil); len(got) != 1 {
+		t.Fatalf("a nil report disclosed %+v", got)
+	}
+	if got := withRepoIgnoreDisclosure(existing, &RepoIgnoreReport{}); len(got) != 1 {
+		t.Fatalf("an empty report disclosed %+v", got)
+	}
+}
+
+// TestTotallyUnreadablePruneWarnsEndToEnd runs the same shortfall through a real
+// repository rather than a hand-built report, so the fix is pinned to a shape the
+// walk actually produces and not to one only the unit test can construct.
+func TestTotallyUnreadablePruneWarnsEndToEnd(t *testing.T) {
+	t.Parallel()
+	if !unreadableDirectoriesHold(t) {
+		t.Skip("this user can read a mode-000 directory (root, or a filesystem that ignores the bits), so the fixture cannot be built")
+	}
+	root := t.TempDir()
+	write(t, root, graphIgnoreFileName, "hidden/\n")
+	// Every ignored source sits under the unreadable directory, so the accounting
+	// reaches the thing it cannot read before it has counted a single path.
+	write(t, root, "hidden/sub/deep.go", "package sub\n\nfunc DeepToken(token string) bool { return len(token) == 32 }\n")
+	write(t, root, "hidden/sub/deeper.go", "package sub\n\nfunc DeeperToken(token string) bool { return token != \"\" }\n")
+	write(t, root, "visible/auth_stub.go", "package visible\n\nfunc ValidateTokenStub(token string) bool { return token != \"\" }\n")
+
+	unreadable := filepath.Join(root, "hidden", "sub")
+	if err := os.Chmod(unreadable, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o755) })
+
+	response := prunedTreeResponse(t, root)
+	if response.RepoIgnored == nil || response.RepoIgnored.Files != 0 || !response.RepoIgnored.CountIncomplete {
+		t.Skipf("the walk counted the pruned tree after all, so this run does not exercise the total shortfall: %+v",
+			response.RepoIgnored)
+	}
+	for _, warning := range response.Warnings {
+		if warning.Code == repoIgnoreDisclosureCode {
+			return
+		}
+	}
+	t.Fatalf("the repository's own ignore rules removed an unknown amount of content and the warnings channel "+
+		"never said so: warnings=%+v report=%+v", response.Warnings, response.RepoIgnored)
+}
