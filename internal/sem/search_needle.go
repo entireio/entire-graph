@@ -198,6 +198,10 @@ func (index *searchNeedleIndex) candidatePathsFromPostings(needle string) ([]str
 // searchNeedleScan is what one lookup found: the sampled hits plus the exact repository-wide counts.
 type searchNeedleScan struct {
 	hits []searchNeedleHit
+	// matchingPaths is every file behind the exact aggregate counts, not only
+	// files whose occurrences fit in hits. It becomes replay provenance when a
+	// literal cluster exposes those aggregate counts.
+	matchingPaths []string
 	// occurrences and files are the EXACT repository totals, not the sample's size. A caller that
 	// cannot have them exactly must emit nothing; the whole value of the block is that the count is
 	// the repository's count.
@@ -226,6 +230,7 @@ func (index *searchNeedleIndex) locate(needle string, paths []string, perFile, m
 		if !ok || strings.IndexByte(content, 0) >= 0 || !strings.Contains(content, needle) {
 			continue
 		}
+		scan.matchingPaths = append(scan.matchingPaths, filePath)
 		scan.files++
 		sampled := 0
 		for offset, line := range strings.Split(content, "\n") {

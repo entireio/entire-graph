@@ -182,6 +182,41 @@ func TestSearchClosedSetSiteRiskOnlyFlagsWhatTheCompilerMisses(t *testing.T) {
 	}
 }
 
+func TestSearchClosedSetRetainsDeclarationAndPreBudgetSiteProvenance(t *testing.T) {
+	t.Parallel()
+
+	set := searchClosedVariantSet{
+		name: "Ops", kind: "enum", members: []string{"PLUS", "MINUS", "QUOT"},
+		declaredIn: "types/Ops.java",
+	}
+	sites := []SearchClosedSetSite{
+		{FilePath: "switches/primary.java", Line: 10, Arms: 3, Exhaustive: true,
+			Default: searchClosedSetDefaultThrows, Checked: searchClosedSetCheckedRuntime},
+		{FilePath: "switches/a_very_long_secondary_file_name_that_forces_the_budget_to_shrink.java",
+			Line: 20, Arms: 3, Exhaustive: true,
+			Default: searchClosedSetDefaultThrows, Checked: searchClosedSetCheckedRuntime},
+	}
+	oneSite := &SearchClosedSet{
+		Type: set.name, Kind: set.kind, Variants: len(set.members), Sites: sites[:1],
+		Warning: searchClosedSetWarning(sites),
+	}
+	block := buildSearchClosedSetBlock(set, sites, searchClosedSetCost(oneSite))
+	if block == nil {
+		t.Fatal("closed-set block did not fit after shrinking")
+	}
+	if len(block.Sites) != 1 {
+		t.Fatalf("sites = %d, want one after budget truncation", len(block.Sites))
+	}
+	want := []string{
+		"switches/a_very_long_secondary_file_name_that_forces_the_budget_to_shrink.java",
+		"switches/primary.java",
+		"types/Ops.java",
+	}
+	if strings.Join(block.provenancePaths, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("closed-set provenance = %v, want %v", block.provenancePaths, want)
+	}
+}
+
 func TestSearchClosedSetScanBlockNeedsTwoArmsOfTheSameSet(t *testing.T) {
 	t.Parallel()
 	set := searchClosedVariantSet{name: "Ops", kind: "enum", language: "Java",

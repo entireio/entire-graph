@@ -27,6 +27,11 @@ type dependentsScanOptions struct {
 	// count.
 	deadline time.Time
 	budget   time.Duration
+	// admit reports whether a candidate file is part of the graph at head, so a
+	// dependent count means "references the graph holds" rather than "textual
+	// references anywhere in the tree". nil admits every candidate, which is
+	// what every caller that has no index policy to offer wants.
+	admit func(rel string) bool
 }
 
 func addDependentCounts(ctx context.Context, repo, head string, result *Result) error {
@@ -85,7 +90,7 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	}
 
 	overBudget := func() bool {
-		return !options.deadline.IsZero() && time.Now().After(options.deadline)
+		return !options.deadline.IsZero() && !time.Now().Before(options.deadline)
 	}
 	if overBudget() {
 		return index, []ProviderWarning{dependentsBudgetWarning(0, -1, options.budget)}, nil
@@ -95,28 +100,99 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	if err != nil {
 		return nil, nil, err
 	}
+	// Drop candidates the graph does not index before any of them is read. A
+	// caller inside a vendored or .graphignore'd tree is not a dependent the
+	// graph can show: after the diff stopped naming those files, counting them
+	// left a number nothing in the output accounted for.
+	if options.admit != nil {
+		admitted := files[:0]
+		for _, file := range files {
+			if options.admit(file) {
+				admitted = append(admitted, file)
+			}
+		}
+		files = admitted
+	}
 	if options.progress != nil {
 		options.progress(0, len(files), "")
 	}
 
-	// One persistent `git cat-file --batch` process replaces a `git show`
+	// One persistent `git cat-file --batch-command` process replaces a one-shot Git
 	// subprocess per candidate file; on large repos the per-file spawn cost
-	// alone was tens of seconds. Falls back to per-file ShowFile only when the
-	// batch process cannot start at all.
-	readFile := func(path string) (string, bool, error) {
-		return gitutil.ShowFile(ctx, repo, head, path)
+	// alone was tens of seconds. Paths the LF protocol cannot represent and a
+	// batch startup failure share one bounded metadata reader, so exceptional
+	// deep paths cannot each reset the component-process allowance.
+	limited := gitutil.NewLimitedFileReader(ctx, repo, head, defaultMaxParseBytes)
+	limited.SetDeadline(options.deadline)
+	defer func() { _ = limited.Close() }()
+
+	limitedOversize := map[string]int64{}
+	// limitedOversizeUnscanned records every oversized path whose size came
+	// from LimitedFileReader rather than the batch reader's oversize scanner
+	// below: LimitedFileReader has no content-scanning capability of its own,
+	// so oversizeMatched can never be populated for these paths. That used to
+	// silently read as "did not match" on the full-tree fallback (prefiltered
+	// == false), undercounting dependents for any line-unsafe or
+	// batch-ineligible oversized file that does contain a changed name. With
+	// no candidate evidence either way, warn rather than assume a miss.
+	limitedOversizeUnscanned := map[string]bool{}
+	limitedUnaddressable := map[string]bool{}
+	limitedUnavailable := map[string]gitutil.LimitedFileStatus{}
+	readLimitedFile := func(path string) (string, bool, error) {
+		if !gitutil.IsCanonicalGitTreePath(path) {
+			limitedUnaddressable[path] = true
+			return "", false, nil
+		}
+		result, err := limited.ReadFile(path)
+		if err != nil {
+			return "", false, err
+		}
+		if result.Status == gitutil.LimitedFileOversize {
+			limitedOversize[path] = result.Bytes
+			limitedOversizeUnscanned[path] = true
+		}
+		if result.Status == gitutil.LimitedFileUnaddressable {
+			limitedUnaddressable[path] = true
+		}
+		switch result.Status {
+		case gitutil.LimitedFileMissing, gitutil.LimitedFileNonBlob, gitutil.LimitedFileUnreadable:
+			limitedUnavailable[path] = result.Status
+		}
+		return result.Content, result.Status == gitutil.LimitedFileContent, nil
 	}
+	readFile := readLimitedFile
 	// oversizeBytes reports a file the reader declined because it exceeds the
 	// parse limit, so the scan can warn about it (below) without the read that
 	// would have cost the file's size twice for a file it refuses to parse anyway.
 	// Set for an oversized blob whose streamed bytes contained a changed name.
 	oversizeMatched := map[string]bool{}
-	oversizeBytes := func(string) (int64, bool) { return 0, false }
-	if batch, batchErr := gitutil.NewBatchFileReader(ctx, repo, head); batchErr == nil {
+	oversizeBytes := func(path string) (int64, bool) {
+		size, ok := limitedOversize[path]
+		return size, ok
+	}
+	batch, batchErr := gitutil.NewBatchFileReader(ctx, repo, head)
+	if batchErr == nil {
 		defer func() { _ = batch.Close() }()
 		batch.SetMaxBytes(defaultMaxParseBytes)
-		readFile = batch.ReadFile
+		readFile = func(path string) (string, bool, error) {
+			if !gitutil.IsCanonicalGitTreePath(path) || !batch.IsPathSafe(path) {
+				return readLimitedFile(path)
+			}
+			content, ok, err := batch.ReadFile(path)
+			if err == nil && !ok {
+				if _, oversize := batch.OversizeBlob(path); !oversize {
+					// Git grep already proved a prefiltered path existed and
+					// matched. A later missing/non-blob batch response means the
+					// promised blob became unavailable between discovery and read.
+					limitedUnavailable[path] = gitutil.LimitedFileUnreadable
+				}
+			}
+			return content, ok, err
+		}
 		oversizeBytes = func(path string) (int64, bool) {
+			if size, ok := limitedOversize[path]; ok {
+				return size, true
+			}
 			blob, ok := batch.OversizeBlob(path)
 			return blob.Bytes, ok
 		}
@@ -149,6 +225,32 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		})
 	}
 
+	// Prime exactly the canonical, supported paths that will use the fallback,
+	// in candidate-list order. Without this pass, every LF-unsafe short path
+	// performs its own lazy ls-tree lookup even though LimitedFileReader can
+	// resolve up to 128 exact paths per bounded metadata subprocess. If the
+	// primary content batch failed to start, every readable candidate uses the
+	// same primed fallback instead.
+	limitedPaths := make([]string, 0, len(files))
+	for _, path := range files {
+		if !Supported(path) || !gitutil.IsCanonicalGitTreePath(path) {
+			continue
+		}
+		if batchErr != nil || !batch.IsPathSafe(path) {
+			limitedPaths = append(limitedPaths, path)
+		}
+	}
+	if err := limited.Prime(limitedPaths); err != nil {
+		return nil, nil, err
+	}
+	// A bounded metadata batch can consume the remaining analysis budget. Keep
+	// the existing semantics: stop before parsing and report one budget warning,
+	// rather than misclassifying deadline-driven component results as read errors.
+	if len(files) > 0 && overBudget() {
+		warnings = append(warnings, dependentsBudgetWarning(0, len(files), options.budget))
+		return index, warnings, nil
+	}
+
 	// When the grep prefilter ran, every file below already matched a changed
 	// name, so every skip is worth warning about. On the fallback full-tree
 	// scan, apply the same candidate test in-process before warning, so the
@@ -174,9 +276,34 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		if err != nil {
 			return nil, nil, err
 		}
+		// A deep-path metadata read can consume the remaining budget. Stop
+		// immediately after it returns, before its deadline-driven
+		// Unaddressable result is mistaken for a file-read failure.
+		if overBudget() {
+			warnings = append(warnings, dependentsBudgetWarning(i, len(files), options.budget))
+			break
+		}
 		if !ok {
-			if size, oversize := oversizeBytes(path); oversize && (prefiltered || oversizeMatched[path]) {
+			// In a fallback full-tree scan, an unsafe oversized file has no
+			// streamed content evidence unless the batch reader's oversize
+			// scanner actually ran on it (oversizeMatched). A path the batch
+			// reader could not touch at all -- read through LimitedFileReader
+			// instead, tracked by limitedOversizeUnscanned -- has no candidate
+			// evidence in either direction, so it must warn rather than be
+			// silently assumed clean; the same applies to a path this scan
+			// cannot address at all. Both are rare, so this does not reopen
+			// the vendored-blob warning spam the isCandidate check above
+			// exists to avoid. Unavailable content has the same uncertainty: on a
+			// full-tree fallback there is no sound way to prove the unreadable file
+			// did not contain a changed name, so it is always disclosed too.
+			if size, oversize := oversizeBytes(path); oversize && (prefiltered || oversizeMatched[path] || limitedOversizeUnscanned[path]) {
 				warnings = append(warnings, dependentsFileTooLargeWarning(path, int(size)))
+			}
+			if limitedUnaddressable[path] {
+				warnings = append(warnings, dependentsFileUnaddressableWarning(path))
+			}
+			if status, unavailable := limitedUnavailable[path]; unavailable {
+				warnings = append(warnings, dependentsFileUnavailableWarning(path, status))
 			}
 			continue
 		}
@@ -280,6 +407,38 @@ func dependentsFileTooLargeWarning(path string, size int) ProviderWarning {
 	}
 }
 
+// dependentsFileUnaddressableWarning reports a candidate whose unusual path
+// could not be resolved within the shared bounded metadata traversal. Its
+// content is never available by definition, so relevance can never be
+// confirmed OR ruled out on the full-tree grep fallback either; callers emit
+// this warning unconditionally rather than silently undercounting
+// dependents_count for a path that might have been relevant.
+func dependentsFileUnaddressableWarning(path string) ProviderWarning {
+	return ProviderWarning{
+		Code:                 "E_FILE_READ",
+		Severity:             "error",
+		FilePath:             path,
+		EffectOnCompleteness: "dependent references in this file were not counted because its Git metadata could not be resolved",
+		Detail:               "path could not be resolved within bounded Git metadata traversal",
+	}
+}
+
+func dependentsFileUnavailableWarning(path string, status gitutil.LimitedFileStatus) ProviderWarning {
+	detail := "the tree entry identifies a blob, but its Git content was unavailable during dependent analysis"
+	if status == gitutil.LimitedFileNonBlob {
+		detail = "the tree entry was not a blob when dependent content was read"
+	} else if status == gitutil.LimitedFileMissing {
+		detail = "the tree entry was missing when dependent content was read"
+	}
+	return ProviderWarning{
+		Code:                 "E_FILE_READ",
+		Severity:             "error",
+		FilePath:             path,
+		EffectOnCompleteness: "dependent references in this file were not counted because its Git content was unavailable",
+		Detail:               detail,
+	}
+}
+
 // dependentsParseFailureWarning mirrors the provider's parse-failure partial
 // failure (provider.go's ParseStatus.ParseError handling, which emits
 // E_PARSE_ERROR or E_PARSE_TIMEOUT depending on ParseStatus.Code), reusing
@@ -303,8 +462,8 @@ func dependentsParseFailureWarning(path string, status ParseStatus) ProviderWarn
 
 // grepFallbackWarning is surfaced once when the git-grep prefilter itself
 // fails and referenceCandidateFiles falls back to scanning every file in the
-// tree. The fallback keeps dependent counts correct, but it is far slower
-// than the prefiltered path, so callers should know it happened.
+// tree. This avoids trusting partial grep stdout; per-file warnings separately
+// disclose any content the fallback itself cannot read.
 func grepFallbackWarning(err error) ProviderWarning {
 	return ProviderWarning{
 		Code:                 "W_DEPENDENTS_PREFILTER_FAILED",
@@ -333,6 +492,11 @@ func grepFallbackWarning(err error) ProviderWarning {
 // file in the tree so a git-grep quirk never silently zeroes out dependent
 // counts, and surface exactly one warning noting the prefilter failure so the
 // fallback (much slower) scan is not silent.
+//
+// The superset guarantee is about TEXT, and the caller may narrow the result
+// afterwards by index membership (dependentsScanOptions.admit). Nothing dropped
+// there is a dependent the graph could ever show, so the guarantee still holds
+// where it is claimed: relative to the files the graph indexes.
 //
 // The prefiltered return reports whether the grep preselection actually ran:
 // true means every returned file already matched a changed name; false means

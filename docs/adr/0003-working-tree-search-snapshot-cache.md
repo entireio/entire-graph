@@ -1,6 +1,9 @@
 # ADR 0003 — Working-tree search-snapshot cache: clean-tree eligibility
 
-Status: Accepted
+Status: Superseded by
+[ADR 0004](0004-working-tree-cache-security-boundary.md) (2026-08-21), which
+removes status-based eligibility and restores unconditional working-tree cache
+bypass. This document remains the historical record of the replaced decision.
 Date: 2026-08-16
 Partially supersedes: [ADR 0002](0002-committed-tree-cache-key.md) — only its
 "working-tree mode stays uncached" consequence. ADR 0002's committed-tree

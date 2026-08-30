@@ -74,11 +74,27 @@ Before its first write, `init-agents` inspects both instruction paths, reads
 each distinct file, validates the marker layout, and renders all managed
 content from that validated snapshot.
 
-Each path must be missing or resolve to a regular file. Symlinks and hard links
-to regular files are supported. A directory, named pipe, socket, device, or
-other non-regular target is rejected with its type named in the error. A
-dangling alias between `AGENTS.md` and `CLAUDE.md` is supported; the shared
-target is created and updated once.
+Each path must be missing or resolve to a regular file. Symlinks to regular
+files are supported, with the target written either relatively or as an
+absolute path, as long as it stays inside the project root; a symlink that
+resolves outside is refused and nothing is installed. Hard links are also
+supported, but every hard-linked pathname names the same inode: an update
+through `AGENTS.md` or `CLAUDE.md` is therefore visible through any other hard
+link to that file, including one outside the project. A directory, named pipe,
+socket, device, or other non-regular target is rejected with its type named in
+the error. A dangling alias between `AGENTS.md` and `CLAUDE.md` is supported;
+the shared target is created and updated once.
+
+A relative symlink target may not step above the project root and later
+re-enter it through another alias. On Windows, a UNC target whose share cannot
+be matched to the repository's own UNC spelling is refused before it is probed;
+this means a mapped-drive checkout must use that mapped-drive spelling rather
+than an UNC spelling of the same directory. A Windows reparse target is also
+refused when its authoritative NT spelling cannot be represented without
+changing meaning in the confined relative operation. This includes raw
+alternate separators, absolute NT dot components, trailing dots or spaces, and
+non-DOS device namespaces; an informational extended-path display name alone
+does not change the target Windows resolves.
 
 Each distinct file must contain either no Entire Graph marker tokens or exactly
 one begin marker followed by one end marker. Marker tokens in examples, code
@@ -116,14 +132,12 @@ There is no removal command. To deactivate, delete
 lines, from `AGENTS.md` and `CLAUDE.md`. Delete `.entire/` or either instruction
 file only if it is otherwise empty.
 
-## Commit before you rely on the cache
+## Working-tree queries bypass the cache
 
-The three activation files are indexable Markdown. While any is untracked or
-modified, the working tree is dirty in a way the query cache respects. Default
-working-tree queries rebuild the graph instead of reusing a clean snapshot.
-Committing the activation files restores clean-tree cache reuse. Activation and
-a query benchmark should therefore not share one uncommitted checkout. See the
-[operations cache guide](operations.md#what-a-cache-entry-is-keyed-on).
+The interactive query family reads the working tree by default and rebuilds its
+snapshot on every query, whether or not the activation files are committed. Use
+`--head` when committed-tree semantics are acceptable and cache reuse matters.
+See the [operations cache guide](operations.md#working-tree-queries).
 
 ## Client notes
 

@@ -44,7 +44,7 @@ command going forward.
 ## 4. Per-arm launch template
 
 ```
-AZURE_AI_API_KEY=<key> AZURE_AI_ENDPOINT=<endpoint> AZURE_AI_API_VERSION=2024-05-01-preview \
+AZURE_AI_ENDPOINT=<endpoint> AZURE_AI_API_VERSION=2024-05-01-preview \
   [COGNEE_LLM_MODEL=azure_ai/gpt-5.6-terra] \
   [<ARM>_STATE_ROOT=$HOME/memarms/state/<arm>_<dataset>] \
   .venv/bin/python -m benchmarks.<locomo|longmemeval>.run \
@@ -54,6 +54,12 @@ AZURE_AI_API_KEY=<key> AZURE_AI_ENDPOINT=<endpoint> AZURE_AI_API_VERSION=2024-05
   --max-workers <N, see load envelope> [--all-questions | --dataset-path ...] \
   --run-id <same as project-name>
 ```
+
+Authenticate with Microsoft Entra ID before starting the launcher. GitHub Actions uses its OIDC
+federated identity and refreshes the assertion during long runs; local and hosted runs use
+`DefaultAzureCredential`. The original 2026-08 measurement artifacts used a Foundry API key. This
+successor changes only the authentication header—the endpoint, request payload, model, prompts,
+retrieval, and scoring remain unchanged—and its new harness hash must be recorded with every run.
 
 `preflight_*` project names are smoke tests only — a handful of questions, never scored as a
 publishable row, never resumed into a `field_*` run.
@@ -219,12 +225,13 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
 `longmemeval/run.py:1263,1446` and `locomo/run.py:870,1024` — writing `metadata.env_capture`:
 
 - `env` — every `EG_* ENTIRE_* MEM0_* QDRANT_* SUPERMEMORY_* SM_* LETTA_* COGNEE_* GRAPHITI_*
-  NEO4J_* REDIS_* EMBED_* OPENAI_* AZURE_* ANTHROPIC_* FAIR_* BENCH_* HARNESS_* COLLECTION_*`
+  NEO4J_* REDIS_* EMBED_* OPENAI_* AZURE_* ANTHROPIC_* LLM_* FAIR_* BENCH_* HARNESS_* COLLECTION_*`
   variable, with any name matching `KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API` replaced by a
   `sha256:` fingerprint so configs are comparable without leaking credentials
 - `argv` — the literal command line, which is what records `--user-profile`
 - `asymmetric_settings_active` and `fair_mode`
-- `code_md5` — the 12 files below
+- `code_md5` — the 16-entry reconstructed-harness map in B9, including the Entra helper and
+  dependency lock
 - `host`
 
 An audit should never again have to reconstruct a config from launcher scripts.
@@ -261,32 +268,41 @@ The fair config uses eg's plain atomic retrieval: none of these set, no dataset-
 
 The five LoCoMo arms in the audited matrix did **not** run identical code (the search-retry
 wrapper landed 04:43, the buffer-invariant guard 14:57), which alone invalidates cross-arm
-comparison. Every arm in the re-run must report these exact md5s, and `metadata.code_md5`
-records them automatically.
+comparison. A fresh reconstruction of the current kit reports the following exact 16-entry
+`metadata.env_capture.code_md5` map. It now binds the Entra authentication helper and copied
+dependency lock as well as the benchmark code:
 
 ```
-f7fcb6afb841d756b96a0591a0a83379  benchmarks/locomo/run.py
-8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py
-4c95d7254d9b921256869eb54e5525ac  benchmarks/longmemeval/run.py
-32e3522b504af5df1acd2c5245c07315  benchmarks/longmemeval/prompts.py
-507bf6ef0aed6a81faf7a3810a5df32c  benchmarks/common/cognee_client.py
-7fbfdabc417f407263b6fb2fc0dcb074  benchmarks/common/entire_client.py
-33b0141bd64d516e18b459fe1a8bb6f5  benchmarks/common/graphiti_client.py
-34948f9f5672339164971b7aa7f97f50  benchmarks/common/letta_client.py
-9e8029fdad08f75095684357d9069745  benchmarks/common/llm_client.py
+51c48c7e947c8ce51581a65e789e5174  benchmarks/common/bm25_client.py
+c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
+6db43dfb66eab930de48520344eaa341  benchmarks/common/entire_client.py
+3f7d918dc36ccc066ebdd4cbad3e80dc  benchmarks/common/entra_auth.py
+5e7b1d0f566636717e222c9e160cc464  benchmarks/common/graphify_client.py
+592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 041f93a130c1a91d1b81f67622555b8c  benchmarks/common/mem0_client.py
-49aea44c313eb7a203fc591a03fa4564  benchmarks/common/supermemory_client.py
-9b17ce70b9043fc6f8af513106bee201  benchmarks/common/runmeta.py
-3fe9a40ba1cc8b494daadee2b977f411  docker/mem0/main.py
+abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
+5fcdb16d2711068bc3355d820a45c63f  benchmarks/common/runmeta.py
+7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
+4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
+8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py
+41158a8eb87cdeeb53d23c3ad845b7bc  benchmarks/locomo/run.py
+180750bea9900b826dd5990fc9e16787  benchmarks/longmemeval/prompts.py
+632e01d52537e5b931994d61a246cd9b  benchmarks/longmemeval/run.py
+72544a7a6b0f0a10103d640b1f281e68  requirements-lock-py312.txt
 ```
 
-`~/mem0harness` is not a git repository, so these hashes — not a commit — are the parity record.
-Regenerate with:
+The patched `docker/mem0/main.py` runs outside the harness process and is therefore not in this
+map; [`UPSTREAM.md`](UPSTREAM.md) pins it separately by content hash. Regenerate the map from the
+fully reconstructed harness with the same function that writes run metadata:
 
-```
-cd ~/mem0harness && md5sum benchmarks/locomo/run.py benchmarks/locomo/prompts.py \
-  benchmarks/longmemeval/run.py benchmarks/longmemeval/prompts.py \
-  benchmarks/common/*_client.py benchmarks/common/runmeta.py docker/mem0/main.py | grep -v '\.bak'
+```bash
+cd ~/mem0harness
+PYTHONPATH=. python - <<'PY'
+from benchmarks.common import runmeta
+
+for path, digest in runmeta.code_hashes().items():
+    print(f"{digest}  {path}")
+PY
 ```
 
 ## B10. Copy-pasteable launch
@@ -365,8 +381,11 @@ before trusting it.
 - **Embedder headroom under real multi-arm load is unmeasured** (see B12).
 - **`MEM0_HOST` is still absent from `run.env`.** Until it is added there, every launcher must
   export it (B2/B10) or connect to nothing.
-- **`metadata.git` is always empty** — `~/mem0harness` is not a git repo. `code_md5` is the parity
-  record instead (B9).
+- **`metadata.git` depends on how the harness was reconstructed.** Nightly CI retains the upstream
+  clone's `.git` directory, so it records commit `4b61c5d31b9c668a12b4f5e78064248a02c82d2b`
+  with `dirty: true` after patches and copied files. Older manually copied harness directories may
+  still record an empty commit. `code_md5` remains the content-level parity record in both cases
+  (B9).
 - **The audited historical numbers are not repaired by any of this.** Every LoCoMo and LongMemEval
   mem0 row in the existing matrix was produced at effective top_k=20 and must be re-run, not
   rescaled.
