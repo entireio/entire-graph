@@ -3557,6 +3557,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						if existing, ok := flowsByEdge[edgeKey]; ok {
 							// Past the cap the array stops growing, so the record has to
 							// say so rather than read as an exhaustive list again.
+							//
+							// Assigned, not appended: this branch runs once per dropped
+							// flow, not once per edge, so appending would repeat the code
+							// as many times as the cap dropped. Anything that later needs
+							// to preserve other warning codes here has to append under a
+							// contains-check, not switch to a bare append.
 							if len(existing.Evidence) >= dataFlowEvidenceLimit {
 								existing.WarningCodes = []string{evidenceTruncatedWarning}
 								continue

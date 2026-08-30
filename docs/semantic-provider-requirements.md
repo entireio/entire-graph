@@ -241,7 +241,9 @@ unknown fields):
   and the array holds all of them, in a canonical order, not one representative.
   It is capped per relation; a relation whose array was cut off at the cap
   carries an `EVIDENCE_TRUNCATED` warning code, so a partial list is never
-  reported as an exhaustive one.
+  reported as an exhaustive one. `reason` is a single field, so it names one of
+  those facts rather than all of them — where several evidence kinds justify one
+  edge, `evidence[].kind` is the complete set and `reason` is one member of it.
 
 The snapshot header also carries optional `schema_features` (features present in
 the stream), `language_versions` (parser/grammar versions), and `completeness`
