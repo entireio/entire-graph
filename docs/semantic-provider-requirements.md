@@ -246,8 +246,8 @@ unknown fields):
   where `A` forwards a parameter into `B` and `B` returns `A()` — keeps the
   first producer's evidence and drops the other's, unmarked, because the
   producers are emitted in different passes and a streamed record cannot be
-  revisited once written. Measured at 4 of 5,240 `DATA_FLOWS` edges on this
-  repository.
+  revisited once written. This costs a few edges on this repository (currently 4
+  of 5,240).
   `reason` is a single field, so it names one of those facts rather than all of
   them. Absent `EVIDENCE_TRUNCATED`, `evidence[].kind` is the complete set of
   kinds for that producer and `reason` is one member of it; past the cap, a kind

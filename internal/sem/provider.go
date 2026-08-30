@@ -3538,9 +3538,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				// sees every producer, which on the streaming path means buffering
 				// all DATA_FLOWS records to the end of the pass -- memory that
 				// grows with the edge count, and output reordered out of the
-				// canonical order this change exists to guarantee. Measured at 4
-				// of 5,240 edges here; documented in the schema rather than paid
-				// for. Revisit if a corpus shows it is not rare.
+				// canonical order this change exists to guarantee. It costs a few
+				// edges here (currently 4 of 5,240, all of them mutual recursion
+				// inside one file), so it is documented in the schema rather than
+				// paid for. Revisit if a corpus shows it is not rare.
 				edgeOrder := []string{}
 				flowsByEdge := map[string]*RelationRecord{}
 				for _, flow := range returnFlowCalls(block, symbolFlowParameterNames(from)) {
