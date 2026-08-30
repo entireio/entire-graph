@@ -1,0 +1,119 @@
+Review PR 167
+
+## 0. Ground rules
+- Never force-push. Never rewrite pushed history. If a push would need `--force`,
+  stop and hand me the command. Approving a rebase is NOT approving a force-push.
+- Read the output of every command before claiming what it did. A commit that
+  says "also merged main" when the merge aborted is a lie you told yourself first.
+- Verify by executing, never by reasoning. Every behavioural claim — mine, the
+  PR's, a reviewer's, or your own — needs a command that demonstrates it.
+- Work in a scratch worktree. Never touch my primary worktree or a contributor's
+  branch without asking.
+
+## 1. State
+Record: current main SHA; live PR head SHA (fetch `pull/N/head`); base/head
+branches; commits ahead/behind; draft and mergeable status; CI per check with
+the SHA each ran against.
+
+## 2. Staleness — do this before reading any code
+This is the dominant failure mode. In this repo, three separate PRs were green
+on CI against bases 160+ commits old, and in two cases main had already fixed or
+neutralised the thing the PR addressed.
+
+- Test-merge the PR head onto **current main** in a scratch worktree.
+- Run the full gate **on the merged tree**, not on the PR head.
+- Re-run the PR's own reproduction from its description. If the exploit or bug
+  no longer reproduces on current main, find out which commit closed it before
+  reviewing anything else.
+- If CI ran against a stale base, say so explicitly and treat it as unproven.
+
+## 3. Does the test actually test the fix?
+The single highest-value check, and the one that is almost never done.
+
+- Revert **only** the fix on the merged tree, keep the tests, re-run.
+- If they still pass, the test has no discriminating power — report that as a
+  finding regardless of how green everything looks.
+- If they fail for a *different reason* than the bug, the test is coupled to
+  something it isn't testing.
+- Check assertions pin the *property*, not an incidental spelling. A test
+  asserting `\x0a` broke when an upstream guard started emitting `\n`, while the
+  property it meant to check still held.
+
+## 4. Guards: check both directions
+For any new validation, prove it rejects the bad input **and** accepts the good.
+A leading-dash guard on git revisions shipped here that breaks `refs/tags/-foo`,
+which is a valid ref that resolves fine. Over-rejection is a real defect.
+
+## 5. Bounds
+- If a bound is added, measure the amplification it prevents. Compute the actual
+  numbers.
+- If a bound is *removed* because a nearby bound "covers it", prove the two
+  cover the same thing. A file-size cap does not bound a value extracted from
+  the file.
+- Check every entry point. A limit on a setter is not a limit if the constructor
+  takes the same value.
+
+## 6. Where does this fix belong?
+- Does it change shared behaviour beyond the PR's stated scope (caches, wire
+  formats, other consumers)? If yes, propose splitting it out.
+- Does it need a cache-key or schema bump that isn't in the diff?
+- Is it one of several changes that rewrite the same identity/contract? Those
+  must land together or they churn consumers once per change.
+
+## 7. Platform and skips
+- Find every `t.Skip`, build tag and `GOOS` guard in the diff.
+- A test that skips when the platform can't do something is green and worthless.
+  Symlink tests skip on Windows without developer mode; `core.symlinks=false`
+  makes a tracked symlink look like a regular file, and that bug is invisible on
+  any machine that can create symlinks.
+- Ask what host-specific condition could make this pass for the wrong reason.
+
+## 8. Independent review — get one, then verify it
+Self-review does not find these. On this repo the trail's agent review found
+eight real issues including two of mine; a second model corrected my
+recommendation; a third found a compensation path I'd missed entirely.
+
+- `entire trail finding list --trail <n> --status any --freshness any` — and
+  check the trail exists at all; a PR with no trail has had no agent review.
+- Cursor Bugbot runs on PR open; comment `bugbot run` to re-trigger.
+- `codex exec --sandbox read-only "<brief>"` for a second opinion. Brief it to
+  *refute*, tell it you may have the wrong model, and give it your evidence as
+  claims to check rather than as facts.
+- **Verify every finding before acting on it.** A finding can be true as an
+  observation and wrong as an assignment — one here correctly described
+  unbounded retention and billed it to the format that made it visible rather
+  than the layer that caused it.
+- Where reviewers disagree, that is the signal. Dig there.
+
+## 9. Reading gate output
+- "Findings: passed" means *nothing blocking*, not *nothing found*. Read the
+  finding list separately.
+- A count of 0 can mean the reviewer crashed. Check for error states.
+- Re-query finding lists immediately before any claim that something is clean.
+  Never assert cleanliness from a list you fetched earlier.
+- Distinguish current from stale findings; the unfiltered list mixes them.
+
+## 10. If I ask you to fix things
+- Append-only commits. Merge main in rather than rebasing when the branch is
+  published.
+- After fixing, **re-run the independent review**. Every round of fixes in this
+  session introduced new findings, twice including a HIGH severity one.
+- Verify staged content, not the working tree, before committing:
+  `git show :<path>`. A shared worktree admin dir once put a reverted file in the
+  index while the working tree looked correct, and the tests passed.
+- Never `cp -R` a git worktree; it shares the index. Use `git worktree add`.
+- Check PR/RFD bodies and docs for claims the code no longer supports, and fix
+  those too.
+- When numbering a new doc/ADR, check unmerged PRs for the same number.
+
+## 11. Report
+Verdict (clean / advisory / changes required), then:
+- Findings by severity: file:line, impact, reproduction, recommended fix.
+- What you verified vs what you assumed. Be explicit about the second list.
+- Verification matrix: command, tree (PR head vs merged-onto-main), result,
+  skips.
+- Anything you could not check, and why.
+- End with links to the GitHub PR and the Entire Trail.
+
+State plainly when a finding is yours. Say "I was wrong" without ceremony and
+move on.
