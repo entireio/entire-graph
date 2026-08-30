@@ -334,8 +334,8 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		// so a rename across the parser boundary cannot become a one-sided phantom
 		// remove/add. Any unsupported side suppresses the delta and leaves a
 		// machine-readable completeness marker instead.
-		_, beforeSupported := languageForContent(oldPath, before)
-		_, afterSupported := languageForContent(path, after)
+		beforeSpec, beforeSupported := languageForContent(oldPath, before)
+		afterSpec, afterSupported := languageForContent(path, after)
 		beforeUnsupported := beforeOK && !beforeSupported
 		afterUnsupported := afterOK && !afterSupported
 		if beforeUnsupported || afterUnsupported {
@@ -358,6 +358,32 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				EffectOnCompleteness: effect,
 				Detail:               detail,
 			})
+			// Same split as the parse-failure branch below: an unsupported side
+			// blocks the entity comparison, not the statement that the file
+			// moved. `x.go` -> `x.txt` leaves the bytes alone and leaves the
+			// graph, and suppressing the whole record named only the head path,
+			// so a consumer was never told which old compound-v1 IDs to retire.
+			//
+			// Only when exactly one side has a parser. With neither side
+			// supported the file is in no snapshot on either side of the range,
+			// so there is nothing to move and nothing to say — reporting a move
+			// there would invent a record for a path the graph has never held.
+			// The language is taken from whichever side the graph actually
+			// indexes, which is the only side any snapshot can be compared with.
+			if mod, ok := pathScopeChange(oldPath, path); ok && beforeOK && afterOK &&
+				beforeUnsupported != afterUnsupported && before == after {
+				indexedSpec := afterSpec
+				if afterUnsupported {
+					indexedSpec = beforeSpec
+				}
+				deltas = append(deltas, &fileDelta{
+					path:     path,
+					oldPath:  file.OldPath,
+					status:   file.Status,
+					language: indexedSpec.language,
+					changes:  []EntityChange{mod},
+				})
+			}
 			continue
 		}
 

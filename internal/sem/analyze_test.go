@@ -2230,6 +2230,69 @@ func TestAnalyzeGitRangePureRenameAcrossAParserBoundaryIsStillReported(t *testin
 	}
 }
 
+// TestAnalyzeGitRangeRenameCrossingTheSupportedSetIsReported covers the other
+// branch that suppresses entity comparison: a rename where one side has no
+// parser at all.
+//
+// `x.go` -> `x.txt` leaves the bytes untouched and takes the file out of the
+// graph. Suppressing the whole record named only the head path, so a consumer
+// was never told which old compound-v1 IDs to retire — the same absence as the
+// parser-boundary case, reached down a different path.
+//
+// The second half is the guard: when NEITHER side has a parser the file is in no
+// snapshot on either side of the range, so a move would invent a record for a
+// path the graph has never held, and nothing may be reported.
+func TestAnalyzeGitRangeRenameCrossingTheSupportedSetIsReported(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "x.go", "package x\n\nfunc Run() int { return 1 }\n")
+	write(t, repo, "note.png", "not really an image, but nothing parses it\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "mv", "x.go", "x.txt")
+	git(t, repo, "mv", "note.png", "moved.png")
+	git(t, repo, "commit", "-m", "rename out of the supported set, and within the unsupported one")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("files = %#v, want only the supported-side rename", result.Files)
+	}
+	file := result.Files[0]
+	if file.Path != "x.txt" || file.OldPath != "x.go" {
+		t.Fatalf("file = %#v, want x.go -> x.txt", file)
+	}
+	// The label comes from the side the graph indexes; x.txt is in no snapshot.
+	if file.Language != "Go" {
+		t.Fatalf("language = %q, want the indexed side's language", file.Language)
+	}
+	if len(file.Changes) != 1 || file.Changes[0].Type != "moved" || file.Changes[0].Kind != moduleKind {
+		t.Fatalf("changes = %#v, want one module moved", file.Changes)
+	}
+	// Neither .png side has a parser, so that rename must produce no record.
+	for _, reported := range result.Files {
+		if reported.Path == "moved.png" || reported.OldPath == "note.png" {
+			t.Fatalf("a rename between two unindexed paths was reported: %#v", reported)
+		}
+	}
+	foundUnsupportedWarning := false
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_UNSUPPORTED_FILE" && warning.FilePath == "x.txt" {
+			foundUnsupportedWarning = true
+		}
+	}
+	if !foundUnsupportedWarning {
+		t.Fatalf("warnings = %#v, want the unsupported head side still disclosed", result.Warnings)
+	}
+}
+
 // TestAnalyzeGitRangeCaseOnlyRenameIsReported pins the one rename whose handling
 // genuinely differs by platform. Correcting a file's capitalization changes the
 // path, so it re-identifies every symbol in the file exactly as any other rename
