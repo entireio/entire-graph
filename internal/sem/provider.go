@@ -10142,16 +10142,19 @@ func pinnedRootIdentity(root *os.Root, repo string) fs.FileInfo {
 	return nil
 }
 
-func containedRealPath(pinned fs.FileInfo, repo, relPath string) (string, bool) {
-	dir, base := filepath.Split(filepath.Join(repo, filepath.FromSlash(relPath)))
+// containedRealDirPath resolves relPath's PARENT and confirms it lies inside the
+// directory this source pinned. It answers with a NAME, which is why every
+// caller must go on to pin that name with a descriptor before reading through
+// it -- see containedRealDir.
+func containedRealDirPath(pinned fs.FileInfo, repo, dir string) (string, bool) {
 	realRepo, err := filepath.EvalSymlinks(repo)
 	if err != nil {
 		return "", false
 	}
-	// The repository PATHNAME is mutable, and everything above resolves it at
-	// READ time: a root pinned by os.OpenRoot when the source was opened does not
-	// constrain filepath.EvalSymlinks here. If the pathname is repointed or
-	// renamed mid-scan -- a symlinked root swapped to another tree, the directory
+	// The repository PATHNAME is mutable, and everything here resolves it at READ
+	// time: a root pinned by os.OpenRoot when the source was opened does not
+	// constrain filepath.EvalSymlinks. If the pathname is repointed or renamed
+	// mid-scan -- a symlinked root swapped to another tree, the directory
 	// replaced -- these reads would validate against, and answer from, the
 	// replacement while the held descriptor still names the tree the caller
 	// selected. Refuse unless the path still resolves to the very directory the
@@ -10172,7 +10175,85 @@ func containedRealPath(pinned fs.FileInfo, repo, relPath string) (string, bool) 
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false
 	}
-	return filepath.Join(realDir, base), true
+	return realDir, true
+}
+
+// containedRealDir pins the directory holding relPath's final component and
+// returns a descriptor on it, so the caller opens the leaf RELATIVE to a handle
+// rather than by re-resolving a validated pathname.
+//
+// Validating a name and then opening that name are two resolutions of the same
+// string, and the filesystem can change between them. An in-repository directory
+// renamed and replaced with a symlink in that window made the open follow the
+// replacement outside the repository, with the containment check already passed
+// -- the check said one thing and the read did another. A descriptor cannot be
+// redirected that way: once opened it names an inode, and a later rename of the
+// path it came from leaves the handle where it was.
+//
+// The window between resolving the name and pinning it is closed by validating
+// again AFTERWARDS and requiring the pinned handle to be the directory that
+// second validation contains. A swap before the pin fails the re-validation's
+// containment check; a swap back after the pin fails the identity comparison,
+// because the handle is still on the directory that was there when it was taken.
+//
+// The caller closes the returned root.
+func containedRealDir(pinned fs.FileInfo, repo, relPath string) (*os.Root, string, bool) {
+	dir, base := filepath.Split(filepath.Join(repo, filepath.FromSlash(relPath)))
+	if base == "" || base == "." || base == ".." {
+		return nil, "", false
+	}
+	realDir, ok := containedRealDirPath(pinned, repo, dir)
+	if !ok {
+		return nil, "", false
+	}
+	dirRoot, err := os.OpenRoot(realDir)
+	if err != nil {
+		return nil, "", false
+	}
+	confirmedDir, ok := containedRealDirPath(pinned, repo, dir)
+	if !ok {
+		_ = dirRoot.Close()
+		return nil, "", false
+	}
+	confirmedInfo, err := os.Stat(confirmedDir)
+	if err != nil {
+		_ = dirRoot.Close()
+		return nil, "", false
+	}
+	pinnedDirInfo, err := dirRoot.Stat(".")
+	if err != nil || !os.SameFile(pinnedDirInfo, confirmedInfo) {
+		_ = dirRoot.Close()
+		return nil, "", false
+	}
+	return dirRoot, base, true
+}
+
+// openContainedRegularFile is the one place the fallback readers turn a
+// repository-relative path into an open file. Lstat and Open both go through the
+// pinned directory handle, so the leaf cannot be a symlink and no component
+// above it can be swapped between the check and the read.
+func openContainedRegularFile(pinned fs.FileInfo, repo, relPath string) (*os.File, fs.FileInfo, bool) {
+	dirRoot, base, ok := containedRealDir(pinned, repo, relPath)
+	if !ok {
+		return nil, nil, false
+	}
+	defer dirRoot.Close()
+	info, err := dirRoot.Lstat(base)
+	if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, nil, false
+	}
+	file, err := dirRoot.Open(base)
+	if err != nil {
+		return nil, nil, false
+	}
+	// The size that governs the caller's bound is the one belonging to the OPEN
+	// file, not to the earlier Lstat of the same name.
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, nil, false
+	}
+	return file, opened, true
 }
 
 // readFallback reads relPath the way os.Root would have, had it not refused
@@ -10181,23 +10262,28 @@ func containedRealPath(pinned fs.FileInfo, repo, relPath string) (string, bool) 
 // above does, verifies containment on the resolved destination, and only then
 // reads.
 func readFallback(pinned fs.FileInfo, repo, relPath string, maxReadBytes int64, noteOversize func(int64)) (string, bool) {
-	joined := filepath.Join(repo, filepath.FromSlash(relPath))
-	info, err := os.Lstat(joined)
-	if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", false
-	}
-	resolved, ok := containedRealPath(pinned, repo, relPath)
+	file, info, ok := openContainedRegularFile(pinned, repo, relPath)
 	if !ok {
 		return "", false
 	}
+	defer file.Close()
 	if maxReadBytes > 0 && info.Size() > maxReadBytes {
 		if noteOversize != nil {
 			noteOversize(info.Size())
 		}
 		return "", false
 	}
-	content, err := os.ReadFile(resolved)
+	content, err := io.ReadAll(file)
 	if err != nil {
+		return "", false
+	}
+	// A file that grew between the size check and the read is refused rather than
+	// truncated: the bound is on what this reader may return, and half a file is
+	// not a smaller answer, it is a wrong one.
+	if maxReadBytes > 0 && int64(len(content)) > maxReadBytes {
+		if noteOversize != nil {
+			noteOversize(int64(len(content)))
+		}
 		return "", false
 	}
 	return string(content), true
@@ -10205,17 +10291,8 @@ func readFallback(pinned fs.FileInfo, repo, relPath string, maxReadBytes int64, 
 
 // readPrefixFallback is readFallback's counterpart for a bounded prefix read.
 func readPrefixFallback(pinned fs.FileInfo, repo, relPath string, limit int) (string, bool) {
-	joined := filepath.Join(repo, filepath.FromSlash(relPath))
-	info, err := os.Lstat(joined)
-	if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", false
-	}
-	resolved, ok := containedRealPath(pinned, repo, relPath)
+	file, _, ok := openContainedRegularFile(pinned, repo, relPath)
 	if !ok {
-		return "", false
-	}
-	file, err := os.Open(resolved)
-	if err != nil {
 		return "", false
 	}
 	defer file.Close()
@@ -10422,21 +10499,9 @@ func (r *oversizeRegistry) digestContained(path string) (filedigest.Digest, erro
 // check readFallback applies, for the destination os.Root's own resolution
 // rules would not reach.
 func (r *oversizeRegistry) digestFallback(path string) (filedigest.Digest, error) {
-	joined := filepath.Join(r.repo, filepath.FromSlash(path))
-	info, err := os.Lstat(joined)
-	if err != nil {
-		return filedigest.Digest{}, err
-	}
-	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return filedigest.Digest{}, fs.ErrInvalid
-	}
-	resolved, ok := containedRealPath(r.pinned, r.repo, path)
+	file, _, ok := openContainedRegularFile(r.pinned, r.repo, path)
 	if !ok {
 		return filedigest.Digest{}, fs.ErrInvalid
-	}
-	file, err := os.Open(resolved)
-	if err != nil {
-		return filedigest.Digest{}, err
 	}
 	defer file.Close()
 	return filedigest.Stream(file)
