@@ -1068,15 +1068,97 @@ def run(value, strict=False):
 	}
 }
 
+// TestAnalyzeGitRangeAddedOrDeletedUnsupportedFileReportsNothing covers the
+// shape that an earlier version of the mixed-support rule got wrong.
+//
+// The rule only means something when BOTH sides exist and exactly one parses:
+// then the file crossed the boundary. An added or deleted unsupported file has
+// only one side at all, so a guard written as "both sides unsupported" never
+// fired for it, and the empty comparison fell through to a module addition or
+// removal for a path no snapshot indexes. An absent side is not an unsupported
+// side, and nothing here is in the graph either way.
+func TestAnalyzeGitRangeAddedOrDeletedUnsupportedFileReportsNothing(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "anchor.go", "package anchor\n\nfunc Anchor() int { return 0 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "pic.png", "nothing parses this\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "add an unsupported file")
+	added := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, added, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("adding an unindexed file produced a record: %#v", result.Files)
+	}
+
+	if err := os.Remove(filepath.Join(repo, "pic.png")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "delete it again")
+
+	result, err = AnalyzeGitRange(context.Background(), repo, added, rev(t, repo, "HEAD"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("deleting an unindexed file produced a record: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeRenameBetweenUnindexedPathsReportsNothing is the guard on
+// the other side of the mixed-support rule.
+//
+// When exactly one side has a parser the file entered or left the index and the
+// removals or additions are real. When NEITHER side does, the file is in no
+// snapshot at either end of the range: there is nothing to retire and nothing to
+// learn, and emitting any record would invent one for a path the graph has never
+// held — the phantom class the index policy work exists to prevent.
+func TestAnalyzeGitRangeRenameBetweenUnindexedPathsReportsNothing(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "note.png", "nothing parses this\n")
+	write(t, repo, "anchor.go", "package anchor\n\nfunc Anchor() int { return 0 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "mv", "note.png", "moved.png")
+	git(t, repo, "commit", "-m", "rename between two paths the graph never indexes")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("files = %#v, want nothing: neither path is in any snapshot", result.Files)
+	}
+}
+
 func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		fromPath string
-		toPath   string
-		warnPath string
+		name       string
+		fromPath   string
+		toPath     string
+		warnPath   string
+		wantType   string
+		wantStatus string
+		wantPath   string
 	}{
-		{name: "supported to unsupported", fromPath: "sample.go", toPath: "sample.ps1", warnPath: "sample.ps1"},
-		{name: "unsupported to supported", fromPath: "sample.ps1", toPath: "sample.go", warnPath: "sample.ps1"},
+		{name: "supported to unsupported", fromPath: "sample.go", toPath: "sample.ps1", warnPath: "sample.ps1", wantType: "removed", wantStatus: "D", wantPath: "sample.go"},
+		{name: "unsupported to supported", fromPath: "sample.ps1", toPath: "sample.go", warnPath: "sample.ps1", wantType: "added", wantStatus: "A", wantPath: "sample.go"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := t.TempDir()
@@ -1099,8 +1181,31 @@ func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(result.Files) != 0 {
-				t.Fatalf("mixed-support rename produced a one-sided delta: %#v", result.Files)
+			// A side with no parser holds nothing in the graph, so this rename is
+			// the file leaving or entering the index and the honest delta is the
+			// removals or additions a snapshot of each side would show. This used
+			// to assert no record at all, to avoid a "one-sided phantom": but the
+			// removals are not phantom, because .ps1 is genuinely absent from
+			// every snapshot, and suppressing them left a consumer unable to
+			// retire the old compound-v1 IDs while the marker named only one path.
+			// A failed PARSE is still suppressed, and for the opposite reason:
+			// there the absence is this provider's blind spot, not a fact.
+			if len(result.Files) != 1 {
+				t.Fatalf("mixed-support rename = %#v, want the indexed side reported", result.Files)
+			}
+			reported := result.Files[0]
+			// Restated as what happened to the index, so the path and language
+			// belong to the side the graph holds. Reporting `sample.ps1` as a Go
+			// rename would present an unindexed file as a parsed one.
+			if reported.Path != tc.wantPath || reported.Status != tc.wantStatus || reported.OldPath != "" {
+				t.Fatalf("file = %#v, want %s of %q with no rename provenance", reported, tc.wantStatus, tc.wantPath)
+			}
+			if reported.Language != "Go" {
+				t.Fatalf("language = %q, want the indexed side's language", reported.Language)
+			}
+			changes := reported.Changes
+			if len(changes) != 1 || changes[0].Type != tc.wantType || changes[0].Name != "Run" {
+				t.Fatalf("changes = %#v, want a single %q for Run", changes, tc.wantType)
 			}
 			var marker *ProviderWarning
 			for i, warning := range result.Warnings {
@@ -1109,7 +1214,7 @@ func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 					break
 				}
 			}
-			if marker == nil || marker.FilePath != tc.warnPath || !strings.Contains(marker.EffectOnCompleteness, "diff suppressed") {
+			if marker == nil || marker.FilePath != tc.warnPath || !strings.Contains(marker.EffectOnCompleteness, "no parser") {
 				t.Fatalf("missing mixed-support marker: %#v", result.Warnings)
 			}
 		})
@@ -2030,5 +2135,224 @@ func TestAnalyzeGitRangeHonorsBuiltinSecretRules(t *testing.T) {
 	}
 	if len(result.Files) != 1 || result.Files[0].Path != "app.go" {
 		t.Fatalf("files = %#v, want only app.go", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangePureRenameIsReported pins the contract that a file Git
+// classified as a rename is never absent from the diff. A 100%-similarity
+// rename has no content change to report, but the file path is a component of
+// every compound-v1 symbol ID, so the rename re-identifies every entity in the
+// file. Dropping the file made a pure rename indistinguishable from an empty
+// diff for any consumer that keys on the output.
+func TestAnalyzeGitRangePureRenameIsReported(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "old/sample.go", "package sample\n\nfunc Run() int { return 1 }\n\ntype W struct{ N int }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	if err := os.MkdirAll(filepath.Join(repo, "new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "mv", "old/sample.go", "new/sample.go")
+	git(t, repo, "commit", "-m", "pure rename")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("pure rename produced %d files, want 1: %#v", len(result.Files), result.Files)
+	}
+	file := result.Files[0]
+	if file.Path != "new/sample.go" || file.OldPath != "old/sample.go" {
+		t.Fatalf("rename metadata = %q -> %q", file.OldPath, file.Path)
+	}
+	if file.Status != "R" {
+		t.Fatalf("status = %q, want R", file.Status)
+	}
+	if file.Language != "Go" {
+		t.Fatalf("language = %q, want Go", file.Language)
+	}
+	if len(file.Changes) != 1 {
+		t.Fatalf("changes = %#v, want exactly one path-scope change", file.Changes)
+	}
+	change := file.Changes[0]
+	if change.Type != "moved" || change.Kind != moduleKind {
+		t.Fatalf("change type/kind = %q/%q, want moved/%s", change.Type, change.Kind, moduleKind)
+	}
+	if change.OldPath != "old/sample.go" || change.NewPath != "new/sample.go" {
+		t.Fatalf("change paths = %q -> %q", change.OldPath, change.NewPath)
+	}
+	if change.Name != "new/sample.go" {
+		t.Fatalf("change name = %q, want the new path", change.Name)
+	}
+	if change.Reconciliation != "MOVED" {
+		t.Fatalf("reconciliation = %q, want MOVED", change.Reconciliation)
+	}
+}
+
+// TestAnalyzeGitRangeUnchangedFileStaysAbsent guards the other side of the same
+// contract: reporting a rename must not start reporting files nothing touched.
+//
+// The range deliberately CONTAINS a pure rename, so the path-scope fallback is
+// actually exercised while sample.go sits still. An earlier version of this test
+// changed only an unrelated file, which never put anything through the new
+// branch at all and passed identically without the fix.
+func TestAnalyzeGitRangeUnchangedFileStaysAbsent(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "sample.go", "package sample\n\nfunc Run() int { return 1 }\n")
+	write(t, repo, "moved.go", "package sample\n\nfunc Moved() int { return 2 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "mv", "moved.go", "renamed.go")
+	git(t, repo, "commit", "-m", "rename one file, touch nothing else")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The rename is reported...
+	if len(result.Files) != 1 || result.Files[0].Path != "renamed.go" {
+		t.Fatalf("files = %#v, want only the renamed file", result.Files)
+	}
+	// ...and the file that did not move is not.
+	for _, file := range result.Files {
+		if file.Path == "sample.go" || file.OldPath == "sample.go" {
+			t.Fatalf("untouched file appeared in the diff: %#v", file)
+		}
+	}
+}
+
+// TestAnalyzeGitRangeModeOnlyChangeStaysAbsent covers a file that reaches the
+// path-scope fallback with identical content and an unchanged path: Git reports
+// a mode-only change as a modification, and it must not be reported as a move.
+//
+// The mode is set through the index rather than the filesystem. os.Chmod does
+// nothing on Windows, where core.fileMode is false, so a filesystem chmod made
+// this test skip on the one platform it could not be checked on — and it is the
+// only guard on this branch, so a skip there was a hole rather than a gap.
+// `git update-index --chmod` writes the index entry directly and behaves the
+// same everywhere.
+func TestAnalyzeGitRangeModeOnlyChangeStaysAbsent(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "sample.go", "package sample\n\nfunc Run() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "update-index", "--chmod=+x", "sample.go")
+	git(t, repo, "commit", "-m", "mode only")
+	head := rev(t, repo, "HEAD")
+
+	// The fixture is only meaningful if Git really reported the file with both
+	// sides pointing at the same blob.
+	if before, after := blobAt(t, repo, base, "sample.go"), blobAt(t, repo, head, "sample.go"); before != after {
+		t.Fatalf("fixture is wrong: content changed (%s -> %s), this is not a mode-only change", before, after)
+	}
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("mode-only change produced a delta: %#v", result.Files)
+	}
+}
+
+// blobAt returns the blob OID a path resolves to at a revision, so a fixture can
+// assert it really did leave the content alone.
+func blobAt(t *testing.T, repo, revision, path string) string {
+	t.Helper()
+	return rev(t, repo, revision+":"+path)
+}
+
+// TestAnalyzeGitRangeCaseOnlyRenameIsReported pins the one rename whose handling
+// genuinely differs by platform. Correcting a file's capitalization changes the
+// path, so it re-identifies every symbol in the file exactly as any other rename
+// does — but Linux sees two distinct names while macOS and Windows fold them onto
+// one, and Go's string comparison in the same-path guard is case-sensitive
+// regardless. Making that guard case-insensitive to "fix" Windows would silently
+// drop a real re-identification, so the behaviour is pinned here.
+//
+// The rename is staged through the index rather than the filesystem, so the
+// fixture cannot depend on whether the host folds case: no file is ever renamed
+// on disk, and the test needs no platform guard to run everywhere.
+func TestAnalyzeGitRangeCaseOnlyRenameIsReported(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "Sample.go", "package sample\n\nfunc Run() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	blob := blobAt(t, repo, base, "Sample.go")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "100644,"+blob+",sample.go")
+	git(t, repo, "update-index", "--force-remove", "Sample.go")
+	git(t, repo, "commit", "-m", "correct the capitalization")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("files = %#v, want one Sample.go -> sample.go rename", result.Files)
+	}
+	file := result.Files[0]
+	if file.Path != "sample.go" || file.OldPath != "Sample.go" {
+		t.Fatalf("files = %#v, want one Sample.go -> sample.go rename", result.Files)
+	}
+	if len(file.Changes) != 1 || file.Changes[0].Type != "moved" || file.Changes[0].Kind != moduleKind {
+		t.Fatalf("changes = %#v, want one module moved", file.Changes)
+	}
+	if file.Changes[0].OldPath != "Sample.go" || file.Changes[0].NewPath != "sample.go" {
+		t.Fatalf("change paths = %q -> %q, want the capitalization preserved on both sides",
+			file.Changes[0].OldPath, file.Changes[0].NewPath)
+	}
+}
+
+// TestAnalyzeGitRangeRenameAcrossLanguagesReportsTheHeadLanguage pins the label
+// on a rename that crosses extensions. The graph indexes the head path with the
+// head parser's language, so reporting the base one contradicts every snapshot
+// of that tree.
+func TestAnalyzeGitRangeRenameAcrossLanguagesReportsTheHeadLanguage(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "mod.js", "export function run() {\n  return 1;\n}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "mv", "mod.js", "mod.ts")
+	git(t, repo, "commit", "-m", "js to ts, byte-identical")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("files = %#v, want one", result.Files)
+	}
+	if got := result.Files[0].Language; got != "TypeScript" {
+		t.Fatalf("language = %q, want TypeScript: the head path is what the graph indexes", got)
 	}
 }
