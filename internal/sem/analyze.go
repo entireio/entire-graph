@@ -366,10 +366,31 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				EffectOnCompleteness: effect,
 				Detail:               detail,
 			})
-			// Neither side is in the graph, so there is nothing to add or retire
-			// and a record here would invent one for a path no snapshot holds.
-			if beforeUnsupported && afterUnsupported {
+			// Only a change with BOTH sides present, exactly one of them parseable,
+			// says anything about the graph: the file crossed the boundary and
+			// its symbols entered or left the index.
+			//
+			// Every other shape must stop here. Two unsupported sides are in no
+			// snapshot at either end. An ADDED or DELETED unsupported file has
+			// only one side at all, so `beforeUnsupported && afterUnsupported` was
+			// false for it and it fell through to moduleScopeChange, which happily
+			// emitted an added/removed module for a path no snapshot indexes —
+			// the same invented record this branch exists to prevent, reached by
+			// forgetting that an absent side is not an unsupported one.
+			if !(beforeOK && afterOK && beforeUnsupported != afterUnsupported) {
 				continue
+			}
+			// The unparseable side is not in the graph, so the range did not
+			// rename a file the graph holds: it removed one or added one. Restate
+			// it as that, exactly as the index policy restates a rename across the
+			// exclusion boundary, so the reported path and language are the
+			// indexed side's and no consumer is handed `sample.ps1` labelled Go.
+			if afterUnsupported {
+				path, after, afterOK = oldPath, "", false
+				file.Status, file.OldPath = "D", ""
+			} else {
+				oldPath, before, beforeOK = path, "", false
+				file.Status, file.OldPath = "A", ""
 			}
 		}
 

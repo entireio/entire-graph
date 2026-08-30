@@ -1068,6 +1068,53 @@ def run(value, strict=False):
 	}
 }
 
+// TestAnalyzeGitRangeAddedOrDeletedUnsupportedFileReportsNothing covers the
+// shape that an earlier version of the mixed-support rule got wrong.
+//
+// The rule only means something when BOTH sides exist and exactly one parses:
+// then the file crossed the boundary. An added or deleted unsupported file has
+// only one side at all, so a guard written as "both sides unsupported" never
+// fired for it, and the empty comparison fell through to a module addition or
+// removal for a path no snapshot indexes. An absent side is not an unsupported
+// side, and nothing here is in the graph either way.
+func TestAnalyzeGitRangeAddedOrDeletedUnsupportedFileReportsNothing(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "anchor.go", "package anchor\n\nfunc Anchor() int { return 0 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "pic.png", "nothing parses this\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "add an unsupported file")
+	added := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, added, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("adding an unindexed file produced a record: %#v", result.Files)
+	}
+
+	if err := os.Remove(filepath.Join(repo, "pic.png")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "delete it again")
+
+	result, err = AnalyzeGitRange(context.Background(), repo, added, rev(t, repo, "HEAD"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("deleting an unindexed file produced a record: %#v", result.Files)
+	}
+}
+
 // TestAnalyzeGitRangeRenameBetweenUnindexedPathsReportsNothing is the guard on
 // the other side of the mixed-support rule.
 //
@@ -1102,14 +1149,16 @@ func TestAnalyzeGitRangeRenameBetweenUnindexedPathsReportsNothing(t *testing.T) 
 
 func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		fromPath string
-		toPath   string
-		warnPath string
-		wantType string
+		name       string
+		fromPath   string
+		toPath     string
+		warnPath   string
+		wantType   string
+		wantStatus string
+		wantPath   string
 	}{
-		{name: "supported to unsupported", fromPath: "sample.go", toPath: "sample.ps1", warnPath: "sample.ps1", wantType: "removed"},
-		{name: "unsupported to supported", fromPath: "sample.ps1", toPath: "sample.go", warnPath: "sample.ps1", wantType: "added"},
+		{name: "supported to unsupported", fromPath: "sample.go", toPath: "sample.ps1", warnPath: "sample.ps1", wantType: "removed", wantStatus: "D", wantPath: "sample.go"},
+		{name: "unsupported to supported", fromPath: "sample.ps1", toPath: "sample.go", warnPath: "sample.ps1", wantType: "added", wantStatus: "A", wantPath: "sample.go"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := t.TempDir()
@@ -1144,7 +1193,17 @@ func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 			if len(result.Files) != 1 {
 				t.Fatalf("mixed-support rename = %#v, want the indexed side reported", result.Files)
 			}
-			changes := result.Files[0].Changes
+			reported := result.Files[0]
+			// Restated as what happened to the index, so the path and language
+			// belong to the side the graph holds. Reporting `sample.ps1` as a Go
+			// rename would present an unindexed file as a parsed one.
+			if reported.Path != tc.wantPath || reported.Status != tc.wantStatus || reported.OldPath != "" {
+				t.Fatalf("file = %#v, want %s of %q with no rename provenance", reported, tc.wantStatus, tc.wantPath)
+			}
+			if reported.Language != "Go" {
+				t.Fatalf("language = %q, want the indexed side's language", reported.Language)
+			}
+			changes := reported.Changes
 			if len(changes) != 1 || changes[0].Type != tc.wantType || changes[0].Name != "Run" {
 				t.Fatalf("changes = %#v, want a single %q for Run", changes, tc.wantType)
 			}
