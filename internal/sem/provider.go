@@ -4824,6 +4824,35 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
+	if from.Language == "C++" {
+		// Declared locals (`Ledger ledger;`, `Ledger ledger(seed);`), which
+		// C++ writes far more often than the constructor-assignment forms the
+		// generic scanner understands. Without this a stack-allocated receiver
+		// carries no type and every method call on it resolves to nothing.
+		//
+		// A name that is already a PARAMETER is skipped, and the reason is a
+		// rule of the language rather than a heuristic: C++ forbids redeclaring
+		// a parameter in the function body's top-level scope, so a declared
+		// local sharing a parameter's name is NECESSARILY inside a nested block
+		// and shadows the parameter only there. localTypes is function-wide and
+		// overwrites varTypes unconditionally below, so without this guard one
+		// nested `Account ledger;` retypes a `Ledger ledger` parameter for the
+		// whole function: `ledger.Commit()` after the block resolved to
+		// Account.Commit at confidence 0.85 with resolution=type_inferred, and
+		// the correct edge to Ledger.Commit disappeared. That is a confidently
+		// WRONG edge, which is worse than the missing one this scanner exists
+		// to fix — so the parameter, whose type is declared rather than
+		// inferred, wins. The cost is that calls on the shadowing local inside
+		// the block go unresolved until receiver typing is scope-aware.
+		for name, typeName := range cppLocalVarTypes(block) {
+			if _, isParameter := varTypes[name]; isParameter {
+				continue
+			}
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
 	if from.Language == "TypeScript" {
 		// Declared-type and Angular-DI locals (`const router: Router = ...`,
 		// `const ref = inject(ViewContainerRef)`), which the generic
