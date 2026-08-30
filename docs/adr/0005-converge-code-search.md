@@ -91,11 +91,12 @@ changes" and "Resolution ... is explicitly out of scope for v1 (requires import 
 recording "SCIP evaluated later." Nothing constructs `SymbolSource::Scip` today. It is a reserved
 slot waiting for a producer.
 
-The producer exists but is **not merged**: PR #97 (`ec/candidate-scip-export-v2`, ashtom, OPEN,
-draft, `MERGEABLE` and level with main as of 2026-08-25, 0 reviews) adds `snapshot --format scip` emitting a real `scippb.Index`
-via `github.com/scip-code/scip/bindings/go/scip v0.9.0`, deterministically marshalled
+The producer exists and is **merged**: PR #97 (`ec/candidate-scip-export-v2`) landed on main on
+2026-08-27, adding `snapshot --format scip` emitting a real `scippb.Index` via
+`github.com/scip-code/scip/bindings/go/scip v0.9.0`, deterministically marshalled
 (`internal/sem/compact_snapshot.go:454,462`), with unsupported relations reported in a JSON stderr
-omission note.
+omission note. The half of step 1 that was a merge is therefore done; what remains there is
+promoting the format out of experimental and freezing the note's compatibility policy.
 
 ## Options considered
 
@@ -170,6 +171,18 @@ Neither engine is deleted. The **duplicate halves** are.
 output: it declares which relations and languages were skipped, which is what lets peregrine
 decide per-language whether to trust the feed.
 
+Being contract, it is versioned like one. The note already carries a version field
+(`"version": "entire-graph-scip-omissions/v1"`, `internal/sem/compact_snapshot.go:299`), so
+"freeze the schema" in step 1 means freezing a compatibility **policy**, not a field list. ADR
+0001's `1.x` rules (`docs/adr/0001-ga-schema-contract.md`) extend to the note unchanged: the
+major is the compatibility boundary and a consumer refuses an unknown one; minors are additive
+only, never removing a field, changing a field's meaning, or making an optional field required;
+readers ignore unknown fields and warn rather than fail on a newer minor within a supported
+major. The version tag therefore carries a minor as well -- `entire-graph-scip-omissions/v1.0`,
+then `/v1.1` for each additive change -- because a bare `v1` gives a tolerant reader nothing to
+warn on and no way to tell compatible evolution from a break. A breaking change is `/v2` with a
+migration note, and is out of scope for the feed's `v1` line.
+
 **Identity, and an addressing mismatch to resolve.** peregrine's `.pg` header carries `org_id`,
 `repo_name`, `repo_id` and `indexed_commit: [u8; 20]` (`src/index/format.rs:33-44`), so the join
 key exists consumer-side. But the **S3 object is repo-scoped, not commit-scoped**: key
@@ -180,12 +193,46 @@ entire-graph dedupes on tree hash rather than commit. The contract: the feed is 
 validates the feed against the `indexed_commit` it is currently building. The feed store is
 commit-versioned even though the `.pg` store is not.
 
-**Delivery.** The artifact lands in the same object store as the `.pg` index, written by the
-producer and read by the indexer tier (`deploy/fleet/apps/peregrine/base/index-deployment.yaml`)
-at build time. peregrine then writes `SectionType::SymbolTable = 6` (`src/index/format.rs:24-31`)
-from the feed instead of from its own extractors. **No `.pg` version bump is required**: `VERSION`
+**Object-format scope: SHA-1 only, for now.** `indexed_commit` is `[u8; 20]`, which holds a
+SHA-1 object id and nothing else, while entire-graph reads SHA-256 repositories
+(`internal/gitutil/git.go:1529-1530` sizes tree metadata for 64-hex object ids;
+`internal/gitutil/git_test.go:1582` branches on `rev-parse --show-object-format`). A 32-byte
+commit id cannot be carried in that header, and the exact-commit join above is the whole
+freshness contract, so this is scoped rather than fudged: **the feed is defined for SHA-1
+repositories only.** The publisher must refuse to publish a feed for a SHA-256 repository rather
+than truncate or re-derive an id, and the consumer treats an absent feed there as feed-off and
+serves from its native layer -- the same path as any other missing feed, so no new failure mode.
+Widening `indexed_commit` to a length-tagged object id is a `.pg` header change and the one part
+of this design that would need a format bump; it is deferred, not assumed away. Step 6's corpus
+must record each repository's object format, so the scope note is confirmed rather than trusted.
+
+**Delivery, and the no-egress boundary.** entire-graph does not write to the object store.
+The provider is no-egress by ratified contract -- "never add remote fetches, hosted API calls,
+telemetry, or runtime grammar downloads" (`AGENTS.md:224`) -- and this RFD's own case against
+Option B rests on it being "a one-shot, no-egress binary". A producer that had to hold
+object-store credentials and reach the network would spend exactly the property that makes its
+output trustworthy, and would change that boundary by implication in an implementation review
+rather than on purpose here. So the write is split three ways:
+
+- **entire-graph** runs `snapshot --format scip`, which writes the SCIP protobuf to stdout and
+  the omission note to stderr (`internal/cli/root.go:271,445`). It has no file sink, no network
+  client and no credentials, and needs none: both halves of the artifact leave over pipes.
+- **A publisher wrapper**, deployment-side and not the graph binary, captures those two streams
+  and uploads them to the same object store as the `.pg` index, under the `(repo_id, commit_sha)`
+  key above. It owns the credentials, retries, retention and the paging for a failed publish.
+- **The indexer tier** (`deploy/fleet/apps/peregrine/base/index-deployment.yaml`) reads the
+  artifact at build time.
+
+Whether that wrapper is a standalone job or a step inside peregrine's indexer tier is open
+question 6. That it is *not* entire-graph is decided here.
+
+Once the artifact is in the store, peregrine writes `SectionType::SymbolTable = 6`
+(`src/index/format.rs:24-31`) from the feed instead of from its own extractors. **No `.pg`
+version bump is required to ingest it**: `VERSION`
 stays `1` (`:6`), the enum values are already defined and parsed, and TOC sections are
 independently addressable and CRC32-checksummed (`:52-58`), so section 6 can be rewritten alone.
+That holds for the symbol table only; widening `indexed_commit` for SHA-256 repositories, above,
+is a header change and would need one.
 
 **Freshness contract.**
 1. A feed is valid only for the exact `indexed_commit` being built. Any other commit is ignored,
@@ -226,12 +273,12 @@ legal and honest rather than hidden.
 
 | # | Step | Owner | Gate |
 |---|---|---|---|
-| 1 | Take PR #97 out of draft and merge it, promote `--format scip` from experimental, freeze the omission-note schema | Us | Byte-identical export on repeat runs, shown in PR #97. The rebase half is done: #97 carries main and merges clean, and the note now also reports `unidentified_records` and `unlocated_symbols`, so freezing the schema means freezing that shape |
+| 1 | Promote `--format scip` from experimental and freeze the omission-note compatibility policy | Us | Byte-identical export on repeat runs, shown in PR #97. The merge half is done: #97 is on main as of 2026-08-27, and the note reports `unidentified_records`, `unlocated_symbols`, `language_tiers`, `partial_failures`, `commit` and `tree`. Freezing means stamping that shape `entire-graph-scip-omissions/v1.0` under the additive-only policy in *The interface*, not freezing it against all further additions |
 | 2 | Publish per-language SCIP coverage matrix vs peregrine's tier-1 15 | Us | Reviewed by Evis |
 | 3 | Decide the moniker scheme (open question 2) | Us + Evis | Written into the contract |
 | 4 | Build the parity harness | TBD (open question 5) | Reproducible by both sides |
 | 5 | Add SCIP ingestion to peregrine's index writer, per-repo flag, default off | Evis | Feed-off path byte-identical to today |
-| 6 | Run parity on N repos, feed-on vs feed-off | Joint | Recall no worse, precision better, budgets held |
+| 6 | Run parity on N repos, feed-on vs feed-off | Joint | Recall no worse than feed-off *and* above the per-language absolute floor, precision better, budgets held |
 | 7 | Flip default to feed-on per language as each clears parity | Evis | Per-language, reversible |
 | 8 | Wire the converged surface into the single MCP front door | Us + Alisha | Follows the `brain_*` plane pattern, P2.M3 |
 | 9 | Remove peregrine's duplicate extractors at feed-on parity | Evis | Two release cycles feed-on, no rollback |
@@ -259,13 +306,25 @@ Nothing is removed before step 7 has held for two release cycles. Then:
 ### Test and rollout gates
 
 - **Corpus**: at least 10 repos spanning all peregrine tier-1 languages, including one monorepo
-  large enough to test PR #97's in-memory materialization.
+  large enough to test PR #97's in-memory materialization. Each repository's git object format is
+  recorded with its result, so the SHA-1-only scope above is confirmed on the corpus rather than
+  assumed.
 - **Primary metric**: symbol recall and precision of the SCIP-fed symbol table against peregrine's
   native layer, per language, definitions and references scored separately. Cross-file
   `resolved_to` correctness scored against hand-labelled ground truth, since that is the field the
   heuristic is weakest on and the one a semantic producer should most improve.
 - **Non-regression**: recall must not drop in any language. A precision gain that costs recall is
   a fail, because users notice a missing hit more than a spurious one.
+- **Absolute floor, because the baseline is not trustworthy everywhere.** Non-regression against
+  peregrine's native layer is a floor of zero wherever that layer is empty or broken. Kotlin
+  yields no symbols at all today (`parser.rs:27`, `extract.rs:93-96`), so a feed that emitted
+  nothing for Kotlin would pass a zero-to-zero comparison and could reach feed-on without ever
+  fixing the coverage gap this RFD cites as a motivation. Every language therefore also has to
+  clear an **absolute recall floor against hand-labelled ground truth** on a sampled subset of
+  the corpus, not only a delta against the native layer. A language whose native baseline is
+  empty or known-degraded -- Kotlin at minimum -- may not go feed-on on the delta comparison at
+  all; the ground-truth measurement is the only evidence that counts for it. The floor per
+  language is agreed with Evis before the run, like the budgets.
 - **Budgets**: `.pg` size delta, index build wall-clock delta, p50/p99 query latency, each with a
   ceiling agreed with Evis before the run, not after.
 - **Rollout**: per-repo flag, then per-language default, then global, each stage reversible by
@@ -344,8 +403,10 @@ Nothing is removed before step 7 has held for two release cycles. Then:
    sizing question, not an unknown.
 5. **Who owns the parity harness?** It must be trusted by both sides, which argues against either
    side owning it alone. Unassigned, and the biggest scheduling risk here.
-6. **Producer runtime placement.** Inside peregrine's indexer tier, or a separate job publishing to
-   the object store? Affects failure isolation and paging.
+6. **Publisher runtime placement.** The producer itself is settled -- entire-graph emits over
+   pipes and never uploads (see *Delivery*). Open is where the publisher wrapper that captures
+   and uploads those streams runs: a step inside peregrine's indexer tier, or a separate job.
+   Affects failure isolation and paging.
 7. **Feed store addressing.** The `.pg` store is repo-keyed and overwritten in place while the feed
    is commit-keyed. Commit-versioned feed store with its own retention, or repo-keyed and accept
    that a rebuild races the feed?
@@ -378,7 +439,8 @@ Nothing is removed before step 7 has held for two release cycles. Then:
 - peregrine gains a cross-repo build dependency it did not have, mitigated by a mandatory
   always-supported fallback.
 - entire-graph gains a second consumer contract alongside brain. ADR 0001's additive-only `1.x`
-  rules should extend to the SCIP projection and its omission note.
+  rules extend to the SCIP projection and its omission note, versioned as set out in
+  *The interface*.
 - COR-786 closes when steps 1 through 7 land and step 9 removes the first duplicate extractor.
   Step 8 continues into P2.M3.
 
@@ -424,11 +486,13 @@ Nothing is removed before step 7 has held for two release cycles. Then:
   "deliberately tree-only, not commit-keyed"; `records_cache.go:89-90` cache paths. No
   incremental reuse.
 - `docs/language-support.md` 185 supported / 36 semantic / 149 inventory-only, covering all 15 of
-  peregrine's tier-1 set; live `capabilities --json` reports 179 / 35 (drift, open question 1).
+  peregrine's tier-1 set; live `capabilities --json` now agrees (185 / 36 / 149, 30 relation
+  types), so the drift noted in open question 1 is reconciled.
   `docs/search.md` search is hybrid lexical plus graph expansion, single `--repo`, byte-budgeted.
 - `docs/brain-and-graph-boundaries.md` MCP surface and multi-repo graph are "Brain's job";
   per-file incremental invalidation is "unbuilt, not declined".
-- PR #97 `ec/candidate-scip-export-v2`, OPEN, draft, `MERGEABLE`, 0 reviews. `internal/cli/root.go:255`
+- PR #97 `ec/candidate-scip-export-v2`, MERGED 2026-08-27, so the following are on main.
+  `internal/cli/root.go:255`
   `--format scip`, `:262-269` snapshot-mode only. `internal/sem/compact_snapshot.go:454,462`
   deterministic marshal; `:345-365` Documents; `:384-404` SymbolInformation and definition
   occurrences; `:407-420` external symbols; `:540-547` only 15 of 30 relations map; `:549-560`
@@ -438,7 +502,9 @@ Nothing is removed before step 7 has held for two release cycles. Then:
 - Branch `codex/eg-graphify-lexical-sidecar` commit `5442ed87`, not on main:
   `internal/sem/search_lexical_index.go:35-36` `EGLEXI1`/`EGPOST1`, `:26-28` postings artifacts,
   `:657,751` trigram API. Zero callers in the query path.
-- No SCIP on main: `grep -rin scip internal/ cmd/` returns only unrelated substring matches.
+- SCIP is on main since #97; the note's version tag is `entire-graph-scip-omissions/v1`
+  (`internal/sem/compact_snapshot.go:299`), and `--format scip` writes the protobuf to stdout and
+  the note to stderr (`internal/cli/root.go:271,445`), with no file or network sink.
   Current CLI is `entire graph ...`; `entire sem ...` is the deprecated old name.
 
 **entire-api / mcp** (the front door, and where the P2.M3 surface lands)
