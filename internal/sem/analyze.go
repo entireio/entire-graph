@@ -391,6 +391,29 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				status, warnPath = beforeStatus, oldPath
 			}
 			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, true))
+			// A total parse failure means no entity-level delta can be trusted,
+			// but it says nothing about whether the file moved. Renaming an
+			// extensionless shebang script to a .go path leaves the bytes
+			// untouched and sends them to a parser that rejects them, and
+			// continuing here dropped the file from `files` entirely — the one
+			// outcome the path-scope change exists to prevent, and the case a
+			// consumer is least able to notice because the old path is never
+			// named again.
+			//
+			// Only the path claim is made. The warning above still stands and is
+			// what tells a consumer the entity-level view is incomplete, so the
+			// pair says "this file moved, and its contents could not be read"
+			// rather than either half alone. Byte-identical is required: with
+			// changed content there is no basis for calling it a pure move.
+			if mod, ok := pathScopeChange(oldPath, path); ok && beforeOK && afterOK && before == after {
+				deltas = append(deltas, &fileDelta{
+					path:     path,
+					oldPath:  file.OldPath,
+					status:   file.Status,
+					language: language,
+					changes:  []EntityChange{mod},
+				})
+			}
 			continue
 		}
 		if afterStatus.ParseError || beforeStatus.ParseError {

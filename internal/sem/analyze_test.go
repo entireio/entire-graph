@@ -2175,6 +2175,61 @@ func blobAt(t *testing.T, repo, revision, path string) string {
 	return rev(t, repo, revision+":"+path)
 }
 
+// TestAnalyzeGitRangePureRenameAcrossAParserBoundaryIsStillReported covers the
+// rename whose new path hands unchanged bytes to a parser that rejects them.
+//
+// An extensionless script is routed by its shebang; renaming it to .go sends the
+// same bytes to the Go parser, which fails outright. A total parse failure means
+// no entity-level delta can be trusted, and the analysis stops there — but that
+// says nothing about whether the file moved, and stopping dropped it from
+// `files` entirely. That is the exact outcome the path-scope change exists to
+// prevent, and the worst instance of it: the old path is never named again, so a
+// consumer cannot even learn which symbols to retire.
+//
+// The move and the warning are asserted together on purpose. The move alone
+// would claim more than the analysis knows; the warning is what tells a consumer
+// the entity view is incomplete.
+func TestAnalyzeGitRangePureRenameAcrossAParserBoundaryIsStillReported(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "script", "#!/usr/bin/env python3\ndef run():\n    return 1\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "mv", "script", "script.go")
+	git(t, repo, "commit", "-m", "rename across a parser boundary, bytes unchanged")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("files = %#v, want the rename reported despite the parse failure", result.Files)
+	}
+	file := result.Files[0]
+	if file.Path != "script.go" || file.OldPath != "script" {
+		t.Fatalf("file = %#v, want script -> script.go", file)
+	}
+	if len(file.Changes) != 1 || file.Changes[0].Type != "moved" || file.Changes[0].Kind != moduleKind {
+		t.Fatalf("changes = %#v, want one module moved and no entity-level claim", file.Changes)
+	}
+	// The move must not silently replace the disclosure that the file could not
+	// be parsed; a consumer needs both to know it should resnapshot.
+	foundParseWarning := false
+	for _, warning := range result.Warnings {
+		if warning.Code == "E_PARSE_ERROR" && warning.FilePath == "script.go" {
+			foundParseWarning = true
+		}
+	}
+	if !foundParseWarning {
+		t.Fatalf("warnings = %#v, want the parse failure still disclosed", result.Warnings)
+	}
+}
+
 // TestAnalyzeGitRangeCaseOnlyRenameIsReported pins the one rename whose handling
 // genuinely differs by platform. Correcting a file's capitalization changes the
 // path, so it re-identifies every symbol in the file exactly as any other rename
@@ -2206,8 +2261,11 @@ func TestAnalyzeGitRangeCaseOnlyRenameIsReported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(result.Files) != 1 {
+		t.Fatalf("files = %#v, want one Sample.go -> sample.go rename", result.Files)
+	}
 	file := result.Files[0]
-	if len(result.Files) != 1 || file.Path != "sample.go" || file.OldPath != "Sample.go" {
+	if file.Path != "sample.go" || file.OldPath != "Sample.go" {
 		t.Fatalf("files = %#v, want one Sample.go -> sample.go rename", result.Files)
 	}
 	if len(file.Changes) != 1 || file.Changes[0].Type != "moved" || file.Changes[0].Kind != moduleKind {
