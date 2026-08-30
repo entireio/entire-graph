@@ -57,7 +57,7 @@ Bulk NDJSON streams. These default to the **committed tree**; pass
 
 | Command | What it does |
 | --- | --- |
-| `snapshot` | The whole graph: header, files, externals, symbols, relations, summary. Also supports `--format compact-ndjson`. |
+| `snapshot` | The whole graph: header, files, externals, symbols, relations, summary. Also supports `--format compact-ndjson` and the experimental `--format scip`. |
 | `symbols` | Symbol records only. There is no name filter; grep the stream, or use `search`/`def` for a targeted lookup. |
 | `edges` | Relation records, filterable server-side with `--to`, `--from`, `--relation`. |
 | `snapshot-query` | Queries a saved compact snapshot without rebuilding the graph. |

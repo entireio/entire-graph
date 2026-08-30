@@ -113,7 +113,8 @@ ignore-file paths resolve against `--repo`, and missing ignore files should fail
 closed with a clear error. Callers may also pass repeatable `--include-file
 <path>` flags containing gitignore-style inclusion rules. Include files are
 applied after `.gitignore` and `--ignore-file`, so they can reopen otherwise
-ignored paths.
+ignored paths. Configuration-derived `core.excludesFile` is deliberately empty
+at the Git subprocess boundary and is not part of the effective ignore policy.
 
 ## Schema Contract
 
@@ -205,6 +206,13 @@ Semantic diffs reconcile identity continuity and tag it with explicit
 When a move has multiple equally similar destinations (within 0.05), the
 provider reports the pair as remove/add and emits a `W_MOVE_AMBIGUOUS` warning
 in the diff `warnings` array rather than guessing.
+
+A file rename whose content is byte-identical on both sides has no entity-level
+delta to reconcile, but the file path is a component of every symbol ID in it,
+so the rename still re-identifies every symbol. Such a file is reported with a
+single module-scope `moved` change carrying `old_path`/`new_path` and
+`reconciliation: MOVED`, so a pure rename is never indistinguishable from an
+empty diff.
 
 ## Relations
 
@@ -353,10 +361,77 @@ files dominating large-repo runs. Files above the cap still emit file records,
 but symbol parsing is skipped and an `E_FILE_TOO_LARGE` partial failure is
 reported.
 
+## Git Subprocess Configuration Boundary
+
+Every production Git subprocess must discard inherited repository-selection,
+command-scope configuration injection, attribute-source and pathspec-control
+variables, `GIT_TRACE*` output targets, and Git for Windows'
+`GIT_REDIRECT_*` standard-stream targets. `GIT_TEXTDOMAINDIR` is also discarded
+because Git probes that directory during startup. Those variables can otherwise
+make Git open arbitrary paths or sockets, including UNC targets, or override the
+explicit path and attribute semantics of machine-readable commands. Inherited
+global and system Git configuration is disabled. To preserve intentionally
+shared or foreign-owned repositories, protected command-scope `safe.directory`
+entries authorize only the selected command directory and its ancestors: the
+exact candidates Git can discover while walking upward from that directory.
+The provider never uses the unrestricted `safe.directory=*` exception.
+Repository-local configuration remains available for structural settings
+required to read the selected repository, but the bounded metadata preflight
+rejects active `[include]` and `[includeIf]` sections before Git starts,
+including sections in `config.worktree` when `extensions.worktreeConfig`
+enables it. The same preflight parses and checks an active `core.worktree` path.
+It also rejects active partial-clone/promisor
+configuration: `extensions.partialClone`, a true `remote.*.promisor`, or any
+`remote.*.partialCloneFilter`. Git before 2.45 can inspect a local or UNC
+promisor URL before applying the transport deny-list, so partial clones are
+refused across the supported Git range rather than weakening no-egress on older
+clients.
+
+Command-scope configuration must set selected-path `safe.directory` entries,
+`core.fsmonitor=false`,
+`log.showSignature=false`, `log.mailmap=false`, `submodule.recurse=false`,
+`core.excludesFile=` and `core.attributesFile=`, and pin `diff.orderFile` to the
+platform null device. Thus Git cannot connect to its configured fsmonitor daemon,
+trigger log signature verification, consult configuration-derived external
+ignore/attribute/mailmap/diff-order files, or make grep enter a nested submodule
+checkout. Machine-readable grep calls also force no line numbers, columns,
+color, or full-name rewriting so repository configuration cannot change their
+record grammar. Working-tree snapshot caching remains disabled rather than
+running Git's conversion-aware status machinery, which can execute configured
+clean or process filters. In-repository `.gitignore`, `.git/info/exclude`,
+per-worktree excludes, and `.gitattributes` remain available; only the
+configuration-derived external files are neutralized.
+
+Before the first worktree Git command that recursively enumerates untracked
+content, the provider completes a bounded traversal beneath a held repository
+root. The preflight never reads or resolves nested case-insensitive `.git`
+markers and refuses Git enumeration when it encounters one, a traversable
+redirect, a mount boundary, an unreadable directory, cancellation, or a
+traversal ceiling. A nested marker routes to the existing bounded filesystem
+fallback only after the full preflight proves that no other directory is a
+mount or traversable redirect. Unreadable local subtrees retain the fallback's
+warned omission while the preflight checks every other reachable directory.
+Redirects, mount boundaries, cancellation, and traversal ceilings fail closed.
+Fallbacks selected by earlier Git failures pass through the same safety gate.
+The provider exposes this filesystem-traversal gate to local consumers such as
+`stats`, so a non-provider fallback cannot silently reintroduce mount traversal.
+
+Implicit repository discovery is the sole ceiling-sensitive path. When
+`GIT_CEILING_DIRECTORIES` is present, the CLI applies its usable absolute entries
+in-process. Entries before Git's first empty-list marker are canonicalized with
+the provider's same-volume guarded path walk; entries after it stay lexical.
+The raw list is never passed to Git, because Git's own canonicalization could
+probe an off-volume or UNC entry; a pre-marker entry that cannot be resolved by
+the guarded walk therefore makes implicit discovery fail closed. Commands
+operating on an already selected repository discard the ceiling with every
+other inherited repository-selection variable.
+
 ## Listing And Memory Bounds
 
-A snapshot's memory must be set by the caller's limits, not by what happens to be
-on disk. Two bounds are enforced, and both are visible in the output:
+A snapshot's retained graph memory is set by the caller's limits, not by what
+happens to be on disk. Discovery that must inspect more than the retained file
+set for security and policy fidelity has separate fixed raw-input bounds. The
+following bounds are enforced:
 
 - **Per-file read cap** — the same limit as the parser input cap (`MaxParseBytes`,
   4 MiB by default). A file above it is never materialized in memory: its size,
@@ -369,12 +444,77 @@ on disk. Two bounds are enforced, and both are visible in the output:
   overrides; negative removes it). Truncation is deterministic in sorted path
   order and always reported as `W_FILE_LIMIT`, naming the real count, the limit
   and the override.
+- **Git worktree discovery cap** — each index, eligible-worktree, or explicitly
+  requested ignored-worktree listing accepts at most 1,000,000 raw
+  NUL-delimited records and 256 MiB including delimiters. These listings must
+  inspect paths beyond `MaxFiles` to find later git-directory evidence before
+  retaining a deterministic prefix. Crossing either bound terminates Git and
+  fails the listing explicitly rather than buffering attacker-sized output or
+  retrying through another unbounded path.
+- **Git metadata validation cap** — before a production Git subprocess starts,
+  the resolved Git administrative directory, common directory, and every
+  recursively discovered alternate object store are walked from held directory
+  handles. The walk accepts at most 2,000,000 entries and 256 MiB of aggregate
+  metadata-path bytes relative to the held resolver root, so its bound is
+  independent of the checkout's absolute path prefix. It refuses mount points,
+  off-volume redirects, and special files, except for Git's own fsmonitor daemon
+  socket while fsmonitor is explicitly disabled for the subprocess; crossing
+  either bound fails closed and refuses the subprocess rather than validating an
+  incomplete metadata tree.
+  Immediately adjacent cache/HEAD/source setup helpers may reuse one
+  repository-bound validation receipt carried by their context; it is neither
+  global nor persisted beyond that operation setup.
+- **Listed-directory observation cap** — the git-directory exclusion pass
+  retains at most 200,000 unique ancestor directories and 64 MiB of their path
+  bytes. Crossing either cap fails the listing explicitly; it never continues
+  with incomplete pointer evidence.
+- **Filesystem-fallback discovery cap** — a fallback traversal accepts at most
+  1,000,000 raw directory entries and 256 MiB of their repository-relative path
+  bytes, and retains at most 200,000 directories and 64 MiB of directory paths.
+  Directories are read in batches of 256 rather than materialized by an
+  unbounded `ReadDir`. Crossing any bound fails explicitly before a partial
+  listing can be returned.
+- **`.git`-pointer sweep budget** — 20,000 admitted directories and 20,000
+  inspected directory entries per working-tree listing
+  (`ENTIRE_GRAPH_SWEEP_DIR_BUDGET` overrides; 0 or negative removes it). The
+  sweep that looks for a suppressed `.git` pointer descends the roots Git
+  collapsed, ignored trees included, so its size is set by content Git omits — a
+  `node_modules`, a package store, a build cache — and without a bound one query
+  is a whole-tree scan of it. The traversal stays beneath a held repository root,
+  refuses symlinks, reparse points, and mount points (Linux uses `openat2`
+  no-crossing resolution when available, with a bounded mount-table preflight
+  plus held no-follow descriptors on older kernels), and reports a refused
+  directory as `W_GITDIR_SWEEP_UNREADABLE_DIRECTORY` rather than following it.
+  Rooted path-component work is capped at 16 times the configured directory
+  budget. The budget is one ledger for the whole listing, so
+  splitting one large ignored tree into many, or flattening it into arbitrarily
+  many files, buys no extra allowance, and
+  exhaustion is not silence: it records hidden evidence, which makes every
+  observed directory carrying a git directory's structure an exclusion target,
+  and it is reported as `W_GITDIR_SWEEP_BUDGET` (`W_GITDIR_SWEEP_CANCELLED` when
+  the caller's context ended it). Running the ledger out therefore produces a
+  WIDER exclusion than a completed sweep, never a narrower one.
+- **Git directory-listing raw-output cap** — 2,000,000 raw NUL-delimited
+  records or 64 MiB including delimiters, charged before non-directory
+  filenames are discarded. A pattern-only ignore can otherwise make
+  `git ls-files --directory` emit one record per ignored file without spending
+  the directory ledger. Crossing either cap terminates Git, treats the listing
+  as incomplete, and selects the fail-closed derived sweep.
+- **Aggregate gitfile read cap** — 64 MiB of `.git` and `commondir` pointer bytes
+  per working-tree listing. Individual `.git` files retain Git's 1 MiB fidelity
+  limit and `commondir` retains a 64 KiB lexical window, but those per-file
+  allowances cannot multiply by 20,000 observations. Exhaustion records hidden
+  evidence and emits `W_GITDIR_POINTER_READ_BUDGET`.
 
 The working-tree listing is Git's own view of the working tree (tracked files plus
-untracked files no exclude rule covers). Every exclude source Git applies — nested
-`.gitignore` files, `.git/info/exclude`, per-worktree excludes, `core.excludesFile`
-— therefore applies to the graph. A filesystem walk that honours the ignore stack
-per directory is the fallback for a tree Git cannot enumerate.
+untracked files no effective exclude rule covers). Repository-controlled exclude
+sources Git applies — nested `.gitignore` files, `.git/info/exclude`, and
+per-worktree excludes — therefore apply to the graph. Configuration-derived
+`core.excludesFile` is neutralized at command scope and does not apply. A
+filesystem walk that honours the ignore stack per directory is the fallback for a
+tree Git cannot enumerate. That fallback conservatively retains ambiguous
+vendored directories and emits `W_GIT_WORKTREE_FALLBACK`, because it cannot
+reproduce every Git-only policy and excluded files can therefore be present.
 
 ## Capability Reporting
 

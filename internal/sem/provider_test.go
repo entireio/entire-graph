@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -1769,6 +1771,69 @@ fn main() {}
 	}
 }
 
+func TestInventoryOnlyFilesEmitNoCallRelations(t *testing.T) {
+	// An inventory-only filetype gets a single `document` symbol whose block is
+	// the whole file. The generic `name(` call scanner ran over it like any
+	// other symbol body, so a unified diff, a CoffeeScript file or an Arduino
+	// sketch could emit a CALLS edge into an unrelated language's symbol
+	// through the globally-unique-name fallback. docs/language-support.md
+	// promises the opposite: inventory-only coverage is file and document
+	// symbols "without claiming call/type/data-flow analysis", and
+	// `capabilities --json` declares only CONTAINS/DEFINES for these languages.
+	repo := t.TempDir()
+	writeFile(t, repo, "svc/service.go", `package svc
+
+type Stage struct{}
+
+func (s Stage) Advance() int {
+	return 1
+}
+
+func RunPipeline() int {
+	return 1
+}
+`)
+	writeFile(t, repo, "notes/change.patch", `--- a/x
++++ b/x
+@@ -1 +1 @@
+-old
++RunPipeline()
+`)
+	writeFile(t, repo, "sketch/blink.ino", `void loop() {
+  RunPipeline();
+}
+`)
+	// A receiver-shaped call exercises the second CALLS producer
+	// (receiverCallRelations), which is gated separately from the bare-name scan.
+	writeFile(t, repo, "web/app.coffee", `run = -> Stage.Advance()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	languageByID := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		languageByID[symbol.ID] = symbol.Language
+	}
+	inventory := map[string]bool{"Patch": true, "Diff": true, "Arduino": true, "CoffeeScript": true}
+	for _, relation := range snapshot.Relations {
+		switch relation.Type {
+		case "CALLS", "CONSTRUCTS", "ASYNC_CALLS":
+		default:
+			continue
+		}
+		if inventory[languageByID[relation.FromID]] {
+			t.Fatalf("inventory-only %s symbol emitted %s: %s -> %s",
+				languageByID[relation.FromID], relation.Type, relation.FromID, relation.ToID)
+		}
+	}
+	// The semantic side of the same repository is untouched.
+	if !hasSymbolNamed(snapshot.Symbols, "RunPipeline") {
+		t.Fatalf("Go symbol missing: %#v", snapshot.Symbols)
+	}
+}
+
 func TestResourceDependsOnGraph(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "main.tf", `resource "aws_vpc" "main" {
@@ -1796,6 +1861,60 @@ resource "aws_subnet" "web" {
 	}
 	if deps[0][0] != "resource.aws_subnet.web" || deps[0][1] != "resource.aws_vpc.main" {
 		t.Fatalf("unexpected dependency %v", deps[0])
+	}
+}
+
+func TestHCLTopLevelAttributesEmitSymbols(t *testing.T) {
+	// A Terraform variables file (`.tfvars`, `*.auto.tfvars`) is by definition
+	// nothing but top-level attribute assignments: the format rejects blocks.
+	// Extracting only `block` nodes therefore made every .tfvars file in every
+	// repository produce zero symbols and zero relations, silently — the file
+	// was parsed, HCL is advertised as a semantic language, and nothing was
+	// reported as missing. Top-level attributes in hand-written .hcl configs
+	// (Consul/Nomad/Vault `datacenter = "dc1"`) were invisible for the same
+	// reason. Attributes INSIDE a block stay folded into the block symbol.
+	repo := t.TempDir()
+	writeFile(t, repo, "prod.tfvars", `region         = "us-west-2"
+instance_count = 3
+
+tags = {
+  env = "prod"
+}
+`)
+	writeFile(t, repo, "main.tf", `datacenter = "dc1"
+
+resource "aws_s3_bucket" "logs" {
+  bucket = "app-logs"
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		if symbol.Language == "HCL" {
+			got[symbol.FilePath+":"+symbol.Name] = symbol.Kind
+		}
+	}
+	for _, want := range []string{
+		"prod.tfvars:region",
+		"prod.tfvars:instance_count",
+		"prod.tfvars:tags",
+		"main.tf:datacenter",
+	} {
+		if got[want] != "setting" {
+			t.Fatalf("HCL top-level attribute %q not extracted as a setting: %#v", want, got)
+		}
+	}
+	if got["main.tf:logs"] != "block" {
+		t.Fatalf("HCL block symbol regressed: %#v", got)
+	}
+	// A nested attribute is part of its block's body, not a symbol of its own.
+	if _, nested := got["main.tf:bucket"]; nested {
+		t.Fatalf("attribute nested in a block must not be extracted: %#v", got)
 	}
 }
 
@@ -10622,7 +10741,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("feature %s should not require network access", feature)
 		}
 	}
-	for _, feature := range []string{"stable_symbol_ids", "semantic_diff", "ndjson_snapshot", "durable_preindex", "focused_neighbors"} {
+	for _, feature := range []string{"stable_symbol_ids", "semantic_diff", "ndjson_snapshot", "compact_snapshot_ndjson_v1", "scip_snapshot_experimental", "durable_preindex", "focused_neighbors"} {
 		if !caps.OptionalLocalOnlyFeatures[feature] {
 			t.Fatalf("optional feature %s not advertised: %#v", feature, caps.OptionalLocalOnlyFeatures)
 		}
@@ -13922,8 +14041,21 @@ func TestObjectiveCMethodFallbackExtractsColonSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshotHasSymbol(snapshot, "invalidateSessionCancelingTasks") {
+	// The method is qualified by its @implementation, exactly as the
+	// tree-sitter walk names it. The recovery scanner used to emit an
+	// unqualified twin instead, so this method existed twice at one source
+	// location; count the records so that cannot come back.
+	if !snapshotHasSymbol(snapshot, "AFURLSessionManager.invalidateSessionCancelingTasks") {
 		t.Fatalf("missing Objective-C colon selector method: %#v", snapshot.Symbols)
+	}
+	records := 0
+	for _, symbol := range snapshot.Symbols {
+		if strings.HasSuffix(symbol.QualifiedName, "invalidateSessionCancelingTasks") {
+			records++
+		}
+	}
+	if records != 1 {
+		t.Fatalf("expected exactly one record for invalidateSessionCancelingTasks, got %d: %#v", records, snapshot.Symbols)
 	}
 }
 
@@ -15083,5 +15215,858 @@ func TestQualifiedImportDoesNotPoisonBareSameFileType(t *testing.T) {
 	})
 	if mods, ok := qualified["Client"]; !ok || len(mods) == 0 {
 		t.Fatalf("fully-qualified name should remain import-authoritative: %#v", qualified)
+	}
+}
+
+// TestSkipVendoredDirAlwaysExcludesGitDir pins the git directory as an
+// unconditional exclusion rather than a re-includable vendored name. `.git`
+// used to be decided by isVendoredScanDir and then cancelled by
+// ignoreMatcher.ReincludesDescendant, so a repo-committed root .gitignore
+// holding `!.git/**` (or the stealthier `!.git/config`) re-included the
+// repository's own git directory.
+func TestSkipVendoredDirAlwaysExcludesGitDir(t *testing.T) {
+	t.Parallel()
+	load := func(content string) ignoreMatcher {
+		t.Helper()
+		var matcher ignoreMatcher
+		if err := matcher.loadContent(content, false); err != nil {
+			t.Fatal(err)
+		}
+		return matcher
+	}
+	untracked := func(string) bool { return false }
+	cases := []struct {
+		name      string
+		rel, base string
+		ignores   ignoreMatcher
+		want      bool
+	}{
+		{"plain", ".git", ".git", ignoreMatcher{}, true},
+		{"glob negation", ".git", ".git", load("!.git/**\n"), true},
+		{"single-file negation", ".git", ".git", load("!.git/config\n"), true},
+		{"trailing-slash negation", ".git", ".git", load("!.git/\n"), true},
+		// The unconditional rule keys off the FIRST path component, so it neither
+		// narrows the existing nested-.git exclusion nor widens onto a sibling
+		// whose name merely starts with ".git".
+		{"nested git dir stays skipped", "vendor/dep/.git", ".git", ignoreMatcher{}, true},
+		// A vendored dependency's own git directory is a git directory too, and
+		// the same negation trick reaches it: `!vendor/dep/.git/**` re-includes a
+		// descendant of `vendor/dep/.git`, which is what ReincludesDescendant
+		// asks about.
+		{"nested git dir survives a glob negation", "vendor/dep/.git", ".git", load("!vendor/dep/.git/**\n"), true},
+		{"nested git dir survives a single-file negation", "vendor/dep/.git", ".git", load("!vendor/dep/.git/config\n"), true},
+		{"github dir is first-party", ".github", ".github", load("!.git/**\n"), false},
+		{"gitattributes-like dir is first-party", ".github/workflows", "workflows", ignoreMatcher{}, false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := skipVendoredDir(testCase.rel, testCase.base, testCase.ignores, untracked); got != testCase.want {
+				t.Errorf("skipVendoredDir(%q, %q) = %v, want %v", testCase.rel, testCase.base, got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestSearchRepositoryNeverIndexesGitDirOnFilesystemFallback is the end-to-end
+// exploit. When `git ls-files` fails, worktreeSourceFiles falls back to
+// walkWorktreeFiles; with `!.git/**` committed at the repository root the walk
+// descended .git and the remote credential in .git/config became a ranked
+// search snippet.
+// gitDirCredentialMarker is the fake credential planted in the fixture's
+// .git/config remote URL. It is not a real secret.
+const gitDirCredentialMarker = "n0t-a-real-git-token"
+
+// gitDirConfigWithCredential and gitDirHookSource are the two pieces of git
+// directory content these fixtures plant: a remote URL carrying the credential,
+// and a hook that is also parseable source so it can be ranked on its own.
+const gitDirConfigWithCredential = "[remote \"origin\"]\n\turl = https://x-access-token:" + gitDirCredentialMarker + "@github.com/acme/private.git\n"
+
+const gitDirHookSource = "package hooks\n\n// PostCommitCredentialLoader returns the origin remote credential.\nfunc PostCommitCredentialLoader() string { return \"" + gitDirCredentialMarker + "\" }\n"
+
+func TestSearchRepositoryNeverIndexesGitDirOnFilesystemFallback(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// The attacker-controlled half: a committed root .gitignore that negates the
+	// git directory.
+	writeFile(t, repo, ".gitignore", "!.git/**\n")
+	// A .git directory with no HEAD, objects or refs is not a usable repository,
+	// so `git ls-files` exits non-zero and the filesystem fallback runs — the
+	// same listing path taken on a uid-mismatched bind mount git rejects for
+	// "dubious ownership", in a sandbox with no git binary, or on a corrupt
+	// index. Ordinary directory and file names only: nothing in this fixture is
+	// unrepresentable on Windows.
+	writeFile(t, repo, ".git/config", "[remote \"origin\"]\n\turl = https://x-access-token:"+gitDirCredentialMarker+"@github.com/acme/private.git\n")
+	writeFile(t, repo, ".git/hooks/post-commit.go", "package hooks\n\n// PostCommitCredentialLoader returns the origin remote credential.\nfunc PostCommitCredentialLoader() string { return \""+gitDirCredentialMarker+"\" }\n")
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	response, err := SearchRepository(t.Context(), repo, "test", "origin remote credential loader", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range response.Results {
+		if result.FilePath == ".git" || strings.HasPrefix(result.FilePath, ".git/") {
+			t.Errorf("search returned a path inside the git directory: %q", result.FilePath)
+		}
+		if strings.Contains(result.Snippet, gitDirCredentialMarker) {
+			t.Errorf("search snippet for %q leaked the .git/config remote credential", result.FilePath)
+		}
+	}
+	// files_scanned must not grow: only .gitignore and src/app.go are listable
+	// content here.
+	if response.Stats.FilesScanned != 2 {
+		t.Errorf("files_scanned = %d, want 2 (.gitignore and src/app.go only)", response.Stats.FilesScanned)
+	}
+}
+
+// TestGitDirPointerTargetResolvesSeparateGitDirPointer pins the `.git` pointer
+// parse. `git init|clone --separate-git-dir=<path>` (and a linked worktree)
+// writes `.git` as a FILE holding `gitdir: <path>`, and that path may be an
+// ordinary-looking directory inside the worktree — `.repo-git`, which the
+// component match of hasGitDirComponent does not cover. The parse is local on
+// purpose: the listing paths that ask this question include the filesystem
+// fallback, which runs because git already failed.
+func TestGitDirPointerTargetResolvesSeparateGitDirPointer(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		// dir is the repo-relative directory whose `.git` is resolved.
+		dir string
+		// setup prepares the repository and returns the expected target ("" when
+		// there is none); it receives the root so a case can name an absolute path.
+		setup func(t *testing.T, repo string) string
+	}{
+		{"no pointer at all", "", func(t *testing.T, repo string) string {
+			return ""
+		}},
+		{"ordinary .git directory", "", func(t *testing.T, repo string) string {
+			if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return ""
+		}},
+		{"relative pointer inside the worktree", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: .repo-git\n")
+			return ".repo-git"
+		}},
+		{"relative pointer into a subdirectory", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: tools/state/.repo-git\n")
+			return "tools/state/.repo-git"
+		}},
+		{"absolute pointer inside the worktree", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: "+filepath.ToSlash(filepath.Join(repo, ".repo-git"))+"\n")
+			return ".repo-git"
+		}},
+		// Git resolves a relative target against the directory holding the `.git`
+		// file, not against the repository root.
+		{"nested pointer resolves against its own directory", "vendor/dep", func(t *testing.T, repo string) string {
+			writeFile(t, repo, "vendor/dep/.git", "gitdir: .repo-git\n")
+			return "vendor/dep/.repo-git"
+		}},
+		{"nested pointer climbing back into the repository", "vendor/dep", func(t *testing.T, repo string) string {
+			writeFile(t, repo, "vendor/dep/.git", "gitdir: ../../state/.repo-git\n")
+			return "state/.repo-git"
+		}},
+		{"pointer escaping the worktree", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: ../elsewhere/.git\n")
+			return ""
+		}},
+		// The root is INSIDE the repository, not outside it: git follows
+		// `gitdir: .` to the root and then lists the git directory's own files
+		// as ordinary content (git 2.54.0). recordTarget decides what to do with
+		// that; resolving it to "" said there was nothing there.
+		{"pointer at the worktree root itself", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: .\n")
+			return "."
+		}},
+		{"absolute pointer outside the worktree", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: "+filepath.ToSlash(t.TempDir())+"\n")
+			return ""
+		}},
+		{"no gitdir prefix", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", ".repo-git\n")
+			return ""
+		}},
+		{"empty target", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: \n")
+			return ""
+		}},
+		// Git strips only the trailing newline, so the surplus spaces are the
+		// name: `git init --separate-git-dir='<wt>/  '` and a `gitdir:   `
+		// pointer resolve to a directory literally called two spaces, verified
+		// on git 2.54.0.
+		{"spaces after the prefix are the path, not padding", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir:   \n")
+			if !trailingSpaceNameTestFS(t, repo) {
+				return ""
+			}
+			if err := os.Mkdir(filepath.Join(repo, "  "), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return "  "
+		}},
+		// The reader accepts this pointer, but its target cannot be looked up on
+		// any supported filesystem. Resolution must return no target rather than
+		// an unchecked lexical spelling that a concurrent redirect can replace;
+		// the reader-only fidelity is pinned separately.
+		{"unrepresentably long pointer target is not returned unchecked", "", func(t *testing.T, repo string) string {
+			target := ".repo-git" + strings.Repeat("x", 8*maxGitPointerBytes)
+			writeFile(t, repo, ".git", "gitdir: "+target+"\n")
+			return ""
+		}},
+		// Git refuses the whole `.git` FILE above 1 MiB (`fatal: too large to
+		// be a .git file`), checked on the file's real size and before it reads
+		// a single byte — so a file this size names nothing to git, however the
+		// bytes inside it are shaped, and this reader must refuse it too.
+		{"pointer file larger than git's 1 MiB ceiling is refused", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: .repo-git"+strings.Repeat("x", maxGitFileBytes))
+			return ""
+		}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+			want := testCase.setup(t, repo)
+			if want != "" && want != "." && want != "  " {
+				if err := os.MkdirAll(filepath.Join(repo, filepath.FromSlash(want)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, ok, hidden := gitDirPointerTarget(repo, testCase.dir)
+			if ok != (want != "") || hidden || got != want {
+				t.Errorf("gitDirPointerTarget(%q) = (%q, %v, hidden %v), want (%q, %v, false)", testCase.dir, got, ok, hidden, want, want != "")
+			}
+		})
+	}
+}
+
+// TestGitDirExcluderCoversEveryGitDirShapeWithoutWideningOntoGitPrefixedNames
+// pins the listing predicate: a `.git` component at ANY depth and every observed
+// pointer target are excluded, while a sibling whose name merely shares a prefix
+// (.github, and `.repo-git`-prefixed names) stays first-party source.
+func TestGitDirExcluderCoversEveryGitDirShapeWithoutWideningOntoGitPrefixedNames(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, ".git", "gitdir: .repo-git\n")
+	writeFile(t, repo, "vendor/dep/.git", "gitdir: .dep-git\n")
+	// Both targets are real git directories on disk, HEAD aside: git resolves a
+	// `.git` file and then asks is_git_directory() of what it names, so a
+	// pointer naming nothing at all names nothing here either.
+	writeHeadlessGitDirFixture(t, repo, ".repo-git")
+	writeHeadlessGitDirFixture(t, repo, "vendor/dep/.dep-git")
+	excluder := newGitDirExcluder(t.Context(), repo)
+	cases := []struct {
+		rel  string
+		want bool
+	}{
+		// Rule 1: a `.git` component at any depth, before anything is observed.
+		{".git", true},
+		{"vendor/dep/.git", true},
+		{"vendor/dep/.git/config", true},
+		{"a/b/c/.git/hooks/post-commit.go", true},
+		// Rule 2: the root pointer, observed by newGitDirExcluder.
+		{".repo-git", true},
+		{".repo-git/config", true},
+		// Not first-party-looking, but not a git directory either.
+		{".github", false},
+		{".github/workflows/ci.yml", false},
+		{".repo-github", false},
+		{".repo-gitignore", false},
+		{"src/app.go", false},
+		// The nested pointer has not been observed yet.
+		{"vendor/dep/.dep-git/config", false},
+	}
+	for _, testCase := range cases {
+		if got := excluder.excluded(testCase.rel); got != testCase.want {
+			t.Errorf("excluded(%q) = %v, want %v", testCase.rel, got, testCase.want)
+		}
+	}
+	// Observing the directory that holds the nested pointer resolves it against
+	// that directory, and only then does its target become excluded.
+	excluder.observeListedPaths([]string{"vendor/dep/.dep-git/config"}, nil)
+	if !excluder.excluded("vendor/dep/.dep-git/config") {
+		t.Error("excluded(\"vendor/dep/.dep-git/config\") = false after observing vendor/dep, want true")
+	}
+	if excluder.excluded("vendor/dep/src/app.go") {
+		t.Error("excluded(\"vendor/dep/src/app.go\") = true, want false")
+	}
+}
+
+// TestSearchRepositoryNeverIndexesSeparateGitDirOnFilesystemFallback is the
+// exploit for a `--separate-git-dir` target inside the worktree. `.git` is a
+// FILE pointing at `.repo-git`, so the first-component `.git` skip never sees
+// the git directory: the filesystem fallback walked `.repo-git` and the remote
+// credential in `.repo-git/config` came back as a ranked search snippet.
+func TestSearchRepositoryNeverIndexesSeparateGitDirOnFilesystemFallback(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// The `.git` pointer git writes for `--separate-git-dir=.repo-git`. The
+	// target holds no HEAD, objects or refs, so `git ls-files` exits non-zero and
+	// the filesystem fallback runs — the same listing path taken on a
+	// uid-mismatched bind mount git rejects for "dubious ownership", in a sandbox
+	// with no git binary, or on a corrupt index. Ordinary directory and file
+	// names only: nothing in this fixture is unrepresentable on Windows.
+	writeFile(t, repo, ".git", "gitdir: .repo-git\n")
+	writeHeadlessGitDirFixture(t, repo, ".repo-git")
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, ".repo-git")
+}
+
+// TestSearchRepositoryNeverIndexesSeparateGitDirGitListed is the same exploit on
+// the primary listing path. `git ls-files --others` reports a separate git
+// directory inside the worktree as ordinary untracked content, so the leak never
+// needed the fallback at all: a working git binary hands the git directory
+// straight to the listing.
+func TestSearchRepositoryNeverIndexesSeparateGitDirGitListed(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// A usable git directory, built by hand rather than by `git init` so the
+	// fixture is deterministic and leaves nothing read-only behind: HEAD, objects
+	// and refs are all git needs to enumerate this worktree. Where no git binary
+	// answers, the listing falls back to the walk and the same invariant holds.
+	writeFile(t, repo, ".git", "gitdir: .repo-git\n")
+	writeFile(t, repo, ".repo-git/HEAD", "ref: refs/heads/main\n")
+	if err := os.MkdirAll(filepath.Join(repo, ".repo-git", "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".repo-git", "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, ".repo-git/config", "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = https://x-access-token:"+gitDirCredentialMarker+"@github.com/acme/private.git\n")
+	writeFile(t, repo, ".repo-git/hooks/post-commit.go", "package hooks\n\n// PostCommitCredentialLoader returns the origin remote credential.\nfunc PostCommitCredentialLoader() string { return \""+gitDirCredentialMarker+"\" }\n")
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, ".repo-git")
+}
+
+// TestSearchRepositoryNeverIndexesNestedGitDirs is the nested shape of the same
+// exploit: the git directory of a vendored dependency, which the
+// first-component match this PR started from did not reach. Both forms appear —
+// `vendor/dep/.git/` as a directory, and `vendor/other/.git` as a `gitdir:`
+// pointer to a sibling `.dep-git/` — under a committed root .gitignore whose
+// negations name descendants of each, which is exactly what
+// ReincludesDescendant consults and therefore what cancelled the vendored skip.
+func TestSearchRepositoryNeverIndexesNestedGitDirs(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, ".gitignore", "!vendor/dep/.git/config\n!vendor/other/.dep-git/config\n")
+	writeFile(t, repo, "vendor/dep/.git/config", gitDirConfigWithCredential)
+	writeFile(t, repo, "vendor/dep/.git/hooks/post-commit.go", gitDirHookSource)
+	// The nested dependency uses --separate-git-dir, so its `.git` is a pointer
+	// file and the git directory itself carries an ordinary name.
+	writeFile(t, repo, "vendor/other/.git", "gitdir: .dep-git\n")
+	writeHeadlessGitDirFixture(t, repo, "vendor/other/.dep-git")
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, "vendor/dep/.git", "vendor/other/.dep-git")
+}
+
+// writeGitDirFixture writes what git itself checks to recognise a directory as a
+// repository — the HEAD file plus objects/ and refs/ — alongside the content
+// these fixtures plant. Nothing creates a loose object, so the tree leaves no
+// read-only file behind for t.TempDir cleanup on Windows.
+func writeGitDirFixture(t *testing.T, repo, dir string) {
+	t.Helper()
+	writeFile(t, repo, dir+"/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, repo, dir+"/config", gitDirConfigWithCredential)
+	writeFile(t, repo, dir+"/hooks/post-commit.go", gitDirHookSource)
+	for _, sub := range []string{"objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(repo, filepath.FromSlash(dir), sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// writeHeadlessGitDirFixture writes the same git directory with NO HEAD, which
+// is what a `--separate-git-dir` target looks like once its HEAD is missing or
+// corrupt — the state that makes git refuse the worktree and the filesystem
+// fallback run. git itself calls such a directory `not a git repository`, so the
+// structural rule cannot reach it and only a `gitdir:` pointer can; that is the
+// complementarity these fixtures isolate.
+//
+// objects/ and refs/ are still there because `git init` creates them and every
+// real git directory has them. They are what separates this directory from the
+// ordinary source tree a stray `.git` file might otherwise name.
+func writeHeadlessGitDirFixture(t *testing.T, repo, dir string) {
+	t.Helper()
+	writeGitDirFixture(t, repo, dir)
+	if err := os.Remove(filepath.Join(repo, filepath.FromSlash(dir), "HEAD")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLooksLikeGitDir pins the structural half of the git-directory rule: a
+// directory carrying HEAD, objects/ and refs/ IS a git directory whatever it is
+// named, and nothing short of all three is.
+func TestLooksLikeGitDir(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+		want  bool
+	}{
+		{"complete git directory", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+		}, true},
+		{"no HEAD", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+			if err := os.Remove(filepath.Join(dir, "d", "HEAD")); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"no objects", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+			if err := os.Remove(filepath.Join(dir, "d", "objects")); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"no refs", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+			if err := os.Remove(filepath.Join(dir, "d", "refs")); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"HEAD is a directory, not a file", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+			if err := os.Remove(filepath.Join(dir, "d", "HEAD")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(dir, "d", "HEAD"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"ordinary source directory", func(t *testing.T, dir string) {
+			writeFile(t, dir, "d/app.go", "package d\n")
+		}, false},
+		{"path is a file, not a directory", func(t *testing.T, dir string) {
+			writeFile(t, dir, "d", "not a directory\n")
+		}, false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			testCase.setup(t, dir)
+			if got := looksLikeGitDir(filepath.Join(dir, "d")); got != testCase.want {
+				t.Errorf("looksLikeGitDir = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestGitDirExcluderObservesGitlinkEntries pins the listed path itself as an
+// observation site. Git emits a tracked nested repository as ONE gitlink entry
+// with no trailing slash, so `vendor/dep` is never an ancestor of anything in
+// the listing; observing only ancestors walks straight past the directory that
+// holds the `.git` pointer, and the target the pointer names stays listed.
+func TestGitDirExcluderObservesGitlinkEntries(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "vendor/dep/.git", "gitdir: ../../state/.dep-git\n")
+	writeHeadlessGitDirFixture(t, repo, "state/.dep-git")
+	writeFile(t, repo, "src/app.go", "package src\n")
+	// Exactly what `git ls-files --cached --others --exclude-standard` reports
+	// for that tree: the gitlink as one entry, and the target's files in full.
+	listed := []string{"src/app.go", "state/.dep-git/config", "vendor/dep"}
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.observeListedPaths(listed, []string{"vendor/dep"})
+	if !excluder.excluded("state/.dep-git/config") {
+		t.Error(`excluded("state/.dep-git/config") = false, want true`)
+	}
+	if excluder.excluded("src/app.go") {
+		t.Error(`excluded("src/app.go") = true, want false`)
+	}
+	// The gitlink's own working tree is not the git directory and must stay
+	// listable; only what its pointer names is excluded.
+	if excluder.excluded("vendor/dep/lib.go") {
+		t.Error(`excluded("vendor/dep/lib.go") = true, want false`)
+	}
+}
+
+// TestSearchRepositoryNeverIndexesGitlinkTargetGitListed is the gitlink exploit
+// on git's own listing, and it isolates the POINTER half of the rule: the target
+// carries no HEAD/objects/refs, so nothing about it looks like a git directory
+// and only reading `vendor/dep/.git` can reveal it.
+func TestSearchRepositoryNeverIndexesGitlinkTargetGitListed(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary required to create a gitlink index entry")
+	}
+	repo := t.TempDir()
+	runGit := func(args ...string) error {
+		command := exec.Command("git", args...)
+		command.Dir = repo
+		if out, err := command.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %v: %w\n%s", args, err, out)
+		}
+		return nil
+	}
+	if err := runGit("init"); err != nil {
+		t.Skipf("git init unavailable here: %v", err)
+	}
+	writeFile(t, repo, "vendor/dep/.git", "gitdir: ../../state/.dep-git\n")
+	writeHeadlessGitDirFixture(t, repo, "state/.dep-git")
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+	// A gitlink index entry, written directly rather than by committing inside a
+	// nested repository: no loose object is created anywhere, so the tree leaves
+	// nothing read-only for t.TempDir cleanup on Windows. Git does not require
+	// the referenced commit to exist locally — that is what a submodule is.
+	if err := runGit("update-index", "--add", "--cacheinfo",
+		"160000,0000000000000000000000000000000000000001,vendor/dep"); err != nil {
+		t.Skipf("gitlink index entry unsupported here: %v", err)
+	}
+
+	assertNoGitDirLeak(t, repo, "state/.dep-git")
+}
+
+// TestSearchRepositoryNeverIndexesGitlinkTargetOnFilesystemFallback is the same
+// shape on the walk, and it isolates the STRUCTURAL half. The pointer sits in
+// `vendor/`, which the vendored-directory heuristic skips unread, so no pointer
+// is reachable at all; the target is caught because a directory carrying HEAD,
+// objects/ and refs/ IS a git directory whatever it is named.
+func TestSearchRepositoryNeverIndexesGitlinkTargetOnFilesystemFallback(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// No usable git directory at the root, so `git ls-files` fails and the
+	// filesystem fallback runs.
+	writeFile(t, repo, "vendor/dep/.git", "gitdir: ../../state/.dep-git\n")
+	writeGitDirFixture(t, repo, "state/.dep-git")
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, "state/.dep-git")
+}
+
+// assertNoGitDirLeak runs the search these fixtures are built for and fails if
+// any result path is inside one of the named git directories, or if any snippet
+// carries the planted credential.
+func assertNoGitDirLeak(t *testing.T, repo string, gitDirs ...string) {
+	t.Helper()
+	response, err := SearchRepository(t.Context(), repo, "test", "origin remote credential loader", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range response.Results {
+		for _, gitDir := range gitDirs {
+			if result.FilePath == gitDir || strings.HasPrefix(result.FilePath, gitDir+"/") {
+				t.Errorf("search returned a path inside the git directory %q: %q", gitDir, result.FilePath)
+			}
+		}
+		if strings.Contains(result.Snippet, gitDirCredentialMarker) {
+			t.Errorf("search snippet for %q leaked the planted remote credential", result.FilePath)
+		}
+	}
+}
+
+// caseFoldingTestFS reports whether dir's filesystem folds case, so the
+// spelling-mismatch fixtures below can skip where they are unrepresentable: on a
+// case-sensitive filesystem `STATE/.dep-git` and `state/.dep-git` really are two
+// different directories, and one cannot be spelled two ways.
+func caseFoldingTestFS(t *testing.T, dir string) bool {
+	t.Helper()
+	probe := filepath.Join(dir, "tf132-case-probe")
+	if err := os.Mkdir(probe, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(probe) }()
+	_, err := os.Lstat(filepath.Join(dir, "TF132-CASE-PROBE"))
+	return err == nil
+}
+
+func normalizationFoldingTestFS(t *testing.T, dir string) bool {
+	t.Helper()
+	composed := filepath.Join(dir, "tf132-caf\u00e9-probe")
+	decomposed := filepath.Join(dir, "tf132-cafe\u0301-probe")
+	if err := os.Mkdir(composed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(composed) }()
+	composedInfo, err := os.Lstat(composed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decomposedInfo, err := os.Lstat(decomposed)
+	return err == nil && os.SameFile(composedInfo, decomposedInfo)
+}
+
+// TestGitDirExcluderMatchesTargetSpelledInAnotherCase pins the pointer half
+// against the filesystem's own case folding. The pointer names the git
+// directory `STATE/.dep-git`; the listing spells the same directory
+// `state/.dep-git`. An exact map lookup misses, and the git directory — which
+// carries no HEAD, so the structural half cannot rescue it — stays listable.
+func TestGitDirExcluderMatchesTargetSpelledInAnotherCase(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if !caseFoldingTestFS(t, repo) {
+		t.Skip("filesystem is case-sensitive: `STATE/.dep-git` and `state/.dep-git` are two directories here")
+	}
+	// Deliberately carries no HEAD, so git itself calls it "not a git
+	// repository" and the structural rule is blind: only the pointer names it,
+	// so only the pointer can exclude it.
+	writeHeadlessGitDirFixture(t, repo, "state/.dep-git")
+	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../STATE/.dep-git\n")
+	// A second git directory whose LEAF carries no letters, so the case the
+	// pointer differs in exists only in an ancestor component.
+	writeHeadlessGitDirFixture(t, repo, "state/42")
+	writeFile(t, repo, "libs/other/.git", "gitdir: ../../STATE/42\n")
+	writeFile(t, repo, "src/app.go", "package src\n")
+	listed := []string{"src/app.go", "state/.dep-git/config", "state/.dep-git/hooks/post-commit.go", "state/42/config", "libs/dep", "libs/other"}
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.observeListedPaths(listed, []string{"libs/dep", "libs/other"})
+	for _, rel := range []string{"state/.dep-git/config", "state/.dep-git/hooks/post-commit.go", "state/42/config"} {
+		if !excluder.excluded(rel) {
+			t.Errorf("excluded(%q) = false, want true", rel)
+		}
+	}
+	if excluder.excluded("src/app.go") {
+		t.Error(`excluded("src/app.go") = true, want false`)
+	}
+}
+
+// TestSearchRepositoryNeverIndexesGitDirNamedInAnotherCase is the same
+// spelling mismatch end to end, on the filesystem fallback. The pointer sits in
+// `libs/`, which the vendored heuristic does not skip, so the pointer IS read —
+// it just names the directory in a different case than the walk spells it.
+func TestSearchRepositoryNeverIndexesGitDirNamedInAnotherCase(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if !caseFoldingTestFS(t, repo) {
+		t.Skip("filesystem is case-sensitive: `STATE/.dep-git` and `state/.dep-git` are two directories here")
+	}
+	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../STATE/.dep-git\n")
+	writeHeadlessGitDirFixture(t, repo, "state/.dep-git")
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, "state/.dep-git")
+}
+
+// TestSearchRepositoryNeverIndexesGitDirNamedInAnotherNormalization is the
+// APFS Unicode-equivalence variant of the spelling mismatch above. The pointer
+// carries a decomposed e+acute spelling while the listing carries the composed
+// spelling of the same directory. Both paths open one directory on a
+// normalization-folding volume, so exact and case-only matching are not enough.
+func TestSearchRepositoryNeverIndexesGitDirNamedInAnotherNormalization(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if !normalizationFoldingTestFS(t, repo) {
+		t.Skip("filesystem is normalization-sensitive: composed and decomposed names are distinct here")
+	}
+	const composed = "state/caf\u00e9/.dep-git"
+	const decomposed = "state/cafe\u0301/.dep-git"
+	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../"+decomposed+"\n")
+	writeHeadlessGitDirFixture(t, repo, composed)
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, composed)
+}
+
+// TestSearchRepositoryNeverIndexesGitDirNamedWithUnicodeCaseAlias covers a
+// case-fold pair strings.ToLower does not canonicalize. Default APFS treats
+// Greek capital sigma, small sigma, and final sigma as one filename, while Go
+// lowercasing leaves final sigma distinct. The excluder must use Unicode case
+// folding so a pointer spelling Σ still excludes a listing spelling ς.
+func TestSearchRepositoryNeverIndexesGitDirNamedWithUnicodeCaseAlias(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	const physical = "state/\u03c2/.dep-git"
+	const pointer = "state/\u03a3/.dep-git"
+	writeHeadlessGitDirFixture(t, repo, physical)
+	physicalInfo, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(physical)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointerInfo, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(pointer)))
+	if err != nil || !os.SameFile(physicalInfo, pointerInfo) {
+		t.Skip("filesystem does not fold the Greek sigma spellings onto one directory")
+	}
+	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../"+pointer+"\n")
+	writeFile(t, repo, "src/app.go", "package src\n\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, physical)
+}
+
+// TestSearchRepositoryNeverIndexesGitDirWithBackslashName pins POSIX path
+// semantics: a backslash is an ordinary filename byte there, not a separator.
+// Treating it like Windows rewrites the pointer target and leaves the real
+// headless git directory eligible for indexing.
+func TestSearchRepositoryNeverIndexesGitDirWithBackslashName(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("backslash is a path separator on Windows")
+	}
+	repo := t.TempDir()
+	const gitDir = `.admin\git`
+	writeFile(t, repo, "libs/dep/.git", `gitdir: ../../`+gitDir+"\n")
+	writeHeadlessGitDirFixture(t, repo, gitDir)
+	writeFile(t, repo, "src/app.go", "package src\n\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, gitDir)
+}
+
+// TestLooksLikeGitDirAcceptsSymlinkedObjectsAndRefs pins the structural half
+// against a repository layout git itself accepts: `objects` and `refs` are
+// symlinks to directories elsewhere (a shared object store, a relocated refs
+// tree). Lstat sees the symlink, not the directory, and calls a real git
+// directory ordinary content.
+func TestLooksLikeGitDirAcceptsSymlinkedObjectsAndRefs(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a directory symlink needs a privilege ordinary Windows accounts lack, so this layout is unrepresentable there")
+	}
+	dir := t.TempDir()
+	writeFile(t, dir, "d/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, dir, "d/config", gitDirConfigWithCredential)
+	for _, name := range []string{"objects", "refs"} {
+		real := filepath.Join(dir, "store", name)
+		if err := os.MkdirAll(real, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(real, filepath.Join(dir, "d", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !looksLikeGitDir(filepath.Join(dir, "d")) {
+		t.Error("looksLikeGitDir = false, want true for a git directory whose objects/ and refs/ are symlinks")
+	}
+}
+
+// TestSearchRepositoryNeverIndexesGitDirWithSymlinkedObjectStore is that same
+// layout end to end, on the walk, where the structural half is the only rule
+// that can catch it: the pointer sits in `vendor/`, which the vendored heuristic
+// skips unread.
+func TestSearchRepositoryNeverIndexesGitDirWithSymlinkedObjectStore(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a directory symlink needs a privilege ordinary Windows accounts lack, so this layout is unrepresentable there")
+	}
+	repo := t.TempDir()
+	writeFile(t, repo, "vendor/dep/.git", "gitdir: ../../state/.dep-git\n")
+	writeFile(t, repo, "state/.dep-git/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, repo, "state/.dep-git/config", gitDirConfigWithCredential)
+	writeFile(t, repo, "state/.dep-git/hooks/post-commit.go", gitDirHookSource)
+	// git accepts a repository whose object store and refs tree live elsewhere
+	// and are reached by symlink; this is how a shared object store is wired.
+	for _, name := range []string{"objects", "refs"} {
+		real := filepath.Join(repo, "store", name)
+		if err := os.MkdirAll(real, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(real, filepath.Join(repo, "state", ".dep-git", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, "state/.dep-git")
+}
+
+// TestLooksLikeGitDirRejectsInvalidHEAD pins the other direction: three names
+// are not evidence on their own. Git reads HEAD and rejects the directory when
+// it is neither `ref: <refname>` nor an object id, so a source tree that
+// happens to carry those three names must stay listed.
+func TestLooksLikeGitDirRejectsInvalidHEAD(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		head string
+		want bool
+	}{
+		{"symbolic ref", "ref: refs/heads/main\n", true},
+		{"symbolic ref separated by a tab", "ref:\trefs/heads/main\n", true},
+		// Git's validate_headref() does not validate the refname, so this names
+		// a directory git treats as a repository and it must be excluded.
+		{"symbolic ref whose refname holds a space", "ref: refs/heads/my branch\n", true},
+		// Git requires the refs/ prefix here, so a one-level ref is not one.
+		{"symbolic ref outside refs/", "ref: MERGE_HEAD\n", false},
+		{"detached object id", strings.Repeat("a", 40) + "\n", true},
+		{"sha256 object id", strings.Repeat("b", 64) + "\n", true},
+		{"object id with trailing junk", strings.Repeat("a", 40) + " stale note\n", true},
+		{"prose", "HEAD OF THE TABLE\n\nThe table's head seat.\n", false},
+		{"empty", "", false},
+		{"ref with no refname", "ref:\n", false},
+		{"csv column header", "HEAD,BODY,TAIL\n", false},
+		{"short hex", strings.Repeat("a", 39) + "\n", false},
+		{"forty non-hex", strings.Repeat("z", 40) + "\n", false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			writeFile(t, dir, "d/HEAD", testCase.head)
+			for _, sub := range []string{"objects", "refs"} {
+				if err := os.MkdirAll(filepath.Join(dir, "d", sub), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := looksLikeGitDir(filepath.Join(dir, "d")); got != testCase.want {
+				t.Errorf("looksLikeGitDir = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestGitDirExcluderKeepsSourceTreeNamedLikeAGitDir is the same false positive
+// at the listing boundary: a fixture directory carrying HEAD, objects/ and
+// refs/ is ordinary program text, and every one of its files must survive.
+func TestGitDirExcluderKeepsSourceTreeNamedLikeAGitDir(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "testdata/parser/HEAD", "HEAD,BODY,TAIL\n")
+	writeFile(t, repo, "testdata/parser/objects/loader.go", "package objects\n")
+	writeFile(t, repo, "testdata/parser/refs/table.go", "package refs\n")
+	listed := []string{"testdata/parser/HEAD", "testdata/parser/objects/loader.go", "testdata/parser/refs/table.go"}
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.observeListedPaths(listed, nil)
+	for _, rel := range listed {
+		if excluder.excluded(rel) {
+			t.Errorf("excluded(%q) = true, want false", rel)
+		}
+	}
+}
+
+// TestSearchRepositoryStillIndexesSourceTreeNamedLikeAGitDir is that false
+// positive end to end: a search that should find the fixture's source returns
+// nothing at all once the directory is misread as a git directory.
+func TestSearchRepositoryStillIndexesSourceTreeNamedLikeAGitDir(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// A CSV column header, not a git HEAD. Git's own is_git_directory() reads
+	// HEAD and rejects this directory.
+	writeFile(t, repo, "testdata/parser/HEAD", "HEAD,BODY,TAIL\n")
+	writeFile(t, repo, "testdata/parser/objects/loader.go", "package objects\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+	if err := os.MkdirAll(filepath.Join(repo, "testdata", "parser", "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "src/other.go", "package src\n")
+
+	response, err := SearchRepository(t.Context(), repo, "test", "origin remote credential loader", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, result := range response.Results {
+		if result.FilePath == "testdata/parser/objects/loader.go" {
+			found = true
+		}
+	}
+	if !found {
+		paths := make([]string, 0, len(response.Results))
+		for _, result := range response.Results {
+			paths = append(paths, result.FilePath)
+		}
+		t.Errorf("search did not return testdata/parser/objects/loader.go; results = %v", paths)
 	}
 }

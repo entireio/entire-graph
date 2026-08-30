@@ -171,11 +171,30 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		// it after the fact. Bind it to the semantic layer's effective corpus policy and validate
 		// every contributing path before writing even the replay header. Policy resolution is an
 		// optimization gate; failure declines the echo and lets the real search report any error.
-		policy, policyErr := sem.ResolveSearchReplayPolicy(ctx, repo, sem.SearchOptions{
-			Worktree:     flags.Worktree,
-			IgnoreFiles:  flags.IgnoreFiles,
-			IncludeFiles: flags.IncludeFiles,
-		})
+		var (
+			policy    sem.SearchReplayPolicy
+			policyErr error
+		)
+		if flags.Worktree {
+			// A mutable worktree cannot provide an immutable replay identity.
+			// Skip the corpus-policy observation entirely; it cannot authorize a
+			// replay and would add an unnecessary second filesystem traversal.
+			forceSessionReplace = true
+		} else {
+			policy, policyErr = sem.ResolveSearchReplayPolicy(ctx, repo, sem.SearchOptions{
+				Worktree:     false,
+				IgnoreFiles:  flags.IgnoreFiles,
+				IncludeFiles: flags.IncludeFiles,
+			})
+		}
+		if policyErr == nil && !policy.MatchesTree(scope.Tree) {
+			// Mutable worktree state cannot be pinned through the final
+			// admission-to-output interval. Discard any payload written by an
+			// older binary as the live search completes; retaining it would keep
+			// credential-bearing bytes on disk even though this binary can never
+			// safely replay them.
+			forceSessionReplace = true
+		}
 		if policyErr == nil && policy.MatchesTree(scope.Tree) {
 			replayPolicy = policy
 			replayPolicyReady = true
@@ -207,8 +226,8 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 						// Path admission can stream a large tree. Recheck the identities and exact paths
 						// after it so a concurrent ref or policy change cannot land in that interval and
 						// still release the older payload. The second admission is intentional: Git's
-						// effective worktree excludes include dynamic inputs such as core.excludesFile
-						// and nested .gitignore files that are not all part of the root-rule fingerprint.
+						// effective worktree excludes include dynamic nested .gitignore inputs that are
+						// not all part of the root-rule fingerprint.
 						finalPolicy, finalErr := sem.ResolveSearchReplayPolicy(ctx, repo, sem.SearchOptions{
 							Worktree:     flags.Worktree,
 							IgnoreFiles:  flags.IgnoreFiles,
@@ -343,11 +362,10 @@ func searchSessionScopeFor(ctx context.Context, repo string) searchSessionScope 
 	if resolved, err := filepath.Abs(repo); err == nil {
 		scope.Repo = resolved
 	}
-	commit, err := gitutil.RevParse(ctx, repo, "HEAD")
-	if err != nil {
+	if sem.EnsureGitMetadataSafeForSubprocess(repo) != nil {
 		return scope
 	}
-	tree, err := gitutil.RevParse(ctx, repo, commit+"^{tree}")
+	_, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
 	if err != nil {
 		return scope
 	}
@@ -450,11 +468,15 @@ func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem
 		encoder.SetEscapeHTML(false)
 		if err := encoder.Encode(map[string]any{
 			"record_type": "search_header",
-			"query":       response.Query,
-			"repo_root":   response.RepoRoot,
-			"commit":      response.Commit,
-			"tree":        response.Tree,
-			"profile":     response.Profile,
+			// The header record carries the envelope version for the same reason
+			// the JSON payload does: a consumer reading the stream must be able to
+			// branch on the shape before it parses a single result record.
+			"format_version": response.FormatVersion,
+			"query":          response.Query,
+			"repo_root":      response.RepoRoot,
+			"commit":         response.Commit,
+			"tree":           response.Tree,
+			"profile":        response.Profile,
 		}); err != nil {
 			return err
 		}

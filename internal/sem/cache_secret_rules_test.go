@@ -83,10 +83,10 @@ func TestProviderRecordsCacheMissesEntryFromDifferentSecretRules(t *testing.T) {
 
 	// The pre-deny build: a taxonomy that denied nothing.
 	setBuiltinSecretPatterns(t, "")
-	if err := StoreProviderRecords(t.Context(), repo, "dev", "tree-1", "symbols", cacheDir, options, records, nil); err != nil {
+	if err := storeProviderRecordsForTest(t.Context(), repo, "dev", "tree-1", "symbols", cacheDir, options, records, nil); err != nil {
 		t.Fatalf("store records under the pre-deny taxonomy: %v", err)
 	}
-	control, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "tree-1", "symbols", cacheDir, options)
+	control, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "tree-1", "tree-1", "symbols", cacheDir, options)
 	if err != nil {
 		t.Fatalf("control load under the pre-deny taxonomy: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestProviderRecordsCacheMissesEntryFromDifferentSecretRules(t *testing.T) {
 	// This build, same repo, same provider version, same tree, same mode.
 	builtinSecretIgnorePatterns = livePatterns
 	builtinSecretIgnoreRules = liveRules
-	cached, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "tree-1", "symbols", cacheDir, options)
+	cached, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "tree-1", "tree-1", "symbols", cacheDir, options)
 	if err != nil {
 		t.Fatalf("load records under the live taxonomy: %v", err)
 	}
@@ -151,11 +151,11 @@ func TestProviderRecordsKeyBindsBuiltinSecretRules(t *testing.T) {
 	repo := t.TempDir()
 	options := ProviderSnapshotOptions{Profile: ProfileFull}
 
-	liveKey, err := providerRecordsKey(repo, "local/victim", "dev", "tree-1", "symbols", options)
+	liveKey, err := providerRecordsKey(repo, "local/victim", "dev", "commit-1", "tree-1", "symbols", options)
 	if err != nil {
 		t.Fatalf("live key: %v", err)
 	}
-	repeatKey, err := providerRecordsKey(repo, "local/victim", "dev", "tree-1", "symbols", options)
+	repeatKey, err := providerRecordsKey(repo, "local/victim", "dev", "commit-1", "tree-1", "symbols", options)
 	if err != nil {
 		t.Fatalf("repeat key: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestProviderRecordsKeyBindsBuiltinSecretRules(t *testing.T) {
 	}
 
 	setBuiltinSecretPatterns(t, "")
-	priorKey, err := providerRecordsKey(repo, "local/victim", "dev", "tree-1", "symbols", options)
+	priorKey, err := providerRecordsKey(repo, "local/victim", "dev", "commit-1", "tree-1", "symbols", options)
 	if err != nil {
 		t.Fatalf("prior key: %v", err)
 	}
@@ -220,11 +220,11 @@ func TestProviderRecordsKeyBindsBuiltinSecretRuleSemantics(t *testing.T) {
 
 	restore := setBuiltinSecretPolicy(t, patterns, map[string]struct{}{"credentials": {}})
 	assertCredentialsDirectoryPolicy(t, false)
-	fileOnlyKey, err := providerRecordsKey(repo, "local/victim", "dev", "tree-1", "symbols", options)
+	fileOnlyKey, err := providerRecordsKey(repo, "local/victim", "dev", "commit-1", "tree-1", "symbols", options)
 	if err != nil {
 		t.Fatalf("file-only key: %v", err)
 	}
-	repeatKey, err := providerRecordsKey(repo, "local/victim", "dev", "tree-1", "symbols", options)
+	repeatKey, err := providerRecordsKey(repo, "local/victim", "dev", "commit-1", "tree-1", "symbols", options)
 	if err != nil {
 		t.Fatalf("repeat file-only key: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestProviderRecordsKeyBindsBuiltinSecretRuleSemantics(t *testing.T) {
 
 	setBuiltinSecretPolicy(t, patterns, nil)
 	assertCredentialsDirectoryPolicy(t, true)
-	ordinaryKey, err := providerRecordsKey(repo, "local/victim", "dev", "tree-1", "symbols", options)
+	ordinaryKey, err := providerRecordsKey(repo, "local/victim", "dev", "commit-1", "tree-1", "symbols", options)
 	if err != nil {
 		t.Fatalf("ordinary Git-semantics key: %v", err)
 	}
@@ -261,10 +261,10 @@ func TestProviderRecordsCacheMissesEntryFromDifferentSecretRuleSemantics(t *test
 
 	restore := setBuiltinSecretPolicy(t, patterns, map[string]struct{}{"credentials": {}})
 	assertCredentialsDirectoryPolicy(t, false)
-	if err := StoreProviderRecords(t.Context(), repo, "dev", "tree-1", "symbols", cacheDir, options, records, nil); err != nil {
+	if err := storeProviderRecordsForTest(t.Context(), repo, "dev", "tree-1", "symbols", cacheDir, options, records, nil); err != nil {
 		t.Fatalf("store records under file-only policy: %v", err)
 	}
-	control, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "tree-1", "symbols", cacheDir, options)
+	control, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "tree-1", "tree-1", "symbols", cacheDir, options)
 	if err != nil {
 		t.Fatalf("control load under file-only policy: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestProviderRecordsCacheMissesEntryFromDifferentSecretRuleSemantics(t *test
 
 	setBuiltinSecretPolicy(t, patterns, nil)
 	assertCredentialsDirectoryPolicy(t, true)
-	cached, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "tree-1", "symbols", cacheDir, options)
+	cached, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "tree-1", "tree-1", "symbols", cacheDir, options)
 	if err != nil {
 		t.Fatalf("load under ordinary Git semantics: %v", err)
 	}

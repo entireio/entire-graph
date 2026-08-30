@@ -69,6 +69,14 @@ type SearchOptions struct {
 	// standard cold default may widen adaptively; explicit and TopK-adaptive
 	// MaxIndexedFiles values remain exact compatibility limits.
 	progressivePreselection bool
+	// afterCachePolicyCapture is a deterministic test seam for policy-file
+	// mutation between transaction capture and the first cache lookup. It is
+	// deliberately unexported and nil in production.
+	afterCachePolicyCapture func()
+	// afterPreindexLoad is a deterministic test seam for repository-identity
+	// mutation between a complete cache lookup and source preselection. It is
+	// deliberately unexported and nil in production.
+	afterPreindexLoad func()
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -416,13 +424,27 @@ type SearchStats struct {
 	PreselectLatencyMS int64 `json:"preselect_latency_ms"`
 }
 
+// SearchFormatVersion versions the search RESPONSE ENVELOPE, the same axis
+// impact, def, neighbors, index and stats already emit as format_version. It is
+// deliberately not sem.SchemaVersion: this is a query response, not one of the
+// persisted 1.x record artifacts ADR 0001 freezes, and conflating the two would
+// make every search-payload change look like a change to the ingestion schema.
+const SearchFormatVersion = 1
+
 type SearchResponse struct {
-	Query    string         `json:"query"`
-	RepoRoot string         `json:"repo_root"`
-	Commit   string         `json:"commit,omitempty"`
-	Tree     string         `json:"tree,omitempty"`
-	Profile  string         `json:"profile"`
-	Results  []SearchResult `json:"results"`
+	// FormatVersion leads the payload so a consumer can branch on it before
+	// reading anything else. Search was the only machine-readable surface with no
+	// version discriminator at all: its five sibling query commands emit
+	// format_version and the record/snapshot surfaces emit schema_version, but a
+	// consumer parsing search JSON had nothing to tell one payload shape from the
+	// next.
+	FormatVersion int            `json:"format_version"`
+	Query         string         `json:"query"`
+	RepoRoot      string         `json:"repo_root"`
+	Commit        string         `json:"commit,omitempty"`
+	Tree          string         `json:"tree,omitempty"`
+	Profile       string         `json:"profile"`
+	Results       []SearchResult `json:"results"`
 	// The three blocks below live outside `results`, and they are declared in the order they
 	// are rendered — see the section order documented in search_blocks.go.
 	//
@@ -652,7 +674,22 @@ var sparseSearchStopWords = map[string]bool{
 
 // SearchRepository performs local hybrid lexical/semantic retrieval. It uses
 // no qrels, hosted models, embeddings, or network access.
+// SearchRepository stamps the response envelope version at the ONE place a
+// content-bearing SearchResponse leaves this package, rather than at each
+// construction site. searchRepository has two success returns and error returns
+// throughout; stamping per site means a third success path added later silently
+// emits format_version 0, which a consumer cannot tell from "field absent".
+// This mirrors how AnalyzeGitRangeWithOptions stamps SchemaVersion.
 func SearchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {
+	response, err := searchRepository(ctx, repo, providerVersion, query, options)
+	if err != nil {
+		return SearchResponse{}, err
+	}
+	response.FormatVersion = SearchFormatVersion
+	return response, nil
+}
+
+func searchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {
 	q := buildSearchQuery(query)
 	if len(q.terms) == 0 {
 		return SearchResponse{}, errors.New("search query has no meaningful terms")
@@ -698,10 +735,31 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		MaxParseBytes: options.MaxParseBytes,
 		Profile:       options.Profile,
 	}
+	searchCacheDisabled := options.DisableCache
+	if !options.Worktree && !searchCacheDisabled && options.CacheDir != "" {
+		capturedOptions, captureErr := CaptureProviderCachePolicy(repo, baseSnapshotOptions)
+		if captureErr != nil {
+			// Capturing retains every policy input at once and therefore has a
+			// stricter aggregate bound than sequential matcher construction. An
+			// optional cache must not reject a search that the uncached path can
+			// safely execute.
+			searchCacheDisabled = true
+		} else {
+			baseSnapshotOptions = capturedOptions
+			// Keep lexical preselection on the same immutable path ordering as
+			// provider keying and construction. The captured policy itself travels
+			// in baseSnapshotOptions to avoid rereading the files below.
+			options.IgnoreFiles = capturedOptions.IgnoreFiles
+			options.IncludeFiles = capturedOptions.IncludeFiles
+			if options.afterCachePolicyCapture != nil {
+				options.afterCachePolicyCapture()
+			}
+		}
+	}
 	var preindexedSnapshot ProviderSnapshot
 	preindexCacheHit := false
 	indexStarted := time.Now()
-	if !options.Worktree && !options.DisableCache {
+	if !options.Worktree && !searchCacheDisabled {
 		var err error
 		preindexedSnapshot, preindexCacheHit, err = loadCachedCompleteSearchSnapshot(
 			ctx, repo, providerVersion, baseSnapshotOptions, options.CacheDir,
@@ -710,13 +768,24 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			return SearchResponse{}, err
 		}
 	}
+	if options.afterPreindexLoad != nil {
+		options.afterPreindexLoad()
+	}
 	preindexLoadLatency := time.Since(indexStarted)
 	preselectStarted := time.Now()
 	selection, err := preselectSearchFiles(
-		ctx, repo, q, sparseQuery, options, preindexedSnapshot, preindexCacheHit,
+		ctx, repo, q, sparseQuery, options, baseSnapshotOptions, preindexedSnapshot, preindexCacheHit,
 	)
 	if err != nil {
 		return SearchResponse{}, err
+	}
+	// The repository identity can change without changing HEAD (for example
+	// when a remote URL changes). Symbols embed that identity, so a complete
+	// preindex loaded before preselection is usable only when both identities
+	// still match. Treat drift as a miss and rebuild from the captured source.
+	if preindexCacheHit && !searchSnapshotMatchesSelection(preindexedSnapshot, selection) {
+		preindexedSnapshot = ProviderSnapshot{}
+		preindexCacheHit = false
 	}
 	preselectLatency := time.Since(preselectStarted)
 	selectedFiles := selection.files
@@ -729,11 +798,11 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// graph. Do not build a cold graph merely to return no results, but do
 		// preserve cached partial failures/completeness and cache-hit provenance.
 		cachedSnapshot, cacheHit := preindexedSnapshot, preindexCacheHit
-		// Tree, not commit, is what determines whether the graph is still valid:
-		// two different commits sharing a tree parse identically, so only a tree
-		// change mid-search is a real race worth rejecting.
-		if cacheHit && selection.commit != "" && cachedSnapshot.Header.Tree != selection.tree {
-			return SearchResponse{}, errors.New("repository HEAD changed during search; retry against a stable commit")
+		// Commit can differ when two commits share a tree, but the tree and
+		// repository identity must still match: the latter participates in stable
+		// symbol IDs even when source bytes are unchanged.
+		if cacheHit && selection.commit != "" && !searchSnapshotMatchesSelection(cachedSnapshot, selection) {
+			return SearchResponse{}, errors.New("repository identity or HEAD changed during search; retry against a stable repository")
 		}
 		totalLatency := time.Since(searchStarted).Milliseconds()
 		repoRoot, commit, tree := selection.repoRoot, selection.commit, selection.tree
@@ -809,7 +878,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// ordinary build when derivation fails (for example after a HEAD move).
 		indexStarted = time.Now()
 		snapshot, cacheHit, err = loadOrDeriveSelectiveSearchSnapshot(
-			ctx, repo, providerVersion, snapshotOptions, options.CacheDir, options.DisableCache, preindexedSnapshot,
+			ctx, repo, providerVersion, snapshotOptions, options.CacheDir, searchCacheDisabled, preindexedSnapshot,
 		)
 		if err != nil {
 			return SearchResponse{}, err
@@ -817,20 +886,21 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		indexLatency += time.Since(indexStarted)
 	} else if !cacheHit {
 		indexStarted = time.Now()
-		snapshot, cacheHit, err = loadOrBuildSearchGraphSnapshot(ctx, repo, providerVersion, snapshotOptions, options.CacheDir, options.DisableCache)
+		snapshot, cacheHit, err = loadOrBuildSearchGraphSnapshot(ctx, repo, providerVersion, snapshotOptions, options.CacheDir, searchCacheDisabled)
 		if err != nil {
 			return SearchResponse{}, err
 		}
 		indexLatency += time.Since(indexStarted)
 	}
-	// See the analogous no-hit guard above: tree identity is what matters here.
-	if selection.commit != "" && snapshot.Header.Tree != selection.tree {
-		return SearchResponse{}, errors.New("repository HEAD changed during search; retry against a stable commit")
+	// See the analogous no-hit guard above. Tree identity pins source bytes;
+	// repository identity additionally pins the stable IDs built from them.
+	if selection.commit != "" && !searchSnapshotMatchesSelection(snapshot, selection) {
+		return SearchResponse{}, errors.New("repository identity or HEAD changed during search; retry against a stable repository")
 	}
 	queryStarted := time.Now()
 	useHead := !options.Worktree && snapshot.Header.Commit != ""
 	read, closeSource, err := openSearchContentReader(
-		ctx, repo, snapshot.Header.Commit, useHead, options.IgnoreFiles, options.IncludeFiles,
+		ctx, repo, snapshot.Header.Commit, useHead, options.IgnoreFiles, options.IncludeFiles, options.MaxParseBytes,
 	)
 	if err != nil {
 		return SearchResponse{}, err
@@ -1463,29 +1533,64 @@ func openSearchContentReader(
 	repo, commit string,
 	useHead bool,
 	ignoreFiles, includeFiles []string,
+	maxParseBytes int,
 ) (contentReader, func() error, error) {
+	// The content reader's cap is a ceiling on what a search RESULT can show,
+	// not a mirror of the parser's eligibility cutoff: a file too large to
+	// parse into the graph can still surface as a lexical (git-tree-grep)
+	// match, and that match still needs its snippet read. So the floor here
+	// stays the package default regardless of a caller-LOWERED MaxParseBytes
+	// -- only a caller-RAISED MaxParseBytes should raise it further, else a
+	// file the raised limit let into the snapshot would be refused right back
+	// out during ranking/snippet reads. A negative resolved value means
+	// "uncapped" (resolveMaxParseBytes's documented escape hatch) and must
+	// stay uncapped rather than be floored back up to the default.
+	resolvedMaxParseBytes := resolveMaxParseBytes(maxParseBytes)
+	maxBytes := resolvedMaxParseBytes
+	if resolvedMaxParseBytes >= 0 {
+		maxBytes = max(defaultMaxParseBytes, resolvedMaxParseBytes)
+	}
 	if useHead {
+		treePathPrefix, err := gitutil.RepoPrefix(ctx, repo)
+		if err != nil {
+			return nil, nil, err
+		}
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, commit)
 		if err != nil {
 			return nil, nil, err
 		}
 		// Snippet and body reads never need a file the indexer refuses to parse,
-		// so the reader declines it rather than materializing it twice over.
-		batch.SetMaxBytes(defaultMaxParseBytes)
+		// so the reader declines it rather than materializing it twice over. Use
+		// the wider of the package default and the caller's resolved search
+		// limit: if a caller raised MaxParseBytes, a file the raised limit lets
+		// into the snapshot must not then be refused here during ranking/snippet
+		// reads.
+		batch.SetMaxBytes(int64(maxBytes))
+		limited := gitutil.NewLimitedFileReader(ctx, repo, commit, int64(maxBytes))
 		read := func(path string) (string, bool) {
-			if strings.Contains(path, "\n") {
-				content, ok, err := gitutil.ShowFile(ctx, repo, commit, path)
-				return content, ok && err == nil
+			if !batch.IsPathSafe(path) {
+				// Same ceiling as the batch reader above. The shared exact-object
+				// fallback exists because the batch protocol cannot carry a
+				// newline-bearing path, not to exempt that path from the cap:
+				// the file's name is chosen by the repository being searched,
+				// so an unbounded read here would be a name-shaped hole in the
+				// bound. One reader also shares the component traversal allowance
+				// and prefix cache across all requested files.
+				result, err := limited.ReadFile(treePathPrefix + path)
+				return result.Content, err == nil && result.Status == gitutil.LimitedFileContent
 			}
 			content, ok, err := batch.ReadFile(path)
 			return content, ok && err == nil
 		}
-		return read, batch.Close, nil
+		closeReaders := func() error {
+			return errors.Join(batch.Close(), limited.Close())
+		}
+		return read, closeReaders, nil
 	}
 	opened, err := openSource(ctx, repo, "", sourceOptions{
 		ignoreFiles:  ignoreFiles,
 		includeFiles: includeFiles,
-		maxReadBytes: defaultMaxParseBytes,
+		maxReadBytes: maxBytes,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -1703,6 +1808,7 @@ type searchFileSelection struct {
 	sparseDocumentLength      int
 	sparseFilesContentRead    int
 	repoRoot                  string
+	repoKey                   string
 	commit                    string
 	tree                      string
 	warnings                  []ProviderWarning
@@ -1749,36 +1855,25 @@ func preselectSearchFiles(
 	repo string,
 	q, sparseQuery searchQuery,
 	options SearchOptions,
+	snapshotOptions ProviderSnapshotOptions,
 	preindexedSnapshot ProviderSnapshot,
 	preindexCacheHit bool,
 ) (searchFileSelection, error) {
-	source, err := prepareSource(ctx, repo, ProviderSnapshotOptions{
-		NoNetwork:    true,
-		Worktree:     options.Worktree,
-		IgnoreFiles:  options.IgnoreFiles,
-		IncludeFiles: options.IncludeFiles,
-	})
+	source, err := prepareSource(ctx, repo, snapshotOptions)
 	if err != nil {
 		return searchFileSelection{}, err
 	}
 	if source.close != nil {
 		defer source.close()
 	}
-	// The same exclude stack prepareSource listed the corpus with, so the one route that reaches
-	// outside that listing can apply the identical verdict. Which loader applies is decided the
-	// way openSource decides it: a committed-tree listing sees .graphignore plus the explicit
-	// files, a working-tree listing the full Git exclude stack as well.
-	loadIgnores := loadWorktreeIgnoreMatcher
-	if !options.Worktree {
-		loadIgnores = loadExplicitIgnoreMatcher
-	}
-	ignores, err := loadIgnores(source.absRepo, options.IgnoreFiles, options.IncludeFiles)
-	if err != nil {
-		return searchFileSelection{}, err
-	}
+	// Keep the exact matcher that admitted source.paths. Re-reading policy files
+	// here could give the whole-tree Git-grep route a different verdict and let
+	// it name a path the corpus listing denied, even when caching is bypassed.
+	ignores := source.ignores
 	selection := searchFileSelection{
 		ignores:                   ignores,
 		repoRoot:                  source.absRepo,
+		repoKey:                   source.key,
 		commit:                    source.commit,
 		tree:                      source.tree,
 		warnings:                  append([]ProviderWarning{}, source.warnings...),
@@ -1810,7 +1905,8 @@ func preselectSearchFiles(
 	// current HEAD; the grep below runs against source.commit directly, so a
 	// same-tree preindex built at a different commit is still an exact match.
 	exactFullPreindex := preindexCacheHit &&
-		preindexedSnapshot.Header.Tree == source.tree
+		preindexedSnapshot.Header.Tree == source.tree &&
+		preindexedSnapshot.Header.RepoKey == source.key
 	grepPatterns, grepSafe := searchGitGrepPatterns(q.terms)
 	if exactFullPreindex && !options.Worktree && !options.Deep && grepSafe {
 		matches, grepErr := gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
@@ -2075,6 +2171,10 @@ func preselectSearchFiles(
 		selection.gitGrepTreeish = ""
 	}
 	return selection, nil
+}
+
+func searchSnapshotMatchesSelection(snapshot ProviderSnapshot, selection searchFileSelection) bool {
+	return snapshot.Header.Tree == selection.tree && snapshot.Header.RepoKey == selection.repoKey
 }
 
 func searchTermsSafeForGitGrep(terms []string) bool {

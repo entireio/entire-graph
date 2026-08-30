@@ -278,13 +278,14 @@ var commandDocs = []commandDoc{
 	{
 		name:    "snapshot",
 		group:   groupInspect,
-		summary: "Stream the whole graph: files, symbols, and relations (bulk NDJSON)",
-		usage:   []string{"entire graph snapshot --repo . --format ndjson|compact-ndjson [--worktree]"},
-		long:    "One header record, then file, external-endpoint, symbol, and relation records, streamed so memory stays bounded. Superset of symbols + edges + files — use it to ingest the full graph into an agent memory or a store such as Entire Brain. compact-ndjson is a complete-snapshot-only local artifact that can be read by snapshot-query.",
+		summary: "Export the whole graph: files, symbols, and relations",
+		usage:   []string{"entire graph snapshot --repo . --format ndjson|compact-ndjson|scip [--worktree]"},
+		long:    "One header record, then file, external-endpoint, symbol, and relation records. Native and compact NDJSON stream so memory stays bounded; the experimental scip format assembles one complete protobuf Index in memory. The snapshot is a superset of symbols + edges + files for ingestion into agent memory or a store such as Entire Brain. compact-ndjson can be read by snapshot-query. scip reserves stderr for one machine-readable omission note and cannot be combined with --progress.",
 		flags:   snapshotFlagDocs,
 		examples: []string{
 			"entire graph snapshot --repo . --format ndjson",
 			"entire graph snapshot --repo . --format compact-ndjson > graph.compact.ndjson",
+			"entire graph snapshot --repo . --format scip > index.scip",
 		},
 	},
 	{
@@ -436,16 +437,16 @@ var providerFlagDocs = []flagDoc{
 	{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
 	{name: "--format", arg: "ndjson", def: "ndjson", desc: "Required output format"},
 	{name: "--worktree", desc: "Stream the working tree instead of HEAD (never cached)"},
-	{name: "--progress", desc: "Emit progress events to stderr"},
+	{name: "--progress", desc: "Emit progress events to stderr (not available with scip)"},
 	{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
 	{name: "--ignore-file", arg: "path", desc: "Extra gitignore-style exclude rules (repeatable)"},
 	{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
 }
 
-// snapshotFlagDocs extend the bulk provider flags with the compact full-snapshot format.
+// snapshotFlagDocs extend the bulk provider flags with complete-snapshot formats.
 var snapshotFlagDocs = []flagDoc{
 	{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
-	{name: "--format", arg: "ndjson|compact-ndjson", def: "ndjson", desc: "Output format; compact requires a complete snapshot"},
+	{name: "--format", arg: "ndjson|compact-ndjson|scip", def: "ndjson", desc: "Output format; compact and scip require a complete snapshot"},
 	{name: "--worktree", desc: "Stream the working tree instead of HEAD (never cached)"},
 	{name: "--progress", desc: "Emit progress events to stderr"},
 	{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},

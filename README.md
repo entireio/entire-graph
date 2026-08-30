@@ -40,8 +40,10 @@ retractions, and reproduction steps.
 
 ## Install
 
-Entire Graph requires Entire CLI 0.10.0 or later on `PATH`. The commands
-below are the official ones from the [Entire CLI installation
+Entire Graph requires Entire CLI 0.10.0 or later and Git 2.36 or later on
+`PATH`. Git 2.36 added the single-session object protocol Entire Graph uses to
+inspect an object's type before reading its contents. The commands below are
+the official ones from the [Entire CLI installation
 guide](https://docs.entire.io/installation), which also covers Windows and
 other channels.
 
@@ -89,9 +91,7 @@ The command creates or updates these files:
   is added or replaced. Text outside the markers is preserved.
 
 Review the three files, then commit them together when the instructions should
-apply to your team. Committing also matters for performance: the files are
-indexable Markdown, and while they sit uncommitted the working tree counts as
-dirty, which turns off query cache reuse (details below).
+apply to your team.
 
 Finally, start a fresh agent session in the repository. A session that was open
 during activation has not seen the new instructions.
@@ -138,6 +138,10 @@ Blast radius: 1 caller (1 direct, 0 transitive), 0 callees, 3 type consumers,
 Callers (1 direct, 0 transitive; who breaks if behavior changes):
 - Router.ServeHTTP (mux.go:203, def :188)
 ```
+
+That point-in-time capture predates ADR 0004's security correction. A current
+default working-tree query reports `cache-miss`; committed-tree queries can
+still report `cache-hit` when a matching entry exists.
 
 Only after the graph queries did the agent read source, in narrow line ranges
 around the reported locations. Its answer traced matching through
@@ -187,18 +191,17 @@ Add `--head` to ask about the committed tree instead. Bulk streams
 (`snapshot`, `symbols`, `edges`) and ref-based analysis (`diff`, `commit`)
 default to committed state.
 
-Queries write a derivative local cache; they never modify repository files.
-When the working tree is clean, a repeated query reuses a snapshot keyed to
-the committed tree and the query options. Any indexable dirty file turns reuse
-off for the repository until the tree is clean again. Examples include
-extensionless files and root dependency manifests such as `go.mod` or
-`package.json`. Dirty files the graph cannot index (a `.bin`, say) do not.
-Changing `.graphignore` selects a different cache entry.
+Queries can write a derivative local cache; they never modify repository files.
+Default working-tree queries always build fresh and do not load or store cache
+entries. A `--head` query can reuse a snapshot keyed to the committed tree and
+query options; changing `.graphignore` selects a different committed-tree
+entry.
 
 Cache state is visible where the format reports it: the default `search` JSON
 carries `stats.index_cache_hit`, and `impact`/`neighbors` text output opens
-with an `Index: cache-hit`/`cache-miss` line, as in the capture above.
-`search --format text` does not report cache state.
+with an `Index: cache-hit`/`cache-miss` line. Default working-tree queries
+report a miss; matching `--head` queries may hit. `search --format text` does
+not report cache state.
 
 `entire graph index` prewarms committed-tree (`--head`) queries only, and
 defaults to profile `full` while plain `search` defaults to `fast`. A default
