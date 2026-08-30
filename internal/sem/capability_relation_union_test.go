@@ -780,3 +780,128 @@ func TestCapabilityRelationDeclarationsMatchIsolatedExtraction(t *testing.T) {
 		})
 	}
 }
+
+// declaresFieldRelation reports whether a language's entry declares either of
+// the two relations fieldAccessRelations produces.
+func declaresFieldRelation(language string) bool {
+	for _, relation := range ooRelationSupport[language] {
+		if relation == "READS_FIELD" || relation == "WRITES_FIELD" {
+			return true
+		}
+	}
+	return false
+}
+
+// TestCapabilityDeclaredFieldRelationsRequireAFieldSymbol asserts a language may
+// not declare READS_FIELD or WRITES_FIELD unless its extractor produces a
+// symbol of kind "field".
+//
+// This is the OVER-declaration direction, and it is the one the suite could not
+// see. TestCapabilityMatrixCoversEmittedRelations fails only on a relation
+// emitted WITHOUT a declaration, so a declaration with nothing behind it is
+// invisible to it however many fixtures are added. That asymmetry is not
+// harmless: an agent told by AGENTS.md to feature-detect against
+// `capabilities --json` reads the relation, queries for it and gets nothing,
+// which fails it the same way an under-declaration does.
+//
+// The equality check above does catch one -- but only because a probe body
+// happens to contain a field access, so editing a probe to drop the access
+// would silently drop the guard with it. The mechanism makes this check exact
+// instead of incidental: fieldAccessRelations is the sole producer of both
+// relations and resolves through fieldsByContainer, which is populated from
+// symbol.Kind == "field" alone. With no field symbol there is nothing for the
+// edge to land on however the body is written.
+//
+// Zig declared READS_FIELD on exactly that footing. tree-sitter-zig names a
+// struct member `container_field`, a node type fieldEntities never admits -- it
+// appears in no Go source in this repository -- so Zig extracts the struct and
+// none of its members, and the relation was unreachable rather than merely
+// unexercised.
+func TestCapabilityDeclaredFieldRelationsRequireAFieldSymbol(t *testing.T) {
+	t.Parallel()
+
+	languages := make([]string, 0, len(capabilityRelationProbes))
+	for language := range capabilityRelationProbes {
+		if declaresFieldRelation(language) {
+			languages = append(languages, language)
+		}
+	}
+	sort.Strings(languages)
+	// Without this the whole test would pass by selecting nothing if the two
+	// relation names were ever renamed.
+	if len(languages) == 0 {
+		t.Fatal("no probed language declares READS_FIELD or WRITES_FIELD; this check would be vacuous")
+	}
+
+	for _, language := range languages {
+		t.Run(language, func(t *testing.T) {
+			t.Parallel()
+			probe := capabilityRelationProbes[language]
+
+			repo := t.TempDir()
+			writeFile(t, repo, probe.path, probe.source)
+
+			snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			total := 0
+			fields := 0
+			for _, symbol := range snapshot.Symbols {
+				if symbol.Language != language {
+					continue
+				}
+				total++
+				if symbol.Kind == "field" {
+					fields++
+				}
+			}
+			if total == 0 {
+				t.Fatalf("%s produced no symbols; %s no longer reaches the extractor", language, probe.path)
+			}
+			if fields == 0 {
+				t.Fatalf("%s declares %v but extracts no symbol of kind %q from %s; fieldAccessRelations resolves only through fieldsByContainer, which is keyed on Kind == %q, so neither field relation is reachable for this language", language, ooRelationSupport[language], "field", probe.path, "field")
+			}
+		})
+	}
+}
+
+// TestCapabilityReportCarriesEveryDeclaredRelation asserts every entry of
+// ooRelationSupport reaches `capabilities --json`.
+//
+// The map is not the contract surface. relationSupportByLanguage builds the
+// report by walking the language SPECS and folding this map in per language, so
+// a key naming a language no spec produces is dropped without a word: the
+// declaration sits in the source looking authoritative while the report agents
+// feature-detect against never carries it. A new key is exactly the shape that
+// can go missing that way, and the tests above would not notice -- they read
+// ooRelationSupport directly.
+func TestCapabilityReportCarriesEveryDeclaredRelation(t *testing.T) {
+	t.Parallel()
+
+	report := Capabilities().RelationSupportByLanguage
+
+	languages := make([]string, 0, len(ooRelationSupport))
+	for language := range ooRelationSupport {
+		languages = append(languages, language)
+	}
+	sort.Strings(languages)
+
+	for _, language := range languages {
+		reported, ok := report[language]
+		if !ok {
+			t.Errorf("ooRelationSupport declares %v for %s but capabilities --json reports no such language", ooRelationSupport[language], language)
+			continue
+		}
+		have := make(map[string]bool, len(reported))
+		for _, relation := range reported {
+			have[relation] = true
+		}
+		for _, relation := range ooRelationSupport[language] {
+			if !have[relation] {
+				t.Errorf("ooRelationSupport declares %s for %s but capabilities --json reports only %v", relation, language, reported)
+			}
+		}
+	}
+}
