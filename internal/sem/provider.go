@@ -112,11 +112,43 @@ var ooRelationSupport = map[string][]string{
 	// multilang-relations / julia-r-basic fixtures actually emit — see
 	// TestCapabilityMatrixCoversEmittedRelations, which fails on any relation
 	// emitted without a declaration.
+	//
+	// The thirteen entries below were found the same way one round later, but by
+	// probing the passes directly rather than waiting for a fixture to happen to
+	// contain the construct. The signature-type pass reads any language whose
+	// parameters carry a type the repository also defines (Dart `int a`, OCaml
+	// `(a : int)`, an Erlang `#point{}` record pattern, a Clojure `^Point`
+	// hint), and the data-flow pass is regex-driven over a callable's body, so
+	// it fires wherever a parameter is forwarded into a call — including
+	// languages with no `return` keyword at all (Erlang `total(A, B) ->
+	// add(A, B).`) and SQL function bodies.
+	//
+	// Each entry is exactly what that language emits on its own, pinned by
+	// TestCapabilityRelationDeclarationsMatchIsolatedExtraction. That test
+	// probes one language per repository deliberately: USES_TYPE resolves a
+	// signature identifier against every type symbol in the repository by short
+	// name, so a polyglot fixture can credit one language with an edge that
+	// actually points at another language's type. R is declared DATA_FLOWS only
+	// for that reason — it defines no type symbols of its own (`setClass`
+	// produces none), so every USES_TYPE edge observed from R had resolved to a
+	// foreign type.
 	"C": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	// C++ shares C's extraction path, so it reaches the same passes.
 	"C++":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	"Clojure":          {"USES_TYPE"},
+	"Dart":             {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Elixir":           {"DATA_FLOWS"},
+	"Erlang":           {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
+	"F#":               {"USES_TYPE", "PARAM_TYPE"},
 	"Groovy":           {"USES_TYPE", "PARAM_TYPE", "READS_FIELD", "DATA_FLOWS"},
-	"Julia":            {"DATA_FLOWS"},
+	"Haskell":          {"USES_TYPE", "PARAM_TYPE"},
+	"Julia":            {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
+	"Lua":              {"DATA_FLOWS"},
+	"OCaml":            {"USES_TYPE", "PARAM_TYPE"},
+	"Objective-C":      {"DATA_FLOWS"},
+	"Perl":             {"DATA_FLOWS"},
+	"R":                {"DATA_FLOWS"},
+	"SQL":              {"DATA_FLOWS"},
 	"Scala":            {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	"Swift":            {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	"Zig":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "DATA_FLOWS"},
@@ -825,7 +857,25 @@ func supportsCallExtraction(spec languageSpec) bool {
 	if spec.inventoryOnly {
 		return false
 	}
-	switch spec.language {
+	return callExtractionLanguage(spec.language)
+}
+
+// callExtractionLanguage is the single source of truth for "this language's
+// call syntax is extracted". It backs BOTH the capability report and the
+// runtime gate on the call scan (fileNeedsCallScan), so the two cannot drift:
+// a language the report says has no CALLS is a language the scanner does not
+// run on.
+//
+// They used to be independent. The report was this list; the scanner ran on
+// every file with any symbol, including the single `document` symbol an
+// inventory-only filetype gets, whose block is the whole file. A `.patch`, a
+// `.coffee` or a `.ino` therefore emitted CALLS into unrelated languages'
+// symbols through the globally-unique-name fallback — false edges in
+// `neighbors`, `impact` and search ranking, from filetypes
+// docs/language-support.md promises are "without claiming call/type/data-flow
+// analysis".
+func callExtractionLanguage(language string) bool {
+	switch language {
 	case "Bash", "C", "C++", "C#", "Clojure", "ClojureScript", "Dart", "Elixir", "Erlang", "F#", "Go", "Groovy", "Haskell", "Java", "JavaScript", "Julia", "Kotlin", "Lua", "Objective-C", "OCaml", "Perl", "PHP", "Python", "R", "Ruby", "Rust", "Scala", "SQL", "Swift", "TypeScript", "Zig", "Zsh":
 		return true
 	default:
@@ -3354,7 +3404,11 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 		lines := strings.Split(content, "\n")
 		currentFileSymbols := recordsByFile[file.Path]
-		fileNeedsCallScan := needsCallScan && !skipFastCFamilyCallScan(spec, file.Language)
+		// callExtractionLanguage keeps the scan inside the set `capabilities
+		// --json` declares CALLS for. Without it the scan also ran over
+		// inventory-only `document` symbols (whose block is the whole file) and
+		// over data/markup languages, inventing cross-language call edges.
+		fileNeedsCallScan := needsCallScan && callExtractionLanguage(file.Language) && !skipFastCFamilyCallScan(spec, file.Language)
 		fileNeedsRouteScan := spec.emits("HANDLES_ROUTE") && routeScanLanguage(file.Language)
 		fileNeedsHTTPScan := spec.emits("HTTP_CALLS") && httpScanLanguage(file.Language)
 		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language)
@@ -3932,7 +3986,12 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 					}
 				}
 			}
-			if spec.callResolution == "full" {
+			// The receiver pass resolves `recv.method(...)` and is a second
+			// producer of CALLS, so it takes the same language gate as the
+			// bare-name scan above: without it an inventory-only `document`
+			// symbol still reached it and matched a `x.y(...)` shape anywhere
+			// in the file against another language's methods.
+			if spec.callResolution == "full" && callExtractionLanguage(file.Language) {
 				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, implementersByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, typeScriptPropTypes, fieldsByContainer, swiftTypes) {
 					emit(r)
 				}

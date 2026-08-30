@@ -3595,6 +3595,19 @@ var cFamilyNonFunctionNames = map[string]bool{
 	"while":   true,
 }
 
+// cFamilyTypedefLanguage reports whether a language's grammar spells a typedef
+// as C does, so that a `type_definition` node's name must be read from its
+// declarator rather than by descending to the first identifier. Objective-C is
+// a strict C superset and shares the node, so it shares the naming rule.
+func cFamilyTypedefLanguage(language string) bool {
+	switch language {
+	case "C", "C++", "Objective-C":
+		return true
+	default:
+		return false
+	}
+}
+
 func cFamilyTypedefAliasName(node *sitter.Node, src []byte) string {
 	text := strings.TrimSpace(stripCodeLiteralsAndComments(node.Content(src)))
 	if !strings.HasPrefix(text, "typedef ") {
@@ -3610,6 +3623,76 @@ func cFamilyTypedefAliasName(node *sitter.Node, src []byte) string {
 		return ""
 	}
 	return name
+}
+
+// cFamilyTypedefDeclaratorNames returns every name a C/C++ typedef binds, in
+// source order. One typedef can declare several — `typedef struct {…} A, B;`
+// is ordinary C, and so are `typedef int I1, I2;` and mixed forms like
+// `typedef struct {…} *H1, H2[4];`. Each declarator is an independent type
+// name that code refers to on its own, so each needs its own symbol.
+//
+// The grammar puts every one of them on a `declarator` field of the
+// type_definition, so this reads the AST rather than extending
+// cFamilyTypedefNameRe, whose `$` anchor can only ever see the last one. The
+// declarator is not always a bare identifier (`*H1`, `H2[4]`, `(*F1)(int)`),
+// so the name comes from firstNameDescendant, which unwraps pointer, array and
+// function declarators alike.
+func cFamilyTypedefDeclaratorNames(node *sitter.Node, src []byte) []string {
+	if !validNode(node) || node.Type() != "type_definition" {
+		return nil
+	}
+	var names []string
+	seen := map[string]bool{}
+	for i := 0; i < int(node.ChildCount()); i++ {
+		if node.FieldNameForChild(i) != "declarator" {
+			continue
+		}
+		name := firstNameDescendant(node.Child(i), src)
+		if name == "" || cFamilyNonFunctionNames[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
+}
+
+// cFamilyTypedefAliasEntities returns the typedef names entityFromNode did not
+// emit. entityFromNode returns a single Entity, so a multi-declarator typedef
+// kept exactly one name and silently dropped the rest: `typedef struct {int v;}
+// A, B;` produced only `type:B`, so a search for `A` found nothing and a
+// parameter typed `A` had no definition to resolve against.
+//
+// The name entityFromNode chose stays the primary entity — it is what scopes
+// the struct's fields — and these are emitted as its peers, so no existing
+// symbol moves and only the missing names are added.
+func cFamilyTypedefAliasEntities(node *sitter.Node, src []byte, language string, primary Entity) []Entity {
+	if language != "C" && language != "C++" {
+		return nil
+	}
+	if primary.Kind != "type" || !validNode(node) || node.Type() != "type_definition" {
+		return nil
+	}
+	names := cFamilyTypedefDeclaratorNames(node, src)
+	if len(names) < 2 {
+		return nil
+	}
+	block := node.Content(src)
+	var aliases []Entity
+	for _, name := range names {
+		if name == primary.Name {
+			continue
+		}
+		alias := primary
+		alias.Name = name
+		// Recompute rather than copy: for a single-line declaration the
+		// fingerprint is the signature with the entity's own name blanked out,
+		// so sharing the primary's would make every alias look like the same
+		// entity to change detection.
+		alias.Fingerprint = hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: primary.Signature}, block)))
+		aliases = append(aliases, alias)
+	}
+	return aliases
 }
 
 // fastCFamilyEntities is the ProfileFast C/C++ parser. It never reaches
@@ -3943,6 +4026,9 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			entity.Local = true // nested inside another function
 		}
 		*entities = append(*entities, entity)
+		// A C/C++ typedef can bind several names at once; entityFromNode
+		// returns one entity, so the remaining declarators are emitted here.
+		*entities = append(*entities, cFamilyTypedefAliasEntities(node, src, language, entity)...)
 		if scopesChildren(language, entity.Kind) {
 			childScope = entity.Name
 		}
@@ -5100,7 +5186,19 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			// *_type_defn child; the generic name descent would instead latch onto
 			// a leading attribute ([<CustomEquality>] type SemVerInfo -> "CustomEquality").
 			name = fsharpTypeName(node, src)
-		} else if (language == "C" || language == "C++") && node.Type() == "type_definition" {
+		} else if cFamilyTypedefLanguage(language) && node.Type() == "type_definition" {
+			// Objective-C belongs here with C and C++: its grammar is a C
+			// superset and emits the same type_definition node. Left out of
+			// this branch it fell through to nodeName, which finds no `name`
+			// field on a typedef and descends to the first identifier in
+			// pre-order — the SOURCE of the alias, never the alias. So every
+			// Objective-C typedef was published under the wrong name:
+			// `typedef struct {int v;} A, B;` became `type:v` (a field),
+			// `typedef struct Node {int q;} NodeAlias;` became `type:Node`
+			// (the tag), `typedef enum {RED, GREEN} Color;` became `type:RED`
+			// (an enum constant), and `typedef NSInteger MyInt;` became
+			// `type:NSInteger` — a phantom definition of a framework type this
+			// file does not define, while `MyInt` was not a symbol at all.
 			if alias := cFamilyTypedefAliasName(node, src); alias != "" {
 				name = alias
 			} else {
@@ -5181,12 +5279,18 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		if language == "Objective-C" && node.Type() == "struct_declaration" {
 			return Entity{}, false
 		}
+		if cFamilyTagReference(node, language) {
+			return Entity{}, false
+		}
 		kind = "struct"
 		name = nodeName(node, src)
 	case "enum_item", "enum_declaration", "enum_specifier":
 		// Same as struct_declaration: Zig enums are anonymous literals named by
 		// the enclosing variable_declaration.
 		if language == "Zig" {
+			return Entity{}, false
+		}
+		if cFamilyTagReference(node, language) {
 			return Entity{}, false
 		}
 		kind = "enum"
@@ -5245,6 +5349,26 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 	case "block":
 		kind = "block"
 		name = hclBlockName(node, src)
+	case "attribute":
+		// HCL top-level attribute (`region = "us-west-2"`). A Terraform
+		// variables file (`.tfvars`, `*.auto.tfvars`) contains nothing else —
+		// the format rejects blocks — so extracting only `block` nodes left
+		// every such file with zero symbols and zero relations while HCL was
+		// advertised as a semantic language. Hand-written Consul/Nomad/Vault
+		// `.hcl` configs carry the same top-level settings. Attributes nested
+		// inside a block are that block's body and stay folded into the block
+		// symbol, which keeps a Terraform module from fanning out one symbol
+		// per argument. The node type is HCL-only in this grammar set, but the
+		// gate is explicit so another language's `attribute` node cannot leak
+		// into this case.
+		if language != "HCL" || !hclTopLevelAttribute(node) {
+			return Entity{}, false
+		}
+		name = hclAttributeName(node, src)
+		if name == "" {
+			return Entity{}, false
+		}
+		kind = "setting"
 	case "field":
 		kind = "field"
 		name = cueFieldName(node, src)
@@ -7356,8 +7480,24 @@ func objectiveCMethodEntities(content string) []Entity {
 	}
 
 	var entities []Entity
+	scope := ""
 	for i := 0; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
+		// Track the enclosing @interface/@implementation/@protocol so a
+		// recovered method carries the same qualified name the tree-sitter walk
+		// gives it. Without the scope every method the walk DID find gained an
+		// unqualified twin here: appendMissingEntities keys on kind+name, so
+		// `Ledger.add` and `add` were two different symbols at one source
+		// location, duplicating the method in the symbol table, duplicating
+		// every call edge into it, and pairing it with itself as SIMILAR_TO.
+		if declared, ok := objectiveCContainerName(trimmed); ok {
+			scope = declared
+			continue
+		}
+		if trimmed == "@end" {
+			scope = ""
+			continue
+		}
 		if !strings.HasPrefix(trimmed, "- (") && !strings.HasPrefix(trimmed, "+ (") {
 			continue
 		}
@@ -7386,7 +7526,7 @@ func objectiveCMethodEntities(content string) []Entity {
 			continue
 		}
 		header := strings.Join(headerParts, " ")
-		name := objectiveCMethodHeaderName(header)
+		name := qualify(scope, objectiveCMethodHeaderName(header))
 		if name == "" {
 			continue
 		}
@@ -7413,6 +7553,33 @@ func objectiveCMethodEntities(content string) []Entity {
 	}
 	return entities
 }
+
+// objectiveCContainerName returns the type an @interface, @implementation or
+// @protocol line declares, matching how the tree-sitter walk names the same
+// node: a category (`@implementation Foo (Bar)`) still names Foo, and a
+// superclass or protocol conformance list is not part of the name.
+func objectiveCContainerName(trimmed string) (string, bool) {
+	for _, keyword := range []string{"@interface", "@implementation", "@protocol"} {
+		if !strings.HasPrefix(trimmed, keyword) {
+			continue
+		}
+		rest := strings.TrimSpace(trimmed[len(keyword):])
+		if rest == "" {
+			// `@interface` with the name on the next line is not a shape the
+			// recovery scanner can attribute; leave the scope untouched rather
+			// than guessing at it.
+			return "", false
+		}
+		name := objectiveCContainerNamePattern.FindString(rest)
+		if name == "" {
+			return "", false
+		}
+		return name, true
+	}
+	return "", false
+}
+
+var objectiveCContainerNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*`)
 
 func objectiveCMethodHeaderName(header string) string {
 	closeReturnType := strings.IndexByte(header, ')')
@@ -8006,6 +8173,29 @@ func hclBlockName(node *sitter.Node, src []byte) string {
 	return strings.Join(parts, ".")
 }
 
+// hclTopLevelAttribute reports whether an `attribute` node sits directly in the
+// file body rather than inside a block. tree-sitter-hcl nests every attribute
+// under a `body`, so the distinguishing parent is the body's own parent:
+// `config_file` for a top-level setting, `block` for a block argument.
+func hclTopLevelAttribute(node *sitter.Node) bool {
+	body := node.Parent()
+	if !validNode(body) || body.Type() != "body" {
+		return false
+	}
+	root := body.Parent()
+	return validNode(root) && root.Type() == "config_file"
+}
+
+// hclAttributeName returns the name an HCL attribute binds — the identifier on
+// the left of the `=`.
+func hclAttributeName(node *sitter.Node, src []byte) string {
+	identifier := firstNamedChildOfType(node, "identifier")
+	if !validNode(identifier) {
+		return ""
+	}
+	return strings.TrimSpace(identifier.Content(src))
+}
+
 func hclBlockPart(node *sitter.Node, src []byte) string {
 	if node.Type() == "identifier" {
 		return strings.TrimSpace(node.Content(src))
@@ -8094,6 +8284,28 @@ func goReceiverName(node *sitter.Node, src []byte) string {
 		name = name[index+1:]
 	}
 	return strings.TrimSpace(name)
+}
+
+// cFamilyTagReference reports whether a C-family struct/enum specifier NAMES a
+// tag rather than defining one. In C the tag name is part of the type syntax, so
+// `struct Ledger *l` and `enum Mode m` parse to the same struct_specifier /
+// enum_specifier node type as the definition does — the definition is the one
+// carrying a body. Without this check every mention of a type produced another
+// "definition" of it: a three-line C file that declares `struct Ledger` once and
+// uses it twice emitted three struct symbols at three different lines, and a
+// header whose only content is prototypes emitted a phantom definition for each
+// parameter type.
+//
+// A body-less specifier at file scope is a forward declaration
+// (`struct Ledger;`) — an incomplete type, not a definition either — so it is
+// skipped on the same rule.
+func cFamilyTagReference(node *sitter.Node, language string) bool {
+	switch language {
+	case "C", "C++", "Objective-C":
+	default:
+		return false
+	}
+	return !validNode(node.ChildByFieldName("body"))
 }
 
 func qualify(scope, name string) string {
