@@ -40,7 +40,11 @@ import (
 	"strings"
 )
 
-var fsharpIdentRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_']*`)
+var (
+	fsharpIdentRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_']*`)
+	// `open Ledger`, `open type System.Math`, `open Paket.UpdateProcess`.
+	fsharpOpenRe = regexp.MustCompile(`(?m)^\s*open\s+(?:type\s+)?([A-Za-z_][A-Za-z0-9_'.]*)`)
+)
 
 // fsharpKeyword reports F# reserved words. They are language syntax, never
 // call targets, and several of them also open a binding head.
@@ -324,7 +328,7 @@ func fsharpJuxtapositionCallIdentifiers(block string, callableNames map[string]b
 	if len(callableNames) == 0 {
 		return out
 	}
-	stripped := stripCodeLiteralsAndComments(block)
+	stripped := maskFSharpLiteralsAndComments(block)
 	boundLocally := fsharpLocallyBoundNames(stripped)
 	inHead := false
 	prevEnd := 0
@@ -367,6 +371,172 @@ func fsharpJuxtapositionCallIdentifiers(block string, callableNames map[string]b
 		out[word] = struct{}{}
 	}
 	return out
+}
+
+// maskFSharpLiteralsAndComments blanks the F# literal and comment forms that
+// span lines, then hands the rest to the shared stripper.
+//
+// The shared stripper ends a quoted run at the first newline, which is right for
+// a language whose strings cannot cross one. F# has three that can: a
+// triple-quoted string, a verbatim `@"..."` string (where `""` is an escaped
+// quote), and a `(* ... *)` block comment, which nests. Their contents leaked
+// into the scan, and the juxtaposition scanner reads bare identifiers, so a
+// worked example inside a documentation string — `add 1 2` — was indistinguishable
+// from the call it documents and became a CALLS edge.
+//
+// Masked bytes keep their line structure: the offside-rule checks below measure
+// columns, so a mask that collapsed lines would move every following token.
+func maskFSharpLiteralsAndComments(content string) string {
+	raw := []byte(content)
+	for i := 0; i < len(raw); i++ {
+		switch {
+		case raw[i] == '(' && i+1 < len(raw) && raw[i+1] == '*':
+			// F# block comments nest, so the first `*)` does not necessarily
+			// close the one that opened here.
+			depth, j := 1, i+2
+			for j+1 < len(raw) && depth > 0 {
+				switch {
+				case raw[j] == '(' && raw[j+1] == '*':
+					depth++
+					j += 2
+				case raw[j] == '*' && raw[j+1] == ')':
+					depth--
+					j += 2
+				default:
+					j++
+				}
+			}
+			if depth > 0 {
+				j = len(raw)
+			}
+			maskBytes(raw, i, j)
+			i = j - 1
+		case raw[i] == '/' && i+1 < len(raw) && raw[i+1] == '/':
+			j := i + 2
+			for j < len(raw) && raw[j] != '\n' && raw[j] != '\r' {
+				j++
+			}
+			maskBytes(raw, i, j)
+			i = j - 1
+		case raw[i] == '"' && i+2 < len(raw) && raw[i+1] == '"' && raw[i+2] == '"':
+			j := i + 3
+			for j+2 < len(raw) && !(raw[j] == '"' && raw[j+1] == '"' && raw[j+2] == '"') {
+				j++
+			}
+			if j+2 < len(raw) {
+				j += 3
+			} else {
+				j = len(raw)
+			}
+			maskBytes(raw, i, j)
+			i = j - 1
+		case raw[i] == '@' && i+1 < len(raw) && raw[i+1] == '"':
+			j := i + 2
+			for j < len(raw) {
+				if raw[j] != '"' {
+					j++
+					continue
+				}
+				if j+1 < len(raw) && raw[j+1] == '"' {
+					j += 2 // an escaped quote inside a verbatim string
+					continue
+				}
+				j++
+				break
+			}
+			maskBytes(raw, i, j)
+			i = j - 1
+		case raw[i] == '"':
+			// An ordinary string, masked here so a `(*` or `//` inside one
+			// cannot open a comment that swallows the rest of the file.
+			j := i + 1
+			for j < len(raw) && raw[j] != '\n' && raw[j] != '\r' {
+				if raw[j] == '\\' {
+					j += 2
+					continue
+				}
+				if raw[j] == '"' {
+					j++
+					break
+				}
+				j++
+			}
+			maskBytes(raw, i, j)
+			i = j - 1
+		}
+	}
+	return stripCodeLiteralsAndComments(string(raw))
+}
+
+// fsharpOpenedModules returns the modules an F# file opens, in source order.
+// `open Ledger` is what makes another module's functions callable by their bare
+// name, so it is what tells the juxtaposition scan which names outside this file
+// can stand in application position.
+func fsharpOpenedModules(content string) []string {
+	stripped := maskFSharpLiteralsAndComments(content)
+	seen := map[string]bool{}
+	var modules []string
+	for _, match := range fsharpOpenRe.FindAllStringSubmatch(stripped, -1) {
+		if len(match) < 2 || seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		modules = append(modules, match[1])
+	}
+	return modules
+}
+
+// fsharpModuleDeclarationMatches reports whether a module symbol's declared name
+// is the module an `open` names. A file writes `module Paket.UpdateProcess` and
+// is opened as either the full path or, from inside the namespace, its tail.
+func fsharpModuleDeclarationMatches(declared, opened string) bool {
+	return declared == opened ||
+		strings.HasSuffix(declared, "."+opened) ||
+		strings.HasSuffix(opened, "."+declared)
+}
+
+// fsharpOpenedCallableNames is the set of callable names an F# file's `open`
+// declarations bring into scope unqualified. Without it the juxtaposition scan
+// only knew this file's own functions, so `open Ledger` followed by
+// `add total 5` — the ordinary shape of a multi-file F# project — produced no
+// edge, while the qualified `Ledger.add total 5` on the next line produced one.
+//
+// Only members of the opened module itself count; a sibling module in the same
+// file is not brought into scope by opening its neighbour.
+func fsharpOpenedCallableNames(opened []string, symbolsByShortName map[string][]SymbolRecord) map[string]bool {
+	if len(opened) == 0 {
+		return nil
+	}
+	moduleIDs := map[string]bool{}
+	for _, module := range opened {
+		short := module
+		if cut := strings.LastIndex(module, "."); cut >= 0 {
+			short = module[cut+1:]
+		}
+		for _, symbol := range symbolsByShortName[short] {
+			if symbol.Language == "F#" && symbol.Kind == "module" && fsharpModuleDeclarationMatches(symbol.Name, module) {
+				moduleIDs[symbol.ID] = true
+			}
+		}
+	}
+	if len(moduleIDs) == 0 {
+		return nil
+	}
+	names := map[string]bool{}
+	for _, symbols := range symbolsByShortName {
+		for _, symbol := range symbols {
+			if symbol.Language != "F#" || !moduleIDs[symbol.ContainerID] {
+				continue
+			}
+			if symbol.Kind != "function" && symbol.Kind != "method" {
+				continue
+			}
+			if name := lastDottedCallSegment(symbol.Name); name != "" {
+				names[name] = true
+			}
+		}
+	}
+	return names
 }
 
 // fsharpFileCallableNames is the set of callable bindings declared in one F#

@@ -192,3 +192,99 @@ func assertFSharpJuxtapositionCalls(t *testing.T, block string, callables map[st
 		}
 	}
 }
+
+// TestFSharpJuxtapositionIgnoresMultilineLiterals pins the masking of the F#
+// literal and comment forms that cross a line. The shared stripper ends a
+// quoted run at the first newline, so a triple-quoted string, a verbatim
+// `@"..."` string and a `(* ... *)` block comment all leaked their contents into
+// the scan. The juxtaposition scanner reads bare identifiers, so a worked
+// example inside a documentation string is indistinguishable from the call it
+// documents.
+func TestFSharpJuxtapositionIgnoresMultilineLiterals(t *testing.T) {
+	t.Parallel()
+	callables := map[string]bool{"add": true, "scale": true}
+	for _, tc := range []struct {
+		name  string
+		block string
+		want  []string
+	}{
+		{"triple-quoted string", "let doc =\n    \"\"\"\nExample:\nadd 1 2\n\"\"\"\n", nil},
+		{"indented triple-quoted string", "let doc =\n    \"\"\"\n    add 1 2\n    \"\"\"\n", nil},
+		{"verbatim string", "let doc = @\"\nadd 3 4\n\"\n", nil},
+		{"verbatim string with an escaped quote", "let doc = @\"\nsay \"\"add 3 4\"\" here\n\"\n", nil},
+		{"block comment", "let f x =\n    (*\nadd 5 6\n*)\n    x\n", nil},
+		{"nested block comment", "let f x =\n    (* outer (* inner\nadd 5 6\n*) still comment *)\n    x\n", nil},
+		// A `(*` inside a string must not open a comment that swallows the
+		// application on the next line.
+		{"parenthesis-star inside a string", "let s = \"(* not a comment\"\nlet f x = add x 1\n", []string{"add"}},
+		// The masking must not eat real code that follows a closed literal.
+		{"application after a triple-quoted string", "let doc = \"\"\"\nadd 1 2\n\"\"\"\nlet f x = scale x 2\n", []string{"scale"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := fsharpJuxtapositionCallIdentifiers(tc.block, callables)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for _, name := range tc.want {
+				if _, ok := got[name]; !ok {
+					t.Fatalf("got %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// A documentation string is where a worked example lives, so the leak was not
+// hypothetical: this file's `describe` gained a CALLS edge to `add` purely from
+// the example inside its own docstring.
+func TestFSharpDocstringExampleIsNotACall(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Doc.fs", "module Doc\n\nlet add (a: int) (b: int) = a + b\n\nlet describe () =\n    let usage = \"\"\"\nExample:\nadd 1 2\n\"\"\"\n    usage.Length\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "describe", "add") {
+		t.Fatalf("an example inside a triple-quoted docstring became a call: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+// TestFSharpJuxtapositionResolvesOpenedModuleCalls covers the other half of the
+// scan's bound. Restricting the callable set to this file's own definitions made
+// the ordinary shape of a multi-file F# project invisible: `open Ledger` then
+// `add total 5` produced nothing, while the qualified `Ledger.add total 5` on
+// the next line produced an edge.
+func TestFSharpJuxtapositionResolvesOpenedModuleCalls(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Ledger.fs", `module Ledger
+
+let add (total: int) (amount: int) = total + amount
+`)
+	writeFile(t, repo, "src/Program.fs", `module Program
+
+open Ledger
+
+let run (total: int) =
+    add total 5
+`)
+	writeFile(t, repo, "src/Silent.fs", `module Silent
+
+let quiet (total: int) =
+    add total 5
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "run", "add") {
+		t.Fatalf("missing F# CALLS run->add through `open Ledger`: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	// Without an `open`, the bare name is not in scope and must not resolve:
+	// the callable set is what bounds the scan, not the workspace.
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "quiet", "add") {
+		t.Fatalf("a bare name resolved without an `open` bringing it into scope: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
