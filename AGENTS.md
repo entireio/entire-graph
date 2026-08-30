@@ -33,7 +33,7 @@ entire graph search --repo . --query "<the task or bug in one plain sentence>" -
 
 - `--format agent` for compact ranked output with latency telemetry; `json`/`ndjson` for the full schema (completeness, partial failures, diagnostics).
 - `--top-k N` result count; `--max-context-bytes N` byte budget (`0` = unbounded).
-- Working tree by default (clean trees reuse a keyed cache); add `--head` for committed-tree semantics.
+- Working tree by default (always rebuilt and never cached); add `--head` for cached committed-tree semantics.
 - `--profile syntax-only|fast|full` (default `fast`); `--index-all-files` or `--max-indexed-files N` to widen/bound cold-search parsing.
 
 **When:** the start of essentially every task. One good query lands you on the fix area.
@@ -89,9 +89,18 @@ One header record, then file, external-endpoint, symbol, and relation records, s
 
 ```sh
 entire graph snapshot --repo . --format ndjson [--worktree]
+entire graph snapshot --repo . --format scip > index.scip 2> index.scip.omissions.json
 ```
 
-**When:** ingesting the full graph into agent memory or a store such as Entire Brain.
+The experimental `scip` format is a complete-snapshot binary projection for
+standard SCIP consumers. Native NDJSON remains the lossless default; SCIP
+retains one complete index in memory and reserves stderr for its JSON omission
+note, so it cannot be combined with `--progress`. Its SCIP package version is the
+project's own declared version from the root manifest (`0` when none declares
+one), never the commit, so a symbol keeps one identity across commits; worktree
+provenance is marked in the note rather than in the version.
+
+**When:** ingesting the full graph into agent memory or a store such as Entire Brain, or exporting a navigation-oriented index to a SCIP consumer.
 
 ### 🧬 diff / analyze / commit / checkpoint — *what changed + risk*
 Entity-level change list (added / removed / renamed / signature-changed / body-changed) with a heuristic **dependent count**, so a signature change with many dependents stands out.

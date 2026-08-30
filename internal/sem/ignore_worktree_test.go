@@ -78,6 +78,37 @@ func TestGitInfoExcludePath(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := filepath.Join(repo, ".git", "info", "exclude")
+		resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(want))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = filepath.Join(resolvedParent, filepath.Base(want))
+		if got := gitInfoExcludePath(repo); got != want {
+			t.Errorf("got %q want %q", got, want)
+		}
+	})
+
+	t.Run("directory gitdir with commondir", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		repo := filepath.Join(root, "repo")
+		gitDir := filepath.Join(repo, ".git")
+		commonDir := filepath.Join(root, "common")
+		if err := os.MkdirAll(filepath.Join(commonDir, "info"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(gitDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(gitDir, "commondir"), []byte(commonDir+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Join(commonDir, "info", "exclude")
+		resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(want))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = filepath.Join(resolvedParent, filepath.Base(want))
 		if got := gitInfoExcludePath(repo); got != want {
 			t.Errorf("got %q want %q", got, want)
 		}

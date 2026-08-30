@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
 	"github.com/entireio/entire-graph/internal/sem"
@@ -126,7 +125,12 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 		Completeness:    snapshot.Header.Completeness,
 	}
 	if flags.Report != "" {
-		if err := os.WriteFile(flags.Report, []byte(renderGraphReport(snapshot)), 0o644); err != nil {
+		// writeOutputFile, not os.WriteFile: --report names a path anywhere on the
+		// machine, but the in-repo spelling this verb prints puts the destination
+		// under the control of the scanned repository, which may have committed a
+		// symlink there. ctx is passed because the boundary is the checkout's git
+		// top level, which --repo does not have to name. See outputpath.go.
+		if err := writeOutputFile(ctx, repo, flags.Report, []byte(renderGraphReport(snapshot)), 0o644, false); err != nil {
 			return fmt.Errorf("write graph report %q: %w", flags.Report, err)
 		}
 	}

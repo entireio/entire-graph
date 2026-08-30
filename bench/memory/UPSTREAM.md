@@ -19,8 +19,10 @@ md5sum benchmarks/common/metrics.py     # abdbb9f272e4265153b7e3e71837007e
 
 ## File-level manifest
 
-`upstream md5` is the file at `4b61c5d31b9c`. `harness md5` is the file as it ran for the published
-numbers.
+`upstream md5` is the file at `4b61c5d31b9c`. `harness md5` is the file produced by the current
+reproducibility kit. The Foundry request, response, prompt, model, and scoring behavior matches the
+published runs; the current kit replaces their API-key transport with Microsoft Entra bearer
+authentication so scheduled jobs do not carry a long-lived inference credential.
 
 ### Unmodified upstream — NOT vendored here
 
@@ -43,11 +45,11 @@ upstream's, untouched, and therefore identical for every arm.
 
 | file | upstream md5 | harness md5 | patch |
 |---|---|---|---|
-| `benchmarks/common/llm_client.py` | `6a5da3c1d05dbf6a78cd364b59fc7a09` | `9e8029fdad08f75095684357d9069745` | `patches/0001-llm_client-azure-ai-provider-timeouts-reasoning.patch` |
+| `benchmarks/common/llm_client.py` | `6a5da3c1d05dbf6a78cd364b59fc7a09` | `592bbcc560b15b88aabb2c9d0280380f` | `patches/0001-llm_client-azure-ai-provider-timeouts-reasoning.patch` |
 | `benchmarks/common/mem0_client.py` | `44e367847d94be3a90cdfa1d21aebe96` | `041f93a130c1a91d1b81f67622555b8c` | `patches/0002-mem0_client-optional-date-injection.patch` |
-| `benchmarks/locomo/run.py` | `f791a93df6257fe869ec6687865f8457` | `7b5402a4d865af5a085a09c6133eb76e` | `patches/0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch` |
+| `benchmarks/locomo/run.py` | `f791a93df6257fe869ec6687865f8457` | `41158a8eb87cdeeb53d23c3ad845b7bc` | `patches/0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch` |
 | `docker/mem0/main.py` | `e4e1e6076c9016bc37de6715ea29e67a` | `3fe9a40ba1cc8b494daadee2b977f411` | `patches/0004-docker-mem0-server-topk-fix-and-ingest-usage-metering.patch` |
-| `requirements.txt` | `13815b8f1ba4ecc628a44fc963a67679` | `e944e768d329e2e345b3929e8bd86478` | `patches/0006-requirements-bm25-deps.patch` |
+| `requirements.txt` | `13815b8f1ba4ecc628a44fc963a67679` | `51c617883adf40e4ca22b79533f4662a` | `patches/0006-requirements-bm25-deps.patch` |
 
 All five apply cleanly to a fresh checkout of `4b61c5d31b9c` (`0005` excluded — it targets the
 separate `codebase-memory-mcp` repo, not this harness):
@@ -59,12 +61,14 @@ for p in patches/000[1-4]-*.patch patches/0006-*.patch; do git apply --check -p1
 What each patch does:
 
 - **0001 `llm_client.py`** — adds the `azure_ai` / `foundry` provider branch used by the whole
-  spine; makes the request timeout overridable via `LLM_TIMEOUT` (the 120s default is too short for
-  a reasoning model on a top-200 context, and a timeout silently becomes an empty answer scored as
-  a miss); applies a `max_completion_tokens` floor for gpt-5/o-series so hidden reasoning tokens
+  spine; authenticates its unchanged `/models/chat/completions` request through the vendored
+  `entra_auth.py` helper, which refreshes Microsoft Entra bearer tokens and never sends an API key;
+  makes the request timeout overridable via `LLM_TIMEOUT` (the 120s default is too short for a
+  reasoning model on a top-200 context, and a timeout silently becomes an empty answer scored as a
+  miss); applies a `max_completion_tokens` floor for gpt-5/o-series so hidden reasoning tokens
   cannot consume the entire budget and return empty content; adds optional `reasoning_effort`
-  passthrough that self-disables if the endpoint rejects it. Every change is question-blind and
-  applies identically to all arms.
+  passthrough that self-disables if the endpoint rejects it. Every inference change is
+  question-blind and applies identically to all arms.
 - **0002 `mem0_client.py`** — optional observation-date injection into the first ingest message,
   gated off by default behind `MEM0_DATE_INJECT=1`. Not enabled in the published runs.
 - **0003 `benchmarks/locomo/run.py`** — registers the new backends; adds bounded retry around
@@ -77,8 +81,49 @@ What each patch does:
   at upstream line 233 / patched-container line 351), plus ingest token-usage metering for the
   cost table and optional Anthropic OAuth-bearer wiring. The metering and OAuth wiring are
   observation-only and gated behind env vars.
-- **0006 `requirements.txt`** adds the `rank-bm25` and `PyStemmer` dependencies used only by the
-  lexical BM25 arm.
+- **0006 `requirements.txt`** pins `azure-identity==1.25.3` for refreshable keyless Foundry
+  authentication and `openai==1.50.0`, the existing minimum whose `/models` request behavior is
+  covered by the integration check; it also adds the `rank-bm25` and `PyStemmer` dependencies used
+  only by the lexical BM25 arm.
+
+### Hash-locked Python environment
+
+[`requirements-lock-py312.txt`](requirements-lock-py312.txt) resolves every direct and transitive
+dependency in the patched upstream `requirements.txt` to one exact version and records the hashes
+published for that release. Its source `requirements.txt` must have MD5
+`51c617883adf40e4ca22b79533f4662a` (Git blob
+`9f246fa9aee1d635304a2f151a80996ef4a499fb`); the committed lock has SHA-256
+`be938c7db3329662071487394ca123e04581322229fbe405bb1103bcc624203f`.
+
+Regenerate it only after reconstructing the pinned harness and applying patches `0001` through
+`0004` plus `0006` as above. From that reconstructed harness checkout:
+
+```bash
+KIT_ROOT=/absolute/path/to/entire-graph
+CUSTOM_COMPILE_COMMAND='uvx --python 3.12 --from pip-tools==7.6.1 pip-compile --generate-hashes --resolver=backtracking --strip-extras --no-annotate --output-file="$KIT_ROOT/bench/memory/requirements-lock-py312.txt" requirements.txt' \
+  uvx --python 3.12 --from pip-tools==7.6.1 pip-compile \
+    --generate-hashes --resolver=backtracking --strip-extras --no-annotate \
+    --output-file="$KIT_ROOT/bench/memory/requirements-lock-py312.txt" requirements.txt
+```
+
+Review the resulting version and hash changes before updating the recorded lock digest. The lock is
+specific to CPython 3.12. CI installs it without first upgrading pip and without allowing pip to
+discover any unlisted dependency:
+
+```bash
+cp "$KIT_ROOT/bench/memory/requirements-lock-py312.txt" .
+.venv/bin/python -m pip install \
+  --require-hashes --only-binary=:all: --no-deps \
+  -r requirements-lock-py312.txt
+.venv/bin/python -m pip check
+```
+
+`--require-hashes` rejects changed artifacts, `--only-binary=:all:` prevents an sdist build from
+executing arbitrary setup code, and `--no-deps` prevents an undeclared transitive fetch. `pip check`
+then verifies that the explicitly listed graph is complete and internally compatible. The lock was
+installed cleanly with CPython 3.12 and its complete wheel set was separately resolved for x86-64
+Linux/manylinux, the GitHub-hosted runner target. Keeping the copied lock at the harness root also
+lets `runmeta.code_hashes()` include it in every result artifact.
 
 ### Not upstream at all — vendored here
 
@@ -90,9 +135,13 @@ Written by us; no upstream code involved.
 | `benchmarks/common/graphify_client.py` | 364 |
 | `benchmarks/common/cmm_client.py` | 418 |
 | `benchmarks/common/graphify_mem_bridge.py` | 184 |
-| `benchmarks/common/runmeta.py` | 129 |
+| `benchmarks/common/runmeta.py` | 136 |
+| `benchmarks/common/test_runmeta.py` | 53 |
 | `benchmarks/common/bm25_client.py` | 369 |
 | `benchmarks/common/test_bm25_client.py` | 40 |
+| `benchmarks/common/entra_auth.py` | 94 |
+| `benchmarks/common/test_entra_auth.py` | 166 |
+| `requirements-lock-py312.txt` | 1418 |
 
 ### Ours but not vendored
 
@@ -114,3 +163,4 @@ description.
 | letta | `https://github.com/letta-ai/letta` | [`0.16.8`](https://github.com/letta-ai/letta/releases/tag/0.16.8) — recovered from an in-repo debugging comment (`run.env`, ENV FIX 2026-08-08) citing `letta/settings.py:314` and `letta/server/db.py:30-31` behavior specific to that release; the live install it describes no longer exists to re-verify against directly |
 | supermemory | `https://github.com/supermemoryai/supermemory` | [`server-v0.0.7-rc.2`](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) — the binary path recorded in the harness config, corroborated independently by `FAIR-CONFIG.md`'s service-state table (§B12) naming the same build |
 | BM25 | `https://github.com/dorianbrown/rank_bm25` | [`0.2.2`](https://github.com/dorianbrown/rank_bm25/releases/tag/0.2.2) (`requirements.txt` pins `>=0.2.2`; the package has had no release since 2022-02-16, so this floor resolves unambiguously) |
+| Azure Identity for Python | `https://github.com/Azure/azure-sdk-for-python/tree/main/sdk/identity/azure-identity` | `1.25.3`; PyPI wheel SHA-256 `f4d0b956a8146f30333e071374171f3cfa7bdb8073adb8c3814b65567aa7447c` |
