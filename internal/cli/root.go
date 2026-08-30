@@ -495,7 +495,11 @@ func scipOmissionNoteWithSummary(note sem.SCIPOmissionNote, summary *sem.Snapsho
 }
 
 func writeSCIPOmissionNote(w io.Writer, note sem.SCIPOmissionNote) error {
-	encoder := json.NewEncoder(w)
+	// The note is the one TEXT stream `--format scip` writes, and it is written to
+	// a terminal. It is wrapped for the same structural reason every other machine
+	// encoder here is: a sink left unwrapped is the one the next field added to
+	// this record forgets about.
+	encoder := json.NewEncoder(termsafe.NewJSONWriter(w))
 	encoder.SetEscapeHTML(false)
 	return encoder.Encode(note)
 }
