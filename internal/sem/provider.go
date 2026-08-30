@@ -10014,6 +10014,9 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		// containment.
 		return openManuallyConfinedWorktreeSource(repo, paths, ignores, warnings, maxReadBytes), nil
 	}
+	// Taken once, from the descriptor os.OpenRoot just pinned, and consulted by
+	// every fallback read below. See pinnedRootIdentity.
+	pinned := pinnedRootIdentity(root, repo)
 	registry := newOversizeRegistry(root, repo)
 	read := func(path string) (string, bool) {
 		name := filepath.FromSlash(path)
@@ -10031,7 +10034,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			// readFallback: it re-verifies containment on the DESTINATION, so
 			// a path that genuinely escapes is refused there exactly as it is
 			// refused here.
-			return readFallback(repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
+			return readFallback(pinned, repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
 		}
 		if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return "", false
@@ -10042,7 +10045,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		}
 		file, err := root.Open(name)
 		if err != nil {
-			return readFallback(repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
+			return readFallback(pinned, repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
 		}
 		defer file.Close()
 		content, err := io.ReadAll(file)
@@ -10055,14 +10058,14 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		name := filepath.FromSlash(path)
 		info, err := root.Lstat(name)
 		if err != nil {
-			return readPrefixFallback(repo, path, limit)
+			return readPrefixFallback(pinned, repo, path, limit)
 		}
 		if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return "", false
 		}
 		file, err := root.Open(name)
 		if err != nil {
-			return readPrefixFallback(repo, path, limit)
+			return readPrefixFallback(pinned, repo, path, limit)
 		}
 		defer file.Close()
 		buf := make([]byte, limit)
@@ -10117,10 +10120,48 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 // It exists only as a fallback for the shapes os.Root's own model refuses
 // outright; every file that resolves under os.Root's stricter rules keeps
 // reading through the syscall-confined root.Open above.
-func containedRealPath(repo, relPath string) (string, bool) {
+// pinnedRootIdentity records WHICH directory a worktree source selected, so the
+// fallback readers can refuse to answer from a different one.
+//
+// os.OpenRoot gives the ordinary reads a descriptor that no later rename can
+// move. The fallback readers cannot use it -- they exist precisely for the paths
+// os.Root refuses to resolve, such as an intermediate symlink with an absolute
+// target -- so they re-resolve the repository by NAME. This is the identity they
+// check that re-resolution against. root.Stat(".") is preferred because it asks
+// the pinned descriptor itself; os.Stat(repo) is the answer for the
+// execute-only root that os.OpenRoot declined to open at all.
+func pinnedRootIdentity(root *os.Root, repo string) fs.FileInfo {
+	if root != nil {
+		if info, err := root.Stat("."); err == nil {
+			return info
+		}
+	}
+	if info, err := os.Stat(repo); err == nil {
+		return info
+	}
+	return nil
+}
+
+func containedRealPath(pinned fs.FileInfo, repo, relPath string) (string, bool) {
 	dir, base := filepath.Split(filepath.Join(repo, filepath.FromSlash(relPath)))
 	realRepo, err := filepath.EvalSymlinks(repo)
 	if err != nil {
+		return "", false
+	}
+	// The repository PATHNAME is mutable, and everything above resolves it at
+	// READ time: a root pinned by os.OpenRoot when the source was opened does not
+	// constrain filepath.EvalSymlinks here. If the pathname is repointed or
+	// renamed mid-scan -- a symlinked root swapped to another tree, the directory
+	// replaced -- these reads would validate against, and answer from, the
+	// replacement while the held descriptor still names the tree the caller
+	// selected. Refuse unless the path still resolves to the very directory the
+	// source pinned. A nil identity means the pin could not be taken, which is
+	// refused rather than trusted.
+	if pinned == nil {
+		return "", false
+	}
+	realRepoInfo, err := os.Stat(realRepo)
+	if err != nil || !os.SameFile(pinned, realRepoInfo) {
 		return "", false
 	}
 	realDir, err := filepath.EvalSymlinks(dir)
@@ -10139,13 +10180,13 @@ func containedRealPath(repo, relPath string) (string, bool) {
 // symlinked or non-regular final component exactly as the root.Lstat check
 // above does, verifies containment on the resolved destination, and only then
 // reads.
-func readFallback(repo, relPath string, maxReadBytes int64, noteOversize func(int64)) (string, bool) {
+func readFallback(pinned fs.FileInfo, repo, relPath string, maxReadBytes int64, noteOversize func(int64)) (string, bool) {
 	joined := filepath.Join(repo, filepath.FromSlash(relPath))
 	info, err := os.Lstat(joined)
 	if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return "", false
 	}
-	resolved, ok := containedRealPath(repo, relPath)
+	resolved, ok := containedRealPath(pinned, repo, relPath)
 	if !ok {
 		return "", false
 	}
@@ -10163,13 +10204,13 @@ func readFallback(repo, relPath string, maxReadBytes int64, noteOversize func(in
 }
 
 // readPrefixFallback is readFallback's counterpart for a bounded prefix read.
-func readPrefixFallback(repo, relPath string, limit int) (string, bool) {
+func readPrefixFallback(pinned fs.FileInfo, repo, relPath string, limit int) (string, bool) {
 	joined := filepath.Join(repo, filepath.FromSlash(relPath))
 	info, err := os.Lstat(joined)
 	if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return "", false
 	}
-	resolved, ok := containedRealPath(repo, relPath)
+	resolved, ok := containedRealPath(pinned, repo, relPath)
 	if !ok {
 		return "", false
 	}
@@ -10194,14 +10235,18 @@ func readPrefixFallback(repo, relPath string, limit int) (string, bool) {
 // descriptor pinning the root across the source's lifetime, not the
 // containment guarantee itself.
 func openManuallyConfinedWorktreeSource(repo string, paths []string, ignores ignoreMatcher, warnings []ProviderWarning, maxReadBytes int64) openedSource {
+	// No descriptor was pinned, so the identity comes from the pathname -- but it
+	// is still taken ONCE, here, so a rename during the scan is refused instead of
+	// silently redirecting every later read.
+	pinned := pinnedRootIdentity(nil, repo)
 	registry := newOversizeRegistry(nil, repo)
 	return openedSource{
 		paths: paths,
 		read: func(path string) (string, bool) {
-			return readFallback(repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
+			return readFallback(pinned, repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
 		},
 		readPrefix: func(path string, limit int) (string, bool) {
-			return readPrefixFallback(repo, path, limit)
+			return readPrefixFallback(pinned, repo, path, limit)
 		},
 		oversize: registry.lookup,
 		ignores:  ignores,
@@ -10311,7 +10356,11 @@ type oversizeRegistry struct {
 	// repo backs digestFallback the same way it backs readFallback: the path
 	// os.Root refused to resolve for the reader is re-verified here, on its
 	// destination, before the deferred digest reads it.
-	repo    string
+	repo string
+	// pinned is the identity of the directory this registry's source selected.
+	// digestFallback re-resolves repo by name exactly as readFallback does, so it
+	// needs the same guard against that name being repointed mid-scan.
+	pinned  fs.FileInfo
 	mu      sync.Mutex
 	pending map[string]oversizePending
 	digests map[string]oversizeFile
@@ -10325,6 +10374,7 @@ func newOversizeRegistry(root *os.Root, repo string) *oversizeRegistry {
 	return &oversizeRegistry{
 		root:    root,
 		repo:    repo,
+		pinned:  pinnedRootIdentity(root, repo),
 		pending: map[string]oversizePending{},
 		digests: map[string]oversizeFile{},
 	}
@@ -10380,7 +10430,7 @@ func (r *oversizeRegistry) digestFallback(path string) (filedigest.Digest, error
 	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return filedigest.Digest{}, fs.ErrInvalid
 	}
-	resolved, ok := containedRealPath(r.repo, path)
+	resolved, ok := containedRealPath(r.pinned, r.repo, path)
 	if !ok {
 		return filedigest.Digest{}, fs.ErrInvalid
 	}
