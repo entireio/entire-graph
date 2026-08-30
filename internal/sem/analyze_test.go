@@ -1068,6 +1068,38 @@ def run(value, strict=False):
 	}
 }
 
+// TestAnalyzeGitRangeRenameBetweenUnindexedPathsReportsNothing is the guard on
+// the other side of the mixed-support rule.
+//
+// When exactly one side has a parser the file entered or left the index and the
+// removals or additions are real. When NEITHER side does, the file is in no
+// snapshot at either end of the range: there is nothing to retire and nothing to
+// learn, and emitting any record would invent one for a path the graph has never
+// held — the phantom class the index policy work exists to prevent.
+func TestAnalyzeGitRangeRenameBetweenUnindexedPathsReportsNothing(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "note.png", "nothing parses this\n")
+	write(t, repo, "anchor.go", "package anchor\n\nfunc Anchor() int { return 0 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "mv", "note.png", "moved.png")
+	git(t, repo, "commit", "-m", "rename between two paths the graph never indexes")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("files = %#v, want nothing: neither path is in any snapshot", result.Files)
+	}
+}
+
 func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
