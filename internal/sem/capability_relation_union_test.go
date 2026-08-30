@@ -144,7 +144,19 @@ let make (a : int) (b : int) : point = { px = a; py = b }
 
 let point_sum (p : point) : int = add p.px p.py
 `, exhaustive: true},
+	// The probe carries a local `@interface` and C-style declarations that name
+	// it, because that -- not Objective-C method syntax -- is what reaches the
+	// signature-type pass. Without a type of its own the probe could only ever
+	// emit DATA_FLOWS, which is exactly how the declaration came to under-report
+	// this language: the fixture proved nothing about the three relations the
+	// shared C extraction path already produces.
 	"Objective-C": {path: "src/Flow.m", source: `#import <Foundation/Foundation.h>
+
+@interface Point : NSObject {
+    NSInteger x;
+    NSInteger y;
+}
+@end
 
 static NSInteger addValues(NSInteger a, NSInteger b) {
     return a + b;
@@ -152,6 +164,14 @@ static NSInteger addValues(NSInteger a, NSInteger b) {
 
 static NSInteger total(NSInteger x, NSInteger y) {
     return addValues(x, y);
+}
+
+static NSInteger movePoint(Point *p, NSInteger dx) {
+    return addValues(dx, dx);
+}
+
+static Point *makePoint(NSInteger a) {
+    return nil;
 }
 `, exhaustive: true},
 	"Perl": {path: "lib/flow.pl", source: `use strict;
@@ -475,10 +495,13 @@ object Flow {
   def make(a: Int, b: Int): Point = { val q = new Point(a, b); q.x = a; q }
 }
 `, exhaustive: true},
-	// Swift resolves the assignment through a local constructor binding, so the
-	// write to `q.x` is attributed, while the read of a parameter's field is not
-	// -- `_ p: Point` is not a shape parameterVarTypes recognises. The
-	// expectation records that asymmetry rather than papering over it.
+	// Swift resolves BOTH the write and the read through a local constructor
+	// binding: `let q = Point()` types q, so `q.x = a` and `return q.x` are each
+	// attributed. Only the read of a PARAMETER's field is not -- `_ p: Point` is
+	// not a shape parameterVarTypes recognises -- which is the asymmetry the
+	// probe records. The earlier fixture wrote through the binding but read only
+	// through a parameter, so READS_FIELD looked unreachable when it was merely
+	// unexercised.
 	"Swift": {path: "Sources/Flow.swift", source: `class Point {
     var x: Int = 0
     var y: Int = 0
@@ -494,6 +517,11 @@ func make(_ a: Int, _ b: Int) -> Point {
     let q = Point()
     q.x = a
     return q
+}
+
+func readPoint() -> Int {
+    let q = Point()
+    return q.x
 }
 `, exhaustive: true},
 	"TypeScript": {path: "src/flow.ts", source: `export class Point {

@@ -156,16 +156,23 @@ var ooRelationSupport = map[string][]string{
 	"Julia":         {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
 	"Lua":           {"DATA_FLOWS"},
 	"OCaml":         {"USES_TYPE", "PARAM_TYPE"},
-	"Objective-C":   {"DATA_FLOWS"},
-	"Perl":          {"DATA_FLOWS"},
-	"R":             {"DATA_FLOWS"},
-	"SQL":           {"DATA_FLOWS"},
-	"Scala":         {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	// Swift resolves a write through a local constructor binding (`let q =
-	// Point(); q.x = a`) but not a read through a parameter -- `_ p: Point` is
-	// not a shape parameterVarTypes recognises -- so WRITES_FIELD is reachable
-	// and READS_FIELD is not.
-	"Swift": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "WRITES_FIELD", "DATA_FLOWS"},
+	// Objective-C compiles through the same C extraction path as C and C++, so a
+	// parameter or return type that names a type the repository defines reaches
+	// the same signature-type pass they do. Only the earlier probe hid it: it
+	// declared no type of its own, so nothing but DATA_FLOWS could fire however
+	// the file was written.
+	"Objective-C": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	"Perl":        {"DATA_FLOWS"},
+	"R":           {"DATA_FLOWS"},
+	"SQL":         {"DATA_FLOWS"},
+	"Scala":       {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	// Swift resolves a local constructor binding (`let q = Point()`) and then
+	// attributes BOTH directions through it: `q.x = a` is a WRITES_FIELD and
+	// `return q.x` is a READS_FIELD. What it does not resolve is a field reached
+	// through a PARAMETER -- `_ p: Point` is not a shape parameterVarTypes
+	// recognises -- and reading only through a parameter was what made
+	// READS_FIELD look unreachable rather than merely unexercised.
+	"Swift": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "DATA_FLOWS"},
 	// Zig extracts the struct but none of its fields as symbols, so no field
 	// symbol exists for a READS_FIELD edge to resolve onto however the body is
 	// written; the relation was declared and is unreachable. An over-declared
