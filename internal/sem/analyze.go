@@ -209,12 +209,18 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		if oldPath == "" {
 			oldPath = path
 		}
-		// The status this file is REPORTED under. A one-sided symlink type
-		// change is read below as if it were an addition or a deletion, because
-		// only one side holds analyzable content, but the path itself was
-		// neither added nor deleted — it changed type — so the delta keeps the
-		// status Git gave it.
-		reportedStatus := file.Status
+		// The status this file is REPORTED under, when that differs from the
+		// status the read plan below runs on. A one-sided symlink type change is
+		// READ as if it were an addition or a deletion, because only one side
+		// holds analyzable content, but the path itself was neither added nor
+		// deleted — it changed type — so the delta keeps the status Git gave it.
+		//
+		// It stays empty for every other entry on purpose. A later restatement
+		// — a rename across the supported/unsupported boundary — also rewrites
+		// file.Status, and there the NEW value is the one that must be reported:
+		// the range really did delete or add the only side the graph holds.
+		// Freezing Git's status for every entry reported those renames as "R".
+		var reportedStatus string
 		beforeInvalidPath := file.Status != "A" && !gitutil.IsCanonicalGitTreePath(oldPath)
 		afterInvalidPath := file.Status != "D" && !gitutil.IsCanonicalGitTreePath(path)
 		if beforeInvalidPath || afterInvalidPath {
@@ -264,6 +270,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			typeChange := beforeSymlink != afterSymlink && file.Status != "A" && file.Status != "D"
 			if typeChange {
 				effect = "symbolic-link side skipped; the file side is analyzed as a one-sided change"
+				reportedStatus = file.Status
 				if afterSymlink {
 					file.Status = "D"
 				} else {
@@ -541,10 +548,14 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			}
 			changes = append(changes, mod)
 		}
+		deltaStatus := file.Status
+		if reportedStatus != "" {
+			deltaStatus = reportedStatus
+		}
 		deltas = append(deltas, &fileDelta{
 			path:     path,
 			oldPath:  file.OldPath,
-			status:   reportedStatus,
+			status:   deltaStatus,
 			language: language,
 			changes:  changes,
 			removed:  removed,
