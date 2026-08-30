@@ -4163,6 +4163,8 @@ func fieldDeclNames(node *sitter.Node, src []byte) []string {
 			// declarator chain rather than beside the type. A plain function
 			// declarator names nothing here: `int Add(int);` in a class body is
 			// a method declaration, not data, and is left to the entity walk.
+			// Neither does `int (*Factory())(double);`, a METHOD returning a
+			// function pointer, which the member-declaration pass extracts.
 			if name := cFamilyMemberDeclaratorName(child, src); name != "" {
 				names = append(names, name)
 			}
@@ -4285,6 +4287,26 @@ func cPlusPlusMemberDeclaratorName(declarator *sitter.Node, src []byte) string {
 	if !validNode(declarator) || declarator.Type() != "function_declarator" {
 		return ""
 	}
+	// `int (*Factory())(double);` declares a METHOD returning a function
+	// pointer. The outer function_declarator's own declarator is the
+	// parenthesized_declarator `(*Factory())`, and the name sits on the
+	// function_declarator nested inside it, so stopping at the outer declarator
+	// rejects a valid member declaration. A function-POINTER data member
+	// (`int (*handler_)(int);`) has the same outer shape but its parens hold a
+	// bare identifier with no nested function_declarator, so it reaches nothing
+	// here and stays the field the member pass classifies it as. The parse tree
+	// bounds the walk: every step moves to a strictly smaller span.
+	for {
+		outer := declarator.ChildByFieldName("declarator")
+		if !validNode(outer) || outer.Type() != "parenthesized_declarator" {
+			break
+		}
+		inner := firstDescendantOfType(outer, "function_declarator")
+		if !descendsStrictly(declarator, inner) {
+			return ""
+		}
+		declarator = inner
+	}
 	name := declarator.ChildByFieldName("declarator")
 	if !validNode(name) {
 		return ""
@@ -4330,7 +4352,19 @@ func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language,
 	if len(members) == 0 {
 		return nil
 	}
-	declarationSignature := signatureFromNode(node, src)
+	// A member function TEMPLATE is written `template<class T> T Get();`, and
+	// the declaration node is only the part after the head. Everything the
+	// symbol reports must come from the whole construct: reading the inner node
+	// alone drops `template<...>` and its constraints from the signature, the
+	// body hash and the source range, so an edit confined to the head produces
+	// no entity change and two overloads separated only by their constraints
+	// collapse onto one fingerprint.
+	span := cPlusPlusDeclarationSpan(node)
+	templateHead := ""
+	if span != node && node.StartByte() > span.StartByte() && int(node.StartByte()) <= len(src) {
+		templateHead = strings.TrimSpace(string(src[span.StartByte():node.StartByte()])) + " "
+	}
+	declarationSignature := signatureFromNode(span, src)
 	typeText := ""
 	if declaredType := node.ChildByFieldName("type"); validNode(declaredType) {
 		typeText = declaredType.Content(src)
@@ -4343,20 +4377,34 @@ func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language,
 			// declarator text: a shared signature would give two members of one
 			// class the same fingerprint, which rename matching reads as one
 			// symbol.
-			signature = strings.Join(strings.Fields(typeText+" "+member.declarator.Content(src)), " ")
+			signature = strings.Join(strings.Fields(templateHead+typeText+" "+member.declarator.Content(src)), " ")
 		}
 		out = append(out, Entity{
 			Kind:        "method",
 			Name:        qualify(scope, member.name),
 			Signature:   signature,
-			StartLine:   int(node.StartPoint().Row) + 1,
-			EndLine:     int(node.EndPoint().Row) + 1,
-			BodyHash:    hash(normalize(node.Content(src))),
+			StartLine:   int(span.StartPoint().Row) + 1,
+			EndLine:     int(span.EndPoint().Row) + 1,
+			BodyHash:    hash(normalize(span.Content(src))),
 			Fingerprint: hash(normalize(signature)),
 			bodyless:    true,
 		})
 	}
 	return out
+}
+
+// cPlusPlusDeclarationSpan returns the node that spans a whole in-class
+// declaration. For a member function template the class body holds a
+// template_declaration and the declaration inside it is only the part after
+// `template<...>`, so the template head, its parameters and any constraints sit
+// OUTSIDE the declaration node. Every derived value — signature, body hash,
+// start and end line — must be read from the wrapper, or the head is invisible
+// to change detection and to signature-based disambiguation.
+func cPlusPlusDeclarationSpan(node *sitter.Node) *sitter.Node {
+	if parent := node.Parent(); validNode(parent) && parent.Type() == "template_declaration" {
+		return parent
+	}
+	return node
 }
 
 // cFamilyNameEndsAtTokenBoundary reports whether a name node's range still ends
@@ -4404,6 +4452,15 @@ func cFamilyMemberDeclaratorName(node *sitter.Node, src []byte) string {
 		case "field_identifier", "identifier":
 			return strings.TrimSpace(node.Content(src))
 		case "pointer_declarator", "array_declarator", "parenthesized_declarator", "reference_declarator":
+			// Parens holding a nested function_declarator are the return type of
+			// a METHOD (`int (*Factory())(double);`), not the name of a
+			// function-POINTER member (`int (*handler_)(int);`). The
+			// field_identifier fallback below reaches the same name in both
+			// shapes, so without this the one construct would enter the graph
+			// twice, as a field here and as a method from the declaration pass.
+			if node.Type() == "parenthesized_declarator" && validNode(firstDescendantOfType(node, "function_declarator")) {
+				return ""
+			}
 			next = node.ChildByFieldName("declarator")
 			if !validNode(next) {
 				next = firstDescendantOfType(node, "field_identifier")

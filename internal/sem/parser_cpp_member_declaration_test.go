@@ -1,6 +1,10 @@
 package sem
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 // TestCPlusPlusInClassMethodDeclarationsAreExtracted covers the declarations a
 // C++ header exists to hold. A header declares an interface — constructors,
@@ -219,6 +223,142 @@ public:
 		if _, ok := got[want]; !ok {
 			t.Errorf("missing %q: %#v", want, mapKeys(got))
 		}
+	}
+}
+
+// TestCPlusPlusMemberTemplateCarriesItsTemplateHead pins what a member function
+// template reports. The class body holds the `template_declaration`, and the
+// declaration inside it is only the part after `template<...>`, so reading the
+// inner node left the head, its parameters and any constraints out of the
+// signature, the body hash and the source range. Two overloads separated only
+// by their template parameters then shared one fingerprint — which rename
+// matching reads as one symbol — and an edit confined to the head produced no
+// entity change at all, so nothing downstream saw the file move.
+func TestCPlusPlusMemberTemplateCarriesItsTemplateHead(t *testing.T) {
+	t.Parallel()
+	one := memberIndex(t, "one.hpp", `class Ledger {
+public:
+    template<class T>
+    T Get();
+};
+`)
+	two := memberIndex(t, "two.hpp", `class Ledger {
+public:
+    template<class T, class U>
+    T Get();
+};
+`)
+	first, ok := one["method:Ledger.Get"]
+	if !ok {
+		t.Fatalf("missing method:Ledger.Get: %#v", mapKeys(one))
+	}
+	second, ok := two["method:Ledger.Get"]
+	if !ok {
+		t.Fatalf("missing method:Ledger.Get: %#v", mapKeys(two))
+	}
+	if !strings.Contains(first.Signature, "template<class T>") {
+		t.Errorf("signature dropped the template head: %q", first.Signature)
+	}
+	if first.Fingerprint == second.Fingerprint {
+		t.Errorf("template heads %q and %q share fingerprint %s", first.Signature, second.Signature, first.Fingerprint)
+	}
+	if first.BodyHash == second.BodyHash {
+		t.Errorf("template heads %q and %q share body hash %s", first.Signature, second.Signature, first.BodyHash)
+	}
+	// The head is on line 3 and the declaration on line 4; the symbol must span
+	// the whole construct, or a reviewer following the range lands past it.
+	if first.StartLine != 3 {
+		t.Errorf("range starts at line %d, want the template head on line 3 (%d-%d)", first.StartLine, first.StartLine, first.EndLine)
+	}
+}
+
+// TestCPlusPlusFunctionPointerReturningMemberIsAMethod separates the two C++
+// member shapes that both put a declarator in parentheses.
+// `int (*Factory())(double);` is a METHOD returning a function pointer: the
+// name sits on a function_declarator nested inside the parens. It was rejected
+// by the declaration pass and picked up by the field pass instead — whose
+// descendant search jumps straight past that nested declarator — so a member
+// function was reported as data. `int (*handler_)(int);` has the same outer
+// shape, holds a bare identifier in its parens, and must stay a field.
+func TestCPlusPlusFunctionPointerReturningMemberIsAMethod(t *testing.T) {
+	t.Parallel()
+	got := memberIndex(t, "factory.hpp", `class Ledger {
+public:
+    int (*Factory())(double);
+    int (*handler_)(int);
+    int (*table_[4])(int);
+};
+`)
+	factory, ok := got["method:Ledger.Factory"]
+	if !ok {
+		t.Fatalf("missing method:Ledger.Factory: %#v", mapKeys(got))
+	}
+	if !strings.Contains(factory.Signature, "Factory") {
+		t.Errorf("unexpected signature %q", factory.Signature)
+	}
+	if _, ok := got["field:Ledger.Factory"]; ok {
+		t.Errorf("the same declaration is in the graph twice, as field and method: %#v", mapKeys(got))
+	}
+	// Function-POINTER data members keep their classification.
+	for _, want := range []string{"field:Ledger.handler_", "field:Ledger.table_"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("missing %q: %#v", want, mapKeys(got))
+		}
+	}
+	for _, unwanted := range []string{"method:Ledger.handler_", "method:Ledger.table_"} {
+		if _, ok := got[unwanted]; ok {
+			t.Errorf("function-pointer member reclassified as a method: %q", unwanted)
+		}
+	}
+}
+
+// TestCPlusPlusReceiverCallResolvesToTheOutOfLineDefinition pins where a call on
+// a typed C++ receiver lands. Extracting in-class declarations gave
+// `methodsByContainer` a `Ledger.Add` entry, and that higher-confidence typed
+// path then beat the unique-name fallback that used to find the real code — so
+// `l.Add(3)` started resolving to the header's BODYLESS declaration instead of
+// the definition in the .cpp. The implementation lost its callers, and impact
+// on it reported nothing.
+func TestCPlusPlusReceiverCallResolvesToTheOutOfLineDefinition(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "ledger.hpp", `#pragma once
+class Ledger {
+public:
+    int Add(int amount) const;
+};
+`)
+	writeFile(t, repo, "ledger.cpp", `#include "ledger.hpp"
+int Ledger::Add(int amount) const { return amount + 1; }
+`)
+	writeFile(t, repo, "main.cpp", `#include "ledger.hpp"
+int run() {
+    Ledger* l = new Ledger();
+    return l->Add(3);
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		byID[symbol.ID] = symbol
+	}
+	var targets []string
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "CALLS" {
+			continue
+		}
+		if from := byID[relation.FromID]; from.Name != "run" {
+			continue
+		}
+		to := byID[relation.ToID]
+		targets = append(targets, fmt.Sprintf("%s:%s@%s:%d", to.Kind, to.Name, to.FilePath, to.StartLine))
+	}
+	want := "function:Add@ledger.cpp:2"
+	if len(targets) != 1 || targets[0] != want {
+		t.Errorf("run() calls %v, want exactly [%s] — the definition, not the header declaration", targets, want)
 	}
 }
 
