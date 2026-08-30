@@ -5031,12 +5031,18 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		if language == "Objective-C" && node.Type() == "struct_declaration" {
 			return Entity{}, false
 		}
+		if cFamilyTagReference(node, language) {
+			return Entity{}, false
+		}
 		kind = "struct"
 		name = nodeName(node, src)
 	case "enum_item", "enum_declaration", "enum_specifier":
 		// Same as struct_declaration: Zig enums are anonymous literals named by
 		// the enclosing variable_declaration.
 		if language == "Zig" {
+			return Entity{}, false
+		}
+		if cFamilyTagReference(node, language) {
 			return Entity{}, false
 		}
 		kind = "enum"
@@ -8021,6 +8027,28 @@ func goReceiverName(node *sitter.Node, src []byte) string {
 		name = name[index+1:]
 	}
 	return strings.TrimSpace(name)
+}
+
+// cFamilyTagReference reports whether a C-family struct/enum specifier NAMES a
+// tag rather than defining one. In C the tag name is part of the type syntax, so
+// `struct Ledger *l` and `enum Mode m` parse to the same struct_specifier /
+// enum_specifier node type as the definition does — the definition is the one
+// carrying a body. Without this check every mention of a type produced another
+// "definition" of it: a three-line C file that declares `struct Ledger` once and
+// uses it twice emitted three struct symbols at three different lines, and a
+// header whose only content is prototypes emitted a phantom definition for each
+// parameter type.
+//
+// A body-less specifier at file scope is a forward declaration
+// (`struct Ledger;`) — an incomplete type, not a definition either — so it is
+// skipped on the same rule.
+func cFamilyTagReference(node *sitter.Node, language string) bool {
+	switch language {
+	case "C", "C++", "Objective-C":
+	default:
+		return false
+	}
+	return !validNode(node.ChildByFieldName("body"))
 }
 
 func qualify(scope, name string) string {
