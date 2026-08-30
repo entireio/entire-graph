@@ -677,7 +677,7 @@ func selectiveSearchSnapshotFromFull(
 		if budgetHit {
 			failures = append(failures, analysisBudgetFailure(options.MaxDuration))
 		}
-		populateSelectiveHeader(&selective, sc.warnings, failures, nil, stopNow)
+		populateSelectiveHeader(&selective, sc.warnings, failures, nil)
 		return selective, nil
 	}
 
@@ -828,7 +828,7 @@ func selectiveSearchSnapshotFromFull(
 		// unbudgeted query as the complete index.
 		failures = append(failures, analysisBudgetFailure(options.MaxDuration))
 	}
-	populateSelectiveHeader(&selective, warnings, failures, relationsByType, stopNow)
+	populateSelectiveHeader(&selective, warnings, failures, relationsByType)
 	return selective, nil
 }
 
@@ -836,7 +836,32 @@ func selectiveSearchSnapshotFromFull(
 // Stats, and Completeness on a selective snapshot. Both the budget-truncated
 // early-return path and the complete derivation path call this so metadata stays
 // consistent regardless of where the gate tripped.
-func populateSelectiveHeader(selective *ProviderSnapshot, warnings []ProviderWarning, failures []PartialFailure, relationsByType map[string]int, stop func() bool) {
+//
+// It deliberately does NOT poll the budget, and takes no stop predicate.
+//
+// Both callers reach it with a gate that has already tripped whenever the
+// derivation was truncated, and a level-triggered predicate answers true from
+// the very first poll -- so the loops below broke at index 0 and the header
+// described a snapshot that is not the one being returned: Stats.Files counts
+// the retained files unconditionally, while Languages came back empty,
+// LanguageTiers nil and ParsedFiles zero beside it. A three-file selective
+// answer was reported as "0 languages / 0 files" by every consumer that reads
+// the coverage figures, and the per-language tiers a SCIP consumer decides
+// trust from vanished for a selection that was in fact retained whole.
+//
+// Polling here also could not stay confined to the truncated path. On the
+// complete path budgetHit is already false and the failure list already built,
+// so a gate that tripped between the last check and this call would break these
+// loops WITHOUT adding E_ANALYSIS_BUDGET_EXCEEDED -- leaving a snapshot with a
+// silently wrong header that the cache writer has no reason to refuse.
+//
+// Not polling costs nothing the budget was protecting: these loops walk the
+// already-materialised selection that filterFilesAndSymbolsForBudget produced
+// under the gate, so their length is bounded by work the budget already
+// admitted, and one more linear pass over it cannot outrun the ceiling that
+// bounded its construction. (The unparsed-file loop over `failures` below has
+// never been polled, for the same reason.)
+func populateSelectiveHeader(selective *ProviderSnapshot, warnings []ProviderWarning, failures []PartialFailure, relationsByType map[string]int) {
 	if warnings == nil {
 		warnings = []ProviderWarning{}
 	}
@@ -845,19 +870,13 @@ func populateSelectiveHeader(selective *ProviderSnapshot, warnings []ProviderWar
 	}
 	languageSet := make(map[string]struct{})
 	completenessLanguages := make(map[string]LanguageCompleteness)
-	for i, file := range selective.Files {
-		if i%budgetPollStride == 0 && stopped(stop) {
-			break
-		}
+	for _, file := range selective.Files {
 		languageSet[file.Language] = struct{}{}
 		completeness := completenessLanguages[file.Language]
 		completeness.Files++
 		completenessLanguages[file.Language] = completeness
 	}
-	for i, symbol := range selective.Symbols {
-		if i%budgetPollStride == 0 && stopped(stop) {
-			break
-		}
+	for _, symbol := range selective.Symbols {
 		completeness := completenessLanguages[symbol.Language]
 		completeness.Symbols++
 		completenessLanguages[symbol.Language] = completeness
@@ -869,10 +888,7 @@ func populateSelectiveHeader(selective *ProviderSnapshot, warnings []ProviderWar
 		}
 	}
 	parsedFiles := 0
-	for i, file := range selective.Files {
-		if i%budgetPollStride == 0 && stopped(stop) {
-			break
-		}
+	for _, file := range selective.Files {
 		if !unparsedFiles[filepath.ToSlash(filepath.Clean(file.Path))] {
 			parsedFiles++
 		}
