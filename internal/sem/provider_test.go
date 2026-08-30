@@ -1801,6 +1801,60 @@ resource "aws_subnet" "web" {
 	}
 }
 
+func TestHCLTopLevelAttributesEmitSymbols(t *testing.T) {
+	// A Terraform variables file (`.tfvars`, `*.auto.tfvars`) is by definition
+	// nothing but top-level attribute assignments: the format rejects blocks.
+	// Extracting only `block` nodes therefore made every .tfvars file in every
+	// repository produce zero symbols and zero relations, silently — the file
+	// was parsed, HCL is advertised as a semantic language, and nothing was
+	// reported as missing. Top-level attributes in hand-written .hcl configs
+	// (Consul/Nomad/Vault `datacenter = "dc1"`) were invisible for the same
+	// reason. Attributes INSIDE a block stay folded into the block symbol.
+	repo := t.TempDir()
+	writeFile(t, repo, "prod.tfvars", `region         = "us-west-2"
+instance_count = 3
+
+tags = {
+  env = "prod"
+}
+`)
+	writeFile(t, repo, "main.tf", `datacenter = "dc1"
+
+resource "aws_s3_bucket" "logs" {
+  bucket = "app-logs"
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		if symbol.Language == "HCL" {
+			got[symbol.FilePath+":"+symbol.Name] = symbol.Kind
+		}
+	}
+	for _, want := range []string{
+		"prod.tfvars:region",
+		"prod.tfvars:instance_count",
+		"prod.tfvars:tags",
+		"main.tf:datacenter",
+	} {
+		if got[want] != "setting" {
+			t.Fatalf("HCL top-level attribute %q not extracted as a setting: %#v", want, got)
+		}
+	}
+	if got["main.tf:logs"] != "block" {
+		t.Fatalf("HCL block symbol regressed: %#v", got)
+	}
+	// A nested attribute is part of its block's body, not a symbol of its own.
+	if _, nested := got["main.tf:bucket"]; nested {
+		t.Fatalf("attribute nested in a block must not be extracted: %#v", got)
+	}
+}
+
 func TestDockerfileStageResourceDependencies(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "Dockerfile", `FROM golang:1.22 AS builder
