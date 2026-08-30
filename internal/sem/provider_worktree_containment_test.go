@@ -221,14 +221,16 @@ func TestReadFallbackFollowsASymlinkChainLongerThanOSRootsLimit(t *testing.T) {
 	}
 }
 
-// TestWorktreeSourceOpensWithAnExecuteOnlyRepositoryRoot covers the medium
-// finding: os.OpenRoot always opens the repository root for reading, but
-// `git ls-files --cached` reads the index rather than listing the worktree
-// root, and a direct read of a known path only needs to traverse (execute)
-// every ancestor directory, never to list one — so a repository root with
-// execute-only permissions used to support both, and os.OpenRoot's stricter
-// requirement failed the whole snapshot before a single file was read.
-func TestWorktreeSourceOpensWithAnExecuteOnlyRepositoryRoot(t *testing.T) {
+// TestExecuteOnlyRepositoryRootIsRefusedByTheListingPreflight pins where an
+// execute-only repository root now stops. gitWorktreeSafeBeforeListing holds an
+// os.Root over the repository before any listing runs (provider.go, "hold
+// selected root"), so such a repository is refused by the LISTING, before
+// openSource reaches its own os.OpenRoot at all. The permission branch below the
+// listing is therefore defensive only — it still covers a root whose mode
+// changes between the preflight and the read, and the listing paths that skip
+// the preflight — and its behavior is pinned directly by the next test rather
+// than through openSource.
+func TestExecuteOnlyRepositoryRootIsRefusedByTheListingPreflight(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits do not apply on Windows")
@@ -236,12 +238,6 @@ func TestWorktreeSourceOpensWithAnExecuteOnlyRepositoryRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permission bits, so this fixture proves nothing running as root")
 	}
-	// worktreeSourceFiles lists via `git ls-files --cached`, which reads
-	// .git/index rather than the repo root's own directory entries, so the
-	// fixture must be a real, committed repository: an uncommitted directory
-	// would force the filepath.WalkDir fallback listing, which DOES need to
-	// read the root's entries and would fail for a reason this test isn't
-	// about.
 	repo, _ := newContainmentFixture(t)
 	git(t, repo, "init")
 	git(t, repo, "add", "src/a.ts")
@@ -251,13 +247,50 @@ func TestWorktreeSourceOpensWithAnExecuteOnlyRepositoryRoot(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(repo, 0o755) })
 
-	opened := openWorktreeSource(t, repo, sourceOptions{})
-	if opened.close != nil {
-		t.Error("execute-only root source returned a closer; no os.Root was ever opened")
+	opened, err := openSource(t.Context(), repo, "", sourceOptions{})
+	if err == nil {
+		if opened.close != nil {
+			_ = opened.close()
+		}
+		t.Fatal("openSource accepted an execute-only repository root; the listing preflight is expected to refuse it")
 	}
-	content, ok := opened.read("src/a.ts")
-	if !ok || content != "export const a = 1;\n" {
-		t.Fatalf("read(src/a.ts) = %q, %v; an execute-only repository root must still support reading a known tracked file", content, ok)
+	if !strings.Contains(err.Error(), "hold selected root") {
+		t.Fatalf("openSource error = %v; want the listing preflight's root-hold refusal", err)
+	}
+}
+
+// TestManuallyConfinedWorktreeSourceReadsAndConfines pins the reader openSource
+// falls back to when it cannot hold an os.Root: no closer, in-repository reads
+// still work, and every escape the rooted reader refuses is refused here too.
+func TestManuallyConfinedWorktreeSourceReadsAndConfines(t *testing.T) {
+	t.Parallel()
+	repo, outside := newContainmentFixture(t)
+	if err := os.WriteFile(filepath.Join(outside, "big.env"), []byte(strings.Repeat("x", 4096)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened := openManuallyConfinedWorktreeSource(repo, []string{"src/a.ts"}, ignoreMatcher{}, nil, 0)
+	capped := openManuallyConfinedWorktreeSource(repo, []string{"src/a.ts"}, ignoreMatcher{}, nil, 16)
+
+	if opened.close != nil {
+		t.Error("manually confined source returned a closer; no os.Root was ever opened")
+	}
+	if content, ok := opened.read("src/a.ts"); !ok || content != "export const a = 1;\n" {
+		t.Fatalf("read(src/a.ts) = %q, %v; the fallback reader must still read a repository file", content, ok)
+	}
+	if prefix, ok := opened.readPrefix("src/a.ts", 6); !ok || prefix != "export" {
+		t.Fatalf("readPrefix(src/a.ts, 6) = %q, %v; want \"export\", true", prefix, ok)
+	}
+	if content, ok := opened.read("../secret.env"); ok {
+		t.Errorf("fallback read escaped the repository root and returned %q", content)
+	}
+	if prefix, ok := opened.readPrefix("../secret.env", 8); ok {
+		t.Errorf("fallback readPrefix escaped the repository root and returned %q", prefix)
+	}
+	if content, ok := capped.read("../big.env"); ok {
+		t.Errorf("fallback read escaped the repository root and returned %q", content)
+	}
+	if record, ok := capped.oversize("../big.env"); ok {
+		t.Errorf("fallback oversize registry described a file above the repository root: %+v", record)
 	}
 }
 
