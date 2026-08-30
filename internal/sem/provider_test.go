@@ -1771,6 +1771,69 @@ fn main() {}
 	}
 }
 
+func TestInventoryOnlyFilesEmitNoCallRelations(t *testing.T) {
+	// An inventory-only filetype gets a single `document` symbol whose block is
+	// the whole file. The generic `name(` call scanner ran over it like any
+	// other symbol body, so a unified diff, a CoffeeScript file or an Arduino
+	// sketch could emit a CALLS edge into an unrelated language's symbol
+	// through the globally-unique-name fallback. docs/language-support.md
+	// promises the opposite: inventory-only coverage is file and document
+	// symbols "without claiming call/type/data-flow analysis", and
+	// `capabilities --json` declares only CONTAINS/DEFINES for these languages.
+	repo := t.TempDir()
+	writeFile(t, repo, "svc/service.go", `package svc
+
+type Stage struct{}
+
+func (s Stage) Advance() int {
+	return 1
+}
+
+func RunPipeline() int {
+	return 1
+}
+`)
+	writeFile(t, repo, "notes/change.patch", `--- a/x
++++ b/x
+@@ -1 +1 @@
+-old
++RunPipeline()
+`)
+	writeFile(t, repo, "sketch/blink.ino", `void loop() {
+  RunPipeline();
+}
+`)
+	// A receiver-shaped call exercises the second CALLS producer
+	// (receiverCallRelations), which is gated separately from the bare-name scan.
+	writeFile(t, repo, "web/app.coffee", `run = -> Stage.Advance()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	languageByID := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		languageByID[symbol.ID] = symbol.Language
+	}
+	inventory := map[string]bool{"Patch": true, "Diff": true, "Arduino": true, "CoffeeScript": true}
+	for _, relation := range snapshot.Relations {
+		switch relation.Type {
+		case "CALLS", "CONSTRUCTS", "ASYNC_CALLS":
+		default:
+			continue
+		}
+		if inventory[languageByID[relation.FromID]] {
+			t.Fatalf("inventory-only %s symbol emitted %s: %s -> %s",
+				languageByID[relation.FromID], relation.Type, relation.FromID, relation.ToID)
+		}
+	}
+	// The semantic side of the same repository is untouched.
+	if !hasSymbolNamed(snapshot.Symbols, "RunPipeline") {
+		t.Fatalf("Go symbol missing: %#v", snapshot.Symbols)
+	}
+}
+
 func TestResourceDependsOnGraph(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "main.tf", `resource "aws_vpc" "main" {
