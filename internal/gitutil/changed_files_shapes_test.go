@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -52,7 +53,20 @@ func TestChangedFilesParsesEveryTwoTreeDiffShape(t *testing.T) {
 	}
 	w("a.go", "package a\n")
 	w("with space.go", "package b\n")
-	w("quote\".go", "package c\n")
+	// A double quote is legal in a Git tree entry and in a POSIX filename, and it
+	// is precisely the shape `--name-status` would C-quote while `-z --raw` emits
+	// verbatim, so the parser has to be walked over it. Windows cannot hold the
+	// name at all: the file cannot be created, and neither can any later checkout
+	// of a tree that contains it — which would take the branch/merge half of this
+	// walk down with it. The shape is therefore covered wherever the OS permits
+	// it, and every other shape below runs on all three platforms.
+	quoted := "quote\".go"
+	if runtime.GOOS == "windows" {
+		quoted = ""
+	}
+	if quoted != "" {
+		w(quoted, "package c\n")
+	}
 	gitx(t, repo, "add", "-A")
 	gitx(t, repo, "commit", "-qm", "base")
 	base := gitx(t, repo, "rev-parse", "HEAD")[:40]
@@ -62,7 +76,9 @@ func TestChangedFilesParsesEveryTwoTreeDiffShape(t *testing.T) {
 	w("exec.sh", "#!/bin/sh\n")
 	gitx(t, repo, "add", "-A")
 	gitx(t, repo, "update-index", "--chmod=+x", "exec.sh")
-	_ = os.Remove(filepath.Join(repo, "quote\".go"))
+	if quoted != "" {
+		_ = os.Remove(filepath.Join(repo, quoted))
+	}
 	gitx(t, repo, "add", "-A")
 	gitx(t, repo, "commit", "-qm", "churn")
 	head := gitx(t, repo, "rev-parse", "HEAD")[:40]
