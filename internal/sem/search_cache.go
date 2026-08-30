@@ -739,7 +739,22 @@ func LoadOrBuildProviderSnapshot(
 // can serve co-change edges computed against the prior history. That is
 // accepted because those edges are heuristic and confidence-scored, not
 // exact facts about the tree.
+// searchSnapshotKey addresses an entry for the schema THIS build serializes
+// under; searchSnapshotKeyForSchema carries the reasoning.
 func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions) (string, error) {
+	return searchSnapshotKeyForSchema(SchemaVersion, absRepo, repositoryKey, providerVersion, tree, options)
+}
+
+// searchSnapshotKeyForSchema takes the schema version explicitly so a test can
+// address the entry a build at another schema would have written. Production
+// reaches it only through searchSnapshotKey, which supplies SchemaVersion.
+//
+// The schema belongs in the ADDRESS and not only in the read-time check: two
+// builds at different schema versions otherwise share one artifact path, so each
+// one's store overwrites the other's and neither ever gets a warm cache. The
+// validity check catches the wrong answer; it cannot stop the mutual eviction
+// that produced it, because by then the entry has already been replaced.
+func searchSnapshotKeyForSchema(schemaVersion, absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions) (string, error) {
 	if options.Worktree {
 		return "", errors.New("working-tree snapshots cannot have persistent cache keys")
 	}
@@ -749,6 +764,7 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	}
 	hash := sha256.New()
 	writeCacheKeyString(hash, "cache-version", searchSnapshotCacheVersion)
+	writeCacheKeyString(hash, "schema-version", schemaVersion)
 	writeCacheKeyString(hash, "repository-path", absRepo)
 	writeCacheKeyString(hash, "repository-key", repositoryKey)
 	writeCacheKeyString(hash, "provider-version", providerVersion)

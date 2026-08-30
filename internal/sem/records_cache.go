@@ -53,13 +53,29 @@ type cachedProviderRecords struct {
 // completeness even though the record commands do not expose it. Callers must
 // NOT use this for --worktree runs (the working tree can differ from HEAD) or
 // for targeted --to/--from/--relation queries.
+// providerRecordsKey addresses an entry for the schema THIS build serializes
+// under. The schema is a key input, not only a read-time check: without it two
+// builds at different schema versions address the same artifact, so each one's
+// store overwrites the other's and neither ever gets a warm cache. Validating
+// the schema after opening a schema-independent entry catches the wrong answer
+// but cannot stop the mutual eviction that produced it.
 func providerRecordsKey(absRepo, repositoryKey, providerVersion, commit, tree, mode string, options ProviderSnapshotOptions) (string, error) {
+	return providerRecordsKeyForSchema(SchemaVersion, absRepo, repositoryKey, providerVersion, commit, tree, mode, options)
+}
+
+// providerRecordsKeyForSchema takes the schema version explicitly so a test can
+// address the entry a build at another schema would have written. Production
+// reaches it only through providerRecordsKey, which supplies SchemaVersion.
+func providerRecordsKeyForSchema(schemaVersion, absRepo, repositoryKey, providerVersion, commit, tree, mode string, options ProviderSnapshotOptions) (string, error) {
 	policy, err := cachePolicyForOptions(absRepo, options)
 	if err != nil {
 		return "", err
 	}
 	hash := sha256.New()
 	writeCacheKeyString(hash, "cache-version", providerRecordsCacheVersion)
+	// The record bytes are replayed VERBATIM, so the schema that shaped them is
+	// part of the entry's ADDRESS, not just of its contents.
+	writeCacheKeyString(hash, "schema-version", schemaVersion)
 	// The built-in credential-store deny decides which files are in this corpus at
 	// all, so a build that disagrees about it must not reach this build's entries.
 	// See builtinSecretRulesDigest for why nothing else in this key separates them.

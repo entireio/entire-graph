@@ -234,3 +234,65 @@ func soleCacheArtifact(t *testing.T, cacheDir string) string {
 	}
 	return found[0]
 }
+
+// Rejecting a foreign-schema entry after opening it is only half the gate. Both
+// caches ADDRESS their artifacts by a key that did not name the schema, so two
+// builds at different schema versions resolve to the SAME file: each one's store
+// replaces the other's, and the read-time check then turns the survivor into a
+// miss for whichever build reads next. The pair never warms — every run rebuilds
+// and re-poisons the entry for the other build — and nothing reports it, because
+// a miss followed by a successful rebuild looks exactly like a cold cache.
+//
+// Keying the schema in gives each schema its own artifact, so the two coexist and
+// each build keeps its own warm entry. The read-time check stays as
+// defence-in-depth for an entry that predates the field or was hand-edited.
+func TestCacheKeysAddressTheSchemaVersion(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+	const foreignSchema = "9.9"
+	if foreignSchema == SchemaVersion {
+		t.Fatalf("the foreign schema fixture must differ from this build's %q", SchemaVersion)
+	}
+
+	recordsOwn, err := providerRecordsKeyForSchema(SchemaVersion, repo, "local/probe", "dev", "commit", "tree", "symbols", options)
+	if err != nil {
+		t.Fatalf("records key at this schema: %v", err)
+	}
+	recordsForeign, err := providerRecordsKeyForSchema(foreignSchema, repo, "local/probe", "dev", "commit", "tree", "symbols", options)
+	if err != nil {
+		t.Fatalf("records key at schema %s: %v", foreignSchema, err)
+	}
+	if recordsOwn == recordsForeign {
+		t.Fatalf("records cache addresses schema %s and schema %s to the same entry %s", SchemaVersion, foreignSchema, recordsOwn)
+	}
+
+	searchOwn, err := searchSnapshotKeyForSchema(SchemaVersion, repo, "local/probe", "dev", "tree", options)
+	if err != nil {
+		t.Fatalf("search key at this schema: %v", err)
+	}
+	searchForeign, err := searchSnapshotKeyForSchema(foreignSchema, repo, "local/probe", "dev", "tree", options)
+	if err != nil {
+		t.Fatalf("search key at schema %s: %v", foreignSchema, err)
+	}
+	if searchOwn == searchForeign {
+		t.Fatalf("search cache addresses schema %s and schema %s to the same entry %s", SchemaVersion, foreignSchema, searchOwn)
+	}
+
+	// The production entry points must address THIS build's schema and no other,
+	// or the keys above would prove nothing about what the tool actually reads.
+	productionRecords, err := providerRecordsKey(repo, "local/probe", "dev", "commit", "tree", "symbols", options)
+	if err != nil {
+		t.Fatalf("production records key: %v", err)
+	}
+	if productionRecords != recordsOwn {
+		t.Fatalf("providerRecordsKey = %s, want the schema-%s key %s", productionRecords, SchemaVersion, recordsOwn)
+	}
+	productionSearch, err := searchSnapshotKey(repo, "local/probe", "dev", "tree", options)
+	if err != nil {
+		t.Fatalf("production search key: %v", err)
+	}
+	if productionSearch != searchOwn {
+		t.Fatalf("searchSnapshotKey = %s, want the schema-%s key %s", productionSearch, SchemaVersion, searchOwn)
+	}
+}
