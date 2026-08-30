@@ -137,15 +137,39 @@ func jsonWireShape(structType reflect.Type) []string {
 		if name == "" {
 			name = field.Name
 		}
+		// EVERY option is recorded, not just omitempty. An earlier version
+		// looked only for omitempty and silently dropped the rest, which left
+		// the same hole one level down: `,string` makes a numeric or boolean
+		// field marshal as a QUOTED string, so adding or removing it changes
+		// what every consumer parses, and `,omitzero` changes when the field is
+		// emitted. Both are wire changes the contract must see.
 		entry := name + " " + field.Type.String()
-		for _, option := range strings.Split(options, ",") {
-			if option == "omitempty" {
-				entry += " omitempty"
-			}
+		if recorded := jsonTagOptions(options); recorded != "" {
+			entry += " " + recorded
 		}
 		shape = append(shape, entry)
 	}
 	return shape
+}
+
+// jsonTagOptions renders a json tag's option list in a stable order, so the
+// frozen shape is a property of the tag rather than of the order someone wrote
+// its options in.
+func jsonTagOptions(options string) string {
+	if options == "" {
+		return ""
+	}
+	seen := map[string]bool{}
+	var recorded []string
+	for _, option := range strings.Split(options, ",") {
+		if option == "" || seen[option] {
+			continue
+		}
+		seen[option] = true
+		recorded = append(recorded, option)
+	}
+	sort.Strings(recorded)
+	return strings.Join(recorded, ",")
 }
 
 // persistedResultTypes are every named struct type reachable from Result. The
@@ -170,9 +194,19 @@ func persistedResultTypes() map[string]reflect.Type {
 			}
 			found[name] = t
 			for i := range t.NumField() {
-				if t.Field(i).IsExported() {
-					walk(t.Field(i).Type)
+				field := t.Field(i)
+				if !field.IsExported() {
+					continue
 				}
+				// A field tagged `json:"-"` never reaches the wire, so a type
+				// reachable ONLY through one is not part of the contract.
+				// Walking into it would demand a shape entry for a type no
+				// consumer can observe, and the freeze would then fail for a
+				// change that cannot break anyone.
+				if fieldName, fieldOptions, _ := strings.Cut(field.Tag.Get("json"), ","); fieldName == "-" && fieldOptions == "" {
+					continue
+				}
+				walk(field.Type)
 			}
 		}
 	}
