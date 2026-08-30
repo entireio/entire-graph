@@ -1854,6 +1854,97 @@ func nameCallMayTargetMethod(lang string) bool {
 	return implicitReceiverLanguage(lang) || lang == "Rust"
 }
 
+// fsharpModulePaths maps each symbol in an F# file to the dotted path of the
+// modules it is declared in ("A", "LoadingScripts.ScriptGeneration"), and
+// returns the set of paths the file declares. F# files routinely hold several
+// modules, so a call written `A.convert` must be held to module A's members
+// instead of binding to whichever same-named definition sits nearest.
+func fsharpModulePaths(fileSymbols []SymbolRecord) (map[string]string, map[string]bool) {
+	byID := make(map[string]SymbolRecord, len(fileSymbols))
+	for _, symbol := range fileSymbols {
+		byID[symbol.ID] = symbol
+	}
+	pathBySymbolID := make(map[string]string, len(fileSymbols))
+	declared := map[string]bool{}
+	for _, symbol := range fileSymbols {
+		var segments []string
+		// Bound by the file's symbol count: a container chain cannot revisit a
+		// symbol, and a malformed one stops at the first unknown container.
+		for container, hops := symbol.ContainerID, 0; container != "" && hops <= len(fileSymbols); hops++ {
+			parent, ok := byID[container]
+			if !ok {
+				break
+			}
+			if parent.Kind == "module" {
+				segments = append([]string{parent.Name}, segments...)
+			}
+			container = parent.ContainerID
+		}
+		path := strings.Join(segments, ".")
+		pathBySymbolID[symbol.ID] = path
+		if symbol.Kind == "module" {
+			own := symbol.Name
+			if path != "" {
+				own = path + "." + symbol.Name
+			}
+			declared[own] = true
+		}
+	}
+	return pathBySymbolID, declared
+}
+
+// fsharpQualifierMatchesModulePath reports whether a call's qualifier names the
+// module a symbol is declared in. A qualifier may be written relative to the
+// enclosing scope (`ScriptGeneration.f` inside `LoadingScripts`), so a suffix on
+// a dot boundary counts.
+func fsharpQualifierMatchesModulePath(path, qualifier string) bool {
+	return path == qualifier || strings.HasSuffix(path, "."+qualifier)
+}
+
+// fsharpModulePathDeclared reports whether the qualifier names a module this
+// file declares. Cross-file qualifiers (`InstallProcess.InstallIntoProjects`
+// from another file's module) stay unrestricted and resolve by name as before.
+func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
+	for path := range declared {
+		if fsharpQualifierMatchesModulePath(path, qualifier) {
+			return true
+		}
+	}
+	return false
+}
+
+// recordFSharpCallQualifier remembers which module a qualified call named, so
+// resolution can keep `A.convert` off `B.convert`. A name that also appears
+// unqualified in the same block, or under two different in-file qualifiers,
+// loses the restriction: the block no longer says which definition each site
+// meant, and guessing would cost an edge that resolves correctly today.
+func recordFSharpCallQualifier(qualifiers map[string]string, declared map[string]bool, name, target string) {
+	qualifier := ""
+	if cut := strings.LastIndex(target, "."); cut > 0 {
+		if candidate := target[:cut]; fsharpModulePathDeclared(declared, candidate) {
+			qualifier = candidate
+		}
+	}
+	if previous, seen := qualifiers[name]; seen && previous != qualifier {
+		qualifiers[name] = ""
+		return
+	}
+	qualifiers[name] = qualifier
+}
+
+// fsharpQualifiedScope drops the symbols of this file that the qualifier rules
+// out. Symbols from other files are untouched: the qualifier is only known to
+// name a module here, so it cannot speak for anywhere else.
+func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier string, pathBySymbolID map[string]string) []SymbolRecord {
+	out := make([]SymbolRecord, 0, len(symbols))
+	for _, symbol := range symbols {
+		if symbol.FilePath != filePath || fsharpQualifierMatchesModulePath(pathBySymbolID[symbol.ID], qualifier) {
+			out = append(out, symbol)
+		}
+	}
+	return out
+}
+
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
@@ -3126,6 +3217,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// and let receiverCallRelations apply the usual shadowing rules.
 			typeScriptPropTypes = typeScriptPropertyTypes(content, recordsByFile[file.Path])
 		}
+		var fsharpModulePathBySymbolID map[string]string
+		var fsharpDeclaredModulePaths map[string]bool
+		if file.Language == "F#" && fileNeedsCallScan {
+			fsharpModulePathBySymbolID, fsharpDeclaredModulePaths = fsharpModulePaths(currentFileSymbols)
+		}
 		var jsSymbolNamespaces map[string]string
 		var jsScan *jsScanState
 		if fileNeedsCallScan && (file.Language == "JavaScript" || file.Language == "TypeScript") {
@@ -3226,6 +3322,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				callNames := callLikeIdentifiers(callBlock, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
+				fsharpCallQualifiers := map[string]string{}
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
 				}
@@ -3278,15 +3375,19 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				if file.Language == "F#" {
 					// F# module-qualified calls (`UpdateProcess.SmartInstall(...)`,
 					// `LoadingScripts.ScriptGeneration.constructScriptsFromData(...)`)
-					// hide the target behind a dotted path.
-					for name := range fsharpDottedCallIdentifiers(callBlock) {
+					// hide the target behind a dotted path; forward pipes
+					// (`value |> normalize`) apply a function by juxtaposition, with
+					// no dot and no parentheses, so neither the dotted scanners nor
+					// the generic `name(` one sees them. Resolution matches on the
+					// name, but the qualifier is kept so a call naming a module this
+					// file declares stays inside it.
+					for target := range fsharpCallTargets(callBlock) {
+						name := lastDottedCallSegment(target)
+						if name == "" {
+							continue
+						}
 						callNames[name] = struct{}{}
-					}
-					// Forward pipes (`value |> normalize`) apply a function by
-					// juxtaposition, with no dot and no parentheses, so neither
-					// scanner above nor the generic `name(` one sees them.
-					for name := range fsharpPipelineCallIdentifiers(callBlock) {
-						callNames[name] = struct{}{}
+						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, name, target)
 					}
 				}
 				if file.Language == "Lua" {
@@ -3361,6 +3462,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						targets = resolveJSNamespaceCallChain(name, from, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, func(terminal string) bool {
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
+					} else if qualifier := fsharpCallQualifiers[name]; qualifier != "" {
+						targets = resolveCallTargets(name, from,
+							fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, fsharpModulePathBySymbolID),
+							fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, fsharpModulePathBySymbolID),
+							callImportsByName, false)
 					} else {
 						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
 					}
@@ -3706,6 +3812,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
+				topLevelFSharpQualifiers := map[string]string{}
 				if file.Language == "Julia" {
 					topLevelNames = juliaCallIdentifiers(topLevel)
 				}
@@ -3730,8 +3837,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				if file.Language == "F#" {
-					for name := range fsharpDottedCallIdentifiers(topLevel) {
+					// Statement-position pipelines (`"x" |> normalize |> ignore` in an
+					// .fsx script, or in a module body) are bound to no symbol, so the
+					// per-symbol scan above never sees them.
+					for target := range fsharpCallTargets(topLevel) {
+						name := lastDottedCallSegment(target)
+						if name == "" {
+							continue
+						}
 						topLevelNames[name] = struct{}{}
+						recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, name, target)
 					}
 				}
 				if file.Language == "Lua" {
@@ -3766,6 +3881,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// file-level pseudo-symbol has no self-call or member names
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
+					} else if qualifier := topLevelFSharpQualifiers[name]; qualifier != "" {
+						targets = resolveCallTargets(name, fileSource,
+							fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, fsharpModulePathBySymbolID),
+							fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, fsharpModulePathBySymbolID),
+							importsByName, false)
 					} else {
 						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false)
 					}

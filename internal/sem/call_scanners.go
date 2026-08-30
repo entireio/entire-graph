@@ -228,8 +228,23 @@ func maskJuliaLiteralsAndComments(content string) string {
 }
 
 func fsharpDottedCallIdentifiers(content string) map[string]struct{} {
+	return fsharpCallTargetNames(fsharpDottedCallTargets(content))
+}
+
+// fsharpDottedCallTargets returns the module-qualified call targets in content
+// as they are written (`UpdateProcess.SmartInstall`, `A.convert`), with the
+// whitespace F# allows around a dot removed. Resolution needs the qualifier:
+// reducing `A.convert` to `convert` before matching lets the call bind to any
+// same-named definition in the file.
+func fsharpDottedCallTargets(content string) map[string]struct{} {
 	stripped := stripCodeLiteralsAndComments(content)
-	out := dottedCallIdentifiers(stripped, fsharpDottedCallRe)
+	out := map[string]struct{}{}
+	for _, match := range fsharpDottedCallRe.FindAllStringSubmatch(stripped, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		addFSharpCallTarget(out, match[1])
+	}
 	for _, match := range fsharpDottedApplyRe.FindAllStringSubmatchIndex(stripped, -1) {
 		if len(match) < 4 {
 			continue
@@ -237,13 +252,38 @@ func fsharpDottedCallIdentifiers(content string) map[string]struct{} {
 		if fsharpDottedApplyIgnored(stripped, match[0]) {
 			continue
 		}
-		name := lastDottedCallSegment(stripped[match[2]:match[3]])
-		if name == "" {
-			continue
-		}
-		out[name] = struct{}{}
+		addFSharpCallTarget(out, stripped[match[2]:match[3]])
 	}
 	return out
+}
+
+// fsharpCallTargets returns every call target the F# scanners can see, dotted
+// and bare alike, as written.
+func fsharpCallTargets(content string) map[string]struct{} {
+	out := fsharpDottedCallTargets(content)
+	for target := range fsharpPipelineCallTargets(content) {
+		out[target] = struct{}{}
+	}
+	return out
+}
+
+// fsharpCallTargetNames reduces call targets to the names resolution matches on.
+func fsharpCallTargetNames(targets map[string]struct{}) map[string]struct{} {
+	out := map[string]struct{}{}
+	for target := range targets {
+		if name := lastDottedCallSegment(target); name != "" {
+			out[name] = struct{}{}
+		}
+	}
+	return out
+}
+
+func addFSharpCallTarget(out map[string]struct{}, target string) {
+	target = strings.Join(strings.Fields(target), "")
+	if target == "" || lastDottedCallSegment(target) == "" {
+		return
+	}
+	out[target] = struct{}{}
 }
 
 // fsharpPipelineCallIdentifiers returns the functions applied by F# forward
@@ -260,6 +300,12 @@ func fsharpDottedCallIdentifiers(content string) map[string]struct{} {
 // guessed at here — an over-eager head-position heuristic would trade the
 // precision the call graph is built on for recall.
 func fsharpPipelineCallIdentifiers(content string) map[string]struct{} {
+	return fsharpCallTargetNames(fsharpPipelineCallTargets(content))
+}
+
+// fsharpPipelineCallTargets returns the piped call targets as written, keeping
+// the module qualifier of `xs |> A.convert` for resolution to hold the call to.
+func fsharpPipelineCallTargets(content string) map[string]struct{} {
 	stripped := stripCodeLiteralsAndComments(content)
 	out := map[string]struct{}{}
 	for _, match := range fsharpPipelineCallRe.FindAllStringSubmatchIndex(stripped, -1) {
@@ -273,11 +319,7 @@ func fsharpPipelineCallIdentifiers(content string) map[string]struct{} {
 		if fsharpPipelineTargetIgnored(target) {
 			continue
 		}
-		name := lastDottedCallSegment(target)
-		if name == "" {
-			continue
-		}
-		out[name] = struct{}{}
+		addFSharpCallTarget(out, target)
 	}
 	return out
 }

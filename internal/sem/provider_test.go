@@ -13276,6 +13276,76 @@ func TestFSharpPipelineScannerSkipsLambdasAndLiterals(t *testing.T) {
 	}
 }
 
+func TestFSharpTopLevelPipelineCallsResolve(t *testing.T) {
+	// A pipeline written as a statement rather than inside a binding — the
+	// normal shape of an .fsx script — belongs to no symbol, so it is scanned by
+	// the file-level pass, not the per-symbol one. Wiring the pipeline scanner
+	// into only the per-symbol pass left those calls invisible.
+	repo := t.TempDir()
+	writeFile(t, repo, "script.fsx", `let normalize (x: string) = x.Trim()
+
+let shout (s: string) = s.ToUpper()
+
+"  hi  " |> normalize |> shout |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"normalize", "shout"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "script.fsx", want) {
+			t.Fatalf("missing top-level F# pipeline CALLS script.fsx->%s: %#v", want, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+func TestFSharpQualifiedCallsStayInTheNamedModule(t *testing.T) {
+	// One F# file routinely declares several modules. Reducing `A.convert` to
+	// `convert` before matching threw away the only thing that says which
+	// definition was meant, and the call bound to whichever same-named
+	// definition was declared nearest — B's, here, for all three call forms.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Q.fs", `module A =
+    let convert (x: int) = x + 1
+
+module B =
+    let convert (x: int) = x * 2
+
+module Caller =
+    let parens (x: int) = A.convert(x)
+    let apply (x: int) = A.convert x
+    let piped (x: int) = x |> A.convert
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// A.convert is on line 2, B.convert on line 5; every caller sits below both.
+	wantLine := map[string]int{"parens": 8, "apply": 9, "piped": 10}
+	seen := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if _, tracked := wantLine[from.Name]; !tracked || to.Name != "convert" {
+			continue
+		}
+		seen[from.Name] = true
+		if to.StartLine != 2 {
+			t.Fatalf("%s (line %d) resolved A.convert to the definition on line %d, want line 2", from.Name, from.StartLine, to.StartLine)
+		}
+	}
+	for name := range wantLine {
+		if !seen[name] {
+			t.Fatalf("missing F# CALLS %s->convert: %#v", name, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
 func TestSwiftProtocolDeclarationsEmitted(t *testing.T) {
 	// tree-sitter-swift emits protocol_declaration; an Objective-C-only gate
 	// on that node type silently dropped every Swift protocol (regression
