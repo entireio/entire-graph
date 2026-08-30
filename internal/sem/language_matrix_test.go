@@ -95,15 +95,7 @@ var languageMatrix = []languageFixture{
 	{dir: "dart", symbols: []string{"class:Ledger", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "elixir", symbols: []string{"module:Ledger", "method:add", "method:double"}, relations: []string{"DEFINES", "CONTAINS", "CALLS"}},
 	{dir: "erlang", symbols: []string{"module:ledger", "struct:ledger", "function:add", "function:double"}, relations: []string{"DEFINES", "CALLS"}},
-	{
-		dir:     "fsharp",
-		symbols: []string{"module:Ledger", "type:Ledger", "function:add", "function:double"},
-		// F# applies functions by juxtaposition (`add ledger amount`), which no
-		// scanner reads: the dotted scanners need a `.` and the generic scanner
-		// needs `name(`. Resolving it needs an application parser.
-		relations: []string{"DEFINES", "CONTAINS", "PARAM_TYPE", "USES_TYPE"},
-		callsGap:  "F# function application by juxtaposition (`add ledger amount`) has no scanner, so idiomatic F# call sites are invisible",
-	},
+	{dir: "fsharp", symbols: []string{"module:Ledger", "type:Ledger", "function:add", "function:double"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "PARAM_TYPE", "USES_TYPE"}},
 	{dir: "go", symbols: []string{"type:Ledger", "field:Total", "method:Add", "function:LedgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "USES_TYPE", "READS_FIELD"}},
 	{dir: "groovy", symbols: []string{"class:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "haskell", symbols: []string{"type:Ledger", "function:add", "function:double"}, relations: []string{"DEFINES", "CALLS", "PARAM_TYPE", "USES_TYPE"}},

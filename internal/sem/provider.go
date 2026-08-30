@@ -3180,6 +3180,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// and let receiverCallRelations apply the usual shadowing rules.
 			typeScriptPropTypes = typeScriptPropertyTypes(content, recordsByFile[file.Path])
 		}
+		var fsharpCallableNames map[string]bool
+		if file.Language == "F#" && fileNeedsCallScan {
+			// The names a bare juxtaposition call may name: this file's own
+			// callables, plus those an `open` brings into scope unqualified.
+			// Computed once per file rather than per symbol.
+			fsharpCallableNames = fsharpFileCallableNames(currentFileSymbols)
+			for name := range fsharpOpenedCallableNames(fsharpOpenedModules(content), symbolsByShortName) {
+				fsharpCallableNames[name] = true
+			}
+		}
 		var jsSymbolNamespaces map[string]string
 		var jsScan *jsScanState
 		if fileNeedsCallScan && (file.Language == "JavaScript" || file.Language == "TypeScript") {
@@ -3334,6 +3344,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// `LoadingScripts.ScriptGeneration.constructScriptsFromData(...)`)
 					// hide the target behind a dotted path.
 					for name := range fsharpDottedCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+					// Plain juxtaposition (`add ledger amount`) is F#'s ordinary
+					// call syntax and has neither a dot, a pipe nor parentheses
+					// to mark it. Whitespace alone does not say which of several
+					// adjacent names is the one being applied, so the scan is
+					// restricted to names that are callable bindings in this
+					// file — an unrecognized name is never guessed into a call.
+					for name := range fsharpJuxtapositionCallIdentifiers(callBlock, fsharpCallableNames) {
 						callNames[name] = struct{}{}
 					}
 				}
