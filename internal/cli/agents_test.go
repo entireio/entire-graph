@@ -3054,3 +3054,53 @@ func TestAgentGuideHeadingIdentifiesTheGuide(t *testing.T) {
 		t.Fatalf("the guide heading matches unrelated file content: %q", agentGuideHeading)
 	}
 }
+
+// TestInitAgentsRefusesHardLinkWhoseCountASymlinkAliasInflates covers the way
+// the hard-link guard could be talked out of firing.
+//
+// The guard asks whether every one of an inode's names is a managed instruction
+// file, and answers by counting managed names that resolve to the same inode.
+// Only real directory entries contribute to an inode's LINK COUNT, so a symlink
+// alias — the documented way to share one instruction file — resolves to the
+// inode without being one of its names, and counting it inflates the managed
+// tally without inflating the link count.
+//
+// Measured before the fix: CLAUDE.md hard-linked to .git/config (2 names) plus
+// AGENTS.md symlinked to CLAUDE.md counted 2 managed names against 2 links, so
+// `init-agents` exited 0 and rewrote git's config — the exact corruption the
+// guard exists to prevent, reached by inflating its own evidence.
+func TestInitAgentsRefusesHardLinkWhoseCountASymlinkAliasInflates(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+
+	victimPath := filepath.Join(repo, ".git", "config")
+	if err := os.MkdirAll(filepath.Dir(victimPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const victimContent = "[core]\n\tbare = false\n"
+	if err := os.WriteFile(victimPath, []byte(victimContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(victimPath, filepath.Join(repo, "CLAUDE.md")); err != nil {
+		t.Skipf("hard links unavailable on this filesystem: %v", err)
+	}
+	if err := os.Symlink("CLAUDE.md", filepath.Join(repo, "AGENTS.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var out bytes.Buffer
+	runErr := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+	if runErr == nil {
+		t.Fatalf("init-agents succeeded while writing through a hard link into the git directory:\n%s", out.String())
+	}
+	if !errors.Is(runErr, errSharedInodeManagedTarget) {
+		t.Fatalf("want a hard-link refusal, got %v\n%s", runErr, out.String())
+	}
+	after, err := os.ReadFile(victimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != victimContent {
+		t.Fatalf(".git/config was written through a hard link:\n%s", after)
+	}
+}

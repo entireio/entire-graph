@@ -1611,12 +1611,8 @@ func writeContainedFile(root *os.Root, name string, content []byte, perm os.File
 // — so this fails closed, on the same reasoning as the case-folded `.GIT`
 // refusal above.
 func refuseSharedInode(root *os.Root, file *os.File, name, resolved string, managed []string) error {
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	links, known := fileLinkCount(info)
-	if !known || links <= 1 {
+	links, device, inode, identified := openFileIdentity(file)
+	if !identified || links <= 1 {
 		return nil
 	}
 	// A shared inode is only dangerous if one of its OTHER names is somewhere
@@ -1629,21 +1625,36 @@ func refuseSharedInode(root *os.Root, file *os.File, name, resolved string, mana
 	// names, then all of its names are accounted for and all of them are ours.
 	// One unaccounted name means some other path — `.git/config`, a hook —
 	// reaches the same bytes, and the write must be refused.
-	device, inode, identified := fileIdentity(info)
-	if !identified {
-		return nil
-	}
 	accounted := uint64(0)
 	for _, candidate := range managed {
+		// The entry must be a HARD LINK to count, and a symlink is not one.
+		//
+		// Only real directory entries contribute to an inode's link count, so
+		// counting a symlink alias inflates `accounted` without inflating
+		// `links` and hands back exactly the permission this guard exists to
+		// withhold. Measured before this check: CLAUDE.md hard-linked to
+		// .git/config (2 names) plus AGENTS.md symlinked to CLAUDE.md counted 2
+		// managed names against 2 links, so init-agents exited 0 and rewrote
+		// git's config. Sharing one instruction file through a SYMLINK is the
+		// documented alias and stays supported; it simply is not evidence about
+		// who else holds a hard link.
+		linkInfo, lstatErr := root.Lstat(candidate)
+		if lstatErr != nil || linkInfo.Mode()&fs.ModeSymlink != 0 {
+			continue
+		}
 		candidateResolved, resolveErr := resolveContainedName(root, candidate)
 		if resolveErr != nil {
 			continue
 		}
-		candidateInfo, statErr := root.Stat(candidateResolved)
-		if statErr != nil {
+		// Opened rather than stat'd because identity is a handle question on
+		// Windows. The symlink check above already ran, so this opens a real
+		// directory entry.
+		candidateFile, openErr := root.Open(candidateResolved)
+		if openErr != nil {
 			continue
 		}
-		candidateDevice, candidateInode, candidateIdentified := fileIdentity(candidateInfo)
+		_, candidateDevice, candidateInode, candidateIdentified := openFileIdentity(candidateFile)
+		_ = candidateFile.Close()
 		if candidateIdentified && candidateDevice == device && candidateInode == inode {
 			accounted++
 		}
