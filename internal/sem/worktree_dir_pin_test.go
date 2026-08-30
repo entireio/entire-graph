@@ -145,15 +145,23 @@ func TestFallbackOpensOnlyThroughTheDirectoryHandle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Normalize first. Git for Windows checks this file out with CRLF endings, so
+	// a "\n}\n" terminator never matches there and the scan below would run over
+	// the WHOLE file -- reporting every os.Stat in the package as a finding
+	// against this one function. A guard that reads the source has to be immune
+	// to how the source was checked out.
+	text := strings.ReplaceAll(string(source), "\r\n", "\n")
 	const marker = "func openContainedRegularFile("
-	start := strings.Index(string(source), marker)
+	start := strings.Index(text, marker)
 	if start < 0 {
 		t.Fatalf("openContainedRegularFile is gone; this guard no longer describes the code")
 	}
-	body := string(source)[start:]
-	if end := strings.Index(body, "\n}\n"); end >= 0 {
-		body = body[:end]
+	body := text[start:]
+	end := strings.Index(body, "\n}\n")
+	if end < 0 {
+		t.Fatalf("could not find the end of openContainedRegularFile; the guard cannot bound what it scans")
 	}
+	body = body[:end]
 	if !strings.Contains(body, "dirRoot.Open(") || !strings.Contains(body, "dirRoot.Lstat(") {
 		t.Errorf("the fallback no longer opens the leaf through the pinned directory handle:\n%s", body)
 	}
