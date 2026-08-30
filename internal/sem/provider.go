@@ -23665,6 +23665,21 @@ func RepoKey(ctx context.Context, repo string) string {
 }
 
 func repoKey(ctx context.Context, repo string) string {
+	// Normalise the caller's SPELLING of the repository before deriving anything
+	// from it. The local/ half of the rule is the LAST PATH ELEMENT, so an
+	// unnormalised spelling degrades it into a namespace no checkout owns: "."
+	// yields local/., ".." yields local/.., "<repo>/." yields local/. again — one
+	// key shared by every repository on the machine, and never the key the
+	// snapshot itself will carry.
+	//
+	// Every in-process caller already passes the absolute path the provider
+	// derived (sourceContext, searchSnapshotKey, providerRecordsKey), for which
+	// this is a no-op. The exported RepoKey has no such guarantee: `graph doctor`
+	// publishes it for a repository resolved from ENTIRE_REPO_ROOT, --repo or the
+	// working directory, any of which may arrive relative. Normalising here rather
+	// than at that one call site keeps the published rule reproducible from a path
+	// alone, which is the whole contract.
+	repo = absoluteRepoPath(repo)
 	if gitMetadataSafeForSubprocessContext(ctx, repo) {
 		for _, remoteURL := range githubRemoteURLs(ctx, repo) {
 			if key, ok := githubRepoKey(remoteURL); ok {
@@ -23673,6 +23688,17 @@ func repoKey(ctx context.Context, repo string) string {
 		}
 	}
 	return "local/" + filepath.Base(repo)
+}
+
+// absoluteRepoPath is filepath.Abs with the caller's spelling kept as the
+// fallback: Abs fails only when the working directory cannot be read, and a
+// degraded key is a better outcome there than a panic or an empty one.
+func absoluteRepoPath(repo string) string {
+	absolute, err := filepath.Abs(repo)
+	if err != nil {
+		return repo
+	}
+	return absolute
 }
 
 func githubRemoteURLs(ctx context.Context, repo string) []string {

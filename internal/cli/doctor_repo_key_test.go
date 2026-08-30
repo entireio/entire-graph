@@ -262,3 +262,47 @@ func countCacheEntries(t *testing.T, cacheDir string) int {
 	}
 	return count
 }
+
+// TestDoctorRepoKeyIsIndependentOfHowTheRepoRootIsSpelled closes the gap the
+// handshake left open. resolveRepo returns --repo and ENTIRE_REPO_ROOT verbatim
+// and falls back to ".", while every path that BUILDS a snapshot derives the key
+// from filepath.Abs of the same input. The two therefore disagreed for any
+// unnormalised spelling: the local/ half of the rule is the last path element, so
+// "." published local/. — a namespace shared by every repository on the machine,
+// and never the one the snapshot would carry. A consumer comparing its own
+// prediction against that report would reject a native snapshot, or accept a
+// foreign one, on the strength of a value no build ever emits.
+func TestDoctorRepoKeyIsIndependentOfHowTheRepoRootIsSpelled(t *testing.T) {
+	repo := t.TempDir()
+	initDoctorRepo(t, repo, "")
+	want := "local/" + filepath.Base(repo)
+
+	t.Chdir(repo)
+	for _, spelling := range []struct {
+		name string
+		root string
+	}{
+		{"absolute", repo},
+		{"working directory", "."},
+		{"uncleaned absolute", repo + string(filepath.Separator) + "sub" + string(filepath.Separator) + ".."},
+		{"trailing dot", repo + string(filepath.Separator) + "."},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := Run(t.Context(), Options{
+				Version: "0.1.0",
+				Env:     EntireEnv{RepoRoot: spelling.root, PluginDataDir: t.TempDir()},
+				Stdout:  &out,
+			}, []string{"doctor", "--json"}); err != nil {
+				t.Fatalf("doctor: %v", err)
+			}
+			var report map[string]any
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatalf("doctor json invalid:\n%s\n%v", out.String(), err)
+			}
+			if got := report["repo_key"]; got != want {
+				t.Fatalf("doctor repo_key for root %q = %v, want %q (report: %s)", spelling.root, got, want, out.String())
+			}
+		})
+	}
+}
