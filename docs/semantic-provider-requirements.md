@@ -253,7 +253,12 @@ unknown fields):
   evidence array from a complete one without re-deriving the graph. It rides on
   the summary record: a streamed header is written before the count is known, so
   only the summary carries it, while a buffered snapshot backfills the header
-  from the summary and carries it in both. A few edges on this repository
+  from the summary and carries it in both. The count identifies no individual
+  relation — each record was already written when its second producer appeared,
+  so a consumer cannot tell from a relation alone whether it is one of the
+  affected edges. The two incompleteness bounds are independent: one edge can be
+  both truncated and one-sided, neither supersedes the other, and the count
+  includes edges that were also truncated. A few edges on this repository
   (currently 4 of 5,240).
   `reason` is a single field, so it names one of those facts rather than all of
   them. Absent `EVIDENCE_TRUNCATED`, `evidence[].kind` is the complete set of

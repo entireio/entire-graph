@@ -243,6 +243,73 @@ func caller(a int) int {
 	}
 }
 
+// TestDataFlowEvidenceBoundsAreIndependent pins the interaction between the two
+// ways a DATA_FLOWS evidence array can be incomplete. They are orthogonal: the
+// cap bounds what one producer contributes, and cross-symbol grouping bounds how
+// many producers contribute at all. One edge can hit both, and when it does
+// neither disclosure may swallow the other -- a reader who saw only
+// EVIDENCE_TRUNCATED would conclude the missing flows are the ones past the cap,
+// when a whole second producer is also absent.
+//
+// alpha forwards ten parameters into bravo, which truncates that direction at
+// the cap, and bravo assigns alpha's return, which makes the same edge
+// two-producer.
+func TestDataFlowEvidenceBoundsAreIndependent(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.go", `package flow
+
+func alpha(a, b, c, d, e, f, g, h, i, j int) int {
+	return bravo(a, b, c, d, e, f, g, h, i, j)
+}
+
+func bravo(a, b, c, d, e, f, g, h, i, j int) int {
+	value := alpha(a, b, c, d, e, f, g, h, i, j)
+	return value
+}
+`)
+
+	var truncated *RelationRecord
+	var summary SnapshotSummary
+	err := StreamSnapshot(t.Context(), repo, "bounds-test", ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull}, func(record any) error {
+		switch typed := record.(type) {
+		case RelationRecord:
+			if typed.Type == "DATA_FLOWS" && lastSegment(typed.FromID) == "alpha" && lastSegment(typed.ToID) == "bravo" {
+				kept := typed
+				truncated = &kept
+			}
+		case SnapshotSummary:
+			summary = typed
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if truncated == nil {
+		t.Fatal("no alpha -> bravo DATA_FLOWS relation")
+	}
+	if len(truncated.Evidence) != dataFlowEvidenceLimit {
+		t.Fatalf("evidence entries = %d, want the cap %d", len(truncated.Evidence), dataFlowEvidenceLimit)
+	}
+	if !slices.Contains(truncated.WarningCodes, evidenceTruncatedWarning) {
+		t.Fatalf("warning codes = %q, want %q", truncated.WarningCodes, evidenceTruncatedWarning)
+	}
+
+	var unmerged *ProviderWarning
+	for i, warning := range summary.Warnings {
+		if warning.Code == "W_DATA_FLOW_EVIDENCE_UNMERGED" {
+			unmerged = &summary.Warnings[i]
+		}
+	}
+	if unmerged == nil {
+		t.Fatal("a truncated edge that also has a second producer must still be counted; the cap does not supersede the cross-symbol bound")
+	}
+	if !strings.Contains(unmerged.Detail, "2 DATA_FLOWS edge(s)") {
+		t.Fatalf("detail = %q, want both orientations of the pair counted", unmerged.Detail)
+	}
+}
+
 // TestSnapshotFormatsAreByteDeterministicWhenRelationsDeduplicate exercises
 // the streaming dedup boundary with several DATA_FLOWS flows that share one
 // public relation identity. All of them belong on the edge — forwarding eight

@@ -1510,9 +1510,9 @@ func unmergedDataFlowEvidenceWarning(edges int) ProviderWarning {
 	return ProviderWarning{
 		Code:                 "W_DATA_FLOW_EVIDENCE_UNMERGED",
 		Severity:             "info",
-		EffectOnCompleteness: "each DATA_FLOWS relation carries every flow found by the symbol that produced it; on these edges a second symbol justified the same edge and its flows were dropped, so the evidence array explains the edge from one side only",
+		EffectOnCompleteness: "each DATA_FLOWS relation carries every flow found by the symbol that produced it; on these edges a second symbol justified the same edge and its flows were dropped, so the evidence array explains the edge from one side only. The affected edges are counted, not identified: each record had already been written when its second producer appeared, so none of them can be marked individually and a consumer cannot tell from a relation alone whether it is one of them",
 		Detail: fmt.Sprintf(
-			"%d DATA_FLOWS edge(s) were justified by more than one symbol, typically mutual recursion where one side forwards a parameter and the other returns a call; the relation, its confidence and its reason are unaffected",
+			"%d DATA_FLOWS edge(s) were justified by more than one symbol, typically mutual recursion where one side forwards a parameter and the other returns a call; the relation, its confidence and its reason are unaffected. Independent of EVIDENCE_TRUNCATED: one edge can be both, neither supersedes the other, and this count includes edges that were also truncated",
 			edges,
 		),
 	}
