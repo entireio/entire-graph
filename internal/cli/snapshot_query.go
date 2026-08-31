@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 type snapshotQueryFlags struct {
@@ -33,7 +34,7 @@ func runSnapshotQuery(opts Options, args []string) error {
 		return fmt.Errorf("load compact snapshot: %w", err)
 	}
 	result := index.Query(sem.CompactSnapshotQuery{Symbol: flags.Symbol, FromID: flags.From, Relation: flags.Relation})
-	encoder := json.NewEncoder(opts.Stdout)
+	encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
 	encoder.SetEscapeHTML(false)
 	for _, symbol := range result.Symbols {
 		if err := encoder.Encode(symbol); err != nil {

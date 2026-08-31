@@ -179,7 +179,7 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 	response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
 	switch flags.Format {
 	case "json":
-		encoder := json.NewEncoder(opts.Stdout)
+		encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(response)
 	case "agent":
