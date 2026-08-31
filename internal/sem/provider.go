@@ -1149,6 +1149,12 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// collisions across realistic relation counts are negligible.
 	startPhase()
 	seenRelation := map[uint64]struct{}{}
+	// One digest per DATA_FLOWS edge, so a dropped duplicate can be compared
+	// against the record that was kept without retaining either record. Sits on
+	// the DATA_FLOWS subset of the map above, which is already held for every
+	// relation, so this adds no new memory class.
+	dataFlowEvidence := map[uint64]uint64{}
+	unmergedEvidenceEdges := 0
 	externalsByID := map[string]ExternalRecord{}
 	relationsByType := map[string]int{}
 	var emitErr error
@@ -1177,7 +1183,20 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		}
 		dedupKey := relationDedupKey(r)
 		if _, seen := seenRelation[dedupKey]; seen {
+			if r.Type == "DATA_FLOWS" {
+				// A duplicate carrying the same flows loses nothing. One carrying
+				// different flows is evidence this edge had a second producer that
+				// emission-site grouping could not see, and the record already
+				// written cannot be amended -- so count the edge and disclose it.
+				if kept, ok := dataFlowEvidence[dedupKey]; ok && kept != evidenceDigest(r.Evidence) {
+					unmergedEvidenceEdges++
+					delete(dataFlowEvidence, dedupKey) // count each edge once
+				}
+			}
 			return
+		}
+		if r.Type == "DATA_FLOWS" {
+			dataFlowEvidence[dedupKey] = evidenceDigest(r.Evidence)
 		}
 		seenRelation[dedupKey] = struct{}{}
 		for _, id := range []string{r.FromID, r.ToID} {
@@ -1255,6 +1274,9 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	warnings := sc.warnings
 	if warnings == nil {
 		warnings = []ProviderWarning{}
+	}
+	if unmergedEvidenceEdges > 0 {
+		warnings = append(warnings, unmergedDataFlowEvidenceWarning(unmergedEvidenceEdges))
 	}
 	if failures == nil {
 		failures = []PartialFailure{}
@@ -1460,6 +1482,40 @@ func useFastCFamilyParser(spec profileSpec, langSpec languageSpec) bool {
 		return false
 	}
 	return langSpec.language == "C" || langSpec.language == "C++"
+}
+
+// evidenceDigest fingerprints an evidence array so two records for one edge can
+// be compared without keeping either. Order matters: the array is canonically
+// ordered, so a reordering is a real difference.
+func evidenceDigest(evidence []Evidence) uint64 {
+	h := fnv.New64a()
+	for _, e := range evidence {
+		_, _ = h.Write([]byte(e.Kind))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(e.Detail))
+		_, _ = h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
+// unmergedDataFlowEvidenceWarning reports DATA_FLOWS edges that more than one
+// symbol justified. Evidence is grouped where flows are emitted, which sees one
+// `from` symbol at a time, so an edge produced from two symbols keeps the first
+// producer's flows. Merging them needs a boundary that sees every producer,
+// which on a write-through stream means buffering every DATA_FLOWS record to the
+// end of the pass and emitting them out of canonical order. The count is
+// disclosed instead, so a consumer can tell a thin evidence array from a
+// complete one.
+func unmergedDataFlowEvidenceWarning(edges int) ProviderWarning {
+	return ProviderWarning{
+		Code:                 "W_DATA_FLOW_EVIDENCE_UNMERGED",
+		Severity:             "info",
+		EffectOnCompleteness: "each DATA_FLOWS relation carries every flow found by the symbol that produced it; on these edges a second symbol justified the same edge and its flows were dropped, so the evidence array explains the edge from one side only",
+		Detail: fmt.Sprintf(
+			"%d DATA_FLOWS edge(s) were justified by more than one symbol, typically mutual recursion where one side forwards a parameter and the other returns a call; the relation, its confidence and its reason are unaffected",
+			edges,
+		),
+	}
 }
 
 // relationDedupKey hashes a relation's identity (from, to, type) to a compact

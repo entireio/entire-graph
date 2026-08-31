@@ -153,6 +153,96 @@ func caller(a, b, c, d, e, f, g, h, i, j int) {
 	}
 }
 
+// TestDataFlowEvidenceUnmergedIsDisclosed covers the loss that emission-site
+// grouping cannot reach. Evidence is grouped per `from` symbol, so an edge two
+// symbols each justify -- alpha forwards a parameter into bravo, bravo assigns
+// alpha's return -- is produced twice, and the streaming dedupe keeps the first
+// without merging. The record is already written by then, so the count is
+// disclosed on the summary instead of being silently dropped.
+//
+// The negative case matters as much as the positive one: a corpus with ordinary
+// one-directional flow must not carry the warning, or it degrades into noise
+// that consumers learn to ignore.
+func TestDataFlowEvidenceUnmergedIsDisclosed(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		source   string
+		wantCode bool
+		wantEdge string
+	}{
+		{
+			name: "mutual recursion loses one side per edge",
+			source: `package flow
+
+func alpha(a int) int {
+	return bravo(a)
+}
+
+func bravo(b int) int {
+	value := alpha(b)
+	return value
+}
+`,
+			wantCode: true,
+			// Both orientations of the pair have two producers.
+			wantEdge: "2 DATA_FLOWS edge(s)",
+		},
+		{
+			name: "one-directional flow loses nothing",
+			source: `package flow
+
+func sink(a int) int { return a }
+
+func caller(a int) int {
+	return sink(a)
+}
+`,
+			wantCode: false,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, repo, "flow.go", testCase.source)
+
+			var summary SnapshotSummary
+			err := StreamSnapshot(t.Context(), repo, "unmerged-test", ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull}, func(record any) error {
+				if typed, ok := record.(SnapshotSummary); ok {
+					summary = typed
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var found *ProviderWarning
+			for i, warning := range summary.Warnings {
+				if warning.Code == "W_DATA_FLOW_EVIDENCE_UNMERGED" {
+					found = &summary.Warnings[i]
+				}
+			}
+			if !testCase.wantCode {
+				if found != nil {
+					t.Fatalf("unexpected %s on a corpus with no multi-producer edge: %s", found.Code, found.Detail)
+				}
+				return
+			}
+			if found == nil {
+				t.Fatalf("no W_DATA_FLOW_EVIDENCE_UNMERGED warning; got %d warning(s)", len(summary.Warnings))
+			}
+			if found.Severity != "info" {
+				t.Fatalf("severity = %q, want %q: the graph is one-sided here, not wrong", found.Severity, "info")
+			}
+			if found.EffectOnCompleteness == "" {
+				t.Fatal("effect_on_semantic_completeness is empty; a disclosure that does not say what it costs is not a disclosure")
+			}
+			if !strings.Contains(found.Detail, testCase.wantEdge) {
+				t.Fatalf("detail = %q, want it to report %q", found.Detail, testCase.wantEdge)
+			}
+		})
+	}
+}
+
 // TestSnapshotFormatsAreByteDeterministicWhenRelationsDeduplicate exercises
 // the streaming dedup boundary with several DATA_FLOWS flows that share one
 // public relation identity. All of them belong on the edge — forwarding eight

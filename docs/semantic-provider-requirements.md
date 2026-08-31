@@ -244,10 +244,17 @@ unknown fields):
   never reported as an exhaustive one. Separately, the array is exhaustive per
   *producing* symbol: an edge two symbols can each justify — mutual recursion,
   where `A` forwards a parameter into `B` and `B` returns `A()` — keeps the
-  first producer's evidence and drops the other's, unmarked, because the
-  producers are emitted in different passes and a streamed record cannot be
-  revisited once written. This costs a few edges on this repository (currently 4
-  of 5,240).
+  first producer's evidence and drops the other's, because the producers are
+  emitted in different passes and a streamed record cannot be revisited once
+  written. The relation, its `confidence` and its `reason` are unaffected; only
+  the evidence array is one-sided. Rather than leave that silent, the snapshot
+  counts the affected edges and reports them as a
+  `W_DATA_FLOW_EVIDENCE_UNMERGED` warning, so a consumer can distinguish a thin
+  evidence array from a complete one without re-deriving the graph. It rides on
+  the summary record: a streamed header is written before the count is known, so
+  only the summary carries it, while a buffered snapshot backfills the header
+  from the summary and carries it in both. A few edges on this repository
+  (currently 4 of 5,240).
   `reason` is a single field, so it names one of those facts rather than all of
   them. Absent `EVIDENCE_TRUNCATED`, `evidence[].kind` is the complete set of
   kinds for that producer and `reason` is one member of it; past the cap, a kind
