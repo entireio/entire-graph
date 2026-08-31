@@ -241,7 +241,9 @@ unknown fields):
   and the array holds all of them, in a canonical order, not one representative.
   Two bounds qualify that. It is capped per relation, and a relation whose array
   was cut off carries an `EVIDENCE_TRUNCATED` warning code, so a partial list is
-  never reported as an exhaustive one. Separately, the array is exhaustive per
+  never reported as an exhaustive one, and `evidence_dropped` carries how many
+  flows did not fit, so a relation that lost one is distinguishable from one that
+  lost ninety (absent and `0` mean the same thing). Separately, the array is exhaustive per
   *producing* symbol: an edge two symbols can each justify — mutual recursion,
   where `A` forwards a parameter into `B` and `B` returns `A()` — keeps the
   first producer's evidence and drops the other's, because the producers are

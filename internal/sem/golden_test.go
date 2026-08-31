@@ -124,21 +124,27 @@ func TestReturnFlowCallsOrderIsTotal(t *testing.T) {
 // exhaustive, which is the failure the merge was written to remove.
 func TestDataFlowEvidenceTruncationIsDisclosed(t *testing.T) {
 	repo := t.TempDir()
+	// Types are written out per parameter rather than grouped as `a, b, ... int`.
+	// A grouped Go declaration of ten names loses the first to parameter
+	// extraction, which would leave this fixture forwarding nine flows while
+	// reading as though it forwards ten -- and the dropped count asserted below
+	// would silently be measuring the wrong thing.
 	writeFile(t, repo, "flow.go", `package flow
 
-func sink(a, b, c, d, e, f, g, h, i, j int) {}
+func sink(a int, b int, c int, d int, e int, f int, g int, h int, i int, j int) {}
 
-func caller(a, b, c, d, e, f, g, h, i, j int) {
+func caller(a int, b int, c int, d int, e int, f int, g int, h int, i int, j int) {
 	sink(a, b, c, d, e, f, g, h, i, j)
 }
 `)
 
 	var evidence []Evidence
 	var warnings []string
+	dropped := 0
 	err := StreamSnapshot(t.Context(), repo, "truncation-test", ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull}, func(record any) error {
 		if typed, ok := record.(RelationRecord); ok &&
 			typed.Type == "DATA_FLOWS" && lastSegment(typed.FromID) == "caller" && lastSegment(typed.ToID) == "sink" {
-			evidence, warnings = typed.Evidence, typed.WarningCodes
+			evidence, warnings, dropped = typed.Evidence, typed.WarningCodes, typed.EvidenceDropped
 		}
 		return nil
 	})
@@ -150,6 +156,12 @@ func caller(a, b, c, d, e, f, g, h, i, j int) {
 	}
 	if !slices.Contains(warnings, evidenceTruncatedWarning) {
 		t.Fatalf("warning codes = %q, want %q on a truncated evidence array", warnings, evidenceTruncatedWarning)
+	}
+	// Ten forwarded, eight kept: the warning says the list is partial, the count
+	// says by how much. Without it a record that lost one flow and a record that
+	// lost ninety are byte-identical.
+	if dropped != 10-dataFlowEvidenceLimit {
+		t.Fatalf("evidence_dropped = %d, want %d", dropped, 10-dataFlowEvidenceLimit)
 	}
 }
 
@@ -336,6 +348,7 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 		summary      SnapshotSummary
 		flowEvidence []string
 		flowWarnings []string
+		flowDropped  int
 	}
 	captureFormat := func(t *testing.T, compact bool) capture {
 		t.Helper()
@@ -351,6 +364,7 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 		hasher := NewSnapshotSemanticHasher()
 		var summary SnapshotSummary
 		var flowEvidence, flowWarnings []string
+		var flowDropped int
 		err := StreamSnapshot(t.Context(), repo, "determinism-test", ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull}, func(record any) error {
 			switch typed := record.(type) {
 			case SnapshotSummary:
@@ -362,6 +376,7 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 						flowEvidence = append(flowEvidence, evidence.Detail)
 					}
 					flowWarnings = typed.WarningCodes
+					flowDropped = typed.EvidenceDropped
 				}
 			}
 			if err := hasher.Add(record); err != nil {
@@ -372,7 +387,7 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return capture{bytes: append([]byte(nil), out.Bytes()...), hash: hasher.SumHex(), summary: summary, flowEvidence: flowEvidence, flowWarnings: flowWarnings}
+		return capture{bytes: append([]byte(nil), out.Bytes()...), hash: hasher.SumHex(), summary: summary, flowEvidence: flowEvidence, flowWarnings: flowWarnings, flowDropped: flowDropped}
 	}
 
 	for _, testCase := range []struct {
@@ -402,6 +417,9 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 			}
 			if len(first.flowWarnings) != 0 {
 				t.Fatalf("DATA_FLOWS warnings = %q, want none at exactly the evidence limit", first.flowWarnings)
+			}
+			if first.flowDropped != 0 {
+				t.Fatalf("evidence_dropped = %d, want 0 at exactly the limit: nothing overflowed", first.flowDropped)
 			}
 			for run := 2; run <= 32; run++ {
 				next := captureFormat(t, testCase.compact)

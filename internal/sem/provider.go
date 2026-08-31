@@ -173,6 +173,7 @@ var schemaFeatures = []string{
 	"completeness_breakdown",
 	"language_versions",
 	"relation_evidence",
+	"relation_evidence_dropped",
 	"relation_resolution",
 	"relation_scope",
 	"relation_target_kind",
@@ -344,6 +345,11 @@ type RelationRecord struct {
 	TargetKind    string     `json:"target_kind,omitempty"`
 	Evidence      []Evidence `json:"evidence,omitempty"`
 	WarningCodes  []string   `json:"warning_codes"`
+	// EvidenceDropped counts flows that justified this relation but did not fit
+	// in Evidence. EVIDENCE_TRUNCATED says the array is partial; this says by how
+	// much, so a record that lost one flow is distinguishable from one that lost
+	// ninety. Zero and absent mean the same thing: nothing was dropped.
+	EvidenceDropped int `json:"evidence_dropped,omitempty"`
 }
 
 // Evidence is a compact pointer to the source location that justifies a
@@ -3633,6 +3639,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							// contains-check, not switch to a bare append.
 							if len(existing.Evidence) >= dataFlowEvidenceLimit {
 								existing.WarningCodes = []string{evidenceTruncatedWarning}
+								existing.EvidenceDropped++
 								continue
 							}
 							existing.Evidence = append(existing.Evidence, item)
