@@ -90,8 +90,11 @@ with a separate cache mode, `snapshot:compact-ndjson-v1`; it is rejected for
 first line is `["h", 1, header]`, and the version appears nowhere else.
 Deterministic first-seen dictionary lines `d` precede positional `f` (file),
 `x` (external), `s` (symbol), and `r` (relation) rows; a trailing `m` summary
-is mandatory. Consumers must reject unknown versions, malformed row arity,
-non-first or duplicate headers, and missing summaries.
+is mandatory. A v1 relation row has the original 11 fields, plus an optional
+twelfth `evidence_dropped` integer when the value is nonzero; consumers accept
+either relation arity and reject every other one. Consumers must also reject
+unknown versions, malformed field values, non-first or duplicate headers, and
+missing summaries.
 
 All `h`, `d`, data, and `m` bytes count as raw compact artifact bytes;
 dictionary overhead must never be subtracted. Compact output is loaded only

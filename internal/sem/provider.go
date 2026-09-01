@@ -173,6 +173,7 @@ var schemaFeatures = []string{
 	"completeness_breakdown",
 	"language_versions",
 	"relation_evidence",
+	"relation_evidence_dropped",
 	"relation_resolution",
 	"relation_scope",
 	"relation_target_kind",
@@ -344,6 +345,11 @@ type RelationRecord struct {
 	TargetKind    string     `json:"target_kind,omitempty"`
 	Evidence      []Evidence `json:"evidence,omitempty"`
 	WarningCodes  []string   `json:"warning_codes"`
+	// EvidenceDropped counts flows that justified this relation but did not fit
+	// in Evidence. EVIDENCE_TRUNCATED says the array is partial; this says by how
+	// much, so a record that lost one flow is distinguishable from one that lost
+	// ninety. Zero and absent mean the same thing: nothing was dropped.
+	EvidenceDropped int `json:"evidence_dropped,omitempty"`
 }
 
 // Evidence is a compact pointer to the source location that justifies a
@@ -1149,6 +1155,12 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// collisions across realistic relation counts are negligible.
 	startPhase()
 	seenRelation := map[uint64]struct{}{}
+	// One digest per DATA_FLOWS edge, so a dropped duplicate can be compared
+	// against the record that was kept without retaining either record. Sits on
+	// the DATA_FLOWS subset of the map above, which is already held for every
+	// relation, so this adds no new memory class.
+	dataFlowEvidence := map[uint64]uint64{}
+	unmergedEvidenceEdges := 0
 	externalsByID := map[string]ExternalRecord{}
 	relationsByType := map[string]int{}
 	var emitErr error
@@ -1177,7 +1189,20 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		}
 		dedupKey := relationDedupKey(r)
 		if _, seen := seenRelation[dedupKey]; seen {
+			if r.Type == "DATA_FLOWS" {
+				// A duplicate carrying the same flows loses nothing. One carrying
+				// different flows is evidence this edge had a second producer that
+				// emission-site grouping could not see, and the record already
+				// written cannot be amended -- so count the edge and disclose it.
+				if kept, ok := dataFlowEvidence[dedupKey]; ok && kept != evidenceDigest(r.Evidence) {
+					unmergedEvidenceEdges++
+					delete(dataFlowEvidence, dedupKey) // count each edge once
+				}
+			}
 			return
+		}
+		if r.Type == "DATA_FLOWS" {
+			dataFlowEvidence[dedupKey] = evidenceDigest(r.Evidence)
 		}
 		seenRelation[dedupKey] = struct{}{}
 		for _, id := range []string{r.FromID, r.ToID} {
@@ -1255,6 +1280,9 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	warnings := sc.warnings
 	if warnings == nil {
 		warnings = []ProviderWarning{}
+	}
+	if unmergedEvidenceEdges > 0 {
+		warnings = append(warnings, unmergedDataFlowEvidenceWarning(unmergedEvidenceEdges))
 	}
 	if failures == nil {
 		failures = []PartialFailure{}
@@ -1460,6 +1488,40 @@ func useFastCFamilyParser(spec profileSpec, langSpec languageSpec) bool {
 		return false
 	}
 	return langSpec.language == "C" || langSpec.language == "C++"
+}
+
+// evidenceDigest fingerprints an evidence array so two records for one edge can
+// be compared without keeping either. Order matters: the array is canonically
+// ordered, so a reordering is a real difference.
+func evidenceDigest(evidence []Evidence) uint64 {
+	h := fnv.New64a()
+	for _, e := range evidence {
+		_, _ = h.Write([]byte(e.Kind))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(e.Detail))
+		_, _ = h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
+// unmergedDataFlowEvidenceWarning reports DATA_FLOWS edges that more than one
+// symbol justified. Evidence is grouped where flows are emitted, which sees one
+// `from` symbol at a time, so an edge produced from two symbols keeps the first
+// producer's flows. Merging them needs a boundary that sees every producer,
+// which on a write-through stream means buffering every DATA_FLOWS record to the
+// end of the pass and emitting them out of canonical order. The count is
+// disclosed instead, so a consumer can tell a thin evidence array from a
+// complete one.
+func unmergedDataFlowEvidenceWarning(edges int) ProviderWarning {
+	return ProviderWarning{
+		Code:                 "W_DATA_FLOW_EVIDENCE_UNMERGED",
+		Severity:             "info",
+		EffectOnCompleteness: "each DATA_FLOWS relation carries every flow found by the symbol that produced it; on these edges a second symbol justified the same edge and its flows were dropped, so the evidence array explains the edge from one side only. The affected edges are counted, not identified: each record had already been written when its second producer appeared, so none of them can be marked individually and a consumer cannot tell from a relation alone whether it is one of them",
+		Detail: fmt.Sprintf(
+			"%d DATA_FLOWS edge(s) were justified by more than one symbol, typically mutual recursion where one side forwards a parameter and the other returns a call; the relation, its confidence and its reason are unaffected. Independent of EVIDENCE_TRUNCATED: one edge can be both, neither supersedes the other, and this count includes edges that were also truncated",
+			edges,
+		),
+	}
 }
 
 // relationDedupKey hashes a relation's identity (from, to, type) to a compact
@@ -3541,6 +3603,28 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if needsDataFlow && callableSymbol {
+				// Several flows can describe one edge: `f(a, b, c)` forwards three
+				// caller parameters into the same callee, and relation identity is
+				// from+to+type, so all three land on one record. Collect every flow
+				// for an edge into its evidence array here rather than emitting
+				// competing records and letting the dedupe keep an arbitrary first
+				// one — that reported one real flow as if it were the only one.
+				// Grouping at emit keeps the streaming path's bounded memory (the
+				// map lives for one symbol) and needs no dedupe-side merge.
+				//
+				// The residual this cannot reach: an edge two symbols each
+				// justify (A forwards a parameter into B, B returns A()) is
+				// produced twice from different `from` symbols, and the dedupe
+				// keeps the first, unmarked. Merging those needs a boundary that
+				// sees every producer, which on the streaming path means buffering
+				// all DATA_FLOWS records to the end of the pass -- memory that
+				// grows with the edge count, and output reordered out of the
+				// canonical order this change exists to guarantee. It costs a few
+				// edges here (currently 4 of 5,240, all of them mutual recursion
+				// inside one file), so it is documented in the schema rather than
+				// paid for. Revisit if a corpus shows it is not rare.
+				edgeOrder := []string{}
+				flowsByEdge := map[string]*RelationRecord{}
 				for _, flow := range returnFlowCalls(block, symbolFlowParameterNames(from)) {
 					if flow.Name == from.Name {
 						continue
@@ -3555,7 +3639,33 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							fromID, toID = from.ID, to.ID
 							confidenceCap = 0.7
 						}
-						emit(RelationRecord{
+						item := Evidence{
+							Kind:      flow.EvidenceKind,
+							FilePath:  from.FilePath,
+							StartLine: from.StartLine,
+							EndLine:   from.EndLine,
+							Detail:    flow.Detail,
+						}
+						edgeKey := fromID + "\x00" + toID
+						if existing, ok := flowsByEdge[edgeKey]; ok {
+							// Past the cap the array stops growing, so the record has to
+							// say so rather than read as an exhaustive list again.
+							//
+							// Assigned, not appended: this branch runs once per dropped
+							// flow, not once per edge, so appending would repeat the code
+							// as many times as the cap dropped. Anything that later needs
+							// to preserve other warning codes here has to append under a
+							// contains-check, not switch to a bare append.
+							if len(existing.Evidence) >= dataFlowEvidenceLimit {
+								existing.WarningCodes = []string{evidenceTruncatedWarning}
+								existing.EvidenceDropped++
+								continue
+							}
+							existing.Evidence = append(existing.Evidence, item)
+							continue
+						}
+						edgeOrder = append(edgeOrder, edgeKey)
+						flowsByEdge[edgeKey] = &RelationRecord{
 							RecordType:    "relation",
 							FromID:        fromID,
 							ToID:          toID,
@@ -3565,16 +3675,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							RelationScope: to.Scope,
 							Resolution:    to.Resolution,
 							TargetKind:    "symbol",
-							Evidence: []Evidence{{
-								Kind:      flow.EvidenceKind,
-								FilePath:  from.FilePath,
-								StartLine: from.StartLine,
-								EndLine:   from.EndLine,
-								Detail:    flow.Detail,
-							}},
-							WarningCodes: []string{},
-						})
+							Evidence:      []Evidence{item},
+							WarningCodes:  []string{},
+						}
 					}
+				}
+				// returnFlowCalls is totally ordered and resolveCallTargets is
+				// deterministic, so both the edge order and each evidence array are
+				// reproducible without re-sorting.
+				for _, edgeKey := range edgeOrder {
+					emit(*flowsByEdge[edgeKey])
 				}
 			}
 			if fileNeedsServiceScan {
@@ -23702,6 +23812,17 @@ func completenessLevel(failures, files, parsedFiles, symbols int) string {
 		return "degraded"
 	}
 }
+
+// dataFlowEvidenceLimit caps how many flows one DATA_FLOWS edge carries. A
+// forwarding call site rarely has more than a handful; the tail is long and
+// repetitive (a struct's fields interned one by one), so the cap bounds output
+// on the outliers. A truncated record is tagged evidenceTruncatedWarning.
+const dataFlowEvidenceLimit = 8
+
+// evidenceTruncatedWarning marks a relation whose evidence array was cut off at
+// a limit, so a consumer reading evidence to explain the edge knows the list is
+// partial rather than exhaustive.
+const evidenceTruncatedWarning = "EVIDENCE_TRUNCATED"
 
 func dedupeRelations(relations []RelationRecord) []RelationRecord {
 	seen := map[string]struct{}{}
