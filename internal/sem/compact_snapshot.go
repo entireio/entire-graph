@@ -184,8 +184,8 @@ func (encoder *CompactSnapshotEncoder) relationRow(record RelationRecord) compac
 	}
 	row := []any{"r", fromID, toID, relationType, record.Confidence, reason, relationScope, resolution, targetKind, evidence, warnings}
 	// Optional trailing field. Emitted only when something was actually dropped,
-	// so the row stays byte-identical for the overwhelming majority of relations
-	// and old readers keep seeing the arity they were written against.
+	// so the row stays byte-identical for the overwhelming majority of relations.
+	// Compact v1 readers accept either the original 11 fields or this 12th field.
 	if record.EvidenceDropped > 0 {
 		row = append(row, record.EvidenceDropped)
 	}
@@ -1236,6 +1236,9 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 		if len(fields) == 12 {
 			if err := json.Unmarshal(fields[11], &evidenceDropped); err != nil {
 				return nil, err
+			}
+			if evidenceDropped < 0 {
+				return nil, fmt.Errorf("evidence_dropped %d must be non-negative", evidenceDropped)
 			}
 		}
 		return RelationRecord{RecordType: "relation", FromID: values[0], ToID: values[1], Type: values[2], Confidence: confidence, Reason: values[3], RelationScope: values[4], Resolution: values[5], TargetKind: values[6], Evidence: evidence, WarningCodes: warnings, EvidenceDropped: evidenceDropped}, nil
