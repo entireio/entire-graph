@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "e52f688167d6",
+  "strategy": "manual-commit",
+  "branch": "ci/windows-investigation-a2-compile-once-shards",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/windows-compile-once-experiment.yml",
+    "docs/ci/windows-investigations/02-compile-once-shards.md",
+    "results/windows-ci/a2/.gitignore",
+    "results/windows-ci/a2/README.md",
+    "results/windows-ci/a2/artifact-checksums.json",
+    "results/windows-ci/a2/cleanup.json",
+    "results/windows-ci/a2/cost-rate.json",
+    "results/windows-ci/a2/experiment-summary.json",
+    "results/windows-ci/a2/randomization.json",
+    "results/windows-ci/a2/testmain-package-global-audit.md",
+    "results/windows-ci/a2/top-level-timings.jsonl",
+    "tools/ci-bench/list-tests.ps1",
+    "tools/ci-bench/partition-tests.py",
+    "tools/ci-bench/run-test-shard.ps1",
+    "tools/ci-bench/tests/test_partition_tests.py",
+    "tools/ci-bench/tests/test_verify_shard_inventory.py",
+    "tools/ci-bench/verify-shard-inventory.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e5/2f688167d6/0/metadata.json",
+      "transcript": "/e5/2f688167d6/0/full.jsonl",
+      "compact_transcript": "/e5/2f688167d6/0/transcript.jsonl",
+      "content_hash": "/e5/2f688167d6/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 850276,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 71048704,
+    "output_tokens": 109564,
+    "api_call_count": 568
+  }
+}

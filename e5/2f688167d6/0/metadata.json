@@ -1,0 +1,51 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "e52f688167d6",
+  "session_id": "01a06215-a1da-7140-a721-eafd792ce9ae",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-02T16:42:51.1386Z",
+  "branch": "ci/windows-investigation-a2-compile-once-shards",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    ".github/workflows/windows-compile-once-experiment.yml",
+    "docs/ci/windows-investigations/02-compile-once-shards.md",
+    "results/windows-ci/a2/.gitignore",
+    "results/windows-ci/a2/README.md",
+    "results/windows-ci/a2/artifact-checksums.json",
+    "results/windows-ci/a2/cleanup.json",
+    "results/windows-ci/a2/cost-rate.json",
+    "results/windows-ci/a2/experiment-summary.json",
+    "results/windows-ci/a2/randomization.json",
+    "results/windows-ci/a2/testmain-package-global-audit.md",
+    "results/windows-ci/a2/top-level-timings.jsonl",
+    "tools/ci-bench/list-tests.ps1",
+    "tools/ci-bench/partition-tests.py",
+    "tools/ci-bench/run-test-shard.ps1",
+    "tools/ci-bench/tests/test_partition_tests.py",
+    "tools/ci-bench/tests/test_verify_shard_inventory.py",
+    "tools/ci-bench/verify-shard-inventory.py"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 850276,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 71048704,
+    "output_tokens": 109564,
+    "api_call_count": 568
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-02T16:42:50.852864Z",
+    "agent_lines": 5078,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 5078,
+    "total_lines_changed": 5078,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
