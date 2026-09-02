@@ -3,18 +3,18 @@ param(
     [Parameter(Mandatory, Position = 0)]
     [string] $OutputPath,
 
-    [Position = 1]
+    [Parameter(Position = 1)]
     [string] $StopFile = '',
 
-    [Position = 2]
+    [Parameter(Position = 2)]
     [ValidateRange(0.25, 3600.0)]
     [double] $IntervalSeconds = 2.0,
 
-    [Position = 3]
+    [Parameter(Position = 3)]
     [ValidateRange(0, 2147483647)]
     [int] $MonitoredProcessId = 0,
 
-    [Position = 4]
+    [Parameter(Position = 4)]
     [ValidateRange(0, 2147483647)]
     [int] $MaxSamples = 0
 )
