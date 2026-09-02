@@ -148,7 +148,9 @@ function Invoke-NativeTimed {
     try {
         Set-Location -LiteralPath $WorkingDirectory
         if ($TeeToHost) {
-            & $Command @Arguments 2> $StderrPath | Tee-Object -FilePath $StdoutPath
+            & $Command @Arguments 2> $StderrPath |
+                Tee-Object -FilePath $StdoutPath |
+                Out-Host
 
             # Capture this immediately. Tee-Object is the final pipeline command,
             # but LASTEXITCODE still belongs to the native Go process.
@@ -184,6 +186,7 @@ function Invoke-NativeTimed {
 function Add-RunError {
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [System.Collections.Generic.List[object]] $List,
 
         [Parameter(Mandatory)]
