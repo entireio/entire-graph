@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "80542cdfcdbf",
+  "strategy": "manual-commit",
+  "branch": "codex/pr153-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/snapshot-format.md",
+    "internal/sem/compact_snapshot.go",
+    "internal/sem/scip_followups_test.go",
+    "internal/sem/scip_project_version.go",
+    "internal/sem/scip_project_version_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/80/542cdfcdbf/0/metadata.json",
+      "transcript": "/80/542cdfcdbf/0/full.jsonl",
+      "compact_transcript": "/80/542cdfcdbf/0/transcript.jsonl",
+      "content_hash": "/80/542cdfcdbf/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 326484,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 24805632,
+    "output_tokens": 54888,
+    "api_call_count": 959
+  }
+}

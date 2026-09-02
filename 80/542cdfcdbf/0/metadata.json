@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "80542cdfcdbf",
+  "session_id": "01a0616d-0c18-7443-82f2-b4c5bc498542",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-02T21:29:23.365923Z",
+  "branch": "codex/pr153-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/snapshot-format.md",
+    "internal/sem/compact_snapshot.go",
+    "internal/sem/scip_followups_test.go",
+    "internal/sem/scip_project_version.go",
+    "internal/sem/scip_project_version_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 326484,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 24805632,
+    "output_tokens": 54888,
+    "api_call_count": 959
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-02T21:29:22.553726Z",
+    "agent_lines": 782,
+    "agent_removed": 178,
+    "human_added": 3,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 785,
+    "total_lines_changed": 963,
+    "agent_percentage": 99.68847352024922,
+    "metric_version": 2
+  }
+}
