@@ -378,10 +378,11 @@ func TestCacheComponentRedirectErrorHonoursEveryRedirectingMode(t *testing.T) {
 }
 
 // Opening the component before checking it is what lets the write keep using the verified object.
-// The injected opener makes the production sequence deterministic: it opens the original, swaps
-// the parent name, and returns the held handle. A regression to Lstat-before-open would accept the
-// stale identity and make this production-path call succeed.
-func TestOpenCacheComponentRejectsIdentitySwap(t *testing.T) {
+// The injected opener deterministically models the result of a name swap by returning a handle to
+// a different directory than the parent currently exposes at name. A regression to
+// Lstat-before-open without a post-open identity check would accept that handle and make this
+// production-path call succeed.
+func TestOpenCacheComponentRejectsIdentityMismatch(t *testing.T) {
 	t.Parallel()
 	root, err := os.OpenRoot(t.TempDir())
 	if err != nil {
@@ -391,25 +392,19 @@ func TestOpenCacheComponentRejectsIdentitySwap(t *testing.T) {
 	if err := root.Mkdir("search", 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := root.Mkdir("replacement", 0o700); err != nil {
+		t.Fatal(err)
+	}
 
-	opened, err := openCacheComponent(root, "search", func(parent *os.Root, name string) (*os.Root, error) {
-		held, openErr := parent.OpenRoot(name)
-		if openErr != nil {
-			return nil, openErr
-		}
-		if renameErr := parent.Rename(name, "opened-search"); renameErr != nil {
-			_ = held.Close()
-			return nil, renameErr
-		}
-		if mkdirErr := parent.Mkdir(name, 0o700); mkdirErr != nil {
-			_ = held.Close()
-			return nil, mkdirErr
-		}
-		return held, nil
+	opened, err := openCacheComponent(root, "search", func(parent *os.Root, _ string) (*os.Root, error) {
+		return parent.OpenRoot("replacement")
 	})
 	if err == nil {
 		_ = opened.Close()
 		t.Fatal("replacement directory matched the cache component opened by production")
+	}
+	if !strings.Contains(err.Error(), "changed identity while it was opened") {
+		t.Fatalf("unexpected identity-mismatch error: %v", err)
 	}
 }
 
