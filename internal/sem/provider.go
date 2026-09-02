@@ -981,23 +981,71 @@ func dedupeSortedStrings(sorted []string) []string {
 	return out
 }
 
-// mergePartialFailures appends extra failures that are not already present
-// for the same code and file, so entity-phase and relation-phase reports for
-// one file collapse to a single record regardless of build path.
+// mergePartialFailures folds extra failures into failures, keeping ONE record
+// per code+file so entity-phase and relation-phase reports for one file collapse
+// to a single record regardless of build path — and so completeness counts that
+// file once, not twice.
+//
+// A duplicate is FOLDED, not dropped. The two phases share a code because they
+// describe the same condition, but they lose DIFFERENT things: the entity walk
+// drops declarations, the relation walk drops call classification. Dropping the
+// later record (the earlier behaviour here) made a file truncated or timed out in
+// both phases report only the entity-phase loss, understating what the snapshot
+// is missing. Identity fields — code, file, severity — always stay with the
+// record already present, so the folded record still dedupes and sorts as one.
 func mergePartialFailures(failures, extra []PartialFailure) []PartialFailure {
-	seen := make(map[string]bool, len(failures))
-	for _, failure := range failures {
-		seen[failure.Code+"\x00"+failure.FilePath] = true
+	if len(extra) == 0 {
+		return failures
+	}
+	merged := make([]PartialFailure, len(failures))
+	copy(merged, failures)
+	index := make(map[string]int, len(merged))
+	for i, failure := range merged {
+		key := partialFailureKey(failure)
+		if _, ok := index[key]; !ok {
+			index[key] = i
+		}
 	}
 	for _, failure := range extra {
-		key := failure.Code + "\x00" + failure.FilePath
-		if seen[key] {
+		key := partialFailureKey(failure)
+		if i, ok := index[key]; ok {
+			merged[i] = foldPartialFailure(merged[i], failure)
 			continue
 		}
-		seen[key] = true
-		failures = append(failures, failure)
+		index[key] = len(merged)
+		merged = append(merged, failure)
 	}
-	return failures
+	return merged
+}
+
+func partialFailureKey(failure PartialFailure) string {
+	return failure.Code + "\x00" + failure.FilePath
+}
+
+// foldPartialFailure combines a duplicate code+file record into the one already
+// reported: only the free-text fields grow, and only with text the existing
+// record does not already carry.
+func foldPartialFailure(existing, incoming PartialFailure) PartialFailure {
+	existing.EffectOnCompleteness = appendFailureClause(existing.EffectOnCompleteness, incoming.EffectOnCompleteness)
+	existing.Detail = appendFailureClause(existing.Detail, incoming.Detail)
+	return existing
+}
+
+// appendFailureClause joins a second phase's sentence onto a failure's free text.
+// Empty and already-covered text is skipped, which keeps repeated merges (the
+// cache-derived selective path can merge the same relation failures again)
+// idempotent instead of growing the string on every pass.
+func appendFailureClause(existing, incoming string) string {
+	switch {
+	case incoming == "":
+		return existing
+	case existing == "":
+		return incoming
+	case strings.Contains(existing, incoming):
+		return existing
+	default:
+		return existing + "; also: " + incoming
+	}
 }
 
 // StreamSnapshot emits a snapshot as a stream of records with bounded memory.
@@ -1247,7 +1295,8 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		// blown in the entity pass usually blows the relation-phase scope parse
 		// too): report one record per code+file, exactly as the cache-derived
 		// selective path does, so cache presence never changes the reported
-		// failure set.
+		// failure set. The single record carries BOTH phases' effect and detail
+		// text (mergePartialFailures folds duplicates) so neither loss is hidden.
 		failures = mergePartialFailures(failures, relationFailures)
 		if spec.emits("FILE_CHANGES_WITH") {
 			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, files) {
@@ -2655,6 +2704,22 @@ func jsScanPartialFailure(path string, err error) PartialFailure {
 	}
 }
 
+// jsScanDepthPartialFailure reports a relation-phase scope walk truncated at
+// maxParseWalkDepth. It reuses the entity phase's code so both phases describe
+// the same condition identically, and it is a warning rather than an error for
+// the same reason: the relations above the limit are emitted. Its effect and
+// detail text stand on their own because mergePartialFailures folds them into the
+// entity-phase record for the same file rather than discarding them.
+func jsScanDepthPartialFailure(path string) PartialFailure {
+	return PartialFailure{
+		Code:                 "E_PARSE_DEPTH_EXCEEDED",
+		Severity:             "warning",
+		FilePath:             path,
+		EffectOnCompleteness: "relation-phase scope walk truncated at the parser depth limit; calls nested deeper than that were not classified",
+		Detail:               fmt.Sprintf("AST nesting exceeded the %d-level walk limit during relation construction", maxParseWalkDepth),
+	}
+}
+
 func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelations(repoKey, files, recordsByFile, emit)
@@ -3266,6 +3331,17 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				// parse is observable instead of silently dropping namespace
 				// call classification for the file.
 				recordFailure(jsScanPartialFailure(file.Path, jsScanErr))
+			}
+			if jsScan.depthTruncated && recordFailure != nil {
+				// A relation-phase walk stopped at the depth limit. Reported
+				// separately from jsScanErr because it is a PARTIAL result, not
+				// a failed parse: the scope state above the limit is real and
+				// still used below. Same code and severity as the entity phase,
+				// so one file truncated in both phases stays one record — but
+				// mergePartialFailures folds this record's effect and detail into
+				// it, because the loss described here (calls not classified) is
+				// not the entity phase's loss (declarations not extracted).
+				recordFailure(jsScanDepthPartialFailure(file.Path))
 			}
 			// Without namespaces there is nothing to map: every namespace-call
 			// consumer below is gated on jsNamespaceCalls entries, which require
@@ -24156,6 +24232,15 @@ func directTypeBodyLines(lines []string, symbol SymbolRecord, fileSymbols []Symb
 // otherwise-complete graph to "degraded". The parsed-file ratio and zero-symbol
 // guards in completenessLevel still catch a repo that is genuinely mostly
 // unparsed, and the skips remain visible in PartialFailures for transparency.
+// E_PARSE_DEPTH_EXCEEDED is deliberately NOT in this map. A depth-truncated walk
+// is a PARTIAL RESULT, not a skip: the graph did attempt the file, did parse it,
+// and did drop declarations it could not reach, so the graph really is
+// incomplete for that file and completeness must say so. The distinction that
+// earns a place in this map is whether the parser looked at the file at all —
+// E_FILE_TOO_LARGE and E_MINIFIED never open it, so there is no gap in
+// understanding to report. Excluding depth truncation as well would let a repo
+// whose files each carry a shallow symbol above deeply nested declarations
+// report "ok" while systematically missing those declarations.
 var intentionalSkipFailureCodes = map[string]bool{
 	"E_FILE_TOO_LARGE": true,
 	"E_MINIFIED":       true,

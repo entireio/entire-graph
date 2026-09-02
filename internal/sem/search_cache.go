@@ -705,8 +705,10 @@ func selectiveSearchSnapshotFromFull(
 }
 
 // The relation-phase failures recorded during selective derivation are merged
-// via mergePartialFailures (provider.go), skipping records the (filtered)
-// full-build failures already carry for the same file and code.
+// via mergePartialFailures (provider.go), which folds a record the (filtered)
+// full-build failures already carry for the same file and code into that record
+// instead of adding or dropping one — so the selective path reports the same
+// single record, carrying both phases' effects, that a full build does.
 func filterSearchPartialFailures(failures []PartialFailure, allowedFiles map[string]bool) []PartialFailure {
 	filtered := make([]PartialFailure, 0, len(failures))
 	for _, failure := range failures {
