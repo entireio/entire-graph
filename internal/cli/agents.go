@@ -73,6 +73,25 @@ const (
 	agentPointerEnd   = "<!-- entire-graph:end -->"
 )
 
+// maxInstructionFileBytes bounds AGENTS.md / CLAUDE.md, the only repository-authored files
+// init-agents reads. Their path is fixed but their SIZE is chosen by the repository, and the
+// command runs against clones the operator has not read, so the size is untrusted input like
+// any other. Every sibling repository read is already bounded — source files and diffs at
+// defaultMaxParseBytes, ignore files at maxIgnoreFileBytes, call-site snippets at
+// callSiteMaxFileBytes — and this one was not: it read to EOF and then kept the whole file
+// alive through validation, marker splitting, and the rendered replacement, so peak memory ran
+// to a multiple of the file. Measured on an otherwise empty repository, a 2 GiB AGENTS.md
+// drove init-agents to 6.5 GiB peak RSS.
+//
+// 4 MiB matches defaultMaxParseBytes, the ceiling the rest of the tool already applies to a
+// repository-authored text file, and is orders of magnitude above any real agent instruction
+// file (this repository's own is ~2 KiB).
+const maxInstructionFileBytes = 4 << 20
+
+// errContainedFileTooLarge reports that a contained read stopped at its limit. The caller owns
+// the message, because only it knows which file the limit was applied to and why.
+var errContainedFileTooLarge = errors.New("file is larger than the read limit")
+
 func runAgentGuide(opts Options, args []string) error {
 	fs := flag.NewFlagSet("agent-guide", flag.ContinueOnError)
 	fs.SetOutput(opts.Stderr)
@@ -183,6 +202,23 @@ func runInitAgents(opts Options, args []string) error {
 	var claudeContent []byte
 	if !sharedInstructions {
 		claudeContent = renderPointerBlock(claudeSource, claudeBegin, claudeEnd, claudeBlock)
+	}
+
+	// The read bound accepts a file sitting exactly on the limit, but the managed
+	// block is APPENDED to it, so the rendered result can land past the bound the
+	// read enforces. Writing that would leave the repository holding an instruction
+	// file this command itself produced and will refuse on the next run, telling
+	// the user to shrink a file whose excess bytes are the block init-agents added.
+	// The bound therefore has to hold for what is WRITTEN, not only for what was
+	// read, and the refusal has to land here — every byte is computed and nothing
+	// has been created or modified yet.
+	if err := ensureRenderedInstructionFits(agentsPath, agentsSource, agentsContent); err != nil {
+		return fmt.Errorf("init-agents: %w", err)
+	}
+	if !sharedInstructions {
+		if err := ensureRenderedInstructionFits(claudePath, claudeSource, claudeContent); err != nil {
+			return fmt.Errorf("init-agents: %w", err)
+		}
 	}
 
 	guideResolvedName, guideInfo, err := resolvedManagedTarget(repoRoot, guideName, false)
@@ -1241,14 +1277,21 @@ func statContainedFile(root *os.Root, name string) (os.FileInfo, error) {
 	return statResolvedContained(root, resolved)
 }
 
-// readContainedFile is os.ReadFile confined to root.
+// readContainedFile is os.ReadFile confined to root and bounded by limit bytes.
 //
 // Reading through the root rather than through the absolute path is not redundant with the
 // preflight. ensureContainedInRepo is explicitly not atomic with what follows, so a link swapped
 // to an outside file after the preflight and restored before the write would otherwise have that
 // file's contents read in and then written back into the repository under the managed block. The
 // escape has to be refused at the read too, not only at the preflight and the write.
-func readContainedFile(root *os.Root, name string) ([]byte, error) {
+//
+// The limit is enforced on the read itself rather than on a preceding Stat, for the same
+// non-atomicity reason: a file that grows between the check and the read would defeat a
+// Stat-based gate, and a growing file is exactly the case the limit exists for. One byte past
+// the limit is requested so a file sitting exactly on it is still accepted, and anything larger
+// is refused rather than truncated — a truncated instruction file would be written back over the
+// user's own text, which is a far worse outcome than a refusal.
+func readContainedFile(root *os.Root, name string, limit int64) ([]byte, error) {
 	resolved, err := resolveContainedName(root, name)
 	if err != nil {
 		return nil, err
@@ -1258,7 +1301,14 @@ func readContainedFile(root *os.Root, name string) ([]byte, error) {
 		return nil, err
 	}
 	defer file.Close()
-	return io.ReadAll(file)
+	content, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > limit {
+		return nil, errContainedFileTooLarge
+	}
+	return content, nil
 }
 
 // writeContainedFile is os.WriteFile confined to root. The perm argument applies only when the
@@ -1354,10 +1404,18 @@ func fileTypeName(mode os.FileMode) string {
 }
 
 func readAndValidateInstructionFile(root *os.Root, name, path string) ([]byte, int, int, error) {
-	content, err := readContainedFile(root, name)
+	content, err := readContainedFile(root, name, maxInstructionFileBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, -1, -1, nil
+		}
+		if errors.Is(err, errContainedFileTooLarge) {
+			return nil, -1, -1, fmt.Errorf(
+				"%s: file is larger than the %d-byte limit init-agents will read; "+
+					"an instruction file this size is not one this command can safely rewrite, "+
+					"so reduce it (or move its bulk into a file it imports) and rerun init-agents",
+				path, maxInstructionFileBytes,
+			)
 		}
 		return nil, -1, -1, fmt.Errorf("%s: read file: %w", path, err)
 	}
@@ -1366,6 +1424,22 @@ func readAndValidateInstructionFile(root *os.Root, name, path string) ([]byte, i
 		return nil, -1, -1, err
 	}
 	return content, begin, end, nil
+}
+
+// ensureRenderedInstructionFits keeps init-agents from writing an instruction file
+// it would refuse to read. It reports the source and rendered sizes because the
+// difference between them is the block this command adds, which is the part the
+// user cannot shrink.
+func ensureRenderedInstructionFits(path string, source, rendered []byte) error {
+	if len(rendered) <= maxInstructionFileBytes {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s: the file is %d bytes and the Entire Graph managed block would take it to %d, "+
+			"past the %d-byte limit init-agents will read back on its next run; "+
+			"reduce it (or move its bulk into a file it imports) and rerun init-agents",
+		path, len(source), len(rendered), maxInstructionFileBytes,
+	)
 }
 
 // validatePointerMarkers intentionally counts the raw marker tokens. Markers in examples,
