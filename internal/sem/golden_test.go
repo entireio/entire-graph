@@ -802,3 +802,50 @@ func TestJuliaModuleOwnsOnlyItsOwnBodyAndOnlyItsOwnScope(t *testing.T) {
 		}
 	}
 }
+
+// TestJuliaOneLineModuleKeepsItsOwnCall pins the module-body scan against a module whose
+// child shares its line.
+//
+// `module M; setup() = 1; setup(); end` puts the module, its child and a real module-level
+// call on ONE line. Blanking the child's lines therefore deleted the call the narrowing
+// exists to keep, and a SymbolRecord carries only line numbers, so there is no byte range
+// to mask instead. The child's BODY is blanked and its definition HEAD is masked by name,
+// which says the same thing without deleting whatever else shares the line.
+func TestJuliaOneLineModuleKeepsItsOwnCall(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	for name, content := range map[string]string{
+		"one.jl":  "module M; setup() = 1; setup(); end\n",
+		"many.jl": "module N\nfunction helper()\n    return 1\nend\nfunction go()\n    helper()\nend\nhelper()\nend\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	edges := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" {
+			edges[symbolsByID[relation.FromID].QualifiedName+" -> "+symbolsByID[relation.ToID].QualifiedName] = true
+		}
+	}
+	for _, want := range []string{
+		"M -> M.setup",  // the one-line module still owns its own call
+		"N -> N.helper", // a module-level call in a multi-line module
+		"N.go -> N.helper",
+	} {
+		if !edges[want] {
+			t.Errorf("missing edge %q; got %v", want, edges)
+		}
+	}
+	if edges["N -> N.go"] {
+		t.Errorf("a definition head was read as a call: %v", edges)
+	}
+}

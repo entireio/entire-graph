@@ -1936,17 +1936,54 @@ func juliaModuleScopedTargetReachable(from, to SymbolRecord) bool {
 // is scanned when its turn comes.
 func juliaModuleOwnBlock(from SymbolRecord, block string, fileSymbols []SymbolRecord) string {
 	lines := strings.Split(block, "\n")
+	var childNames []string
 	for _, child := range fileSymbols {
 		if child.ID == from.ID || child.ContainerID != from.ID {
 			continue
 		}
-		for line := child.StartLine; line <= child.EndLine; line++ {
+		childNames = append(childNames, child.Name)
+		// The child's BODY is blanked, but not the line its definition starts
+		// on. A one-line module -- `module M; setup() = 1; setup(); end` -- puts
+		// the child, the module and a real module-level call on that same line,
+		// so blanking it whole deleted the very call this function exists to
+		// keep. Line numbers are all a SymbolRecord carries, so the head line is
+		// handled textually below instead.
+		for line := child.StartLine + 1; line <= child.EndLine; line++ {
 			if index := line - from.StartLine; index >= 0 && index < len(lines) {
 				lines[index] = ""
 			}
 		}
 	}
-	return strings.Join(lines, "\n")
+	return juliaMaskDefinitionHeads(strings.Join(lines, "\n"), childNames)
+}
+
+// juliaMaskDefinitionHeads blanks the definition HEADS of the given names, leaving
+// calls to those same names in place.
+//
+// A definition reads like a call to a name scanner -- `function setup(` and the
+// short form `setup() = 1` both put the name in front of a parenthesis -- which is
+// why a container was never credited with calling its own children. Blanking the
+// heads says the same thing without also deleting whatever else shares the line.
+func juliaMaskDefinitionHeads(block string, names []string) string {
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		quoted := regexp.QuoteMeta(name)
+		for _, pattern := range []string{
+			`\bfunction\s+` + quoted + `\b`,
+			// Short form, and only where a single `=` assigns: `setup() == x` is
+			// a comparison, not a definition.
+			`\b` + quoted + `\s*\([^()]*\)\s*=(?:[^=]|$)`,
+		} {
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				continue
+			}
+			block = replacePatternSameLength(block, re, "")
+		}
+	}
+	return block
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
