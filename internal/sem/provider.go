@@ -3419,7 +3419,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// the generic `name(` one sees them. Resolution matches on the
 					// name, but the qualifier is kept so a call naming a module this
 					// file declares stays inside it.
-					for target := range fsharpCallTargets(callBlock) {
+					for target := range fsharpCallTargets(maskFSharpBlockComments(callBlock)) {
 						name := lastDottedCallSegment(target)
 						if name == "" {
 							continue
@@ -19805,6 +19805,40 @@ func callNameIgnored(content string, start int, name, language string) bool {
 	default:
 		return false
 	}
+}
+
+// maskFSharpBlockComments blanks `(* ... *)` comment bodies, preserving length and
+// line structure so every offset around them is unchanged.
+//
+// The generic literal/comment stripper does not know this form, so a commented
+// pipeline -- `(* xs |> helper *)` -- reached the F# scanners and emitted a CALLS edge
+// to a function the code does not call. Commented-out code is the shape most likely to
+// contain a call, which is what makes the fabrication easy to hit.
+//
+// F# block comments NEST, so the scan counts depth rather than stopping at the first
+// `*)`; a single-pass strip would end the mask early and expose the tail of an outer
+// comment. Line comments are already handled by the generic stripper.
+func maskFSharpBlockComments(text string) string {
+	if !strings.Contains(text, "(*") {
+		return text
+	}
+	out := []byte(text)
+	depth := 0
+	for i := 0; i < len(out); i++ {
+		switch {
+		case i+1 < len(out) && out[i] == '(' && out[i+1] == '*':
+			depth++
+			out[i], out[i+1] = ' ', ' '
+			i++
+		case depth > 0 && i+1 < len(out) && out[i] == '*' && out[i+1] == ')':
+			depth--
+			out[i], out[i+1] = ' ', ' '
+			i++
+		case depth > 0 && out[i] != '\n':
+			out[i] = ' '
+		}
+	}
+	return string(out)
 }
 
 func stripCodeLiteralsAndComments(content string) string {

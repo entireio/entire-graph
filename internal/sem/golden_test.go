@@ -733,3 +733,37 @@ func TestFSharpModuleDoesNotClaimItsMembersCalls(t *testing.T) {
 		t.Fatalf("the real pipeline edge run -> helper was withdrawn too (found %d)", pipeline)
 	}
 }
+
+// TestFSharpBlockCommentDoesNotFabricateACall pins that a commented pipeline is not a call.
+//
+// The generic literal/comment stripper does not know F#'s `(* ... *)` form, so a commented
+// pipeline reached the F# scanners and emitted a CALLS edge to a function the code does
+// not call. Commented-out code is the shape most likely to contain a call, which is what
+// makes the fabrication easy to hit.
+//
+// The nested case is here because F# block comments nest: a single-pass strip ends at the
+// first `*)` and exposes the tail of the outer comment, which is a call again.
+func TestFSharpBlockCommentDoesNotFabricateACall(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name   string
+		source string
+	}{
+		{"a commented pipeline", "let run v =\n    (* xs |> helper *)\n    v |> other\n"},
+		{"nested block comments", "let run v =\n    (* outer (* inner |> hidden *) tail |> alsoHidden *)\n    v |> other\n"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			targets := fsharpCallTargets(maskFSharpBlockComments(stripCodeLiteralsAndComments(testCase.source)))
+			for _, commented := range []string{"helper", "hidden", "alsoHidden"} {
+				if _, fabricated := targets[commented]; fabricated {
+					t.Errorf("a commented call %q was scanned as a real one: %v", commented, targets)
+				}
+			}
+			if _, ok := targets["other"]; !ok {
+				t.Fatalf("the real pipeline call was masked away too: %v", targets)
+			}
+		})
+	}
+}
