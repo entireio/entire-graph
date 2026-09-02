@@ -282,8 +282,32 @@ func withSplatSpelling(node *sitter.Node, src []byte, names []string) []string {
 // type positions. It descends because a C declarator wraps its identifier in
 // pointer/function/array layers (`*b`, `(*cb)(int)`) and a destructuring
 // pattern nests its bindings.
+//
+// depth is capped at maxParseWalkDepth (parser.go). walkEntitiesScoped reaches
+// this walker through astParameterNames on every callable it extracts, BEFORE
+// it descends into that callable, so the entity walk's own budget is unspent
+// and cannot bound this descent: a parameter pattern nested deeply enough
+// exhausted the goroutine stack — a fatal, unrecoverable process abort —
+// however shallow the file was elsewhere. Bounding the recursive walker itself,
+// rather than either call site, covers both entry points (astParameterNames and
+// directParameterChildren, Swift's list-less form).
+//
+// The budget starts fresh here rather than continuing the entity walk's, for
+// the same reason firstNameDescendant's does: this descent begins at one
+// parameter entry and only ever looks downward, so it cannot compound with the
+// caller's remaining budget the way initializerTypeBodies (whose result the
+// entity walk then descends INTO) can.
+//
+// Truncating drops the bindings nested past the limit, which costs the file
+// some DATA_FLOWS edges. It is not silent: a pattern that deep sits inside a
+// file the entity walk truncates on the same nesting, so ParseWithStatus
+// already reports E_PARSE_DEPTH_EXCEEDED for it.
 func identifierDescendants(node *sitter.Node, src []byte) []string {
-	if !validNode(node) || isTypeNode(node) {
+	return identifierDescendantsAt(node, src, 0)
+}
+
+func identifierDescendantsAt(node *sitter.Node, src []byte, depth int) []string {
+	if !validNode(node) || isTypeNode(node) || depth >= maxParseWalkDepth {
 		return nil
 	}
 	if isIdentifierNode(node) {
@@ -294,7 +318,7 @@ func identifierDescendants(node *sitter.Node, src []byte) []string {
 	}
 	var names []string
 	for index := 0; index < int(node.NamedChildCount()); index++ {
-		names = append(names, identifierDescendants(node.NamedChild(index), src)...)
+		names = append(names, identifierDescendantsAt(node.NamedChild(index), src, depth+1)...)
 	}
 	return names
 }

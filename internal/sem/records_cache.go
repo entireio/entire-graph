@@ -20,8 +20,10 @@ import (
 // repos, so we cache the raw NDJSON bytes under that complete identity. Unlike
 // the structured search cache, an opaque record stream cannot restamp commit
 // provenance on a same-tree hit. v8 additionally binds the shared nested-ignore
-// resource policy and surfaced refusals.
-const providerRecordsCacheVersion = "provider-records-v8"
+// resource policy and surfaced refusals; v9 retires entries whose DATA_FLOWS
+// records carry a single evidence entry per edge rather than every flow; v10
+// retires entries written before truncated records counted what they dropped.
+const providerRecordsCacheVersion = "provider-records-v10"
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+commit+tree+mode+profile+

@@ -207,6 +207,13 @@ When a move has multiple equally similar destinations (within 0.05), the
 provider reports the pair as remove/add and emits a `W_MOVE_AMBIGUOUS` warning
 in the diff `warnings` array rather than guessing.
 
+A file rename whose content is byte-identical on both sides has no entity-level
+delta to reconcile, but the file path is a component of every symbol ID in it,
+so the rename still re-identifies every symbol. Such a file is reported with a
+single module-scope `moved` change carrying `old_path`/`new_path` and
+`reconciliation: MOVED`, so a pure rename is never indistinguishable from an
+empty diff.
+
 ## Relations
 
 Relations should include:
@@ -229,7 +236,36 @@ unknown fields):
 - `target_kind`: `symbol`, `file`, `external`, `route`, `resource`, `channel`,
   or `config`.
 - `evidence`: array of compact `{kind, file_path, start_line, end_line, detail}`
-  source pointers.
+  source pointers. Several facts can justify one edge — forwarding three caller
+  parameters into the same callee is three `DATA_FLOWS` flows on one relation —
+  and the array holds all of them, in a canonical order, not one representative.
+  Two bounds qualify that. It is capped per relation, and a relation whose array
+  was cut off carries an `EVIDENCE_TRUNCATED` warning code, so a partial list is
+  never reported as an exhaustive one, and `evidence_dropped` carries how many
+  flows did not fit, so a relation that lost one is distinguishable from one that
+  lost ninety (absent and `0` mean the same thing). Separately, the array is exhaustive per
+  *producing* symbol: an edge two symbols can each justify — mutual recursion,
+  where `A` forwards a parameter into `B` and `B` returns `A()` — keeps the
+  first producer's evidence and drops the other's, because the producers are
+  emitted in different passes and a streamed record cannot be revisited once
+  written. The relation, its `confidence` and its `reason` are unaffected; only
+  the evidence array is one-sided. Rather than leave that silent, the snapshot
+  counts the affected edges and reports them as a
+  `W_DATA_FLOW_EVIDENCE_UNMERGED` warning, so a consumer can distinguish a thin
+  evidence array from a complete one without re-deriving the graph. It rides on
+  the summary record: a streamed header is written before the count is known, so
+  only the summary carries it, while a buffered snapshot backfills the header
+  from the summary and carries it in both. The count identifies no individual
+  relation — each record was already written when its second producer appeared,
+  so a consumer cannot tell from a relation alone whether it is one of the
+  affected edges. The two incompleteness bounds are independent: one edge can be
+  both truncated and one-sided, neither supersedes the other, and the count
+  includes edges that were also truncated. A few edges on this repository
+  (currently 4 of 5,240).
+  `reason` is a single field, so it names one of those facts rather than all of
+  them. Absent `EVIDENCE_TRUNCATED`, `evidence[].kind` is the complete set of
+  kinds for that producer and `reason` is one member of it; past the cap, a kind
+  occurring only after the cutoff is not represented at all.
 
 The snapshot header also carries optional `schema_features` (features present in
 the stream), `language_versions` (parser/grammar versions), and `completeness`

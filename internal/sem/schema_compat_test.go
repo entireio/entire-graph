@@ -1,0 +1,351 @@
+package sem
+
+import (
+	"bytes"
+	"encoding/json"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// compactWithSchemaVersion re-encodes the standard compact fixture with the
+// header's schema_version replaced. It edits the SERIALIZED line rather than the
+// Go struct because the case that matters most — the field being absent — cannot
+// be expressed by a struct whose field is a plain string.
+func compactWithSchemaVersion(t *testing.T, declared string, present bool) []byte {
+	t.Helper()
+	encoded, _ := encodeCompactFixture(t, compactFixtureRecords())
+	lines := bytes.Split(bytes.TrimRight(encoded, "\n"), []byte("\n"))
+	var header []json.RawMessage
+	if err := json.Unmarshal(lines[0], &header); err != nil {
+		t.Fatalf("decode fixture header line: %v", err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(header[2], &object); err != nil {
+		t.Fatalf("decode fixture header: %v", err)
+	}
+	if present {
+		object["schema_version"] = declared
+	} else {
+		delete(object, "schema_version")
+	}
+	rewritten, err := json.Marshal(object)
+	if err != nil {
+		t.Fatalf("encode fixture header: %v", err)
+	}
+	header[2] = rewritten
+	line, err := json.Marshal(header)
+	if err != nil {
+		t.Fatalf("encode fixture header line: %v", err)
+	}
+	lines[0] = line
+	return append(bytes.Join(lines, []byte("\n")), '\n')
+}
+
+// ADR 0001 makes the MAJOR the compatibility boundary and requires a consumer to
+// refuse an unknown one. entire-graph is such a consumer whenever it reads a
+// compact snapshot back off disk (snapshot-query, the bench preflight), and the
+// compact envelope version does not cover this: it versions the array encoding,
+// not the record schema the header declares, so the two move independently.
+//
+// Before this gate every row below loaded silently and answered the query, so a
+// snapshot written by a schema-2.x producer was decoded into 1.x structs with
+// each renamed field arriving as a zero value.
+func TestLoadCompactSnapshotEnforcesSchemaMajor(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name      string
+		declared  string
+		present   bool
+		wantError string
+		wantWarn  bool
+	}{
+		{name: "this build's schema", declared: SchemaVersion, present: true},
+		{name: "older minor of this major", declared: "1.0", present: true},
+		{name: "newer minor of this major", declared: "1.99", present: true, wantWarn: true},
+		{name: "newer major", declared: "2.0", present: true, wantError: `unsupported schema version "2.0"`},
+		{name: "older major", declared: "0.9", present: true, wantError: `unsupported schema version "0.9"`},
+		{name: "absent", present: false, wantError: "schema version is missing"},
+		{name: "empty", declared: "", present: true, wantError: "schema version is missing"},
+		{name: "not major.minor", declared: "abc", present: true, wantError: `is not major.minor`},
+		{name: "three components", declared: "1.1.0", present: true, wantError: `is not major.minor`},
+		{name: "unreadable minor", declared: "1.x", present: true, wantError: "unreadable minor"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			encoded := compactWithSchemaVersion(t, testCase.declared, testCase.present)
+			index, err := LoadCompactSnapshot(bytes.NewReader(encoded))
+			if testCase.wantError != "" {
+				if err == nil {
+					t.Fatalf("loaded a snapshot declaring %q; want refusal", testCase.declared)
+				}
+				if !strings.Contains(err.Error(), testCase.wantError) {
+					t.Fatalf("error = %q, want it to contain %q", err, testCase.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("readable schema %q was refused: %v", testCase.declared, err)
+			}
+			// The contract's other half: a newer minor of a readable major LOADS,
+			// and says so, because additive facts from that minor were skipped.
+			warned := len(index.SchemaWarnings) == 1 &&
+				index.SchemaWarnings[0].Code == "W_NEWER_SCHEMA_MINOR"
+			if warned != testCase.wantWarn {
+				t.Fatalf("schema warnings = %+v, want newer-minor warning = %v",
+					index.SchemaWarnings, testCase.wantWarn)
+			}
+		})
+	}
+}
+
+// The decoder gate is separate from the loader's, so pin it directly: a consumer
+// streaming records through DecodeCompactSnapshot must get the same refusal.
+func TestDecodeCompactSnapshotEnforcesSchemaMajor(t *testing.T) {
+	t.Parallel()
+	encoded := compactWithSchemaVersion(t, "2.0", true)
+	_, err := DecodeCompactSnapshot(bytes.NewReader(encoded), func(any) error { return nil })
+	if err == nil {
+		t.Fatal("decoder streamed records from a snapshot declaring schema 2.0")
+	}
+	if !strings.Contains(err.Error(), `unsupported schema version "2.0"`) {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestCheckReadableSchemaVersionClassifiesAgainstThisBuild(t *testing.T) {
+	t.Parallel()
+	if newerMinor, err := CheckReadableSchemaVersion(SchemaVersion); err != nil || newerMinor {
+		t.Fatalf("this build's own schema must read clean: newerMinor=%v err=%v", newerMinor, err)
+	}
+	newer := schemaVersionAfterThisBuild(t)
+	if newerMinor, err := CheckReadableSchemaVersion(newer); err != nil || !newerMinor {
+		t.Fatalf("schema %s must load with a newer-minor signal: newerMinor=%v err=%v", newer, newerMinor, err)
+	}
+	other := schemaVersionWithNextMajor(t)
+	if _, err := CheckReadableSchemaVersion(other); err == nil {
+		t.Fatalf("schema %s must be refused as another major", other)
+	}
+}
+
+func TestCheckReadableSchemaVersionAcceptsUnboundedNewerMinor(t *testing.T) {
+	t.Parallel()
+	major, _, err := schemaMajorMinor(SchemaVersion)
+	if err != nil {
+		t.Fatalf("package SchemaVersion %q is not major.minor: %v", SchemaVersion, err)
+	}
+	declared := major + "." + strings.Repeat("9", 100)
+	if newerMinor, err := CheckReadableSchemaVersion(declared); err != nil || !newerMinor {
+		t.Fatalf("schema %s must load with a newer-minor signal: newerMinor=%v err=%v", declared, newerMinor, err)
+	}
+	encoded := compactWithSchemaVersion(t, declared, true)
+	loaded, err := LoadCompactSnapshot(bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("load schema %s: %v", declared, err)
+	}
+	if len(loaded.SchemaWarnings) != 1 || loaded.SchemaWarnings[0].Code != "W_NEWER_SCHEMA_MINOR" {
+		t.Fatalf("schema warnings = %#v, want one newer-minor warning", loaded.SchemaWarnings)
+	}
+}
+
+func TestCheckReadableSchemaVersionNormalizesDecimalComponents(t *testing.T) {
+	t.Parallel()
+	major, minor, err := schemaMajorMinor(SchemaVersion)
+	if err != nil {
+		t.Fatalf("package SchemaVersion %q is not major.minor: %v", SchemaVersion, err)
+	}
+	for _, declared := range []string{
+		strings.Repeat("0", 20) + major + "." + strings.Repeat("0", 100) + minor,
+		"+" + major + ".+" + strings.Repeat("0", 20) + minor,
+	} {
+		if newerMinor, err := CheckReadableSchemaVersion(declared); err != nil || newerMinor {
+			t.Fatalf("schema %q must normalize to this build: newerMinor=%v err=%v", declared, newerMinor, err)
+		}
+	}
+	for _, declared := range []string{
+		major + ".-0",
+		major + ".+",
+		major + ". " + minor,
+		major + ".١",
+		"+." + minor,
+	} {
+		if _, err := CheckReadableSchemaVersion(declared); err == nil {
+			t.Fatalf("schema %q must be rejected", declared)
+		}
+	}
+}
+
+func schemaVersionAfterThisBuild(t *testing.T) string {
+	t.Helper()
+	major, minor, err := schemaMajorMinor(SchemaVersion)
+	if err != nil {
+		t.Fatalf("package SchemaVersion %q is not major.minor: %v", SchemaVersion, err)
+	}
+	minorNumber, err := strconv.Atoi(minor)
+	if err != nil {
+		t.Fatalf("provider schema minor %q does not fit test arithmetic: %v", minor, err)
+	}
+	return major + "." + strconv.Itoa(minorNumber+1)
+}
+
+func schemaVersionWithNextMajor(t *testing.T) string {
+	t.Helper()
+	major, _, err := schemaMajorMinor(SchemaVersion)
+	if err != nil {
+		t.Fatalf("package SchemaVersion %q is not major.minor: %v", SchemaVersion, err)
+	}
+	majorNumber, err := strconv.Atoi(major)
+	if err != nil {
+		t.Fatalf("provider schema major %q does not fit test arithmetic: %v", major, err)
+	}
+	return strconv.Itoa(majorNumber+1) + ".0"
+}
+
+// TestDecodeCompactSnapshotReturnsTheNewerMinorWarning pins the half of ADR 0001
+// clause 3 the streaming decoder used to drop.
+//
+// The decoder computed the newer-minor signal in order to decide whether the
+// artifact was readable at all, and then discarded it — so every caller that
+// owed the reader a warning had to re-derive it from the header. LoadCompactSnapshot
+// did; a direct caller had nothing to remind it. Returning the warnings makes
+// the obligation part of the signature.
+func TestDecodeCompactSnapshotReturnsTheNewerMinorWarning(t *testing.T) {
+	t.Parallel()
+	newerMinor := schemaVersionAfterThisBuild(t)
+
+	encoded := compactWithSchemaVersion(t, newerMinor, true)
+	warnings, err := DecodeCompactSnapshot(bytes.NewReader(encoded), func(any) error { return nil })
+	if err != nil {
+		t.Fatalf("a newer minor of a readable major must still decode: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("want exactly one tolerant-reader warning for a newer minor, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0].Detail, newerMinor) {
+		t.Fatalf("the warning must name the version it saw: %#v", warnings[0])
+	}
+
+	// The current version is not newer than itself, so it must warn about nothing.
+	same := compactWithSchemaVersion(t, SchemaVersion, true)
+	warnings, err = DecodeCompactSnapshot(bytes.NewReader(same), func(any) error { return nil })
+	if err != nil {
+		t.Fatalf("this build's own version must decode: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("this build's own version must produce no warning, got %#v", warnings)
+	}
+}
+
+func TestDecodeCompactSnapshotToleratesNewerMinorAdditions(t *testing.T) {
+	t.Parallel()
+	lines := []string{
+		`["h",1,{"schema_version":"1.99"}]`,
+		`["f",0,0,0,0,0,{"future":"file field"}]`,
+		`["q",{"future":"record kind"}]`,
+		`["x",0,0,0,0,0,0,0,0,false,0,0,{"future":"external field"}]`,
+		`["s",0,0,0,0,0,0,0,0,0,0,0,0,[],{"future":"symbol field"}]`,
+		`["r",0,0,0,1,0,0,0,0,[[0,0,1,1,0,{"future":"evidence field"}]],[],7,{"future":"relation field"}]`,
+		`["m",{}]`,
+	}
+	input := strings.Join(lines, "\n") + "\n"
+
+	var decoded []any
+	warnings, err := DecodeCompactSnapshot(strings.NewReader(input), func(record any) error {
+		decoded = append(decoded, record)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("newer-minor additive records must decode: %v", err)
+	}
+	if len(warnings) != 1 || warnings[0].Code != "W_NEWER_SCHEMA_MINOR" {
+		t.Fatalf("schema warnings = %#v, want one newer-minor warning", warnings)
+	}
+	if len(decoded) != 6 {
+		t.Fatalf("decoded records = %#v, want six known records and the unknown kind skipped", decoded)
+	}
+	relation, ok := decoded[4].(RelationRecord)
+	if !ok || len(relation.Evidence) != 1 || relation.EvidenceDropped != 7 {
+		t.Fatalf("decoded relation = %#v, want known fields preserved", decoded[4])
+	}
+
+	baselineLines := append([]string{}, lines[:2]...)
+	baselineLines = append(baselineLines, lines[3:]...)
+	baseline, err := LoadCompactSnapshot(strings.NewReader(strings.Join(baselineLines, "\n") + "\n"))
+	if err != nil {
+		t.Fatalf("load newer-minor baseline: %v", err)
+	}
+	withUnknown, err := LoadCompactSnapshot(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("load newer-minor snapshot with unknown kind: %v", err)
+	}
+	if !reflect.DeepEqual(withUnknown.Snapshot, baseline.Snapshot) || withUnknown.CanonicalSemanticHash != baseline.CanonicalSemanticHash {
+		t.Fatalf("unknown record changed known projection or hash\n with=%#v %s\n base=%#v %s",
+			withUnknown.Snapshot, withUnknown.CanonicalSemanticHash,
+			baseline.Snapshot, baseline.CanonicalSemanticHash)
+	}
+}
+
+func TestDecodeCompactSnapshotKeepsCurrentAndOlderSchemaStrict(t *testing.T) {
+	t.Parallel()
+	for _, schema := range []string{SchemaVersion, "1.0"} {
+		for _, testCase := range []struct {
+			name string
+			line string
+			want string
+		}{
+			{name: "unknown record", line: `["q",{}]`, want: `unknown compact snapshot tag "q"`},
+			{name: "trailing field", line: `["f",0,0,0,0,0,{"unexpected":"field"}]`, want: "file record arity 7, want 6"},
+		} {
+			t.Run(schema+"/"+testCase.name, func(t *testing.T) {
+				input := compactHeaderForSchema(schema) + testCase.line + "\n"
+				_, err := DecodeCompactSnapshot(strings.NewReader(input), func(any) error { return nil })
+				if err == nil || !strings.Contains(err.Error(), testCase.want) {
+					t.Fatalf("decode error = %v, want %q", err, testCase.want)
+				}
+			})
+		}
+	}
+}
+
+func TestDecodeCompactSnapshotKeepsNewerMinorEnvelopeAndRequiredFieldsStrict(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "short data row", input: compactHeaderForSchema("1.99") + `["f",0,0,0,0]` + "\n", want: "file record arity 5, want 6"},
+		{name: "header tail", input: `["h",1,{"schema_version":"1.99"},"extra"]` + "\n", want: "header must be first and have arity 3"},
+		{name: "dictionary tail", input: compactHeaderForSchema("1.99") + `["d",1,["value"],"extra"]` + "\n", want: "dictionary has invalid placement or arity"},
+		{name: "summary tail", input: compactHeaderForSchema("1.99") + `["m",{},"extra"]` + "\n", want: "summary has invalid placement or arity"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := DecodeCompactSnapshot(strings.NewReader(testCase.input), func(any) error { return nil })
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("decode error = %v, want %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+func compactHeaderForSchema(schema string) string {
+	return `["h",1,{"schema_version":"` + schema + `"}]` + "\n"
+}
+
+// TestLoadCompactSnapshotSurfacesTheDecoderWarning keeps the two paths agreeing:
+// the index's SchemaWarnings must be exactly what the decoder returned, now that
+// LoadCompactSnapshot consumes them instead of recomputing the condition.
+func TestLoadCompactSnapshotSurfacesTheDecoderWarning(t *testing.T) {
+	t.Parallel()
+	newerMinor := schemaVersionAfterThisBuild(t)
+	encoded := compactWithSchemaVersion(t, newerMinor, true)
+
+	index, err := LoadCompactSnapshot(bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(index.SchemaWarnings) != 1 || !strings.Contains(index.SchemaWarnings[0].Detail, newerMinor) {
+		t.Fatalf("the loader must surface the decoder's warning: %#v", index.SchemaWarnings)
+	}
+}

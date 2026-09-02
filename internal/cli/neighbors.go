@@ -59,13 +59,15 @@ type neighborEndpoint struct {
 }
 
 type neighborEdge struct {
-	Direction  string           `json:"direction"`
-	Relation   string           `json:"relation"`
-	Endpoint   neighborEndpoint `json:"endpoint"`
-	Confidence float64          `json:"confidence"`
-	Resolution string           `json:"resolution,omitempty"`
-	Reason     string           `json:"reason,omitempty"`
-	Evidence   []sem.Evidence   `json:"evidence,omitempty"`
+	Direction       string           `json:"direction"`
+	Relation        string           `json:"relation"`
+	Endpoint        neighborEndpoint `json:"endpoint"`
+	Confidence      float64          `json:"confidence"`
+	Resolution      string           `json:"resolution,omitempty"`
+	Reason          string           `json:"reason,omitempty"`
+	Evidence        []sem.Evidence   `json:"evidence,omitempty"`
+	WarningCodes    []string         `json:"warning_codes,omitempty"`
+	EvidenceDropped int              `json:"evidence_dropped,omitempty"`
 	// CallSite is where the call is actually written, resolved from the caller's
 	// body. Nil when it could not be resolved, in which case the endpoint's
 	// definition line is all this answer knows.
@@ -179,7 +181,7 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 	response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
 	switch flags.Format {
 	case "json":
-		encoder := json.NewEncoder(opts.Stdout)
+		encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(response)
 	case "agent":
@@ -630,6 +632,7 @@ func edgeForRelation(direction string, endpoint neighborEndpoint, relation sem.R
 		Direction: direction, Relation: relation.Type, Endpoint: endpoint,
 		Confidence: relation.Confidence, Resolution: relation.Resolution,
 		Reason: relation.Reason, Evidence: relation.Evidence,
+		WarningCodes: relation.WarningCodes, EvidenceDropped: relation.EvidenceDropped,
 	}
 }
 
