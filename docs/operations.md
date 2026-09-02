@@ -69,6 +69,12 @@ relocate a cache, point `--cache-dir` or `ENTIRE_PLUGIN_DATA_DIR` at the backing
 directory, or make the cache root itself a symlink rather than linking a family
 or version below it. Best-effort query caching treats a refusal as a cold path;
 `index`, whose purpose is durable prewarming, reports the persistence failure.
+These checks cover path entries supplied by a repository and substitutions
+observed while a component is opened. They do not claim resistance to another
+running process with permission to rename an already-opened directory: `os.Root`
+continues using that directory object after a move, and portable Go cannot pin
+its lexical ancestry. Such a process can already move existing cache artifacts
+through the same writable namespace.
 
 ### Two cache families
 

@@ -97,6 +97,13 @@ func (entry cacheEntry) open() (*os.File, error) {
 // `.git` or another repository-chosen directory. Relocation remains supported by naming the
 // backing directory as the cache root or making the root itself a symlink. Best-effort query paths
 // treat a refusal as a cache miss; the explicit `index` persist path reports it.
+//
+// This boundary covers repository-controlled path entries and identity substitutions observable
+// while a component is opened. Once admitted, a directory is used as a held filesystem capability:
+// os.Root deliberately keeps referring to that object if another process with namespace-write
+// permission moves it. Concurrent relocation by such a process is outside the cache threat model;
+// portable os.Root cannot also pin the object's lexical ancestry, and that process already has the
+// authority needed to move existing cache artifacts through the same namespace.
 func (entry cacheEntry) write(temporaryPrefix string, value any) error {
 	if err := os.MkdirAll(entry.root, 0o700); err != nil {
 		return err
@@ -156,7 +163,9 @@ func (entry cacheEntry) write(temporaryPrefix string, value any) error {
 
 // openCacheDirectory creates and opens each component of the entry's directory beneath root,
 // refusing a symlinked one. Descending through an opened handle rather than re-walking the path
-// means the create and the rename that follow act on the directory this loop actually checked.
+// means the create and the rename that follow act on the directory object this loop actually
+// checked. It does not promise lexical containment against a concurrent process that later moves
+// that object; the write threat model above states that boundary explicitly.
 func openCacheDirectory(root *os.Root, directory string) (*os.Root, error) {
 	current, err := root.OpenRoot(".")
 	if err != nil {
