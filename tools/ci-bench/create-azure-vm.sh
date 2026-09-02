@@ -247,7 +247,12 @@ account_state=$(az_cli account show --query state --output tsv)
 resolved_location=$(az_cli account list-locations --query "[?name == '$location'].name | [0]" --output tsv)
 [[ "$resolved_location" == "$location" ]] || die "Azure region is unavailable in this subscription: $location"
 
-sku_query="[?name == '$vm_size' && length(restrictions) == \`0\`] | [0].name"
+# This harness creates a regional VM and never requests an availability zone.
+# A SKU may therefore carry a restriction for one particular zone while still
+# being valid for regional allocation. Reject only location-wide restrictions;
+# treating every zone restriction as a regional ban incorrectly eliminates
+# otherwise deployable SKUs.
+sku_query="[?name == '$vm_size' && length(restrictions[?type == 'Location']) == \`0\`] | [0].name"
 resolved_vm_size=$(az_cli vm list-skus --location "$location" --resource-type virtualMachines \
 	--size "$vm_size" --query "$sku_query" --output tsv)
 [[ "$resolved_vm_size" == "$vm_size" ]] ||
