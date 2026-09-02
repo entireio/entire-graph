@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "ed7e00f688e5",
+  "session_id": "01a05eba-299a-7303-bec4-7679fccd2a8b",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-02T09:15:23.750429Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "9c7cf629e38f",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 177657,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 14080,
+    "output_tokens": 569,
+    "api_call_count": 696
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 21,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 21
+      }
+    }
+  ]
+}
