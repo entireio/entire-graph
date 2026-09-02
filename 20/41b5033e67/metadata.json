@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "2041b5033e67",
+  "strategy": "manual-commit",
+  "branch": "codex/pr160-strict-refusal",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/operations.md",
+    "docs/trust-and-security.md",
+    "internal/sem/cache_entry.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/20/41b5033e67/0/metadata.json",
+      "transcript": "/20/41b5033e67/0/full.jsonl",
+      "compact_transcript": "/20/41b5033e67/0/transcript.jsonl",
+      "content_hash": "/20/41b5033e67/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": -41865472,
+    "output_tokens": -72937,
+    "api_call_count": 3
+  }
+}
