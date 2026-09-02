@@ -243,11 +243,28 @@ func IndexReplacedNonRegularPaths(ctx context.Context, repo string, nonRegular m
 			// conservative direction.
 			continue
 		}
-		current, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(path)))
+		// The blob is a LINK TARGET -- a path, so its length is small and is the
+		// natural bound for this comparison. A REPLACEMENT can be any size, and
+		// reading it whole to find that out would let a tracked symlink swapped
+		// for a huge file allocate its entire contents here, before any of the
+		// provider's source-size limits apply. A file of a different length
+		// already differs, so only an equal-length one is read, and then only
+		// to the blob's length.
+		if onDisk.Size() != int64(len(indexed)) {
+			replaced[path] = struct{}{}
+			continue
+		}
+		file, err := os.Open(filepath.Join(repo, filepath.FromSlash(path)))
 		if err != nil {
 			continue
 		}
-		if strings.TrimRight(string(current), "\n") != strings.TrimRight(indexed, "\n") {
+		current := make([]byte, len(indexed))
+		_, readErr := io.ReadFull(file, current)
+		file.Close()
+		if readErr != nil {
+			continue
+		}
+		if string(current) != indexed {
 			replaced[path] = struct{}{}
 		}
 	}
