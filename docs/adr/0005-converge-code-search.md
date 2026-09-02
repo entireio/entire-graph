@@ -304,7 +304,7 @@ legal and honest rather than hidden.
 
 | # | Step | Owner | Gate |
 |---|---|---|---|
-| 1 | Promote `--format scip` from experimental and freeze the omission-note compatibility policy | Us | Byte-identical export on repeat runs, shown in PR #97. The merge half is done: #97 is on main as of 2026-08-27, and the note reports `unidentified_records`, `unlocated_symbols`, `language_tiers`, `partial_failures`, `commit` and `tree`. Freezing means stamping that shape `entire-graph-scip-omissions/v1.0` under the additive-only policy in *The interface*, not freezing it against all further additions |
+| 1 | Promote `--format scip` from experimental and freeze the omission-note compatibility policy | Us | Byte-identical export on repeat runs, shown in PR #97. The merge half is done: #97 is on main as of 2026-08-27, and the note reports `unidentified_records`, `unlocated_symbols`, `language_tiers`, `partial_failures`, `commit` and `tree`. Freezing means adopting the additive-only policy in *The interface* for that shape -- the tag stays `entire-graph-scip-omissions/v1` and the minor rides beside it -- not freezing it against all further additions |
 | 2 | Publish per-language SCIP coverage matrix vs peregrine's tier-1 15 | Us | Reviewed by Evis |
 | 3 | Decide the moniker scheme (open question 2) | Us + Evis | Written into the contract |
 | 4 | Build the parity harness | TBD (open question 5) | Reproducible by both sides |
