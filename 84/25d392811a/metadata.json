@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "8425d392811a",
+  "strategy": "manual-commit",
+  "branch": "ci/windows-investigation-coordinator",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tools/ci-bench/README.md",
+    "tools/ci-bench/collect-environment.ps1",
+    "tools/ci-bench/create-azure-vm.sh",
+    "tools/ci-bench/delete-azure-resources.sh",
+    "tools/ci-bench/monitor-resources.ps1",
+    "tools/ci-bench/parse-go-test-json.py",
+    "tools/ci-bench/run-go-suite.ps1",
+    "tools/ci-bench/run-on-azure-vm.sh",
+    "tools/ci-bench/tests/test_parse_go_test_json.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/84/25d392811a/0/metadata.json",
+      "transcript": "/84/25d392811a/0/full.jsonl",
+      "compact_transcript": "/84/25d392811a/0/transcript.jsonl",
+      "content_hash": "/84/25d392811a/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 151603,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 5354240,
+    "output_tokens": 24806,
+    "api_call_count": 82
+  }
+}
