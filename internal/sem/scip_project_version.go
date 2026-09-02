@@ -95,10 +95,39 @@ func parseCargoPackageVersion(content string) string {
 	// [package] version exported every such crate as "0", so distinct releases
 	// shared one SCIP package identity -- the identity confusion this whole
 	// field exists to avoid.
-	if !tomlTableInheritsFromWorkspace(content, "package", "version") {
-		return ""
+	if tomlTableInheritsFromWorkspace(content, "package", "version") {
+		return tomlTableString(content, "workspace.package", "version")
 	}
-	return tomlTableString(content, "workspace.package", "version")
+	// A virtual workspace root has no [package] at all: it declares
+	// [workspace.package].version and lists members, and the `version.workspace
+	// = true` markers live in the member manifests this reader never opens.
+	// Requiring the marker here meant the standard workspace layout -- the one
+	// the inheritance support exists for -- still exported version "0" and
+	// collapsed every crate onto one identity.
+	//
+	// The workspace version is not a guess in this shape: it is the version every
+	// member inherits by definition. The narrowness is deliberate -- a root that
+	// DOES declare [package] but says nothing about version is left alone rather
+	// than handed a version it never claimed, because a wrong version becomes
+	// part of every symbol's identity.
+	if !tomlHasTable(content, "package") {
+		return tomlTableString(content, "workspace.package", "version")
+	}
+	return ""
+}
+
+// tomlHasTable reports whether content declares the given table header.
+func tomlHasTable(content, table string) bool {
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "[") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.TrimSpace(strings.Trim(line, "[]")) == table {
+			return true
+		}
+	}
+	return false
 }
 
 // tomlTableInheritsFromWorkspace reports whether a table defers a key to the
@@ -109,10 +138,16 @@ func tomlTableInheritsFromWorkspace(content, table, key string) bool {
 		return true
 	}
 	value := tomlTableRawValue(content, table, key)
-	if !strings.HasPrefix(value, "{") {
+	// Both braces are required. Accepting a bare opening brace let an unterminated
+	// inline table -- `version = { workspace = true` -- read as a complete
+	// inheritance declaration, so an invalid manifest was handed the workspace's
+	// version instead of falling back. That contradicts the fallback the rest of
+	// this file is built on: an unparseable manifest must yield no version, because
+	// a guessed version becomes part of every symbol's identity.
+	if !strings.HasPrefix(value, "{") || !strings.HasSuffix(value, "}") {
 		return false
 	}
-	inner := strings.TrimSpace(strings.Trim(value, "{}"))
+	inner := strings.TrimSpace(value[1 : len(value)-1])
 	for _, field := range strings.Split(inner, ",") {
 		name, setting, found := strings.Cut(field, "=")
 		if found && strings.TrimSpace(name) == "workspace" && strings.EqualFold(strings.TrimSpace(setting), "true") {

@@ -519,6 +519,74 @@ func TestCargoWorkspaceInheritanceSurvivesATrailingComment(t *testing.T) {
 			content: workspace + "[package]\n# version.workspace = true\n",
 			want:    "",
 		},
+		{
+			// An unterminated inline table is not a declaration. Accepting it
+			// handed an invalid manifest the workspace's version, which is the
+			// opposite of the fallback this file relies on.
+			name:    "an unterminated inline table is not inheritance",
+			content: workspace + "[package]\nversion = { workspace = true\n",
+			want:    "",
+		},
+		{
+			name:    "an inline table closed after a comment is still not inheritance",
+			content: workspace + "[package]\nversion = { workspace = true # }\n",
+			want:    "",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseCargoPackageVersion(testCase.content); got != testCase.want {
+				t.Fatalf("parseCargoPackageVersion() = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestCargoVirtualWorkspaceRootUsesTheWorkspaceVersion pins the shape the inheritance
+// support exists to serve and did not reach.
+//
+// A virtual workspace root has no [package] of its own: it declares
+// [workspace.package].version and lists members, and `version.workspace = true` appears
+// only in the member manifests, which this reader never opens. Requiring the marker in
+// the root meant the standard layout exported the unknown version and collapsed every
+// crate in the workspace onto one SCIP identity -- silently, since the manifest parses.
+//
+// The narrowness is the point of the last two cases: a root that declares [package] and
+// says nothing about version is left alone, because inventing a version corrupts the
+// identity of every symbol under it.
+func TestCargoVirtualWorkspaceRootUsesTheWorkspaceVersion(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "virtual workspace root with no package table",
+			content: "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\nversion = \"4.2.0\"\n",
+			want:    "4.2.0",
+		},
+		{
+			name:    "root package that inherits still resolves",
+			content: "[workspace.package]\nversion = \"4.2.0\"\n\n[package]\nversion.workspace = true\n",
+			want:    "4.2.0",
+		},
+		{
+			name:    "an explicit package version still wins",
+			content: "[workspace.package]\nversion = \"4.2.0\"\n\n[package]\nversion = \"1.0.0\"\n",
+			want:    "1.0.0",
+		},
+		{
+			name:    "a package table silent about version is not handed one",
+			content: "[workspace.package]\nversion = \"4.2.0\"\n\n[package]\nname = \"thing\"\n",
+			want:    "",
+		},
+		{
+			name:    "no workspace version to fall back to",
+			content: "[workspace]\nmembers = [\"crates/*\"]\n",
+			want:    "",
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
