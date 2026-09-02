@@ -216,6 +216,13 @@ func runDoctor(ctx context.Context, opts Options, args []string) error {
 	}
 
 	repo, err := resolveRepo(ctx, opts.Env, "")
+	if err == nil {
+		// Snapshot construction converts the resolved repository to an absolute,
+		// cleaned path before deriving either RepoRoot or RepoKey. Doctor is the
+		// preflight for that snapshot, so advertise the same spelling rather than
+		// the caller's possibly-relative ENTIRE_REPO_ROOT value.
+		repo, err = filepath.Abs(repo)
+	}
 	if err != nil {
 		report["repo_root"] = ""
 		report["repo_error"] = err.Error()
@@ -227,6 +234,13 @@ func runDoctor(ctx context.Context, opts Options, args []string) error {
 		return nil
 	}
 	report["repo_root"] = repo
+	// The repo_key and schema_version this binary WILL use are part of the
+	// doctor report so a consumer can verify the seam contract up front. Brain
+	// runs doctor before every snapshot; discovering a repo_key rule mismatch or
+	// an unsupported schema major here costs milliseconds, whereas discovering
+	// it from the finished snapshot costs the whole (up to 30 minute) run.
+	report["repo_key"] = sem.RepoKey(ctx, repo)
+	report["schema_version"] = sem.SchemaVersion
 	if asJSON {
 		return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(report)
 	}

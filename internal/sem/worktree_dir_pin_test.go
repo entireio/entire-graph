@@ -39,7 +39,12 @@ func TestContainedRealDirPinsTheDirectoryItValidated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pinned := pinnedRootIdentity(nil, repo)
+	repoRoot, err := os.OpenRoot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repoRoot.Close()
+	pinned := pinnedRootIdentity(repoRoot)
 	file, _, ok := openContainedRegularFile(pinned, repo, "sub/app.go")
 	if !ok {
 		t.Fatal("a plain in-repository path was refused")
@@ -61,6 +66,73 @@ func TestContainedRealDirPinsTheDirectoryItValidated(t *testing.T) {
 	}
 	if string(content) != "package inside\n" {
 		t.Fatalf("the opened file followed the replacement: read %q, want the directory that was validated", content)
+	}
+}
+
+// TestContainedRealDirOpensTheChildThroughThePinnedRepository schedules the
+// exact pre-open swap that a pathname open follows outside the repository. The
+// production opener is injected only at the final confined operation, after
+// canonicalization has selected "sub" but before repoRoot.OpenRoot resolves it.
+// A stable outside symlink at that point must be refused.
+func TestContainedRealDirOpensTheChildThroughThePinnedRepository(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("renaming a directory beneath an open root is not portable on Windows")
+	}
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	inside := filepath.Join(repo, "sub")
+	stash := filepath.Join(parent, "stash")
+	outside := filepath.Join(parent, "outside")
+	for _, dir := range []string{inside, outside} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(inside, "app.go"), []byte("package inside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "app.go"), []byte("package outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repoRoot, err := os.OpenRoot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repoRoot.Close()
+	pinned := pinnedRootIdentity(repoRoot)
+
+	swapped := false
+	dirRoot, _, ok := containedRealDirWithOpen(
+		pinned,
+		repo,
+		"sub/app.go",
+		func(root *os.Root, relative string) (*os.Root, error) {
+			if err := os.Rename(inside, stash); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, inside); err != nil {
+				t.Skipf("filesystem does not support the replacement symlink: %v", err)
+			}
+			swapped = true
+			return root.OpenRoot(relative)
+		},
+	)
+	if dirRoot != nil {
+		_ = dirRoot.Close()
+	}
+	if swapped {
+		if err := os.Remove(inside); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(stash, inside); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !swapped {
+		t.Fatal("test did not schedule the directory swap")
+	}
+	if ok {
+		t.Fatal("confined child open accepted a directory replaced by an outside symlink")
 	}
 }
 
@@ -88,7 +160,12 @@ func TestFallbackNeverReadsThroughASwappedDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(outside, "app.go"), []byte("package outside\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pinned := pinnedRootIdentity(nil, repo)
+	repoRoot, err := os.OpenRoot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repoRoot.Close()
+	pinned := pinnedRootIdentity(repoRoot)
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -129,8 +206,8 @@ func TestFallbackNeverReadsThroughASwappedDirectory(t *testing.T) {
 	}
 }
 
-// TestFallbackOpensOnlyThroughTheDirectoryHandle is a source-level guard, and it
-// exists because the property it pins is only OBSERVABLE under a race.
+// TestFallbackOpensOnlyThroughTheDirectoryHandle is a source-level guard for
+// the two descriptor-relative opens the fallback's confinement depends on.
 //
 // The difference between opening the leaf through a pinned directory descriptor
 // and re-opening a validated pathname shows up solely in the window between the
@@ -151,6 +228,21 @@ func TestFallbackOpensOnlyThroughTheDirectoryHandle(t *testing.T) {
 	// against this one function. A guard that reads the source has to be immune
 	// to how the source was checked out.
 	text := strings.ReplaceAll(string(source), "\r\n", "\n")
+	const wrapperMarker = "func containedRealDir("
+	wrapperStart := strings.Index(text, wrapperMarker)
+	if wrapperStart < 0 {
+		t.Fatalf("containedRealDir is gone; the confinement guard no longer describes the code")
+	}
+	wrapperBody := text[wrapperStart:]
+	wrapperEnd := strings.Index(wrapperBody, "\n}\n")
+	if wrapperEnd < 0 {
+		t.Fatalf("could not find the end of containedRealDir; the guard cannot bound what it scans")
+	}
+	wrapperBody = wrapperBody[:wrapperEnd]
+	if !strings.Contains(wrapperBody, "containedRealDirWithOpen(pinned, repo, relPath, (*os.Root).OpenRoot)") {
+		t.Errorf("containedRealDir no longer wires the confined os.Root opener:\n%s", wrapperBody)
+	}
+
 	const marker = "func openContainedRegularFile("
 	start := strings.Index(text, marker)
 	if start < 0 {
@@ -168,6 +260,26 @@ func TestFallbackOpensOnlyThroughTheDirectoryHandle(t *testing.T) {
 	for _, banned := range []string{"os.Open(", "os.ReadFile(", "os.Lstat(", "os.Stat("} {
 		if strings.Contains(body, banned) {
 			t.Errorf("the fallback reaches the filesystem by pathname via %s, which the check-then-open race exploits:\n%s", banned, body)
+		}
+	}
+
+	const confinedMarker = "func containedRealDirWithOpen("
+	start = strings.Index(text, confinedMarker)
+	if start < 0 {
+		t.Fatalf("containedRealDirWithOpen is gone; the confinement guard no longer describes the code")
+	}
+	body = text[start:]
+	end = strings.Index(body, "\n}\n")
+	if end < 0 {
+		t.Fatalf("could not find the end of containedRealDirWithOpen; the guard cannot bound what it scans")
+	}
+	body = body[:end]
+	if !strings.Contains(body, "repoRoot.Stat(\".\")") || !strings.Contains(body, "openDir(repoRoot, relativeDir)") {
+		t.Errorf("the fallback no longer identity-checks and descends through the repository handle:\n%s", body)
+	}
+	for _, banned := range []string{"os.OpenRoot(realDir)", "os.Stat(confirmedDir)"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("containedRealDir restored pathname-based child validation via %s:\n%s", banned, body)
 		}
 	}
 }

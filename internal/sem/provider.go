@@ -10321,22 +10321,16 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		if !errors.Is(err, fs.ErrPermission) {
 			return openedSource{}, err
 		}
-		// os.OpenRoot always opens the repository root itself for reading, but
-		// nothing downstream needs that: `git ls-files --cached` reads the
-		// index, not the worktree root's own directory entries, and a direct
-		// read of a KNOWN path only needs to traverse (execute) every ancestor
-		// directory, never to list one. A repository whose root carries
-		// execute-only permissions supported both before this source held a
-		// root descriptor, and failing the whole snapshot here — before a
-		// single file is read — took that away for a permission bit nothing
-		// after this point actually requires. Fall back to a reader with no
-		// root descriptor; see readFallback for how it still enforces
-		// containment.
+		// A rootless reader cannot prove repository identity across concurrent
+		// pathname replacement. Keep the source shape so this defensive branch
+		// reports per-file read failures, but make every content read fail closed.
+		// The listing preflight already refuses a persistently execute-only root;
+		// this branch covers permissions changing between listing and reading.
 		return openManuallyConfinedWorktreeSource(repo, paths, ignores, warnings, maxReadBytes), nil
 	}
 	// Taken once, from the descriptor os.OpenRoot just pinned, and consulted by
 	// every fallback read below. See pinnedRootIdentity.
-	pinned := pinnedRootIdentity(root, repo)
+	pinned := pinnedRootIdentity(root)
 	registry := newOversizeRegistry(root, repo)
 	read := func(path string) (string, bool) {
 		name := filepath.FromSlash(path)
@@ -10409,12 +10403,11 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	}, nil
 }
 
-// containedRealPath resolves the DIRECTORY portion of repo/relPath through
-// every symlink it contains — repo itself included, so a repository reached
-// through its own symlink does not make an in-repository file look external —
-// and reports the resulting real path joined with relPath's own final
-// component, unresolved, together with whether that directory lies within
-// repo.
+// The fallback directory translation resolves the DIRECTORY portion of
+// repo/relPath through every symlink it contains — repo itself included, so a
+// repository reached through its own symlink does not make an in-repository
+// file look external. The final component stays unresolved so the caller can
+// still refuse a symlinked leaf, matching root.Lstat's own refusal.
 //
 // This exists because os.Root refuses two shapes of pointer that resolve to a
 // location inside the repository just as validly as any other: a symlink
@@ -10430,72 +10423,48 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 // where it ends up, not how many hops it took or how a symlink spelled its
 // target.
 //
-// The final component is left unresolved on purpose, so a caller can still
-// refuse it for being a symlink itself — matching root.Lstat's own refusal —
-// without this helper silently following it first.
-//
-// The trade-off this accepts: unlike os.Root's containment, checking a
-// resolved path and then opening it separately has a TOCTOU window, because
-// it is not backed by a directory file descriptor the way os.Root's reads are.
-// It exists only as a fallback for the shapes os.Root's own model refuses
-// outright; every file that resolves under os.Root's stricter rules keeps
-// reading through the syscall-confined root.Open above.
+// Resolution supplies only a repository-relative translation, never an open
+// authority. containedRealDir re-enters through an identity-checked os.Root,
+// so concurrent pathname changes either remain confined to that repository or
+// make the descriptor-relative open fail.
 // pinnedRootIdentity records WHICH directory a worktree source selected, so the
 // fallback readers can refuse to answer from a different one.
 //
 // os.OpenRoot gives the ordinary reads a descriptor that no later rename can
-// move. The fallback readers cannot use it -- they exist precisely for the paths
-// os.Root refuses to resolve, such as an intermediate symlink with an absolute
-// target -- so they re-resolve the repository by NAME. This is the identity they
-// check that re-resolution against. root.Stat(".") is preferred because it asks
-// the pinned descriptor itself; os.Stat(repo) is the answer for the
-// execute-only root that os.OpenRoot declined to open at all.
-func pinnedRootIdentity(root *os.Root, repo string) fs.FileInfo {
-	if root != nil {
-		if info, err := root.Stat("."); err == nil {
-			return info
-		}
+// move. The fallback readers re-resolve the repository only to translate a
+// special absolute or long-chain alias into a repository-relative path. Before
+// reading, containedRealDir reopens that repository, compares the new descriptor
+// to this identity, and descends only through the confined handle. root.Stat(".")
+// is the only accepted source: a pathname FileInfo without a retained handle
+// cannot resist replacement or inode-reuse ABA and therefore fails closed.
+func pinnedRootIdentity(root *os.Root) fs.FileInfo {
+	if root == nil {
+		return nil
 	}
-	if info, err := os.Stat(repo); err == nil {
+	if info, err := root.Stat("."); err == nil {
 		return info
 	}
 	return nil
 }
 
-// containedRealDirPath resolves relPath's PARENT and confirms it lies inside the
-// directory this source pinned. It answers with a NAME, which is why every
-// caller must go on to pin that name with a descriptor before reading through
-// it -- see containedRealDir.
-func containedRealDirPath(pinned fs.FileInfo, repo, dir string) (string, bool) {
+// containedRealDirPath resolves relPath's parent and translates it into a path
+// relative to the canonical repository. Neither returned name is a read
+// authority: containedRealDir must open and identity-check realRepo, then open
+// relDir through that confined descriptor.
+func containedRealDirPath(repo, dir string) (realRepo, relDir string, ok bool) {
 	realRepo, err := filepath.EvalSymlinks(repo)
 	if err != nil {
-		return "", false
-	}
-	// The repository PATHNAME is mutable, and everything here resolves it at READ
-	// time: a root pinned by os.OpenRoot when the source was opened does not
-	// constrain filepath.EvalSymlinks. If the pathname is repointed or renamed
-	// mid-scan -- a symlinked root swapped to another tree, the directory
-	// replaced -- these reads would validate against, and answer from, the
-	// replacement while the held descriptor still names the tree the caller
-	// selected. Refuse unless the path still resolves to the very directory the
-	// source pinned. A nil identity means the pin could not be taken, which is
-	// refused rather than trusted.
-	if pinned == nil {
-		return "", false
-	}
-	realRepoInfo, err := os.Stat(realRepo)
-	if err != nil || !os.SameFile(pinned, realRepoInfo) {
-		return "", false
+		return "", "", false
 	}
 	realDir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	rel, err := filepath.Rel(realRepo, realDir)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", false
+		return "", "", false
 	}
-	return realDir, true
+	return realRepo, rel, true
 }
 
 // containedRealDir pins the directory holding relPath's final component and
@@ -10510,39 +10479,41 @@ func containedRealDirPath(pinned fs.FileInfo, repo, dir string) (string, bool) {
 // redirected that way: once opened it names an inode, and a later rename of the
 // path it came from leaves the handle where it was.
 //
-// The window between resolving the name and pinning it is closed by validating
-// again AFTERWARDS and requiring the pinned handle to be the directory that
-// second validation contains. A swap before the pin fails the re-validation's
-// containment check; a swap back after the pin fails the identity comparison,
-// because the handle is still on the directory that was there when it was taken.
+// The canonical path is used only to obtain a repository-relative directory
+// name. The repository itself is then opened and identity-checked by descriptor,
+// and the child is opened through that confined root. A concurrent swap can
+// select another in-repository object or make OpenRoot refuse, but it cannot
+// redirect the returned handle outside the repository this source pinned.
 //
 // The caller closes the returned root.
 func containedRealDir(pinned fs.FileInfo, repo, relPath string) (*os.Root, string, bool) {
+	return containedRealDirWithOpen(pinned, repo, relPath, (*os.Root).OpenRoot)
+}
+
+func containedRealDirWithOpen(
+	pinned fs.FileInfo,
+	repo, relPath string,
+	openDir func(*os.Root, string) (*os.Root, error),
+) (*os.Root, string, bool) {
 	dir, base := filepath.Split(filepath.Join(repo, filepath.FromSlash(relPath)))
-	if base == "" || base == "." || base == ".." {
+	if pinned == nil || base == "" || base == "." || base == ".." {
 		return nil, "", false
 	}
-	realDir, ok := containedRealDirPath(pinned, repo, dir)
+	realRepo, relativeDir, ok := containedRealDirPath(repo, dir)
 	if !ok {
 		return nil, "", false
 	}
-	dirRoot, err := os.OpenRoot(realDir)
+	repoRoot, err := os.OpenRoot(realRepo)
 	if err != nil {
 		return nil, "", false
 	}
-	confirmedDir, ok := containedRealDirPath(pinned, repo, dir)
-	if !ok {
-		_ = dirRoot.Close()
+	defer repoRoot.Close()
+	openedRepoInfo, err := repoRoot.Stat(".")
+	if err != nil || !os.SameFile(pinned, openedRepoInfo) {
 		return nil, "", false
 	}
-	confirmedInfo, err := os.Stat(confirmedDir)
+	dirRoot, err := openDir(repoRoot, relativeDir)
 	if err != nil {
-		_ = dirRoot.Close()
-		return nil, "", false
-	}
-	pinnedDirInfo, err := dirRoot.Stat(".")
-	if err != nil || !os.SameFile(pinnedDirInfo, confirmedInfo) {
-		_ = dirRoot.Close()
 		return nil, "", false
 	}
 	return dirRoot, base, true
@@ -10577,7 +10548,7 @@ func openContainedRegularFile(pinned fs.FileInfo, repo, relPath string) (*os.Fil
 }
 
 // readFallback reads relPath the way os.Root would have, had it not refused
-// one of the two shapes containedRealPath's doc describes: it refuses a
+// one of the two shapes the fallback-directory comment describes: it refuses a
 // symlinked or non-regular final component exactly as the root.Lstat check
 // above does, verifies containment on the resolved destination, and only then
 // reads.
@@ -10624,18 +10595,12 @@ func readPrefixFallback(pinned fs.FileInfo, repo, relPath string, limit int) (st
 	return string(buf[:n]), true
 }
 
-// openManuallyConfinedWorktreeSource builds a worktree source with no
-// os.Root descriptor at all, for the repository whose root os.OpenRoot itself
-// refused to open (see the permission branch above). Every read still goes
-// through readFallback / readPrefixFallback, so containment is still checked
-// on every file; what is lost is the syscall-level guarantee of a directory
-// descriptor pinning the root across the source's lifetime, not the
-// containment guarantee itself.
+// openManuallyConfinedWorktreeSource builds a refusal-only worktree source for
+// the defensive case where the repository root could not be held open. Without
+// that descriptor, pathname identity cannot be trusted across concurrent
+// replacement, so every content read fails closed.
 func openManuallyConfinedWorktreeSource(repo string, paths []string, ignores ignoreMatcher, warnings []ProviderWarning, maxReadBytes int64) openedSource {
-	// No descriptor was pinned, so the identity comes from the pathname -- but it
-	// is still taken ONCE, here, so a rename during the scan is refused instead of
-	// silently redirecting every later read.
-	pinned := pinnedRootIdentity(nil, repo)
+	var pinned fs.FileInfo
 	registry := newOversizeRegistry(nil, repo)
 	return openedSource{
 		paths: paths,
@@ -10771,7 +10736,7 @@ func newOversizeRegistry(root *os.Root, repo string) *oversizeRegistry {
 	return &oversizeRegistry{
 		root:    root,
 		repo:    repo,
-		pinned:  pinnedRootIdentity(root, repo),
+		pinned:  pinnedRootIdentity(root),
 		pending: map[string]oversizePending{},
 		digests: map[string]oversizeFile{},
 	}
@@ -24385,7 +24350,57 @@ func externalID(kind, value string) string {
 	return "external:" + kind + ":" + value
 }
 
+// RepoKey is the exported form of the provider repo_key rule. It is the
+// symbol-ID namespace stamped into every record of a snapshot, and it is
+// derived from the repository ALONE so that any process holding the repo path
+// can reproduce it. Remote URLs use the provider's established compatibility
+// order: the last configured origin URL, then non-origin URLs in Git config
+// order. The first supported github.com URL yields gh/<owner>/<name>; a
+// repository with no such URL yields local/<basename>.
+//
+// It is a published contract, not an internal detail: `graph doctor --json`
+// reports it and TestRepoKeyContractGoldenVectors pins the vectors that
+// entire-brain asserts on its side. A consumer predicts it to check the seam
+// BEFORE paying for a snapshot, and to reject a snapshot built by a binary
+// whose rule has drifted from its own.
+//
+// IT IS A NAMESPACE, NOT A REPOSITORY IDENTITY, AND ONLY THE gh/ HALF IS
+// GLOBALLY UNIQUE. `local/<basename>` is derived from the directory name, so
+// every repository named `tools` with no supported GitHub remote — different
+// owners on gitlab, two unrelated checkouts — publishes the same key. Two
+// colliding snapshots are byte-distinguishable only by
+// `repo_root`, `commit` and `tree`. A consumer must therefore treat repo_key
+// as a necessary and not a sufficient identity test: `repo_key` mismatch
+// proves a foreign snapshot, `repo_key` match does not prove a native one.
+// TestRepoKeyLocalIsNotGloballyUnique pins that boundary.
+//
+// The discriminator every side already carries is the absolute repository
+// path. This provider hashes it into both persistent cache keys beside the
+// repo key (searchSnapshotKey, providerRecordsKey), which is why two colliding
+// repositories sharing a cache directory never share an entry even at an
+// identical tree — TestCollidingRepoKeysDoNotShareCacheEntries. `doctor --json`
+// reports `repo_root` beside `repo_key` for the same reason: it is what makes
+// the pair unique.
+func RepoKey(ctx context.Context, repo string) string {
+	return repoKey(ctx, repo)
+}
+
 func repoKey(ctx context.Context, repo string) string {
+	// Normalise the caller's SPELLING of the repository before deriving anything
+	// from it. The local/ half of the rule is the LAST PATH ELEMENT, so an
+	// unnormalised spelling degrades it into a namespace no checkout owns: "."
+	// yields local/., ".." yields local/.., "<repo>/." yields local/. again — one
+	// key shared by every repository on the machine, and never the key the
+	// snapshot itself will carry.
+	//
+	// Every in-process caller already passes the absolute path the provider
+	// derived (sourceContext, searchSnapshotKey, providerRecordsKey), for which
+	// this is a no-op. The exported RepoKey has no such guarantee: `graph doctor`
+	// publishes it for a repository resolved from ENTIRE_REPO_ROOT, --repo or the
+	// working directory, any of which may arrive relative. Normalising here rather
+	// than at that one call site keeps the published rule reproducible from a path
+	// alone, which is the whole contract.
+	repo = absoluteRepoPath(repo)
 	if gitMetadataSafeForSubprocessContext(ctx, repo) {
 		for _, remoteURL := range githubRemoteURLs(ctx, repo) {
 			if key, ok := githubRepoKey(remoteURL); ok {
@@ -24394,6 +24409,17 @@ func repoKey(ctx context.Context, repo string) string {
 		}
 	}
 	return "local/" + filepath.Base(repo)
+}
+
+// absoluteRepoPath is filepath.Abs with the caller's spelling kept as the
+// fallback: Abs fails only when the working directory cannot be read, and a
+// degraded key is a better outcome there than a panic or an empty one.
+func absoluteRepoPath(repo string) string {
+	absolute, err := filepath.Abs(repo)
+	if err != nil {
+		return repo
+	}
+	return absolute
 }
 
 func githubRemoteURLs(ctx context.Context, repo string) []string {

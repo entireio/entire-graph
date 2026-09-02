@@ -47,7 +47,7 @@ func TestFallbackRefusesAReplacedRepositoryRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	pinned := pinnedRootIdentity(root, repo)
+	pinned := pinnedRootIdentity(root)
 	if pinned == nil {
 		t.Fatal("the pinned root has no identity to compare against")
 	}
@@ -75,7 +75,12 @@ func TestFallbackRefusesAReplacedRepositoryRoot(t *testing.T) {
 	}
 
 	// Non-over-refusal: the pinned tree itself is still readable by its real path.
-	if got, ok := readFallback(pinnedRootIdentity(nil, selected), selected, "app.go", 0, nil); !ok || got != "package selected\n" {
+	selectedRoot, err := os.OpenRoot(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer selectedRoot.Close()
+	if got, ok := readFallback(pinnedRootIdentity(selectedRoot), selected, "app.go", 0, nil); !ok || got != "package selected\n" {
 		t.Fatalf("a repository read through its own unchanged path = %q, ok=%v; want the file", got, ok)
 	}
 }
