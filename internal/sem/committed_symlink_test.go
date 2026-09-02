@@ -137,3 +137,64 @@ func TestWorktreeExcludesIndexSymlinkWithoutCoreSymlinks(t *testing.T) {
 		t.Errorf("the regular file went missing: committed=%v worktree=%v", committed, worktree)
 	}
 }
+
+// TestWorktreeShowsASymlinkReplacedByARealFile pins the difference between two states the
+// index reports identically.
+//
+// A tracked mode-120000 entry sits on disk as an ordinary file in two situations: Git
+// materialized it that way because core.symlinks=false, or the user deleted the link and
+// wrote a real file in its place. Vetoing on the index mode alone dropped both, so an
+// uncommitted replacement stayed invisible until it was staged -- the one thing a worktree
+// listing exists not to do. Only the replacement differs from the index, so that is what
+// separates them.
+func TestWorktreeShowsASymlinkReplacedByARealFile(t *testing.T) {
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "--quiet", "-b", "trunk")
+	git("config", "user.name", "Entire Graph Test")
+	git("config", "user.email", "graph@example.com")
+	git("config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(repo, "real.go"), []byte("package a\n\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.go", filepath.Join(repo, "link.go")); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	git("add", "-A")
+	git("commit", "--quiet", "-m", "seed")
+
+	listed := func() map[string]bool {
+		t.Helper()
+		snapshot, err := BuildProviderSnapshotWithOptions(context.Background(), repo, "test", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths := map[string]bool{}
+		for _, file := range snapshot.Files {
+			paths[file.Path] = true
+		}
+		return paths
+	}
+
+	if listed()["link.go"] {
+		t.Fatal("an untouched tracked symlink must stay out of the listing")
+	}
+
+	if err := os.Remove(filepath.Join(repo, "link.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "link.go"), []byte("package a\n\nfunc Replaced() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !listed()["link.go"] {
+		t.Fatal("a symlink replaced by a real file is invisible to a worktree query")
+	}
+}

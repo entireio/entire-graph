@@ -179,27 +179,79 @@ func validateTreeish(rev string) error {
 // Untracked paths have no index entry and are absent from the result, so a
 // caller still judges those by lstat alone.
 func IndexNonRegularPaths(ctx context.Context, repo string) (map[string]struct{}, error) {
-	out, err := run(ctx, repo, "git", "ls-files", "-s", "-z")
+	// Streamed through the same fixed count and byte bounds every other listing
+	// uses. Reading the index with run() buffered all of stdout and then
+	// strings.Split copied it again, so a repository near the 256 MiB raw-output
+	// limit the sibling listings enforce needed several more full-size copies
+	// here -- and could exhaust memory before any output was consumed -- while
+	// bypassing the bound that exists to stop exactly that.
+	paths := map[string]struct{}{}
+	err := visitBoundedWorktreePathOutput(
+		newCmd(ctx, repo, "git", "ls-files", "-s", "-z"),
+		func(entry string) bool {
+			if entry == "" {
+				return true
+			}
+			// "<mode> SP <object> SP <stage> TAB <path>"
+			meta, path, found := strings.Cut(entry, "\t")
+			if !found || path == "" {
+				return true
+			}
+			mode, _, found := strings.Cut(meta, " ")
+			if !found || isRegularTreeMode(mode) {
+				return true
+			}
+			paths[path] = struct{}{}
+			return true
+		})
 	if err != nil {
 		return nil, err
 	}
-	paths := map[string]struct{}{}
-	for _, entry := range strings.Split(out, "\x00") {
-		if entry == "" {
-			continue
-		}
-		// "<mode> SP <object> SP <stage> TAB <path>"
-		meta, path, found := strings.Cut(entry, "\t")
-		if !found || path == "" {
-			continue
-		}
-		mode, _, found := strings.Cut(meta, " ")
-		if !found || isRegularTreeMode(mode) {
-			continue
-		}
-		paths[path] = struct{}{}
-	}
 	return paths, nil
+}
+
+// IndexReplacedNonRegularPaths returns the paths whose index entry is NOT a
+// regular file but whose worktree file no longer holds what that entry says,
+// keyed by slash-separated repo-relative path.
+//
+// It separates two states the index reports identically. With
+// core.symlinks=false Git writes a mode-120000 entry to disk as an ordinary file
+// containing the LINK TARGET, and that file is not an edit -- it is the symlink,
+// spelled the only way the filesystem allows. A user who deletes the link and
+// writes a real file in its place produces the same index mode and the same
+// lstat verdict, but different bytes.
+//
+// Content is what separates them, not modification status: Git reports the
+// materialized file as a typechange whenever core.symlinks is not persisted in
+// the repository's own config, so diff-files calls both cases modified and
+// cannot tell them apart.
+//
+// Only paths given in nonRegular are examined, so the cost is bounded by the
+// number of tracked symlinks and gitlinks rather than by the size of the tree.
+func IndexReplacedNonRegularPaths(ctx context.Context, repo string, nonRegular map[string]struct{}) map[string]struct{} {
+	replaced := map[string]struct{}{}
+	for path := range nonRegular {
+		onDisk, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(path)))
+		if err != nil || !onDisk.Mode().IsRegular() {
+			// Still a link (or gone): nothing was substituted for it.
+			continue
+		}
+		// The index blob for a mode-120000 entry is the link target itself.
+		indexed, err := run(ctx, repo, "git", "cat-file", "blob", ":"+path)
+		if err != nil {
+			// Unreadable index entry: leave the veto in place, which is the
+			// conservative direction.
+			continue
+		}
+		current, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(path)))
+		if err != nil {
+			continue
+		}
+		if strings.TrimRight(string(current), "\n") != strings.TrimRight(indexed, "\n") {
+			replaced[path] = struct{}{}
+		}
+	}
+	return replaced
 }
 
 // ListRegularFiles lists the REGULAR files in a committed tree, excluding
