@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "df4f51bd3a2e",
+  "strategy": "manual-commit",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/schema_compat.go",
+    "internal/sem/schema_compat_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/df/4f51bd3a2e/0/metadata.json",
+      "transcript": "/df/4f51bd3a2e/0/full.jsonl",
+      "compact_transcript": "/df/4f51bd3a2e/0/transcript.jsonl",
+      "content_hash": "/df/4f51bd3a2e/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 379941,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 38766080,
+    "output_tokens": 62131,
+    "api_call_count": 365
+  }
+}
