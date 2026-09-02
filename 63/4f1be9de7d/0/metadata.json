@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "634f1be9de7d",
+  "session_id": "01a0616d-0c18-7443-82f2-b4c5bc498542",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-02T10:27:49.911411Z",
+  "branch": "codex/pr160-strict-refusal",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/operations.md",
+    "docs/trust-and-security.md",
+    "internal/sem/cache_entry.go",
+    "internal/sem/cache_write_confinement_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 292566,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 16956928,
+    "output_tokens": 47285,
+    "api_call_count": 139
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-02T10:27:49.654375Z",
+    "agent_lines": 178,
+    "agent_removed": 28,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 178,
+    "total_lines_changed": 206,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
