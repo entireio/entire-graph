@@ -207,7 +207,7 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 		response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
 		switch flags.Format {
 		case "json":
-			encoder := json.NewEncoder(opts.Stdout)
+			encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
 			encoder.SetEscapeHTML(false)
 			if err := encoder.Encode(response); err != nil {
 				return err
