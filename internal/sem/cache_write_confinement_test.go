@@ -1,9 +1,6 @@
 package sem
 
 import (
-	"crypto/rand"
-	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,7 +8,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"testing/iotest"
 	"time"
 )
 
@@ -410,55 +406,27 @@ func TestOpenCacheComponentRejectsIdentityMismatch(t *testing.T) {
 	}
 }
 
-// TestCacheTempNameSuffixReportsRandomnessFailure pins that a randomness failure
-// is REPORTED. crypto/rand.Text, the obvious way to write this, routes such a
-// failure through runtime.fatal — an unrecoverable process kill, not a panic a
-// caller can recover — so a cache write whose errors every best-effort caller
-// already discards would instead tear down the whole index run.
-func TestCacheTempNameSuffixReportsRandomnessFailure(t *testing.T) {
+// TestCacheTempNameSuffixFormatsGeneratorWords pins the stable, separator-free
+// name shape without consulting crypto/rand. The production source is
+// math/rand/v2.Uint64, whose process-local generator has no entropy-error path.
+func TestCacheTempNameSuffixFormatsGeneratorWords(t *testing.T) {
 	t.Parallel()
-	sentinel := errors.New("randomness source unavailable")
-	if _, err := cacheTempNameSuffix(iotest.ErrReader(sentinel)); !errors.Is(err, sentinel) {
-		t.Fatalf("cacheTempNameSuffix error = %v, want it to report %v", err, sentinel)
-	}
-	// A source that ends early must be reported too, not silently shorten the name.
-	if _, err := cacheTempNameSuffix(strings.NewReader("too short")); !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Fatalf("cacheTempNameSuffix error = %v, want %v", err, io.ErrUnexpectedEOF)
+	words := []uint64{0x0123456789abcdef, 0xfedcba9876543210}
+	index := 0
+	suffix := cacheTempNameSuffix(func() uint64 {
+		word := words[index]
+		index++
+		return word
+	})
+	if want := "0123456789abcdeffedcba9876543210"; suffix != want {
+		t.Fatalf("cacheTempNameSuffix = %q, want %q", suffix, want)
 	}
 }
 
-// TestCacheTempNameSuffixIsUnpredictable keeps the replacement drawing from the
-// CSPRNG rather than from a counter: the O_EXCL create is only a race guard if no
-// one can name the file first.
-func TestCacheTempNameSuffixIsUnpredictable(t *testing.T) {
-	t.Parallel()
-	seen := map[string]bool{}
-	for i := 0; i < 64; i++ {
-		suffix, err := cacheTempNameSuffix(rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(suffix) != 32 {
-			t.Fatalf("suffix %q is %d characters, want 32 hexadecimal ones", suffix, len(suffix))
-		}
-		for _, r := range suffix {
-			if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-				t.Fatalf("suffix %q is not lowercase hexadecimal; a case-insensitive filesystem could alias two names", suffix)
-			}
-		}
-		if seen[suffix] {
-			t.Fatalf("suffix %q repeated within 64 draws", suffix)
-		}
-		seen[suffix] = true
-	}
-}
-
-// TestCreateRootTempNamesTheFileFromTheReportedRandomSource ties the call site to
-// the reporting draw. It is the only thing that distinguishes it from
-// crypto/rand.Text, whose 26-character uppercase base32 name is visibly different
-// from the 32 lowercase hexadecimal characters cacheTempNameSuffix produces — and
-// whose randomness failure would kill the process instead of returning here.
-func TestCreateRootTempNamesTheFileFromTheReportedRandomSource(t *testing.T) {
+// TestCreateRootTempRetriesAnOccupiedCandidate pins O_EXCL as the boundary: a
+// predicted candidate is neither followed nor overwritten, and a fresh name is
+// tried instead. The injected source makes the collision deterministic.
+func TestCreateRootTempRetriesAnOccupiedCandidate(t *testing.T) {
 	t.Parallel()
 	root, err := os.OpenRoot(t.TempDir())
 	if err != nil {
@@ -466,6 +434,86 @@ func TestCreateRootTempNamesTheFileFromTheReportedRandomSource(t *testing.T) {
 	}
 	defer root.Close()
 
+	occupiedName := ".snapshot-" + strings.Repeat("0", 32) + ".json.gz"
+	if err := root.WriteFile(occupiedName, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	words := []uint64{0, 0, 0, 1}
+	index := 0
+	file, name, err := createRootTempWithSource(root, "snapshot", func() uint64 {
+		word := words[index]
+		index++
+		return word
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if want := ".snapshot-00000000000000000000000000000001.json.gz"; name != want {
+		t.Fatalf("temporary cache file named %q, want %q after one collision", name, want)
+	}
+	contents, err := root.ReadFile(occupiedName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "occupied" {
+		t.Fatalf("occupied candidate was overwritten: %q", contents)
+	}
+}
+
+// TestCreateRootTempReportsExhaustedCandidates pins the retry bound and its
+// failure contract. Repeated prediction can deny this cache write, but O_EXCL
+// must still preserve the occupied entry on every attempt.
+func TestCreateRootTempReportsExhaustedCandidates(t *testing.T) {
+	t.Parallel()
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	occupiedName := ".records-" + strings.Repeat("0", 32) + ".json.gz"
+	if err := root.WriteFile(occupiedName, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	file, name, err := createRootTempWithSource(root, "records", func() uint64 {
+		calls++
+		return 0
+	})
+	if err == nil {
+		if file != nil {
+			_ = file.Close()
+		}
+		t.Fatal("sixteen occupied candidates did not fail the cache write")
+	}
+	if file != nil || name != "" {
+		t.Fatalf("exhausted create returned file=%v name=%q", file, name)
+	}
+	if want := "create temporary cache file in " + root.Name() + ": no unused name"; err.Error() != want {
+		t.Fatalf("exhausted create error = %q, want %q", err, want)
+	}
+	if calls != 32 {
+		t.Fatalf("random source calls = %d, want 32 for sixteen two-word candidates", calls)
+	}
+	contents, readErr := root.ReadFile(occupiedName)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(contents) != "occupied" {
+		t.Fatalf("occupied candidate was overwritten after exhaustion: %q", contents)
+	}
+}
+
+func TestCreateRootTempUsesHexadecimalRuntimeNames(t *testing.T) {
+	t.Parallel()
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
 	file, name, err := createRootTemp(root, "snapshot")
 	if err != nil {
 		t.Fatal(err)

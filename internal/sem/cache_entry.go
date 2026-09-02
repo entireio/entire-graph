@@ -2,14 +2,12 @@ package sem
 
 import (
 	"compress/gzip"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,31 +247,30 @@ func cacheComponentRedirectError(name string, info os.FileInfo) error {
 	return fmt.Errorf("cache directory component %q is a symlink or other redirecting entry (%s)", name, info.Mode().Type())
 }
 
-// cacheTempNameSuffix draws the unpredictable half of a temporary artifact name.
-//
-// crypto/rand.Text is the obvious call and is deliberately not used: it reports a
-// randomness failure through runtime.fatal, which is not a panic a caller can
-// recover but an unrecoverable process kill. Tearing down an index run because a
-// temporary file could not be named is the wrong failure mode for a best-effort
-// cache write, whose callers already discard errors. Reading rand.Reader directly
-// keeps exactly the same CSPRNG and returns the failure instead.
-func cacheTempNameSuffix(source io.Reader) (string, error) {
-	var raw [16]byte
-	if _, err := io.ReadFull(source, raw[:]); err != nil {
-		return "", fmt.Errorf("draw a random cache file name: %w", err)
-	}
-	return hex.EncodeToString(raw[:]), nil
+// cacheTempNameSuffix draws collision-avoidance words from an infallible
+// process-local generator. A cryptographic source is deliberately unnecessary:
+// O_EXCL is the security boundary, so predicting and occupying a candidate can
+// only make this bounded cache write retry or fail; it cannot make
+// the open follow or overwrite that entry. Avoiding crypto/rand also avoids its
+// documented irrecoverable process termination when OS entropy fails.
+func cacheTempNameSuffix(source func() uint64) string {
+	return fmt.Sprintf("%016x%016x", source(), source())
 }
 
-// createRootTemp is os.CreateTemp confined to an opened directory. The name is a cryptographically
-// random suffix opened with O_EXCL, so there is no predictable name for anything to occupy first,
-// and it keeps the visible `.<prefix>-*.json.gz` shape that operator cleanup globs already match.
+// createRootTemp is os.CreateTemp confined to an opened directory. The name uses a process-local
+// pseudo-random suffix opened with O_EXCL, and it keeps the visible `.<prefix>-*.json.gz` shape
+// that operator cleanup globs already match.
 func createRootTemp(directory *os.Root, prefix string) (*os.File, string, error) {
+	return createRootTempWithSource(directory, prefix, rand.Uint64)
+}
+
+func createRootTempWithSource(
+	directory *os.Root,
+	prefix string,
+	source func() uint64,
+) (*os.File, string, error) {
 	for attempt := 0; attempt < 16; attempt++ {
-		suffix, err := cacheTempNameSuffix(rand.Reader)
-		if err != nil {
-			return nil, "", err
-		}
+		suffix := cacheTempNameSuffix(source)
 		name := "." + prefix + "-" + suffix + ".json.gz"
 		file, err := directory.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, fs.ErrExist) {
