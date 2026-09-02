@@ -223,6 +223,37 @@ mise run check   # fmt + vet + race tests + build
 
 Contract rules that must not break: schema `1.x` is frozen and additive-only (`docs/adr/0001-ga-schema-contract.md`); the provider is **no-egress** (never add remote fetches, hosted API calls, telemetry, or runtime grammar downloads); `compound-v1` symbol IDs must stay stable across ordinary edits; unsupported/unparseable files must surface as machine-readable partial failures, never silent drops. All logic lives under `internal/` (`sem` = parsing/graph/search, `cli` = hand-rolled dispatch, `gitutil` = git subprocess); `cmd/entire-graph/main.go` is a thin entry point. The plugin manifest (`entire-plugin.yml`) registers the subcommand `graph`, so users type `entire graph ...`. This project was **previously named `entire-sem`** — do not reintroduce the old name. **Entire Brain** (`entire-brain`) is the separate downstream consumer of this provider's NDJSON — not an old name for this project.
 
+### Working in a scratch worktree: adopt the session first
+
+Entire binds an agent session to the worktree it started in, and links a commit to
+that session through a `Entire-Checkpoint:` trailer added by its git hooks. Commits
+made in a DIFFERENT worktree are not linked: no checkpoint, no trailer, and the
+work is absent from `entire checkpoint list` even though the hooks are healthy and
+`entire doctor` reports nothing wrong.
+
+That is easy to hit precisely because reviewing a pull request should happen in a
+scratch worktree rather than the primary one. Before the first commit in it, run
+from inside the scratch worktree:
+
+```sh
+entire session adopt <session-id> --from /path/to/primary/worktree
+```
+
+`entire session current` shows the id, and `entire session info <id>` shows which
+worktree a session is bound to and how many checkpoints it has. A session that has
+made commits but reports `Checkpoints: 0` is the symptom.
+
+If it is already too late, `entire session attach <session-id>` builds a checkpoint
+from the transcript and links it to the last commit. Two cautions:
+
+- It attaches to the last commit **of the current branch**, so make sure that
+  branch is up to date first. A primary worktree that has only ever fetched still
+  points at whatever it was on when the session started.
+- Do not pass `--force` on a branch whose tip is already pushed: that flag amends
+  the last commit to add the trailer, which rewrites published history. Without it
+  the checkpoint is still created and the trailer is printed to paste into a later
+  commit instead.
+
 <!-- entire-graph:begin -->
 This repo has the entire-graph code graph installed. Before exploring code with
 grep/find/whole-file reads, read .entire/graph-agent.md — resolution-first guidance

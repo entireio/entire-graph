@@ -2278,3 +2278,145 @@ func kernelReachesRawPath(t *testing.T, dir, name string) error {
 	}
 	return nil
 }
+
+// TestInitAgentsRefusesOversizeInstructionFileWithoutWrites pins the read bound on the only
+// repository-authored files init-agents reads. Their size is chosen by the repository, so an
+// unbounded read let a clone drive the command's memory to a multiple of the file it shipped.
+// The refusal has to land before anything is created or modified, and it has to be a refusal
+// rather than a truncation: a truncated instruction file would be written back over the user's
+// own text.
+func TestInitAgentsRefusesOversizeInstructionFileWithoutWrites(t *testing.T) {
+	for _, oversizeName := range []string{"AGENTS.md", "CLAUDE.md"} {
+		t.Run(oversizeName, func(t *testing.T) {
+			repo := t.TempDir()
+			counterpartName := "CLAUDE.md"
+			if oversizeName == "CLAUDE.md" {
+				counterpartName = "AGENTS.md"
+			}
+			oversize := bytes.Repeat([]byte("a"), maxInstructionFileBytes+1)
+			oversizePath := filepath.Join(repo, oversizeName)
+			if err := os.WriteFile(oversizePath, oversize, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+			if err == nil {
+				t.Fatalf("init-agents accepted a %d-byte %s", len(oversize), oversizeName)
+			}
+			for _, want := range []string{oversizeName, "larger than", "rerun init-agents"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q missing %q", err, want)
+				}
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before the size check completed: %q", stdout.String())
+			}
+			if got := readFileForTest(t, oversizePath); got != string(oversize) {
+				t.Fatalf("%s was rewritten despite the refusal (%d bytes read back)", oversizeName, len(got))
+			}
+			for _, path := range []string{
+				filepath.Join(repo, ".entire", "graph-agent.md"),
+				filepath.Join(repo, counterpartName),
+			} {
+				if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+					t.Fatalf("%s was created despite the refusal (stat error %v)", path, statErr)
+				}
+			}
+		})
+	}
+}
+
+// managedBlockOverheadForTest measures how many bytes init-agents adds to an
+// unmanaged instruction file, by running it on a one-byte file and diffing. It is
+// measured rather than restated so the boundary tests below cannot drift from the
+// block the command actually renders.
+func managedBlockOverheadForTest(t *testing.T) int {
+	t.Helper()
+	repo := t.TempDir()
+	agentsPath := filepath.Join(repo, "AGENTS.md")
+	if err := os.WriteFile(agentsPath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo}); err != nil {
+		t.Fatalf("probe run: %v", err)
+	}
+	return len(readFileForTest(t, agentsPath)) - 1
+}
+
+// TestInitAgentsAcceptsTheLargestFileThatStillFitsOnceTheBlockIsAdded keeps the bound
+// off-by-one-safe from the side that matters. The limit governs what is WRITTEN, so the
+// largest accepted source is the one whose rendered form lands exactly on it, and that
+// rendered form must survive a second run — the round trip is the whole point of bounding
+// the write rather than only the read.
+func TestInitAgentsAcceptsTheLargestFileThatStillFitsOnceTheBlockIsAdded(t *testing.T) {
+	overhead := managedBlockOverheadForTest(t)
+	repo := t.TempDir()
+	atLimit := bytes.Repeat([]byte("a"), maxInstructionFileBytes-overhead)
+	agentsPath := filepath.Join(repo, "AGENTS.md")
+	if err := os.WriteFile(agentsPath, atLimit, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo}); err != nil {
+		t.Fatalf("init-agents refused a file that renders to exactly the %d-byte limit: %v", maxInstructionFileBytes, err)
+	}
+	got := readFileForTest(t, agentsPath)
+	if !strings.HasPrefix(got, string(atLimit)) {
+		t.Fatal("AGENTS.md lost its original content")
+	}
+	if !strings.Contains(got, agentPointerBegin) {
+		t.Fatal("AGENTS.md did not receive the managed pointer block")
+	}
+	if len(got) != maxInstructionFileBytes {
+		t.Fatalf("rendered AGENTS.md is %d bytes, want exactly the %d-byte limit", len(got), maxInstructionFileBytes)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo}); err != nil {
+		t.Fatalf("init-agents could not read back the %d-byte file it wrote: %v", len(got), err)
+	}
+	if again := readFileForTest(t, agentsPath); again != got {
+		t.Fatalf("the second run rewrote the file (%d bytes, was %d)", len(again), len(got))
+	}
+}
+
+// TestInitAgentsRefusesWhenTheManagedBlockWouldCrossTheReadLimit pins the invariant the
+// read bound alone does not give: init-agents must never leave behind an instruction file
+// it will refuse to read. A source sitting exactly on the limit passes the read and is then
+// APPENDED to, so the written result lands past it — and the next run reports the user's
+// file as too large to rewrite, over bytes this command added. Refuse it up front, with the
+// tree untouched, instead.
+func TestInitAgentsRefusesWhenTheManagedBlockWouldCrossTheReadLimit(t *testing.T) {
+	repo := t.TempDir()
+	atLimit := bytes.Repeat([]byte("a"), maxInstructionFileBytes)
+	agentsPath := filepath.Join(repo, "AGENTS.md")
+	if err := os.WriteFile(agentsPath, atLimit, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+	if err == nil {
+		t.Fatalf("init-agents wrote a file past the %d-byte limit it will read back", maxInstructionFileBytes)
+	}
+	for _, want := range []string{"AGENTS.md", "read back", "rerun init-agents"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err, want)
+		}
+	}
+	if got := readFileForTest(t, agentsPath); got != string(atLimit) {
+		t.Fatalf("AGENTS.md was rewritten despite the refusal (%d bytes read back)", len(got))
+	}
+	for _, path := range []string{
+		filepath.Join(repo, ".entire", "graph-agent.md"),
+		filepath.Join(repo, "CLAUDE.md"),
+	} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("%s was created despite the refusal (stat error %v)", path, statErr)
+		}
+	}
+}

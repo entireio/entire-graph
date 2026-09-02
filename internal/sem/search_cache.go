@@ -21,8 +21,10 @@ import (
 // "remove old version dirs" instead of per-entry reachability analysis.
 // v12 retires every entry produced before the final immutable-policy,
 // unconditional-worktree-bypass transaction checks, and shared nested-ignore
-// resource policy were complete.
-const searchSnapshotCacheVersion = "search-snapshot-v12"
+// resource policy were complete; v13 retires entries whose DATA_FLOWS records
+// carry a single evidence entry per edge rather than every flow; v14 retires
+// entries written before truncated records counted what they dropped.
+const searchSnapshotCacheVersion = "search-snapshot-v14"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
