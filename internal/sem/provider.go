@@ -19824,8 +19824,31 @@ func maskFSharpBlockComments(text string) string {
 	}
 	out := []byte(text)
 	depth := 0
+	inString := false
+	verbatim := false
 	for i := 0; i < len(out); i++ {
+		if inString {
+			switch {
+			case !verbatim && out[i] == '\\' && i+1 < len(out):
+				// An escape consumes the next byte, so a `\"` does not end the
+				// string and expose the code after it to the comment scanner.
+				i++
+			case out[i] == '"':
+				if verbatim && i+1 < len(out) && out[i+1] == '"' {
+					i++ // "" is one escaped quote inside a verbatim string
+					continue
+				}
+				inString, verbatim = false, false
+			}
+			continue
+		}
 		switch {
+		case depth == 0 && out[i] == '"':
+			// A STRING is not code. `let marker = "(*"` used to open a comment
+			// that never closed, and the rest of the block -- every real
+			// pipeline in it -- was blanked away, dropping those calls silently.
+			inString = true
+			verbatim = i > 0 && out[i-1] == '@'
 		case i+1 < len(out) && out[i] == '(' && out[i+1] == '*':
 			depth++
 			out[i], out[i+1] = ' ', ' '

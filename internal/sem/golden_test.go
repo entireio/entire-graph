@@ -752,6 +752,10 @@ func TestFSharpBlockCommentDoesNotFabricateACall(t *testing.T) {
 	}{
 		{"a commented pipeline", "let run v =\n    (* xs |> helper *)\n    v |> other\n"},
 		{"nested block comments", "let run v =\n    (* outer (* inner |> hidden *) tail |> alsoHidden *)\n    v |> other\n"},
+		// A STRING is not code: an unmatched `(*` inside one used to open a comment
+		// that never closed, blanking every real pipeline after it.
+		{"a comment opener inside a string literal", "let marker = \"(*\"\nlet run v =\n    v |> other\n"},
+		{"an escaped quote does not end the string", "let m = \"a\\\"(*\"\nlet run v =\n    v |> other\n"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
