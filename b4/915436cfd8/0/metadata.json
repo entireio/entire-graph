@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "b4915436cfd8",
+  "session_id": "01a06215-a1da-7140-a721-eafd792ce9ae",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-02T13:43:32.877154Z",
+  "branch": "ci/windows-investigation-coordinator",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tools/ci-bench/collect-environment.ps1"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "checkpoint_transcript_start": 1270,
+  "transcript_lines_at_start": 1270,
+  "compact_transcript_start": 192,
+  "token_usage": {
+    "input_tokens": 22505,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2417408,
+    "output_tokens": 4220,
+    "api_call_count": 17
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-02T13:43:32.746684Z",
+    "agent_lines": 40,
+    "agent_removed": 11,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 40,
+    "total_lines_changed": 51,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "b4915436cfd8",
+  "strategy": "manual-commit",
+  "branch": "ci/windows-investigation-coordinator",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tools/ci-bench/collect-environment.ps1"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b4/915436cfd8/0/metadata.json",
+      "transcript": "/b4/915436cfd8/0/full.jsonl",
+      "compact_transcript": "/b4/915436cfd8/0/transcript.jsonl",
+      "content_hash": "/b4/915436cfd8/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 22505,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2417408,
+    "output_tokens": 4220,
+    "api_call_count": 17
+  }
+}
