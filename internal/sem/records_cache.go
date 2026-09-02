@@ -191,23 +191,25 @@ func (transaction *ProviderRecordsCacheTransaction) Load() ([]byte, *SnapshotSum
 }
 
 // Store persists records built with Options only when their observed header
-// still matches the immutable commit, tree, repository identity, provider, and
-// profile that keyed this transaction. A moving HEAD or remote therefore cannot
-// place a later snapshot's record stream under the earlier cache entry.
+// still matches the immutable schema, commit, tree, repository identity,
+// provider, and profile that keyed this transaction. A moving HEAD, remote, or
+// serializer therefore cannot place a different snapshot's record stream under
+// the earlier cache entry.
 func (transaction *ProviderRecordsCacheTransaction) Store(records []byte, summary *SnapshotSummary, observed SnapshotHeader) error {
 	if transaction == nil || !transaction.enabled {
 		return nil
 	}
-	if observed.Tree != transaction.tree ||
+	if observed.SchemaVersion != SchemaVersion ||
+		observed.Tree != transaction.tree ||
 		observed.Commit != transaction.commit ||
 		observed.RepoKey != transaction.repositoryKey ||
 		observed.Provider != ProviderName ||
 		observed.ProviderVersion != transaction.providerVersion ||
 		observed.Profile != string(transaction.options.Profile) {
 		return fmt.Errorf(
-			"provider records snapshot provenance changed while building: got commit=%q tree=%q repo=%q provider=%q version=%q profile=%q, want commit=%q tree=%q repo=%q provider=%q version=%q profile=%q",
-			observed.Commit, observed.Tree, observed.RepoKey, observed.Provider, observed.ProviderVersion, observed.Profile,
-			transaction.commit, transaction.tree, transaction.repositoryKey, ProviderName, transaction.providerVersion, transaction.options.Profile,
+			"provider records snapshot provenance changed while building: got schema=%q commit=%q tree=%q repo=%q provider=%q version=%q profile=%q, want schema=%q commit=%q tree=%q repo=%q provider=%q version=%q profile=%q",
+			observed.SchemaVersion, observed.Commit, observed.Tree, observed.RepoKey, observed.Provider, observed.ProviderVersion, observed.Profile,
+			SchemaVersion, transaction.commit, transaction.tree, transaction.repositoryKey, ProviderName, transaction.providerVersion, transaction.options.Profile,
 		)
 	}
 	cache := cachedProviderRecords{

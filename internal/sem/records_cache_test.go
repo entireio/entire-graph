@@ -16,6 +16,7 @@ func storeProviderRecordsForTest(ctx context.Context, repo, providerVersion, tre
 		return err
 	}
 	return transaction.Store(records, summary, SnapshotHeader{
+		SchemaVersion:   SchemaVersion,
 		Provider:        ProviderName,
 		ProviderVersion: providerVersion,
 		RepoKey:         transaction.repositoryKey,
@@ -31,6 +32,8 @@ func TestProviderRecordsCacheTransactionRejectsObservedProvenanceMismatch(t *tes
 		name   string
 		mutate func(*SnapshotHeader)
 	}{
+		{"schema version missing", func(header *SnapshotHeader) { header.SchemaVersion = "" }},
+		{"schema version foreign", func(header *SnapshotHeader) { header.SchemaVersion = "9.9" }},
 		{"commit", func(header *SnapshotHeader) { header.Commit = "commit-b" }},
 		{"tree", func(header *SnapshotHeader) { header.Tree = "tree-b" }},
 		{"repository key", func(header *SnapshotHeader) { header.RepoKey = "gh/example/moved" }},
@@ -45,6 +48,7 @@ func TestProviderRecordsCacheTransactionRejectsObservedProvenanceMismatch(t *tes
 				t.Fatal(err)
 			}
 			header := SnapshotHeader{
+				SchemaVersion:   SchemaVersion,
 				Provider:        ProviderName,
 				ProviderVersion: "test",
 				RepoKey:         transaction.repositoryKey,
@@ -74,6 +78,7 @@ func TestProviderRecordsCacheDiscriminatesSameTreeCommits(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := first.Store([]byte("commit-a records\n"), nil, SnapshotHeader{
+		SchemaVersion:   SchemaVersion,
 		Provider:        ProviderName,
 		ProviderVersion: "test",
 		RepoKey:         first.repositoryKey,
