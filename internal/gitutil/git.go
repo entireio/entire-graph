@@ -1251,6 +1251,14 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 				msg = "unexpected response to protocol probe"
 			}
 		}
+		// The probe cannot distinguish an old Git from a dead one. When THIS
+		// context ended, exec kills the child mid-probe and the read fails, so
+		// blaming the Git version would report a wrong and unactionable cause --
+		// telling a user to upgrade a Git that was fine. Classify by the context
+		// first, and keep the probe's message for the reader.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("git cat-file --batch-command probe ended: %s: %w", msg, ctxErr)
+		}
 		return nil, fmt.Errorf("git cat-file --batch-command unavailable (Git 2.36 or newer required): %s", msg)
 	}
 	return reader, nil
@@ -1822,6 +1830,10 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 		if message == "" {
 			message = err.Error()
 		}
+		// Same context-vs-signal ambiguity as the Wait path below.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("git ls-tree metadata: %s: %w", message, ctxErr)
+		}
 		return nil, fmt.Errorf("git ls-tree metadata: %s", message)
 	}
 	defer job.close()
@@ -1845,6 +1857,15 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 				message := strings.TrimSpace(stderr.String())
 				if message == "" {
 					message = waitErr.Error()
+				}
+				// A subprocess killed because THIS context ended reports the signal,
+				// not the reason (see the note on run()): Wait returns "signal: killed"
+				// and a caller that set a deadline could not distinguish its own expiry
+				// from a Git failure. Carry the context's error alongside Git's message
+				// so errors.Is(err, context.DeadlineExceeded) holds while stderr stays
+				// readable.
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, fmt.Errorf("git ls-tree metadata: %s: %w", message, ctxErr)
 				}
 				return nil, fmt.Errorf("git ls-tree metadata: %s", message)
 			}

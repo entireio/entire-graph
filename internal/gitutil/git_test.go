@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -2900,5 +2901,45 @@ func TestFirstParentRejectsAnOptionShapedRevision(t *testing.T) {
 
 	if _, err := FirstParent(t.Context(), repo, "HEAD"); err != nil {
 		t.Fatalf("FirstParent(\"HEAD\") = %v, want a resolved parent OID", err)
+	}
+}
+
+// TestTreeEntryMetadataBatchReportsTheContextNotTheSignal pins the classification a
+// caller needs when its own deadline ends the work.
+//
+// exec.CommandContext kills the child when the context ends and Wait then reports
+// "signal: killed" -- the mechanism, not the reason. Wrapping only that message made a
+// caller's expired deadline indistinguishable from a genuine Git failure, so callers
+// testing errors.Is(err, context.DeadlineExceeded) classified their own timeout as a
+// tool error. The failure was load-dependent: on a fast host the context error usually
+// won the race and the bug stayed hidden, which is why it surfaced only on the slower
+// macOS and Windows CI runners.
+//
+// The context error is carried ALONGSIDE Git's message rather than replacing it, so the
+// stderr a reader needs is still in the text.
+func TestTreeEntryMetadataBatchReportsTheContextNotTheSignal(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", ".")
+	git(t, repo, "config", "user.email", "t@example.com")
+	git(t, repo, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "a.txt")
+	git(t, repo, "commit", "-qm", "seed")
+
+	// Already past its deadline: whichever site loses the race -- the start path or
+	// the Wait path -- must still classify as the caller's expiry.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err := treeEntryMetadataBatch(ctx, repo, "HEAD", []string{"a.txt"})
+	if err == nil {
+		t.Fatal("an expired context must surface as an error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want an error wrapping context.DeadlineExceeded, got %v", err)
 	}
 }
