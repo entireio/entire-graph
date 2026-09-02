@@ -461,7 +461,7 @@ func TestCompactSnapshotDecoderRejectsWrongArity(t *testing.T) {
 	requireCompactDecodeError(t, compactHeaderLine()+"[\"d\",1]\n", "dictionary has invalid placement or arity")
 }
 func TestCompactSnapshotDecoderRejectsNegativeEvidenceDropped(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"r\",0,0,0,0,0,0,0,0,[],[],-1]\n", "evidence_dropped -1 must be non-negative")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"r\",0,0,0,0,0,0,0,0,[],[],-1]\n", "evidence_dropped -1 must be non-negative")
 }
 func TestCompactSnapshotDecoderRequiresHeaderDictionaryThenSummary(t *testing.T) {
 	requireCompactDecodeError(t, "[\"d\",1,[\"x\"]]\n", "dictionary has invalid placement")
