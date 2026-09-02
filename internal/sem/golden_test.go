@@ -684,3 +684,52 @@ func TestHeuristicRelationTypesMatchDocumentation(t *testing.T) {
 		}
 	}
 }
+
+// TestFSharpModuleDoesNotClaimItsMembersCalls pins who owns a pipeline call.
+//
+// An F# `module` block spans every binding under it, so scanning the module's own text
+// sees the pipelines written inside its FUNCTIONS. Those calls belong to the functions,
+// which emit them already, and crediting the module produced a second edge from a symbol
+// that never made the call: `B.run`'s `v |> helper` appeared as both `run -> helper` and
+// `B -> helper`. Impact on `helper` then named a module that does not call it.
+//
+// The real edge is asserted alongside because the fix withdraws candidates, and a
+// withdrawal that also drops the true edge has traded one wrong answer for another.
+func TestFSharpModuleDoesNotClaimItsMembersCalls(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	for name, content := range map[string]string{
+		"a.fs": "module A\nlet helper x = x + 1\n",
+		"b.fs": "module B\nlet run v =\n    v |> helper\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+
+	pipeline := 0
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "CALLS" {
+			continue
+		}
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if from.Language == "F#" && from.Kind == "module" {
+			t.Errorf("module %s credited with calling %s; the call belongs to the binding that wrote it", from.Name, to.Name)
+		}
+		if from.Name == "run" && to.Name == "helper" {
+			pipeline++
+		}
+	}
+	if pipeline != 1 {
+		t.Fatalf("the real pipeline edge run -> helper was withdrawn too (found %d)", pipeline)
+	}
+}

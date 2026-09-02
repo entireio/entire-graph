@@ -1935,7 +1935,33 @@ func recordFSharpCallQualifier(qualifiers map[string]string, declared map[string
 // fsharpQualifiedScope drops the symbols of this file that the qualifier rules
 // out. Symbols from other files are untouched: the qualifier is only known to
 // name a module here, so it cannot speak for anywhere else.
-func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier string, pathBySymbolID map[string]string) []SymbolRecord {
+func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier, callerPath string, pathBySymbolID map[string]string) []SymbolRecord {
+	// A relative qualifier is read from the caller outwards, so resolve it
+	// against the caller's own module before falling back to a suffix. With both
+	// `ScriptGeneration` and `LoadingScripts.ScriptGeneration` declaring `f`, a
+	// plain suffix admits BOTH and the winner then depends on caller scope and
+	// source order. From inside `LoadingScripts`, `ScriptGeneration.f` names the
+	// nested one, and that reading is exact rather than ambiguous. A file-level
+	// caller has no enclosing module and passes "", keeping the old behaviour.
+	if callerPath != "" {
+		exact := callerPath + "." + qualifier
+		nearest := make([]SymbolRecord, 0, len(symbols))
+		for _, symbol := range symbols {
+			if symbol.FilePath == filePath && pathBySymbolID[symbol.ID] == exact {
+				nearest = append(nearest, symbol)
+			}
+		}
+		if len(nearest) > 0 {
+			// Other files stay untouched: the qualifier is only known to name
+			// a module HERE, so it cannot speak for anywhere else.
+			for _, symbol := range symbols {
+				if symbol.FilePath != filePath {
+					nearest = append(nearest, symbol)
+				}
+			}
+			return nearest
+		}
+	}
 	out := make([]SymbolRecord, 0, len(symbols))
 	for _, symbol := range symbols {
 		if symbol.FilePath != filePath || fsharpQualifierMatchesModulePath(pathBySymbolID[symbol.ID], qualifier) {
@@ -1943,6 +1969,18 @@ func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier string, pa
 		}
 	}
 	return out
+}
+
+// fsharpModuleEmitsNameCalls reports whether a symbol's own block is a place F#
+// call names may be attributed to it.
+//
+// An F# `module` block spans every binding declared under it, so a scan of the
+// module's own text sees the pipelines and calls written inside its FUNCTIONS.
+// Those calls belong to the functions, which emit them already; crediting the
+// module too produced a second edge from a symbol that never made the call --
+// `B.run |> helper` appeared as both `run -> helper` and `B -> helper`.
+func fsharpModuleEmitsNameCalls(from SymbolRecord) bool {
+	return !(from.Language == "F#" && from.Kind == "module")
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
@@ -3443,6 +3481,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
+					if !fsharpModuleEmitsNameCalls(from) {
+						continue
+					}
 					// A container's block spans its members' definition lines, which
 					// look like calls (e.g. `def validate(self):`). Skip the names of
 					// direct children so a class is not credited with calling its own
@@ -3464,8 +3505,8 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						})
 					} else if qualifier := fsharpCallQualifiers[name]; qualifier != "" {
 						targets = resolveCallTargets(name, from,
-							fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, fsharpModulePathBySymbolID),
-							fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, fsharpModulePathBySymbolID),
+							fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID),
+							fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID),
 							callImportsByName, false)
 					} else {
 						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
@@ -3883,8 +3924,8 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else if qualifier := topLevelFSharpQualifiers[name]; qualifier != "" {
 						targets = resolveCallTargets(name, fileSource,
-							fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, fsharpModulePathBySymbolID),
-							fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, fsharpModulePathBySymbolID),
+							fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, "", fsharpModulePathBySymbolID),
+							fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, "", fsharpModulePathBySymbolID),
 							importsByName, false)
 					} else {
 						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false)
