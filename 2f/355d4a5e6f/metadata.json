@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "2f355d4a5e6f",
+  "strategy": "manual-commit",
+  "branch": "ci/windows-investigation-a4-test-binary-split",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/ci/windows-investigations/04-test-binary-split.md",
+    "results/windows-ci/a4/.gitignore",
+    "results/windows-ci/a4/README.md",
+    "results/windows-ci/a4/azure-cost.json",
+    "results/windows-ci/a4/checksums.txt",
+    "results/windows-ci/a4/coverage-equivalence.json",
+    "results/windows-ci/a4/environment-summary.json",
+    "results/windows-ci/a4/failures.json",
+    "results/windows-ci/a4/metrics.json",
+    "results/windows-ci/a4/source-integrity.json",
+    "tools/ci-bench/a4/bootstrap.ps1",
+    "tools/ci-bench/a4/invoke-blob-driver.ps1",
+    "tools/ci-bench/a4/run-experiment.ps1",
+    "tools/ci-bench/a4/verify-test-events.py",
+    "tools/ci-bench/generate-test-overlays.py",
+    "tools/ci-bench/go-test-file-inventory.go",
+    "tools/ci-bench/tests/test_generate_test_overlays.py",
+    "tools/ci-bench/tests/test_verify_a4_test_events.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/2f/355d4a5e6f/0/metadata.json",
+      "transcript": "/2f/355d4a5e6f/0/full.jsonl",
+      "compact_transcript": "/2f/355d4a5e6f/0/transcript.jsonl",
+      "content_hash": "/2f/355d4a5e6f/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1187190,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 105536000,
+    "output_tokens": 158956,
+    "api_call_count": 862
+  }
+}

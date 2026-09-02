@@ -1,0 +1,52 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "2f355d4a5e6f",
+  "session_id": "01a06215-a1da-7140-a721-eafd792ce9ae",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-02T19:01:10.940993Z",
+  "branch": "ci/windows-investigation-a4-test-binary-split",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "docs/ci/windows-investigations/04-test-binary-split.md",
+    "results/windows-ci/a4/.gitignore",
+    "results/windows-ci/a4/README.md",
+    "results/windows-ci/a4/azure-cost.json",
+    "results/windows-ci/a4/checksums.txt",
+    "results/windows-ci/a4/coverage-equivalence.json",
+    "results/windows-ci/a4/environment-summary.json",
+    "results/windows-ci/a4/failures.json",
+    "results/windows-ci/a4/metrics.json",
+    "results/windows-ci/a4/source-integrity.json",
+    "tools/ci-bench/a4/bootstrap.ps1",
+    "tools/ci-bench/a4/invoke-blob-driver.ps1",
+    "tools/ci-bench/a4/run-experiment.ps1",
+    "tools/ci-bench/a4/verify-test-events.py",
+    "tools/ci-bench/generate-test-overlays.py",
+    "tools/ci-bench/go-test-file-inventory.go",
+    "tools/ci-bench/tests/test_generate_test_overlays.py",
+    "tools/ci-bench/tests/test_verify_a4_test_events.py"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 1187190,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 105536000,
+    "output_tokens": 158956,
+    "api_call_count": 862
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-02T19:01:10.542121Z",
+    "agent_lines": 2979,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 2979,
+    "total_lines_changed": 2979,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
