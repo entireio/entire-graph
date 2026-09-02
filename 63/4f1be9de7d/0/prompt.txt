@@ -1,0 +1,13 @@
+Pull main. Check all open PRs and their respective Entire trails. Decide which to merge next.
+
+---
+
+Sort your table by suggested merge timing
+
+---
+
+Walk me through the first four, fix or dismiss open findings, review if the fixes create new findings, ask me for needed decisions. When done with the PR/trail, ask for my approval and then merge.
+
+---
+
+Strict refusal
