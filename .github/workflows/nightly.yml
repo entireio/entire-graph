@@ -1,0 +1,51 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nightly-tag:
+    name: tag and release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create nightly tag
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG=$(scripts/create-nightly-tag.sh) && EXIT=0 || EXIT=$?
+          if [ "$EXIT" -eq 2 ]; then
+            echo "Skipping — HEAD already has a nightly tag."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [ "$EXIT" -ne 0 ] || [ -z "$TAG" ]; then
+            echo "::error::Failed to generate nightly tag"
+            exit 1
+          fi
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # A tag pushed with GITHUB_TOKEN does not trigger `on: push: tags`, so
+      # dispatch the release explicitly. Dispatching with --ref <tag> sets
+      # github.ref to refs/tags/<tag>, which is what release.yml's publish job
+      # requires.
+      - name: Build and publish the release for that tag
+        if: steps.tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"

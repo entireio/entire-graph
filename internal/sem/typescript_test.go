@@ -1298,8 +1298,10 @@ func TestStreamSnapshotDedupesSameCodeFailuresAcrossPhases(t *testing.T) {
 	// a real both-phase timeout cannot be forced end-to-end in a unit test.
 	// Pin the cross-phase dedup at the exact merge seam StreamSnapshot uses:
 	// the records the two phases produce for one file (entity-phase timeout,
-	// then jsScanPartialFailure for the same file) must collapse to one, with
-	// the entity-phase record winning, while distinct codes both survive.
+	// then jsScanPartialFailure for the same file) must collapse to one record
+	// with the entity phase's identity — while that record still carries BOTH
+	// phases' effect text, because a blown budget loses symbol parsing in one
+	// phase and call classification in the other. Distinct codes both survive.
 	entity := PartialFailure{
 		Code:                 "E_PARSE_TIMEOUT",
 		Severity:             "warning",
@@ -1314,8 +1316,13 @@ func TestStreamSnapshotDedupesSameCodeFailuresAcrossPhases(t *testing.T) {
 	if len(merged) != 1 {
 		t.Fatalf("same code+file failure reported by both phases must dedupe to one record: %#v", merged)
 	}
-	if merged[0].EffectOnCompleteness != entity.EffectOnCompleteness {
-		t.Fatalf("dedup must keep the entity-phase record: %#v", merged[0])
+	if merged[0].Code != entity.Code || merged[0].FilePath != entity.FilePath || merged[0].Severity != entity.Severity {
+		t.Fatalf("dedup must keep the entity-phase record's identity: %#v", merged[0])
+	}
+	for _, want := range []string{entity.EffectOnCompleteness, relation.EffectOnCompleteness} {
+		if !strings.Contains(merged[0].EffectOnCompleteness, want) {
+			t.Fatalf("merged effect %q must still carry %q", merged[0].EffectOnCompleteness, want)
+		}
 	}
 	distinct := mergePartialFailures([]PartialFailure{{Code: "E_PARSE_ERROR", FilePath: "src/big.ts"}}, []PartialFailure{relation})
 	if len(distinct) != 2 {

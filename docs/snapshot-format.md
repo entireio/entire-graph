@@ -55,6 +55,37 @@ is emitted before that so consumers can begin work immediately. The profile
 metadata is **header-only**: it is known up front and is therefore not
 repeated in the summary.
 
+**`repo_key` is the symbol-ID namespace, not a repository identity.** Remote
+URLs are checked in the provider's established compatibility order: the last
+configured `remote.origin.url` is checked first, then every non-origin remote
+URL in Git config order. The first URL in that order matching a supported
+github.com form yields `gh/<owner>/<name>`. A repository with no such URL — no
+remote, gitlab, bitbucket, self-hosted — instead yields `local/<basename>`,
+which is **not** globally unique. Two unrelated repositories whose directories
+are both named `tools` publish the same `local/tools` in their headers and in
+every symbol ID. A consumer must therefore use `repo_key` as a necessary and
+not a sufficient identity test: a mismatch proves a foreign snapshot, a match
+does not prove a native one. Pair it with `repo_root`, `commit` and `tree` — or
+with the consumer's own storage key — for identity. `graph doctor --json`
+advertises the same `repo_key` and `repo_root` before a snapshot is built, so
+the pair can be checked up front.
+
+**Symbol ID fields are not escaped, so an ID must never be split positionally.**
+An ID is `<repo_key>:<language>:<file_path>:<kind>:<qualified_name>` joined with
+`:`, and nothing escapes the fields. Two of them can carry a `:` of their own: a
+`local/<basename>` key inherits whatever the directory is called, and a file path
+may contain one on any POSIX filesystem. `local/weird:name:Python:od:d/mod.py:class:Cache`
+is a well-formed ID that splits into seven fields, not five. The trailing fields
+already do this routinely — `external:import:std::collections::HashMap`. A
+consumer that reads `split(id, ":")[2]` as the path therefore mis-attributes
+every record in such a repository, silently and without an error.
+
+The four safe reads, all of which entire-graph uses internally and pins in its
+own tests: compare a whole ID; anchor on the LAST separator for a trailing
+segment; cut at the FIRST separator only inside the `external:<kind>:<value>`
+namespace, whose kind cannot contain a `:`; and take a file path from the
+record's own `file_path` field rather than from the ID.
+
 **The final `summary` record is authoritative for aggregate metadata.** It
 carries the real `languages`, `language_tiers` (each present language
 classified `semantic` or `inventory-only`), `warnings`, `partial_failures`,
@@ -90,18 +121,30 @@ with a separate cache mode, `snapshot:compact-ndjson-v1`; it is rejected for
 first line is `["h", 1, header]`, and the version appears nowhere else.
 Deterministic first-seen dictionary lines `d` precede positional `f` (file),
 `x` (external), `s` (symbol), and `r` (relation) rows; a trailing `m` summary
-is mandatory. Consumers must reject unknown versions, malformed row arity,
-non-first or duplicate headers, and missing summaries.
+is mandatory. A v1 relation row has the original 11 fields, plus an optional
+twelfth `evidence_dropped` integer when the value is nonzero. For artifacts that
+declare the current or an older supported schema minor, consumers accept either
+relation arity and reject every other one. For a newer minor in the supported
+major, consumers warn, decode each known data row's required positional prefix,
+ignore trailing additive fields, and skip unknown public data tags. The outer
+`h`, `d`, and `m` arities remain exact because they are compact-envelope control
+structure governed by the compact format version, not the record schema.
+Consumers must also reject unknown format or schema-major versions, malformed
+known field values, missing required fields, non-first or duplicate headers,
+and missing summaries.
 
 All `h`, `d`, data, and `m` bytes count as raw compact artifact bytes;
 dictionary overhead must never be subtracted. Compact output is loaded only
 through the production compact loader and queried with
 `snapshot-query --input <file> --symbol <id-or-name> [--from <stable-id>
 --relation <TYPE>] --format ndjson`, which writes deterministically ordered
-native symbol/relation records. Its decoded public projection and canonical
-semantic SHA-256 (normalized native records in record order) must equal the
-normal NDJSON snapshot. Matching only the hash is not sufficient evidence of
-losslessness.
+native symbol/relation records. For an artifact produced by the same build, its
+decoded public projection and canonical semantic SHA-256 (normalized native
+records in record order) must equal the normal NDJSON snapshot; the lossless
+preflight enforces both. A newer-minor reader instead hashes its known
+projection and carries `W_NEWER_SCHEMA_MINOR`, because intentionally skipped
+additive facts cannot equal the newer producer's full projection. Matching only
+the hash is not sufficient evidence of losslessness.
 
 ## Experimental SCIP snapshot protobuf
 
