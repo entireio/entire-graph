@@ -87,6 +87,24 @@ function Protect-Text {
     )
 }
 
+function Get-OptionalPropertyValue {
+    param(
+        [AllowNull()][object] $InputObject,
+
+        [Parameter(Mandatory)]
+        [string] $Name
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
+
 function Invoke-NativeCapture {
     param(
         [Parameter(Mandatory)]
@@ -286,6 +304,7 @@ try {
         }
     )
 
+    $azureCompute = $null
     $azureMetadata = Invoke-SafeCapture -Section 'Azure instance metadata' -Operation {
         $imdsArguments = @{
             Headers = @{ Metadata = 'true' }
@@ -296,22 +315,32 @@ try {
         Invoke-RestMethod @imdsArguments
     }
     if ($null -ne $azureMetadata) {
+        $azureCompute = Get-OptionalPropertyValue -InputObject $azureMetadata -Name 'compute'
+        $azureNetwork = @(
+            Invoke-SafeCapture -Section 'Azure instance network metadata' -Operation {
+                $networkMetadata = Get-OptionalPropertyValue -InputObject $azureMetadata -Name 'network'
+                $interfaces = Get-OptionalPropertyValue -InputObject $networkMetadata -Name 'interface'
+                @($interfaces) | ForEach-Object {
+                    $ipv4 = Get-OptionalPropertyValue -InputObject $_ -Name 'ipv4'
+                    $ipv6 = Get-OptionalPropertyValue -InputObject $_ -Name 'ipv6'
+                    $ipv4Subnets = Get-OptionalPropertyValue -InputObject $ipv4 -Name 'subnet'
+                    $ipv6Subnets = Get-OptionalPropertyValue -InputObject $ipv6 -Name 'subnet'
+                    [ordered]@{
+                        macAddress = Get-OptionalPropertyValue -InputObject $_ -Name 'macAddress'
+                        ipv4Subnet = @($ipv4Subnets | Select-Object address, prefix)
+                        ipv6Subnet = @($ipv6Subnets | Select-Object address, prefix)
+                    }
+                }
+            }
+        )
         $payload.azure = [ordered]@{
             # Keep the benchmark-relevant image and machine facts without
             # persisting subscription, tenant, resource IDs, or VM IDs in
             # result artifacts that may later be committed to the repository.
-            compute = $azureMetadata.compute |
+            compute = $azureCompute |
                 Select-Object name, location, vmSize, osType, publisher, offer,
                     sku, version, platformFaultDomain, platformSubFaultDomain
-            network = @(
-                $azureMetadata.network.interface | ForEach-Object {
-                    [ordered]@{
-                        macAddress = $_.macAddress
-                        ipv4Subnet = @($_.ipv4.subnet | Select-Object address, prefix)
-                        ipv6Subnet = @($_.ipv6.subnet | Select-Object address, prefix)
-                    }
-                }
-            )
+            network = $azureNetwork
         }
     }
 
@@ -323,7 +352,7 @@ try {
         githubActions = $env:GITHUB_ACTIONS
         imageOS = $env:ImageOS
         imageVersion = $env:ImageVersion
-        azureVmSize = if ($null -ne $azureMetadata) { $azureMetadata.compute.vmSize } else { $null }
+        azureVmSize = Get-OptionalPropertyValue -InputObject $azureCompute -Name 'vmSize'
     }
 
     $goVersion = Invoke-NativeCapture -Section 'go version' -Command 'go' -Arguments @('version')
