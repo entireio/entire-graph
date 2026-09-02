@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "ebf086871d44",
+  "strategy": "manual-commit",
+  "branch": "ci/windows-investigation-coordinator",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tools/ci-bench/create-azure-vm.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/eb/f086871d44/0/metadata.json",
+      "transcript": "/eb/f086871d44/0/full.jsonl",
+      "compact_transcript": "/eb/f086871d44/0/transcript.jsonl",
+      "content_hash": "/eb/f086871d44/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 36229,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4566272,
+    "output_tokens": 9709,
+    "api_call_count": 39
+  }
+}
