@@ -2,6 +2,8 @@ package sem
 
 import (
 	"bytes"
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -25,14 +27,26 @@ func encodeSCIP(t *testing.T, records ...any) (*scippb.Index, SCIPOmissionNote) 
 	return index, encoder.OmissionNote()
 }
 
+func requireSCIPRelationAccounting(t *testing.T, note SCIPOmissionNote, missingSource, missingTarget, missingEvidence int, unsupported map[string]int) {
+	t.Helper()
+	if note.MissingSourceRelations != missingSource || note.MissingTargetRelations != missingTarget || note.MissingEvidenceRelations != missingEvidence {
+		t.Fatalf("relation omissions source=%d target=%d evidence=%d, want %d/%d/%d: %#v",
+			note.MissingSourceRelations, note.MissingTargetRelations, note.MissingEvidenceRelations,
+			missingSource, missingTarget, missingEvidence, note)
+	}
+	if !reflect.DeepEqual(note.UnsupportedRelationCounts, unsupported) {
+		t.Fatalf("unsupported relations = %#v, want %#v", note.UnsupportedRelationCounts, unsupported)
+	}
+}
+
 // TestSCIPCountsUnrepresentedContainment covers memberships SCIP cannot carry.
 //
-// DEFINES and CONTAINS are normally redundant, because symbol metadata already
-// expresses the membership through EnclosingSymbol. That holds only when the
-// relation agrees with ContainerID. An extension member -- a method attached to
-// a receiver declared elsewhere -- produces a CONTAINS whose parent is NOT the
-// symbol's container, and that membership survives in no other field. Skipping
-// it silently let the note report a completeness the protobuf did not have.
+// CONTAINS is normally redundant because symbol metadata expresses the
+// membership through EnclosingSymbol. That holds only when the relation agrees
+// with ContainerID. An extension member -- a method attached to a receiver
+// declared elsewhere -- produces a CONTAINS whose parent is NOT the symbol's
+// container, and that membership survives in no other field. Skipping it
+// silently let the note report a completeness the protobuf did not have.
 func TestSCIPCountsUnrepresentedContainment(t *testing.T) {
 	base := []any{
 		SnapshotHeader{RepoKey: "local/demo", Commit: "abc"},
@@ -42,22 +56,41 @@ func TestSCIPCountsUnrepresentedContainment(t *testing.T) {
 		SymbolRecord{ID: "member", Kind: "method", Name: "Member", FilePath: "a.go", ContainerID: "owner", StartLine: 7, EndLine: 8},
 	}
 
-	// Agrees with ContainerID: EnclosingSymbol already carries it, so it is
-	// genuinely redundant and must not be counted.
-	_, note := encodeSCIP(t, append(append([]any{}, base...),
-		RelationRecord{Type: "CONTAINS", FromID: "owner", ToID: "member"},
-		SnapshotSummary{})...)
-	if got := note.UnsupportedRelationCounts["CONTAINS"]; got != 0 {
-		t.Errorf("redundant CONTAINS counted %d times, want 0", got)
-	}
-
-	// Disagrees with ContainerID: nothing else expresses it, so dropping it
-	// silently would overstate what the index contains.
-	_, note = encodeSCIP(t, append(append([]any{}, base...),
-		RelationRecord{Type: "CONTAINS", FromID: "elsewhere", ToID: "member"},
-		SnapshotSummary{})...)
-	if got := note.UnsupportedRelationCounts["CONTAINS"]; got != 1 {
-		t.Errorf("unrepresented CONTAINS counted %d times, want 1", got)
+	for _, test := range []struct {
+		name          string
+		relation      RelationRecord
+		missingSource int
+		missingTarget int
+		unsupported   map[string]int
+	}{
+		{
+			name:        "matching parent is redundant",
+			relation:    RelationRecord{Type: "CONTAINS", FromID: "owner", ToID: "member"},
+			unsupported: map[string]int{},
+		},
+		{
+			name:        "different existing parent is unsupported",
+			relation:    RelationRecord{Type: "CONTAINS", FromID: "elsewhere", ToID: "member"},
+			unsupported: map[string]int{"CONTAINS": 1},
+		},
+		{
+			name:          "missing parent is a missing source",
+			relation:      RelationRecord{Type: "CONTAINS", FromID: "missing", ToID: "member"},
+			missingSource: 1,
+			unsupported:   map[string]int{},
+		},
+		{
+			name:          "missing child is a missing target",
+			relation:      RelationRecord{Type: "CONTAINS", FromID: "owner", ToID: "missing"},
+			missingTarget: 1,
+			unsupported:   map[string]int{},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			records := append(append([]any{}, base...), test.relation, SnapshotSummary{})
+			_, note := encodeSCIP(t, records...)
+			requireSCIPRelationAccounting(t, note, test.missingSource, test.missingTarget, 0, test.unsupported)
+		})
 	}
 }
 
@@ -70,27 +103,39 @@ func TestSCIPCountsUnrepresentedContainment(t *testing.T) {
 // on a base type report every subtype's definition as a reference to it.
 func TestSCIPIsReferenceOnlyForMemberRelationships(t *testing.T) {
 	for _, test := range []struct {
-		name         string
-		kind         string
-		relation     string
-		wantIsRefSet bool
+		name           string
+		sourceKind     string
+		targetKind     string
+		targetExternal bool
+		relation       string
+		wantIsRefSet   bool
 	}{
-		{"type implements", "struct", "IMPLEMENTS", false},
-		{"type extends", "class", "EXTENDS", false},
-		{"type inherits", "interface", "INHERITS", false},
-		{"method overrides", "method", "OVERRIDES", true},
-		{"function implements", "function", "IMPLEMENTS", true},
+		{name: "type implements type", sourceKind: "struct", targetKind: "interface", relation: "IMPLEMENTS"},
+		{name: "type extends type", sourceKind: "class", targetKind: "class", relation: "EXTENDS"},
+		{name: "type inherits type", sourceKind: "interface", targetKind: "interface", relation: "INHERITS"},
+		{name: "method overrides method", sourceKind: "method", targetKind: "method", relation: "OVERRIDES", wantIsRefSet: true},
+		{name: "function implements function", sourceKind: "function", targetKind: "function", relation: "IMPLEMENTS", wantIsRefSet: true},
+		{name: "method to type", sourceKind: "method", targetKind: "interface", relation: "OVERRIDES"},
+		{name: "method to unknown kind", sourceKind: "method", targetKind: "unknown", relation: "OVERRIDES"},
+		{name: "method to external method", sourceKind: "method", targetKind: "method", targetExternal: true, relation: "OVERRIDES", wantIsRefSet: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			index, _ := encodeSCIP(t,
+			records := []any{
 				SnapshotHeader{RepoKey: "local/demo", Commit: "abc"},
 				FileRecord{Path: "a.go", Language: "Go"},
-				SymbolRecord{ID: "target", Kind: "interface", Name: "Target", FilePath: "a.go", StartLine: 1, EndLine: 2},
-				SymbolRecord{ID: "src", Kind: test.kind, Name: "Source", FilePath: "a.go", StartLine: 4, EndLine: 5},
+			}
+			if test.targetExternal {
+				records = append(records, ExternalRecord{ID: "target", Kind: test.targetKind, Value: "Target", External: true})
+			} else {
+				records = append(records, SymbolRecord{ID: "target", Kind: test.targetKind, Name: "Target", FilePath: "a.go", StartLine: 1, EndLine: 2})
+			}
+			records = append(records,
+				SymbolRecord{ID: "src", Kind: test.sourceKind, Name: "Source", FilePath: "a.go", StartLine: 4, EndLine: 5},
 				RelationRecord{Type: test.relation, FromID: "src", ToID: "target",
 					Evidence: []Evidence{{FilePath: "a.go", StartLine: 4, EndLine: 4}}},
 				SnapshotSummary{},
 			)
+			index, _ := encodeSCIP(t, records...)
 			var found *scippb.Relationship
 			for _, doc := range index.GetDocuments() {
 				for _, info := range doc.GetSymbols() {
@@ -114,21 +159,113 @@ func TestSCIPIsReferenceOnlyForMemberRelationships(t *testing.T) {
 	}
 }
 
-// TestSCIPDoesNotCountDefines guards the over-count this fix nearly shipped.
+func TestSCIPCountsMissingImplementationSource(t *testing.T) {
+	index, note := encodeSCIP(t,
+		SnapshotHeader{RepoKey: "local/demo", Commit: "abc"},
+		FileRecord{Path: "a.go", Language: "Go"},
+		SymbolRecord{ID: "target", Kind: "method", Name: "Target", FilePath: "a.go", StartLine: 1, EndLine: 2},
+		RelationRecord{Type: "OVERRIDES", FromID: "missing", ToID: "target",
+			Evidence: []Evidence{{FilePath: "a.go", StartLine: 4, EndLine: 4}}},
+		SnapshotSummary{},
+	)
+	requireSCIPRelationAccounting(t, note, 1, 0, 0, map[string]int{})
+	if note.EmittedImplementations != 0 || note.EmittedReferences != 1 {
+		t.Fatalf("emitted implementations/references = %d/%d, want 0/1: %#v", note.EmittedImplementations, note.EmittedReferences, note)
+	}
+	for _, doc := range index.GetDocuments() {
+		for _, info := range doc.GetSymbols() {
+			if len(info.GetRelationships()) != 0 {
+				t.Fatalf("relationship emitted without a local source: %#v", info.GetRelationships())
+			}
+		}
+	}
+}
+
+func TestSCIPMissingSourceAccountingIsOptionalAndReset(t *testing.T) {
+	encoded, err := json.Marshal(SCIPOmissionNote{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("missing_source_relations")) {
+		t.Fatalf("zero omission note carries optional missing-source field: %s", encoded)
+	}
+
+	encoder := NewSCIPSnapshotEncoder(&bytes.Buffer{}, "1.0.0")
+	for _, record := range []any{
+		SnapshotHeader{RepoKey: "local/demo", Commit: "abc"},
+		FileRecord{Path: "a.go", Language: "Go"},
+		SymbolRecord{ID: "target", Kind: "method", Name: "Target", FilePath: "a.go", StartLine: 1, EndLine: 2},
+		RelationRecord{Type: "OVERRIDES", FromID: "missing", ToID: "target",
+			Evidence: []Evidence{{FilePath: "a.go", StartLine: 4, EndLine: 4}}},
+	} {
+		if err := encoder.Encode(record); err != nil {
+			t.Fatalf("Encode(%T): %v", record, err)
+		}
+	}
+	if _, err := encoder.marshalIndex(); err != nil {
+		t.Fatal(err)
+	}
+	if got := encoder.OmissionNote().MissingSourceRelations; got != 1 {
+		t.Fatalf("first marshal missing_source_relations = %d, want 1", got)
+	}
+	encoder.relations = nil
+	if _, err := encoder.marshalIndex(); err != nil {
+		t.Fatal(err)
+	}
+	if got := encoder.OmissionNote().MissingSourceRelations; got != 0 {
+		t.Fatalf("second marshal retained missing_source_relations = %d, want 0", got)
+	}
+}
+
+// TestSCIPDoesNotCountDefines guards both the native redundant form and
+// malformed structural sources that the definition occurrence cannot prove.
 //
 // DEFINES is always represented -- the definition occurrence and the symbol
-// record carry it -- but a file DEFINES a symbol whose ContainerID is not the
-// file, so a containment check written for CONTAINS also fires for every
-// DEFINES. On this repository that reported 9,877 of them as lost.
+// record carry it -- only when the relation starts at the native file id for
+// that symbol's non-empty FilePath.
 func TestSCIPDoesNotCountDefines(t *testing.T) {
-	_, note := encodeSCIP(t,
+	base := []any{
 		SnapshotHeader{RepoKey: "local/demo", Commit: "abc"},
 		FileRecord{Path: "a.go", Language: "Go"},
 		SymbolRecord{ID: "sym", Kind: "function", Name: "Fn", FilePath: "a.go", StartLine: 1, EndLine: 2},
-		RelationRecord{Type: "DEFINES", FromID: "file:a.go", ToID: "sym"},
-		SnapshotSummary{},
-	)
-	if got := note.UnsupportedRelationCounts["DEFINES"]; got != 0 {
-		t.Fatalf("DEFINES counted %d times, want 0 -- it is represented by the definition occurrence", got)
 	}
+	for _, test := range []struct {
+		name          string
+		relation      RelationRecord
+		missingTarget int
+		unsupported   map[string]int
+	}{
+		{
+			name:        "native file source is redundant",
+			relation:    RelationRecord{Type: "DEFINES", FromID: fileID("local/demo", "a.go"), ToID: "sym"},
+			unsupported: map[string]int{},
+		},
+		{
+			name:        "mismatched file source is unsupported",
+			relation:    RelationRecord{Type: "DEFINES", FromID: fileID("local/demo", "other.go"), ToID: "sym"},
+			unsupported: map[string]int{"DEFINES": 1},
+		},
+		{
+			name:          "missing child is a missing target",
+			relation:      RelationRecord{Type: "DEFINES", FromID: fileID("local/demo", "a.go"), ToID: "missing"},
+			missingTarget: 1,
+			unsupported:   map[string]int{},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			records := append(append([]any{}, base...), test.relation, SnapshotSummary{})
+			_, note := encodeSCIP(t, records...)
+			requireSCIPRelationAccounting(t, note, 0, test.missingTarget, 0, test.unsupported)
+		})
+	}
+
+	t.Run("empty child path is unsupported", func(t *testing.T) {
+		_, note := encodeSCIP(t,
+			SnapshotHeader{RepoKey: "local/demo", Commit: "abc"},
+			SymbolRecord{ID: "sym", Kind: "function", Name: "Fn", StartLine: 1, EndLine: 2},
+			RelationRecord{Type: "DEFINES", FromID: fileID("local/demo", ""), ToID: "sym"},
+			SnapshotSummary{},
+		)
+		requireSCIPRelationAccounting(t, note, 0, 0, 0, map[string]int{"DEFINES": 1})
+	})
 }

@@ -94,6 +94,9 @@ func TestScipProjectVersionReadsRootManifests(t *testing.T) {
 		{"cargo workspace inheritance, inline table", map[string]string{
 			"Cargo.toml": "[workspace.package]\nversion = \"4.4.4\"\n\n[package]\nname = \"demo\"\nversion = { workspace = true }\n",
 		}, "4.4.4"},
+		{"cargo virtual workspace version is unknown", map[string]string{
+			"Cargo.toml": "[workspace]\nmembers = [\"member\"]\n\n[workspace.package]\nversion = \"5.5.5\"\n",
+		}, ""},
 		{"literal package version still wins over workspace", map[string]string{
 			"Cargo.toml": "[workspace.package]\nversion = \"3.3.3\"\n\n[package]\nversion = \"1.1.1\"\n",
 		}, "1.1.1"},
@@ -477,13 +480,9 @@ func TestSCIPLocalSymbolsAreInjectivePerDocument(t *testing.T) {
 // TestCargoWorkspaceInheritanceSurvivesATrailingComment pins the comment strip on the
 // inheritance check. A '#' opens a comment anywhere TOML allows a value, and the raw
 // value used to carry it: `version.workspace = true # inherit` compared "true # inherit"
-// against "true", read as "does not inherit", and fell back to the unknown version. Every
-// crate in a commented workspace then shared one SCIP package identity -- the identity
-// collapse parseCargoPackageVersion exists to prevent -- while parsing cleanly and
-// reporting no error.
-//
-// The quoted case is here because the strip must not run inside a string: a version may
-// legitimately contain a hash, and truncating it would corrupt the identity it sets.
+// against "true", read as "does not inherit", and fell back to the unknown version. A
+// root package using commented inheritance then shared the unknown SCIP package identity
+// while parsing cleanly and reporting no error.
 func TestCargoWorkspaceInheritanceSurvivesATrailingComment(t *testing.T) {
 	t.Parallel()
 
@@ -510,11 +509,6 @@ func TestCargoWorkspaceInheritanceSurvivesATrailingComment(t *testing.T) {
 			want:    "4.2.0",
 		},
 		{
-			name:    "a literal version keeps a hash inside its quotes",
-			content: "[package]\nversion = \"1.0#rc1\"\n",
-			want:    "1.0#rc1",
-		},
-		{
 			name:    "a commented-out inheritance is not inheritance",
 			content: workspace + "[package]\n# version.workspace = true\n",
 			want:    "",
@@ -524,6 +518,499 @@ func TestCargoWorkspaceInheritanceSurvivesATrailingComment(t *testing.T) {
 			t.Parallel()
 			if got := parseCargoPackageVersion(testCase.content); got != testCase.want {
 				t.Fatalf("parseCargoPackageVersion() = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestTOMLParserKeepsAHashInsideQuotes(t *testing.T) {
+	t.Parallel()
+
+	const content = "[package]\nmetadata = \"release#candidate\" # local annotation\n"
+	document, ok := parseTOMLDocument(content)
+	if !ok {
+		t.Fatal("parseTOMLDocument() rejected valid TOML")
+	}
+	section, ok := tomlTable(document, "package")
+	if !ok {
+		t.Fatal("package table missing")
+	}
+	if got, want := section["metadata"], any("release#candidate"); got != want {
+		t.Fatalf("metadata = %#v, want %#v", got, want)
+	}
+}
+
+func TestCargoWorkspaceInheritanceSyntaxIsConservative(t *testing.T) {
+	t.Parallel()
+
+	const workspace = "[workspace.package]\nversion = \"4.2.0\"\n"
+
+	for _, testCase := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "valid dotted form",
+			content: workspace + "[package]\nversion.workspace = true\n",
+			want:    "4.2.0",
+		},
+		{
+			name:    "valid dotted form with trailing comment",
+			content: workspace + "[package]\nversion.workspace = true # inherit\n",
+			want:    "4.2.0",
+		},
+		{
+			name:    "valid inline form",
+			content: workspace + "[package]\nversion = { workspace = true }\n",
+			want:    "4.2.0",
+		},
+		{
+			name:    "missing inline close",
+			content: workspace + "[package]\nversion = { workspace = true\n",
+			want:    "",
+		},
+		{
+			name:    "extra inline close",
+			content: workspace + "[package]\nversion = { workspace = true }}\n",
+			want:    "",
+		},
+		{
+			name:    "inline trailing junk",
+			content: workspace + "[package]\nversion = { workspace = true } junk\n",
+			want:    "",
+		},
+		{
+			name:    "inline extra field is unknown",
+			content: workspace + "[package]\nversion = { workspace = true, note = \"keep#hash\" } # not Cargo inheritance\n",
+			want:    "",
+		},
+		{
+			name:    "uppercase dotted boolean",
+			content: workspace + "[package]\nversion.workspace = TRUE\n",
+			want:    "",
+		},
+		{
+			name:    "uppercase inline boolean",
+			content: workspace + "[package]\nversion = { workspace = TRUE }\n",
+			want:    "",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseCargoPackageVersion(testCase.content); got != testCase.want {
+				t.Fatalf("parseCargoPackageVersion() = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestTOMLTableHeadersAreExactAndCommentAware(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "root package header with trailing comment",
+			content: "[package] # the root crate\nversion = \"1.2.3\"\n",
+			want:    "1.2.3",
+		},
+		{
+			name:    "both inheritance headers have trailing comments",
+			content: "[workspace.package] # shared defaults\nversion = \"4.2.0\"\n[package] # root crate\nversion.workspace = true\n",
+			want:    "4.2.0",
+		},
+		{
+			name:    "array package header is not a package table",
+			content: "[[package]]\nversion = \"9.9.9\"\n",
+			want:    "",
+		},
+		{
+			name:    "extra closing bracket is malformed",
+			content: "[package]]\nversion = \"9.9.9\"\n",
+			want:    "",
+		},
+		{
+			name:    "missing closing bracket is malformed",
+			content: "[package\nversion = \"9.9.9\"\n",
+			want:    "",
+		},
+		{
+			name:    "array workspace package cannot supply inheritance",
+			content: "[[workspace.package]]\nversion = \"9.9.9\"\n[package]\nversion.workspace = true\n",
+			want:    "",
+		},
+		{
+			name:    "malformed header terminates the preceding table",
+			content: "[package]\nname = \"demo\"\n[[bin]]\nversion = \"9.9.9\"\n",
+			want:    "",
+		},
+		{
+			name:    "unrelated array table does not invalidate a later package",
+			content: "[[bin]]\nname = \"demo-bin\"\n[package]\nversion = \"1.2.3\"\n",
+			want:    "1.2.3",
+		},
+		{
+			name:    "quoted table key is normalized",
+			content: "[\"package\"]\nversion = \"9.9.9\"\n",
+			want:    "9.9.9",
+		},
+		{
+			name:    "whitespace around a dotted table key is normalized",
+			content: "[workspace . package]\nversion = \"9.9.9\"\n[package]\nversion.workspace = true\n",
+			want:    "9.9.9",
+		},
+		{
+			name:    "quoted version key is normalized",
+			content: "[package]\n\"version\" = \"9.9.9\"\n",
+			want:    "9.9.9",
+		},
+		{
+			name:    "whitespace around a dotted inheritance key is normalized",
+			content: "[workspace.package]\nversion = \"9.9.9\"\n[package]\nversion . workspace = true\n",
+			want:    "9.9.9",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseCargoPackageVersion(testCase.content); got != testCase.want {
+				t.Fatalf("parseCargoPackageVersion() = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestTOMLTableLookupIgnoresMultilineStringContents(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name: "basic multiline string cannot declare inheritance",
+			content: `[workspace.package]
+version = "4.2.0"
+[package]
+description = """
+version.workspace = true
+"""
+`,
+			want: "",
+		},
+		{
+			name: "literal multiline string cannot declare inheritance",
+			content: `[workspace.package]
+version = "4.2.0"
+[package]
+description = '''
+version.workspace = true
+'''
+`,
+			want: "",
+		},
+		{
+			name: "fake table in multiline string is ignored before real table",
+			content: `notes = '''
+[package]
+version = "9.9.9"
+'''
+[package]
+version = "1.2.3"
+`,
+			want: "1.2.3",
+		},
+		{
+			name: "escaped basic triple quote does not close the string",
+			content: `[workspace.package]
+version = "4.2.0"
+[package]
+description = """
+\""" does not close this string
+version.workspace = true
+"""
+`,
+			want: "",
+		},
+		{
+			name: "four basic quotes close after a quoted character",
+			content: `[workspace.package]
+version = "4.2.0"
+[package]
+description = """"quoted
+version.workspace = true
+quoted""""
+`,
+			want: "",
+		},
+		{
+			name: "five literal quotes close after two quoted characters",
+			content: `[workspace.package]
+version = "4.2.0"
+[package]
+description = '''''quoted
+version.workspace = true
+quoted'''''
+`,
+			want: "",
+		},
+		{
+			name:    "same-line multiline value is decoded",
+			content: "[package]\nversion = \"\"\"1.2.3\"\"\"\n",
+			want:    "1.2.3",
+		},
+		{
+			name: "multiple multiline values on one line preserve state",
+			content: `notes = ["""first""", '''second
+[package]
+version = "9.9.9"
+''']
+[package]
+version = "1.2.3"
+`,
+			want: "1.2.3",
+		},
+		{
+			name: "unterminated multiline invalidates an earlier version",
+			content: `[package]
+version = "1.2.3"
+notes = """
+unfinished
+`,
+			want: "",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseCargoPackageVersion(testCase.content); got != testCase.want {
+				t.Fatalf("parseCargoPackageVersion() = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestTOMLSingleLineStringParsingIsExact(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "escaped quote closes at the real delimiter",
+			content: "[package]\nversion = \"1.2.\\\"beta\"\n",
+			want:    `1.2."beta`,
+		},
+		{
+			name: "basic unicode escapes are decoded",
+			content: `[package]
+version = "\u0031.\u0032.\u0033"
+`,
+			want: "1.2.3",
+		},
+		{
+			name:    "literal backslash is preserved",
+			content: "[package]\nversion = '1.2\\beta'\n",
+			want:    `1.2\beta`,
+		},
+		{
+			name:    "trailing comment is excluded",
+			content: "[package]\nversion = \"1.2.3\" # pinned\n",
+			want:    "1.2.3",
+		},
+		{
+			name: "TOML 1.1 hex escape is decoded",
+			content: `[package]
+version = "\x31.2.3"
+`,
+			want: "1.2.3",
+		},
+		{
+			name: "unsupported escaped slash fails closed",
+			content: `[package]
+version = "1.2.3\/candidate"
+`,
+			want: "",
+		},
+		{
+			name: "surrogate unicode escape fails closed",
+			content: `[package]
+version = "\uD800"
+`,
+			want: "",
+		},
+		{
+			name:    "trailing junk after closing quote fails closed",
+			content: "[package]\nversion = \"1.2.3\" junk\n",
+			want:    "",
+		},
+		{
+			name:    "unescaped control character fails closed",
+			content: "[package]\nversion = \"1.2" + string(rune(1)) + ".3\"\n",
+			want:    "",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseCargoPackageVersion(testCase.content); got != testCase.want {
+				t.Fatalf("parseCargoPackageVersion() = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestTOMLTableLookupRejectsDuplicateDeclarations(t *testing.T) {
+	t.Parallel()
+
+	const workspace = "[workspace.package]\nversion = \"4.2.0\"\n"
+	for _, testCase := range []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "duplicate package table",
+			content: "[package]\nversion = \"1.2.3\"\n[package]\nname = \"demo\"\n",
+		},
+		{
+			name:    "duplicate version key",
+			content: "[package]\nversion = \"1.2.3\"\nversion = \"9.9.9\"\n",
+		},
+		{
+			name:    "duplicate workspace package table",
+			content: workspace + "[workspace.package]\nname = \"defaults\"\n[package]\nversion.workspace = true\n",
+		},
+		{
+			name:    "literal and dotted version declarations conflict",
+			content: workspace + "[package]\nversion = \"1.2.3\"\nversion.workspace = true\n",
+		},
+		{
+			name:    "duplicate unrelated key still makes the table invalid",
+			content: "[package]\nname = \"one\"\nname = \"two\"\nversion = \"1.2.3\"\n",
+		},
+		{
+			name:    "quoted table alias cannot hide a duplicate canonical table",
+			content: "[\"package\"]\nversion = \"9.9.9\"\n[package]\nversion = \"1.2.3\"\n",
+		},
+		{
+			name:    "array table alias cannot hide a canonical table",
+			content: "[[package]]\nversion = \"9.9.9\"\n[package]\nversion = \"1.2.3\"\n",
+		},
+		{
+			name:    "quoted key alias cannot hide a duplicate bare key",
+			content: "[package]\n\"version\" = \"9.9.9\"\nversion = \"1.2.3\"\n",
+		},
+		{
+			name:    "whitespace dotted inheritance conflicts with inline inheritance",
+			content: workspace + "[package]\nversion . workspace = true\nversion = { workspace = true }\n",
+		},
+		{
+			name:    "root dotted declaration cannot hide a table declaration",
+			content: "package.version = \"9.9.9\"\n[package]\nversion = \"1.2.3\"\n",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseCargoPackageVersion(testCase.content); got != "" {
+				t.Fatalf("parseCargoPackageVersion() = %q, want unknown", got)
+			}
+		})
+	}
+}
+
+func TestTOMLParserPreservesVersionsBesideNestedCollections(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name    string
+		content string
+		parse   func(string) string
+	}{
+		{
+			name: "Poetry source arrays of tables",
+			content: `[tool.poetry]
+version = "1.2.3"
+[[tool.poetry.source]]
+name = "one"
+url = "https://one.invalid"
+[[tool.poetry.source]]
+name = "two"
+url = "https://two.invalid"
+`,
+			parse: parsePyProjectVersion,
+		},
+		{
+			name: "PEP 621 nested multiline array",
+			content: `[project]
+matrix = [
+  [1, 2],
+  [3, 4],
+]
+version = "1.2.3"
+`,
+			parse: parsePyProjectVersion,
+		},
+		{
+			name: "Cargo metadata arrays of tables",
+			content: `[package]
+version = "1.2.3"
+[[package.metadata.release]]
+channel = "alpha"
+[[package.metadata.release]]
+channel = "stable"
+`,
+			parse: parseCargoPackageVersion,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := testCase.parse(testCase.content); got != "1.2.3" {
+				t.Fatalf("parsed version = %q, want 1.2.3", got)
+			}
+		})
+	}
+}
+
+func TestTOMLParserRejectsMalformedVersionManifests(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "scalar then package table",
+			content: "package = \"scalar\"\n[package]\nversion = \"1.2.3\"\n",
+		},
+		{
+			name:    "dotted package declaration then package table",
+			content: "package.name = \"demo\"\n[package]\nversion = \"1.2.3\"\n",
+		},
+		{
+			name:    "version scalar then version table",
+			content: "[package]\nversion = \"1.2.3\"\n[package.version]\n",
+		},
+		{
+			name:    "oversized multiline basic closing run",
+			content: "[package]\nversion = \"1.2.3\"\ndescription = \"\"\"\ntext\"\"\"\"\"\"\n",
+		},
+		{
+			name:    "oversized multiline literal closing run",
+			content: "[package]\nversion = \"1.2.3\"\ndescription = '''\ntext''''''\n",
+		},
+		{
+			name:    "non-ASCII header whitespace",
+			content: "[package]\u00a0\nversion = \"1.2.3\"\n",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseCargoPackageVersion(testCase.content); got != "" {
+				t.Fatalf("parseCargoPackageVersion() = %q, want unknown", got)
 			}
 		})
 	}

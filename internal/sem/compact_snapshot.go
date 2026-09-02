@@ -215,11 +215,14 @@ type SCIPOmissionNote struct {
 	MissingEvidenceRelations  int            `json:"missing_evidence_relations"`
 	EmittedDefinitions        int            `json:"emitted_definitions"`
 	EmittedReferences         int            `json:"emitted_references"`
-	WorktreeSnapshot          bool           `json:"worktree_snapshot,omitempty"`
-	PartialSnapshot           bool           `json:"partial_snapshot,omitempty"`
-	CompletenessLevel         string         `json:"completeness_level,omitempty"`
-	WarningCount              int            `json:"warning_count,omitempty"`
-	PartialFailureCount       int            `json:"partial_failure_count,omitempty"`
+	// MissingSourceRelations counts relations whose resolved target needs a
+	// local source symbol to carry the SCIP relationship, but has none.
+	MissingSourceRelations int    `json:"missing_source_relations,omitempty"`
+	WorktreeSnapshot       bool   `json:"worktree_snapshot,omitempty"`
+	PartialSnapshot        bool   `json:"partial_snapshot,omitempty"`
+	CompletenessLevel      string `json:"completeness_level,omitempty"`
+	WarningCount           int    `json:"warning_count,omitempty"`
+	PartialFailureCount    int    `json:"partial_failure_count,omitempty"`
 	// UnidentifiedRecords counts records the encoder could not key and
 	// therefore did not carry into the index: a file with no path, or a symbol
 	// or external endpoint with no id. Such a record is a provider bug rather
@@ -430,6 +433,7 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 	}
 	encoder.note.UnsupportedRelationCounts = map[string]int{}
 	encoder.note.MissingTargetRelations = 0
+	encoder.note.MissingSourceRelations = 0
 	encoder.note.MissingEvidenceRelations = 0
 	encoder.note.EmittedDefinitions = 0
 	encoder.note.EmittedReferences = 0
@@ -553,20 +557,38 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 	for _, relation := range encoder.relations {
 		relationType := strings.ToUpper(relation.Type)
 		if relationType == "DEFINES" || relationType == "CONTAINS" {
-			// These are normally redundant: symbol metadata already carries the
-			// membership through EnclosingSymbol. That only holds when the
-			// relation agrees with ContainerID. Extension members -- a method
-			// attached to a receiver declared elsewhere -- produce a CONTAINS
-			// whose parent is NOT the symbol's container, and that membership is
-			// in no other field, so skipping it silently made the note report a
-			// completeness the protobuf did not have.
-			// DEFINES is always represented: the definition occurrence and the
-			// symbol record carry it. Only CONTAINS can disagree, and only then
-			// is the membership genuinely absent from the protobuf.
+			// These are normally redundant: EnclosingSymbol carries CONTAINS,
+			// while a symbol's document and definition occurrence carry DEFINES.
+			// That only holds when the relation agrees with the corresponding
+			// native metadata. Extension members -- a method attached to a
+			// receiver declared elsewhere -- produce a CONTAINS whose parent is
+			// NOT the symbol's container, and that membership is in no other
+			// field, so skipping it silently made the note report a completeness
+			// the protobuf did not have.
+			// The child is the structural target for both relation families. A
+			// missing one cannot be represented by the symbol metadata or a
+			// definition occurrence, and must not be misclassified as an
+			// unsupported-but-present relation.
+			child, ok := encoder.symbols[relation.ToID]
+			if !ok {
+				encoder.note.MissingTargetRelations++
+				continue
+			}
 			if relationType == "CONTAINS" {
-				if child, ok := encoder.symbols[relation.ToID]; !ok || child.ContainerID != relation.FromID {
+				if _, ok := encoder.symbols[relation.FromID]; !ok {
+					encoder.note.MissingSourceRelations++
+					continue
+				}
+				if child.ContainerID != relation.FromID {
 					encoder.note.UnsupportedRelationCounts[relationType]++
 				}
+				continue
+			}
+			// A native DEFINES source is the repository-scoped file id derived
+			// from the child's path. Anything else describes membership that the
+			// SCIP definition occurrence does not prove.
+			if child.FilePath == "" || relation.FromID != fileID(header.RepoKey, child.FilePath) {
+				encoder.note.UnsupportedRelationCounts[relationType]++
 			}
 			continue
 		}
@@ -575,8 +597,15 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 			continue
 		}
 		target := symbols[relation.ToID]
+		targetKind := ""
+		if record, ok := encoder.symbols[relation.ToID]; ok {
+			targetKind = record.Kind
+		}
 		if target == "" {
 			target = externals[relation.ToID]
+			if record, ok := encoder.externals[relation.ToID]; ok {
+				targetKind = record.Kind
+			}
 		}
 		if target == "" {
 			encoder.note.MissingTargetRelations++
@@ -588,20 +617,25 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 			// reference occurrences meant the navigation they exist for
 			// returned nothing, and because the types count as supported the
 			// loss was not reported either.
-			if info := infos[relation.FromID]; info != nil {
+			source, sourceExists := encoder.symbols[relation.FromID]
+			if info := infos[relation.FromID]; sourceExists && info != nil {
 				// is_reference is not "this is a reference"; it tells a consumer
 				// to MERGE the related symbol's references into this one's. That
 				// is right for a member override -- Find References on the base
 				// method should reach the override's callers -- and wrong for a
 				// type relationship, where it makes Find References on a base
-				// type report every subtype's definition as a reference to it.
-				memberLevel := methodLikeSCIPKind(encoder.symbols[relation.FromID].Kind)
+				// type report every subtype's definition as a reference to it. Both
+				// endpoints must be members; an unknown or mismatched target kind
+				// fails closed.
+				memberLevel := methodLikeSCIPKind(source.Kind) && methodLikeSCIPKind(targetKind)
 				info.Relationships = append(info.Relationships, &scippb.Relationship{
 					Symbol:           target,
 					IsImplementation: true,
 					IsReference:      memberLevel,
 				})
 				encoder.note.EmittedImplementations++
+			} else {
+				encoder.note.MissingSourceRelations++
 			}
 		}
 		emitted := false
