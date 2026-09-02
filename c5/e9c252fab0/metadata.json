@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "c5e9c252fab0",
+  "strategy": "manual-commit",
+  "branch": "ci/windows-investigation-coordinator",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tools/ci-bench/run-go-suite.ps1"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c5/e9c252fab0/0/metadata.json",
+      "transcript": "/c5/e9c252fab0/0/full.jsonl",
+      "compact_transcript": "/c5/e9c252fab0/0/transcript.jsonl",
+      "content_hash": "/c5/e9c252fab0/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 92536,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 19209216,
+    "output_tokens": 12096,
+    "api_call_count": 127
+  }
+}
