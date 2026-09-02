@@ -210,6 +210,11 @@ func IndexNonRegularPaths(ctx context.Context, repo string) (map[string]struct{}
 	return paths, nil
 }
 
+// maxSymlinkTargetBytes bounds what may be read as a symlink target. A target is a
+// PATH, and every platform this runs on caps a path far below this; the bound exists
+// because a mode-120000 index entry is not required by Git to hold one.
+const maxSymlinkTargetBytes = 4096
+
 // IndexReplacedNonRegularPaths returns the paths whose index entry is NOT a
 // regular file but whose worktree file no longer holds what that entry says,
 // keyed by slash-separated repo-relative path.
@@ -236,11 +241,33 @@ func IndexReplacedNonRegularPaths(ctx context.Context, repo string, nonRegular m
 			// Still a link (or gone): nothing was substituted for it.
 			continue
 		}
-		// The index blob for a mode-120000 entry is the link target itself.
+		// The blob is SIZED before it is read. A mode-120000 entry is supposed to
+		// hold a link target, but nothing in Git enforces that: a repository can
+		// stage a mode-120000 entry of any size, and reading it whole to compare
+		// would hand that repository the allocation. `cat-file -s` answers in a
+		// few bytes whatever the blob holds.
+		sized, err := run(ctx, repo, "git", "cat-file", "-s", ":"+path)
+		if err != nil {
+			// No stage-0 entry. An UNMERGED path has stages 1-3 and no stage 0,
+			// so there is no single index blob to compare against -- and the
+			// worktree file sitting there is the merge's own resolution, which a
+			// worktree query exists to show. Anything else unreadable falls the
+			// same way, which is toward showing a regular file that is there.
+			replaced[path] = struct{}{}
+			continue
+		}
+		blobBytes, err := strconv.ParseInt(strings.TrimSpace(sized), 10, 64)
+		if err != nil {
+			continue
+		}
+		if blobBytes > maxSymlinkTargetBytes || onDisk.Size() != blobBytes {
+			// Too large to be a link target, or a different length than the
+			// entry: either way the file on disk is not that entry materialized.
+			replaced[path] = struct{}{}
+			continue
+		}
 		indexed, err := run(ctx, repo, "git", "cat-file", "blob", ":"+path)
 		if err != nil {
-			// Unreadable index entry: leave the veto in place, which is the
-			// conservative direction.
 			continue
 		}
 		// The blob is a LINK TARGET -- a path, so its length is small and is the
@@ -250,10 +277,6 @@ func IndexReplacedNonRegularPaths(ctx context.Context, repo string, nonRegular m
 		// provider's source-size limits apply. A file of a different length
 		// already differs, so only an equal-length one is read, and then only
 		// to the blob's length.
-		if onDisk.Size() != int64(len(indexed)) {
-			replaced[path] = struct{}{}
-			continue
-		}
 		file, err := os.Open(filepath.Join(repo, filepath.FromSlash(path)))
 		if err != nil {
 			continue
