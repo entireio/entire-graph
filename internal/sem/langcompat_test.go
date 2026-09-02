@@ -212,6 +212,9 @@ func TestLanguagesShareTypesRelation(t *testing.T) {
 		// Sourcing runs the library's functions in the calling shell, so the
 		// naming works in whichever direction the `source` is written.
 		{"Bash", "Zsh"},
+		// Swift imports Objective-C through the Clang importer, and Objective-C
+		// names @objc Swift declarations through the generated <Module>-Swift.h.
+		{"Swift", "Objective-C"},
 	} {
 		if !languagesShareTypes(pair[0], pair[1]) {
 			t.Fatalf("languagesShareTypes(%q, %q) = false, want true", pair[0], pair[1])
@@ -233,7 +236,6 @@ func TestLanguagesShareTypesRelation(t *testing.T) {
 		{"Objective-C++", "C++"},
 		{"Objective-C++", "Objective-C"},
 		{"Swift", "C"},
-		{"Swift", "Objective-C"},
 		{"Swift", "C++"},
 	} {
 		if !languagesShareTypes(pair[0], pair[1]) {
