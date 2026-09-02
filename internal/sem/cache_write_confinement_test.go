@@ -144,6 +144,60 @@ func TestCacheEntryWriteRejectsSymlinkedFamilyInsideRoot(t *testing.T) {
 	}
 }
 
+// Descendant redirects are refused even when they look operationally benign and remain inside
+// the cache root. This was a working layout before the confinement boundary was made strict, so
+// pin the compatibility decision explicitly instead of letting the .git-specific case imply it.
+// Operators that want to relocate a cache should name the backing directory as the cache root or
+// make the root itself a symlink; family and version components belong to Entire Graph.
+func TestCacheEntryWriteRejectsBenignInRootFamilyAlias(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		family string
+		write  func(cacheEntry) error
+	}{
+		{
+			name:   "search snapshot",
+			family: "search",
+			write: func(entry cacheEntry) error {
+				return writeSearchSnapshot(entry, cachedSearchSnapshot{Tree: "planted"})
+			},
+		},
+		{
+			name:   "provider records",
+			family: "records",
+			write: func(entry cacheEntry) error {
+				return writeProviderRecords(entry, cachedProviderRecords{Tree: "planted"})
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cacheDir := t.TempDir()
+			backing := filepath.Join(cacheDir, "bigstore")
+			if err := os.Mkdir(backing, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			symlinkOrSkip(t, "bigstore", filepath.Join(cacheDir, test.family))
+
+			entry, err := newCacheEntry(cacheDir, test.family, "v1", strings.Repeat("9", 64))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := test.write(entry); err == nil {
+				t.Error("cache write followed a family alias that stays inside the cache root")
+			}
+			items, err := os.ReadDir(backing)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 0 {
+				t.Errorf("cache write landed behind the in-root alias: %d entries", len(items))
+			}
+		})
+	}
+}
+
 // The version component is a second planting site, and on a case-insensitive filesystem a link
 // spelled differently still answers the lookup, so the refusal must not be an exact-case compare.
 func TestCacheEntryWriteRejectsSymlinkedVersion(t *testing.T) {
@@ -320,6 +374,42 @@ func TestCacheComponentRedirectErrorHonoursEveryRedirectingMode(t *testing.T) {
 				t.Fatalf("mode %s was refused on %s: %v", testCase.mode, runtime.GOOS, err)
 			}
 		})
+	}
+}
+
+// Opening the component before checking it is what lets the write keep using the verified object.
+// The injected opener makes the production sequence deterministic: it opens the original, swaps
+// the parent name, and returns the held handle. A regression to Lstat-before-open would accept the
+// stale identity and make this production-path call succeed.
+func TestOpenCacheComponentRejectsIdentitySwap(t *testing.T) {
+	t.Parallel()
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := root.Mkdir("search", 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	opened, err := openCacheComponent(root, "search", func(parent *os.Root, name string) (*os.Root, error) {
+		held, openErr := parent.OpenRoot(name)
+		if openErr != nil {
+			return nil, openErr
+		}
+		if renameErr := parent.Rename(name, "opened-search"); renameErr != nil {
+			_ = held.Close()
+			return nil, renameErr
+		}
+		if mkdirErr := parent.Mkdir(name, 0o700); mkdirErr != nil {
+			_ = held.Close()
+			return nil, mkdirErr
+		}
+		return held, nil
+	})
+	if err == nil {
+		_ = opened.Close()
+		t.Fatal("replacement directory matched the cache component opened by production")
 	}
 }
 

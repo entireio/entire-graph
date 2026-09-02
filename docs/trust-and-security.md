@@ -177,13 +177,18 @@ these rules existed misses instead of re-emitting the paths it named.
   (for most query commands) the per-user cache directory. Cache entries are
   compressed snapshots rebuilt from repository state; deleting them costs a
   rebuild, nothing else. Queries never modify repository source files. The
-  cache directory you name is resolved as you gave it and may itself be a
-  symlink, but everything below it is named by Entire Graph — a family, a
-  version, and a SHA-256 digest — and both reads and writes are confined to
-  the directory that was opened, so a symlink planted at one of those
-  components cannot redirect an entry out of the cache directory. That matters
-  when the cache directory resolves inside a scanned checkout, where the
-  planter would be the repository.
+  cache directory you name is the trust boundary: it is resolved as given and
+  may itself be a symlink. Everything below it is named by Entire Graph — a
+  family, a version, and a SHA-256 digest. Writes open each family and version
+  component, compare the held directory with the name's filesystem identity,
+  and refuse symlinks, Windows junction and mount-point reparse entries, and
+  identity swaps even when the redirect would remain inside the opened root.
+  This intentionally drops the older behavior where an in-root family or
+  version alias could work; allowing it would let a repository steer derivative
+  bytes into `.git` whenever the cache root is a checkout. To relocate the
+  cache, name the backing directory as the root or make the root itself a
+  symlink. Reads remain confined by `os.Root`; query writes fall back cold on a
+  refusal, while `index` reports it.
 - `init-agents` writes through exactly three repository paths, disclosed in
   [agent activation](agents.md): `.entire/graph-agent.md` and managed blocks
   in `AGENTS.md` and `CLAUDE.md`. A repository-committed symlink at one of

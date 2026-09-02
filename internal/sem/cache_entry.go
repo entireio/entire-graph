@@ -20,9 +20,10 @@ import (
 // lowercase SHA-256 digest produced by the corresponding cache-key function.
 // Keeping that invariant here makes the relative path non-injectable.
 //
-// Reads additionally go through os.Root. The cache directory itself is a
-// caller-owned location and may be a symlink, but no descendant symlink can
-// make an artifact read escape the directory OpenRoot actually opened.
+// Reads additionally go through os.Root. The cache directory itself is the
+// caller-selected trust boundary and may be a symlink. Writes require every
+// family and version component below that root to be a non-redirecting
+// directory, including when a link would remain inside the opened root.
 type cacheEntry struct {
 	root     string
 	relative string
@@ -84,17 +85,18 @@ func (entry cacheEntry) open() (*os.File, error) {
 //
 // os.Root alone does not close that, for the same reason it does not close it for `--report`
 // (see internal/cli/outputpath.go): it stops a link LEAVING the root but follows one that stays
-// inside it, and with the cache directory at the checkout root, `.git` is inside it. So each
-// component is created and then checked with Lstat before it is descended into, and a symlink
-// there is refused rather than followed. The check is not exact-case, so a case-insensitive
-// filesystem cannot answer it with a differently-spelled link.
+// inside it, and with the cache directory at the checkout root, `.git` is inside it. Each
+// component is therefore opened first and the held directory's identity is compared with an
+// Lstat of its name. A link reports a different identity from its target, and a component swapped
+// during the open reports a different identity from its replacement; either is refused before the
+// held handle receives a write.
 //
-// The refusal costs nothing that works today: entry.open reads through os.Root, so an escaping
-// link is one the reader could never have followed either (see
-// TestCacheEntryReadRejectsSymlinkEscape), and an internal one only ever redirected the write to
-// somewhere the tool does not own. Such an entry is written on every run and read on none. What
-// was a silent permanent cache miss is now an error, which the best-effort call sites discard and
-// the explicit `index` persist path reports.
+// Escaping descendant links never produced cache hits because entry.open already refused them.
+// In-root descendant links could previously hit, so refusing them is an intentional compatibility
+// break: a cache rooted at a checkout must not let a committed link steer derivative bytes into
+// `.git` or another repository-chosen directory. Relocation remains supported by naming the
+// backing directory as the cache root or making the root itself a symlink. Best-effort query paths
+// treat a refusal as a cache miss; the explicit `index` persist path reports it.
 func (entry cacheEntry) write(temporaryPrefix string, value any) error {
 	if err := os.MkdirAll(entry.root, 0o700); err != nil {
 		return err
@@ -164,7 +166,7 @@ func openCacheDirectory(root *os.Root, directory string) (*os.Root, error) {
 		return current, nil
 	}
 	for _, component := range strings.Split(filepath.ToSlash(directory), "/") {
-		next, err := openCacheComponent(current, component)
+		next, err := openCacheComponent(current, component, (*os.Root).OpenRoot)
 		_ = current.Close()
 		if err != nil {
 			return nil, err
@@ -174,18 +176,52 @@ func openCacheDirectory(root *os.Root, directory string) (*os.Root, error) {
 	return current, nil
 }
 
-func openCacheComponent(parent *os.Root, name string) (*os.Root, error) {
+func openCacheComponent(
+	parent *os.Root,
+	name string,
+	open func(*os.Root, string) (*os.Root, error),
+) (*os.Root, error) {
 	if err := parent.Mkdir(name, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return nil, err
 	}
-	info, err := parent.Lstat(name)
+	next, err := open(parent, name)
 	if err != nil {
+		// Preserve the actionable redirect diagnostic when os.Root refuses a
+		// component that escapes the root before an identity can be held.
+		if named, lstatErr := parent.Lstat(name); lstatErr == nil {
+			if redirectErr := cacheComponentRedirectError(name, named); redirectErr != nil {
+				return nil, redirectErr
+			}
+		}
 		return nil, err
 	}
-	if err := cacheComponentRedirectError(name, info); err != nil {
+	if err := refuseRedirectingCacheComponent(parent, name, next); err != nil {
+		_ = next.Close()
 		return nil, err
 	}
-	return parent.OpenRoot(name)
+	return next, nil
+}
+
+// refuseRedirectingCacheComponent verifies that held names the same ordinary
+// directory the parent currently exposes at name. Opening first pins the object
+// subsequent writes use; comparing that handle with Lstat closes the gap where a
+// checked component could otherwise be replaced before OpenRoot followed it.
+func refuseRedirectingCacheComponent(parent *os.Root, name string, held *os.Root) error {
+	named, err := parent.Lstat(name)
+	if err != nil {
+		return err
+	}
+	if err := cacheComponentRedirectError(name, named); err != nil {
+		return err
+	}
+	opened, err := held.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(named, opened) {
+		return fmt.Errorf("cache directory component %q changed identity while it was opened", name)
+	}
+	return nil
 }
 
 // cacheComponentRedirectError refuses a cache directory component that can send a

@@ -59,6 +59,17 @@ variable set they rebuild on every run. One directory is shared by every
 repository and worktree on the machine; keys, not directories, separate
 entries.
 
+The caller-selected cache root is the filesystem trust boundary and may itself
+be a symlink. Beneath it, Entire Graph owns the family and version directories;
+each must be an ordinary, non-redirecting directory. A symlink, a Windows
+junction or mount-point reparse entry, or a component swapped while it is opened
+is refused even when its target would remain inside the cache root. This
+intentionally excludes in-root aliases that older versions followed. To
+relocate a cache, point `--cache-dir` or `ENTIRE_PLUGIN_DATA_DIR` at the backing
+directory, or make the cache root itself a symlink rather than linking a family
+or version below it. Best-effort query caching treats a refusal as a cold path;
+`index`, whose purpose is durable prewarming, reports the persistence failure.
+
 ### Two cache families
 
 - The **search snapshot cache** backs `search`, `neighbors`, `impact`, and
