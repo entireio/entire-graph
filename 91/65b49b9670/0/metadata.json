@@ -1,0 +1,47 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "9165b49b9670",
+  "session_id": "01a0616d-0c18-7443-82f2-b4c5bc498542",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-02T20:55:56.300014Z",
+  "branch": "codex/windows-ci-parity",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/test.yml",
+    "tools/ci-bench/windows-production/README.md",
+    "tools/ci-bench/windows-production/historical-weights.json",
+    "tools/ci-bench/windows-production/inventory_testmain.go",
+    "tools/ci-bench/windows-production/plan_shards.py",
+    "tools/ci-bench/windows-production/prepare.py",
+    "tools/ci-bench/windows-production/run_other.py",
+    "tools/ci-bench/windows-production/run_shard.py",
+    "tools/ci-bench/windows-production/settings.json",
+    "tools/ci-bench/windows-production/tests/test_plan_shards.py",
+    "tools/ci-bench/windows-production/tests/test_testmain_inventory.py",
+    "tools/ci-bench/windows-production/tests/test_verify_results.py",
+    "tools/ci-bench/windows-production/tests/test_workflow_contract.py",
+    "tools/ci-bench/windows-production/verify_results.py"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 116864,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 10065664,
+    "output_tokens": 15749,
+    "api_call_count": 833
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-02T20:55:55.569443Z",
+    "agent_lines": 3922,
+    "agent_removed": 8,
+    "human_added": 2,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 3924,
+    "total_lines_changed": 3932,
+    "agent_percentage": 99.94913530010173,
+    "metric_version": 2
+  }
+}

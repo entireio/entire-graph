@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "9165b49b9670",
+  "strategy": "manual-commit",
+  "branch": "codex/windows-ci-parity",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/test.yml",
+    "tools/ci-bench/windows-production/README.md",
+    "tools/ci-bench/windows-production/historical-weights.json",
+    "tools/ci-bench/windows-production/inventory_testmain.go",
+    "tools/ci-bench/windows-production/plan_shards.py",
+    "tools/ci-bench/windows-production/prepare.py",
+    "tools/ci-bench/windows-production/run_other.py",
+    "tools/ci-bench/windows-production/run_shard.py",
+    "tools/ci-bench/windows-production/settings.json",
+    "tools/ci-bench/windows-production/tests/test_plan_shards.py",
+    "tools/ci-bench/windows-production/tests/test_testmain_inventory.py",
+    "tools/ci-bench/windows-production/tests/test_verify_results.py",
+    "tools/ci-bench/windows-production/tests/test_workflow_contract.py",
+    "tools/ci-bench/windows-production/verify_results.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/91/65b49b9670/0/metadata.json",
+      "transcript": "/91/65b49b9670/0/full.jsonl",
+      "compact_transcript": "/91/65b49b9670/0/transcript.jsonl",
+      "content_hash": "/91/65b49b9670/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 116864,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 10065664,
+    "output_tokens": 15749,
+    "api_call_count": 833
+  }
+}
