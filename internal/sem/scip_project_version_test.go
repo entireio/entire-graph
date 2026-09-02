@@ -513,6 +513,19 @@ func TestCargoWorkspaceInheritanceSurvivesATrailingComment(t *testing.T) {
 			content: workspace + "[package]\n# version.workspace = true\n",
 			want:    "",
 		},
+		{
+			// An unterminated inline table is not a declaration. Accepting it
+			// handed an invalid manifest the workspace's version, which is the
+			// opposite of the fallback this file relies on.
+			name:    "an unterminated inline table is not inheritance",
+			content: workspace + "[package]\nversion = { workspace = true\n",
+			want:    "",
+		},
+		{
+			name:    "an inline table closed after a comment is still not inheritance",
+			content: workspace + "[package]\nversion = { workspace = true # }\n",
+			want:    "",
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
