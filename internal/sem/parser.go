@@ -4101,9 +4101,29 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 	end := int(node.EndPoint().Row) + 1
 	out := make([]Entity, 0, len(names))
 	for _, name := range names {
-		signature := name
+		// The declarator carries the pointer, reference and array part, and the
+		// type field carries only the base type, so a signature built from the
+		// NAME and the type alone rendered `char *data` and `char data`
+		// identically as "data char". Two different fields then had the same
+		// signature and the same hash, and entity diff/impact reported a change
+		// between them as a generic module edit -- a silent miss, since nothing
+		// about the output looked wrong.
+		spelling := name
+		if shape := fieldDeclaratorShape(node, src, name); shape != "" {
+			spelling = shape
+		}
+		signature := spelling
 		if typeText != "" {
-			signature = name + " " + typeText
+			signature = spelling + " " + typeText
+		}
+		// The declared type is the base type plus whatever the declarator adds,
+		// so `char *data` is a `char *` and `char data` is a `char`. Hashing the
+		// base type alone gave both the same body hash, which is the other half
+		// of the same miss: the signature said they differed while the hash said
+		// they did not.
+		declaredType := typeText
+		if spelling != name {
+			declaredType = strings.TrimSpace(typeText + " " + strings.Replace(spelling, name, "", 1))
 		}
 		out = append(out, Entity{
 			Kind:        "field",
@@ -4111,7 +4131,7 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 			Signature:   signature,
 			StartLine:   start,
 			EndLine:     end,
-			BodyHash:    hash(typeText),
+			BodyHash:    hash(declaredType),
 			Fingerprint: hash(normalize(signature)),
 		})
 	}
@@ -4122,6 +4142,34 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 // across languages: field_identifier (Go/Rust/C++), variable_declarator (Java)
 // or variable_declaration>variable_declarator (C#), and property_identifier /
 // name field (TypeScript, C# properties).
+// fieldDeclaratorShape returns the declarator text for one named C/C++ member --
+// "*data" for `char *data`, "name[32]" for `char name[32]`, "(*handler)(int)"
+// for a function-pointer member -- or "" when the member is declared without a
+// declarator of its own.
+//
+// It exists so a field's signature records the part of its type that the
+// grammar hangs off the declarator rather than the type field. Without it a
+// pointer, reference, array or function-pointer change leaves the signature
+// byte-identical.
+func fieldDeclaratorShape(node *sitter.Node, src []byte, name string) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "pointer_declarator", "array_declarator", "reference_declarator",
+			"parenthesized_declarator", "function_declarator":
+			if cFamilyMemberDeclaratorName(child, src) != name {
+				continue
+			}
+			shape := strings.TrimSpace(child.Content(src))
+			if shape == name {
+				return ""
+			}
+			return shape
+		}
+	}
+	return ""
+}
+
 func fieldDeclNames(node *sitter.Node, src []byte) []string {
 	switch node.Type() {
 	case "public_field_definition", "field_definition", "property_signature", "property_declaration":
@@ -4234,8 +4282,20 @@ func cFamilyMemberDeclaratorName(node *sitter.Node, src []byte) string {
 		case "function_declarator":
 			// A function-pointer member: the name is inside the parens. A plain
 			// function declarator is a method declaration and names nothing.
+			//
+			// Parentheses alone do not make it data. C++ lets a method name be
+			// parenthesized -- `virtual int (Run)() = 0;` -- and that shape
+			// reaches an identifier inside parens exactly like a function
+			// pointer does, so accepting every parenthesized inner declarator
+			// reclassified those methods as fields and removed the callable
+			// from method and call-resolution output entirely. What makes it a
+			// pointer-to-function is the POINTER: `(*callback)(int)` wraps a
+			// pointer_declarator, `(Run)()` wraps the bare name.
 			inner := node.ChildByFieldName("declarator")
 			if !validNode(inner) || inner.Type() != "parenthesized_declarator" {
+				return ""
+			}
+			if !parenthesizedDeclaratorIsIndirect(inner) {
 				return ""
 			}
 			next = inner
@@ -4248,6 +4308,24 @@ func cFamilyMemberDeclaratorName(node *sitter.Node, src []byte) string {
 		node = next
 	}
 	return ""
+}
+
+// parenthesizedDeclaratorIsIndirect reports whether a parenthesized declarator
+// wraps a pointer or reference, which is what separates a function-pointer
+// member (`void (*callback)(int)`) from a method whose name merely carries
+// parentheses (`virtual int (Run)() = 0`). Both reach an identifier inside
+// parens; only the first declares data.
+func parenthesizedDeclaratorIsIndirect(node *sitter.Node) bool {
+	if !validNode(node) {
+		return false
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		switch node.NamedChild(i).Type() {
+		case "pointer_declarator", "reference_declarator":
+			return true
+		}
+	}
+	return false
 }
 
 // firstChildDeclarator returns the declarator a wrapping declarator encloses,

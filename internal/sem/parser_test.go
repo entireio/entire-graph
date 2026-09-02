@@ -3419,3 +3419,43 @@ func TestTreeSitterParserCSharpBareAsyncArgumentMasked(t *testing.T) {
 		}
 	}
 }
+
+// TestCFamilyFieldSignatureCarriesTheDeclarator pins the two halves of a member's
+// declared type.
+//
+// The grammar splits it: the type field holds the base type and the declarator holds the
+// pointer, reference, array or function-pointer part. Building the signature from the
+// bare NAME and the base type alone rendered `char *data` and `char data` identically as
+// "data char", and hashing the base type alone gave them the same body hash, so entity
+// diff and impact saw no difference between two genuinely different fields and reported a
+// change between them as a generic module edit. Nothing about the output looked wrong,
+// which is what made it a silent miss.
+func TestCFamilyFieldSignatureCarriesTheDeclarator(t *testing.T) {
+	t.Parallel()
+
+	fieldOf := func(t *testing.T, source string) Entity {
+		t.Helper()
+		entities, _, _ := TreeSitterParser{}.ParseWithStatus("member.cpp", source)
+		for _, entity := range entities {
+			if entity.Kind == "field" {
+				return entity
+			}
+		}
+		t.Fatalf("no field extracted from %q", source)
+		return Entity{}
+	}
+
+	pointer := fieldOf(t, "struct S { char *data; };")
+	plain := fieldOf(t, "struct S { char data; };")
+	array := fieldOf(t, "struct S { char data[32]; };")
+
+	if pointer.Signature == plain.Signature {
+		t.Fatalf("`char *data` and `char data` share signature %q", pointer.Signature)
+	}
+	if pointer.BodyHash == plain.BodyHash {
+		t.Fatalf("`char *data` and `char data` share body hash %q", pointer.BodyHash)
+	}
+	if array.Signature == plain.Signature || array.BodyHash == plain.BodyHash {
+		t.Fatalf("`char data[32]` is indistinguishable from `char data`: %q/%q", array.Signature, array.BodyHash)
+	}
+}
