@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "ea4107e8c401",
+  "strategy": "manual-commit",
+  "branch": "ci/windows-investigation-a3-cross-compile",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tools/ci-bench/collect-environment.ps1",
+    "tools/ci-bench/create-azure-vm.sh",
+    "tools/ci-bench/monitor-resources.ps1",
+    "tools/ci-bench/run-go-suite.ps1"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ea/4107e8c401/0/metadata.json",
+      "transcript": "/ea/4107e8c401/0/full.jsonl",
+      "compact_transcript": "/ea/4107e8c401/0/transcript.jsonl",
+      "content_hash": "/ea/4107e8c401/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1052498,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 87344896,
+    "output_tokens": 141701,
+    "api_call_count": 740
+  }
+}
