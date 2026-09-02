@@ -612,7 +612,17 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// carries the full, uncapped report regardless (response.RepoIgnored).
 	if block := sem.RenderRepoIgnoreDisclosure(response.RepoIgnored); len(block) > 0 {
 		budget := response.Stats.ContextBudgetBytes
-		if budget <= 0 || len(block) < budget {
+		// Charged against the REMAINING headroom, not against the whole ceiling.
+		// The ranked results and the funded blocks were already fitted to this
+		// same budget, so asking only whether the disclosure fits ON ITS OWN
+		// admitted it on top of a payload already at the ceiling -- the rendered
+		// output then exceeded --max-context-bytes by the full block, which is
+		// repository-controlled and so attacker-sized.
+		//
+		// The three terms are the ones validateSearchContextBlockBudget funds
+		// from inside the ceiling (search_blocks.go); keep them in step.
+		funded := response.Stats.ResultBytes + response.Stats.TypeCardBytes + response.Stats.SignatureTypeBytes
+		if budget <= 0 || funded+len(block) <= budget {
 			if _, err := out.Write(block); err != nil {
 				return err
 			}
