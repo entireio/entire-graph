@@ -1,17 +1,1 @@
-Pull main. Check all open PRs. Decide which to merge next.
-
----
-
-Check again and refresh the suggested queue
-
----
-
-Go through your queue and address any findings in the Entire trail, either fix or dismiss. If there are no more findings, approve in my name and merge. Stop after PR 156.
-
----
-
-Did you push the Entire session as described in the AGENTS.md instructions?
-
----
-
 Just push an empty commit to main to make sure the last state of the session is linked.
