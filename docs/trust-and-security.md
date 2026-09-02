@@ -186,9 +186,17 @@ these rules existed misses instead of re-emitting the paths it named.
   planter would be the repository.
 - `init-agents` writes through exactly three repository paths, disclosed in
   [agent activation](agents.md): `.entire/graph-agent.md` and managed blocks
-  in `AGENTS.md` and `CLAUDE.md`. A hard-linked pathname elsewhere names the
-  same inode and therefore observes the same update; the activation guide
-  calls out that filesystem property explicitly.
+  in `AGENTS.md` and `CLAUDE.md`. A repository-committed symlink at one of
+  those paths may redirect the write to another file, which is what makes the
+  alias support in the activation guide work; the redirection is confined to
+  the project root, and additionally refused when it lands in a git directory —
+  recognised by structure, so an administrative directory not named `.git` is
+  covered too — or on an existing file that is not an agent-instruction file, so
+  a hostile checkout cannot aim a managed block at `.git/config`, a hook, a
+  `Makefile`, `.envrc`, or a CI workflow.
+  A hard-linked pathname elsewhere names the same inode and therefore observes
+  the same update; the activation guide calls out that filesystem property
+  explicitly.
 - `index --report <path>` writes a Markdown graph report to the path you give
   it.
 - `verify --record-baseline <path>` creates parent directories as needed and

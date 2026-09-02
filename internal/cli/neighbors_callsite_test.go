@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -116,6 +117,58 @@ func neighborsJSON(t *testing.T, repo, symbol, direction string) neighborRespons
 		t.Fatalf("decode neighbors json: %v\n%s", err, out.String())
 	}
 	return response
+}
+
+// A DATA_FLOWS relation whose evidence hit the provider cap must remain
+// visibly partial after neighbors projects it into its own JSON shape. Carrying
+// the shortened array without either disclosure recreates the exact ambiguity
+// evidence_dropped was added to remove.
+func TestNeighborsJSONPreservesDataFlowEvidenceTruncation(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	write(t, repo, "flow.go", `package flow
+
+func sink(a int, b int, c int, d int, e int, f int, g int, h int, i int, j int) {}
+
+func caller(a int, b int, c int, d int, e int, f int, g int, h int, i int, j int) {
+	sink(a, b, c, d, e, f, g, h, i, j)
+}
+`)
+
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
+		"neighbors", "--repo", repo, "--symbol", "caller", "--direction", "out",
+		"--relation", "DATA_FLOWS", "--format", "json",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var response neighborResponse
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatalf("decode neighbors json: %v\n%s", err, out.String())
+	}
+	if len(response.Matches) != 1 {
+		t.Fatalf("focus matches = %d, want 1", len(response.Matches))
+	}
+	var flow *neighborEdge
+	for i := range response.Matches[0].Outgoing {
+		edge := &response.Matches[0].Outgoing[i]
+		if edge.Relation == "DATA_FLOWS" && edge.Endpoint.Name == "sink" {
+			flow = edge
+			break
+		}
+	}
+	if flow == nil {
+		t.Fatalf("caller -> sink DATA_FLOWS edge missing: %#v", response.Matches[0].Outgoing)
+	}
+	if len(flow.Evidence) != 8 {
+		t.Fatalf("evidence entries = %d, want provider cap 8", len(flow.Evidence))
+	}
+	if !slices.Contains(flow.WarningCodes, "EVIDENCE_TRUNCATED") {
+		t.Fatalf("warning_codes = %q, want EVIDENCE_TRUNCATED", flow.WarningCodes)
+	}
+	if flow.EvidenceDropped != 2 {
+		t.Fatalf("evidence_dropped = %d, want 2", flow.EvidenceDropped)
+	}
 }
 
 // End to end: a caller must be located at the line it calls on, with the

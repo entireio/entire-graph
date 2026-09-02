@@ -111,7 +111,7 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runInitAgents(opts, args[1:])
 	case "version", "--version", "-v":
 		if len(args) > 1 && args[1] == "--json" {
-			return json.NewEncoder(opts.Stdout).Encode(map[string]string{
+			return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(map[string]string{
 				"provider": sem.ProviderName,
 				"version":  opts.Version,
 			})
@@ -220,7 +220,7 @@ func runDoctor(ctx context.Context, opts Options, args []string) error {
 		report["repo_root"] = ""
 		report["repo_error"] = err.Error()
 		if asJSON {
-			return json.NewEncoder(opts.Stdout).Encode(report)
+			return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(report)
 		}
 		fmt.Fprintf(opts.Stdout, "repo_root=%s\n", valueOrUnset(""))
 		fmt.Fprintf(opts.Stdout, "repo_error=%s\n", err)
@@ -228,7 +228,7 @@ func runDoctor(ctx context.Context, opts Options, args []string) error {
 	}
 	report["repo_root"] = repo
 	if asJSON {
-		return json.NewEncoder(opts.Stdout).Encode(report)
+		return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(report)
 	}
 	fmt.Fprintf(opts.Stdout, "repo_root=%s\n", repo)
 	return nil
@@ -238,7 +238,7 @@ func runCapabilities(opts Options, args []string) error {
 	if len(args) != 1 || args[0] != "--json" {
 		return errors.New("capabilities requires --json")
 	}
-	return json.NewEncoder(opts.Stdout).Encode(sem.Capabilities())
+	return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(sem.Capabilities())
 }
 
 func runProviderRecords(ctx context.Context, opts Options, args []string, mode string) error {
@@ -303,12 +303,23 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// complete graph before writing its single protobuf Index message.
 	var scipEncoder *sem.SCIPSnapshotEncoder
 	newRecordEncoder := func(out io.Writer) func(any) error {
-		if compact {
-			return sem.NewCompactSnapshotEncoder(out).Encode
-		}
 		if scip {
+			// NOT wrapped. `--format scip` writes a binary protobuf Index, and the C1
+			// rewrite is defined over a TEXT stream: it would rewrite any 0xc2 0x8X
+			// pair the wire format happens to contain -- a varint, a length prefix, a
+			// UTF-8 name -- into six ASCII bytes, and the result no longer parses as
+			// an Index at all. A hostile pathname in this stream reaches a terminal
+			// only after a consumer has decoded the protobuf and chosen to render it,
+			// which is that consumer's escape to apply, not this encoder's.
 			scipEncoder = sem.NewSCIPSnapshotEncoder(out, "")
 			return scipEncoder.Encode
+		}
+		// Wrapped once here rather than in either branch below: both encoders write
+		// repository-controlled pathnames and entity names, and a snapshot carries no
+		// source text, so a hostile PATHNAME is the only C1 these streams can hold.
+		out = termsafe.NewJSONWriter(out)
+		if compact {
+			return sem.NewCompactSnapshotEncoder(out).Encode
 		}
 		encoder := json.NewEncoder(out)
 		encoder.SetEscapeHTML(false) // match json.Marshal used elsewhere (no < escaping)
@@ -418,7 +429,12 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	}
 	if recordsCache != nil {
 		if records, cachedSummary, hit := recordsCache.Load(); hit {
-			if _, err := opts.Stdout.Write(records); err != nil {
+			// Replayed bytes need the same wrap the encoder below gets. This path does
+			// not go through encodeRecord at all, so a cache entry written before the
+			// C1 rule existed — or by any build that predates it — would stream the
+			// repository's raw control straight to the terminal on every hit. Escaping
+			// is idempotent, so a clean entry passes through unchanged.
+			if _, err := termsafe.NewJSONWriter(opts.Stdout).Write(records); err != nil {
 				return err
 			}
 			warnIfPartial(opts.Stderr, flags.Worktree, cachedSummary)
@@ -479,7 +495,11 @@ func scipOmissionNoteWithSummary(note sem.SCIPOmissionNote, summary *sem.Snapsho
 }
 
 func writeSCIPOmissionNote(w io.Writer, note sem.SCIPOmissionNote) error {
-	encoder := json.NewEncoder(w)
+	// The note is the one TEXT stream `--format scip` writes, and it is written to
+	// a terminal. It is wrapped for the same structural reason every other machine
+	// encoder here is: a sink left unwrapped is the one the next field added to
+	// this record forgets about.
+	encoder := json.NewEncoder(termsafe.NewJSONWriter(w))
 	encoder.SetEscapeHTML(false)
 	return encoder.Encode(note)
 }
@@ -789,7 +809,7 @@ func runAnalyze(ctx context.Context, opts Options, args []string) error {
 // validateRevision rejects a revision value that Git would read as an option instead.
 //
 // Every revision this package accepts is eventually spliced into a git argv — `git diff -z
-// --name-status --find-renames <base> <head> --` in gitutil.ChangedFiles, `git rev-parse
+// --raw --find-renames <base> <head> --` in gitutil.ChangedFiles, `git rev-parse
 // <rev>^` in gitutil.FirstParent, `git show <rev>^{tree}:<path>` in gitutil.ShowFile. Git
 // parses options anywhere ahead of `--`, so a value beginning with '-' stops being a revision
 // and becomes a flag of the command it lands in: `diff --base '--output=FILE'` exited 0 having
@@ -1138,7 +1158,7 @@ func printResult(out io.Writer, result sem.Result, asJSON bool, producerVersion 
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(out, string(encoded))
+		fmt.Fprintln(termsafe.NewJSONWriter(out), string(encoded))
 		return nil
 	}
 	sem.WriteText(out, result)

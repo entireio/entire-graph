@@ -214,6 +214,10 @@ func TestCacheWritesRefuseSymlinkedFamilyDirectories(t *testing.T) {
 func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
 	options := ProviderSnapshotOptions{Profile: ProfileFull}
 	snapshot := ProviderSnapshot{Header: SnapshotHeader{
+		// Real snapshots always stamp the schema they were built under (see
+		// newProviderSnapshot); the cache validator now requires it, so a
+		// hand-built header has to carry it too.
+		SchemaVersion:   SchemaVersion,
 		RepoKey:         "github.com/example/repo",
 		Commit:          "old-commit",
 		Tree:            "tree",
@@ -243,6 +247,7 @@ func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
 func TestValidateBuiltSearchSnapshotPinsGraphProvenanceButNotCommit(t *testing.T) {
 	options := ProviderSnapshotOptions{Profile: ProfileFull}
 	want := SnapshotHeader{
+		SchemaVersion:   SchemaVersion,
 		Provider:        ProviderName,
 		ProviderVersion: "test-version",
 		RepoKey:         "github.com/example/repo",
@@ -268,6 +273,8 @@ func TestValidateBuiltSearchSnapshotPinsGraphProvenanceButNotCommit(t *testing.T
 		name   string
 		mutate func(*SnapshotHeader)
 	}{
+		{"schema version missing", func(header *SnapshotHeader) { header.SchemaVersion = "" }},
+		{"schema version foreign", func(header *SnapshotHeader) { header.SchemaVersion = "9.9" }},
 		{"repository key", func(header *SnapshotHeader) { header.RepoKey = "github.com/example/other" }},
 		{"tree", func(header *SnapshotHeader) { header.Tree = "other-tree" }},
 		{"provider", func(header *SnapshotHeader) { header.Provider = "other-provider" }},
@@ -287,7 +294,7 @@ func TestValidateBuiltSearchSnapshotPinsGraphProvenanceButNotCommit(t *testing.T
 
 func TestSearchSnapshotMatchesSelectionPinsRepositoryIdentityAndTree(t *testing.T) {
 	selection := searchFileSelection{repoKey: "github.com/example/repo", tree: "tree"}
-	snapshot := ProviderSnapshot{Header: SnapshotHeader{RepoKey: selection.repoKey, Tree: selection.tree}}
+	snapshot := ProviderSnapshot{Header: SnapshotHeader{SchemaVersion: SchemaVersion, RepoKey: selection.repoKey, Tree: selection.tree}}
 	if !searchSnapshotMatchesSelection(snapshot, selection) {
 		t.Fatal("matching snapshot and selection rejected")
 	}
