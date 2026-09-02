@@ -259,10 +259,10 @@ func TestExecuteOnlyRepositoryRootIsRefusedByTheListingPreflight(t *testing.T) {
 	}
 }
 
-// TestManuallyConfinedWorktreeSourceReadsAndConfines pins the reader openSource
-// falls back to when it cannot hold an os.Root: no closer, in-repository reads
-// still work, and every escape the rooted reader refuses is refused here too.
-func TestManuallyConfinedWorktreeSourceReadsAndConfines(t *testing.T) {
+// TestManuallyConfinedWorktreeSourceFailsClosed pins the defensive source used
+// when no repository root descriptor can be retained: it has no closer and
+// refuses every content read rather than trusting pathname identity.
+func TestManuallyConfinedWorktreeSourceFailsClosed(t *testing.T) {
 	t.Parallel()
 	repo, outside := newContainmentFixture(t)
 	if err := os.WriteFile(filepath.Join(outside, "big.env"), []byte(strings.Repeat("x", 4096)), 0o600); err != nil {
@@ -274,11 +274,11 @@ func TestManuallyConfinedWorktreeSourceReadsAndConfines(t *testing.T) {
 	if opened.close != nil {
 		t.Error("manually confined source returned a closer; no os.Root was ever opened")
 	}
-	if content, ok := opened.read("src/a.ts"); !ok || content != "export const a = 1;\n" {
-		t.Fatalf("read(src/a.ts) = %q, %v; the fallback reader must still read a repository file", content, ok)
+	if content, ok := opened.read("src/a.ts"); ok {
+		t.Fatalf("rootless read returned %q; want strict refusal", content)
 	}
-	if prefix, ok := opened.readPrefix("src/a.ts", 6); !ok || prefix != "export" {
-		t.Fatalf("readPrefix(src/a.ts, 6) = %q, %v; want \"export\", true", prefix, ok)
+	if prefix, ok := opened.readPrefix("src/a.ts", 6); ok {
+		t.Fatalf("rootless readPrefix returned %q; want strict refusal", prefix)
 	}
 	if content, ok := opened.read("../secret.env"); ok {
 		t.Errorf("fallback read escaped the repository root and returned %q", content)
