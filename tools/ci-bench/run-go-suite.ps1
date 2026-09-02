@@ -42,6 +42,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Go's JSON stream is UTF-8. Azure Run Command and Windows service contexts can
+# otherwise inherit an OEM code page, causing Tee-Object to mojibake non-ASCII
+# test names before writing the supposedly raw JSONL artifact.
+$originalConsoleOutputEncoding = [Console]::OutputEncoding
+$originalOutputEncoding = $OutputEncoding
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+
 $nativePreferenceExists = Test-Path -LiteralPath 'variable:PSNativeCommandUseErrorActionPreference'
 $originalNativePreference = $null
 if ($nativePreferenceExists) {
@@ -476,6 +485,8 @@ finally {
         if ($nativePreferenceExists) {
             $PSNativeCommandUseErrorActionPreference = $originalNativePreference
         }
+        [Console]::OutputEncoding = $originalConsoleOutputEncoding
+        $OutputEncoding = $originalOutputEncoding
     }
 }
 
