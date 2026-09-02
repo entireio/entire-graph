@@ -1834,6 +1834,188 @@ func RunPipeline() int {
 	}
 }
 
+func TestCapabilityMatrixDeclaresTypeAndFlowRelations(t *testing.T) {
+	// Companion to TestCapabilityMatrixCoversEmittedRelations, which reads the
+	// golden fixtures. Those fixtures do not exercise annotated signatures or
+	// argument forwarding in every semantic language, so ten languages emitted
+	// USES_TYPE / PARAM_TYPE / DATA_FLOWS that `capabilities --json` declared
+	// they could not. AGENTS.md tells agents to feature-detect with that report
+	// before trusting a language, so an under-declaration makes them skip
+	// relations the provider does produce.
+	//
+	// This builds one repository whose files carry the constructs the generic
+	// type and data-flow passes read, and asserts the same invariant directly.
+	repo := t.TempDir()
+	writeFile(t, repo, "clj/core.cljc", `(ns fixture.core)
+
+(defrecord Point [x y])
+
+(defn add [a b] (+ a b))
+
+(defn make-point [x y] (Point. x y))
+
+(defn point-sum [^Point p] (add (:x p) (:y p)))
+`)
+	writeFile(t, repo, "ex/point.ex", `defmodule Fixture.Point do
+  def add(a, b) do
+    a + b
+  end
+
+  def sum(x, y) do
+    add(x, y)
+  end
+end
+`)
+	// The record is named `coord`, not `point`: USES_TYPE resolves signature
+	// identifiers against every type symbol in the repository by short name, so
+	// a record named `point` here was resolving the `point` in this file's R
+	// and Clojure signatures too, crediting those languages with a type edge
+	// that pointed at Erlang.
+	writeFile(t, repo, "erl/fix.erl", `-module(fix).
+-export([sum/1, add/2]).
+
+-record(coord, {x = 0, y = 0}).
+
+add(A, B) ->
+    A + B.
+
+sum(#coord{x = X, y = Y}) ->
+    add(X, Y).
+`)
+	writeFile(t, repo, "fs/Fix.fs", `module Fixture
+
+type Point = { X: int; Y: int }
+
+let add a b = a + b
+
+let sum (p: Point) = add p.X p.Y
+`)
+	writeFile(t, repo, "hs/Fix.hs", `module Fixture where
+
+data Point = Point
+  { px :: Int
+  , py :: Int
+  }
+
+add :: Int -> Int -> Int
+add a b = a + b
+
+pointSum :: Point -> Int
+pointSum p = add (px p) (py p)
+
+main :: IO ()
+main = print (pointSum (Point 1 2))
+`)
+	writeFile(t, repo, "jl/fix.jl", `struct Point
+    x::Int
+    y::Int
+end
+
+function add(a, b)
+    return a + b
+end
+
+function pointsum(p::Point)
+    return add(p.x, p.y)
+end
+`)
+	writeFile(t, repo, "lua/fix.lua", `local function add(a, b)
+  return a + b
+end
+
+local function total(x, y)
+  return add(x, y)
+end
+
+return total
+`)
+	writeFile(t, repo, "objc/Fix.m", `#import <Foundation/Foundation.h>
+
+static NSInteger addValues(NSInteger a, NSInteger b) {
+    return a + b;
+}
+
+static NSInteger total(NSInteger x, NSInteger y) {
+    return addValues(x, y);
+}
+`)
+	writeFile(t, repo, "perl/fix.pl", `use strict;
+use warnings;
+
+sub add {
+    my ($a, $b) = @_;
+    return $a + $b;
+}
+
+sub total {
+    my ($x, $y) = @_;
+    return add($x, $y);
+}
+
+1;
+`)
+	writeFile(t, repo, "r/fix.R", `add <- function(a, b) {
+  a + b
+}
+
+make_point <- function(x, y) {
+  structure(list(x = x, y = y), class = "point")
+}
+
+point_sum <- function(p) {
+  add(p$x, p$y)
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := Capabilities()
+	global := map[string]bool{}
+	for _, relation := range capabilities.HeuristicRelationTypes {
+		global[relation] = true
+	}
+	declared := map[string]map[string]bool{}
+	for language, relations := range capabilities.RelationSupportByLanguage {
+		set := make(map[string]bool, len(relations))
+		for _, relation := range relations {
+			set[relation] = true
+		}
+		declared[language] = set
+	}
+	languageByID := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		languageByID[symbol.ID] = symbol.Language
+	}
+	seen := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		language := languageByID[relation.FromID]
+		if language == "" || global[relation.Type] || declared[language][relation.Type] {
+			continue
+		}
+		key := language + "\x00" + relation.Type
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		t.Errorf("%s emits %s but capabilities declares neither it per-language nor as a global heuristic", language, relation.Type)
+	}
+	// Guard against the assertion passing because nothing was extracted.
+	for _, language := range []string{"Clojure", "Elixir", "Erlang", "F#", "Haskell", "Julia", "Lua", "Objective-C", "Perl", "R"} {
+		found := false
+		for _, symbol := range snapshot.Symbols {
+			if symbol.Language == language {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("fixture produced no %s symbols", language)
+		}
+	}
+}
+
 func TestResourceDependsOnGraph(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "main.tf", `resource "aws_vpc" "main" {
