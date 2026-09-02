@@ -1416,13 +1416,20 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			emitErr = emit(r)
 		}
 		relationsShouldStop := func() bool { return emitErr != nil || budgetHit || gate.expired() }
-		if options.ProjectVersion != nil {
+		if options.ProjectVersion != nil && !relationsShouldStop() {
 			// Read through the snapshot's own content reader: metadata already
 			// validated, bounded by MaxParseBytes, non-regular files refused, and
 			// pinned to this snapshot's revision rather than to a HEAD that can move
 			// underneath it. Above the profile branch so a syntax-only export, which
 			// resolves no relations, still reports a version.
-			options.ProjectVersion(ScipProjectVersion(ManifestReader(sc.read)))
+			//
+			// Gated on both counts, because this sits inside the phase --max-seconds
+			// advertises that it bounds. Unguarded, an expiry landing just before
+			// this line still read and parsed up to three maximum-sized manifests
+			// before anything noticed, so the ceiling did not hold where it was
+			// claimed. budgetedRead stops mid-lookup for the same reason: checking
+			// only on entry leaves the same window one manifest wide.
+			options.ProjectVersion(ScipProjectVersion(ManifestReader(budgetedRead)))
 		}
 		if spec.name == ProfileSyntaxOnly {
 			emitStructuralRelationsCompact(sc.key, files, structuralByFile, relationsShouldStop, func(r RelationRecord) {
