@@ -1884,10 +1884,36 @@ func juliaCallerScope(from SymbolRecord) string {
 // withdraw candidates the method arm itself introduced, never a target that
 // resolved before it.
 func juliaModuleScopedTargetReachable(from, to SymbolRecord) bool {
-	if from.Language != "Julia" || to.Kind != "method" || to.FilePath != from.FilePath {
+	if from.Language != "Julia" || to.Kind != "method" {
+		return true
+	}
+	// The method arm exists so a bare Julia call can reach a Julia
+	// module-scoped definition. The global fallback it draws on is
+	// language-agnostic, so without this an unresolved `runTask()` bound to a
+	// globally unique JAVA or C# method of that name -- a call Julia cannot
+	// make, and one the method arm itself introduced.
+	if to.Language != from.Language {
+		return false
+	}
+	if to.FilePath != from.FilePath {
 		return true
 	}
 	return to.ContainerID == juliaCallerScope(from)
+}
+
+// juliaModuleEmitsNameCalls reports whether a symbol's own block is a place
+// Julia call names may be attributed to it.
+//
+// A `module M ... end` block spans every nested definition, so a scan of the
+// module's own text sees the call names written inside its FUNCTIONS. Those
+// calls belong to the functions, which emit them already. Crediting the module
+// too produced a second edge from a symbol that never made the call: the same
+// `runTask()` appeared as both `M.go -> runTask` and `M -> runTask`. The
+// existing childNamesByContainer guard does not cover this, because it only
+// skips names the module DECLARES, and a call out of the module is not one of
+// them.
+func juliaModuleEmitsNameCalls(from SymbolRecord) bool {
+	return !(from.Language == "Julia" && from.Kind == "module")
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
@@ -3370,6 +3396,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 				for _, name := range sortedKeysOf(callNames) {
 					if name == from.Name {
+						continue
+					}
+					if !juliaModuleEmitsNameCalls(from) {
 						continue
 					}
 					// A container's block spans its members' definition lines, which

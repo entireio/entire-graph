@@ -684,3 +684,61 @@ func TestHeuristicRelationTypesMatchDocumentation(t *testing.T) {
 		}
 	}
 }
+
+// TestJuliaBareCallStaysInsideItsOwnLanguageAndScope pins the two edges the Julia method
+// arm must not create.
+//
+// Admitting method targets is what lets a bare `name(args...)` -- Julia's only call form
+// -- reach a module-scoped definition. Two things ride along with it unless refused. The
+// global fallback it draws on is language-agnostic, so an unresolved call bound to a
+// globally unique JAVA method of the same name, which Julia cannot invoke. And a
+// `module M ... end` block spans every nested definition, so scanning the module's own
+// text saw the call names written inside its FUNCTIONS and credited the module with
+// making them -- the same call appearing twice, once from the function that made it and
+// once from a symbol that did not.
+//
+// The intra-module case is asserted alongside because both fixes withdraw candidates, and
+// a withdrawal that also drops the real edge has traded one wrong answer for another.
+func TestJuliaBareCallStaysInsideItsOwnLanguageAndScope(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+
+	writeFileForTest := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFileForTest("m.jl", "module M\nfunction go()\n    runTask()\nend\nend\n")
+	writeFileForTest("T.java", "public class T { void runTask() { } }\n")
+	writeFileForTest("n.jl", "module N\nfunction outer()\n    inner()\nend\nfunction inner()\n    return 1\nend\nend\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+
+	intraModule := 0
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "CALLS" {
+			continue
+		}
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if from.Language == "Julia" && to.Language != "Julia" {
+			t.Errorf("Julia %s resolved a bare call to %s/%s, which it cannot invoke", from.Name, to.Language, to.Name)
+		}
+		if from.Language == "Julia" && from.Kind == "module" {
+			t.Errorf("module %s credited with calling %s; the call belongs to the function that wrote it", from.Name, to.Name)
+		}
+		if from.Name == "outer" && to.Name == "inner" {
+			intraModule++
+		}
+	}
+	if intraModule != 1 {
+		t.Fatalf("the legitimate intra-module call outer -> inner was withdrawn too (found %d)", intraModule)
+	}
+}
