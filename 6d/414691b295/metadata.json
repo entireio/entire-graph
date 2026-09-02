@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "6d414691b295",
+  "strategy": "manual-commit",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0001-ga-schema-contract.md",
+    "internal/sem/result_shape_contract_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6d/414691b295/0/metadata.json",
+      "transcript": "/6d/414691b295/0/full.jsonl",
+      "compact_transcript": "/6d/414691b295/0/transcript.jsonl",
+      "content_hash": "/6d/414691b295/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 674450,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 69401600,
+    "output_tokens": 110326,
+    "api_call_count": 604
+  }
+}

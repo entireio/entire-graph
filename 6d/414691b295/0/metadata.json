@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "6d414691b295",
+  "session_id": "01a05eba-299a-7303-bec4-7679fccd2a8b",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-02T03:50:00.537755Z",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0001-ga-schema-contract.md",
+    "internal/sem/result_shape_contract_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 674450,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 69401600,
+    "output_tokens": 110326,
+    "api_call_count": 604
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-02T03:49:59.892366Z",
+    "agent_lines": 716,
+    "agent_removed": 104,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 716,
+    "total_lines_changed": 820,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
