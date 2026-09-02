@@ -1,0 +1,7 @@
+aa5cd2b05583b7d421d0e1aa011cdff65fde309256b0b80c51df463b9275001f  docs/ci/windows-investigations/01-larger-runners.md
+7f788451448abd2b3299a885f93affe5337ce5c11ab4b7dd4b583bd2e1ece062  results/windows-ci/a1/cleanup.txt
+a420f9f001d42bbedd402531043bf1a742c6be38d379eccdc929d6a799f708b1  results/windows-ci/a1/cost.json
+2f0497542ede70db6c7a990a36da4ebdb61e6ba67edf7efad12ff730419fbee8  results/windows-ci/a1/environment.json
+f8fc6e1747f21f2091c32e5ca6580cb680a73410bb1684dc35cccd3907c1d76a  results/windows-ci/a1/rejected-runs.json
+bb456384176446203176fd1341f9dffdb25fdcaba0a3390b88ab1703f697bae7  results/windows-ci/a1/runner-access.json
+7ebbfc4bb76f09939d88e598c33edefc0356c7aab3305980f72ca83288570683  results/windows-ci/a1/summary.json

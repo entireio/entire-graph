@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "currency": "USD",
+  "priceSource": {
+    "name": "Azure Retail Prices API",
+    "endpoint": "https://prices.azure.com/api/retail/prices",
+    "fetchedAtUtc": "2026-09-02T17:11:25Z",
+    "vmFilterTemplate": "serviceName eq 'Virtual Machines' and armRegionName eq 'eastus2' and armSkuName eq '<SKU>' and priceType eq 'Consumption'",
+    "vmClientSideSelection": "productName contains Windows; skuName excludes Spot and Low Priority; isPrimaryMeterRegion is true",
+    "diskFilter": "serviceName eq 'Storage' and armRegionName eq 'eastus2' and contains(productName, 'Premium SSD') and priceType eq 'Consumption'",
+    "natFilter": "serviceName eq 'NAT Gateway' and armRegionName eq 'Global' and priceType eq 'Consumption'",
+    "publicIpFilter": "serviceName eq 'Virtual Network' and armRegionName eq 'eastus2' and priceType eq 'Consumption'"
+  },
+  "imagePricingResolution": {
+    "image": "MicrosoftWindowsServer:WindowsServer:2025-datacenter-azure-edition:26100.33222.260810",
+    "exactImageVersionMeterResolved": false,
+    "reason": "The Retail Prices API meters Windows licensing by VM SKU and region, not by Marketplace image version. The selected rows are exact regular Windows VM meters for the tested SKU and region, but the image version is not a meter key."
+  },
+  "vmRates": [
+    {
+      "armSkuName": "Standard_D4ads_v7",
+      "productName": "Virtual Machines Dadsv7 Series Windows",
+      "skuName": "D4ads v7",
+      "meterName": "D4ads v7",
+      "retailPrice": 0.412,
+      "unitOfMeasure": "1 Hour",
+      "effectiveStartDate": "2025-11-01T00:00:00Z"
+    },
+    {
+      "armSkuName": "Standard_D8ads_v7",
+      "productName": "Virtual Machines Dadsv7 Series Windows",
+      "skuName": "D8ads v7",
+      "meterName": "D8ads v7",
+      "retailPrice": 0.824,
+      "unitOfMeasure": "1 Hour",
+      "effectiveStartDate": "2025-11-01T00:00:00Z"
+    },
+    {
+      "armSkuName": "Standard_D16ads_v7",
+      "productName": "Virtual Machines Dadsv7 Series Windows",
+      "skuName": "D16ads v7",
+      "meterName": "D16ads v7",
+      "retailPrice": 1.648,
+      "unitOfMeasure": "1 Hour",
+      "effectiveStartDate": "2025-11-01T00:00:00Z"
+    },
+    {
+      "armSkuName": "Standard_D32ads_v7",
+      "productName": "Virtual Machines Dadsv7 Series Windows",
+      "skuName": "D32ads v7",
+      "meterName": "D32ads v7",
+      "retailPrice": 3.296,
+      "unitOfMeasure": "1 Hour",
+      "effectiveStartDate": "2025-11-01T00:00:00Z"
+    }
+  ],
+  "acceptedRunEstimates": [
+    {
+      "runId": "accepted-screen-03-d4",
+      "vmSize": "Standard_D4ads_v7",
+      "kernelOnlyUsd": 0.088743,
+      "measuredTreatmentUsd": 0.093929
+    },
+    {
+      "runId": "accepted-screen-04-d8",
+      "vmSize": "Standard_D8ads_v7",
+      "kernelOnlyUsd": 0.136095,
+      "measuredTreatmentUsd": 0.143638
+    },
+    {
+      "runId": "accepted-screen-05-d16",
+      "vmSize": "Standard_D16ads_v7",
+      "kernelOnlyUsd": 0.279970,
+      "measuredTreatmentUsd": 0.298388
+    },
+    {
+      "runId": "accepted-screen-02-d32",
+      "vmSize": "Standard_D32ads_v7",
+      "kernelOnlyUsd": 0.509683,
+      "measuredTreatmentUsd": 0.523535
+    },
+    {
+      "runId": "accepted-repeat-01-d32",
+      "vmSize": "Standard_D32ads_v7",
+      "kernelOnlyUsd": 0.534278,
+      "measuredTreatmentUsd": 0.564699
+    },
+    {
+      "runId": "accepted-repeat-02-d32",
+      "vmSize": "Standard_D32ads_v7",
+      "kernelOnlyUsd": 0.503721,
+      "measuredTreatmentUsd": 0.518631
+    }
+  ],
+  "aggregates": {
+    "acceptedKernelOnlyUsd": 2.052490,
+    "acceptedMeasuredTreatmentUsd": 2.142819,
+    "d32MedianKernelOnlyUsd": 0.509683,
+    "d32MedianMeasuredTreatmentUsd": 0.523535
+  },
+  "sharedFixedAndVariableMeters": [
+    {
+      "resource": "128 GiB Premium SSD LRS OS disk",
+      "productName": "Premium SSD Managed Disks",
+      "skuName": "P10 LRS",
+      "meterName": "P10 LRS Disk",
+      "retailPrice": 17.92,
+      "unitOfMeasure": "1/Month",
+      "effectiveStartDate": "2018-05-01T00:00:00Z"
+    },
+    {
+      "resource": "P10 LRS disk mount meter (billing applicability not inferred)",
+      "productName": "Premium SSD Managed Disks",
+      "skuName": "P10 LRS",
+      "meterName": "P10 LRS Disk Mount",
+      "retailPrice": 0.91,
+      "unitOfMeasure": "1/Month",
+      "effectiveStartDate": "2021-07-01T00:00:00Z"
+    },
+    {
+      "resource": "Standard NAT Gateway",
+      "meterName": "Standard Gateway",
+      "retailPrice": 0.045,
+      "unitOfMeasure": "1 Hour",
+      "effectiveStartDate": "2020-06-01T00:00:00Z"
+    },
+    {
+      "resource": "Standard NAT Gateway data",
+      "meterName": "Standard Data Processed",
+      "retailPrice": 0.045,
+      "unitOfMeasure": "1 GB",
+      "effectiveStartDate": "2020-06-01T00:00:00Z"
+    },
+    {
+      "resource": "Standard static public IPv4 attached to NAT only",
+      "meterName": "Standard IPv4 Static Public IP",
+      "retailPrice": 0.005,
+      "unitOfMeasure": "1 Hour",
+      "effectiveStartDate": "2018-06-01T00:00:00Z"
+    }
+  ],
+  "calculation": "Each VM estimate is exact tested duration in hours multiplied by the exact regular Windows hourly meter. Kernel-only uses the exact go-test step; measured treatment includes pin/VM validation, seed restore, suite wrapper, diagnostic probes, cleanup, and terminal treatment metadata. Packaging and upload followed and were measured separately, so they are not included in treatmentSeconds.",
+  "limitations": [
+    "VM estimates exclude provisioning, resize/start, deallocation latency, bootstrap, rejected runs, and idle time because a complete billing-span trace was not retained.",
+    "Disk, NAT, public-IP, blob-capacity, transaction, and egress meters are shared or usage-dependent and are reported separately rather than allocated to a run.",
+    "Retail rates are public list prices, not the subscription invoice rate or negotiated discount."
+  ]
+}

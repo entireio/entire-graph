@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "observedDateUtc": "2026-09-02",
+  "organizationRunnerInventory": {
+    "status": 403,
+    "finding": "The credential lacks organization runner-administration access."
+  },
+  "repositoryRunnerInventory": {
+    "status": 200,
+    "totalCount": 0,
+    "runners": []
+  },
+  "disposition": "Access finding only; it did not block the Azure experiment."
+}
