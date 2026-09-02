@@ -71,8 +71,13 @@ var typeSharingLanguageGroups = [][]string{
 // Swift reaches C++ as well as C and Objective-C: direct C++ interoperability
 // imports C++ types and functions, so `Swift -> C++` is a real edge. The reverse
 // is still refused -- C++ has no way to name a Swift declaration.
+//
+// C++ reaches Objective-C-LABELLED declarations because the label follows the
+// file, not the declaration: a header holding any Objective-C syntax is labelled
+// Objective-C even where it also declares plain C structs and functions, which
+// C++ compiles unchanged. Refusing the pair dropped those edges wholesale.
 var typeSharingLanguageEdges = map[string][]string{
-	"C++":           {"C"},
+	"C++":           {"C", "Objective-C"},
 	"Objective-C":   {"C"},
 	"Objective-C++": {"C", "C++", "Objective-C"},
 	"Swift":         {"C", "Objective-C", "C++"},

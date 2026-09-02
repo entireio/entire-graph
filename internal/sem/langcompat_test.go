@@ -227,6 +227,7 @@ func TestLanguagesShareTypesRelation(t *testing.T) {
 	// file exists to remove.
 	for _, pair := range [][2]string{
 		{"C++", "C"},
+		{"C++", "Objective-C"},
 		{"Objective-C", "C"},
 		{"Objective-C++", "C"},
 		{"Objective-C++", "C++"},
