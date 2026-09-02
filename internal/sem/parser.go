@@ -7844,9 +7844,37 @@ func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
 			// previously it produced no name at all. Its text runs up to the
 			// (always present) parameter list, so cutting at the first `(`
 			// keeps `operator const char*` and drops `() const`.
+			// Cut at the parameter list STRUCTURALLY. The target type can
+			// contain parentheses of its own -- `operator decltype(value)()
+			// const` and `operator void(*)()` are both valid -- so the first
+			// '(' is not reliably the parameter list. Cutting there produced
+			// `operator decltype` and `operator void`, collapsing unrelated
+			// conversions onto one name and one symbol ID.
+			//
+			// The operator's parameter list hangs off its declarator child, so
+			// the type is everything before that node starts. A conversion to a
+			// function pointer still loses the type's own trailing `()`
+			// (`operator void(*)`), which no longer collides with plain
+			// `operator void` but does not yet separate two pointer
+			// conversions differing only in their signature.
 			text := cur.Content(src)
-			if paren := strings.IndexByte(text, '('); paren >= 0 {
-				text = text[:paren]
+			cutAtParams := false
+			for i := 0; i < int(cur.ChildCount()); i++ {
+				child := cur.Child(i)
+				if !validNode(child) || !strings.HasSuffix(child.Type(), "declarator") {
+					continue
+				}
+				params := firstDescendantOfType(child, "parameter_list")
+				if validNode(params) && params.StartByte() > cur.StartByte() {
+					text = string(src[cur.StartByte():params.StartByte()])
+					cutAtParams = true
+					break
+				}
+			}
+			if !cutAtParams {
+				if paren := strings.IndexByte(text, '('); paren >= 0 {
+					text = text[:paren]
+				}
 			}
 			if name := normalize(text); name != "" {
 				return name

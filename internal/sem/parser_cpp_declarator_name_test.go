@@ -185,3 +185,36 @@ void *operator new(size_t sz) { return nullptr; }
 		}
 	}
 }
+
+// TestCPlusPlusConversionOperatorKeepsAParenthesizedTarget pins the cut point for a
+// conversion operator's name.
+//
+// A conversion operator is named for the type it converts to, and that type may contain
+// parentheses of its own -- `decltype(...)` and function pointers both do. Cutting the
+// name at the first '(' truncated the type, so `operator decltype(Value::v)()` was named
+// `operator decltype` and every conversion whose type merely BEGAN the same way collapsed
+// onto one name and one symbol ID: the same identity destruction this file's original
+// return-type bug caused. The cut is structural now -- the type is what precedes the
+// operator's own parameter list.
+func TestCPlusPlusConversionOperatorKeepsAParenthesizedTarget(t *testing.T) {
+	src := `struct Value { int v; };
+
+struct S {
+  operator decltype(Value::v)() const { return 0; }
+  operator const char*() const { return ""; }
+};
+`
+	kinds := parseCPlusPlus(t, src)
+	for _, name := range []string{
+		"S.operator decltype(Value::v)",
+		"S.operator const char*",
+	} {
+		if kinds[name] == "" {
+			t.Fatalf("conversion operator %q not extracted; got %#v", name, kinds)
+		}
+	}
+	// The truncated spelling is what collided the identities, so it must be gone.
+	if _, truncated := kinds["S.operator decltype"]; truncated {
+		t.Fatalf("name still cut at the type's own parenthesis: %#v", kinds)
+	}
+}
