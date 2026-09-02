@@ -1,0 +1,340 @@
+name: Windows compile-once shard experiment
+
+# Prototype only. GitHub cannot dispatch a workflow that exists solely on a
+# non-default branch, so the measured investigation is run through isolated
+# Azure VMs. Keep this manual and non-required if it is later placed on main.
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: Weighted execution-shard count
+        required: true
+        default: "6"
+        type: choice
+        options: ["4", "6", "8"]
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_SHA: ee6468a6a49d9b2a1a828bd276792f415f392185
+  GO_VERSION: 1.26.7
+  CGO_ENABLED: "1"
+  GOOS: windows
+  GOARCH: amd64
+
+jobs:
+  compile-heavy-once:
+    name: Compile heavy packages once (default vet)
+    runs-on: windows-latest
+    steps:
+      - name: Check out experiment harness
+        uses: actions/checkout@v6
+        with:
+          path: harness
+          persist-credentials: false
+      - name: Check out pinned product
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          path: product
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: product/go.sum
+      - name: Compile, dynamically list, and partition heavy tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = (Resolve-Path product).Path
+          $tools = (Resolve-Path harness/tools/ci-bench).Path
+          $out = Join-Path $env:RUNNER_TEMP 'a2-compile'
+          $binaries = Join-Path $out 'binaries'
+          New-Item -ItemType Directory -Path $binaries -Force | Out-Null
+          $rows = @(
+            @{ package = './internal/sem'; name = 'sem.test.exe' },
+            @{ package = './internal/cli'; name = 'cli.test.exe' },
+            @{ package = './internal/gitutil'; name = 'gitutil.test.exe' }
+          )
+          $metrics = [System.Collections.Generic.List[object]]::new()
+          foreach ($row in $rows) {
+            $binary = Join-Path $binaries $row.name
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            Push-Location $repo
+            try {
+              # Candidate path deliberately retains go test's default vet.
+              & go test -c $row.package -o $binary
+              $code = $LASTEXITCODE
+            } finally { Pop-Location; $watch.Stop() }
+            $metrics.Add(@{ package = $row.package; binary = $row.name; durationSeconds = $watch.Elapsed.TotalSeconds; exitCode = $code })
+            if ($code -ne 0) { throw "compile failed for $($row.package): $code" }
+            & pwsh -NoProfile -File (Join-Path $tools 'list-tests.ps1') `
+              -RepositoryPath $repo -BinaryPath $binary -PackageArgument $row.package `
+              -OutputPath (Join-Path $out ($row.name + '.inventory.json'))
+            if ($LASTEXITCODE -ne 0) { throw "inventory failed for $($row.package)" }
+          }
+
+          $heavy = @(
+            'github.com/entireio/entire-graph/internal/sem',
+            'github.com/entireio/entire-graph/internal/cli',
+            'github.com/entireio/entire-graph/internal/gitutil'
+          )
+          $packageRows = @()
+          Push-Location $repo
+          try { $listed = @(& go list -f '{{.ImportPath}}|{{.Dir}}|{{len .TestGoFiles}}|{{len .XTestGoFiles}}' ./...); $listCode = $LASTEXITCODE }
+          finally { Pop-Location }
+          if ($listCode -ne 0) { throw "target-Windows go list failed: $listCode" }
+          foreach ($line in $listed) {
+            $fields = $line -split '\|', 4
+            $packageRows += @{
+              importPath = $fields[0]
+              directory = $fields[1]
+              testGoFileCount = [int] $fields[2]
+              externalTestGoFileCount = [int] $fields[3]
+              heavy = $heavy -contains $fields[0]
+            }
+          }
+          @{ schema = 'ci-bench.windows-package-inventory.v1'; goos = 'windows'; goarch = 'amd64'; cgoEnabled = '1'; packages = $packageRows } |
+            ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $out 'windows-package-inventory.json') -Encoding utf8NoBOM
+
+          $inventoryArgs = @()
+          Get-ChildItem -LiteralPath $out -Filter '*.inventory.json' | Sort-Object Name | ForEach-Object {
+            $inventoryArgs += @('--inventory', $_.FullName)
+          }
+          $timingArgs = @()
+          $historical = Join-Path (Resolve-Path harness/results/windows-ci/a2).Path 'top-level-timings.jsonl'
+          if (Test-Path -LiteralPath $historical) { $timingArgs = @('--timings', $historical) }
+          foreach ($count in 4, 6, 8) {
+            & python (Join-Path $tools 'partition-tests.py') @inventoryArgs @timingArgs `
+              --shards $count --output (Join-Path $out "plan-$count.json")
+            if ($LASTEXITCODE -ne 0) { throw "partitioning $count shards failed" }
+          }
+          @{ exitCode = 0; compileExitCodes = @($metrics | ForEach-Object { $_.exitCode }); compile = $metrics } |
+            ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $out 'compile-metadata.json') -Encoding utf8NoBOM
+      - name: Upload binaries and plans
+        uses: actions/upload-artifact@v6
+        with:
+          name: a2-compiled-heavy
+          path: ${{ runner.temp }}/a2-compile
+          if-no-files-found: error
+          retention-days: 14
+
+  monolithic-baseline:
+    name: Coverage-reference monolithic baseline
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - name: Capture the exact dynamic event reference
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $out = Join-Path $env:RUNNER_TEMP 'a2-baseline'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          & go clean -testcache
+          $cleanCode = $LASTEXITCODE
+          if ($cleanCode -ne 0) { throw "go clean -testcache failed: $cleanCode" }
+          $watch = [Diagnostics.Stopwatch]::StartNew()
+          & go test -json -timeout 30m ./... 1> (Join-Path $out 'baseline-events.jsonl') 2> (Join-Path $out 'baseline.stderr.log')
+          $testCode = $LASTEXITCODE
+          $watch.Stop()
+          @{
+            schema = 'ci-bench.a2-workflow-baseline.v1'
+            cleanTestCacheExitCode = $cleanCode
+            exitCode = $testCode
+            durationSeconds = $watch.Elapsed.TotalSeconds
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $out 'baseline-metadata.json') -Encoding utf8NoBOM
+          if ($testCode -ne 0) { exit $testCode }
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: a2-monolithic-baseline
+          path: ${{ runner.temp }}/a2-baseline
+          if-no-files-found: error
+          retention-days: 14
+
+  other-packages:
+    name: Run every non-heavy package once (default vet)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - name: Test exact target-Windows non-heavy inventory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'a2-other'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $heavy = @(
+            'github.com/entireio/entire-graph/internal/sem',
+            'github.com/entireio/entire-graph/internal/cli',
+            'github.com/entireio/entire-graph/internal/gitutil'
+          )
+          $packages = @(& go list -f '{{.ImportPath}}' ./... | Where-Object { $heavy -notcontains $_ })
+          if ($LASTEXITCODE -ne 0 -or $packages.Count -eq 0) { throw 'failed to generate non-heavy package inventory' }
+          & go clean -testcache
+          if ($LASTEXITCODE -ne 0) { throw 'go clean -testcache failed' }
+          $watch = [Diagnostics.Stopwatch]::StartNew()
+          & go test -json -timeout 30m @packages 1> (Join-Path $out 'other-events.jsonl') 2> (Join-Path $out 'other.stderr.log')
+          $code = $LASTEXITCODE
+          $watch.Stop()
+          @{ exitCode = $code; packageCount = $packages.Count; durationSeconds = $watch.Elapsed.TotalSeconds; packages = $packages } |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $out 'other-metadata.json') -Encoding utf8NoBOM
+          if ($code -ne 0) { exit $code }
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: a2-other-packages
+          path: ${{ runner.temp }}/a2-other
+          if-no-files-found: error
+          retention-days: 14
+
+  strengthened-vet:
+    name: Strengthened standalone vet (concurrent)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - name: Run standalone go vet
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'a2-vet'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $watch = [Diagnostics.Stopwatch]::StartNew()
+          & go vet ./... 1> (Join-Path $out 'vet.stdout.log') 2> (Join-Path $out 'vet.stderr.log')
+          $code = $LASTEXITCODE
+          $watch.Stop()
+          @{ exitCode = $code; durationSeconds = $watch.Elapsed.TotalSeconds; fidelity = 'strengthened: candidate compile/tests also retain default vet' } |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $out 'vet-metadata.json') -Encoding utf8NoBOM
+          if ($code -ne 0) { exit $code }
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: a2-strengthened-vet
+          path: ${{ runner.temp }}/a2-vet
+          retention-days: 14
+
+  execute-heavy-shards:
+    name: Execute ${{ inputs.shards }} shards / shard ${{ matrix.shard }}
+    needs: compile-heavy-once
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shards == '4' && '[0,1,2,3]' || inputs.shards == '6' && '[0,1,2,3,4,5]' || '[0,1,2,3,4,5,6,7]') }}
+    runs-on: windows-latest
+    steps:
+      - name: Check out experiment harness
+        uses: actions/checkout@v6
+        with:
+          path: harness
+          persist-credentials: false
+      - name: Check out pinned product
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          path: product
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: product/go.sum
+      - uses: actions/download-artifact@v6
+        with:
+          name: a2-compiled-heavy
+          path: ${{ runner.temp }}/a2-compiled-heavy
+      - name: Execute compiled binaries from package source directories
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File harness/tools/ci-bench/run-test-shard.ps1 `
+            -PlanPath "${{ runner.temp }}/a2-compiled-heavy/plan-${{ inputs.shards }}.json" `
+            -ShardIndex ${{ matrix.shard }} `
+            -RepositoryPath product `
+            -BinaryDirectory "${{ runner.temp }}/a2-compiled-heavy/binaries" `
+            -OutputDirectory "${{ runner.temp }}/a2-shard-${{ matrix.shard }}" `
+            -ExpectedRepositorySha $env:PRODUCT_SHA `
+            -Timeout 30m
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: a2-shard-${{ inputs.shards }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/a2-shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-equivalence:
+    name: Fail-closed coverage equivalence
+    needs: [compile-heavy-once, monolithic-baseline, execute-heavy-shards, other-packages, strengthened-vet]
+    if: always() && needs.compile-heavy-once.result == 'success' && needs.monolithic-baseline.result == 'success' && needs.execute-heavy-shards.result == 'success' && needs.other-packages.result == 'success' && needs.strengthened-vet.result == 'success'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: harness
+          persist-credentials: false
+      - uses: actions/download-artifact@v6
+        with:
+          name: a2-compiled-heavy
+          path: ${{ runner.temp }}/compiled
+      - uses: actions/download-artifact@v6
+        with:
+          name: a2-monolithic-baseline
+          path: ${{ runner.temp }}/baseline
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: a2-shard-${{ inputs.shards }}-*
+          path: ${{ runner.temp }}/shards
+      - uses: actions/download-artifact@v6
+        with:
+          name: a2-other-packages
+          path: ${{ runner.temp }}/other
+      - uses: actions/download-artifact@v6
+        with:
+          name: a2-strengthened-vet
+          path: ${{ runner.temp }}/vet
+      - name: Compare baseline and sharded event multisets
+        shell: pwsh
+        run: |
+          $args = @(
+            '--baseline-events', (Resolve-Path '${{ runner.temp }}/baseline/baseline-events.jsonl').Path,
+            '--plan', (Resolve-Path "${{ runner.temp }}/compiled/plan-${{ inputs.shards }}.json").Path,
+            '--package-inventory', (Resolve-Path '${{ runner.temp }}/compiled/windows-package-inventory.json').Path,
+            '--output', '${{ runner.temp }}/equivalence.json',
+            '--metadata', (Resolve-Path '${{ runner.temp }}/compiled/compile-metadata.json').Path,
+            '--metadata', (Resolve-Path '${{ runner.temp }}/baseline/baseline-metadata.json').Path,
+            '--metadata', (Resolve-Path '${{ runner.temp }}/other/other-metadata.json').Path,
+            '--metadata', (Resolve-Path '${{ runner.temp }}/vet/vet-metadata.json').Path,
+            '--candidate-events', (Resolve-Path '${{ runner.temp }}/other/other-events.jsonl').Path
+          )
+          Get-ChildItem '${{ runner.temp }}/compiled' -Filter '*.inventory.json' | ForEach-Object { $args += @('--inventory', $_.FullName) }
+          Get-ChildItem '${{ runner.temp }}/shards' -Recurse -Filter 'shard-events.jsonl' | ForEach-Object { $args += @('--candidate-events', $_.FullName) }
+          Get-ChildItem '${{ runner.temp }}/shards' -Recurse -Filter 'shard-metadata.json' | ForEach-Object { $args += @('--metadata', $_.FullName) }
+          & python harness/tools/ci-bench/verify-shard-inventory.py @args
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: a2-equivalence-${{ inputs.shards }}
+          path: ${{ runner.temp }}/equivalence.json
+          if-no-files-found: error
+          retention-days: 14

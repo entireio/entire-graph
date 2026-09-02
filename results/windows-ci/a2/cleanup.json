@@ -1,0 +1,10 @@
+{
+  "schema": "ci-bench.a2-cleanup.v1",
+  "verifiedUtc": "2026-09-02T16:32:02Z",
+  "target": "exact derived rg-entire-win-ci-a2-<run-id> group",
+  "artifactCountExportedBeforeDeletion": 22,
+  "groupExists": false,
+  "matchingTaggedGroupCount": 0,
+  "matchingTaggedResourceCount": 0,
+  "result": "all disposable A2 Azure resources deleted"
+}
