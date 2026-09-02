@@ -183,6 +183,12 @@ func (encoder *CompactSnapshotEncoder) relationRow(record RelationRecord) compac
 		}
 	}
 	row := []any{"r", fromID, toID, relationType, record.Confidence, reason, relationScope, resolution, targetKind, evidence, warnings}
+	// Optional trailing field. Emitted only when something was actually dropped,
+	// so the row stays byte-identical for the overwhelming majority of relations.
+	// Compact v1 readers accept either the original 11 fields or this 12th field.
+	if record.EvidenceDropped > 0 {
+		row = append(row, record.EvidenceDropped)
+	}
 	return encoder.dataRow(row, base)
 }
 
@@ -1201,8 +1207,8 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 		}
 		return SymbolRecord{RecordType: "symbol", ID: values[0], StableIDVersion: values[1], Kind: values[2], Name: values[3], QualifiedName: values[4], FilePath: values[5], StartLine: start, EndLine: end, Signature: values[6], BodyHash: values[7], Language: values[8], ContainerID: values[9], Aliases: aliases}, nil
 	case "r":
-		if len(fields) != 11 {
-			return nil, fmt.Errorf("relation record arity %d, want 11", len(fields))
+		if len(fields) != 11 && len(fields) != 12 {
+			return nil, fmt.Errorf("relation record arity %d, want 11 or 12", len(fields))
 		}
 		values := make([]string, 7)
 		for i, position := range []int{1, 2, 3, 5, 6, 7, 8} {
@@ -1259,7 +1265,16 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 				warnings[i] = dictionary[index]
 			}
 		}
-		return RelationRecord{RecordType: "relation", FromID: values[0], ToID: values[1], Type: values[2], Confidence: confidence, Reason: values[3], RelationScope: values[4], Resolution: values[5], TargetKind: values[6], Evidence: evidence, WarningCodes: warnings}, nil
+		evidenceDropped := 0
+		if len(fields) == 12 {
+			if err := json.Unmarshal(fields[11], &evidenceDropped); err != nil {
+				return nil, err
+			}
+			if evidenceDropped < 0 {
+				return nil, fmt.Errorf("evidence_dropped %d must be non-negative", evidenceDropped)
+			}
+		}
+		return RelationRecord{RecordType: "relation", FromID: values[0], ToID: values[1], Type: values[2], Confidence: confidence, Reason: values[3], RelationScope: values[4], Resolution: values[5], TargetKind: values[6], Evidence: evidence, WarningCodes: warnings, EvidenceDropped: evidenceDropped}, nil
 	}
 	return nil, fmt.Errorf("unknown compact data tag %q", tag)
 }

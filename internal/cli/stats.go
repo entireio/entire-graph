@@ -17,6 +17,7 @@ import (
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // stats answers the question users actually ask about a code graph: "did this save me
@@ -226,7 +227,7 @@ func runStats(ctx context.Context, opts Options, args []string) error {
 	}
 
 	if flags.Format == "json" {
-		encoder := json.NewEncoder(opts.Stdout)
+		encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(report)
 	}
