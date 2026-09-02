@@ -209,6 +209,18 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		if oldPath == "" {
 			oldPath = path
 		}
+		// The status this file is REPORTED under, when that differs from the
+		// status the read plan below runs on. A one-sided symlink type change is
+		// READ as if it were an addition or a deletion, because only one side
+		// holds analyzable content, but the path itself was neither added nor
+		// deleted — it changed type — so the delta keeps the status Git gave it.
+		//
+		// It stays empty for every other entry on purpose. A later restatement
+		// — a rename across the supported/unsupported boundary — also rewrites
+		// file.Status, and there the NEW value is the one that must be reported:
+		// the range really did delete or add the only side the graph holds.
+		// Freezing Git's status for every entry reported those renames as "R".
+		var reportedStatus string
 		beforeInvalidPath := file.Status != "A" && !gitutil.IsCanonicalGitTreePath(oldPath)
 		afterInvalidPath := file.Status != "D" && !gitutil.IsCanonicalGitTreePath(path)
 		if beforeInvalidPath || afterInvalidPath {
@@ -222,6 +234,59 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			}
 			result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
 			continue
+		}
+
+		// A symbolic link is stored as a blob whose bytes are its target path,
+		// so it reaches the readers below indistinguishable from a one-line
+		// source file: `alias.py` holding "pkg/real.py" parses cleanly as
+		// Python and yields a phantom module entity, while `alias.go` holding
+		// "pkg/real.go" fails to parse and reports E_PARSE_ERROR against a file
+		// that is not source at all. Mode is the only signal that separates
+		// them, so classify here — alongside the gitlink handling below, which
+		// this mirrors — rather than reading content that cannot be analyzed.
+		beforeSymlink := file.Status != "A" && file.OldMode == gitutil.SymlinkMode
+		afterSymlink := file.Status != "D" && file.NewMode == gitutil.SymlinkMode
+		if beforeSymlink || afterSymlink {
+			warningPath := path
+			detail := "head version is a symbolic link, not file content"
+			if beforeSymlink && !afterSymlink {
+				warningPath = oldPath
+				detail = "base version is a symbolic link, not file content"
+			} else if beforeSymlink && afterSymlink {
+				detail = "base and head versions are symbolic links, not file content"
+			}
+			// A path can change TYPE between a regular file and a symbolic
+			// link, which Git reports as status `T` with one mode 100644 and the
+			// other 120000. Only the symlink side is unanalyzable; the other
+			// side is ordinary source whose symbols genuinely appear or
+			// disappear at this commit. Skipping BOTH sides discarded that:
+			// replacing a source file with a link reported no removals, and
+			// replacing a link with a source file reported no additions, so a
+			// symbol that really left the tree was invisible in the diff. Read
+			// the file side as the one-sided change it is and skip only the
+			// link side. `A` and `D` are excluded because they have only one
+			// side to begin with, and it is the symlink.
+			effect := "file skipped; the Git tree entry is a symbolic link, so its changes are not analyzed"
+			typeChange := beforeSymlink != afterSymlink && file.Status != "A" && file.Status != "D"
+			if typeChange {
+				effect = "symbolic-link side skipped; the file side is analyzed as a one-sided change"
+				reportedStatus = file.Status
+				if afterSymlink {
+					file.Status = "D"
+				} else {
+					file.Status = "A"
+				}
+			}
+			result.Warnings = append(result.Warnings, ProviderWarning{
+				Code:                 "W_UNSUPPORTED_FILE",
+				Severity:             "info",
+				FilePath:             warningPath,
+				EffectOnCompleteness: effect,
+				Detail:               detail,
+			})
+			if !typeChange {
+				continue
+			}
 		}
 
 		var before, after string
@@ -564,10 +629,14 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			}
 			changes = append(changes, mod)
 		}
+		deltaStatus := file.Status
+		if reportedStatus != "" {
+			deltaStatus = reportedStatus
+		}
 		deltas = append(deltas, &fileDelta{
 			path:     path,
 			oldPath:  file.OldPath,
-			status:   file.Status,
+			status:   deltaStatus,
 			language: language,
 			changes:  changes,
 			removed:  removed,
@@ -1235,10 +1304,17 @@ func (p diffIndexPolicy) admitFunc() func(string) bool {
 //	base no,  head no    dropped
 //
 // Rewriting to "D" and "A" needs no new emission code: both are ordinary
-// name-status inputs, and the loop above already derives its read plan from
+// raw-diff inputs, and the loop above already derives its read plan from
 // Status alone. The emitted FileChange.Status is then the graph's truth rather
 // than Git's — a rename out of the index IS a deletion of everything the index
 // held.
+//
+// A rewrite restates the status; it does not restate what the entry IS. The
+// surviving side's tree entry mode must therefore travel with it, because the
+// loop above classifies on mode: a rewritten entry that arrives with an empty
+// OldMode/NewMode reads as an ordinary blob, so an added or deleted symlink
+// would be parsed as source. Any field that decides how an entry is read has to
+// be carried here for the same reason.
 //
 // A copy (status "C") is the one entry that is never a comparison at all: its
 // source still exists, so the destination is purely an addition and must never
@@ -1266,7 +1342,7 @@ func admitChangedFiles(changed []gitutil.ChangedFile, base, head diffIndexPolicy
 			// otherwise: never a deletion of a file that still exists, and never
 			// a comparison against a source this change did not touch.
 			if inHead {
-				kept = append(kept, gitutil.ChangedFile{Status: "A", Path: file.Path})
+				kept = append(kept, gitutil.ChangedFile{Status: "A", Path: file.Path, NewMode: file.NewMode})
 			}
 			continue
 		}
@@ -1274,9 +1350,9 @@ func admitChangedFiles(changed []gitutil.ChangedFile, base, head diffIndexPolicy
 		case inBase && inHead:
 			kept = append(kept, file)
 		case inBase:
-			kept = append(kept, gitutil.ChangedFile{Status: "D", Path: oldPath})
+			kept = append(kept, gitutil.ChangedFile{Status: "D", Path: oldPath, OldMode: file.OldMode})
 		case inHead:
-			kept = append(kept, gitutil.ChangedFile{Status: "A", Path: file.Path})
+			kept = append(kept, gitutil.ChangedFile{Status: "A", Path: file.Path, NewMode: file.NewMode})
 		}
 	}
 	return kept
