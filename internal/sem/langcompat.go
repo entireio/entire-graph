@@ -40,10 +40,11 @@ import (
 // (extensions are written in C, and the dynamic language never names the C
 // struct), Go/C (cgo references are qualified `C.Foo`).
 var typeSharingLanguageGroups = [][]string{
-	// One header set. C++ and Objective-C consume C headers unchanged, and
-	// Swift imports C and Objective-C declarations via bridging headers.
-	// Objective-C++ is inventory-only today but belongs to the same family.
-	{"C", "C++", "Objective-C", "Objective-C++", "Swift"},
+	// Shells. `source ./lib.sh` executes the library's functions in the calling
+	// shell, so a `.zsh` caller genuinely names functions declared in a `.sh`
+	// file. The extensions map to different language labels (Bash and Zsh), and
+	// without this pair a sourced helper lost its CALLS edge entirely.
+	{"Bash", "Zsh"},
 	// The JVM. All of these compile to JVM classes and name Java types
 	// directly in signatures and type hints.
 	{"Java", "Kotlin", "Scala", "Groovy", "Clojure"},
@@ -59,12 +60,35 @@ var typeSharingLanguageGroups = [][]string{
 	{"C#", "F#"},
 }
 
-// typeSharingLanguages is the symmetric closure of typeSharingLanguageGroups:
-// language -> the set of other languages whose type declarations it may name.
-var typeSharingLanguages = buildTypeSharingLanguages(typeSharingLanguageGroups)
+// typeSharingLanguageEdges lists the pairs whose interoperability runs ONE WAY,
+// keyed by the naming language. A symmetric group cannot express the C family:
+// C++ and Objective-C compile C headers unchanged and Swift imports both through
+// the Clang importer, but C has no way to name a C++ class or template, and an
+// Objective-C `.m` cannot name a C++ type either -- only `.mm` can. Listing the
+// family as one symmetric set therefore licensed exactly the impossible edges
+// this file exists to remove, just in the other direction.
+var typeSharingLanguageEdges = map[string][]string{
+	"C++":           {"C"},
+	"Objective-C":   {"C"},
+	"Objective-C++": {"C", "C++", "Objective-C"},
+	"Swift":         {"C", "Objective-C"},
+}
 
-func buildTypeSharingLanguages(groups [][]string) map[string]map[string]bool {
+// typeSharingLanguages is the symmetric closure of typeSharingLanguageGroups
+// plus the one-way edges above: language -> the set of other languages whose
+// type declarations it may name.
+var typeSharingLanguages = buildTypeSharingLanguages(typeSharingLanguageGroups, typeSharingLanguageEdges)
+
+func buildTypeSharingLanguages(groups [][]string, edges map[string][]string) map[string]map[string]bool {
 	compatible := map[string]map[string]bool{}
+	for from, targets := range edges {
+		for _, target := range targets {
+			if compatible[from] == nil {
+				compatible[from] = map[string]bool{}
+			}
+			compatible[from][target] = true
+		}
+	}
 	for _, group := range groups {
 		for _, a := range group {
 			for _, b := range group {

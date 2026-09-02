@@ -101,8 +101,12 @@ func TestTypeReferenceKeepsSharedDeclarationLanguages(t *testing.T) {
 	// C header type used from C++, and a C++ type used from C.
 	writeFile(t, repo, "wid.h", "struct Widget { int w; };\n")
 	writeFile(t, repo, "render.cpp", "void renderWidget(Widget w) { }\n")
-	writeFile(t, repo, "shape.hpp", "class Shape { public: int n; };\n")
-	writeFile(t, repo, "use_shape.c", "void use_shape(Shape s) { }\n")
+	// There is deliberately no C-names-C++ fixture. That direction is impossible
+	// -- `void use_shape(Shape s)` in a .c file does not compile as C at all --
+	// so the case it used to assert pinned the defect rather than the contract.
+	// Objective-C++ is the only family member that may name a C++ class, and it
+	// is inventory-only today, so it emits no type edge to assert on. The
+	// legitimate direction is covered by C++/renderWidget->C/Widget above.
 	// C struct used from Swift (bridging header).
 	writeFile(t, repo, "vec.h", "struct Vec3 { float x; };\n")
 	writeFile(t, repo, "use_vec.swift", "func useVec(v: Vec3) { }\n")
@@ -137,7 +141,6 @@ func TestTypeReferenceKeepsSharedDeclarationLanguages(t *testing.T) {
 	edges := typeEdgeSet(t, snapshot)
 	for _, want := range []string{
 		"C++/renderWidget->C/Widget",
-		"C/use_shape->C++/Shape",
 		"Swift/useVec->C/Vec3",
 		"Kotlin/billInvoice->Java/Invoice",
 		"Scala/postLedger->Java/Ledger",
@@ -200,21 +203,42 @@ func TestLanguagesShareTypesRelation(t *testing.T) {
 	t.Parallel()
 	for _, pair := range [][2]string{
 		{"Go", "Go"},
-		{"C", "C++"},
-		{"C++", "Objective-C"},
-		{"Swift", "C"},
 		{"Java", "Kotlin"},
 		{"Scala", "Groovy"},
 		{"Clojure", "Java"},
 		{"Clojure", "ClojureScript"},
 		{"TypeScript", "JavaScript"},
 		{"C#", "F#"},
+		// Sourcing runs the library's functions in the calling shell, so the
+		// naming works in whichever direction the `source` is written.
+		{"Bash", "Zsh"},
 	} {
 		if !languagesShareTypes(pair[0], pair[1]) {
 			t.Fatalf("languagesShareTypes(%q, %q) = false, want true", pair[0], pair[1])
 		}
 		if !languagesShareTypes(pair[1], pair[0]) {
 			t.Fatalf("relation is not symmetric for %q/%q", pair[0], pair[1])
+		}
+	}
+	// The C family is one-way. C++ and Objective-C compile C headers unchanged
+	// and Swift imports both, but C has no way to name a C++ class or template,
+	// and an Objective-C `.m` cannot name a C++ type either -- only `.mm` can.
+	// Asserting these as symmetric licensed exactly the impossible edges this
+	// file exists to remove.
+	for _, pair := range [][2]string{
+		{"C++", "C"},
+		{"Objective-C", "C"},
+		{"Objective-C++", "C"},
+		{"Objective-C++", "C++"},
+		{"Objective-C++", "Objective-C"},
+		{"Swift", "C"},
+		{"Swift", "Objective-C"},
+	} {
+		if !languagesShareTypes(pair[0], pair[1]) {
+			t.Fatalf("languagesShareTypes(%q, %q) = false, want true", pair[0], pair[1])
+		}
+		if languagesShareTypes(pair[1], pair[0]) {
+			t.Fatalf("languagesShareTypes(%q, %q) = true; that direction is impossible", pair[1], pair[0])
 		}
 	}
 	for _, pair := range [][2]string{
