@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -42,7 +43,7 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -50,12 +51,231 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v6
         with: { go-version: "1.26.x" }
-      # internal/sem runs ~550s on the Windows runner against Go's 600s default
-      # per-package wall, with run-to-run swings of about 40s. That is 92% of an
-      # unset budget: the suite was one ordinary new test away from failing for a
-      # reason unrelated to the change that tripped it, which is what happened.
-      # Name a budget with headroom instead of inheriting one nobody chose.
+      # Keep the named package budget consistent with the Windows shard policy.
       - run: go test -timeout 30m ./...
+
+  windows-test-prepare:
+    name: Windows test / compile and plan
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      shard-matrix: ${{ steps.shard-matrix.outputs.value }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Validate the Windows sharding harness
+        run: python -B -m unittest discover -s tools/ci-bench/windows-production/tests -p "test_*.py" -v
+      - name: Compile once and inventory default-runnable roots
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repository = (Resolve-Path -LiteralPath '.').Path
+          $output = Join-Path $env:RUNNER_TEMP 'windows-test-bundle'
+          & python -B tools/ci-bench/windows-production/prepare.py `
+            --repository $repository `
+            --output $output `
+            --settings tools/ci-bench/windows-production/settings.json `
+            --weights tools/ci-bench/windows-production/historical-weights.json `
+            --expected-repository-sha '${{ github.sha }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Export the authoritative shard matrix
+        id: shard-matrix
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $planPath = Join-Path $env:RUNNER_TEMP 'windows-test-bundle/plan.json'
+          $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+          $indexes = @($plan.shards | ForEach-Object { [int] $_.index })
+          if ($indexes.Count -ne [int] $plan.shardCount -or $indexes.Count -eq 0) {
+            throw 'plan shard indexes do not match shardCount'
+          }
+          $matrix = ConvertTo-Json -InputObject $indexes -Compress
+          "value=$matrix" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Upload immutable Windows test bundle
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-test-bundle
+          path: ${{ runner.temp }}/windows-test-bundle
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  windows-test-shards:
+    name: Windows test / shard ${{ matrix.shard }}
+    needs: windows-test-prepare
+    runs-on: windows-latest
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: ${{ fromJSON(needs.windows-test-prepare.outputs.shard-matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v6
+        with:
+          name: windows-test-bundle
+          path: ${{ runner.temp }}/windows-test-bundle
+      - name: Execute the assigned compiled roots
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repository = (Resolve-Path -LiteralPath '.').Path
+          $bundle = (Resolve-Path -LiteralPath '${{ runner.temp }}/windows-test-bundle').Path
+          $output = Join-Path $env:RUNNER_TEMP 'windows-test-shard-${{ matrix.shard }}'
+          & python -B tools/ci-bench/windows-production/run_shard.py `
+            --repository $repository `
+            --bundle $bundle `
+            --output $output `
+            --shard-index '${{ matrix.shard }}' `
+            --expected-repository-sha '${{ github.sha }}'
+          exit $LASTEXITCODE
+      - name: Upload shard evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-test-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/windows-test-shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 3
+
+  windows-test-other:
+    name: Windows test / non-heavy packages
+    needs: windows-test-prepare
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v6
+        with:
+          name: windows-test-bundle
+          path: ${{ runner.temp }}/windows-test-bundle
+      - name: Run every target-Windows non-heavy package once
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repository = (Resolve-Path -LiteralPath '.').Path
+          $bundle = (Resolve-Path -LiteralPath '${{ runner.temp }}/windows-test-bundle').Path
+          $output = Join-Path $env:RUNNER_TEMP 'windows-test-other'
+          & python -B tools/ci-bench/windows-production/run_other.py `
+            --repository $repository `
+            --bundle $bundle `
+            --output $output `
+            --expected-repository-sha '${{ github.sha }}'
+          exit $LASTEXITCODE
+      - name: Upload non-heavy package evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-test-other
+          path: ${{ runner.temp }}/windows-test-other
+          if-no-files-found: error
+          retention-days: 3
+
+  windows-test-vet:
+    name: Windows test / vet
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: go.sum
+      - run: go vet ./...
+
+  windows-test-verify:
+    name: Windows test / coverage and integrity
+    needs: [windows-test-prepare, windows-test-shards, windows-test-other]
+    if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v6
+        with:
+          name: windows-test-bundle
+          path: ${{ runner.temp }}/windows-test-bundle
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: windows-test-shard-*
+          path: ${{ runner.temp }}/windows-test-shards
+      - uses: actions/download-artifact@v6
+        with:
+          name: windows-test-other
+          path: ${{ runner.temp }}/windows-test-other
+      - name: Verify exact root, package, process, and artifact coverage
+        run: |
+          python -B tools/ci-bench/windows-production/verify_results.py \
+            --bundle "${{ runner.temp }}/windows-test-bundle" \
+            --shard-results "${{ runner.temp }}/windows-test-shards" \
+            --other-results "${{ runner.temp }}/windows-test-other" \
+            --output "${{ runner.temp }}/windows-test-verification.json"
+      - name: Upload verification report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-test-verification
+          path: ${{ runner.temp }}/windows-test-verification.json
+          if-no-files-found: error
+          retention-days: 3
+
+  # Keep the former matrix check identity stable for required-check migration.
+  windows-test:
+    name: test (windows-latest)
+    needs:
+      [windows-test-prepare, windows-test-shards, windows-test-other, windows-test-vet, windows-test-verify]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Windows test component
+        env:
+          PREPARE_RESULT: ${{ needs.windows-test-prepare.result }}
+          SHARDS_RESULT: ${{ needs.windows-test-shards.result }}
+          OTHER_RESULT: ${{ needs.windows-test-other.result }}
+          VET_RESULT: ${{ needs.windows-test-vet.result }}
+          VERIFY_RESULT: ${{ needs.windows-test-verify.result }}
+        run: |
+          for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT" "$VET_RESULT" "$VERIFY_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "A required Windows test component ended with: $result" >&2
+              exit 1
+            fi
+          done
 
   bm25-adapter:
     runs-on: ubuntu-latest
@@ -66,8 +286,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: python -m pip install --disable-pip-version-check rank-bm25==0.2.2
-      - run: python -m unittest bench.memory.benchmarks.common.test_bm25_client
+      - run: python -B -m pip install --disable-pip-version-check rank-bm25==0.2.2
+      - run: python -B -m unittest bench.memory.benchmarks.common.test_bm25_client
 
   # The status line is a POSIX shell script with its own shell suite; `go test` never runs it.
   # No windows-latest: the script targets /bin/sh.
