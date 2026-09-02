@@ -233,6 +233,7 @@ func TestLanguagesShareTypesRelation(t *testing.T) {
 		{"Objective-C++", "Objective-C"},
 		{"Swift", "C"},
 		{"Swift", "Objective-C"},
+		{"Swift", "C++"},
 	} {
 		if !languagesShareTypes(pair[0], pair[1]) {
 			t.Fatalf("languagesShareTypes(%q, %q) = false, want true", pair[0], pair[1])
@@ -512,5 +513,56 @@ func TestClojureScriptOnlyBindsPortableClojureDeclarations(t *testing.T) {
 	}
 	if !portable {
 		t.Errorf("the portable .cljc declaration must still resolve; severing the dialect pair is not the fix: %#v", snapshot.Relations)
+	}
+}
+
+// TestPortableClojureConsumerMayNameEitherDialect pins the direction the extension rule
+// has to read.
+//
+// `.cljc` is compiled by BOTH readers, and a reader conditional -- `#?(:cljs ...)` -- is
+// exactly how a portable file references a declaration that exists in only one dialect.
+// Deciding compatibility from the CANDIDATE's extension alone rejected every such
+// reference, dropping real CALLS and type edges out of portable code.
+//
+// The single-dialect direction is asserted with it because that is the rule this must not
+// loosen: a `.cljs` reader still cannot read `.clj`.
+func TestPortableClojureConsumerMayNameEitherDialect(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name                               string
+		fromLang, fromPath, toLang, toPath string
+		want                               bool
+	}{
+		{
+			name:     "a portable consumer reaches a ClojureScript-only declaration",
+			fromLang: "Clojure", fromPath: "src/portable.cljc",
+			toLang: "ClojureScript", toPath: "src/browser.cljs",
+			want: true,
+		},
+		{
+			name:     "a ClojureScript consumer still cannot read a JVM-only declaration",
+			fromLang: "ClojureScript", fromPath: "src/app.cljs",
+			toLang: "Clojure", toPath: "src/jvmonly.clj",
+			want: false,
+		},
+		{
+			name:     "a ClojureScript consumer reaches a portable declaration",
+			fromLang: "ClojureScript", fromPath: "src/app.cljs",
+			toLang: "Clojure", toPath: "src/portable.cljc",
+			want: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got := candidateSharesDeclarations(
+				SymbolRecord{Language: testCase.fromLang, FilePath: testCase.fromPath},
+				SymbolRecord{Language: testCase.toLang, FilePath: testCase.toPath},
+			)
+			if got != testCase.want {
+				t.Fatalf("candidateSharesDeclarations(%s, %s) = %v, want %v",
+					testCase.fromPath, testCase.toPath, got, testCase.want)
+			}
+		})
 	}
 }

@@ -67,11 +67,15 @@ var typeSharingLanguageGroups = [][]string{
 // Objective-C `.m` cannot name a C++ type either -- only `.mm` can. Listing the
 // family as one symmetric set therefore licensed exactly the impossible edges
 // this file exists to remove, just in the other direction.
+//
+// Swift reaches C++ as well as C and Objective-C: direct C++ interoperability
+// imports C++ types and functions, so `Swift -> C++` is a real edge. The reverse
+// is still refused -- C++ has no way to name a Swift declaration.
 var typeSharingLanguageEdges = map[string][]string{
 	"C++":           {"C"},
 	"Objective-C":   {"C"},
 	"Objective-C++": {"C", "C++", "Objective-C"},
-	"Swift":         {"C", "Objective-C"},
+	"Swift":         {"C", "Objective-C", "C++"},
 }
 
 // typeSharingLanguages is the symmetric closure of typeSharingLanguageGroups
@@ -179,6 +183,15 @@ func candidateSharesDeclarations(from, candidate SymbolRecord) bool {
 		return true
 	}
 	if isClojureDialect(from.Language) && isClojureDialect(candidate.Language) {
+		// A PORTABLE consumer may name either dialect. `.cljc` is compiled by both
+		// readers, and a reader conditional -- `#?(:cljs ...)` -- is exactly how it
+		// references a declaration that exists in only one of them. Deciding from
+		// the candidate's extension alone rejected every such reference.
+		if strings.EqualFold(path.Ext(from.FilePath), clojurePortableExt) {
+			return true
+		}
+		// A single-dialect consumer still needs a portable declaration: a `.cljs`
+		// reader cannot read `.clj`, and a `.clj` reader cannot read `.cljs`.
 		return strings.EqualFold(path.Ext(candidate.FilePath), clojurePortableExt)
 	}
 	return true
