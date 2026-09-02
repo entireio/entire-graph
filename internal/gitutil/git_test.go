@@ -2902,3 +2902,37 @@ func TestFirstParentRejectsAnOptionShapedRevision(t *testing.T) {
 		t.Fatalf("FirstParent(\"HEAD\") = %v, want a resolved parent OID", err)
 	}
 }
+
+// TestIndexReplacedNonRegularPathsHandlesAStageLikeName pins the index object spec.
+//
+// Git reads a leading "0:".."3:" as a STAGE, so addressing an entry as ":"+path made a
+// file legitimately named `0:link.go` resolve to another entry or to none. The lookup
+// then failed and the symlink was reported REPLACED, which puts it into the worktree
+// listing to be parsed as ordinary source -- the exact confusion the index consultation
+// exists to prevent. The "./" form cannot be read as a stage number.
+func TestIndexReplacedNonRegularPathsHandlesAStageLikeName(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", ".")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	if err := os.WriteFile(filepath.Join(repo, "real.go"), []byte("package p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.go", filepath.Join(repo, "0:link.go")); err != nil {
+		t.Skipf("this filesystem cannot create symlinks: %v", err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-qm", "seed")
+
+	nonRegular, err := IndexNonRegularPaths(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := nonRegular["0:link.go"]; !ok {
+		t.Fatalf("a symlink named like a stage was not seen as non-regular: %v", nonRegular)
+	}
+	if _, wrong := IndexReplacedNonRegularPaths(context.Background(), repo, nonRegular)["0:link.go"]; wrong {
+		t.Fatal("an untouched symlink named like a stage was reported as replaced")
+	}
+}
