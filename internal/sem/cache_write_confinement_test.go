@@ -18,8 +18,10 @@ import (
 // The cache directory's descendants are named by this program — two constants and a SHA-256
 // digest — so a symlink at one of them was planted by whatever owns those bytes. That is the
 // scanned repository whenever --cache-dir or ENTIRE_PLUGIN_DATA_DIR resolves inside a checkout,
-// and following it puts the artifact wherever the repository chose. The write boundary must be
-// the one entry.open already reads through (TestCacheEntryReadRejectsSymlinkEscape).
+// and following it puts the artifact wherever the repository chose. Escaping links must be
+// rejected on write just as entry.open rejects them on read
+// (TestCacheEntryReadRejectsSymlinkEscape); writes intentionally go further and reject in-root
+// aliases that reads may follow.
 
 func TestCacheEntryWriteRejectsSymlinkedFamilyEscape(t *testing.T) {
 	t.Parallel()
@@ -198,8 +200,8 @@ func TestCacheEntryWriteRejectsBenignInRootFamilyAlias(t *testing.T) {
 	}
 }
 
-// The version component is a second planting site, and on a case-insensitive filesystem a link
-// spelled differently still answers the lookup, so the refusal must not be an exact-case compare.
+// The version component is a second planting site, so it needs the same strict redirect refusal
+// as the family component.
 func TestCacheEntryWriteRejectsSymlinkedVersion(t *testing.T) {
 	t.Parallel()
 	parent := t.TempDir()
