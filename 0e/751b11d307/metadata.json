@@ -1,0 +1,47 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "0e751b11d307",
+  "strategy": "manual-commit",
+  "branch": "ci/windows-investigation-a3-cross-compile",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/windows-cross-compile-experiment.yml",
+    "docs/ci/windows-investigations/03-cross-compile.md",
+    "results/windows-ci/a3/.gitignore",
+    "results/windows-ci/a3/README.md",
+    "results/windows-ci/a3/bounded-sequential-diagnostic-summary.json",
+    "results/windows-ci/a3/cleanup-summary.json",
+    "results/windows-ci/a3/cost-summary.json",
+    "results/windows-ci/a3/cross-compile-summary.json",
+    "results/windows-ci/a3/infrastructure-summary.json",
+    "results/windows-ci/a3/linux-native-comparator-summary.json",
+    "results/windows-ci/a3/native-baseline-summary.json",
+    "results/windows-ci/a3/native-fidelity-summary.json",
+    "results/windows-ci/a3/transfer-summary.json",
+    "results/windows-ci/a3/weighted-execution-summary.json",
+    "tools/ci-bench/a3/build-cross-binaries.sh",
+    "tools/ci-bench/a3/compare-evidence.py",
+    "tools/ci-bench/a3/partition-tests.py",
+    "tools/ci-bench/a3/run-cross-binaries.ps1",
+    "tools/ci-bench/a3/run-cross-shard-worker.ps1",
+    "tools/ci-bench/a3/run-cross-weighted-shards.ps1",
+    "tools/ci-bench/a3/run-native-fidelity.ps1",
+    "tools/ci-bench/a3/test_a3_helpers.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0e/751b11d307/0/metadata.json",
+      "transcript": "/0e/751b11d307/0/full.jsonl",
+      "compact_transcript": "/0e/751b11d307/0/transcript.jsonl",
+      "content_hash": "/0e/751b11d307/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1055216,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 87634176,
+    "output_tokens": 142109,
+    "api_call_count": 742
+  }
+}
