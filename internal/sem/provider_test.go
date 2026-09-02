@@ -15940,3 +15940,38 @@ func TestSearchRepositoryStillIndexesSourceTreeNamedLikeAGitDir(t *testing.T) {
 		t.Errorf("search did not return testdata/parser/objects/loader.go; results = %v", paths)
 	}
 }
+
+// TestSignatureNamesQualifiedMethodUsesTokenBoundaries pins the qualified-name match
+// against both directions of a raw substring test.
+//
+// Matching `Container::Name` with strings.Contains was wrong twice over. It matched too
+// much -- `BA::foo` contains `A::foo`, so an unrelated class's definition was accepted as
+// a declaration's out-of-line body and emitted a CALLS edge to the wrong function -- and
+// too little, because a template definition is spelled `A<T>::foo` and never contains the
+// bare text, leaving those calls resolved to the bodyless declaration whose callers the
+// lookup exists to redirect.
+func TestSignatureNamesQualifiedMethodUsesTokenBoundaries(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name      string
+		signature string
+		container string
+		method    string
+		want      bool
+	}{
+		{"plain qualified definition", "int A::foo(int x)", "A", "foo", true},
+		{"template definition qualifies through its arguments", "int A<T>::foo(int x)", "A", "foo", true},
+		{"a longer class name is not this class", "int BA::foo(int x)", "A", "foo", false},
+		{"a longer method name is not this method", "int A::foobar(int x)", "A", "foo", false},
+		{"a different class does not match", "int B::foo(int x)", "A", "foo", false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := signatureNamesQualifiedMethod(testCase.signature, testCase.container, testCase.method); got != testCase.want {
+				t.Fatalf("signatureNamesQualifiedMethod(%q, %q, %q) = %v, want %v",
+					testCase.signature, testCase.container, testCase.method, got, testCase.want)
+			}
+		})
+	}
+}

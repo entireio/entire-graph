@@ -2733,7 +2733,22 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if methodsByContainer[symbol.ContainerID] == nil {
 						methodsByContainer[symbol.ContainerID] = map[string]SymbolRecord{}
 					}
-					methodsByContainer[symbol.ContainerID][symbol.Name] = symbol
+					// This index is keyed by NAME, so C++ overloads collide in
+					// it. Last-write-wins made the winner depend on source
+					// order: with `void f(int) { ... }` followed by
+					// `void f(double);`, the bodyless declaration replaced the
+					// inline definition and every `obj.f(...)` call resolved to
+					// the declaration, leaving the real implementation with no
+					// callers at all.
+					//
+					// A body is what a caller means, so a bodyless entry never
+					// displaces one that has a body. The reverse still applies,
+					// which is what lets a real definition replace a declaration
+					// indexed before it.
+					existing, collides := methodsByContainer[symbol.ContainerID][symbol.Name]
+					if !collides || (existing.bodyless && !symbol.bodyless) {
+						methodsByContainer[symbol.ContainerID][symbol.Name] = symbol
+					}
 				}
 				// C# receiver-call resolution also reads the field index:
 				// class-level `Type Name { get; }` members type `Name.Method()`
@@ -6605,6 +6620,47 @@ func appendGoInterfaceImplementationCalls(relations []RelationRecord, from Symbo
 // uniqueMethodByShortName returns the sole method whose short name matches, if
 // exactly one method (across the workspace) carries that name. Used as a
 // last-resort receiver.method() resolver when the receiver type is unknown.
+// signatureNamesQualifiedMethod reports whether signature writes
+// `Container::Name` as a whole qualified name.
+//
+// A raw substring test is wrong in both directions. It matches too much --
+// `BA::foo` contains `A::foo`, so an unrelated class's definition was accepted
+// as the out-of-line body and produced a false CALLS edge -- and too little,
+// because a template definition is spelled `A<T>::foo` and never contains the
+// bare `A::foo` at all, leaving those calls pointed at the bodyless
+// declaration. Both are the same mistake: treating a qualified name as text
+// rather than as tokens.
+func signatureNamesQualifiedMethod(signature, container, name string) bool {
+	for offset := 0; ; {
+		index := strings.Index(signature[offset:], container)
+		if index < 0 {
+			return false
+		}
+		start := offset + index
+		offset = start + len(container)
+		// The container must start a token: `BA::foo` must not match `A::foo`.
+		if start > 0 && isIdentifierByte(signature[start-1]) {
+			continue
+		}
+		rest := signature[offset:]
+		// A template definition qualifies through its argument list
+		// (`A<T>::foo`), which is part of the same name.
+		if strings.HasPrefix(rest, "<") {
+			if close := strings.IndexByte(rest, '>'); close >= 0 {
+				rest = rest[close+1:]
+			}
+		}
+		if !strings.HasPrefix(rest, "::"+name) {
+			continue
+		}
+		// The name must end a token, so `A::foobar` does not match `A::foo`.
+		after := rest[len("::"+name):]
+		if after == "" || !isIdentifierByte(after[0]) {
+			return true
+		}
+	}
+}
+
 // cPlusPlusOutOfLineDefinition returns the definition that a bodyless C++
 // in-class method declaration stands for. A header declares
 // `int Add(int) const;` inside `class Ledger` and the .cpp defines
@@ -6627,14 +6683,13 @@ func cPlusPlusOutOfLineDefinition(declaration SymbolRecord, candidates []SymbolR
 	if container == "" {
 		return SymbolRecord{}, false
 	}
-	qualified := container + "::" + declaration.Name
 	var definition SymbolRecord
 	found := 0
 	for _, candidate := range candidates {
 		if candidate.bodyless || candidate.Language != "C++" || candidate.ID == declaration.ID {
 			continue
 		}
-		if candidate.Name != declaration.Name || !strings.Contains(candidate.Signature, qualified) {
+		if candidate.Name != declaration.Name || !signatureNamesQualifiedMethod(candidate.Signature, container, declaration.Name) {
 			continue
 		}
 		found++
