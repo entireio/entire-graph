@@ -24388,8 +24388,10 @@ func externalID(kind, value string) string {
 // RepoKey is the exported form of the provider repo_key rule. It is the
 // symbol-ID namespace stamped into every record of a snapshot, and it is
 // derived from the repository ALONE so that any process holding the repo path
-// can reproduce it: a github.com `origin` yields gh/<owner>/<name>, everything
-// else yields local/<basename>.
+// can reproduce it. Remote URLs use the provider's established compatibility
+// order: the last configured origin URL, then non-origin URLs in Git config
+// order. The first supported github.com URL yields gh/<owner>/<name>; a
+// repository with no such URL yields local/<basename>.
 //
 // It is a published contract, not an internal detail: `graph doctor --json`
 // reports it and TestRepoKeyContractGoldenVectors pins the vectors that
@@ -24399,9 +24401,9 @@ func externalID(kind, value string) string {
 //
 // IT IS A NAMESPACE, NOT A REPOSITORY IDENTITY, AND ONLY THE gh/ HALF IS
 // GLOBALLY UNIQUE. `local/<basename>` is derived from the directory name, so
-// every repository named `tools` with no github.com origin — different owners
-// on gitlab, two unrelated checkouts, a fork beside its upstream — publishes
-// the same key. Two colliding snapshots are byte-distinguishable only by
+// every repository named `tools` with no supported GitHub remote — different
+// owners on gitlab, two unrelated checkouts — publishes the same key. Two
+// colliding snapshots are byte-distinguishable only by
 // `repo_root`, `commit` and `tree`. A consumer must therefore treat repo_key
 // as a necessary and not a sufficient identity test: `repo_key` mismatch
 // proves a foreign snapshot, `repo_key` match does not prove a native one.

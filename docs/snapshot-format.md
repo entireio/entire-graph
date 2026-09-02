@@ -55,17 +55,20 @@ is emitted before that so consumers can begin work immediately. The profile
 metadata is **header-only**: it is known up front and is therefore not
 repeated in the summary.
 
-**`repo_key` is the symbol-ID namespace, not a repository identity.** A
-github.com `origin` yields `gh/<owner>/<name>`, which is globally unique;
-everything else — no remote, gitlab, bitbucket, self-hosted — yields
-`local/<basename>`, which is **not**. Two unrelated repositories whose
-directories are both named `tools` publish the same `local/tools` in their
-headers and in every symbol ID. A consumer must therefore use `repo_key` as a
-necessary and not a sufficient identity test: a mismatch proves a foreign
-snapshot, a match does not prove a native one. Pair it with `repo_root`,
-`commit` and `tree` — or with the consumer's own storage key — for identity.
-`graph doctor --json` advertises the same `repo_key` and `repo_root` before a
-snapshot is built, so the pair can be checked up front.
+**`repo_key` is the symbol-ID namespace, not a repository identity.** Remote
+URLs are checked in the provider's established compatibility order: the last
+configured `remote.origin.url` is checked first, then every non-origin remote
+URL in Git config order. The first URL in that order matching a supported
+github.com form yields `gh/<owner>/<name>`. A repository with no such URL — no
+remote, gitlab, bitbucket, self-hosted — instead yields `local/<basename>`,
+which is **not** globally unique. Two unrelated repositories whose directories
+are both named `tools` publish the same `local/tools` in their headers and in
+every symbol ID. A consumer must therefore use `repo_key` as a necessary and
+not a sufficient identity test: a mismatch proves a foreign snapshot, a match
+does not prove a native one. Pair it with `repo_root`, `commit` and `tree` — or
+with the consumer's own storage key — for identity. `graph doctor --json`
+advertises the same `repo_key` and `repo_root` before a snapshot is built, so
+the pair can be checked up front.
 
 **Symbol ID fields are not escaped, so an ID must never be split positionally.**
 An ID is `<repo_key>:<language>:<file_path>:<kind>:<qualified_name>` joined with

@@ -216,6 +216,13 @@ func runDoctor(ctx context.Context, opts Options, args []string) error {
 	}
 
 	repo, err := resolveRepo(ctx, opts.Env, "")
+	if err == nil {
+		// Snapshot construction converts the resolved repository to an absolute,
+		// cleaned path before deriving either RepoRoot or RepoKey. Doctor is the
+		// preflight for that snapshot, so advertise the same spelling rather than
+		// the caller's possibly-relative ENTIRE_REPO_ROOT value.
+		repo, err = filepath.Abs(repo)
+	}
 	if err != nil {
 		report["repo_root"] = ""
 		report["repo_error"] = err.Error()

@@ -94,11 +94,13 @@ func TestDoctorReportsRepoKeyAndSchemaVersion(t *testing.T) {
 func TestDoctorRepoKeyMatchesSnapshotHeader(t *testing.T) {
 	repo := t.TempDir()
 	initDoctorRepo(t, repo, "")
+	t.Chdir(repo)
+	root := "."
 
 	var doctorOut bytes.Buffer
 	if err := Run(t.Context(), Options{
 		Version: "0.1.0",
-		Env:     EntireEnv{RepoRoot: repo, PluginDataDir: t.TempDir()},
+		Env:     EntireEnv{RepoRoot: root, PluginDataDir: t.TempDir()},
 		Stdout:  &doctorOut,
 	}, []string{"doctor", "--json"}); err != nil {
 		t.Fatalf("doctor: %v", err)
@@ -107,8 +109,18 @@ func TestDoctorRepoKeyMatchesSnapshotHeader(t *testing.T) {
 	if err := json.Unmarshal(doctorOut.Bytes(), &report); err != nil {
 		t.Fatalf("doctor json invalid: %v", err)
 	}
-	if got, want := report["repo_key"], sem.RepoKey(t.Context(), repo); got != want {
-		t.Fatalf("doctor repo_key = %v, want the provider's own %q", got, want)
+	snapshot, err := sem.BuildProviderSnapshot(t.Context(), root, "0.1.0")
+	if err != nil {
+		t.Fatalf("build provider snapshot: %v", err)
+	}
+	if got, want := report["repo_key"], snapshot.Header.RepoKey; got != want {
+		t.Fatalf("doctor repo_key = %v, snapshot repo_key = %q", got, want)
+	}
+	if got, want := report["repo_root"], snapshot.Header.RepoRoot; got != want {
+		t.Fatalf("doctor repo_root = %v, snapshot repo_root = %q", got, want)
+	}
+	if got, want := report["schema_version"], snapshot.Header.SchemaVersion; got != want {
+		t.Fatalf("doctor schema_version = %v, snapshot schema_version = %q", got, want)
 	}
 }
 
@@ -117,27 +129,63 @@ func TestDoctorRepoKeyMatchesSnapshotHeader(t *testing.T) {
 // rule on either side breaks a test on both rather than silently splitting the
 // seam.
 func TestRepoKeyContractGoldenVectors(t *testing.T) {
-	for _, tc := range []struct{ remote, want string }{
-		{"git@github.com:example/repo.git", "gh/example/repo"},
-		{"https://github.com/example/repo.git", "gh/example/repo"},
-		{"https://github.com/example/repo", "gh/example/repo"},
-		{"ssh://git@github.com/example/repo.git", "gh/example/repo"},
-		{"http://github.com/example/repo.git", "gh/example/repo"},
-		{"https://github.com/example/nested/repo.git", ""},
-		{"https://gitlab.com/acme/widget.git", ""},
-		{"git@bitbucket.org:acme/widget.git", ""},
-		{"https://git.corp.internal/acme/widget.git", ""},
-		{"", ""},
+	type remote struct {
+		name string
+		url  string
+	}
+	for _, tc := range []struct {
+		name    string
+		remotes []remote
+		want    string
+	}{
+		{"github scp", []remote{{"origin", "git@github.com:example/repo.git"}}, "gh/example/repo"},
+		{"github https git suffix", []remote{{"origin", "https://github.com/example/repo.git"}}, "gh/example/repo"},
+		{"github https", []remote{{"origin", "https://github.com/example/repo"}}, "gh/example/repo"},
+		{"github ssh", []remote{{"origin", "ssh://git@github.com/example/repo.git"}}, "gh/example/repo"},
+		{"github http", []remote{{"origin", "http://github.com/example/repo.git"}}, "gh/example/repo"},
+		{"nested github path", []remote{{"origin", "https://github.com/example/nested/repo.git"}}, ""},
+		{"gitlab origin", []remote{{"origin", "https://gitlab.com/acme/widget.git"}}, ""},
+		{"bitbucket origin", []remote{{"origin", "git@bitbucket.org:acme/widget.git"}}, ""},
+		{"self-hosted origin", []remote{{"origin", "https://git.corp.internal/acme/widget.git"}}, ""},
+		{"no remotes", nil, ""},
+		{"github origin wins", []remote{
+			{"upstream", "https://github.com/upstream-owner/widget.git"},
+			{"origin", "https://github.com/origin-owner/widget.git"},
+		}, "gh/origin-owner/widget"},
+		{"github upstream after gitlab origin", []remote{
+			{"origin", "https://gitlab.com/acme/widget.git"},
+			{"upstream", "https://github.com/upstream-owner/widget.git"},
+		}, "gh/upstream-owner/widget"},
+		{"github upstream without origin", []remote{
+			{"upstream", "https://github.com/upstream-owner/widget.git"},
+		}, "gh/upstream-owner/widget"},
+		{"last origin URL is checked", []remote{
+			{"origin", "https://github.com/first-owner/widget.git"},
+			{"origin", "https://gitlab.com/acme/widget.git"},
+		}, ""},
+		{"last origin GitHub URL wins", []remote{
+			{"origin", "https://github.com/first-owner/widget.git"},
+			{"origin", "https://github.com/last-owner/widget.git"},
+		}, "gh/last-owner/widget"},
+		{"non-origin URLs keep config order", []remote{
+			{"upstream", "https://github.com/first-owner/widget.git"},
+			{"mirror", "https://github.com/second-owner/widget.git"},
+		}, "gh/first-owner/widget"},
 	} {
-		repo := t.TempDir()
-		initDoctorRepo(t, repo, tc.remote)
-		want := tc.want
-		if want == "" {
-			want = "local/" + filepath.Base(repo)
-		}
-		if got := sem.RepoKey(t.Context(), repo); got != want {
-			t.Fatalf("sem.RepoKey(remote=%q) = %q, want %q", tc.remote, got, want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			initDoctorRepo(t, repo, "")
+			for _, configured := range tc.remotes {
+				git(t, repo, "config", "--add", "remote."+configured.name+".url", configured.url)
+			}
+			want := tc.want
+			if want == "" {
+				want = "local/" + filepath.Base(repo)
+			}
+			if got := sem.RepoKey(t.Context(), repo); got != want {
+				t.Fatalf("sem.RepoKey(remotes=%v) = %q, want %q", tc.remotes, got, want)
+			}
+		})
 	}
 }
 
@@ -153,14 +201,22 @@ func sameNamedRepo(t *testing.T, parent, name, file, content string) string {
 	initDoctorRepo(t, repo, "")
 	write(t, repo, file, content)
 	git(t, repo, "add", "-A")
-	git(t, repo, "commit", "-m", "initial")
+	cmd := exec.Command("git", "commit", "-m", "initial")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z",
+		"GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
 	return repo
 }
 
 // TestRepoKeyLocalIsNotGloballyUnique pins the boundary of the contract doctor
 // now publishes: only the gh/ half of the rule is globally unique. Two
 // unrelated repositories that share a directory basename and have no
-// github.com origin publish the SAME repo_key, so a consumer that treats
+// supported GitHub remote publish the SAME repo_key, so a consumer that treats
 // repo_key match as proof of repository identity is wrong. Measured, not
 // assumed — this is the property the RepoKey doc comment states, and the test
 // exists so the doc cannot quietly start claiming uniqueness.
@@ -215,6 +271,9 @@ func TestCollidingRepoKeysDoNotShareCacheEntries(t *testing.T) {
 	if leftTree, rightTree := rev(t, left, "HEAD^{tree}"), rev(t, right, "HEAD^{tree}"); leftTree != rightTree {
 		t.Fatalf("premise lost: trees %q and %q differ", leftTree, rightTree)
 	}
+	if leftCommit, rightCommit := rev(t, left, "HEAD"), rev(t, right, "HEAD"); leftCommit != rightCommit {
+		t.Fatalf("premise lost: commits %q and %q differ", leftCommit, rightCommit)
+	}
 
 	cacheDir := t.TempDir()
 	for _, repo := range []string{left, right} {
@@ -242,7 +301,32 @@ func TestCollidingRepoKeysDoNotShareCacheEntries(t *testing.T) {
 	}
 
 	if entries := countCacheEntries(t, cacheDir); entries != 2 {
-		t.Fatalf("cache holds %d entries for two colliding repositories, want 2", entries)
+		t.Fatalf("search cache holds %d entries for two colliding repositories, want 2", entries)
+	}
+
+	// Exercise the second persistent family as well. If providerRecordsKey drops
+	// the absolute path, the second run replays the first repository's serialized
+	// header because repo key, commit, tree, mode, version, and options all match.
+	for _, repo := range []string{left, right} {
+		var out bytes.Buffer
+		if err := Run(t.Context(), Options{
+			Version: "0.1.0",
+			Env:     EntireEnv{RepoRoot: repo, PluginDataDir: cacheDir},
+			Stdout:  &out,
+		}, []string{"snapshot", "--repo", repo, "--cache-dir", cacheDir, "--format", "ndjson"}); err != nil {
+			t.Fatalf("snapshot %s: %v", repo, err)
+		}
+		var header sem.SnapshotHeader
+		if err := json.NewDecoder(&out).Decode(&header); err != nil {
+			t.Fatalf("snapshot header invalid:\n%s\n%v", out.String(), err)
+		}
+		if header.RepoRoot != repo {
+			t.Fatalf("snapshot repo_root = %q, want %q: provider-record cache replayed a foreign repository", header.RepoRoot, repo)
+		}
+	}
+
+	if entries := countCacheEntries(t, cacheDir); entries != 4 {
+		t.Fatalf("search and provider-record caches hold %d entries for two colliding repositories, want 4", entries)
 	}
 }
 
@@ -265,17 +349,13 @@ func countCacheEntries(t *testing.T, cacheDir string) int {
 
 // TestDoctorRepoKeyIsIndependentOfHowTheRepoRootIsSpelled closes the gap the
 // handshake left open. resolveRepo returns --repo and ENTIRE_REPO_ROOT verbatim
-// and falls back to ".", while every path that BUILDS a snapshot derives the key
-// from filepath.Abs of the same input. The two therefore disagreed for any
-// unnormalised spelling: the local/ half of the rule is the last path element, so
-// "." published local/. — a namespace shared by every repository on the machine,
-// and never the one the snapshot would carry. A consumer comparing its own
-// prediction against that report would reject a native snapshot, or accept a
-// foreign one, on the strength of a value no build ever emits.
+// and falls back to ".", while every path that BUILDS a snapshot derives both
+// repo_root and repo_key from filepath.Abs of the same input. Doctor must do the
+// same so the pair it advertises is the pair the snapshot will actually carry.
 func TestDoctorRepoKeyIsIndependentOfHowTheRepoRootIsSpelled(t *testing.T) {
 	repo := t.TempDir()
 	initDoctorRepo(t, repo, "")
-	want := "local/" + filepath.Base(repo)
+	wantKey := "local/" + filepath.Base(repo)
 
 	t.Chdir(repo)
 	for _, spelling := range []struct {
@@ -300,8 +380,11 @@ func TestDoctorRepoKeyIsIndependentOfHowTheRepoRootIsSpelled(t *testing.T) {
 			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 				t.Fatalf("doctor json invalid:\n%s\n%v", out.String(), err)
 			}
-			if got := report["repo_key"]; got != want {
-				t.Fatalf("doctor repo_key for root %q = %v, want %q (report: %s)", spelling.root, got, want, out.String())
+			if got := report["repo_key"]; got != wantKey {
+				t.Fatalf("doctor repo_key for root %q = %v, want %q (report: %s)", spelling.root, got, wantKey, out.String())
+			}
+			if got := report["repo_root"]; got != repo {
+				t.Fatalf("doctor repo_root for root %q = %v, want %q (report: %s)", spelling.root, got, repo, out.String())
 			}
 		})
 	}
