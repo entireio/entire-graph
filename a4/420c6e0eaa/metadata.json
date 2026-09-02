@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "a4420c6e0eaa",
+  "strategy": "manual-commit",
+  "branch": "ci/windows-investigation-a2-compile-once-shards",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tools/ci-bench/collect-environment.ps1",
+    "tools/ci-bench/create-azure-vm.sh",
+    "tools/ci-bench/monitor-resources.ps1",
+    "tools/ci-bench/run-go-suite.ps1"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a4/420c6e0eaa/0/metadata.json",
+      "transcript": "/a4/420c6e0eaa/0/full.jsonl",
+      "compact_transcript": "/a4/420c6e0eaa/0/transcript.jsonl",
+      "content_hash": "/a4/420c6e0eaa/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 844701,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 70885888,
+    "output_tokens": 108558,
+    "api_call_count": 564
+  }
+}
