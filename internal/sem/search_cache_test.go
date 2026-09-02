@@ -227,6 +227,7 @@ func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
 func TestValidateBuiltSearchSnapshotPinsGraphProvenanceButNotCommit(t *testing.T) {
 	options := ProviderSnapshotOptions{Profile: ProfileFull}
 	want := SnapshotHeader{
+		SchemaVersion:   SchemaVersion,
 		Provider:        ProviderName,
 		ProviderVersion: "test-version",
 		RepoKey:         "github.com/example/repo",
@@ -252,6 +253,8 @@ func TestValidateBuiltSearchSnapshotPinsGraphProvenanceButNotCommit(t *testing.T
 		name   string
 		mutate func(*SnapshotHeader)
 	}{
+		{"schema version missing", func(header *SnapshotHeader) { header.SchemaVersion = "" }},
+		{"schema version foreign", func(header *SnapshotHeader) { header.SchemaVersion = "9.9" }},
 		{"repository key", func(header *SnapshotHeader) { header.RepoKey = "github.com/example/other" }},
 		{"tree", func(header *SnapshotHeader) { header.Tree = "other-tree" }},
 		{"provider", func(header *SnapshotHeader) { header.Provider = "other-provider" }},

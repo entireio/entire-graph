@@ -396,9 +396,9 @@ func preindexProviderSnapshotWithPersistenceReader(
 
 // validateBuiltSearchSnapshot closes the transaction between cache keying and
 // snapshot construction. Git tree identity alone is enough for source bytes,
-// but repository identity participates in stable symbol IDs, while provider
-// version and profile select the shape of the graph. A concurrent config or
-// option change must therefore fail before the snapshot is returned or stored.
+// but schema, repository identity, provider version, and profile select the
+// shape of the graph. A concurrent serializer, config, or option change must
+// therefore fail before the snapshot is returned or stored.
 // Commit is deliberately excluded: different commits with the same tree have
 // identical graph content and are re-stamped to the commit captured by the
 // caller after this validation succeeds.
@@ -408,15 +408,16 @@ func validateBuiltSearchSnapshot(
 	options ProviderSnapshotOptions,
 ) error {
 	header := snapshot.Header
-	if header.Tree != tree ||
+	if header.SchemaVersion != SchemaVersion ||
+		header.Tree != tree ||
 		header.RepoKey != repositoryKey ||
 		header.Provider != ProviderName ||
 		header.ProviderVersion != providerVersion ||
 		header.Profile != string(options.Profile) {
 		return fmt.Errorf(
-			"got repo %q tree %q provider %q version %q profile %q; want repo %q tree %q provider %q version %q profile %q",
-			header.RepoKey, header.Tree, header.Provider, header.ProviderVersion, header.Profile,
-			repositoryKey, tree, ProviderName, providerVersion, options.Profile,
+			"got schema %q repo %q tree %q provider %q version %q profile %q; want schema %q repo %q tree %q provider %q version %q profile %q",
+			header.SchemaVersion, header.RepoKey, header.Tree, header.Provider, header.ProviderVersion, header.Profile,
+			SchemaVersion, repositoryKey, tree, ProviderName, providerVersion, options.Profile,
 		)
 	}
 	return nil

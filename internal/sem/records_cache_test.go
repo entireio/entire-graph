@@ -63,6 +63,10 @@ func TestProviderRecordsCacheTransactionRejectsObservedProvenanceMismatch(t *tes
 			if _, _, hit := transaction.Load(); hit {
 				t.Fatal("provenance-mismatched records reached the cache")
 			}
+			artifact := filepath.Join(transaction.entry.root, transaction.entry.relative)
+			if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+				t.Fatalf("provenance-mismatched records created cache artifact %q: %v", artifact, err)
+			}
 		})
 	}
 }
