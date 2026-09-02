@@ -1268,7 +1268,7 @@ func TestCompareEntitiesDisambiguatesSameNameOverloads(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1296,7 +1296,7 @@ func TestCompareEntitiesDetectsSecondOverloadEdit(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(object)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1318,7 +1318,7 @@ func TestCompareEntitiesSingleEntityUnchangedBehavior(t *testing.T) {
 		{Kind: "function", Name: "validate", Signature: "validate(token, issuer)", StartLine: 1},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1344,7 +1344,7 @@ func TestCompareEntitiesAddedOverloadReportedAsAdded(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(bool)", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on stable overloads: %#v", changes)
 	}
@@ -1373,7 +1373,7 @@ func TestCompareEntitiesRemovedOverloadReported(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on stable overloads: %#v", changes)
 	}
@@ -1404,7 +1404,7 @@ func TestCompareEntitiesTrueDuplicatesEditOne(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h2", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1431,7 +1431,7 @@ func TestCompareEntitiesDuplicateInsertionPreservesExistingBodies(t *testing.T) 
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h2", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 {
 		t.Fatalf("duplicate insertion caused survivor churn: changes=%#v removed=%#v", changes, removed)
 	}
@@ -1454,7 +1454,7 @@ func TestCompareEntitiesRepeatedDuplicateInsertionPreservesContentClass(t *testi
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h1", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 || len(added) != 1 || added[0].BodyHash != "h0" {
 		t.Fatalf("unexpected duplicate multiset diff: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1473,7 +1473,7 @@ func TestCompareEntitiesDuplicateReorderUsesBodyBeforeFingerprint(t *testing.T) 
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h1", Fingerprint: "shared", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("duplicate reorder must be inert: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1491,7 +1491,7 @@ func TestCompareEntitiesExactSignatureOutranksSharedFingerprint(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", Fingerprint: "shared", StartLine: 1},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(added) != 0 {
 		t.Fatalf("exact-signature survivor caused churn: changes=%#v added=%#v", changes, added)
 	}
@@ -1513,7 +1513,7 @@ func TestCompareEntitiesExactSignaturesOutrankSwappedBodies(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", BodyHash: "int-body", Fingerprint: "int-body", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 || len(changes) != 2 {
 		t.Fatalf("unexpected swapped-body diff: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1537,7 +1537,7 @@ func TestCompareEntitiesRemovalAndSignatureEditMatchByFingerprint(t *testing.T) 
 		{Kind: "method", Name: "C.F", Signature: "F(object)", BodyHash: "new-body", Fingerprint: "survivor", StartLine: 1},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(added) != 0 {
 		t.Fatalf("unexpected added overloads: %#v", added)
 	}
@@ -1568,7 +1568,7 @@ func TestCompareEntitiesReorderedSignatureEditsMatchUniqueFingerprints(t *testin
 		{Kind: "method", Name: "C.F", Signature: "F(long)", BodyHash: "new-a", Fingerprint: "a", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 || len(changes) != 2 {
 		t.Fatalf("unexpected reordered edit diff: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1619,7 +1619,7 @@ func TestCompareEntitiesRemoveFirstOverloadNoCascade(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(bool)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on surviving overloads: %#v", changes)
 	}
@@ -1648,7 +1648,7 @@ func TestCompareEntitiesMidListInsertOnlyAdded(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(bool)", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on stable overloads: %#v", changes)
 	}
@@ -1677,7 +1677,7 @@ func TestCompareEntitiesReorderedOverloadsNoChanges(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(int)", BodyHash: "hi", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("reorder must be inert: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}

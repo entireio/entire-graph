@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -117,11 +118,219 @@ func TestReturnFlowCallsOrderIsTotal(t *testing.T) {
 	}
 }
 
+// TestDataFlowEvidenceTruncationIsDisclosed covers the other side of the cap:
+// past dataFlowEvidenceLimit the evidence array stops growing, and a record
+// that stopped growing must say so. A silently truncated list reads as
+// exhaustive, which is the failure the merge was written to remove.
+func TestDataFlowEvidenceTruncationIsDisclosed(t *testing.T) {
+	repo := t.TempDir()
+	// Types are written out per parameter rather than grouped as `a, b, ... int`.
+	// A grouped Go declaration of ten names loses the first to parameter
+	// extraction, which would leave this fixture forwarding nine flows while
+	// reading as though it forwards ten -- and the dropped count asserted below
+	// would silently be measuring the wrong thing.
+	writeFile(t, repo, "flow.go", `package flow
+
+func sink(a int, b int, c int, d int, e int, f int, g int, h int, i int, j int) {}
+
+func caller(a int, b int, c int, d int, e int, f int, g int, h int, i int, j int) {
+	sink(a, b, c, d, e, f, g, h, i, j)
+}
+`)
+
+	var evidence []Evidence
+	var warnings []string
+	dropped := 0
+	err := StreamSnapshot(t.Context(), repo, "truncation-test", ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull}, func(record any) error {
+		if typed, ok := record.(RelationRecord); ok &&
+			typed.Type == "DATA_FLOWS" && lastSegment(typed.FromID) == "caller" && lastSegment(typed.ToID) == "sink" {
+			evidence, warnings, dropped = typed.Evidence, typed.WarningCodes, typed.EvidenceDropped
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != dataFlowEvidenceLimit {
+		t.Fatalf("evidence entries = %d, want the cap %d", len(evidence), dataFlowEvidenceLimit)
+	}
+	if !slices.Contains(warnings, evidenceTruncatedWarning) {
+		t.Fatalf("warning codes = %q, want %q on a truncated evidence array", warnings, evidenceTruncatedWarning)
+	}
+	// Ten forwarded, eight kept: the warning says the list is partial, the count
+	// says by how much. Without it a record that lost one flow and a record that
+	// lost ninety are byte-identical.
+	if dropped != 10-dataFlowEvidenceLimit {
+		t.Fatalf("evidence_dropped = %d, want %d", dropped, 10-dataFlowEvidenceLimit)
+	}
+}
+
+// TestDataFlowEvidenceUnmergedIsDisclosed covers the loss that emission-site
+// grouping cannot reach. Evidence is grouped per `from` symbol, so an edge two
+// symbols each justify -- alpha forwards a parameter into bravo, bravo assigns
+// alpha's return -- is produced twice, and the streaming dedupe keeps the first
+// without merging. The record is already written by then, so the count is
+// disclosed on the summary instead of being silently dropped.
+//
+// The negative case matters as much as the positive one: a corpus with ordinary
+// one-directional flow must not carry the warning, or it degrades into noise
+// that consumers learn to ignore.
+func TestDataFlowEvidenceUnmergedIsDisclosed(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		source   string
+		wantCode bool
+		wantEdge string
+	}{
+		{
+			name: "mutual recursion loses one side per edge",
+			source: `package flow
+
+func alpha(a int) int {
+	return bravo(a)
+}
+
+func bravo(b int) int {
+	value := alpha(b)
+	return value
+}
+`,
+			wantCode: true,
+			// Both orientations of the pair have two producers.
+			wantEdge: "2 DATA_FLOWS edge(s)",
+		},
+		{
+			name: "one-directional flow loses nothing",
+			source: `package flow
+
+func sink(a int) int { return a }
+
+func caller(a int) int {
+	return sink(a)
+}
+`,
+			wantCode: false,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, repo, "flow.go", testCase.source)
+
+			var summary SnapshotSummary
+			err := StreamSnapshot(t.Context(), repo, "unmerged-test", ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull}, func(record any) error {
+				if typed, ok := record.(SnapshotSummary); ok {
+					summary = typed
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var found *ProviderWarning
+			for i, warning := range summary.Warnings {
+				if warning.Code == "W_DATA_FLOW_EVIDENCE_UNMERGED" {
+					found = &summary.Warnings[i]
+				}
+			}
+			if !testCase.wantCode {
+				if found != nil {
+					t.Fatalf("unexpected %s on a corpus with no multi-producer edge: %s", found.Code, found.Detail)
+				}
+				return
+			}
+			if found == nil {
+				t.Fatalf("no W_DATA_FLOW_EVIDENCE_UNMERGED warning; got %d warning(s)", len(summary.Warnings))
+			}
+			if found.Severity != "info" {
+				t.Fatalf("severity = %q, want %q: the graph is one-sided here, not wrong", found.Severity, "info")
+			}
+			if found.EffectOnCompleteness == "" {
+				t.Fatal("effect_on_semantic_completeness is empty; a disclosure that does not say what it costs is not a disclosure")
+			}
+			if !strings.Contains(found.Detail, testCase.wantEdge) {
+				t.Fatalf("detail = %q, want it to report %q", found.Detail, testCase.wantEdge)
+			}
+		})
+	}
+}
+
+// TestDataFlowEvidenceBoundsAreIndependent pins the interaction between the two
+// ways a DATA_FLOWS evidence array can be incomplete. They are orthogonal: the
+// cap bounds what one producer contributes, and cross-symbol grouping bounds how
+// many producers contribute at all. One edge can hit both, and when it does
+// neither disclosure may swallow the other -- a reader who saw only
+// EVIDENCE_TRUNCATED would conclude the missing flows are the ones past the cap,
+// when a whole second producer is also absent.
+//
+// alpha forwards ten parameters into bravo, which truncates that direction at
+// the cap, and bravo assigns alpha's return, which makes the same edge
+// two-producer.
+func TestDataFlowEvidenceBoundsAreIndependent(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.go", `package flow
+
+func alpha(a, b, c, d, e, f, g, h, i, j int) int {
+	return bravo(a, b, c, d, e, f, g, h, i, j)
+}
+
+func bravo(a, b, c, d, e, f, g, h, i, j int) int {
+	value := alpha(a, b, c, d, e, f, g, h, i, j)
+	return value
+}
+`)
+
+	var truncated *RelationRecord
+	var summary SnapshotSummary
+	err := StreamSnapshot(t.Context(), repo, "bounds-test", ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull}, func(record any) error {
+		switch typed := record.(type) {
+		case RelationRecord:
+			if typed.Type == "DATA_FLOWS" && lastSegment(typed.FromID) == "alpha" && lastSegment(typed.ToID) == "bravo" {
+				kept := typed
+				truncated = &kept
+			}
+		case SnapshotSummary:
+			summary = typed
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if truncated == nil {
+		t.Fatal("no alpha -> bravo DATA_FLOWS relation")
+	}
+	if len(truncated.Evidence) != dataFlowEvidenceLimit {
+		t.Fatalf("evidence entries = %d, want the cap %d", len(truncated.Evidence), dataFlowEvidenceLimit)
+	}
+	if !slices.Contains(truncated.WarningCodes, evidenceTruncatedWarning) {
+		t.Fatalf("warning codes = %q, want %q", truncated.WarningCodes, evidenceTruncatedWarning)
+	}
+
+	var unmerged *ProviderWarning
+	for i, warning := range summary.Warnings {
+		if warning.Code == "W_DATA_FLOW_EVIDENCE_UNMERGED" {
+			unmerged = &summary.Warnings[i]
+		}
+	}
+	if unmerged == nil {
+		t.Fatal("a truncated edge that also has a second producer must still be counted; the cap does not supersede the cross-symbol bound")
+	}
+	if !strings.Contains(unmerged.Detail, "2 DATA_FLOWS edge(s)") {
+		t.Fatalf("detail = %q, want both orientations of the pair counted", unmerged.Detail)
+	}
+}
+
 // TestSnapshotFormatsAreByteDeterministicWhenRelationsDeduplicate exercises
-// the streaming dedup boundary with several DATA_FLOWS candidates that share
-// one public relation identity. The chosen evidence must be canonical, not the
-// first value encountered while ranging a Go map, because both native and
-// first-seen-dictionary compact output inherit that choice byte for byte.
+// the streaming dedup boundary with several DATA_FLOWS flows that share one
+// public relation identity. All of them belong on the edge — forwarding eight
+// parameters into one callee is eight real flows, not one — so the record
+// carries the whole ordered list. That order must be canonical, not the order a
+// Go map happened to range in, because both native and first-seen-dictionary
+// compact output inherit it byte for byte. The fixture forwards exactly
+// dataFlowEvidenceLimit parameters, which also pins the cap boundary: at the
+// limit nothing is dropped and no truncation warning appears.
 func TestSnapshotFormatsAreByteDeterministicWhenRelationsDeduplicate(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.go", `package flow
@@ -137,7 +346,9 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 		bytes        []byte
 		hash         string
 		summary      SnapshotSummary
-		flowEvidence string
+		flowEvidence []string
+		flowWarnings []string
+		flowDropped  int
 	}
 	captureFormat := func(t *testing.T, compact bool) capture {
 		t.Helper()
@@ -152,14 +363,20 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 		}
 		hasher := NewSnapshotSemanticHasher()
 		var summary SnapshotSummary
-		var flowEvidence string
+		var flowEvidence, flowWarnings []string
+		var flowDropped int
 		err := StreamSnapshot(t.Context(), repo, "determinism-test", ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull}, func(record any) error {
 			switch typed := record.(type) {
 			case SnapshotSummary:
 				summary = typed
 			case RelationRecord:
-				if typed.Type == "DATA_FLOWS" && lastSegment(typed.FromID) == "caller" && lastSegment(typed.ToID) == "sink" && len(typed.Evidence) == 1 {
-					flowEvidence = typed.Evidence[0].Detail
+				if typed.Type == "DATA_FLOWS" && lastSegment(typed.FromID) == "caller" && lastSegment(typed.ToID) == "sink" {
+					flowEvidence = nil
+					for _, evidence := range typed.Evidence {
+						flowEvidence = append(flowEvidence, evidence.Detail)
+					}
+					flowWarnings = typed.WarningCodes
+					flowDropped = typed.EvidenceDropped
 				}
 			}
 			if err := hasher.Add(record); err != nil {
@@ -170,7 +387,7 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return capture{bytes: append([]byte(nil), out.Bytes()...), hash: hasher.SumHex(), summary: summary, flowEvidence: flowEvidence}
+		return capture{bytes: append([]byte(nil), out.Bytes()...), hash: hasher.SumHex(), summary: summary, flowEvidence: flowEvidence, flowWarnings: flowWarnings, flowDropped: flowDropped}
 	}
 
 	for _, testCase := range []struct {
@@ -185,8 +402,24 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 			if first.summary.Stats.Symbols != 2 || first.summary.Stats.Relations == 0 {
 				t.Fatalf("fixture stats = %#v, want 2 symbols and at least one relation", first.summary.Stats)
 			}
-			if first.flowEvidence != "alpha -> sink()" {
-				t.Fatalf("canonical DATA_FLOWS evidence = %q, want %q", first.flowEvidence, "alpha -> sink()")
+			wantEvidence := []string{
+				"alpha -> sink()",
+				"bravo -> sink()",
+				"charlie -> sink()",
+				"delta -> sink()",
+				"echo -> sink()",
+				"foxtrot -> sink()",
+				"golf -> sink()",
+				"hotel -> sink()",
+			}
+			if !reflect.DeepEqual(first.flowEvidence, wantEvidence) {
+				t.Fatalf("DATA_FLOWS evidence = %q, want %q", first.flowEvidence, wantEvidence)
+			}
+			if len(first.flowWarnings) != 0 {
+				t.Fatalf("DATA_FLOWS warnings = %q, want none at exactly the evidence limit", first.flowWarnings)
+			}
+			if first.flowDropped != 0 {
+				t.Fatalf("evidence_dropped = %d, want 0 at exactly the limit: nothing overflowed", first.flowDropped)
 			}
 			for run := 2; run <= 32; run++ {
 				next := captureFormat(t, testCase.compact)

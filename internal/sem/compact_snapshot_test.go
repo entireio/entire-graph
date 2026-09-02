@@ -35,7 +35,7 @@ func compactFixtureRecords() []any {
 		ExternalRecord{RecordType: "external", ID: "ext-id", Kind: "module", Value: "example", FilePath: "main.go", StartLine: 2, EndLine: 3, Signature: "sig", Language: "Go", External: true, SourceSymbol: "source", SourceDetails: "details"},
 		SymbolRecord{RecordType: "symbol", ID: "symbol-id", StableIDVersion: "v1", Kind: "function", Name: "same", QualifiedName: "pkg.same", FilePath: "main.go", StartLine: 5, EndLine: 9, Signature: "func same()", BodyHash: "hash", Language: "Go", ContainerID: "container", Aliases: []string{"alias"}},
 		SymbolRecord{RecordType: "symbol", ID: "symbol-id-2", StableIDVersion: "v1", Kind: "method", Name: "same", QualifiedName: "other.same", FilePath: "other.go", StartLine: 1, EndLine: 2, Signature: "func same()", BodyHash: "hash2", Language: "Go", ContainerID: "other", Aliases: []string{}},
-		RelationRecord{RecordType: "relation", FromID: "symbol-id", ToID: "symbol-id-2", Type: "CALLS", Confidence: 0.75, Reason: "reason", RelationScope: "scope", Resolution: "resolved", TargetKind: "method", Evidence: []Evidence{{Kind: "call", FilePath: "main.go", StartLine: 6, EndLine: 6, Detail: "detail"}}, WarningCodes: []string{"W1"}},
+		RelationRecord{RecordType: "relation", FromID: "symbol-id", ToID: "symbol-id-2", Type: "CALLS", Confidence: 0.75, Reason: "reason", RelationScope: "scope", Resolution: "resolved", TargetKind: "method", Evidence: []Evidence{{Kind: "call", FilePath: "main.go", StartLine: 6, EndLine: 6, Detail: "detail"}}, WarningCodes: []string{"EVIDENCE_TRUNCATED"}, EvidenceDropped: 2},
 		RelationRecord{RecordType: "relation", FromID: "symbol-id", ToID: "external-target", Type: "IMPORTS", Confidence: 1, Reason: "import", WarningCodes: []string{}},
 		SnapshotSummary{RecordType: "summary", Languages: []string{"Go"}, LanguageTiers: map[string]string{"Go": "semantic"}, Warnings: []ProviderWarning{}, PartialFailures: []PartialFailure{}, Stats: ProviderStats{Files: 1, ParsedFiles: 1, Symbols: 2, Relations: 2, CompletenessLevel: "ok"}, Completeness: CompletenessReport{Languages: map[string]LanguageCompleteness{"Go": {Files: 1, Symbols: 2}}, Relations: map[string]int{"CALLS": 1, "IMPORTS": 1}}},
 	}
@@ -459,6 +459,9 @@ func TestCompactSnapshotDecoderRejectsUnknownVersion(t *testing.T) {
 }
 func TestCompactSnapshotDecoderRejectsWrongArity(t *testing.T) {
 	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",1]\n", "dictionary has invalid placement or arity")
+}
+func TestCompactSnapshotDecoderRejectsNegativeEvidenceDropped(t *testing.T) {
+	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"r\",0,0,0,0,0,0,0,0,[],[],-1]\n", "evidence_dropped -1 must be non-negative")
 }
 func TestCompactSnapshotDecoderRequiresHeaderDictionaryThenSummary(t *testing.T) {
 	requireCompactDecodeError(t, "[\"d\",1,[\"x\"]]\n", "dictionary has invalid placement")
