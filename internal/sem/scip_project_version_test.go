@@ -473,3 +473,58 @@ func TestSCIPLocalSymbolsAreInjectivePerDocument(t *testing.T) {
 		t.Error("no local 0 emitted")
 	}
 }
+
+// TestCargoWorkspaceInheritanceSurvivesATrailingComment pins the comment strip on the
+// inheritance check. A '#' opens a comment anywhere TOML allows a value, and the raw
+// value used to carry it: `version.workspace = true # inherit` compared "true # inherit"
+// against "true", read as "does not inherit", and fell back to the unknown version. Every
+// crate in a commented workspace then shared one SCIP package identity -- the identity
+// collapse parseCargoPackageVersion exists to prevent -- while parsing cleanly and
+// reporting no error.
+//
+// The quoted case is here because the strip must not run inside a string: a version may
+// legitimately contain a hash, and truncating it would corrupt the identity it sets.
+func TestCargoWorkspaceInheritanceSurvivesATrailingComment(t *testing.T) {
+	t.Parallel()
+
+	const workspace = "[workspace.package]\nversion = \"4.2.0\"\n"
+
+	for _, testCase := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "dotted key with a trailing comment",
+			content: workspace + "[package]\nversion.workspace = true # inherit\n",
+			want:    "4.2.0",
+		},
+		{
+			name:    "inline table with a trailing comment",
+			content: workspace + "[package]\nversion = { workspace = true } # inherit\n",
+			want:    "4.2.0",
+		},
+		{
+			name:    "dotted key without a comment still works",
+			content: workspace + "[package]\nversion.workspace = true\n",
+			want:    "4.2.0",
+		},
+		{
+			name:    "a literal version keeps a hash inside its quotes",
+			content: "[package]\nversion = \"1.0#rc1\"\n",
+			want:    "1.0#rc1",
+		},
+		{
+			name:    "a commented-out inheritance is not inheritance",
+			content: workspace + "[package]\n# version.workspace = true\n",
+			want:    "",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseCargoPackageVersion(testCase.content); got != testCase.want {
+				t.Fatalf("parseCargoPackageVersion() = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}

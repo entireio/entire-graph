@@ -156,7 +156,12 @@ func tomlTableRawValue(content, table, key string) string {
 		}
 		name, value, found := strings.Cut(line, "=")
 		if found && strings.TrimSpace(name) == key {
-			return strings.TrimSpace(value)
+			// A trailing comment is not part of the value. Without this,
+			// `version.workspace = true # inherit` compares "true # inherit"
+			// against "true", reports no inheritance, and collapses the crate
+			// back to the shared "0" identity this field exists to prevent.
+			// stripTOMLComment is quote-aware, so `"1.0#rc1"` keeps its hash.
+			return strings.TrimSpace(stripTOMLComment(value))
 		}
 	}
 	return ""
