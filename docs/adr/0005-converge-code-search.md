@@ -178,10 +178,19 @@ Being contract, it is versioned like one. The note already carries a version fie
 major is the compatibility boundary and a consumer refuses an unknown one; minors are additive
 only, never removing a field, changing a field's meaning, or making an optional field required;
 readers ignore unknown fields and warn rather than fail on a newer minor within a supported
-major. The version tag therefore carries a minor as well -- `entire-graph-scip-omissions/v1.0`,
-then `/v1.1` for each additive change -- because a bare `v1` gives a tolerant reader nothing to
-warn on and no way to tell compatible evolution from a break. A breaking change is `/v2` with a
-migration note, and is out of scope for the feed's `v1` line.
+major. A bare `v1` does leave a tolerant reader with nothing to warn on and no way to tell
+compatible evolution from a break -- but the fix is not to rewrite the tag. `v1` is already
+shipped: `TestSCIPOmissionNoteVersionIsPinned` asserts the exact string, deliberately, so that a
+contract change cannot be incidental, and consumers matching it exactly would be rejected by a
+rename. Retagging to `/v1.0` would therefore be a breaking change performed in the name of an
+additive freeze, and it would fail the very test that guards the contract.
+
+The minor is carried **beside** the tag instead, as a new optional integer field that a tolerant
+reader may ignore -- which is exactly the additive move `1.x` allows. The tag stays
+`entire-graph-scip-omissions/v1`, exact-match consumers keep working, the pinning test keeps
+passing, and a reader that wants to distinguish compatible evolution from a break has a field to
+read. A breaking change is still `/v2` with a migration note, and is out of scope for the feed's
+`v1` line.
 
 **Identity, and an addressing mismatch to resolve.** peregrine's `.pg` header carries `org_id`,
 `repo_name`, `repo_id` and `indexed_commit: [u8; 20]` (`src/index/format.rs:33-44`), so the join
