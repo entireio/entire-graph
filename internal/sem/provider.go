@@ -10999,6 +10999,34 @@ func hasGitDirComponent(rel string) bool {
 	return false
 }
 
+// PathLandsInGitDir reports whether a repo-relative path RESOLVES into a git directory. It
+// answers hasGitDirComponent's question for a caller outside this package that is about to hand
+// the path to the KERNEL, rather than reading the name back out of a directory walk.
+//
+// Everything above about depth applies here unchanged — a nested checkout's `vendor/dep/.git` and
+// a linked worktree's `.git` pointer file are both git directories — and this deliberately reuses
+// that whole-component rule rather than inventing a second one.
+//
+// It differs in exactly one way, and the difference belongs to the filesystem rather than to
+// taste. hasGitDirComponent judges names the walker ENUMERATED, which are the names as they exist
+// on disk. This judges a name the caller RESOLVED — on the far end of a symlink chain whose text a
+// repository chose — and on the two platforms most development happens on, macOS and Windows, the
+// kernel matches that text case-insensitively: a committed `CLAUDE.md -> .GIT/config` opens
+// `.git/config`. An exact comparison is a bypass on precisely those platforms, so this folds.
+//
+// Folding where the filesystem does not can only refuse a path through a directory genuinely
+// named `.GIT`, which is not a git directory — and is not an instruction file's home either. The
+// trade therefore runs the safe way: it fails closed, and only on a spelling nothing legitimate
+// uses.
+func PathLandsInGitDir(rel string) bool {
+	for _, component := range strings.Split(filepath.ToSlash(rel), "/") {
+		if strings.EqualFold(component, ".git") {
+			return true
+		}
+	}
+	return false
+}
+
 // maxGitPointerBytes bounds how much of a `commondir` file is READ. It bounds
 // the read, not the file: `commondir` carries no size limit of git's own, so
 // this is a read-safety bound this tool chooses, not one git enforces. See

@@ -2023,6 +2023,14 @@ type aliasPlant struct {
 	name   string
 	target string
 	plant  func(t *testing.T, repo string) string
+	// refusedEvenIfTheKernelCanReachIt marks a landing init-agents refuses on purpose whatever
+	// the kernel says, because it is inside the git directory. The oracle below otherwise
+	// requires agreement with the kernel, and that requirement is exactly what this exception
+	// exists to bound: on a platform whose path rules make one of these spellings reachable —
+	// Windows, which collapses ".." lexically before opening anything — "agree with the
+	// kernel" means "install the managed block into .git/config", which is the bug, not the
+	// contract.
+	refusedEvenIfTheKernelCanReachIt bool
 }
 
 // untraversableAliasPlants are the in-repository alias spellings whose landing exists only after
@@ -2096,8 +2104,9 @@ var untraversableAliasPlants = []aliasPlant{
 		},
 	},
 	{
-		name:   "landing inside the git directory",
-		target: "AGENTS.md",
+		name:                             "landing inside the git directory",
+		target:                           "AGENTS.md",
+		refusedEvenIfTheKernelCanReachIt: true,
 		plant: func(t *testing.T, repo string) string {
 			t.Helper()
 			victim := filepath.Join(repo, ".git", "config")
@@ -2166,7 +2175,9 @@ func TestInitAgentsRefusesAliasCollapsingUntraversableComponent(t *testing.T) {
 // than restate the kernel's path rules — restating them is how the collapse came to be written —
 // it asks the filesystem what each spelling does and requires init-agents to agree: install
 // exactly when the kernel can open that path, refuse when it cannot, and, when both succeed, land
-// on the file the kernel's own resolution reaches. Every alias here stays inside the repository,
+// on the file the kernel's own resolution reaches. The single exception is a landing inside the
+// git directory, which is refused whatever the kernel answers; see
+// refusedEvenIfTheKernelCanReachIt. Every alias here stays inside the repository,
 // which is what makes the two comparable; an alias that leaves is refused by design and is covered
 // by TestInitAgentsRefusesAbsoluteAliasLeavingRepository.
 func TestInitAgentsAliasResolutionMatchesTheKernel(t *testing.T) {
@@ -2224,6 +2235,18 @@ func TestInitAgentsAliasResolutionMatchesTheKernel(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
 
+			if tt.refusedEvenIfTheKernelCanReachIt {
+				// The one deliberate divergence. Reachability is the kernel's to answer and
+				// it is not the question here: a landing in the git directory is refused
+				// whether the kernel could take the path or not.
+				if err == nil {
+					t.Fatalf("init-agents installed into the git directory; the kernel reaching it (%v) does not make it a legal landing", kernelErr)
+				}
+				if !strings.Contains(err.Error(), "git directory") && !strings.Contains(err.Error(), "cannot resolve") {
+					t.Fatalf("refusal named neither the git directory nor an unresolvable path: %v", err)
+				}
+				return
+			}
 			if (kernelErr == nil) != (err == nil) {
 				t.Fatalf("init-agents disagreed with the filesystem about %s:\nkernel: %v\n  init: %v", tt.target, kernelErr, err)
 			}
@@ -2418,5 +2441,666 @@ func TestInitAgentsRefusesWhenTheManagedBlockWouldCrossTheReadLimit(t *testing.T
 		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
 			t.Fatalf("%s was created despite the refusal (stat error %v)", path, statErr)
 		}
+	}
+}
+
+// TestInitAgentsRefusesManagedTargetInsideGitDirectory pins the landing that containment alone
+// cannot refuse. os.Root keeps the write inside the project root, and `.git` is inside the project
+// root, so a committed `CLAUDE.md -> .git/config` used to be followed: the managed block landed in
+// git's own config and git then refused to operate on the repository at all.
+//
+// Each case is a link that STAYS inside the repository, so none of them is an escape and none is
+// caught by the escape refusal above.
+func TestInitAgentsRefusesManagedTargetInsideGitDirectory(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name    string
+		managed string
+		victim  string
+		// linkSpelling overrides the symlink target text. It is set only where the point of
+		// the case is that the spelling and the landing differ.
+		linkSpelling string
+	}{
+		{name: "claude to git config", managed: "CLAUDE.md", victim: filepath.Join(".git", "config")},
+		{name: "agents to git hook", managed: "AGENTS.md", victim: filepath.Join(".git", "hooks", "pre-commit")},
+		{name: "guide to git config", managed: filepath.Join(".entire", "graph-agent.md"), victim: filepath.Join(".git", "config")},
+		{name: "nested checkout git config", managed: "AGENTS.md", victim: filepath.Join("vendor", "dep", ".git", "config")},
+		// A symlink target is text the repository chose, and macOS and Windows resolve it
+		// case-insensitively: an exact ".git" comparison is a bypass on both.
+		{name: "uppercase git spelling", managed: "CLAUDE.md", victim: filepath.Join(".git", "config"), linkSpelling: ".GIT/config"},
+		{name: "mixed case git spelling", managed: "CLAUDE.md", victim: filepath.Join(".git", "config"), linkSpelling: ".Git/config"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+
+			victimPath := filepath.Join(repo, testCase.victim)
+			if err := os.MkdirAll(filepath.Dir(victimPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			const victimContent = "[core]\n\tbare = false\n"
+			if err := os.WriteFile(victimPath, []byte(victimContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			managedPath := filepath.Join(repo, testCase.managed)
+			if err := os.MkdirAll(filepath.Dir(managedPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			relativeVictim, err := filepath.Rel(filepath.Dir(managedPath), victimPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if testCase.linkSpelling != "" {
+				if !caseInsensitiveFilesystem(t, repo) {
+					t.Skip("filesystem is case-sensitive, so this spelling names nothing")
+				}
+				relativeVictim = filepath.FromSlash(testCase.linkSpelling)
+			}
+			if err := os.Symlink(relativeVictim, managedPath); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			var out bytes.Buffer
+			runErr := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+			requireGitDirRefusal(t, runErr, out.String())
+
+			after, err := os.ReadFile(victimPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != victimContent {
+				t.Fatalf("%s was written through:\n%s", testCase.victim, after)
+			}
+
+			// The refusal is a preflight for ALL managed targets, so nothing is installed.
+			for _, unwritten := range []string{"AGENTS.md", "CLAUDE.md", filepath.Join(".entire", "graph-agent.md")} {
+				if unwritten == testCase.managed {
+					continue
+				}
+				if _, err := os.Lstat(filepath.Join(repo, unwritten)); !os.IsNotExist(err) {
+					t.Fatalf("partial install: %s exists after the refusal (%v)", unwritten, err)
+				}
+			}
+		})
+	}
+}
+
+// TestInitAgentsRefusesIndirectRoutesIntoGitDirectory pins the refusal to the RESOLVED landing
+// rather than to the link's spelling. Both shapes below reach `.git/config` without naming it as a
+// plain relative path, so a check that read the symlink text would miss them: one is spelled as an
+// absolute path that re-enters the repository, the other reaches it in two hops through a
+// symlinked directory.
+func TestInitAgentsRefusesIndirectRoutesIntoGitDirectory(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name  string
+		build func(t *testing.T, repo string)
+	}{
+		{
+			name: "absolute target re-entering the repository",
+			build: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.Symlink(filepath.Join(repo, ".git", "config"), filepath.Join(repo, "CLAUDE.md")); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			},
+		},
+		{
+			name: "two hops through a symlinked directory",
+			build: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join("..", ".git"), filepath.Join(repo, "sub", "glink")); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				if err := os.Symlink(filepath.Join("sub", "glink", "config"), filepath.Join(repo, "AGENTS.md")); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+			gitDir := filepath.Join(repo, ".git")
+			if err := os.MkdirAll(gitDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			const config = "[core]\n\tbare = false\n"
+			configPath := filepath.Join(gitDir, "config")
+			if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			testCase.build(t, repo)
+
+			var out bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+			requireGitDirRefusal(t, err, out.String())
+			after, readErr := os.ReadFile(configPath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(after) != config {
+				t.Fatalf("git config was written through:\n%s", after)
+			}
+		})
+	}
+}
+
+// TestInitAgentsRefusesGuideDirectoryAliasedToGitDirectory covers the directory target, which
+// resolves through resolveContainedDirectoryName rather than the file resolver: `.entire -> .git`
+// would otherwise have MkdirAll accept the git directory as the guide's home and drop
+// graph-agent.md inside it.
+func TestInitAgentsRefusesGuideDirectoryAliasedToGitDirectory(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	gitDir := filepath.Join(repo, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".git", filepath.Join(repo, ".entire")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+	requireGitDirRefusal(t, err, out.String())
+	if _, statErr := os.Lstat(filepath.Join(gitDir, "graph-agent.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("guide written inside the git directory (%v)", statErr)
+	}
+}
+
+// TestInitAgentsStillFollowsInRepositoryAliases guards the other side of the refusal above. The
+// git-directory landing is the only one being added; docs/agents.md documents in-repository
+// symlinks as supported, and both shapes it names must keep working.
+func TestInitAgentsStillFollowsInRepositoryAliases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("shared instruction file", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		if err := os.Symlink("AGENTS.md", filepath.Join(repo, "CLAUDE.md")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		var out bytes.Buffer
+		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo}); err != nil {
+			t.Fatalf("documented alias refused: %v\n%s", err, out.String())
+		}
+		agents, err := os.ReadFile(filepath.Join(repo, "AGENTS.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(string(agents), agentPointerBegin) != 1 {
+			t.Fatalf("shared instruction file did not receive exactly one block:\n%s", agents)
+		}
+	})
+
+	t.Run("link to an ordinary in-repository file", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(repo, "docs"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(repo, "docs", "guide.md")
+		if err := os.WriteFile(target, []byte("# house rules\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join("docs", "guide.md"), filepath.Join(repo, "AGENTS.md")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		var out bytes.Buffer
+		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo}); err != nil {
+			t.Fatalf("documented alias refused: %v\n%s", err, out.String())
+		}
+		got, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(got), "# house rules") || !strings.Contains(string(got), agentPointerBegin) {
+			t.Fatalf("alias target not updated in place:\n%s", got)
+		}
+	})
+}
+
+// caseInsensitiveFilesystem asks the filesystem under dir rather than assuming from GOOS: a
+// case-sensitive volume on macOS and a case-insensitive one on Linux are both ordinary.
+func caseInsensitiveFilesystem(t *testing.T, dir string) bool {
+	t.Helper()
+	probe := filepath.Join(dir, ".case-probe")
+	if err := os.WriteFile(probe, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Remove(probe) }()
+	_, err := os.Stat(filepath.Join(dir, ".CASE-PROBE"))
+	return err == nil
+}
+
+// requireGitDirRefusal asserts the refusal without over-fitting its wording to one platform. The
+// landing is what matters; the ROUTE to it can fail first for a reason that is not this rule.
+// Windows decides a symlink's type when it is created and cannot traverse a file link as a
+// directory, so a multi-hop or directory-valued spelling can be refused as unresolvable there and
+// as a git-directory landing everywhere else. Both are refusals of the same write.
+func requireGitDirRefusal(t *testing.T, err error, out string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("init-agents wrote into the git directory; output:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "git directory") && !strings.Contains(err.Error(), "cannot resolve") {
+		t.Fatalf("refusal named neither the git directory nor an unresolvable path: %v", err)
+	}
+}
+
+// TestInitAgentsRefusesManagedTargetHardLinkedIntoGitDirectory covers the route
+// the git-directory refusal cannot see.
+//
+// Every guard around it reasons about a PATH — its components, what it resolves
+// to, whether a component is a symlink. A hard link has no path to reason about:
+// `ln .git/config CLAUDE.md` gives git's config a second name in the working
+// tree, so it resolves to "CLAUDE.md", carries no `.git` component, and Lstat
+// reports an ordinary regular file. PathLandsInGitDir is structurally unable to
+// refuse it.
+//
+// Measured on this branch before the guard: `init-agents` exited 0 (nil error)
+// and `.git/config` was rewritten with the managed block appended — the exact
+// corruption this PR exists to prevent, reached by a route it did not cover.
+func TestInitAgentsRefusesManagedTargetHardLinkedIntoGitDirectory(t *testing.T) {
+	t.Parallel()
+
+	for _, managed := range []string{"CLAUDE.md", "AGENTS.md"} {
+		t.Run(managed, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+
+			victimPath := filepath.Join(repo, ".git", "config")
+			if err := os.MkdirAll(filepath.Dir(victimPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			const victimContent = "[core]\n\tbare = false\n"
+			if err := os.WriteFile(victimPath, []byte(victimContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(victimPath, filepath.Join(repo, managed)); err != nil {
+				t.Skipf("hard links unavailable on this filesystem: %v", err)
+			}
+
+			var out bytes.Buffer
+			runErr := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+			if runErr == nil {
+				t.Fatalf("init-agents succeeded while writing through a hard link into the git directory:\n%s", out.String())
+			}
+			if !errors.Is(runErr, errSharedInodeManagedTarget) {
+				t.Fatalf("want a hard-link refusal, got %v\n%s", runErr, out.String())
+			}
+
+			after, err := os.ReadFile(victimPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != victimContent {
+				t.Fatalf(".git/config was written through a hard link:\n%s", after)
+			}
+		})
+	}
+}
+
+// TestInitAgentsWritesAnOrdinaryInstructionFile keeps the hard-link guard from
+// becoming a blanket refusal. A guard that rejected every managed target would
+// pass the test above and break the command, so the ordinary path is asserted
+// beside it.
+func TestInitAgentsWritesAnOrdinaryInstructionFile(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("# house rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo}); err != nil {
+		t.Fatalf("init-agents on an ordinary file: %v\n%s", err, out.String())
+	}
+	body, err := os.ReadFile(filepath.Join(repo, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "house rules") {
+		t.Fatalf("the user's own text must survive:\n%s", body)
+	}
+}
+
+// plantGitAdministrativeDirectory builds a git administrative directory at dir that is NOT named
+// `.git`, so the name rule cannot see it. It is written by hand rather than by shelling out to
+// `git init --separate-git-dir`, so the test states exactly which structure the refusal keys on and
+// needs no git binary; the layout is the one `git init` produces and the one git's own
+// is_git_directory() recognises.
+func plantGitAdministrativeDirectory(t *testing.T, dir string) {
+	t.Helper()
+	mkdirAllForTest(t, filepath.Join(dir, "objects"))
+	mkdirAllForTest(t, filepath.Join(dir, "refs", "heads"))
+	mkdirAllForTest(t, filepath.Join(dir, "hooks"))
+	writeFileForTest(t, filepath.Join(dir, "HEAD"), "ref: refs/heads/main\n")
+	writeFileForTest(t, filepath.Join(dir, "config"), gitAdministrativeConfig)
+}
+
+const gitAdministrativeConfig = "[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
+
+// TestInitAgentsRefusesGitDirectoryNotNamedDotGit pins the git-directory refusal to the directory
+// git actually uses rather than to the name `.git`.
+//
+// sem.PathLandsInGitDir judges a repo-relative STRING, so it refuses a landing that SPELLS a `.git`
+// component and nothing else. Git does not require that spelling: `git init --separate-git-dir=admin`
+// leaves a `.git` POINTER FILE and puts the real administrative directory at `admin/`, and a
+// repository initialised under GIT_DIR has no `.git` entry at all. Measured on this branch before
+// the fix, in a `--separate-git-dir` repository: `CLAUDE.md -> admin/config` exited 0 with the
+// managed block appended to git's real config, after which every git command failed with "fatal:
+// bad config line 9".
+//
+// The `.entire` case is the one no filename rule can catch. Its landing is `graph-agent.md`, an
+// ordinary markdown name that the instruction-file allowlist admits — it is refused only because of
+// WHERE it lands, which is inside the real ref store.
+func TestInitAgentsRefusesGitDirectoryNotNamedDotGit(t *testing.T) {
+	t.Parallel()
+	skipIfSymlinksUnrepresentable(t)
+
+	for _, testCase := range []struct {
+		name string
+		// build plants the repository and returns the file that must not be written.
+		build func(t *testing.T, repo string) string
+	}{
+		{
+			name: "gitlink pointer to an in-tree administrative directory",
+			build: func(t *testing.T, repo string) string {
+				t.Helper()
+				plantGitAdministrativeDirectory(t, filepath.Join(repo, "admin"))
+				writeFileForTest(t, filepath.Join(repo, ".git"), "gitdir: admin\n")
+				symlinkForTest(t, filepath.Join("admin", "config"), filepath.Join(repo, "CLAUDE.md"))
+				return filepath.Join(repo, "admin", "config")
+			},
+		},
+		{
+			name: "administrative directory with no gitlink at all",
+			build: func(t *testing.T, repo string) string {
+				t.Helper()
+				plantGitAdministrativeDirectory(t, filepath.Join(repo, "admin"))
+				hook := filepath.Join(repo, "admin", "hooks", "pre-commit")
+				writeFileForTest(t, hook, "#!/bin/sh\nexit 0\n")
+				symlinkForTest(t, filepath.Join("admin", "hooks", "pre-commit"), filepath.Join(repo, "AGENTS.md"))
+				return hook
+			},
+		},
+		{
+			name: "guide directory alias into the real ref store",
+			build: func(t *testing.T, repo string) string {
+				t.Helper()
+				plantGitAdministrativeDirectory(t, filepath.Join(repo, "admin"))
+				writeFileForTest(t, filepath.Join(repo, ".git"), "gitdir: admin\n")
+				symlinkForTest(t, filepath.Join("admin", "refs", "heads"), filepath.Join(repo, ".entire"))
+				return filepath.Join(repo, "admin", "refs", "heads", "graph-agent.md")
+			},
+		},
+		{
+			name: "administrative directory with no object or ref store",
+			build: func(t *testing.T, repo string) string {
+				t.Helper()
+				// A linked worktree's administrative directory keeps commondir and gitdir
+				// in place of its own object and ref stores, so a test that asked only for
+				// those two would not recognise it.
+				worktreeAdmin := filepath.Join(repo, "wt")
+				mkdirAllForTest(t, worktreeAdmin)
+				writeFileForTest(t, filepath.Join(worktreeAdmin, "HEAD"), "ref: refs/heads/main\n")
+				writeFileForTest(t, filepath.Join(worktreeAdmin, "commondir"), "../..\n")
+				victim := filepath.Join(worktreeAdmin, "gitdir")
+				writeFileForTest(t, victim, "/elsewhere/.git\n")
+				writeFileForTest(t, filepath.Join(repo, ".git"), "gitdir: wt\n")
+				symlinkForTest(t, filepath.Join("wt", "gitdir"), filepath.Join(repo, "CLAUDE.md"))
+				return victim
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+			victim := testCase.build(t, repo)
+			before, existed := "", false
+			if content, err := os.ReadFile(victim); err == nil {
+				before, existed = string(content), true
+			}
+
+			var out bytes.Buffer
+			runErr := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+			requireGitDirRefusal(t, runErr, out.String())
+
+			if existed {
+				if got := readFileForTest(t, victim); got != before {
+					t.Fatalf("%s was written through:\nwant: %q\n got: %q", victim, before, got)
+				}
+			} else if _, statErr := os.Lstat(victim); !os.IsNotExist(statErr) {
+				t.Fatalf("%s was created inside the git directory (stat error %v)", victim, statErr)
+			}
+			for _, unwritten := range []string{"AGENTS.md", "CLAUDE.md", filepath.Join(".entire", "graph-agent.md")} {
+				path := filepath.Join(repo, unwritten)
+				info, statErr := os.Lstat(path)
+				if os.IsNotExist(statErr) {
+					continue
+				}
+				if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+					// The planted alias itself, untouched.
+					continue
+				}
+				t.Fatalf("partial install: %s exists after the refusal (%v)", unwritten, statErr)
+			}
+		})
+	}
+}
+
+// TestInitAgentsRefusesLandingThatIsNotAnInstructionFile pins the write to the kind of file
+// init-agents exists to write.
+//
+// The git-directory refusals name one destination each, which is a denylist, and a denylist of
+// destinations cannot be finished. Measured on this branch before the fix, each of these exited 0
+// with the managed block appended to the victim's real build, CI, environment or package file. The
+// rule that replaces the list is the one thing that IS bounded: docs/agents.md offers the alias so
+// AGENTS.md and CLAUDE.md may share one INSTRUCTION FILE, so a landing that is not an instruction
+// file is not a use of the feature.
+func TestInitAgentsRefusesLandingThatIsNotAnInstructionFile(t *testing.T) {
+	t.Parallel()
+	skipIfSymlinksUnrepresentable(t)
+
+	for _, testCase := range []struct {
+		name    string
+		managed string
+		victim  string
+		content string
+	}{
+		{name: "workflow", managed: "CLAUDE.md", victim: filepath.Join(".github", "workflows", "ci.yml"), content: "name: ci\non: [push]\n"},
+		{name: "makefile", managed: "CLAUDE.md", victim: "Makefile", content: "all:\n\techo hi\n"},
+		{name: "direnv", managed: "CLAUDE.md", victim: ".envrc", content: "export FOO=bar\n"},
+		{name: "package manifest", managed: "AGENTS.md", victim: "package.json", content: "{\"scripts\":{\"build\":\"tsc\"}}\n"},
+		{name: "shell profile", managed: "AGENTS.md", victim: ".bashrc", content: "export PATH=$PATH:/bin\n"},
+		{name: "guide alias", managed: filepath.Join(".entire", "graph-agent.md"), victim: "Makefile", content: "all:\n\techo hi\n"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+			victimPath := filepath.Join(repo, testCase.victim)
+			mkdirAllForTest(t, filepath.Dir(victimPath))
+			writeFileForTest(t, victimPath, testCase.content)
+
+			managedPath := filepath.Join(repo, testCase.managed)
+			mkdirAllForTest(t, filepath.Dir(managedPath))
+			relativeVictim, err := filepath.Rel(filepath.Dir(managedPath), victimPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			symlinkForTest(t, relativeVictim, managedPath)
+
+			var out bytes.Buffer
+			runErr := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+			if runErr == nil {
+				t.Fatalf("init-agents wrote its managed block into %s; output:\n%s", testCase.victim, out.String())
+			}
+			if !strings.Contains(runErr.Error(), "agent-instruction file") {
+				t.Fatalf("the refusal did not name the instruction-file rule: %v", runErr)
+			}
+			// The refusal comes from the resolver, so it carries no syscall errno and is
+			// indistinguishable from os.Root's own escape sentinel unless the classifier
+			// names it. Every link here stays inside the repository.
+			if strings.Contains(runErr.Error(), "leaves the repository") {
+				t.Fatalf("a link that never left the root was reported as a repository escape: %v", runErr)
+			}
+			if got := readFileForTest(t, victimPath); got != testCase.content {
+				t.Fatalf("%s was written through:\nwant: %q\n got: %q", testCase.victim, testCase.content, got)
+			}
+			for _, unwritten := range []string{"AGENTS.md", "CLAUDE.md", filepath.Join(".entire", "graph-agent.md")} {
+				if unwritten == testCase.managed {
+					continue
+				}
+				if _, statErr := os.Lstat(filepath.Join(repo, unwritten)); !os.IsNotExist(statErr) {
+					t.Fatalf("partial install: %s exists after the refusal (%v)", unwritten, statErr)
+				}
+			}
+		})
+	}
+}
+
+// TestInitAgentsAllowsInstructionFileLandings bounds the refusal above from the other side. Each of
+// these is a landing the documented alias is FOR, and each must keep working: a markdown file the
+// repository already had, an agent rules file that carries no markdown extension, and — twice — a
+// landing this command itself created, because a rule that admitted a target on the first run and
+// refused it on the second would be worse than no rule.
+func TestInitAgentsAllowsInstructionFileLandings(t *testing.T) {
+	t.Parallel()
+	skipIfSymlinksUnrepresentable(t)
+
+	t.Run("existing markdown target", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		shared := filepath.Join(repo, "docs", "shared.md")
+		mkdirAllForTest(t, filepath.Dir(shared))
+		writeFileForTest(t, shared, "# Shared rules\n")
+		symlinkForTest(t, filepath.Join("docs", "shared.md"), filepath.Join(repo, "AGENTS.md"))
+		symlinkForTest(t, "AGENTS.md", filepath.Join(repo, "CLAUDE.md"))
+
+		runInitAgentsForTest(t, repo)
+
+		got := readFileForTest(t, shared)
+		if !strings.Contains(got, "# Shared rules") || !strings.Contains(got, testAgentPointerBlock) {
+			t.Fatalf("the shared instruction file lost content or the pointer:\n%s", got)
+		}
+	})
+
+	t.Run("rules file without a markdown extension", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		rules := filepath.Join(repo, ".cursorrules")
+		writeFileForTest(t, rules, "# Cursor rules\n")
+		symlinkForTest(t, ".cursorrules", filepath.Join(repo, "CLAUDE.md"))
+
+		runInitAgentsForTest(t, repo)
+
+		got := readFileForTest(t, rules)
+		if !strings.Contains(got, "# Cursor rules") || !strings.Contains(got, testAgentPointerBlock) {
+			t.Fatalf("the rules file lost content or the pointer:\n%s", got)
+		}
+	})
+
+	t.Run("landing this command created is writable again", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		// No markdown extension and not on any list: admitted the first time because it
+		// does not exist, and the second time because it now carries this command's block.
+		symlinkForTest(t, "NOTES", filepath.Join(repo, "AGENTS.md"))
+
+		runInitAgentsForTest(t, repo)
+		runInitAgentsForTest(t, repo)
+
+		got := readFileForTest(t, filepath.Join(repo, "NOTES"))
+		if strings.Count(got, agentPointerBegin) != 1 {
+			t.Fatalf("the second run did not update the block in place:\n%s", got)
+		}
+	})
+
+	t.Run("guide landing this command created is writable again", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		mkdirAllForTest(t, filepath.Join(repo, ".entire"))
+		symlinkForTest(t, filepath.Join("..", "GUIDE"), filepath.Join(repo, ".entire", "graph-agent.md"))
+
+		runInitAgentsForTest(t, repo)
+		runInitAgentsForTest(t, repo)
+
+		if got := readFileForTest(t, filepath.Join(repo, "GUIDE")); got != agentGuide {
+			t.Fatalf("the guide landing did not hold the guide after two runs:\n%s", got)
+		}
+	})
+}
+
+// TestAgentGuideHeadingIdentifiesTheGuide guards the derivation the re-run case above depends on. A
+// heading that went empty, or that stopped appearing in the guide, would make
+// landingCarriesManagedContent either admit every file or admit none.
+func TestAgentGuideHeadingIdentifiesTheGuide(t *testing.T) {
+	t.Parallel()
+	if len(agentGuideHeading) < len("# entire-graph") {
+		t.Fatalf("the guide heading is too short to identify anything: %q", agentGuideHeading)
+	}
+	if !strings.Contains(agentGuide, agentGuideHeading) {
+		t.Fatalf("the guide no longer contains its own heading %q", agentGuideHeading)
+	}
+	if strings.Contains("all:\n\techo hi\n", agentGuideHeading) {
+		t.Fatalf("the guide heading matches unrelated file content: %q", agentGuideHeading)
+	}
+}
+
+// TestInitAgentsRefusesHardLinkWhoseCountASymlinkAliasInflates covers the way
+// the hard-link guard could be talked out of firing.
+//
+// The guard asks whether every one of an inode's names is a managed instruction
+// file, and answers by counting managed names that resolve to the same inode.
+// Only real directory entries contribute to an inode's LINK COUNT, so a symlink
+// alias — the documented way to share one instruction file — resolves to the
+// inode without being one of its names, and counting it inflates the managed
+// tally without inflating the link count.
+//
+// Measured before the fix: CLAUDE.md hard-linked to .git/config (2 names) plus
+// AGENTS.md symlinked to CLAUDE.md counted 2 managed names against 2 links, so
+// `init-agents` exited 0 and rewrote git's config — the exact corruption the
+// guard exists to prevent, reached by inflating its own evidence.
+func TestInitAgentsRefusesHardLinkWhoseCountASymlinkAliasInflates(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+
+	victimPath := filepath.Join(repo, ".git", "config")
+	if err := os.MkdirAll(filepath.Dir(victimPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const victimContent = "[core]\n\tbare = false\n"
+	if err := os.WriteFile(victimPath, []byte(victimContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(victimPath, filepath.Join(repo, "CLAUDE.md")); err != nil {
+		t.Skipf("hard links unavailable on this filesystem: %v", err)
+	}
+	if err := os.Symlink("CLAUDE.md", filepath.Join(repo, "AGENTS.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var out bytes.Buffer
+	runErr := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+	if runErr == nil {
+		t.Fatalf("init-agents succeeded while writing through a hard link into the git directory:\n%s", out.String())
+	}
+	if !errors.Is(runErr, errSharedInodeManagedTarget) {
+		t.Fatalf("want a hard-link refusal, got %v\n%s", runErr, out.String())
+	}
+	after, err := os.ReadFile(victimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != victimContent {
+		t.Fatalf(".git/config was written through a hard link:\n%s", after)
 	}
 }
