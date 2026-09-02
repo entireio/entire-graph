@@ -3459,3 +3459,39 @@ func TestCFamilyFieldSignatureCarriesTheDeclarator(t *testing.T) {
 		t.Fatalf("`char data[32]` is indistinguishable from `char data`: %q/%q", array.Signature, array.BodyHash)
 	}
 }
+
+// TestCFamilyBitFieldWidthIsPartOfTheField pins the width as part of a member's identity.
+//
+// `unsigned ready : 1` and `unsigned ready : 2` are different fields, but the width hangs
+// off a bitfield_clause BESIDE the name rather than on the declarator, so neither the name
+// nor the declarator shape carried it. Both rendered "ready unsigned" and hashed the same,
+// which is the silent diff miss the declarator shape was added to close, arriving through
+// the one shape that shape cannot see.
+func TestCFamilyBitFieldWidthIsPartOfTheField(t *testing.T) {
+	t.Parallel()
+
+	fieldOf := func(t *testing.T, source string) Entity {
+		t.Helper()
+		entities, _, _ := TreeSitterParser{}.ParseWithStatus("member.cpp", source)
+		for _, entity := range entities {
+			if entity.Kind == "field" {
+				return entity
+			}
+		}
+		t.Fatalf("no field extracted from %q", source)
+		return Entity{}
+	}
+
+	oneBit := fieldOf(t, "struct S { unsigned ready : 1; };")
+	twoBits := fieldOf(t, "struct S { unsigned ready : 2; };")
+	plain := fieldOf(t, "struct S { unsigned ready; };")
+
+	if oneBit.Signature == twoBits.Signature || oneBit.BodyHash == twoBits.BodyHash {
+		t.Fatalf("widths 1 and 2 are indistinguishable: %q/%q vs %q/%q",
+			oneBit.Signature, oneBit.BodyHash, twoBits.Signature, twoBits.BodyHash)
+	}
+	if oneBit.Signature == plain.Signature || oneBit.BodyHash == plain.BodyHash {
+		t.Fatalf("a bit-field is indistinguishable from a plain member: %q/%q vs %q/%q",
+			oneBit.Signature, oneBit.BodyHash, plain.Signature, plain.BodyHash)
+	}
+}

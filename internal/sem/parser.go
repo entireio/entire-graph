@@ -4112,6 +4112,13 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 		if shape := fieldDeclaratorShape(node, src, name); shape != "" {
 			spelling = shape
 		}
+		// A bit-field's WIDTH is part of what the member is: `unsigned ready : 1`
+		// and `unsigned ready : 2` are different fields, and the width hangs off a
+		// bitfield_clause beside the name rather than on the declarator, so without
+		// it both rendered "ready unsigned" and hashed the same -- the same silent
+		// diff miss the declarator shape above exists to close.
+		width := fieldBitfieldWidth(node, src, name)
+		spelling += width
 		signature := spelling
 		if typeText != "" {
 			signature = spelling + " " + typeText
@@ -4142,6 +4149,28 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 // across languages: field_identifier (Go/Rust/C++), variable_declarator (Java)
 // or variable_declaration>variable_declarator (C#), and property_identifier /
 // name field (TypeScript, C# properties).
+// fieldBitfieldWidth returns a member's bit-field clause -- ": 1" for
+// `unsigned ready : 1` -- or "" when the member is not a bit-field.
+//
+// The clause is a SIBLING of the name rather than part of the declarator, so the
+// declarator shape never carries it, and a width is part of what the member is:
+// two fields differing only in width are two different fields.
+func fieldBitfieldWidth(node *sitter.Node, src []byte, name string) string {
+	named := false
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "field_identifier":
+			named = strings.TrimSpace(child.Content(src)) == name
+		case "bitfield_clause":
+			if named {
+				return " " + strings.TrimSpace(child.Content(src))
+			}
+		}
+	}
+	return ""
+}
+
 // fieldDeclaratorShape returns the declarator text for one named C/C++ member --
 // "*data" for `char *data`, "name[32]" for `char name[32]`, "(*handler)(int)"
 // for a function-pointer member -- or "" when the member is declared without a
