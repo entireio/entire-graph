@@ -1883,6 +1883,15 @@ func juliaCallerScope(from SymbolRecord) string {
 // The gate is deliberately narrow — same file, method kind — so it can only
 // withdraw candidates the method arm itself introduced, never a target that
 // resolved before it.
+// juliaScopeName is the name of the module a symbol's own code is written in:
+// its container for an ordinary definition, and itself for a module.
+func juliaScopeName(symbol SymbolRecord) string {
+	if symbol.Kind == "module" {
+		return symbol.Name
+	}
+	return containerName(symbol.QualifiedName)
+}
+
 func juliaModuleScopedTargetReachable(from, to SymbolRecord) bool {
 	if from.Language != "Julia" || to.Kind != "method" {
 		return true
@@ -1895,25 +1904,49 @@ func juliaModuleScopedTargetReachable(from, to SymbolRecord) bool {
 	if to.Language != from.Language {
 		return false
 	}
+	// A module is a hard namespace boundary in EVERY file, not only in the one
+	// it is declared in: from outside M, its definitions are reachable as
+	// `M.name(...)` and no other way. Exempting cross-file targets let a bare
+	// call in module B bind a globally unique method of module A purely because
+	// their files differed.
+	//
+	// Module NAMES are compared rather than container ids, because a Julia
+	// module routinely spans files through `include` and each file gives it a
+	// different container id while it stays one namespace.
+	if toModule := containerName(to.QualifiedName); toModule != "" && toModule != juliaScopeName(from) {
+		return false
+	}
 	if to.FilePath != from.FilePath {
 		return true
 	}
 	return to.ContainerID == juliaCallerScope(from)
 }
 
-// juliaModuleEmitsNameCalls reports whether a symbol's own block is a place
-// Julia call names may be attributed to it.
+// juliaModuleOwnBlock returns a module's block with its nested definitions blanked
+// out, leaving the expressions written directly in the module body.
 //
-// A `module M ... end` block spans every nested definition, so a scan of the
-// module's own text sees the call names written inside its FUNCTIONS. Those
-// calls belong to the functions, which emit them already. Crediting the module
-// too produced a second edge from a symbol that never made the call: the same
-// `runTask()` appeared as both `M.go -> runTask` and `M -> runTask`. The
-// existing childNamesByContainer guard does not cover this, because it only
-// skips names the module DECLARES, and a call out of the module is not one of
-// them.
-func juliaModuleEmitsNameCalls(from SymbolRecord) bool {
-	return !(from.Language == "Julia" && from.Kind == "module")
+// A `module M ... end` block spans every definition under it, so scanning it whole
+// credited the module with the calls its FUNCTIONS make. Refusing the module outright
+// fixed that and took a real edge with it: `module M; setup(); end` runs `setup()` at
+// module scope, and that call has no other symbol to belong to. Removing the children
+// keeps both -- the module owns what its own body runs, and nothing else.
+//
+// Lines are blanked rather than deleted so the remaining text keeps its offsets, and
+// only DIRECT children are removed: a nested module is itself a child, and its own body
+// is scanned when its turn comes.
+func juliaModuleOwnBlock(from SymbolRecord, block string, fileSymbols []SymbolRecord) string {
+	lines := strings.Split(block, "\n")
+	for _, child := range fileSymbols {
+		if child.ID == from.ID || child.ContainerID != from.ID {
+			continue
+		}
+		for line := child.StartLine; line <= child.EndLine; line++ {
+			if index := line - from.StartLine; index >= 0 && index < len(lines) {
+				lines[index] = ""
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
@@ -3265,6 +3298,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			} else if fileNeedsCallScan && !typeLikeKind(from.Kind) {
 				callBlock := block
+				// A Julia module's block spans its definitions, so its own body is what
+				// is left once they are removed. Narrowing it also RETIRES the
+				// child-name guard below for this symbol: that guard exists because a
+				// definition line reads like a call, and there are no definition lines
+				// left here -- while `module M; setup(); end` calls a child for real.
+				blockIsOwnBody := false
+				if from.Language == "Julia" && from.Kind == "module" {
+					callBlock = juliaModuleOwnBlock(from, callBlock, currentFileSymbols)
+					blockIsOwnBody = true
+				}
 				if file.Language == "Rust" {
 					callBlock = stripRustCodegenMacroBodies(block)
 				}
@@ -3398,14 +3441,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					if !juliaModuleEmitsNameCalls(from) {
-						continue
-					}
 					// A container's block spans its members' definition lines, which
 					// look like calls (e.g. `def validate(self):`). Skip the names of
 					// direct children so a class is not credited with calling its own
 					// methods; the real call site lives in the calling function.
-					if childNamesByContainer[from.ID][name] {
+					if childNamesByContainer[from.ID][name] && !blockIsOwnBody {
 						continue
 					}
 					var targets []resolvedCallTarget

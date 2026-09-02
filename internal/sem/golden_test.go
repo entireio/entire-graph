@@ -742,3 +742,63 @@ func TestJuliaBareCallStaysInsideItsOwnLanguageAndScope(t *testing.T) {
 		t.Fatalf("the legitimate intra-module call outer -> inner was withdrawn too (found %d)", intraModule)
 	}
 }
+
+// TestJuliaModuleOwnsOnlyItsOwnBodyAndOnlyItsOwnScope pins the two boundaries a Julia
+// bare call sits inside.
+//
+// SCOPE: a module is a hard namespace boundary in every file. From outside M its
+// definitions are reachable as `M.name(...)` and no other way, so a bare call in one
+// module must not bind a same-named method of another just because their files differ.
+//
+// BODY: a `module M ... end` block spans every definition under it, so scanning it whole
+// credited the module with the calls its FUNCTIONS make. Refusing the module outright
+// fixed that and took a real edge with it -- `setup()` written at module scope has no
+// other symbol to belong to. The module owns what its own body runs, and nothing else.
+func TestJuliaModuleOwnsOnlyItsOwnBodyAndOnlyItsOwnScope(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	for name, content := range map[string]string{
+		"a.jl": "module A\nfunction alpha()\n    return 1\nend\nend\n",
+		"b.jl": "module B\nfunction caller()\n    alpha()\nend\nend\n",
+		"m.jl": "module M\nfunction setup()\n    return 1\nend\nfunction helper()\n    return 2\nend\nfunction go()\n    helper()\nend\nsetup()\nend\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+
+	edges := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "CALLS" {
+			continue
+		}
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		edges[from.QualifiedName+" -> "+to.QualifiedName] = true
+	}
+
+	for _, want := range []string{
+		"M.go -> M.helper", // a nested call belongs to the function that wrote it
+		"M -> M.setup",     // a module-body call belongs to the module
+	} {
+		if !edges[want] {
+			t.Errorf("missing edge %q; got %v", want, edges)
+		}
+	}
+	for _, unwanted := range []string{
+		"B.caller -> A.alpha", // crosses a module boundary, so it needs A.alpha(...)
+		"M -> M.helper",       // written inside go(), not in the module body
+	} {
+		if edges[unwanted] {
+			t.Errorf("edge %q must not be emitted; got %v", unwanted, edges)
+		}
+	}
+}
