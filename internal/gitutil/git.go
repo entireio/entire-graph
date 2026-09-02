@@ -306,9 +306,14 @@ func catFileBatchCheckSizes(ctx context.Context, repo string, paths []string) ma
 	var stdin bytes.Buffer
 	for _, path := range paths {
 		stdin.WriteString(indexObjectSpec(path))
-		stdin.WriteByte('\n')
+		stdin.WriteByte(0)
 	}
-	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch-check=%(objectsize)")
+	// NUL-delimited input. A Git pathname may hold any byte except NUL and '/',
+	// so a tracked path CONTAINING A NEWLINE split into several requests under
+	// the line-delimited protocol and shifted every later response onto the
+	// wrong path -- which silently admits an untouched symlink as source, or
+	// hides a replacement. NUL is the one byte a pathname cannot contain.
+	cmd := newCmd(ctx, repo, "git", "cat-file", "-z", "--batch-check=%(objectsize)")
 	cmd.Stdin = &stdin
 	out, err := cmd.Output()
 	if err != nil {
@@ -337,9 +342,12 @@ func catFileBatchContents(ctx context.Context, repo string, paths []string) map[
 	var stdin bytes.Buffer
 	for _, path := range paths {
 		stdin.WriteString(indexObjectSpec(path))
-		stdin.WriteByte('\n')
+		stdin.WriteByte(0)
 	}
-	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch=%(objectsize)")
+	// NUL-delimited input, for the reason given on catFileBatchCheckSizes. The
+	// RESPONSE stays length-prefixed and is read by that length, so a newline in
+	// a path cannot desynchronize it either.
+	cmd := newCmd(ctx, repo, "git", "cat-file", "-z", "--batch=%(objectsize)")
 	cmd.Stdin = &stdin
 	out, err := cmd.Output()
 	if err != nil {
