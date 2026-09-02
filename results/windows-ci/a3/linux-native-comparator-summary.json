@@ -1,0 +1,60 @@
+{
+  "schema": "entire-graph.windows-ci.a3.linux-native-comparator-summary.v2",
+  "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+  "goVersion": "go1.26.7",
+  "target": {
+    "goos": "linux",
+    "goarch": "amd64",
+    "cgoEnabled": "1",
+    "cc": "gcc 13.3.0",
+    "git": "2.55.0"
+  },
+  "cachePreparation": "go clean -testcache",
+  "command": "go test -json -timeout 30m ./...",
+  "startTimeUtc": "2026-09-02T17:42:58.450343157Z",
+  "endTimeUtc": "2026-09-02T17:44:49.970043621Z",
+  "durationSeconds": 111.517735,
+  "exitCode": 0,
+  "accepted": true,
+  "jsonDiagnostics": 0,
+  "fullyQualifiedDynamicEventCount": 8492,
+  "topLevelRunnableRootCount": 2373,
+  "packageSeconds": {
+    "cmd/entire-graph": 0.058,
+    "cmd/graph-bench": 2.069,
+    "internal/bench": 0.239,
+    "internal/cli": 26.742,
+    "internal/filedigest": 0.133,
+    "internal/gitutil": 6.324,
+    "internal/sem": 98.406,
+    "internal/termsafe": 1.78
+  },
+  "rawEvidence": {
+    "archiveBytes": 423035,
+    "archiveSha256": "ec822eb6ea4ff05fe87269b2fbe16d91e9f3a5a7bdfbf8a03ed9d933f00e8346",
+    "rawSummarySha256": "6c63c74f90d94a5aa44b672cfce86d61f58b0abf43189cc4a331313f53094452",
+    "retention": "archive and full logs verified locally and left unstaged"
+  },
+  "rejectedDiagnostics": [
+    {
+      "gitVersion": "2.43.0",
+      "gitPackage": "1:2.43.0-1ubuntu7.3",
+      "durationSeconds": 128.311279,
+      "exitCode": 1,
+      "failingPackage": "github.com/entireio/entire-graph/cmd/graph-bench",
+      "failingTopLevelRoots": 20,
+      "otherTestPackagesPassed": 7,
+      "commonObservedError": "the Linux host git checkout command treated --end-of-options as a path argument and failed before checkout",
+      "archiveBytes": 424115,
+      "archiveSha256": "30bfa9d949845c08d7695a4a2b1fc0ec7a0ad625bef21e6928e5d96e10ff2f68",
+      "rawSummarySha256": "fbb9fe1d5529fbc97a5c28417f5c0faf9ab86cd75ec4bd13b1d7e3151867f683",
+      "disposition": "rejected as an environmental Git incompatibility, not used as the Linux baseline"
+    }
+  ],
+  "nonMeasuredPreflight": {
+    "durationSeconds": 0.460434,
+    "dynamicEvents": 0,
+    "reason": "the non-login Azure shell had no GOPATH after HOME repurposing was removed; the driver now sets GOPATH explicitly",
+    "includedInTiming": false
+  }
+}

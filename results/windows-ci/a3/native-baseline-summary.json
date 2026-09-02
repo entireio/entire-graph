@@ -1,0 +1,58 @@
+{
+  "schema": "entire-graph.windows-ci.a3.native-baseline.v1",
+  "accepted": {
+    "runId": "a3-native-baseline-b22-01",
+    "coordinatorSha": "b22be6a73adac8d9c582af4bfc681c5d7a517221",
+    "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+    "goVersion": "go1.26.7",
+    "goos": "windows",
+    "goarch": "amd64",
+    "cgoEnabled": "1",
+    "cacheState": "warm Go build cache; go clean -testcache immediately before execution",
+    "wrapperDurationSeconds": 1291.55431,
+    "goTestDurationSeconds": 1278.984897,
+    "goTestExitCode": 0,
+    "fullyQualifiedDynamicEventCount": 8414,
+    "topLevelRunnableRootCount": 2383,
+    "jsonDiagnostics": 0,
+    "packageSeconds": {
+      "cmd/entire-graph": 3.024,
+      "cmd/graph-bench": 43.511,
+      "internal/bench": 6.561,
+      "internal/cli": 228.714,
+      "internal/filedigest": 0.358,
+      "internal/gitutil": 77.316,
+      "internal/sem": 944.99,
+      "internal/termsafe": 1.876
+    },
+    "warmNativeHeavyTestLinksSeconds": {
+      "internal/sem": 5.651308,
+      "internal/cli": 4.84466,
+      "internal/gitutil": 1.044604
+    },
+    "archiveSha256": "4547d6013f972af9a4e857a9584b263ae4d4e9c58ab900f5cef723b85968db87"
+  },
+  "nativeToolchain": {
+    "gcc": "MinGW-W64 x86_64-ucrt-posix-seh GCC 16.2.0",
+    "git": "2.55.0.windows.1",
+    "powershell": "7.6.5",
+    "windows": "Windows Server 2025 Datacenter Azure Edition 24H2, build 26100.33222"
+  },
+  "rejectedDiagnostics": [
+    {
+      "coordinatorSha": "c157b32d9eab2576837497b57b43d66b92f0a011",
+      "goTestDurationSeconds": 822.799911,
+      "semPackageSeconds": 745.22,
+      "exitCode": 1,
+      "reason": "portable Git PATH omitted git/usr/bin/sh.exe; exactly three CLI shell-driven tests failed"
+    },
+    {
+      "coordinatorSha": "c157b32d9eab2576837497b57b43d66b92f0a011",
+      "wrapperDurationSeconds": 1261.216576,
+      "goTestDurationSeconds": 1250.810521,
+      "semPackageSeconds": 947.169,
+      "exitCode": 0,
+      "reason": "environment correction passed, but coordinator predates the explicit UTF-8 raw Go JSON fix"
+    }
+  ]
+}

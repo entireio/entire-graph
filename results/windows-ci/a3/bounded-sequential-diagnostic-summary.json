@@ -1,0 +1,26 @@
+{
+  "schema": "entire-graph.windows-ci.a3.bounded-sequential-diagnostic.v1",
+  "accepted": false,
+  "configuration": "three cross-artifact repetitions with all eight package binaries executed sequentially in each repetition",
+  "elapsedAtBoundSeconds": 2178,
+  "finalArtifactSentinelPresentAtBound": false,
+  "azureCpuLastElevenCompleteMinutesPercent": {
+    "average": 39.357,
+    "minimum": 17.73,
+    "maximum": 62.355
+  },
+  "disposition": "the exact disposable Windows VM was deallocated at the bound; its managed disks were retained for recovery",
+  "diagnosis": "the active CPU and 1278.984897-second native baseline imply a normal second sequential repetition, not an idle hang; requiring three serial native-length executions before the only checkpoint made this diagnostic unbounded and unobservable",
+  "recovery": {
+    "activeExperimentProcessesAfterRestart": 0,
+    "downloadBytes": 278227744,
+    "extractedArtifactBytes": 1564816811,
+    "manifestCount": 3,
+    "testExecutableCount": 24,
+    "partialOutputArchiveRetainedLocally": true,
+    "partialOutputArchiveBytes": 2830,
+    "partialOutputArchiveSha256": "f0807f7c4aace593ef722261f8942e93a7bb08232aad272223b5dc027830eed2",
+    "caveat": "Azure replayed the preempted Run Command on restart. Its initialization reset the output directory before a newer helper hash stopped the replay, so no completed sequential repetition remained recoverable. This replay/preemption behavior is itself retained as rejected diagnostic evidence."
+  },
+  "correction": "the decision matrix now emits and exports an atomic SHA-256 checkpoint after every candidate and enforces a 1600-second outer per-candidate process-tree watchdog; the monolithic prototype is limited to one diagnostic repetition"
+}

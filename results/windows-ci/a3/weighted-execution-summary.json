@@ -1,0 +1,72 @@
+{
+  "schema": "entire-graph.windows-ci.a3.weighted-execution-summary.v1",
+  "runId": "260902x1",
+  "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+  "goVersion": "go1.26.7",
+  "coordinatorSha": "b22be6a73adac8d9c582af4bfc681c5d7a517221",
+  "baseline": {
+    "fullyQualifiedDynamicEventCount": 8414,
+    "topLevelRunnableRootCount": 2383,
+    "primaryTestRootCount": 2383,
+    "benchmarksExcludedFromDefaultExecution": 5,
+    "examplesOrFuzzTargetsInDefaultExecution": 0,
+    "missingOrZeroDurationWeights": 1165
+  },
+  "sharding": {
+    "heavyPackages": [
+      "github.com/entireio/entire-graph/internal/cli",
+      "github.com/entireio/entire-graph/internal/gitutil",
+      "github.com/entireio/entire-graph/internal/sem"
+    ],
+    "nonHeavyPackageCount": 5,
+    "nonHeavyPackagesRunExactlyOncePerCandidate": true,
+    "subtestsRemainAttachedToTopLevelParent": true,
+    "screenOrderSeed": 1206663894,
+    "screenOrder": [6, 4, 8],
+    "candidateWatchdogSeconds": 1600,
+    "watchdogBasis": "ceil(1278.984897-second accepted native baseline multiplied by 1.25)"
+  },
+  "parallelUnshardedDiagnostic": {
+    "artifactRun": "cross-01",
+    "packageProcessCount": 8,
+    "durationSeconds": 561.4787792,
+    "longestPackageSeconds": 559.4941442,
+    "dynamicEventsEquivalent": true,
+    "childReexecAndTreeSitterCgoVerified": true
+  },
+  "screens": [
+    {"shards": 6, "durationSeconds": 267.0420676, "longestShardSeconds": 265.5858772, "packageInvocations": 23, "maxArgvCharacters": 15570},
+    {"shards": 4, "durationSeconds": 308.4156346, "longestShardSeconds": 307.4929212, "packageInvocations": 17, "maxArgvCharacters": 22343},
+    {"shards": 8, "durationSeconds": 254.1789286, "longestShardSeconds": 253.1185813, "packageInvocations": 29, "maxArgvCharacters": 11598}
+  ],
+  "winningShardCount": 8,
+  "acceptedRepetitions": [
+    {"artifactRun": "cross-01", "durationSeconds": 286.0653057, "longestShardSeconds": 284.697554},
+    {"artifactRun": "cross-02", "durationSeconds": 271.3569492, "longestShardSeconds": 270.1035922},
+    {"artifactRun": "cross-03", "durationSeconds": 267.4609841, "longestShardSeconds": 265.5730475}
+  ],
+  "acceptedTiming": {
+    "medianSeconds": 271.3569492,
+    "rangeSeconds": [267.4609841, 286.0653057],
+    "sampleStandardDeviationSeconds": 9.811856,
+    "coefficientOfVariationPercent": 3.568
+  },
+  "resourceSamples": {
+    "repeat-01": {"cpuAveragePercent": 95.789, "cpuP95Percent": 100.0, "availableMemoryMinimumGiB": 26.378, "diskTimeAveragePercent": 14.908},
+    "repeat-02": {"cpuAveragePercent": 96.333, "cpuP95Percent": 100.0, "availableMemoryMinimumGiB": 26.074, "diskTimeAveragePercent": 18.09},
+    "repeat-03": {"cpuAveragePercent": 96.606, "cpuP95Percent": 100.0, "availableMemoryMinimumGiB": 26.201, "diskTimeAveragePercent": 16.345}
+  },
+  "coverageGuards": {
+    "everyCandidateExitCodeZero": true,
+    "everyCandidateDynamicMultiset": {"baselineEvents": 8414, "candidateEvents": 8414, "missing": 0, "unexpected": 0, "jsonDiagnostics": 0},
+    "everyCandidateChildReexecAndTreeSitterCgoVerified": true,
+    "checkpointSha256Verified": true,
+    "testMainDefinitions": 3,
+    "testMainRisk": "heavy-package sharding repeats package initialization and TestMain; the three definitions only dispatch opt-in helper modes before m.Run, but hidden package-global ordering remains a fidelity risk"
+  },
+  "rawArchive": {
+    "bytes": 11750319,
+    "sha256": "801b5f4b7c75e09f6dfd30415cd2e230389cbc11093fc0df59eda371dbd25a62",
+    "retention": "verified locally and left unstaged"
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "schema": "entire-graph.windows-ci.a3.infrastructure.v1",
+  "runId": "260902x1",
+  "coordinatorSha": "b22be6a73adac8d9c582af4bfc681c5d7a517221",
+  "resourceGroup": "rg-entire-win-ci-a3-260902x1",
+  "location": "westus3",
+  "expiresUtc": "2026-09-02T21:23:40Z",
+  "tags": {
+    "purpose": "entire-windows-ci-benchmark",
+    "agent": "a3",
+    "run": "260902x1",
+    "owner": "codex"
+  },
+  "linuxCompiler": {
+    "vmSize": "Standard_D8ds_v5",
+    "priority": "Regular",
+    "image": "Canonical:ubuntu-24_04-lts:server:24.04.202608270",
+    "osDisk": "Premium_LRS",
+    "publicIpAttached": false
+  },
+  "windowsExecutor": {
+    "vmSize": "Standard_D8ds_v5",
+    "priority": "Regular",
+    "image": "MicrosoftWindowsServer:WindowsServer:2025-datacenter-azure-edition:26100.33222.260810",
+    "osDisk": "Premium_LRS",
+    "publicIpAttached": false
+  },
+  "network": {
+    "customInboundRules": 0,
+    "vmPublicIps": 0,
+    "outbound": "tagged Standard NAT gateway"
+  },
+  "artifactTransport": {
+    "service": "private Azure Blob container",
+    "authentication": "system-assigned managed identities and Azure RBAC",
+    "tlsMinimum": "1.2",
+    "anonymousBlobAccess": false,
+    "sasOrAccountKeysInScripts": false
+  },
+  "retailRatesObservedUsdPerHour": {
+    "linuxStandardD8dsV5": 0.452,
+    "windowsStandardD8dsV5": 0.82,
+    "currency": "USD",
+    "unit": "1 Hour",
+    "priceType": "Consumption",
+    "effectiveStartDate": "2022-08-01T00:00:00Z",
+    "source": "Azure Retail Prices API, exact non-Spot D8ds v5 VM meters in westus3, queried 2026-09-02T15:35:00Z"
+  },
+  "cleanup": {
+    "validatedResourceCount": 11,
+    "deletedAtUtc": "2026-09-02T17:53:03Z",
+    "resourceGroupExistsAfterDeletion": false,
+    "matchingTaggedResourcesAfterDeletion": 0,
+    "matchingTaggedGroupsAfterDeletion": 0
+  }
+}

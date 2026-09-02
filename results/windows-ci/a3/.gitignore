@@ -1,0 +1,14 @@
+# Raw archives, executables, Azure responses, and full logs are local evidence.
+# Commit only the compact, sanitized summaries/checksums beside this file.
+*-raw/
+azure-*-response*.json
+azure-*-response*.json.tmp.*
+# Run-specific Azure staging drivers contain disposable resource names and are
+# retained only with the local raw evidence. Reusable logic lives in
+# tools/ci-bench/a3/ and the workflow prototype.
+azure-*.sh
+azure-*.ps1
+*.zip
+*.tar.gz
+*.exe
+*.log

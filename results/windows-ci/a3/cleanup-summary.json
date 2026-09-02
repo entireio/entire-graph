@@ -1,0 +1,14 @@
+{
+  "schema": "entire-graph.windows-ci.a3.cleanup-summary.v1",
+  "runId": "260902x1",
+  "resourceGroup": "rg-entire-win-ci-a3-260902x1",
+  "validatedBeforeDeletion": true,
+  "validatedResourceCount": 11,
+  "deletedAtUtc": "2026-09-02T17:53:03Z",
+  "verification": {
+    "resourceGroupExists": false,
+    "matchingTaggedResourceCount": 0,
+    "matchingTaggedResourceGroupCount": 0
+  },
+  "recoverability": "the disposable Azure resource group was permanently deleted after raw artifacts and checksums were verified locally"
+}
