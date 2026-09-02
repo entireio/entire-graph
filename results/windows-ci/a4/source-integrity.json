@@ -1,0 +1,61 @@
+{
+  "schema": "ci-bench.a4-source-integrity.v1",
+  "productCommit": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+  "harnessCommit": "b22be6a73adac8d9c582af4bfc681c5d7a517221",
+  "target": {
+    "goos": "windows",
+    "goarch": "amd64",
+    "cgoEnabled": "1",
+    "package": "github.com/entireio/entire-graph/internal/sem"
+  },
+  "sourceTrees": {
+    "productionFileCount": 90,
+    "productionTreeSHA256": "1e9851b4824608c134050e82d76efd0ac123fd036e9dd43763c9d20be2158bc3",
+    "targetSelectedTestFileCount": 154,
+    "targetSelectedTestTreeSHA256": "4733ad5ad784fce6e116d9881f54df07d579cd32096842a58bb826c0fae9d3f7"
+  },
+  "runnables": {
+    "count": 1743,
+    "assignmentExactlyOnce": true,
+    "ownedFilesCompiledUnmodified": true,
+    "omittedFromUnownedSurrogates": true,
+    "exactDeclarationProofAggregateSHA256": "a86a9ab9cf255e8257cbf90dd4bfa0af8c271ebb86dcfd2b692cc164315af64b",
+    "aggregateRecord": "sorted name\\0file\\0kind\\0start\\0end\\0declaration_sha256 followed by newline"
+  },
+  "testMain": {
+    "sourceFile": "provider_gitdir_unc_windows_test.go",
+    "sourceFileSHA256": "5862f6b72093440aeed863073de5528c6cf7bc4956b98a8232ec55924a87859d",
+    "exactDeclarationSHA256": "e62d6a507d71cf6ec1b253bf9cc6e5fb0e5e54177ef91262f23cb72a2a5287ed",
+    "runnablesInSourceFile": 40,
+    "ownerShardInTwoShardGate": 2,
+    "surrogateGeneratedInEveryOtherShard": true,
+    "shardOneSurrogateSHA256": "99d07a742a34aed2a44f8837e8ebaa9a0559a69bebbe6d4b8c23d766c259ffa9"
+  },
+  "twoShardGate": [
+    {
+      "shard": 1,
+      "ownedTestFiles": 75,
+      "ownedRunnables": 872,
+      "supportSurrogates": 79,
+      "retainedDeclarations": 194,
+      "omittedUnownedRunnables": 871,
+      "overlaySHA256": "b0d4ba5fbe2ed5d0327b8e98e8ffbba56ca4184e905d1b6c2195490aad8a54b3"
+    },
+    {
+      "shard": 2,
+      "ownedTestFiles": 79,
+      "ownedRunnables": 871,
+      "supportSurrogates": 75,
+      "retainedDeclarations": 202,
+      "omittedUnownedRunnables": 872,
+      "overlaySHA256": "f38616a085dc0bb5c7b55f81c58b6635daadc9c407d63358deb631e1069d82b4"
+    }
+  ],
+  "naiveFullFileDependencyClosure": {
+    "result": "rejected",
+    "componentCount": 42,
+    "largestComponentTestFiles": 105,
+    "largestComponentRunnables": 1480,
+    "reason": "Duplicating the component duplicates tests; assigning it once preserves nearly all monolithic work."
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "schema": "ci-bench.a4-coverage-equivalence.v1",
+  "result": "incomplete-dynamic-parity",
+  "targetInventory": {
+    "source": "GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go list -json ./internal/sem",
+    "testGoFiles": 154,
+    "xTestGoFiles": 0,
+    "topLevelRunnables": 1743,
+    "allSelectedFilesAssignedExactlyOnce": true,
+    "allTopLevelRunnablesAssignedExactlyOnce": true
+  },
+  "twoShardGate": {
+    "baselineListCount": 1743,
+    "candidateListCount": 1743,
+    "baselineUniqueCount": 1743,
+    "candidateUniqueCount": 1743,
+    "differenceCount": 0,
+    "exactListMultiset": true,
+    "baselineSignatureSHA256": "78f8f5fdb82f9cda30ca05763cf0bd84efa443943f46b0efde4be33b85b61603",
+    "candidateSignatureSHA256": "78f8f5fdb82f9cda30ca05763cf0bd84efa443943f46b0efde4be33b85b61603",
+    "shardTestMainProbeExitCodes": [23, 23],
+    "shardTestMainProbeMarkers": ["started", "started"],
+    "everyBinaryContainsRealTestMain": true
+  },
+  "fourShardScreen": {
+    "allProcessesExitedZero": false,
+    "allMetadataProcessesExitedZero": false,
+    "allShardsCompleted": false,
+    "fullyQualifiedDynamicEventMultisetCompared": false,
+    "dynamicRunPassFailSkipParity": null,
+    "reason": "Execution exceeded 30 minutes and the control-plane watchdog preempted the run before terminal export."
+  },
+  "acceptedBaseline": {
+    "fullSuiteCompleted": true,
+    "goTestExitCode": 0,
+    "wrapperMetadataExitCode": 0
+  },
+  "coverageConclusion": "Compile/list/TestMain equivalence passed; dynamic coverage equivalence was not proved."
+}
