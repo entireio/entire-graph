@@ -69,13 +69,27 @@ interchange would refuse snapshots the contract above promises to accept.
 **The persisted `Result` payload is interchange**, so its shape is governed by
 the major and may only grow within it. That shape is frozen and its digest is
 pinned beside the exact version string, so the shape cannot move without the
-version question being asked in the same edit.
+version question being asked in the same edit. The reflection guard covers every
+reachable user-defined named type: struct fields include anonymous-promotion and
+`encoding/json`-valid explicit-name taggedness in an unambiguous quoted record,
+while named scalars, slices, maps, arrays, and pointers record a canonical
+underlying-type descriptor. Type references recurse through composite wrappers
+and qualify named types by full import path. Reachable interfaces, named or
+unnamed, are rejected because their runtime concrete values cannot be statically
+frozen. The guard also rejects custom `json.Marshaler` and
+`encoding.TextMarshaler`
+implementations, including pointer receivers; either can replace ordinary value
+bytes, and text marshaling also controls supported map keys. Finally, an exact
+`omitzero` field may not use a value- or pointer-receiver `IsZero() bool` hook,
+because that can change field omission without changing its reflected shape.
+Any of these customizations requires an explicit serialized contract plus the
+same schema-version decision.
 
 | question | rule | enforced by |
 |---|---|---|
 | may I *read* bytes another build wrote? | same major; warn on newer minor | `CheckReadableSchemaVersion` |
 | may I *reuse* a cache entry I wrote? | exact match; absent fails closed | cache-entry validity checks |
-| may this payload's shape change? | additive within a major; break needs `2.0` | frozen shape + pinned digest |
+| may this payload's shape change? | additive within a major; break needs `2.0` | frozen closed reachable shapes + pinned digest; interfaces and JSON/text/`IsZero` hooks rejected |
 
 ## Consequences
 
