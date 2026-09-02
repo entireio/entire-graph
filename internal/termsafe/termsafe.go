@@ -32,10 +32,18 @@
 //   - Everything else in C0, DEL, and C1 is escaped to its Go literal form, so
 //     the byte is shown rather than obeyed and nothing is silently dropped.
 //
-// JSON and NDJSON output is deliberately NOT wrapped: encoding/json already
-// escapes control characters inside strings, so no raw byte reaches that stream,
-// and a consumer of the machine formats is entitled to the exact bytes Git
-// reported.
+// JSON and NDJSON output is wrapped too, but by JSONWriter and for the C1 range
+// only. This package shipped asserting the opposite — that encoding/json escapes
+// the control characters inside strings, so no raw byte can reach a machine
+// format and none of them needs wrapping. That is true of C0 and FALSE of C1:
+// encoding/json escapes below U+0020 and folds invalid UTF-8 to U+FFFD, but
+// U+0080-U+009F encode to a WELL-FORMED two-byte sequence it copies through
+// verbatim. A repository that names a file with U+009D (OSC) and U+009C (ST)
+// therefore reaches the reader's terminal with the pair that brackets an OSC 52
+// clipboard write, through `entire graph search` with no --format flag at all —
+// json is that verb's default. The escape JSONWriter writes is LOSSLESS: \u009d
+// decodes to the same code point, so a consumer of the machine formats still
+// receives the exact bytes Git reported.
 //
 // One accepted cost: renderers that trim a payload to a byte budget do so before
 // their writer is wrapped, so escaping can push a payload past its budget. Each
@@ -77,18 +85,178 @@ func NewWriter(out io.Writer) *Writer {
 // half-written escape stops being an escape. It is reported as io.ErrShortWrite
 // instead.
 func (w *Writer) Write(p []byte) (int, error) {
-	if !needsEscape(p, keepLayout) {
-		return w.out.Write(p)
+	return writeEscaped(w.out, p, keepLayout)
+}
+
+// JSONWriter neutralizes the one control an encoded JSON document still carries
+// raw, and rewrites nothing else.
+//
+// It wraps the SINK an encoder writes to rather than the values going into the
+// encoder, for the reason Writer does: the machine formats are emitted from
+// json.Encoder and CompactSnapshotEncoder instances created in a dozen verbs, and
+// a rule enforced at each of them is a rule the next verb forgets. Wrapping the
+// sink makes it structural.
+//
+// What it rewrites is U+0080-U+009F, and only that. The escape it writes is the
+// JSON escape \u00XX, which decodes to the identical code point, so the stream
+// stays a valid JSON document carrying the exact value the repository holds — no
+// consumer sees a different string, and none has to know this wrapper exists.
+//
+// It DOES hold state between calls, unlike Writer: a trailing 0xc2 that has not
+// yet met its continuation byte is withheld rather than judged as an orphan,
+// because io.Writer's contract describes progress through the caller's buffer
+// and makes no promise about where one Write ends and the next begins.
+// json.Encoder.Encode happens to write each encoded value to its sink in a
+// single Write (measured: one 200 KB value, one Write) and a complete, valid
+// JSON value never itself ends on an unterminated UTF-8 sequence, so no current
+// caller in this codebase ever leaves anything pending — but a caller who does
+// split a stream, present or future, gets the one-shot answer either way. Were
+// this writer stateless like Writer, a split would pass the leading 0xc2 through
+// raw and then read the genuine continuation byte on its own in the next call:
+// U+0080-U+009F misread as a bare byte is exactly the C1 range this writer
+// exists to escape, so it would escape that stray byte as if it were a raw
+// control the repository had planted alone — turning one legitimate two-byte
+// character into a spurious \u00XX escape, and leaving the orphaned 0xc2 as an
+// invalid UTF-8 byte in what is supposed to be a valid JSON document.
+type JSONWriter struct {
+	out io.Writer
+	// pendingLead is true when the previous Write ended on a bare 0xc2 whose
+	// continuation byte had not arrived yet. Write resolves it against the
+	// next call's first byte before scanning the rest of that call's data.
+	pendingLead bool
+}
+
+// NewJSONWriter wraps the sink of a machine-format encoder.
+func NewJSONWriter(out io.Writer) *JSONWriter {
+	return &JSONWriter{out: out}
+}
+
+// Write sanitizes p and writes it, reporting progress through the CALLER's buffer
+// exactly as Writer.Write does and for the same reasons.
+func (w *JSONWriter) Write(p []byte) (int, error) {
+	total := len(p)
+	rest := p
+	if w.pendingLead {
+		w.pendingLead = false
+		if len(rest) == 0 {
+			// Nothing arrived to resolve it with; keep waiting.
+			w.pendingLead = true
+			return total, nil
+		}
+		// Judge the withheld 0xc2 together with the byte that follows it,
+		// through the SAME rule a same-call scan applies, so a completed C1
+		// escape, a completed ordinary two-byte character, and a true orphan
+		// are told apart exactly as they would be had both bytes arrived
+		// together.
+		pair := [2]byte{0xc2, rest[0]}
+		width, escape := escapedAt(pair[:], 0, jsonLayout)
+		if err := flushEscaped(w.out, appendEscapedAt(nil, pair[:], 0, width, escape)); err != nil {
+			return 0, err
+		}
+		if width == 2 {
+			// rest[0] was consumed as the pair's second byte, either escaped
+			// (a completed C1 control) or copied (an ordinary character).
+			rest = rest[1:]
+		}
+		// width == 1 means the 0xc2 was written alone, an orphan with no
+		// valid continuation at all; rest[0] is unconsumed and scanned below
+		// exactly as any other byte in this call is.
 	}
-	safe := appendEscaped(make([]byte, 0, len(p)+escapeHeadroom), p, keepLayout)
-	written, err := w.out.Write(safe)
-	if err != nil {
+	// A trailing 0xc2 might be the lead of a sequence this call's OWN boundary
+	// cuts off, indistinguishable here from a true orphan; withhold it rather
+	// than resolve it now, and let the next Write judge it against whatever
+	// arrives.
+	withheldLead := len(rest) > 0 && rest[len(rest)-1] == 0xc2
+	if withheldLead {
+		rest = rest[:len(rest)-1]
+	}
+	if _, err := writeEscaped(w.out, rest, jsonLayout); err != nil {
 		return 0, err
 	}
-	if written != len(safe) {
-		return 0, io.ErrShortWrite
+	w.pendingLead = withheldLead
+	return total, nil
+}
+
+// Close flushes a 0xc2 withheld by Write that never received its continuation
+// byte, writing it exactly as an unsplit Write already would: raw, since a bare
+// 0xc2 is an incomplete UTF-8 sequence no terminal acts on.
+//
+// No caller in this codebase needs it — see the type doc for why a complete
+// JSON value never leaves anything pending — but a caller who deliberately
+// chunks a byte stream through this writer and stops before its final chunk's
+// trailing 0xc2 is resolved must call it to avoid losing that byte.
+func (w *JSONWriter) Close() error {
+	if !w.pendingLead {
+		return nil
+	}
+	w.pendingLead = false
+	_, err := w.out.Write([]byte{0xc2})
+	return err
+}
+
+// writeEscaped is the write path both writers share.
+//
+// The escaped bytes are flushed in bounded pieces rather than built as one buffer
+// the size of p, because p is not always a rendered line. The provider-record
+// cache hit in internal/cli/root.go hands this a single []byte holding the whole
+// decompressed snapshot, and the search replay paths in internal/cli/search.go
+// hand it a whole stored payload; a full-size copy of one of those doubles the
+// peak footprint of the largest thing the tool holds in memory, on input the
+// repository controls — one C1 byte anywhere in a cached snapshot is enough to
+// take the no-copy fast path away. The flush buffer never grows past
+// escapedFlushCapacity(len(p)): one position contributes at most six bytes and
+// the headroom exceeds that, so a stream at or above escapeFlushBytes costs
+// escapeFlushBytes and nothing more — but a SHORT write costs only what that
+// write could possibly escape to, not a flat escapeFlushBytes regardless of
+// size. A hostile C1 byte repeated across many small symbol and relation
+// records used to allocate the full escapeFlushBytes buffer for every one of
+// them; sizing to the smaller of the two bounds turns tens of thousands of
+// oversized allocations into ones proportional to what each record needs.
+//
+// The SCAN still runs over the whole input, and that is the part that must not be
+// chunked. Both lookahead rules read the byte after the one being judged — CRLF
+// passes only as a pair, and a C1 control is recognised from its two-byte form —
+// so escaping one bounded window at a time would judge the last byte of every
+// window against the end of that window instead of against the real next byte.
+// Only the output is in pieces, which is why the result is byte-for-byte the
+// one-shot escape (TestFlushBoundariesDoNotChangeTheEscaping).
+func writeEscaped(out io.Writer, p []byte, keep layout) (int, error) {
+	if !needsEscape(p, keep) {
+		return out.Write(p)
+	}
+	buffer := make([]byte, 0, escapedFlushCapacity(len(p)))
+	for i := 0; i < len(p); {
+		width, escape := escapedAt(p, i, keep)
+		buffer = appendEscapedAt(buffer, p, i, width, escape)
+		i += width
+		if len(buffer) < escapeFlushBytes {
+			continue
+		}
+		if err := flushEscaped(out, buffer); err != nil {
+			return 0, err
+		}
+		buffer = buffer[:0]
+	}
+	if err := flushEscaped(out, buffer); err != nil {
+		return 0, err
 	}
 	return len(p), nil
+}
+
+// flushEscaped writes one piece of the escaped stream, refusing a short write for
+// the reason Writer.Write documents.
+func flushEscaped(out io.Writer, buffer []byte) error {
+	if len(buffer) == 0 {
+		return nil
+	}
+	written, err := out.Write(buffer)
+	if err != nil {
+		return err
+	}
+	if written != len(buffer) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 // Line neutralizes one value that must occupy a single line: a file path, a
@@ -135,19 +303,62 @@ func Bytes(value []byte) []byte {
 	return appendEscaped(make([]byte, 0, len(value)+escapeHeadroom), value, keepLayout)
 }
 
-// layout says whether LF, TAB, and CRLF are this value's own structure (a source
-// snippet, a rendered block) or content it must not be allowed to fake (a path or
-// a name inside a one-line record).
-type layout bool
+// layout says what the value being scanned IS, which is what decides whether a
+// given byte is its own structure or content it must not be allowed to fake.
+type layout uint8
 
 const (
-	keepLayout   layout = true
-	escapeLayout layout = false
+	// keepLayout: a source snippet or an already-rendered block, whose LF, TAB and
+	// CRLF are its own page structure.
+	keepLayout layout = iota
+	// escapeLayout: a path or a name going into a one-line record, where an LF is
+	// not layout but forgery.
+	escapeLayout
+	// jsonLayout: an already-ENCODED JSON document, where every byte below 0x80 is
+	// either the document's own syntax or an escape encoding/json has already
+	// chosen, and the C1 range is the only raw control left to neutralize.
+	jsonLayout
 )
 
-// escapeHeadroom is the slack the output buffer starts with. It is a guess at how
-// much a hostile string grows, not a bound; append handles the rest.
+// escapeHeadroom is the slack the output buffer starts with. For the value
+// helpers it is a guess at how much a hostile string grows, not a bound, and
+// append handles the rest. For writeEscaped's flush buffer it IS the bound: that
+// buffer is flushed as soon as it reaches escapeFlushBytes, and one position
+// contributes at most six bytes, so 16 bytes of slack is never exhausted.
 const escapeHeadroom = 16
+
+// escapeFlushBytes is how much escaped output writeEscaped accumulates before
+// handing it to the sink. It is the whole memory cost of escaping a stream, so it
+// is sized to amortize the write syscall rather than to fit any payload — 32 KiB
+// is what io.Copy uses for the same trade.
+const escapeFlushBytes = 32 << 10
+
+// escapedFlushCapacity is how large writeEscaped's flush buffer should start,
+// for an input of inputBytes. It is the smaller of two independent bounds: the
+// flush limit above, which caps the memory cost of an arbitrarily large input,
+// and inputBytes*6 + escapeHeadroom, the most this particular input could ever
+// escape to (every byte escapes to at most six, per appendEscapedAt) plus the
+// same slack the flush buffer always carries. Below escapeFlushBytes an input
+// cannot fill the flush buffer at all, so allocating the flush buffer's full
+// size for it is pure waste — and a repository-controlled record repeated many
+// times over is exactly the shape that turns that waste into a resource-
+// exhaustion cost paid once per record.
+func escapedFlushCapacity(inputBytes int) int {
+	// Widened to int64 before multiplying: on a 32-bit build, int is 32 bits,
+	// and inputBytes*6 overflows above ~357,913,941 bytes (~341 MiB) — a size a
+	// repository-controlled string can reach on this exact input (the whole
+	// point of a flush-buffer sizing helper is that it runs on the largest
+	// thing the tool holds). A wrapped negative "worst" compares less than
+	// escapeFlushBytes+escapeHeadroom and gets returned as the capacity,
+	// and make([]byte, 0, negative) panics — turning oversized repository
+	// content into a crash on the one architecture where this arithmetic can
+	// wrap. int64(inputBytes)*6 cannot overflow for any inputBytes an int (even
+	// a 64-bit one) can hold.
+	if worst := int64(inputBytes)*6 + escapeHeadroom; worst < escapeFlushBytes+escapeHeadroom {
+		return int(worst)
+	}
+	return escapeFlushBytes + escapeHeadroom
+}
 
 const hexDigits = "0123456789abcdef"
 
@@ -234,6 +445,12 @@ func sequenceWidth[T text](data T, i, width int, secondLow, secondHigh byte) int
 func escapedAt[T text](data T, i int, keep layout) (int, bool) {
 	character := data[i]
 	switch {
+	case keep == jsonLayout && character < 0x80:
+		// Nothing below 0x80 survives encoding as a control: the C0 range is already
+		// a \uXXXX escape, and every remaining ASCII byte is the document's own
+		// syntax. Rewriting any of it would corrupt the JSON rather than defend it,
+		// so the scan skips straight to the range encoding/json left raw.
+		return 1, false
 	case character == '\n' || character == '\t' || character == '\f' || character == '\v':
 		// FF and VT ride along with LF and TAB because they are page whitespace,
 		// not a cursor primitive: a terminal treats both as an index (move down a
@@ -242,10 +459,10 @@ func escapedAt[T text](data T, i int, keep layout) (int, bool) {
 		// and older Perl separate pages — escaping it would rewrite the bytes of
 		// every such file's snippet and break the verbatim edit anchor this
 		// package promises to preserve.
-		return 1, !bool(keep)
+		return 1, keep != keepLayout
 	case character == '\r':
 		// CRLF is the line ending of a Windows-authored file, not an overwrite.
-		if keep && i+1 < len(data) && data[i+1] == '\n' {
+		if keep == keepLayout && i+1 < len(data) && data[i+1] == '\n' {
 			return 1, false
 		}
 		return 1, true
@@ -295,23 +512,35 @@ func needsEscape[T text](data T, keep layout) bool {
 func appendEscaped[T text](dst []byte, data T, keep layout) []byte {
 	for i := 0; i < len(data); {
 		width, escape := escapedAt(data, i, keep)
-		switch {
-		case !escape:
-			for offset := 0; offset < width; offset++ {
-				dst = append(dst, data[i+offset])
-			}
-		case width == 2:
-			// In the two-byte form the trailing byte IS the code point: 0xc2
-			// contributes the 0x80 that its 0x00-0x1f payload is added to.
-			point := data[i+1]
-			dst = append(dst, '\\', 'u', '0', '0', hexDigits[point>>4], hexDigits[point&0x0f])
-		case data[i] >= 0x80:
-			// A stray C1 byte denotes the code point of the same value.
-			dst = append(dst, '\\', 'u', '0', '0', hexDigits[data[i]>>4], hexDigits[data[i]&0x0f])
-		default:
-			dst = append(dst, '\\', 'x', hexDigits[data[i]>>4], hexDigits[data[i]&0x0f])
-		}
+		dst = appendEscapedAt(dst, data, i, width, escape)
 		i += width
+	}
+	return dst
+}
+
+// appendEscapedAt appends the one sequence escapedAt just judged, verbatim or as
+// its escape. It is separate from the loop above so that the streaming write path
+// emits the identical bytes from the identical code: two copies of these four
+// cases would be two things to keep in step, and the escape FORM is what every
+// consumer of the machine formats decodes.
+//
+// It appends at most six bytes, which is what bounds writeEscaped's flush buffer.
+func appendEscapedAt[T text](dst []byte, data T, i, width int, escape bool) []byte {
+	switch {
+	case !escape:
+		for offset := 0; offset < width; offset++ {
+			dst = append(dst, data[i+offset])
+		}
+	case width == 2:
+		// In the two-byte form the trailing byte IS the code point: 0xc2
+		// contributes the 0x80 that its 0x00-0x1f payload is added to.
+		point := data[i+1]
+		dst = append(dst, '\\', 'u', '0', '0', hexDigits[point>>4], hexDigits[point&0x0f])
+	case data[i] >= 0x80:
+		// A stray C1 byte denotes the code point of the same value.
+		dst = append(dst, '\\', 'u', '0', '0', hexDigits[data[i]>>4], hexDigits[data[i]&0x0f])
+	default:
+		dst = append(dst, '\\', 'x', hexDigits[data[i]>>4], hexDigits[data[i]&0x0f])
 	}
 	return dst
 }
