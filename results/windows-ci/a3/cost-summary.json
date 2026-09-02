@@ -1,0 +1,40 @@
+{
+  "schema": "entire-graph.windows-ci.a3.cost-summary.v1",
+  "currency": "USD",
+  "rates": {
+    "linuxStandardD8dsV5PerHour": 0.452,
+    "windowsStandardD8dsV5PerHour": 0.82,
+    "meter": "Consumption",
+    "region": "westus3",
+    "effectiveStartDate": "2022-08-01T00:00:00Z",
+    "observedAtUtc": "2026-09-02T15:35:00Z",
+    "source": "Azure Retail Prices API exact non-Spot D8ds v5 VM meters"
+  },
+  "measuredComponentsSeconds": {
+    "linuxCompileMedian": 46.996,
+    "linuxManagedIdentityUploadPhase": 9.0,
+    "windowsArtifactDownloadVerifyAndExtract": 5.4150933,
+    "windowsWeightedExecutionMedian": 271.3569492,
+    "windowsNativeFidelityGates": 101.9755692,
+    "nativeWindowsBaseline": 1278.984897
+  },
+  "criticalPath": {
+    "crossCompileTransferAndWeightedExecutionSeconds": 332.7680425,
+    "serializedWithNativeFidelityGatesSeconds": 434.7436117,
+    "concurrentParityGatedSeconds": 378.7476117,
+    "concurrentParityGatedSpeedupOverBaseline": 3.376879,
+    "concurrentParityGatedReductionPercent": 70.3869
+  },
+  "computeCost": {
+    "candidateWithoutNativeFidelityGates": 0.0700731,
+    "concurrentParityGatedCandidate": 0.0933009,
+    "nativeWindowsBaseline": 0.2913243,
+    "reductionPercent": 67.9735,
+    "formula": "Linux (46.996+9.0)*0.452/3600 + Windows (101.9755692+5.4150933+271.3569492)*0.82/3600"
+  },
+  "excludedCharges": {
+    "artifactBytesPerCandidate": 92742606,
+    "network": "same-region transfer was measured but Azure egress/processing charges were not inferred",
+    "storageAndTransactions": "Premium disks, NAT, Blob capacity, and operation charges are separate and require billing-export confirmation"
+  }
+}

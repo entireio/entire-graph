@@ -1,0 +1,178 @@
+name: windows cross-compile experiment
+
+# Prototype only. GitHub does not expose a workflow_dispatch workflow until it
+# exists on the default branch; the measured A3 runs therefore use disposable
+# Azure VMs and this branch is never pushed merely to trigger the prototype.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_SHA: ee6468a6a49d9b2a1a828bd276792f415f392185
+  GO_VERSION: 1.26.7
+
+jobs:
+  linux-cross-compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out experiment helpers
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          path: experiment
+      - name: Check out pinned product tree
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ env.PRODUCT_SHA }}
+          path: product
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Install MinGW cross compiler and resource tools
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 sysstat zip
+      - name: Cross-compile all Windows package tests three times
+        env:
+          CC: x86_64-w64-mingw32-gcc
+          CXX: x86_64-w64-mingw32-g++
+        run: |
+          experiment/tools/ci-bench/a3/build-cross-binaries.sh \
+            --repo product --output cross-results --repetitions 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a3-cross-binaries
+          path: |
+            cross-results/cross-*.zip
+            cross-results/cross-*.zip.sha256
+            cross-results/go-version.txt
+            cross-results/go-env.json
+            cross-results/cross-gcc-version.txt
+            cross-results/cross-gxx-version.txt
+          if-no-files-found: error
+
+  windows-native-baseline:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Check out experiment helpers
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          path: experiment
+      - name: Check out pinned product tree
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ env.PRODUCT_SHA }}
+          path: product
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: msys2/setup-msys2@v2
+        with:
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+      - name: Add native MinGW tools
+        shell: pwsh
+        run: Add-Content -LiteralPath $env:GITHUB_PATH -Value 'C:\msys64\mingw64\bin'
+      - name: Validate shared wrapper and run native dynamic baseline
+        shell: pwsh
+        run: |
+          Get-ChildItem experiment/tools/ci-bench -Filter '*.ps1' -Recurse | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { throw ($errors -join '; ') }
+          }
+          pwsh -NoProfile -File experiment/tools/ci-bench/run-go-suite.ps1 `
+            -OutputDirectory baseline `
+            -RepositoryPath product `
+            -RunId a3-native-baseline `
+            -RunLabel native-windows-dynamic-baseline `
+            -ExpectedRepositorySha $env:PRODUCT_SHA `
+            -ExpectedGoVersion "go$env:GO_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a3-native-baseline
+          path: baseline
+          if-no-files-found: error
+
+  windows-cross-execution:
+    needs: [linux-cross-compile, windows-native-baseline]
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - name: Check out experiment helpers
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          path: experiment
+      - name: Check out pinned product tree
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ env.PRODUCT_SHA }}
+          path: product
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: msys2/setup-msys2@v2
+        with:
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+      - name: Add native MinGW tools
+        shell: pwsh
+        run: Add-Content -LiteralPath $env:GITHUB_PATH -Value 'C:\msys64\mingw64\bin'
+      - uses: actions/download-artifact@v4
+        with:
+          name: a3-cross-binaries
+          path: cross-results
+      - uses: actions/download-artifact@v4
+        with:
+          name: a3-native-baseline
+          path: baseline
+      - name: Verify and expand cross artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path cross-artifacts -Force | Out-Null
+          Get-ChildItem cross-results -Filter 'cross-*.zip' | ForEach-Object {
+            $checksumPath = "$($_.FullName).sha256"
+            $expected = ((Get-Content $checksumPath -Raw) -split '\s+')[0]
+            $actual = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $expected) { throw "checksum mismatch: $($_.Name)" }
+            $destination = Join-Path cross-artifacts $_.BaseName
+            New-Item -ItemType Directory -Path $destination -Force | Out-Null
+            tar.exe -xf $_.FullName -C $destination
+            if ($LASTEXITCODE -ne 0) { throw "archive extraction failed: $($_.Name)" }
+          }
+      - name: Execute every cross-built test on Windows and compare evidence
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File experiment/tools/ci-bench/a3/run-cross-binaries.ps1 `
+            -RepositoryPath product `
+            -CrossArtifactRoot cross-artifacts `
+            -OutputDirectory cross-execution `
+            -BaselineJsonPath baseline/go-test.jsonl `
+            -ManifestLimit 1
+      - name: Screen weighted 4, 6, and 8 shard execution and repeat the winner
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File experiment/tools/ci-bench/a3/run-cross-weighted-shards.ps1 `
+            -RepositoryPath product `
+            -CrossArtifactRoot cross-artifacts `
+            -OutputDirectory weighted-cross-execution `
+            -BaselineJsonPath baseline/go-test.jsonl `
+            -RepeatCount 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a3-cross-execution-evidence
+          path: |
+            cross-execution
+            weighted-cross-execution
+          if-no-files-found: error

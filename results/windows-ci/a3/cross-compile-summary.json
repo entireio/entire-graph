@@ -1,0 +1,90 @@
+{
+  "schema": "entire-graph.windows-ci.a3.cross-compile-summary.v2",
+  "runId": "260902x1",
+  "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+  "goVersion": "go1.26.7",
+  "target": {
+    "goos": "windows",
+    "goarch": "amd64",
+    "cgoEnabled": "1"
+  },
+  "compiler": {
+    "cc": "x86_64-w64-mingw32-gcc 13.2.0",
+    "cxx": "x86_64-w64-mingw32-g++ 13.2.0",
+    "host": "Ubuntu 24.04 on Standard_D8ds_v5",
+    "cgoLdflags": "-static -static-libgcc -static-libstdc++",
+    "runtimeLinkage": "static-mingw-support"
+  },
+  "seedBuildCacheSha256": "abcfa6a9d4df344d1781bc2560b5e4cdcae08b39ed303063535e7e1e926a304a",
+  "cacheState": "every accepted repetition copied the identical empty seed GOCACHE; the downloaded module cache was shared",
+  "packageInventory": [
+    "github.com/entireio/entire-graph/cmd/entire-graph",
+    "github.com/entireio/entire-graph/cmd/graph-bench",
+    "github.com/entireio/entire-graph/internal/bench",
+    "github.com/entireio/entire-graph/internal/cli",
+    "github.com/entireio/entire-graph/internal/filedigest",
+    "github.com/entireio/entire-graph/internal/gitutil",
+    "github.com/entireio/entire-graph/internal/sem",
+    "github.com/entireio/entire-graph/internal/termsafe"
+  ],
+  "peImportEvidence": {
+    "cmd/entire-graph": ["KERNEL32.dll", "msvcrt.dll"],
+    "cmd/graph-bench": ["KERNEL32.dll", "msvcrt.dll"],
+    "internal/bench": ["KERNEL32.dll", "msvcrt.dll"],
+    "internal/cli": ["KERNEL32.dll", "msvcrt.dll"],
+    "internal/filedigest": [],
+    "internal/gitutil": [],
+    "internal/sem": ["KERNEL32.dll", "msvcrt.dll"],
+    "internal/termsafe": []
+  },
+  "peImportEvidenceIdenticalAcrossRepetitions": true,
+  "externalMinGWRuntimeDllImports": [],
+  "runs": [
+    {
+      "name": "cross-01",
+      "compileSeconds": 47.203,
+      "longestPackage": "github.com/entireio/entire-graph/cmd/entire-graph",
+      "archiveBytes": 92742606,
+      "archiveSha256": "191c28d5bac324f80bc4ba7bbe0c5b2764774039809d4974feb1fb0da0627521"
+    },
+    {
+      "name": "cross-02",
+      "compileSeconds": 46.996,
+      "longestPackage": "github.com/entireio/entire-graph/cmd/entire-graph",
+      "archiveBytes": 92742422,
+      "archiveSha256": "a1322cdab88e5eb688b14b2bd11fc6103803300204c5312194f36810ebbf64fe"
+    },
+    {
+      "name": "cross-03",
+      "compileSeconds": 46.049,
+      "longestPackage": "github.com/entireio/entire-graph/cmd/entire-graph",
+      "archiveBytes": 92742413,
+      "archiveSha256": "fa5e3122d70f70bdec61661f44f18a6f91241c7174aef26e12daa8584a510b4b"
+    }
+  ],
+  "compileMedianSeconds": 46.996,
+  "compileRangeSeconds": [46.049, 47.203],
+  "resourceSamples": {
+    "cross-01": {"cpuAveragePercent": 62.526, "cpuP95Percent": 99.75, "ioWaitAveragePercent": 0.379, "diskUtilAveragePercent": 13.601},
+    "cross-02": {"cpuAveragePercent": 65.568, "cpuP95Percent": 99.75, "ioWaitAveragePercent": 2.002, "diskUtilAveragePercent": 7.883},
+    "cross-03": {"cpuAveragePercent": 64.055, "cpuP95Percent": 99.88, "ioWaitAveragePercent": 1.295, "diskUtilAveragePercent": 7.588}
+  },
+  "artifactUpload": {
+    "startTimeUtc": "2026-09-02T15:12:12Z",
+    "endTimeUtc": "2026-09-02T15:12:21Z",
+    "threeArchiveTransferSeconds": 2.02,
+    "transport": "Azure Blob HTTPS with system-assigned managed identity"
+  },
+  "compactEnvironmentEvidence": {
+    "sha256": "09b13eb1ab2c1d2c6eb01b268e5fa3f7c9f1fb00bb58c3830a0ca8941ed1e5e0",
+    "retention": "raw archive and three ZIPs verified locally and left unstaged; this summary is commit-safe"
+  },
+  "rejectedDiagnostics": [
+    {
+      "construction": "dynamic MinGW support DLLs adjacent to each original test executable",
+      "compileSeconds": [50.922, 46.616, 47.009],
+      "archiveBytes": [101052810, 101051679, 101051715],
+      "reason": "Windows tests copy their own PE into isolated helper directories and replace PATH; an adjacent-only DLL bundle can fail before TestMain or silently load the different host runtime after child re-exec"
+    }
+  ]
+}

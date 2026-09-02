@@ -1,0 +1,67 @@
+{
+  "schema": "entire-graph.windows-ci.a3.native-fidelity-summary.v1",
+  "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+  "goVersion": "go1.26.7",
+  "target": {"goos": "windows", "goarch": "amd64", "cgoEnabled": "1"},
+  "nativeCompiler": {
+    "cc": "gcc.exe MinGW-W64 x86_64-ucrt-posix-seh GCC 16.2.0",
+    "cxx": "g++.exe MinGW-W64 x86_64-ucrt-posix-seh GCC 16.2.0"
+  },
+  "cacheState": "warm native Windows Go build cache; fidelity gates are not candidate timing",
+  "targetSelection": {"nativePackageCount": 21, "crossPackageCount": 21, "equivalent": true, "differences": 0},
+  "topLevelTestLists": {"nativePackageCount": 8, "crossPackageCount": 8, "nativeNames": 2388, "crossNames": 2388, "equivalent": true, "differences": 0},
+  "nativeTestLinks": {
+    "packageCount": 8,
+    "allExitCodesZero": true,
+    "sumSeconds": 31.084583,
+    "packages": [
+      {"package": "github.com/entireio/entire-graph/cmd/entire-graph", "seconds": 9.121147},
+      {"package": "github.com/entireio/entire-graph/cmd/graph-bench", "seconds": 4.406177},
+      {"package": "github.com/entireio/entire-graph/internal/bench", "seconds": 4.098674},
+      {"package": "github.com/entireio/entire-graph/internal/cli", "seconds": 4.937338},
+      {"package": "github.com/entireio/entire-graph/internal/filedigest", "seconds": 0.867866},
+      {"package": "github.com/entireio/entire-graph/internal/gitutil", "seconds": 1.766902},
+      {"package": "github.com/entireio/entire-graph/internal/sem", "seconds": 4.981401},
+      {"package": "github.com/entireio/entire-graph/internal/termsafe", "seconds": 0.905078}
+    ]
+  },
+  "nativeChecks": {
+    "goBuildAllSeconds": 5.875902,
+    "goBuildAllExitCode": 0,
+    "targetWindowsVetAllSeconds": 3.07116,
+    "targetWindowsVetAllExitCode": 0,
+    "fullGateBeforeMatchedDiagnosticSeconds": 101.9755692
+  },
+  "matchedParallelUnshardedDiagnostic": {
+    "alreadyLinkedBeforeTiming": true,
+    "packageCount": 8,
+    "durationSeconds": 562.9893733,
+    "longestPackageSeconds": 561.0322008,
+    "fullyQualifiedDynamicEvents": 8414,
+    "dynamicEventsEquivalent": true,
+    "childReexecAndTreeSitterCgoVerified": true,
+    "allExitCodesZero": true,
+    "crossParallelUnshardedSeconds": 561.4787792,
+    "nativeMinusCrossSeconds": 1.5105941,
+    "nativeSlowerPercent": 0.269,
+    "interpretation": "the earlier 944.99-second native sem observation was run variance/context, not evidence that the GCC13 MSVCRT static cross runtime is intrinsically faster"
+  },
+  "nativePeImports": {
+    "cmd/entire-graph": ["libgcc_s_seh-1.dll", "libstdc++-6.dll", "KERNEL32.dll", "UCRT api-set DLLs"],
+    "cmd/graph-bench": ["libgcc_s_seh-1.dll", "libstdc++-6.dll", "KERNEL32.dll", "UCRT api-set DLLs"],
+    "internal/bench": ["libgcc_s_seh-1.dll", "libstdc++-6.dll", "KERNEL32.dll", "UCRT api-set DLLs"],
+    "internal/cli": ["libgcc_s_seh-1.dll", "libstdc++-6.dll", "KERNEL32.dll", "UCRT api-set DLLs"],
+    "internal/filedigest": [],
+    "internal/gitutil": [],
+    "internal/sem": ["libgcc_s_seh-1.dll", "libstdc++-6.dll", "KERNEL32.dll", "UCRT api-set DLLs"],
+    "internal/termsafe": []
+  },
+  "resourceSamples": {
+    "matchedDiagnostic": {"cpuAveragePercent": 49.57, "cpuP95Percent": 97.0, "availableMemoryMinimumGiB": 27.26, "diskTimeAveragePercent": 7.537}
+  },
+  "rawArchive": {
+    "bytes": 4928733,
+    "sha256": "83fd9302621f6429394b1df71dd667b562de4809ac0062c32973d363b8e76942",
+    "retention": "verified locally and left unstaged"
+  }
+}

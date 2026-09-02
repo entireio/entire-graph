@@ -1,0 +1,15 @@
+{
+  "schema": "entire-graph.windows-ci.a3.transfer-screen.v1",
+  "artifact": "cross-01.zip",
+  "archiveBytes": 92742606,
+  "archiveSha256": "191c28d5bac324f80bc4ba7bbe0c5b2764774039809d4974feb1fb0da0627521",
+  "transport": "Azure Blob HTTPS with system-assigned managed identity",
+  "startTimeUtc": "2026-09-02T17:01:52.2731217+00:00",
+  "endTimeUtc": "2026-09-02T17:01:57.6882150+00:00",
+  "archiveDownloadSeconds": 2.177835,
+  "checksumDownloadAndVerifySeconds": 2.37277,
+  "extractionSeconds": 0.8564171,
+  "totalSeconds": 5.4150933,
+  "extractedManifestCount": 1,
+  "extractedTestExecutableCount": 8
+}
