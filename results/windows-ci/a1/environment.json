@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "sanitized": true,
+  "sourceRunId": "accepted-screen-02-d32",
+  "capturedAtUtc": "2026-09-02T15:48:06.4012030Z",
+  "captureStatus": "complete",
+  "region": "eastus2",
+  "resourceGroupPattern": "rg-entire-win-ci-a1-<run-id>",
+  "resourcePolicy": {
+    "priority": "Regular",
+    "spot": false,
+    "vmPublicIp": false,
+    "nicPublicIp": false,
+    "customInboundRuleCount": 0,
+    "outbound": "Standard NAT Gateway with static public IPv4 attached only to the NAT Gateway",
+    "osDiskStorageAccountType": "Premium_LRS",
+    "osDiskSizeGiB": 128,
+    "requiredTagsApplied": true
+  },
+  "image": "MicrosoftWindowsServer:WindowsServer:2025-datacenter-azure-edition:26100.33222.260810",
+  "operatingSystem": {
+    "caption": "Microsoft Windows Server 2025 Datacenter Azure Edition",
+    "displayVersion": "24H2",
+    "version": "10.0.26100",
+    "build": "26100.33222",
+    "architecture": "64-bit"
+  },
+  "testedFamily": {
+    "family": "StandardDadsv7Family",
+    "premiumIo": true,
+    "sizes": [
+      "Standard_D4ads_v7",
+      "Standard_D8ads_v7",
+      "Standard_D16ads_v7",
+      "Standard_D32ads_v7"
+    ],
+    "regionalRestrictionsAtValidation": []
+  },
+  "d32Hardware": {
+    "processor": "AMD EPYC 9V45 96-Core Processor",
+    "logicalProcessors": 32,
+    "totalPhysicalMemoryBytes": 137433444352,
+    "osDiskModel": "Virtual_Disk NVME Premium",
+    "osFileSystem": "NTFS"
+  },
+  "toolchain": {
+    "go": "go1.26.7 windows/amd64",
+    "git": "2.55.0.windows.1",
+    "gcc": "16.1.0 x86_64-posix-seh",
+    "powershell": "PowerShell 7",
+    "goos": "windows",
+    "goarch": "amd64",
+    "cgoEnabled": "1"
+  },
+  "commandResolution": {
+    "sh": "C:\\tools\\mingit\\usr\\bin\\sh.exe",
+    "git": "C:\\tools\\mingit\\cmd\\git.exe",
+    "gcc": "C:\\ProgramData\\mingw64\\mingw64\\bin\\gcc.exe",
+    "go": "C:\\tools\\go\\bin\\go.exe",
+    "pwsh": "C:\\tools\\pwsh\\pwsh.exe",
+    "pathPrefix": [
+      "C:\\tools\\go\\bin",
+      "C:\\tools\\mingit\\cmd",
+      "C:\\tools\\pwsh",
+      "C:\\tools\\mingit\\usr\\bin",
+      "C:\\ProgramData\\mingw64\\mingw64\\bin"
+    ]
+  },
+  "executionEnvironment": {
+    "context": "Azure Run Command service context",
+    "gitTerminalPrompt": "0",
+    "gitCredentialManagerInteractive": "Never",
+    "qualification": "CI-equivalent noninteractive Git execution; not a claim of byte-for-byte hosted-runner environment identity"
+  },
+  "pins": {
+    "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+    "harnessSha": "b22be6a73adac8d9c582af4bfc681c5d7a517221",
+    "command": "go test -json -timeout 30m ./..."
+  },
+  "cacheSeed": {
+    "archiveSha256": "191fe6f421eb53af4f73f90055c1f1eea2a2fa0ea673c2e91f01646bcb467422",
+    "fileCount": 2333,
+    "uncompressedBytes": 259078925,
+    "preparationSeconds": 113.166754,
+    "moduleDownloadSeconds": 4.900552,
+    "warmNoTestBuildSeconds": 106.869211,
+    "cleanTestCacheSeconds": 0.034293,
+    "archiveSeconds": 1.260695,
+    "policy": "Restore the identical SHA-256-addressed module/build cache before every accepted treatment, then run go clean -testcache."
+  }
+}

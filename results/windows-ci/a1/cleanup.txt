@@ -1,0 +1,20 @@
+A1 Azure cleanup evidence
+verified_at_utc=2026-09-02T17:24:41Z
+resource_group=rg-entire-win-ci-a1-scale-260902
+
+Pre-delete safety validation:
+- exact derived group name matched agent=a1 and run=scale-260902
+- group and all 8 listed resources had the required benchmark tags
+- VM was fully deallocated before deletion
+
+Deletion:
+- delete-azure-resources.sh --agent a1 --run-id scale-260902 --yes
+- script completed successfully for the exact resource group
+
+Post-delete read-only verification:
+- az group exists: false
+- resources matching tags agent=a1 and run=scale-260902: 0
+- resource groups matching tags agent=a1 and run=scale-260902: 0
+- repeated validate-only cleanup reported the exact group absent (idempotent success)
+
+No subscription, tenant, storage-account, resource, network, or credential identifiers are retained here.

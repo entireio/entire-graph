@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "rejectedTreatments": [
+    {
+      "runId": "screen-01-d32",
+      "vmSize": "Standard_D32ads_v7",
+      "accepted": false,
+      "kernelSecondsRecoveredFromDisk": 1827.621557,
+      "suiteState": "failed",
+      "reason": "The Run Command service context allowed Git Credential Manager to prompt during the deliberately invalid remote test. The exact Go command reached its 30-minute timeout, and Start-Process -Wait then kept the Run Command invocation open on a descendant/process-tree condition after the suite stopped doing work.",
+      "externalAzureWallObservation": "Run Command remained open for more than 40 minutes and Azure CPU was effectively idle for more than 10 minutes before forced VM termination; the exact billable wall span was not reconstructed.",
+      "encodingQualification": "This attempt preceded the explicit UTF-8 harness fix, so test-name text may be encoding-tainted.",
+      "disposition": "Rejected as environment and driver/export-hang evidence; not included in the scaling curve."
+    },
+    {
+      "runId": "accepted-screen-01-d32",
+      "vmSize": "Standard_D32ads_v7",
+      "accepted": false,
+      "kernelSeconds": 563.522256,
+      "suiteState": "failed",
+      "failedTests": [
+        "internal/cli.TestVerifyRecordBaselineWritesToCallerOwnedPaths",
+        "internal/cli.TestVerifyRecordBaselineOutsideAGitRepository",
+        "internal/cli.TestVerifyEndToEndRecordsThenAdjudicates"
+      ],
+      "reason": "MinGit's exact usr\\bin directory was absent from PATH, so sh could not be resolved. The wrapper also returned zero while suite metadata returned one, violating fail-closed exit agreement.",
+      "disposition": "Rejected as a missing-sh and exit-propagation diagnostic; not included in the scaling curve."
+    }
+  ],
+  "bootstrapDiagnostics": [
+    {
+      "attempt": 2,
+      "toolchainInstallSeconds": 87.397,
+      "reason": "Checkout failed under Windows PowerShell 5 native-stderr semantics after the fresh toolchain installed."
+    },
+    {
+      "attempt": 3,
+      "reason": "GCC path discovery mismatch."
+    },
+    {
+      "attempt": 4,
+      "reason": "Environment collector assumed optional IMDS network/subnet fields."
+    },
+    {
+      "attempt": 5,
+      "reason": "Suite wrapper Tee output and empty-error-list handling defects."
+    },
+    {
+      "attempt": 6,
+      "accepted": true,
+      "artifactSha256": "b42280725fd071038813a10081a15663832dd1c23bfe540fd53cd63400ce17f0",
+      "result": "PowerShell parse gate, environment capture, resource monitor, and bounded wrapper smoke all passed."
+    }
+  ],
+  "acceptanceProofs": [
+    {
+      "runId": "smoke-b22-d32-graphbench",
+      "artifactSha256": "e32be53accbe4a7c50e86d35ec47dfddcd09286d76d5e0fcdb811027d73fa87f",
+      "result": "The formerly blocking invalid-remote test failed promptly for the expected noninteractive reason, and direct WaitForExit/finalization/export completed."
+    },
+    {
+      "runId": "smoke-b22-d32-cli",
+      "artifactSha256": "84deb1a7869ab45382884c0d1e7da9c7401bb0fab1e602c3a343b60e5e55b5a2",
+      "kernelSeconds": 134.421656,
+      "result": "Exact MinGit sh path resolved; suite metadata, inner PowerShell, outer process, driver, checksum, and managed-identity export all agreed on success."
+    }
+  ]
+}

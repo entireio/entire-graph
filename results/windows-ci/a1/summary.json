@@ -1,0 +1,926 @@
+{
+  "schemaVersion": 1,
+  "acceptedRunCount": 6,
+  "coverageEquivalence": {
+    "allRunsPassed": true,
+    "identicalTestInventoryAcrossRuns": true,
+    "inventorySha256Values": [
+      "5742e245912be38f1d4fe77b68b23c03e3ff5d07be39ea660c40c034e772fd35"
+    ],
+    "identicalSeedAcrossRuns": true,
+    "seedArchiveSha256Values": [
+      "191fe6f421eb53af4f73f90055c1f1eea2a2fa0ea673c2e91f01646bcb467422"
+    ]
+  },
+  "d32Variance": {
+    "runCount": 3,
+    "completeTreatment": {
+      "seconds": [
+        571.821841,
+        616.783247,
+        566.465524
+      ],
+      "medianSeconds": 571.821841,
+      "minimumSeconds": 566.465524,
+      "maximumSeconds": 616.783247,
+      "rangeSeconds": 50.317723,
+      "sampleStandardDeviationSeconds": 27.634795
+    },
+    "kernel": {
+      "seconds": [
+        556.692922,
+        583.55597,
+        550.180297
+      ],
+      "medianSeconds": 556.692922,
+      "minimumSeconds": 550.180297,
+      "maximumSeconds": 583.55597,
+      "rangeSeconds": 33.375673,
+      "sampleStandardDeviationSeconds": 17.69168
+    }
+  },
+  "runs": [
+    {
+      "runId": "accepted-screen-03-d4",
+      "runLabel": "accepted-screen-d4ads-v7-r1",
+      "vmSize": "Standard_D4ads_v7",
+      "vcpus": 4,
+      "seedArchiveSha256": "191fe6f421eb53af4f73f90055c1f1eea2a2fa0ea673c2e91f01646bcb467422",
+      "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+      "harnessSha": "b22be6a73adac8d9c582af4bfc681c5d7a517221",
+      "commandLine": "go test -json -timeout 30m ./...",
+      "kernelSeconds": 775.422368,
+      "suiteWrapperSeconds": 796.782622,
+      "treatmentSeconds": 820.735858,
+      "cacheRestoreSeconds": 7.372801,
+      "packageSeconds": 0.638685,
+      "uploadSeconds": 0.070795,
+      "artifactBytes": 668787,
+      "artifactSha256": "df798937f377b23a1d68c580db259476455e2fcf35e98bdd4aa4c8ce69b227e8",
+      "acceptance": {
+        "suiteState": "completed",
+        "suitePhase": "finished",
+        "exitCodes": {
+          "goTest": 0,
+          "suiteMetadata": 0,
+          "wrapperProcess": 0,
+          "driver": 0
+        },
+        "exportStatus": "artifact-and-checksum-uploaded"
+      },
+      "warmCacheCompileDiagnostics": [
+        {
+          "name": "sem",
+          "wallTimeSeconds": 14.370264,
+          "binarySizeBytes": 103366391,
+          "exitCode": 0
+        },
+        {
+          "name": "cli",
+          "wallTimeSeconds": 3.768874,
+          "binarySizeBytes": 97604500,
+          "exitCode": 0
+        },
+        {
+          "name": "gitutil",
+          "wallTimeSeconds": 1.210695,
+          "binarySizeBytes": 6044160,
+          "exitCode": 0
+        }
+      ],
+      "resourceMonitor": {
+        "sampleCount": 279,
+        "samplesWithErrors": 0,
+        "cpuPercent": {
+          "count": 279,
+          "mean": 59.992832,
+          "p50": 65.0,
+          "p95": 100.0,
+          "max": 100.0
+        },
+        "diskPercent": {
+          "count": 279,
+          "mean": 36.168459,
+          "p50": 0.0,
+          "p95": 79.3,
+          "max": 3172.0
+        },
+        "diskBytesPerSecond": {
+          "count": 279,
+          "mean": 7160274.792115,
+          "p50": 542748.0,
+          "p95": 22023175.0,
+          "max": 215821267.0
+        },
+        "diskQueueLength": {
+          "count": 279,
+          "mean": 0.394265,
+          "p50": 0.0,
+          "p95": 2.0,
+          "max": 17.0
+        },
+        "minimumAvailableMemoryBytes": 12699525120
+      },
+      "testInventory": {
+        "runEventCount": 4207,
+        "sha256": "5742e245912be38f1d4fe77b68b23c03e3ff5d07be39ea660c40c034e772fd35",
+        "packageCount": 21,
+        "failedPackages": []
+      },
+      "slowestPackages": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "action": "pass",
+          "elapsedSeconds": 729.25
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "action": "pass",
+          "elapsedSeconds": 215.408
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/gitutil",
+          "action": "pass",
+          "elapsedSeconds": 93.616
+        },
+        {
+          "package": "github.com/entireio/entire-graph/cmd/graph-bench",
+          "action": "pass",
+          "elapsedSeconds": 61.128
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/bench",
+          "action": "pass",
+          "elapsedSeconds": 6.335
+        }
+      ],
+      "slowestTopLevelTests": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "test": "TestSnapshotLineReaderSharesDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 50.05
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestHeadReadersShareDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 40.17
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestBuildReferenceIndexSharesDeepPathMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 33.88
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestAnalyzeGitRangeReadsPathBeyondMetadataArgvBound",
+          "action": "pass",
+          "elapsedSeconds": 23.03
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestSafeStatThroughSymlinksRejectsAChainThatLeavesTheVolumeOnASecondHop",
+          "action": "pass",
+          "elapsedSeconds": 21.05
+        }
+      ]
+    },
+    {
+      "runId": "accepted-screen-04-d8",
+      "runLabel": "accepted-screen-d8ads-v7-r1",
+      "vmSize": "Standard_D8ads_v7",
+      "vcpus": 8,
+      "seedArchiveSha256": "191fe6f421eb53af4f73f90055c1f1eea2a2fa0ea673c2e91f01646bcb467422",
+      "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+      "harnessSha": "b22be6a73adac8d9c582af4bfc681c5d7a517221",
+      "commandLine": "go test -json -timeout 30m ./...",
+      "kernelSeconds": 594.591419,
+      "suiteWrapperSeconds": 605.7267,
+      "treatmentSeconds": 627.546509,
+      "cacheRestoreSeconds": 7.279084,
+      "packageSeconds": 0.597198,
+      "uploadSeconds": 0.080095,
+      "artifactBytes": 666791,
+      "artifactSha256": "e6275c11b790884465e29557c60a696dfbb02908ff667451b8332f0c94b101d5",
+      "acceptance": {
+        "suiteState": "completed",
+        "suitePhase": "finished",
+        "exitCodes": {
+          "goTest": 0,
+          "suiteMetadata": 0,
+          "wrapperProcess": 0,
+          "driver": 0
+        },
+        "exportStatus": "artifact-and-checksum-uploaded"
+      },
+      "warmCacheCompileDiagnostics": [
+        {
+          "name": "sem",
+          "wallTimeSeconds": 4.776332,
+          "binarySizeBytes": 103366391,
+          "exitCode": 0
+        },
+        {
+          "name": "cli",
+          "wallTimeSeconds": 3.888154,
+          "binarySizeBytes": 97604500,
+          "exitCode": 0
+        },
+        {
+          "name": "gitutil",
+          "wallTimeSeconds": 0.816311,
+          "binarySizeBytes": 6044160,
+          "exitCode": 0
+        }
+      ],
+      "resourceMonitor": {
+        "sampleCount": 216,
+        "samplesWithErrors": 0,
+        "cpuPercent": {
+          "count": 216,
+          "mean": 34.240741,
+          "p50": 23.5,
+          "p95": 86.5,
+          "max": 100.0
+        },
+        "diskPercent": {
+          "count": 216,
+          "mean": 24.430556,
+          "p50": 1.0,
+          "p95": 92.25,
+          "max": 1108.0
+        },
+        "diskBytesPerSecond": {
+          "count": 216,
+          "mean": 8362442.384259,
+          "p50": 993985.5,
+          "p95": 31475069.5,
+          "max": 272240397.0
+        },
+        "diskQueueLength": {
+          "count": 216,
+          "mean": 0.50463,
+          "p50": 0.0,
+          "p95": 2.0,
+          "max": 24.0
+        },
+        "minimumAvailableMemoryBytes": 29598789632
+      },
+      "testInventory": {
+        "runEventCount": 4207,
+        "sha256": "5742e245912be38f1d4fe77b68b23c03e3ff5d07be39ea660c40c034e772fd35",
+        "packageCount": 21,
+        "failedPackages": []
+      },
+      "slowestPackages": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "action": "pass",
+          "elapsedSeconds": 567.225
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "action": "pass",
+          "elapsedSeconds": 127.722
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/gitutil",
+          "action": "pass",
+          "elapsedSeconds": 58.936
+        },
+        {
+          "package": "github.com/entireio/entire-graph/cmd/graph-bench",
+          "action": "pass",
+          "elapsedSeconds": 34.961
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/bench",
+          "action": "pass",
+          "elapsedSeconds": 5.2379999999999995
+        }
+      ],
+      "slowestTopLevelTests": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestHeadReadersShareDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 30.16
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "test": "TestSnapshotLineReaderSharesDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 24.5
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestBuildReferenceIndexSharesDeepPathMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 23.05
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestRootGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing",
+          "action": "pass",
+          "elapsedSeconds": 21.06
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestSafeStatThroughSymlinksRejectsAChainThatLeavesTheVolumeOnASecondHop",
+          "action": "pass",
+          "elapsedSeconds": 21.02
+        }
+      ]
+    },
+    {
+      "runId": "accepted-screen-05-d16",
+      "runLabel": "accepted-screen-d16ads-v7-r1",
+      "vmSize": "Standard_D16ads_v7",
+      "vcpus": 16,
+      "seedArchiveSha256": "191fe6f421eb53af4f73f90055c1f1eea2a2fa0ea673c2e91f01646bcb467422",
+      "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+      "harnessSha": "b22be6a73adac8d9c582af4bfc681c5d7a517221",
+      "commandLine": "go test -json -timeout 30m ./...",
+      "kernelSeconds": 611.585128,
+      "suiteWrapperSeconds": 629.762998,
+      "treatmentSeconds": 651.817356,
+      "cacheRestoreSeconds": 6.851096,
+      "packageSeconds": 0.777512,
+      "uploadSeconds": 0.079631,
+      "artifactBytes": 670839,
+      "artifactSha256": "25cf6e13879b761cfa579de699ff5ada65767da78a517c01c963d9d40efb7e49",
+      "acceptance": {
+        "suiteState": "completed",
+        "suitePhase": "finished",
+        "exitCodes": {
+          "goTest": 0,
+          "suiteMetadata": 0,
+          "wrapperProcess": 0,
+          "driver": 0
+        },
+        "exportStatus": "artifact-and-checksum-uploaded"
+      },
+      "warmCacheCompileDiagnostics": [
+        {
+          "name": "sem",
+          "wallTimeSeconds": 11.53515,
+          "binarySizeBytes": 103366391,
+          "exitCode": 0
+        },
+        {
+          "name": "cli",
+          "wallTimeSeconds": 4.341865,
+          "binarySizeBytes": 97604500,
+          "exitCode": 0
+        },
+        {
+          "name": "gitutil",
+          "wallTimeSeconds": 1.530269,
+          "binarySizeBytes": 6044160,
+          "exitCode": 0
+        }
+      ],
+      "resourceMonitor": {
+        "sampleCount": 224,
+        "samplesWithErrors": 0,
+        "cpuPercent": {
+          "count": 224,
+          "mean": 23.40625,
+          "p50": 17.0,
+          "p95": 50.0,
+          "max": 98.0
+        },
+        "diskPercent": {
+          "count": 224,
+          "mean": 13.705357,
+          "p50": 0.0,
+          "p95": 36.55,
+          "max": 601.0
+        },
+        "diskBytesPerSecond": {
+          "count": 224,
+          "mean": 8269080.308036,
+          "p50": 475129.5,
+          "p95": 23049321.85,
+          "max": 304196667.0
+        },
+        "diskQueueLength": {
+          "count": 224,
+          "mean": 0.392857,
+          "p50": 0.0,
+          "p95": 1.0,
+          "max": 17.0
+        },
+        "minimumAvailableMemoryBytes": 63639498752
+      },
+      "testInventory": {
+        "runEventCount": 4207,
+        "sha256": "5742e245912be38f1d4fe77b68b23c03e3ff5d07be39ea660c40c034e772fd35",
+        "packageCount": 21,
+        "failedPackages": []
+      },
+      "slowestPackages": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "action": "pass",
+          "elapsedSeconds": 586.83
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "action": "pass",
+          "elapsedSeconds": 117.099
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/gitutil",
+          "action": "pass",
+          "elapsedSeconds": 53.14
+        },
+        {
+          "package": "github.com/entireio/entire-graph/cmd/graph-bench",
+          "action": "pass",
+          "elapsedSeconds": 31.069
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/bench",
+          "action": "pass",
+          "elapsedSeconds": 4.618
+        }
+      ],
+      "slowestTopLevelTests": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestHeadReadersShareDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 30.78
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "test": "TestSnapshotLineReaderSharesDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 22.67
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestBuildReferenceIndexSharesDeepPathMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 21.56
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestRootGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing",
+          "action": "pass",
+          "elapsedSeconds": 21.04
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestGitDirLinkTargetRejectsAUNCSymlinkWithoutTouchingTheNetwork",
+          "action": "pass",
+          "elapsedSeconds": 21.03
+        }
+      ]
+    },
+    {
+      "runId": "accepted-screen-02-d32",
+      "runLabel": "accepted-screen-d32ads-v7-r1",
+      "vmSize": "Standard_D32ads_v7",
+      "vcpus": 32,
+      "seedArchiveSha256": "191fe6f421eb53af4f73f90055c1f1eea2a2fa0ea673c2e91f01646bcb467422",
+      "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+      "harnessSha": "b22be6a73adac8d9c582af4bfc681c5d7a517221",
+      "commandLine": "go test -json -timeout 30m ./...",
+      "kernelSeconds": 556.692922,
+      "suiteWrapperSeconds": 565.05066,
+      "treatmentSeconds": 571.821841,
+      "cacheRestoreSeconds": 1.457853,
+      "packageSeconds": 0.370029,
+      "uploadSeconds": 0.091187,
+      "artifactBytes": 681521,
+      "artifactSha256": "5dbd702d9d1fb345062cc4128ba269763caad83557a6e8e0bb1348aa644fecae",
+      "acceptance": {
+        "suiteState": "completed",
+        "suitePhase": "finished",
+        "exitCodes": {
+          "goTest": 0,
+          "suiteMetadata": 0,
+          "wrapperProcess": 0,
+          "driver": 0
+        },
+        "exportStatus": "artifact-and-checksum-uploaded"
+      },
+      "warmCacheCompileDiagnostics": [
+        {
+          "name": "sem",
+          "wallTimeSeconds": 3.726604,
+          "binarySizeBytes": 103366391,
+          "exitCode": 0
+        },
+        {
+          "name": "cli",
+          "wallTimeSeconds": 3.135564,
+          "binarySizeBytes": 97604500,
+          "exitCode": 0
+        },
+        {
+          "name": "gitutil",
+          "wallTimeSeconds": 0.716439,
+          "binarySizeBytes": 6044160,
+          "exitCode": 0
+        }
+      ],
+      "resourceMonitor": {
+        "sampleCount": 201,
+        "samplesWithErrors": 0,
+        "cpuPercent": {
+          "count": 201,
+          "mean": 15.233831,
+          "p50": 10.0,
+          "p95": 42.0,
+          "max": 64.0
+        },
+        "diskPercent": {
+          "count": 201,
+          "mean": 6.726368,
+          "p50": 0.0,
+          "p95": 25.0,
+          "max": 292.0
+        },
+        "diskBytesPerSecond": {
+          "count": 201,
+          "mean": 5292062.338308,
+          "p50": 96705.0,
+          "p95": 21274159.0,
+          "max": 161449634.0
+        },
+        "diskQueueLength": {
+          "count": 201,
+          "mean": 0.437811,
+          "p50": 0.0,
+          "p95": 2.0,
+          "max": 29.0
+        },
+        "minimumAvailableMemoryBytes": 130762113024
+      },
+      "testInventory": {
+        "runEventCount": 4207,
+        "sha256": "5742e245912be38f1d4fe77b68b23c03e3ff5d07be39ea660c40c034e772fd35",
+        "packageCount": 21,
+        "failedPackages": []
+      },
+      "slowestPackages": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "action": "pass",
+          "elapsedSeconds": 548.496
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "action": "pass",
+          "elapsedSeconds": 115.207
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/gitutil",
+          "action": "pass",
+          "elapsedSeconds": 56.326
+        },
+        {
+          "package": "github.com/entireio/entire-graph/cmd/graph-bench",
+          "action": "pass",
+          "elapsedSeconds": 33.248
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/bench",
+          "action": "pass",
+          "elapsedSeconds": 4.346
+        }
+      ],
+      "slowestTopLevelTests": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestHeadReadersShareDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 29.87
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "test": "TestSnapshotLineReaderSharesDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 23.98
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestBuildReferenceIndexSharesDeepPathMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 21.33
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestRootGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing",
+          "action": "pass",
+          "elapsedSeconds": 21.05
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestSafeStatThroughSymlinksRejectsAChainThatLeavesTheVolumeOnASecondHop",
+          "action": "pass",
+          "elapsedSeconds": 21.02
+        }
+      ]
+    },
+    {
+      "runId": "accepted-repeat-01-d32",
+      "runLabel": "accepted-winner-d32ads-v7-r2",
+      "vmSize": "Standard_D32ads_v7",
+      "vcpus": 32,
+      "seedArchiveSha256": "191fe6f421eb53af4f73f90055c1f1eea2a2fa0ea673c2e91f01646bcb467422",
+      "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+      "harnessSha": "b22be6a73adac8d9c582af4bfc681c5d7a517221",
+      "commandLine": "go test -json -timeout 30m ./...",
+      "kernelSeconds": 583.55597,
+      "suiteWrapperSeconds": 594.037934,
+      "treatmentSeconds": 616.783247,
+      "cacheRestoreSeconds": 7.267854,
+      "packageSeconds": 0.698844,
+      "uploadSeconds": 0.08425,
+      "artifactBytes": 683262,
+      "artifactSha256": "2143535d3a5606485dcce26ea8c49d8b8ab6d368becbc0b225074d4675739976",
+      "acceptance": {
+        "suiteState": "completed",
+        "suitePhase": "finished",
+        "exitCodes": {
+          "goTest": 0,
+          "suiteMetadata": 0,
+          "wrapperProcess": 0,
+          "driver": 0
+        },
+        "exportStatus": "artifact-and-checksum-uploaded"
+      },
+      "warmCacheCompileDiagnostics": [
+        {
+          "name": "sem",
+          "wallTimeSeconds": 5.040945,
+          "binarySizeBytes": 103366391,
+          "exitCode": 0
+        },
+        {
+          "name": "cli",
+          "wallTimeSeconds": 3.159874,
+          "binarySizeBytes": 97604500,
+          "exitCode": 0
+        },
+        {
+          "name": "gitutil",
+          "wallTimeSeconds": 0.666354,
+          "binarySizeBytes": 6044160,
+          "exitCode": 0
+        }
+      ],
+      "resourceMonitor": {
+        "sampleCount": 211,
+        "samplesWithErrors": 0,
+        "cpuPercent": {
+          "count": 211,
+          "mean": 14.834123,
+          "p50": 10.0,
+          "p95": 39.5,
+          "max": 69.0
+        },
+        "diskPercent": {
+          "count": 211,
+          "mean": 6.308057,
+          "p50": 0.0,
+          "p95": 27.5,
+          "max": 135.0
+        },
+        "diskBytesPerSecond": {
+          "count": 211,
+          "mean": 6424702.127962,
+          "p50": 509413.0,
+          "p95": 25922370.5,
+          "max": 196359131.0
+        },
+        "diskQueueLength": {
+          "count": 211,
+          "mean": 0.559242,
+          "p50": 0.0,
+          "p95": 2.0,
+          "max": 39.0
+        },
+        "minimumAvailableMemoryBytes": 131060387840
+      },
+      "testInventory": {
+        "runEventCount": 4207,
+        "sha256": "5742e245912be38f1d4fe77b68b23c03e3ff5d07be39ea660c40c034e772fd35",
+        "packageCount": 21,
+        "failedPackages": []
+      },
+      "slowestPackages": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "action": "pass",
+          "elapsedSeconds": 557.051
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "action": "pass",
+          "elapsedSeconds": 124.438
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/gitutil",
+          "action": "pass",
+          "elapsedSeconds": 59.264
+        },
+        {
+          "package": "github.com/entireio/entire-graph/cmd/graph-bench",
+          "action": "pass",
+          "elapsedSeconds": 34.751
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/bench",
+          "action": "pass",
+          "elapsedSeconds": 4.602
+        }
+      ],
+      "slowestTopLevelTests": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestHeadReadersShareDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 29.67
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "test": "TestSnapshotLineReaderSharesDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 25.7
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestBuildReferenceIndexSharesDeepPathMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 22.13
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestRootGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing",
+          "action": "pass",
+          "elapsedSeconds": 21.06
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestSafeStatThroughSymlinksRejectsAChainThatLeavesTheVolumeOnASecondHop",
+          "action": "pass",
+          "elapsedSeconds": 21.02
+        }
+      ]
+    },
+    {
+      "runId": "accepted-repeat-02-d32",
+      "runLabel": "accepted-winner-d32ads-v7-r3",
+      "vmSize": "Standard_D32ads_v7",
+      "vcpus": 32,
+      "seedArchiveSha256": "191fe6f421eb53af4f73f90055c1f1eea2a2fa0ea673c2e91f01646bcb467422",
+      "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+      "harnessSha": "b22be6a73adac8d9c582af4bfc681c5d7a517221",
+      "commandLine": "go test -json -timeout 30m ./...",
+      "kernelSeconds": 550.180297,
+      "suiteWrapperSeconds": 559.19301,
+      "treatmentSeconds": 566.465524,
+      "cacheRestoreSeconds": 1.938366,
+      "packageSeconds": 0.455537,
+      "uploadSeconds": 0.102472,
+      "artifactBytes": 677790,
+      "artifactSha256": "72dfeb4e715168c98b328be559b4c5d8129a629ecd41abd9883472246d9494e3",
+      "acceptance": {
+        "suiteState": "completed",
+        "suitePhase": "finished",
+        "exitCodes": {
+          "goTest": 0,
+          "suiteMetadata": 0,
+          "wrapperProcess": 0,
+          "driver": 0
+        },
+        "exportStatus": "artifact-and-checksum-uploaded"
+      },
+      "warmCacheCompileDiagnostics": [
+        {
+          "name": "sem",
+          "wallTimeSeconds": 4.310588,
+          "binarySizeBytes": 103366391,
+          "exitCode": 0
+        },
+        {
+          "name": "cli",
+          "wallTimeSeconds": 3.1144,
+          "binarySizeBytes": 97604500,
+          "exitCode": 0
+        },
+        {
+          "name": "gitutil",
+          "wallTimeSeconds": 0.642044,
+          "binarySizeBytes": 6044160,
+          "exitCode": 0
+        }
+      ],
+      "resourceMonitor": {
+        "sampleCount": 199,
+        "samplesWithErrors": 0,
+        "cpuPercent": {
+          "count": 199,
+          "mean": 15.19598,
+          "p50": 10.0,
+          "p95": 43.2,
+          "max": 80.0
+        },
+        "diskPercent": {
+          "count": 199,
+          "mean": 6.809045,
+          "p50": 0.0,
+          "p95": 15.1,
+          "max": 868.0
+        },
+        "diskBytesPerSecond": {
+          "count": 199,
+          "mean": 4976935.231156,
+          "p50": 32719.0,
+          "p95": 20980586.6,
+          "max": 169603390.0
+        },
+        "diskQueueLength": {
+          "count": 199,
+          "mean": 0.386935,
+          "p50": 0.0,
+          "p95": 1.0,
+          "max": 40.0
+        },
+        "minimumAvailableMemoryBytes": 130626179072
+      },
+      "testInventory": {
+        "runEventCount": 4207,
+        "sha256": "5742e245912be38f1d4fe77b68b23c03e3ff5d07be39ea660c40c034e772fd35",
+        "packageCount": 21,
+        "failedPackages": []
+      },
+      "slowestPackages": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "action": "pass",
+          "elapsedSeconds": 541.841
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "action": "pass",
+          "elapsedSeconds": 110.517
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/gitutil",
+          "action": "pass",
+          "elapsedSeconds": 51.154
+        },
+        {
+          "package": "github.com/entireio/entire-graph/cmd/graph-bench",
+          "action": "pass",
+          "elapsedSeconds": 29.575
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/bench",
+          "action": "pass",
+          "elapsedSeconds": 4.159
+        }
+      ],
+      "slowestTopLevelTests": [
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestHeadReadersShareDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 28.59
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/cli",
+          "test": "TestSnapshotLineReaderSharesDeepUnsafeMetadataAllowance",
+          "action": "pass",
+          "elapsedSeconds": 21.18
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestSafeStatThroughSymlinksRejectsAChainThatLeavesTheVolumeOnASecondHop",
+          "action": "pass",
+          "elapsedSeconds": 21.04
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestRootGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing",
+          "action": "pass",
+          "elapsedSeconds": 21.03
+        },
+        {
+          "package": "github.com/entireio/entire-graph/internal/sem",
+          "test": "TestGitDirLinkTargetRejectsAUNCSymlinkWithoutTouchingTheNetwork",
+          "action": "pass",
+          "elapsedSeconds": 20.88
+        }
+      ]
+    }
+  ]
+}
