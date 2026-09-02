@@ -116,26 +116,90 @@ func TestDecodeCompactSnapshotEnforcesSchemaMajor(t *testing.T) {
 
 func TestCheckReadableSchemaVersionClassifiesAgainstThisBuild(t *testing.T) {
 	t.Parallel()
-	// Guard the constant itself: the whole gate is built on it parsing.
-	major, minor, err := schemaMajorMinor(SchemaVersion)
-	if err != nil {
-		t.Fatalf("package SchemaVersion %q is not major.minor: %v", SchemaVersion, err)
-	}
 	if newerMinor, err := CheckReadableSchemaVersion(SchemaVersion); err != nil || newerMinor {
 		t.Fatalf("this build's own schema must read clean: newerMinor=%v err=%v", newerMinor, err)
 	}
-	newer := formatSchemaVersion(major, minor+1)
+	newer := schemaVersionAfterThisBuild(t)
 	if newerMinor, err := CheckReadableSchemaVersion(newer); err != nil || !newerMinor {
 		t.Fatalf("schema %s must load with a newer-minor signal: newerMinor=%v err=%v", newer, newerMinor, err)
 	}
-	other := formatSchemaVersion(major+1, 0)
+	other := schemaVersionWithNextMajor(t)
 	if _, err := CheckReadableSchemaVersion(other); err == nil {
 		t.Fatalf("schema %s must be refused as another major", other)
 	}
 }
 
-func formatSchemaVersion(major, minor int) string {
-	return strconv.Itoa(major) + "." + strconv.Itoa(minor)
+func TestCheckReadableSchemaVersionAcceptsUnboundedNewerMinor(t *testing.T) {
+	t.Parallel()
+	major, _, err := schemaMajorMinor(SchemaVersion)
+	if err != nil {
+		t.Fatalf("package SchemaVersion %q is not major.minor: %v", SchemaVersion, err)
+	}
+	declared := major + "." + strings.Repeat("9", 100)
+	if newerMinor, err := CheckReadableSchemaVersion(declared); err != nil || !newerMinor {
+		t.Fatalf("schema %s must load with a newer-minor signal: newerMinor=%v err=%v", declared, newerMinor, err)
+	}
+	encoded := compactWithSchemaVersion(t, declared, true)
+	loaded, err := LoadCompactSnapshot(bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("load schema %s: %v", declared, err)
+	}
+	if len(loaded.SchemaWarnings) != 1 || loaded.SchemaWarnings[0].Code != "W_NEWER_SCHEMA_MINOR" {
+		t.Fatalf("schema warnings = %#v, want one newer-minor warning", loaded.SchemaWarnings)
+	}
+}
+
+func TestCheckReadableSchemaVersionNormalizesDecimalComponents(t *testing.T) {
+	t.Parallel()
+	major, minor, err := schemaMajorMinor(SchemaVersion)
+	if err != nil {
+		t.Fatalf("package SchemaVersion %q is not major.minor: %v", SchemaVersion, err)
+	}
+	for _, declared := range []string{
+		strings.Repeat("0", 20) + major + "." + strings.Repeat("0", 100) + minor,
+		"+" + major + ".+" + strings.Repeat("0", 20) + minor,
+	} {
+		if newerMinor, err := CheckReadableSchemaVersion(declared); err != nil || newerMinor {
+			t.Fatalf("schema %q must normalize to this build: newerMinor=%v err=%v", declared, newerMinor, err)
+		}
+	}
+	for _, declared := range []string{
+		major + ".-0",
+		major + ".+",
+		major + ". " + minor,
+		major + ".١",
+		"+." + minor,
+	} {
+		if _, err := CheckReadableSchemaVersion(declared); err == nil {
+			t.Fatalf("schema %q must be rejected", declared)
+		}
+	}
+}
+
+func schemaVersionAfterThisBuild(t *testing.T) string {
+	t.Helper()
+	major, minor, err := schemaMajorMinor(SchemaVersion)
+	if err != nil {
+		t.Fatalf("package SchemaVersion %q is not major.minor: %v", SchemaVersion, err)
+	}
+	minorNumber, err := strconv.Atoi(minor)
+	if err != nil {
+		t.Fatalf("provider schema minor %q does not fit test arithmetic: %v", minor, err)
+	}
+	return major + "." + strconv.Itoa(minorNumber+1)
+}
+
+func schemaVersionWithNextMajor(t *testing.T) string {
+	t.Helper()
+	major, _, err := schemaMajorMinor(SchemaVersion)
+	if err != nil {
+		t.Fatalf("package SchemaVersion %q is not major.minor: %v", SchemaVersion, err)
+	}
+	majorNumber, err := strconv.Atoi(major)
+	if err != nil {
+		t.Fatalf("provider schema major %q does not fit test arithmetic: %v", major, err)
+	}
+	return strconv.Itoa(majorNumber+1) + ".0"
 }
 
 // TestDecodeCompactSnapshotReturnsTheNewerMinorWarning pins the half of ADR 0001
@@ -148,11 +212,7 @@ func formatSchemaVersion(major, minor int) string {
 // the obligation part of the signature.
 func TestDecodeCompactSnapshotReturnsTheNewerMinorWarning(t *testing.T) {
 	t.Parallel()
-	major, minor, err := schemaMajorMinor(SchemaVersion)
-	if err != nil {
-		t.Fatalf("this build's SchemaVersion must parse: %v", err)
-	}
-	newerMinor := strconv.Itoa(major) + "." + strconv.Itoa(minor+1)
+	newerMinor := schemaVersionAfterThisBuild(t)
 
 	encoded := compactWithSchemaVersion(t, newerMinor, true)
 	warnings, err := DecodeCompactSnapshot(bytes.NewReader(encoded), func(any) error { return nil })
@@ -278,11 +338,7 @@ func compactHeaderForSchema(schema string) string {
 // LoadCompactSnapshot consumes them instead of recomputing the condition.
 func TestLoadCompactSnapshotSurfacesTheDecoderWarning(t *testing.T) {
 	t.Parallel()
-	major, minor, err := schemaMajorMinor(SchemaVersion)
-	if err != nil {
-		t.Fatalf("this build's SchemaVersion must parse: %v", err)
-	}
-	newerMinor := strconv.Itoa(major) + "." + strconv.Itoa(minor+1)
+	newerMinor := schemaVersionAfterThisBuild(t)
 	encoded := compactWithSchemaVersion(t, newerMinor, true)
 
 	index, err := LoadCompactSnapshot(bytes.NewReader(encoded))

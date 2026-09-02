@@ -2,7 +2,6 @@ package sem
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -30,23 +29,57 @@ import (
 // schemaMajorMinor splits a major.minor schema version. Trailing components are
 // rejected rather than ignored: the contract names exactly two, and silently
 // accepting a third would let a "1.1.x" line through unclassified.
-func schemaMajorMinor(version string) (int, int, error) {
+func schemaMajorMinor(version string) (string, string, error) {
 	if version == "" {
-		return 0, 0, fmt.Errorf("schema version is missing")
+		return "", "", fmt.Errorf("schema version is missing")
 	}
 	parts := strings.Split(version, ".")
 	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("schema version %q is not major.minor", version)
+		return "", "", fmt.Errorf("schema version %q is not major.minor", version)
 	}
-	major, err := strconv.Atoi(parts[0])
-	if err != nil || major < 0 {
-		return 0, 0, fmt.Errorf("schema version %q has an unreadable major", version)
+	major, ok := normalizeSchemaNumber(parts[0])
+	if !ok {
+		return "", "", fmt.Errorf("schema version %q has an unreadable major", version)
 	}
-	minor, err := strconv.Atoi(parts[1])
-	if err != nil || minor < 0 {
-		return 0, 0, fmt.Errorf("schema version %q has an unreadable minor", version)
+	minor, ok := normalizeSchemaNumber(parts[1])
+	if !ok {
+		return "", "", fmt.Errorf("schema version %q has an unreadable minor", version)
 	}
 	return major, minor, nil
+}
+
+// normalizeSchemaNumber validates a nonnegative decimal component and returns
+// a canonical representation that can be compared without converting through
+// a platform-sized integer. A leading '+' remains accepted solely for
+// compatibility with the previous strconv.Atoi parser. Atoi made whether a
+// valid 1.x minor was readable depend on the reader's word size.
+func normalizeSchemaNumber(value string) (string, bool) {
+	if strings.HasPrefix(value, "+") {
+		value = value[1:]
+	}
+	if value == "" {
+		return "", false
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return "", false
+		}
+	}
+	value = strings.TrimLeft(value, "0")
+	if value == "" {
+		return "0", true
+	}
+	return value, true
+}
+
+func compareSchemaNumbers(left, right string) int {
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	return strings.Compare(left, right)
 }
 
 // CheckReadableSchemaVersion applies ADR 0001 to a schema version read off a
@@ -68,11 +101,11 @@ func CheckReadableSchemaVersion(declared string) (newerMinor bool, err error) {
 	}
 	if major != wantMajor {
 		return false, fmt.Errorf(
-			"unsupported schema version %q: this build reads major %d (%s) and a different major is not backward compatible",
+			"unsupported schema version %q: this build reads major %s (%s) and a different major is not backward compatible",
 			declared, wantMajor, SchemaVersion,
 		)
 	}
-	return minor > wantMinor, nil
+	return compareSchemaNumbers(minor, wantMinor) > 0, nil
 }
 
 // newerSchemaMinorWarning is the ADR-mandated warning for an artifact from a
