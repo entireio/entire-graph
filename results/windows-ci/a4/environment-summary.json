@@ -1,0 +1,49 @@
+{
+  "schema": "ci-bench.a4-environment-summary.v1",
+  "capturedAtUtc": "2026-09-02T17:39:33.6943614Z",
+  "region": "eastus2",
+  "compute": {
+    "priority": "regular-non-spot",
+    "vmSize": "Standard_D32ads_v7",
+    "logicalProcessors": 32,
+    "physicalMemoryBytes": 137433444352,
+    "processor": "AMD EPYC 9V45 96-Core Processor"
+  },
+  "image": {
+    "publisher": "MicrosoftWindowsServer",
+    "offer": "WindowsServer",
+    "sku": "2025-datacenter-azure-edition",
+    "version": "26100.33222.260810",
+    "caption": "Microsoft Windows Server 2025 Datacenter Azure Edition",
+    "build": "26100.33222"
+  },
+  "toolchain": {
+    "go": "go1.26.7 windows/amd64",
+    "goos": "windows",
+    "goarch": "amd64",
+    "cgoEnabled": "1",
+    "git": "2.55.0.windows.1",
+    "gcc": "MinGW-Builds 16.1.0 x86_64-posix-seh"
+  },
+  "storage": {
+    "osDisk": "P10 Premium_LRS",
+    "osDiskBytes": 136366917120,
+    "localNvmeDiskCount": 4,
+    "localNvmeBytesEach": 472443632640
+  },
+  "security": {
+    "publicIp": false,
+    "customInboundNsgRules": 0,
+    "outbound": "NAT-only bootstrap",
+    "managedIdentity": "system-assigned",
+    "artifactContainers": "private",
+    "storageAnonymousAccess": false,
+    "credentialsOrTokensRetained": false,
+    "defenderRealtimeProtection": true,
+    "requiredTagsAppliedToAllEightResources": true
+  },
+  "repository": {
+    "productCommit": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+    "dirty": false
+  }
+}

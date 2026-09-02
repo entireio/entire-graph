@@ -1,0 +1,62 @@
+{
+  "schema": "ci-bench.a4-failures.v1",
+  "result": "no-go",
+  "bootstrapAttempts": [
+    {
+      "attempt": 1,
+      "state": "failed",
+      "cause": "go mod download inherited the Run Command service working directory",
+      "correction": "use explicit repository working directories"
+    },
+    {
+      "attempt": 2,
+      "state": "failed",
+      "cause": "PowerShell 5 Start-Process exit capture obscured the TestMain probe",
+      "correction": "direct process invocation with MinGW on PATH proved exit 23 and marker started"
+    },
+    {
+      "attempt": 3,
+      "state": "failed",
+      "cause": "generator correctly refused to overwrite a stale owned gate plan",
+      "correction": "remove only the exact owned gate result before generation"
+    },
+    {
+      "attempt": 4,
+      "state": "failed-after-gate",
+      "cause": "PowerShell 5 treated an empty git status result as a scalar without Count",
+      "correction": "array-wrap status output"
+    },
+    {
+      "attempt": 5,
+      "state": "completed",
+      "durationSeconds": 35.00642,
+      "windowsOverlayGateSeconds": 11.908764
+    }
+  ],
+  "candidateFailure": {
+    "shardCount": 4,
+    "nativeTimeoutSeconds": 1800,
+    "state": "no-terminal-checkpoint",
+    "observedCpu": "initial peak near 36 percent, then near 3.16 percent for about 25 minutes",
+    "externalAction": "deallocate exact VM at bounded deadline",
+    "runCommandOutcome": "OperationPreempted",
+    "timeoutStacksAvailable": false,
+    "candidateResultTreeAvailable": false,
+    "dynamicEventParityAvailable": false
+  },
+  "boundedRecovery": {
+    "restartAttempted": true,
+    "reapplyAttempts": 1,
+    "finalProvisioningState": "Updating",
+    "diskForensicsAttempted": false,
+    "reasonStopped": "bounded recovery exhausted; raw recovery was not required for the NO-GO decision"
+  },
+  "screensNotRun": [8, 12],
+  "threeRepetitionCandidateRun": false,
+  "cleanup": {
+    "verifiedAtUtc": "2026-09-02T18:51:56Z",
+    "exactResourceGroupExists": false,
+    "matchingTaggedGroups": 0,
+    "matchingTaggedResources": 0
+  }
+}

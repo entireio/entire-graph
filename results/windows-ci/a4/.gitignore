@@ -1,0 +1,10 @@
+*
+!.gitignore
+!README.md
+!metrics.json
+!coverage-equivalence.json
+!source-integrity.json
+!environment-summary.json
+!azure-cost.json
+!failures.json
+!checksums.txt

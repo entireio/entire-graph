@@ -1,0 +1,60 @@
+{
+  "schema": "ci-bench.a4-metrics.v1",
+  "result": "no-go",
+  "bestAcceptedCandidate": null,
+  "baseline": {
+    "name": "accepted-b22-monolithic-full-suite",
+    "repetitions": 1,
+    "preparationSeconds": 1.712039,
+    "wrapperSeconds": 561.987552,
+    "suiteSeconds": 556.840779,
+    "goTestExitCode": 0,
+    "wrapperMetadataExitCode": 0,
+    "suiteState": "completed"
+  },
+  "prototypeGate": {
+    "shardCount": 2,
+    "kind": "compile-list-testmain-only",
+    "totalSeconds": 11.908764,
+    "compiledShardBinaries": 2,
+    "compiledMonolithicComparisonBinaries": 1,
+    "testExecutionPerformed": false,
+    "acceptedAsCandidate": false
+  },
+  "screens": [
+    {
+      "shardCount": 4,
+      "state": "watchdog-terminated",
+      "candidateEndToEndSeconds": null,
+      "compileLinkSeconds": null,
+      "executionSecondsLowerBound": 1800,
+      "longestShardSecondsLowerBound": 1800,
+      "checkpointToDeallocationSecondsApprox": 2125,
+      "allShardsCompleted": false,
+      "repetitionsCompleted": 0,
+      "accepted": false
+    },
+    {
+      "shardCount": 8,
+      "state": "not-run-after-four-shard-watchdog",
+      "accepted": false
+    },
+    {
+      "shardCount": 12,
+      "state": "not-run-after-four-shard-watchdog",
+      "accepted": false
+    }
+  ],
+  "resourceObservations": {
+    "azureCpuPercentPeakApprox": 36.0,
+    "azureCpuPercentSustainedApprox": 3.16,
+    "sustainedLowCpuMinutesApprox": 25,
+    "diskTopologyCaptured": true,
+    "candidateDiskUtilizationCaptured": false,
+    "candidateProcessAndTimeoutStacksCaptured": false
+  },
+  "variance": {
+    "available": false,
+    "reason": "No credible candidate completed; the planned three repetitions were not run."
+  }
+}

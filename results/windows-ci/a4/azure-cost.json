@@ -1,0 +1,34 @@
+{
+  "schema": "ci-bench.a4-azure-cost.v1",
+  "currency": "USD",
+  "priceEvidence": {
+    "capturedAtUtc": "2026-09-02T17:44:51Z",
+    "source": "Azure Retail Prices API",
+    "region": "eastus2",
+    "productName": "Virtual Machines Dadsv7 Series Windows",
+    "skuName": "D32ads v7",
+    "meterName": "D32ads v7",
+    "priority": "regular-non-spot",
+    "effectiveStartDate": "2025-11-01T00:00:00Z",
+    "unitOfMeasure": "1 Hour",
+    "retailPricePerHour": 3.296
+  },
+  "calculatedVmCosts": {
+    "acceptedBaselineWrapperSeconds": 561.987552,
+    "acceptedBaselineVmCost": 0.514531,
+    "failedFourShardExecutionSecondsLowerBound": 1800,
+    "failedFourShardVmCostLowerBound": 1.648,
+    "baselineCheckpointToWatchdogSecondsApprox": 2125,
+    "baselineCheckpointToWatchdogVmCostApprox": 1.945556,
+    "completeResourceGroupWindowSeconds": 6409,
+    "completeResourceGroupWindowVmCostMaximum": 5.867796
+  },
+  "excludedMeters": [
+    "P10 Premium_LRS OS disk",
+    "NAT Gateway hourly and data processing",
+    "standard static IPv4",
+    "storage transactions and capacity",
+    "network egress"
+  ],
+  "billingQualification": "Retail calculations are reproducibility estimates, not an Azure invoice. The complete-window value is a VM-only maximum, not total experiment cost."
+}
