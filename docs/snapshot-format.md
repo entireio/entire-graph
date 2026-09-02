@@ -91,20 +91,29 @@ first line is `["h", 1, header]`, and the version appears nowhere else.
 Deterministic first-seen dictionary lines `d` precede positional `f` (file),
 `x` (external), `s` (symbol), and `r` (relation) rows; a trailing `m` summary
 is mandatory. A v1 relation row has the original 11 fields, plus an optional
-twelfth `evidence_dropped` integer when the value is nonzero; consumers accept
-either relation arity and reject every other one. Consumers must also reject
-unknown versions, malformed field values, non-first or duplicate headers, and
-missing summaries.
+twelfth `evidence_dropped` integer when the value is nonzero. For artifacts that
+declare the current or an older supported schema minor, consumers accept either
+relation arity and reject every other one. For a newer minor in the supported
+major, consumers warn, decode each known data row's required positional prefix,
+ignore trailing additive fields, and skip unknown public data tags. The outer
+`h`, `d`, and `m` arities remain exact because they are compact-envelope control
+structure governed by the compact format version, not the record schema.
+Consumers must also reject unknown format or schema-major versions, malformed
+known field values, missing required fields, non-first or duplicate headers,
+and missing summaries.
 
 All `h`, `d`, data, and `m` bytes count as raw compact artifact bytes;
 dictionary overhead must never be subtracted. Compact output is loaded only
 through the production compact loader and queried with
 `snapshot-query --input <file> --symbol <id-or-name> [--from <stable-id>
 --relation <TYPE>] --format ndjson`, which writes deterministically ordered
-native symbol/relation records. Its decoded public projection and canonical
-semantic SHA-256 (normalized native records in record order) must equal the
-normal NDJSON snapshot. Matching only the hash is not sufficient evidence of
-losslessness.
+native symbol/relation records. For an artifact produced by the same build, its
+decoded public projection and canonical semantic SHA-256 (normalized native
+records in record order) must equal the normal NDJSON snapshot; the lossless
+preflight enforces both. A newer-minor reader instead hashes its known
+projection and carries `W_NEWER_SCHEMA_MINOR`, because intentionally skipped
+additive facts cannot equal the newer producer's full projection. Matching only
+the hash is not sufficient evidence of losslessness.
 
 ## Experimental SCIP snapshot protobuf
 

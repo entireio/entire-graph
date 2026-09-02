@@ -1009,6 +1009,7 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	dictionary := []string{""}
 	known := map[string]bool{"": true}
 	seenHeader, seenSummary := false, false
+	tolerateSchemaAdditions := false
 	lineNumber := 0
 	for scanner.Scan() {
 		lineNumber++
@@ -1060,6 +1061,7 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 			if newerMinor {
 				warnings = append(warnings, newerSchemaMinorWarning(header.SchemaVersion))
 			}
+			tolerateSchemaAdditions = newerMinor
 			seenHeader = true
 			if err := emit(header); err != nil {
 				return warnings, err
@@ -1096,7 +1098,7 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 			if !seenHeader {
 				return warnings, errors.New("compact snapshot data requires header")
 			}
-			record, err := decodeCompactData(tag, fields, dictionary)
+			record, err := decodeCompactData(tag, fields, dictionary, tolerateSchemaAdditions)
 			if err != nil {
 				return warnings, fmt.Errorf("compact snapshot line %d: %w", lineNumber, err)
 			}
@@ -1116,6 +1118,12 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 				return warnings, err
 			}
 		default:
+			if seenHeader && tolerateSchemaAdditions && tag != "" {
+				// ADR 0001 permits a newer minor to add optional record kinds.
+				// Their compact tags are not meaningful to this build, so skip
+				// the whole row while retaining the mandatory newer-minor warning.
+				continue
+			}
 			return warnings, fmt.Errorf("unknown compact snapshot tag %q", tag)
 		}
 	}
@@ -1131,7 +1139,7 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	return warnings, nil
 }
 
-func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string) (any, error) {
+func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string, tolerateTrailingFields bool) (any, error) {
 	stringAt := func(position int) (string, error) {
 		var index int
 		if err := json.Unmarshal(fields[position], &index); err != nil {
@@ -1145,7 +1153,7 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 	integerAt := func(position int) (int, error) { var value int; return value, json.Unmarshal(fields[position], &value) }
 	switch tag {
 	case "f":
-		if len(fields) != 6 {
+		if len(fields) < 6 || (!tolerateTrailingFields && len(fields) != 6) {
 			return nil, fmt.Errorf("file record arity %d, want 6", len(fields))
 		}
 		id, e1 := stringAt(1)
@@ -1158,7 +1166,7 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 		}
 		return FileRecord{RecordType: "file", ID: id, Path: path, Blob: blob, Language: language, Bytes: size}, nil
 	case "x":
-		if len(fields) != 12 {
+		if len(fields) < 12 || (!tolerateTrailingFields && len(fields) != 12) {
 			return nil, fmt.Errorf("external record arity %d, want 12", len(fields))
 		}
 		values := make([]string, 8)
@@ -1178,7 +1186,7 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 		}
 		return ExternalRecord{RecordType: "external", ID: values[0], Kind: values[1], Value: values[2], FilePath: values[3], StartLine: start, EndLine: end, Signature: values[4], Language: values[5], External: external, SourceSymbol: values[6], SourceDetails: values[7]}, nil
 	case "s":
-		if len(fields) != 14 {
+		if len(fields) < 14 || (!tolerateTrailingFields && len(fields) != 14) {
 			return nil, fmt.Errorf("symbol record arity %d, want 14", len(fields))
 		}
 		values := make([]string, 10)
@@ -1207,7 +1215,7 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 		}
 		return SymbolRecord{RecordType: "symbol", ID: values[0], StableIDVersion: values[1], Kind: values[2], Name: values[3], QualifiedName: values[4], FilePath: values[5], StartLine: start, EndLine: end, Signature: values[6], BodyHash: values[7], Language: values[8], ContainerID: values[9], Aliases: aliases}, nil
 	case "r":
-		if len(fields) != 11 && len(fields) != 12 {
+		if len(fields) < 11 || (!tolerateTrailingFields && len(fields) != 11 && len(fields) != 12) {
 			return nil, fmt.Errorf("relation record arity %d, want 11 or 12", len(fields))
 		}
 		values := make([]string, 7)
@@ -1228,7 +1236,7 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 		}
 		evidence := make([]Evidence, len(rawEvidence))
 		for i, raw := range rawEvidence {
-			if len(raw) != 5 {
+			if len(raw) < 5 || (!tolerateTrailingFields && len(raw) != 5) {
 				return nil, fmt.Errorf("evidence arity %d, want 5", len(raw))
 			}
 			var err error
@@ -1266,7 +1274,7 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 			}
 		}
 		evidenceDropped := 0
-		if len(fields) == 12 {
+		if len(fields) >= 12 {
 			if err := json.Unmarshal(fields[11], &evidenceDropped); err != nil {
 				return nil, err
 			}

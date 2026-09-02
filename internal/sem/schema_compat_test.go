@@ -3,6 +3,7 @@ package sem
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -174,6 +175,102 @@ func TestDecodeCompactSnapshotReturnsTheNewerMinorWarning(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("this build's own version must produce no warning, got %#v", warnings)
 	}
+}
+
+func TestDecodeCompactSnapshotToleratesNewerMinorAdditions(t *testing.T) {
+	t.Parallel()
+	lines := []string{
+		`["h",1,{"schema_version":"1.99"}]`,
+		`["f",0,0,0,0,0,{"future":"file field"}]`,
+		`["q",{"future":"record kind"}]`,
+		`["x",0,0,0,0,0,0,0,0,false,0,0,{"future":"external field"}]`,
+		`["s",0,0,0,0,0,0,0,0,0,0,0,0,[],{"future":"symbol field"}]`,
+		`["r",0,0,0,1,0,0,0,0,[[0,0,1,1,0,{"future":"evidence field"}]],[],7,{"future":"relation field"}]`,
+		`["m",{}]`,
+	}
+	input := strings.Join(lines, "\n") + "\n"
+
+	var decoded []any
+	warnings, err := DecodeCompactSnapshot(strings.NewReader(input), func(record any) error {
+		decoded = append(decoded, record)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("newer-minor additive records must decode: %v", err)
+	}
+	if len(warnings) != 1 || warnings[0].Code != "W_NEWER_SCHEMA_MINOR" {
+		t.Fatalf("schema warnings = %#v, want one newer-minor warning", warnings)
+	}
+	if len(decoded) != 6 {
+		t.Fatalf("decoded records = %#v, want six known records and the unknown kind skipped", decoded)
+	}
+	relation, ok := decoded[4].(RelationRecord)
+	if !ok || len(relation.Evidence) != 1 || relation.EvidenceDropped != 7 {
+		t.Fatalf("decoded relation = %#v, want known fields preserved", decoded[4])
+	}
+
+	baselineLines := append([]string{}, lines[:2]...)
+	baselineLines = append(baselineLines, lines[3:]...)
+	baseline, err := LoadCompactSnapshot(strings.NewReader(strings.Join(baselineLines, "\n") + "\n"))
+	if err != nil {
+		t.Fatalf("load newer-minor baseline: %v", err)
+	}
+	withUnknown, err := LoadCompactSnapshot(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("load newer-minor snapshot with unknown kind: %v", err)
+	}
+	if !reflect.DeepEqual(withUnknown.Snapshot, baseline.Snapshot) || withUnknown.CanonicalSemanticHash != baseline.CanonicalSemanticHash {
+		t.Fatalf("unknown record changed known projection or hash\n with=%#v %s\n base=%#v %s",
+			withUnknown.Snapshot, withUnknown.CanonicalSemanticHash,
+			baseline.Snapshot, baseline.CanonicalSemanticHash)
+	}
+}
+
+func TestDecodeCompactSnapshotKeepsCurrentAndOlderSchemaStrict(t *testing.T) {
+	t.Parallel()
+	for _, schema := range []string{SchemaVersion, "1.0"} {
+		for _, testCase := range []struct {
+			name string
+			line string
+			want string
+		}{
+			{name: "unknown record", line: `["q",{}]`, want: `unknown compact snapshot tag "q"`},
+			{name: "trailing field", line: `["f",0,0,0,0,0,{"unexpected":"field"}]`, want: "file record arity 7, want 6"},
+		} {
+			t.Run(schema+"/"+testCase.name, func(t *testing.T) {
+				input := compactHeaderForSchema(schema) + testCase.line + "\n"
+				_, err := DecodeCompactSnapshot(strings.NewReader(input), func(any) error { return nil })
+				if err == nil || !strings.Contains(err.Error(), testCase.want) {
+					t.Fatalf("decode error = %v, want %q", err, testCase.want)
+				}
+			})
+		}
+	}
+}
+
+func TestDecodeCompactSnapshotKeepsNewerMinorEnvelopeAndRequiredFieldsStrict(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "short data row", input: compactHeaderForSchema("1.99") + `["f",0,0,0,0]` + "\n", want: "file record arity 5, want 6"},
+		{name: "header tail", input: `["h",1,{"schema_version":"1.99"},"extra"]` + "\n", want: "header must be first and have arity 3"},
+		{name: "dictionary tail", input: compactHeaderForSchema("1.99") + `["d",1,["value"],"extra"]` + "\n", want: "dictionary has invalid placement or arity"},
+		{name: "summary tail", input: compactHeaderForSchema("1.99") + `["m",{},"extra"]` + "\n", want: "summary has invalid placement or arity"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := DecodeCompactSnapshot(strings.NewReader(testCase.input), func(any) error { return nil })
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("decode error = %v, want %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+func compactHeaderForSchema(schema string) string {
+	return `["h",1,{"schema_version":"` + schema + `"}]` + "\n"
 }
 
 // TestLoadCompactSnapshotSurfacesTheDecoderWarning keeps the two paths agreeing:

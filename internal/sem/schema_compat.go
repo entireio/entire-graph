@@ -76,13 +76,14 @@ func CheckReadableSchemaVersion(declared string) (newerMinor bool, err error) {
 }
 
 // newerSchemaMinorWarning is the ADR-mandated warning for an artifact from a
-// newer minor of a readable major: the records parse, but any field that minor
-// added is absent from what this build understood.
+// newer minor of a readable major: the known projection parses, but additive
+// fields or record kinds from that minor are absent from what this build
+// understood.
 func newerSchemaMinorWarning(declared string) ProviderWarning {
 	return ProviderWarning{
 		Code:                 "W_NEWER_SCHEMA_MINOR",
 		Severity:             "warning",
-		EffectOnCompleteness: "additive fields introduced after this build's schema were not read",
+		EffectOnCompleteness: "additive fields or record kinds introduced after this build's schema were not read",
 		Detail: fmt.Sprintf(
 			"artifact declares schema %s; this build reads %s",
 			declared, SchemaVersion,
