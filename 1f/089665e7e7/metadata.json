@@ -3,14 +3,16 @@
   "checkpoint_id": "1f089665e7e7",
   "strategy": "manual-commit",
   "checkpoints_count": 3,
-  "files_touched": null,
+  "files_touched": [
+    "internal/sem/compact_snapshot_test.go"
+  ],
   "sessions": [
     {
       "metadata": "/1f/089665e7e7/0/metadata.json",
       "transcript": "/1f/089665e7e7/0/full.jsonl",
       "compact_transcript": "/1f/089665e7e7/0/transcript.jsonl",
       "content_hash": "/1f/089665e7e7/0/content_hash.txt",
-      "prompt": "/1f/089665e7e7/0/prompt.txt"
+      "prompt": ""
     }
   ],
   "token_usage": {
