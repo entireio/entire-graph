@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "395322abfdca",
+  "strategy": "manual-commit",
+  "branch": "ci/windows-investigation-a1-larger-runners",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/ci/windows-investigations/01-larger-runners.md",
+    "results/windows-ci/a1/cleanup.txt",
+    "results/windows-ci/a1/cost.json",
+    "results/windows-ci/a1/environment.json",
+    "results/windows-ci/a1/manifest.sha256",
+    "results/windows-ci/a1/rejected-runs.json",
+    "results/windows-ci/a1/runner-access.json",
+    "results/windows-ci/a1/summary.json",
+    "tools/ci-bench/a1/bootstrap-and-smoke.ps1",
+    "tools/ci-bench/a1/invoke-blob-driver.ps1",
+    "tools/ci-bench/a1/prepare-cache-seed.ps1",
+    "tools/ci-bench/a1/recover-d32-hang.ps1",
+    "tools/ci-bench/a1/refresh-harness.ps1",
+    "tools/ci-bench/a1/run-full-treatment.ps1",
+    "tools/ci-bench/a1/summarize-results.py",
+    "tools/ci-bench/a1/watchdog-screen.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/39/5322abfdca/0/metadata.json",
+      "transcript": "/39/5322abfdca/0/full.jsonl",
+      "compact_transcript": "/39/5322abfdca/0/transcript.jsonl",
+      "content_hash": "/39/5322abfdca/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 996822,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 80121344,
+    "output_tokens": 132283,
+    "api_call_count": 685
+  }
+}

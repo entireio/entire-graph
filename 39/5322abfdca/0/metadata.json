@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "395322abfdca",
+  "session_id": "01a06215-a1da-7140-a721-eafd792ce9ae",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-02T17:31:20.803409Z",
+  "branch": "ci/windows-investigation-a1-larger-runners",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "docs/ci/windows-investigations/01-larger-runners.md",
+    "results/windows-ci/a1/cleanup.txt",
+    "results/windows-ci/a1/cost.json",
+    "results/windows-ci/a1/environment.json",
+    "results/windows-ci/a1/manifest.sha256",
+    "results/windows-ci/a1/rejected-runs.json",
+    "results/windows-ci/a1/runner-access.json",
+    "results/windows-ci/a1/summary.json",
+    "tools/ci-bench/a1/bootstrap-and-smoke.ps1",
+    "tools/ci-bench/a1/invoke-blob-driver.ps1",
+    "tools/ci-bench/a1/prepare-cache-seed.ps1",
+    "tools/ci-bench/a1/recover-d32-hang.ps1",
+    "tools/ci-bench/a1/refresh-harness.ps1",
+    "tools/ci-bench/a1/run-full-treatment.ps1",
+    "tools/ci-bench/a1/summarize-results.py",
+    "tools/ci-bench/a1/watchdog-screen.sh"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 996822,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 80121344,
+    "output_tokens": 132283,
+    "api_call_count": 685
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-02T17:31:20.47686Z",
+    "agent_lines": 2974,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 2974,
+    "total_lines_changed": 2974,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
