@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "0a93b6fc3807",
+  "strategy": "manual-commit",
+  "branch": "codex/pr160-strict-refusal",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/cache_entry.go",
+    "internal/sem/cache_write_confinement_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0a/93b6fc3807/0/metadata.json",
+      "transcript": "/0a/93b6fc3807/0/full.jsonl",
+      "compact_transcript": "/0a/93b6fc3807/0/transcript.jsonl",
+      "content_hash": "/0a/93b6fc3807/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 50180,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 3958784,
+    "output_tokens": 11780,
+    "api_call_count": 40
+  }
+}
