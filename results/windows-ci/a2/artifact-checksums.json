@@ -1,0 +1,30 @@
+{
+  "schema": "ci-bench.a2-artifact-checksums.v1",
+  "algorithm": "sha256",
+  "archive": "operator-local secure archive outside the repository",
+  "archivePermissions": "directory 0700; files 0600",
+  "artifacts": [
+    {"path": "artifacts/repeat-v2-8-02/compiled-binaries.zip", "bytes": 39713333, "sha256": "f9ba1f97379382126330918e5c304ebfc367a26facbb9e04b4f66f231caa3fee"},
+    {"path": "artifacts/repeat-v2-8-03/compiled-binaries.zip", "bytes": 39713333, "sha256": "cebdeb174cadfde5b81ba2a6d600c88ffd07450899f537528550918d97b0a289"},
+    {"path": "artifacts/screen-4-01/compiled-binaries.zip", "bytes": 39713333, "sha256": "59856ac6ffa34c470fff7d890d6543806267f302d61aae9084f67403d5829c4e"},
+    {"path": "artifacts/screen-8-01/compiled-binaries.zip", "bytes": 39713333, "sha256": "bdeed9df2c9eee1b975ae99fcf2952b0e4403af33d59acd1a3a07c50e92a4d36"},
+    {"path": "artifacts/screen-8-02/compiled-binaries.zip", "bytes": 39713333, "sha256": "65127b7076c51b753ddcca4b95c18445343af1ea09723445a6b077de15fca2a6"},
+    {"path": "artifacts/screen-v2-4-01/compiled-binaries.zip", "bytes": 39713333, "sha256": "5c85e653124d3e345946f75501e2f89890fdbd9494b6bd9546d19467950a9bd5"},
+    {"path": "artifacts/screen-v2-6-01/compiled-binaries.zip", "bytes": 39713333, "sha256": "24fb4eaad802a2e464575b8e8953b937c24cb09c7dd554bbfc37507d643a13b0"},
+    {"path": "artifacts/screen-v2-8-01/compiled-binaries.zip", "bytes": 39713333, "sha256": "bb78f1dbe368c7a22431ad1aadb5e9b9ea69efde3498fc1db79b647ebaafe3c1"},
+    {"path": "baseline-01.zip", "bytes": 40237666, "sha256": "d0137d56c7f978d688159b87e587bc31d9cc27b8a1d9c538e5777b6a0d833bea"},
+    {"path": "baseline-02.zip", "bytes": 40238279, "sha256": "d0eccbf9ab43861d488c3a989d85dfeb6ca43d109d8352bc60faa435087c33da"},
+    {"path": "baseline-03.zip", "bytes": 40237534, "sha256": "4df0071a279547d4db238cf5b671f5acaa2ccc89f71ffa96572ea6227db0ff5e"},
+    {"path": "baseline-04.zip", "bytes": 40237103, "sha256": "0093df7f3e038d98fe2b2936ec8fa482a4f671a42f75458130774ed6c6749c0e"},
+    {"path": "experiment-stage.json", "bytes": 3581, "sha256": "c7644bb8295cb8576ad0679f1ede41dd671c1e20af39c129a0ca9ed3dd0cef60"},
+    {"path": "repeat-v2-8-02.zip", "bytes": 994399, "sha256": "e2e51f075d0962424d931db9a92504fa78b767bfe68ba2d44f12e120b6bf769d"},
+    {"path": "repeat-v2-8-03.zip", "bytes": 994927, "sha256": "b8b1c48baf9df174282b00689793a42eac3345d683a78944ded9e320a9b2e33d"},
+    {"path": "screen-4-01.zip", "bytes": 538543, "sha256": "8264f708f18593e4af533016e89d04d546ceac93b1008db89b34d17ecacc9bbf"},
+    {"path": "screen-8-01.zip", "bytes": 974190, "sha256": "da4fedbba7a811203cf6fd7fb8ca817fcc3debe0d75bcdc2f8eaff616b5ba834"},
+    {"path": "screen-8-02.zip", "bytes": 954594, "sha256": "bc2f6f49493c8efa957ae696b711b53ac8eebe7864b1c203f0579266f46ec937"},
+    {"path": "screen-v2-4-01.zip", "bytes": 951233, "sha256": "1c65220c1c4a13b221b4093383abf933e4c09bc266248bde0e634b7efa2f9cf0"},
+    {"path": "screen-v2-6-01.zip", "bytes": 976375, "sha256": "67517c21d334f3c35278732c4c192a1a2101f287a8f2556c640e9a164558ddb8"},
+    {"path": "screen-v2-8-01.zip", "bytes": 994336, "sha256": "99740484d0868b960c0b4ca07f7c1bae8830f388c0845907a3d5c9d3a284e917"},
+    {"path": "validation-fixed.zip", "bytes": 3395462, "sha256": "8a8d28e486463bbdebfe27c1d147925620a07c025af07fc6f24bd287e64f183b"}
+  ]
+}

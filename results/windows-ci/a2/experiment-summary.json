@@ -1,0 +1,242 @@
+{
+  "schema": "ci-bench.a2-experiment-summary.v1",
+  "generatedUtc": "2026-09-02T16:32:02Z",
+  "experiment": "compile heavy Windows test packages once, then execute weighted shards",
+  "repositorySha": "ee6468a6a49d9b2a1a828bd276792f415f392185",
+  "environment": {
+    "os": "Windows Server 2025 Datacenter Azure Edition",
+    "image": "MicrosoftWindowsServer:WindowsServer:2025-datacenter-azure-edition:26100.33222.260810",
+    "region": "westus3",
+    "vmSku": "Standard_D16ads_v5",
+    "priority": "Regular",
+    "network": "private VM, no public IP, no inbound rule; managed-identity blob transfer",
+    "disk": "Premium_LRS",
+    "goVersion": "go1.26.7",
+    "goos": "windows",
+    "goarch": "amd64",
+    "cgoEnabled": "1",
+    "powerShellVersion": "7.6.4",
+    "gitVersion": "2.55",
+    "pythonVersion": "3.13.14",
+    "gccVersion": "16.2"
+  },
+  "cacheControl": {
+    "seedManifestSha256": "6390c275116b23e041e1bcf4efe69e69b8d6e51218ca8a0222880fdfb0348bdd",
+    "policy": "Every treatment restored independent compile, non-heavy, vet, and shard caches from the identical baseline-04 seed snapshot.",
+    "randomizedScreenOrder": [8, 4, 6],
+    "randomizationSeed": 7
+  },
+  "acceptedBaseline": {
+    "label": "baseline-04",
+    "wrapperSeconds": 780.313473,
+    "goTestStepSeconds": 766.832055,
+    "eventWallSeconds": 727.927556,
+    "exitCode": 0,
+    "packageCount": 21,
+    "topLevelTests": 2383,
+    "topLevelPass": 2286,
+    "topLevelSkip": 97,
+    "topLevelFail": 0,
+    "resourceSamples": 276,
+    "cpuMeanPercent": 27.619565,
+    "cpuP95Percent": 90.0,
+    "cpuMaxPercent": 100.0,
+    "diskP95BytesPerSecond": 7893792.25,
+    "diskMaxBytesPerSecond": 234860886.0,
+    "memoryMinAvailableBytes": 61248425984,
+    "memoryMaxCommittedBytes": 7032995840
+  },
+  "acceptedScreens": [
+    {
+      "label": "screen-v2-8-01",
+      "shards": 8,
+      "modeledCriticalPathSeconds": 296.012476,
+      "orchestrationWallSeconds": 304.879085,
+      "compileSeconds": 104.142695,
+      "artifactUploadSeconds": 0.99751,
+      "longestArtifactDownloadSeconds": 1.608273,
+      "longestShardSeconds": 189.263998,
+      "otherPackagesSeconds": 139.070176,
+      "strengthenedVetSeconds": 84.132938,
+      "testsPerShard": [288, 289],
+      "worstSerializedArgvCharactersWithNull": 9093,
+      "cpuMeanPercent": 75.981132,
+      "cpuP95Percent": 100.0,
+      "diskP95BytesPerSecond": 125876123.25,
+      "diskMaxBytesPerSecond": 344689735.0
+    },
+    {
+      "label": "screen-v2-4-01",
+      "shards": 4,
+      "modeledCriticalPathSeconds": 322.246136,
+      "orchestrationWallSeconds": 329.172685,
+      "compileSeconds": 104.280207,
+      "artifactUploadSeconds": 1.117,
+      "longestArtifactDownloadSeconds": 1.283806,
+      "longestShardSeconds": 215.565123,
+      "otherPackagesSeconds": 130.55873,
+      "strengthenedVetSeconds": 80.665103,
+      "testsPerShard": [576, 577],
+      "worstSerializedArgvCharactersWithNull": 16820,
+      "cpuMeanPercent": 64.741379,
+      "cpuP95Percent": 100.0,
+      "diskP95BytesPerSecond": 222056404.75,
+      "diskMaxBytesPerSecond": 277624994.0
+    },
+    {
+      "label": "screen-v2-6-01",
+      "shards": 6,
+      "modeledCriticalPathSeconds": 299.189382,
+      "orchestrationWallSeconds": 306.237202,
+      "compileSeconds": 101.86012,
+      "artifactUploadSeconds": 1.179486,
+      "longestArtifactDownloadSeconds": 1.412694,
+      "longestShardSeconds": 194.737082,
+      "otherPackagesSeconds": 136.81292,
+      "strengthenedVetSeconds": 83.909452,
+      "testsPerShard": [384, 385],
+      "worstSerializedArgvCharactersWithNull": 12047,
+      "cpuMeanPercent": 72.113208,
+      "cpuP95Percent": 100.0,
+      "diskP95BytesPerSecond": 139627108.25,
+      "diskMaxBytesPerSecond": 268992723.0
+    }
+  ],
+  "winnerRepetitions": [
+    {
+      "label": "screen-v2-8-01",
+      "modeledCriticalPathSeconds": 296.012476,
+      "orchestrationWallSeconds": 304.879085,
+      "compileSeconds": 104.142695,
+      "longestShardSeconds": 189.263998,
+      "otherPackagesSeconds": 139.070176,
+      "strengthenedVetSeconds": 84.132938,
+      "cpuMeanPercent": 75.981132,
+      "diskP95BytesPerSecond": 125876123.25
+    },
+    {
+      "label": "repeat-v2-8-02",
+      "modeledCriticalPathSeconds": 292.094958,
+      "orchestrationWallSeconds": 300.074219,
+      "compileSeconds": 102.255757,
+      "longestShardSeconds": 187.167227,
+      "otherPackagesSeconds": 142.361636,
+      "strengthenedVetSeconds": 81.003341,
+      "cpuMeanPercent": 78.461538,
+      "diskP95BytesPerSecond": 169016739.2
+    },
+    {
+      "label": "repeat-v2-8-03",
+      "modeledCriticalPathSeconds": 294.231173,
+      "orchestrationWallSeconds": 303.221255,
+      "compileSeconds": 102.86555,
+      "longestShardSeconds": 188.3451,
+      "otherPackagesSeconds": 144.474063,
+      "strengthenedVetSeconds": 80.588957,
+      "cpuMeanPercent": 75.009524,
+      "diskP95BytesPerSecond": 181576713.2
+    }
+  ],
+  "winnerAggregate": {
+    "shards": 8,
+    "repeatCount": 3,
+    "modeledCriticalPathSeconds": {
+      "median": 294.231173,
+      "min": 292.094958,
+      "max": 296.012476,
+      "range": 3.917518,
+      "populationStddev": 1.601506
+    },
+    "orchestrationWallSeconds": {
+      "median": 303.221255,
+      "min": 300.074219,
+      "max": 304.879085,
+      "range": 4.804866,
+      "populationStddev": 1.992736
+    },
+    "medianModeledReductionVsBaselineGoTestPercent": 61.630298,
+    "medianOrchestrationReductionVsBaselineWrapperPercent": 61.141097,
+    "cpuMeanPercent": {
+      "median": 75.981132,
+      "min": 75.009524,
+      "max": 78.461538
+    },
+    "cpuP95Percent": 100.0,
+    "diskP95BytesPerSecond": {
+      "median": 169016739.2,
+      "min": 125876123.25,
+      "max": 181576713.2
+    },
+    "diskMaxBytesPerSecond": {
+      "median": 337381511.0,
+      "min": 293176132.0,
+      "max": 344689735.0
+    }
+  },
+  "coverage": {
+    "acceptedRunCount": 5,
+    "allAcceptedEquivalent": true,
+    "dynamicRunPassFailSkipMultisetPerRun": [8414, 8414],
+    "heavyTopLevelInventoryPerRun": [2307, 2307],
+    "packageInventoryCount": 21,
+    "baselinePackageMultiplicity": "exactly one terminal result per package",
+    "candidatePackageMultiplicity": "each non-heavy package once; each heavy package once for every nonempty shard assignment",
+    "multiplicityMismatchCountPerAcceptedRun": 0,
+    "failedPackageTerminalCountPerAcceptedRun": 0,
+    "exitRecordCounts": {"fourShards": 33, "sixShards": 45, "eightShards": 57},
+    "allExitRecordsPassed": true,
+    "unicodeNormalization": "none"
+  },
+  "commandLineGuard": {
+    "conservativeLimitCharactersWithNull": 30000,
+    "win32AbsoluteLimitCharactersWithNull": 32767,
+    "acceptedWorstCharactersWithNull": 16820,
+    "acceptedWinnerWorstCharactersWithNull": 9093,
+    "batching": false
+  },
+  "artifact": {
+    "compiledBinaryZipBytes": 39713333,
+    "secureRawArchive": "operator-local 0700 archive outside the repository; see artifact-checksums.json",
+    "rawArtifactsVersioned": false
+  },
+  "cleanup": {
+    "verifiedUtc": "2026-09-02T16:32:02Z",
+    "groupExists": false,
+    "matchingTaggedGroupCount": 0,
+    "matchingTaggedResourceCount": 0
+  },
+  "rejectedRuns": [
+    {
+      "label": "baseline-01",
+      "reason": "Explicit PATH omitted Git's bin directory; three CLI tests could not find sh."
+    },
+    {
+      "label": "baseline-02",
+      "reason": "Suite passed, but Tee-Object encoded two em-dash test names as mojibake."
+    },
+    {
+      "label": "baseline-03",
+      "reason": "Unicode was correct, but the run began before the exact accepted UTF-8 wrapper was staged."
+    },
+    {
+      "label": "screen-8-01",
+      "reason": "Compared correct candidate Unicode to rejected mojibake baseline; four dynamic keys differed."
+    },
+    {
+      "label": "screen-8-02",
+      "reason": "Old partitioner passed coverage but produced a 31,580-character argv, above the later conservative 30,000-character guard."
+    },
+    {
+      "label": "screen-4-01",
+      "reason": "Old partitioner failed closed on a 35,438-character sem argv."
+    }
+  ],
+  "limitations": [
+    "The workflow is a branch-only workflow_dispatch prototype and cannot be executed from GitHub until it exists on the default branch.",
+    "Azure used one 16-vCPU VM to emulate concurrent jobs; GitHub-hosted runner provisioning, artifact service behavior, quotas, and billing were not measured.",
+    "Sharding deliberately repeats package init and TestMain once per represented package per shard and can hide an accidental cross-top-level-test state dependency.",
+    "The strengthened standalone go vet ran concurrently; fidelity candidates retained default go test vet."
+  ],
+  "verdict": "CONDITIONAL",
+  "recommendation": "Pilot the eight-shard prototype as a manual non-required workflow with the exact coverage and argv guards. Six shards screened within 1.1 percent and is the fallback if runner fan-out or artifact costs dominate."
+}

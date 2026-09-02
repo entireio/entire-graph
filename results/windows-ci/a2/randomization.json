@@ -1,0 +1,8 @@
+{
+  "schema": "ci-bench.a2-randomization.v1",
+  "recordedBeforeAcceptedScreensUtc": "2026-09-02T15:14:00Z",
+  "algorithm": "Python random.Random(seed).shuffle",
+  "seed": 7,
+  "input": [4, 6, 8],
+  "screenOrder": [8, 4, 6]
+}

@@ -1,0 +1,80 @@
+{
+  "schema": "ci-bench.a2-cost-rate.v1",
+  "retrievedUtc": "2026-09-02T16:18:38Z",
+  "source": "https://prices.azure.com/api/retail/prices",
+  "sourceDocumentation": "https://learn.microsoft.com/rest/api/cost-management/retail-prices/azure-retail-prices",
+  "filter": "serviceName eq 'Virtual Machines' and armSkuName eq 'Standard_D16ads_v5' and armRegionName eq 'westus3'",
+  "currency": "USD",
+  "armRegionName": "westus3",
+  "armSkuName": "Standard_D16ads_v5",
+  "productName": "Virtual Machines Dadsv5 Series Windows",
+  "skuName": "Standard_D16ads_v5",
+  "meterName": "D16ads v5",
+  "priceType": "Consumption",
+  "purchaseModel": "regular pay-as-you-go; not Spot or Low Priority",
+  "retailPricePerHour": 1.56,
+  "unitOfMeasure": "1 Hour",
+  "effectiveStartDate": "2022-08-01T00:00:00Z",
+  "image": "MicrosoftWindowsServer:WindowsServer:2025-datacenter-azure-edition:26100.33222.260810",
+  "imageMeterNote": "The Retail Prices API has no image-version field; this Windows-licensed VM meter is the exact SKU/region purchase-model match for the measured Windows Server image.",
+  "medianEightShardModeledCriticalPathSeconds": 294.231173,
+  "medianEightShardVmCostUsd": 0.127500175,
+  "eightShardVmCostRangeUsd": [0.126574482, 0.128272073],
+  "separateInfrastructureMeters": {
+    "natGateway": {
+      "armRegionName": "Global",
+      "productName": "NAT Gateway",
+      "skuName": "Standard",
+      "hourlyMeterName": "Standard Gateway",
+      "retailPricePerHourUsd": 0.045,
+      "dataMeterName": "Standard Data Processed",
+      "retailPricePerGbUsd": 0.045,
+      "effectiveStartDate": "2020-06-01T00:00:00Z",
+      "billingNote": "The experiment shared this bootstrap resource across runs. Azure documents that a partial resource hour is billed as a full hour, so it is a fixed experiment cost and is not folded into candidate VM cost."
+    },
+    "publicIp": {
+      "armRegionName": "westus3",
+      "productName": "IP Addresses",
+      "skuName": "Standard",
+      "meterName": "Standard IPv4 Static Public IP",
+      "retailPricePerHourUsd": 0.005,
+      "effectiveStartDate": "2021-04-20T00:00:00Z",
+      "billingNote": "Shared only by the NAT gateway; the measured VM itself had no public IP or inbound rule."
+    },
+    "managedOsDisk": {
+      "armRegionName": "westus3",
+      "productName": "Premium SSD Managed Disks",
+      "skuName": "P10 LRS",
+      "meterName": "P10 LRS Disk",
+      "retailPricePerMonthUsd": 17.92,
+      "effectiveStartDate": "2022-08-01T00:00:00Z",
+      "billingNote": "The P10 OS disk was shared across the experiment lifetime and is not folded into candidate VM cost."
+    },
+    "blobStorage": {
+      "armRegionName": "westus3",
+      "productName": "General Block Blob v2",
+      "skuName": "Hot LRS",
+      "capacityMeterName": "Hot LRS Data Stored",
+      "firstTierRetailPricePerGbMonthUsd": 0.0184,
+      "readOperationsRetailPricePerTenThousandUsd": 0.004,
+      "writeOperationsRetailPricePerTenThousandUsd": 0.05,
+      "effectiveStartDate": "2022-08-01T00:00:00Z"
+    }
+  },
+  "medianEightShardArtifactAccounting": {
+    "compiledArtifactBytes": 39713333,
+    "compiledArtifactTransfers": 9,
+    "medianResultArtifactBytes": 994399,
+    "payloadBytes": 358414396,
+    "payloadGbDecimal": 0.358414396,
+    "natDataProcessingUpperBoundUsd": 0.016128648,
+    "note": "The payload figure counts one compiled-artifact upload, eight downloads, and one result upload. It is an upper-bound multiplication against the NAT data meter, not a claim about final invoiced byte accounting. Blob capacity and transaction charges are separate and below one tenth of a cent per run at this scale."
+  },
+  "excludesFromVmCost": [
+    "managed disk",
+    "NAT gateway fixed lifetime",
+    "public IP fixed lifetime",
+    "blob capacity and operations",
+    "network data processing"
+  ]
+}
