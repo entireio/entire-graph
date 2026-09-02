@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "14686ac0b07e",
+  "strategy": "manual-commit",
+  "branch": "codex/pr169-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/snapshot-format.md",
+    "internal/cli/doctor_repo_key_test.go",
+    "internal/cli/root.go",
+    "internal/sem/provider.go",
+    "internal/sem/repo_key_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/14/686ac0b07e/0/metadata.json",
+      "transcript": "/14/686ac0b07e/0/full.jsonl",
+      "compact_transcript": "/14/686ac0b07e/0/transcript.jsonl",
+      "content_hash": "/14/686ac0b07e/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 141631,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 6971136,
+    "output_tokens": 21467,
+    "api_call_count": 84
+  }
+}
