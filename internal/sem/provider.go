@@ -3881,7 +3881,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// Statement-position pipelines (`"x" |> normalize |> ignore` in an
 					// .fsx script, or in a module body) are bound to no symbol, so the
 					// per-symbol scan above never sees them.
-					for target := range fsharpCallTargets(topLevel) {
+					for target := range fsharpCallTargets(maskFSharpBlockComments(topLevel)) {
 						name := lastDottedCallSegment(target)
 						if name == "" {
 							continue
