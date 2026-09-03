@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "9647ef5f2a08",
+  "strategy": "manual-commit",
+  "branch": "codex/pr161-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go",
+    "internal/sem/records_cache.go",
+    "internal/sem/search_cache.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/96/47ef5f2a08/0/metadata.json",
+      "transcript": "/96/47ef5f2a08/0/full.jsonl",
+      "compact_transcript": "/96/47ef5f2a08/0/transcript.jsonl",
+      "content_hash": "/96/47ef5f2a08/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 200140,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 12076544,
+    "output_tokens": 21540,
+    "api_call_count": 1147
+  }
+}
