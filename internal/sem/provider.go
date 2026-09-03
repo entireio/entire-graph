@@ -2067,8 +2067,14 @@ func juliaBlankAfterClosingEnd(block string) string {
 		}
 		// Past the closing `end`. Anything after it on the SAME line belongs to
 		// the enclosing scope, not to this definition.
+		// LastIndexByte returns -1 when the block holds no newline at all, and
+		// the +1 turns that into 0 -- which is the CORRECT start of the only
+		// line. Rejecting 0 treated a one-line definition as unlocatable, so
+		// `function f(); end; setup()` kept `setup()` in f's own scan and
+		// emitted a false `f -> setup` for code belonging to the enclosing
+		// scope.
 		lineStart := strings.LastIndexByte(scan[:cursor], '\n') + 1
-		if lineStart <= 0 || len(lines[last]) == 0 {
+		if len(lines[last]) == 0 {
 			return block
 		}
 		if strings.Count(scan[:cursor], "\n") != last {

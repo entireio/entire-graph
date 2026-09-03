@@ -12745,6 +12745,32 @@ func TestJuliaShortFormDefinitionFormsStayMasked(t *testing.T) {
 	}
 }
 
+func TestJuliaOneLineDefinitionGivesUpTrailingModuleCode(t *testing.T) {
+	// The counterpart to TestJuliaCodeAfterAChildsEndBelongsToTheModule for a
+	// definition written entirely on ONE line. Locating the closing `end`'s line
+	// used LastIndexByte, which returns -1 when the block holds no newline; the
+	// +1 makes that 0, the correct start of the only line, but the guard rejected
+	// 0 as "not found" and bailed out. `function f(); end; setup()` therefore kept
+	// `setup()` inside f's own scan and emitted a false `f -> setup`.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/M.jl", `module M
+function setup(); 1; end
+function f(); end; setup()
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.setup") {
+		t.Errorf("the module lost the call written after the one-line definition: %#v", calls)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M.f", "M.setup") {
+		t.Errorf("a one-line definition kept trailing module-level code in its own scan: %#v", calls)
+	}
+}
+
 func TestJuliaModuleIsNotCreditedWithItsOwnMacros(t *testing.T) {
 	// A module's block spans its members' definition lines, and a macro's head
 	// reads as a call: `macro mymac(x)` contains `mymac(x)`. The module-own-block
