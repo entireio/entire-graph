@@ -215,6 +215,15 @@ func TestLanguagesShareTypesRelation(t *testing.T) {
 		// Swift imports Objective-C through the Clang importer, and Objective-C
 		// names @objc Swift declarations through the generated <Module>-Swift.h.
 		{"Swift", "Objective-C"},
+		// C and Objective-C share in both directions, and for one reason in
+		// both: the Objective-C label follows the FILE. Objective-C compiles a
+		// C header unchanged, and a `.h` holding a single `#import` is labelled
+		// Objective-C while still declaring the plain C a `.c` includes. This is
+		// the only C-family pair that is symmetric at the LANGUAGE level, and it
+		// is still not symmetric in effect: candidateSharesDeclarations keeps an
+		// `@interface` or a selector out of reach of C, and
+		// TestCNamesOnlyPlainCDeclarationsInObjectiveCFiles pins that.
+		{"C", "Objective-C"},
 	} {
 		if !languagesShareTypes(pair[0], pair[1]) {
 			t.Fatalf("languagesShareTypes(%q, %q) = false, want true", pair[0], pair[1])
@@ -231,7 +240,6 @@ func TestLanguagesShareTypesRelation(t *testing.T) {
 	for _, pair := range [][2]string{
 		{"C++", "C"},
 		{"C++", "Objective-C"},
-		{"Objective-C", "C"},
 		{"Objective-C++", "C"},
 		{"Objective-C++", "C++"},
 		{"Objective-C++", "Objective-C"},
@@ -660,6 +668,102 @@ struct Widget { int w; };
 	} {
 		if _, ok := edges[want]; !ok {
 			t.Fatalf("plain C declaration in an Objective-C-labelled header was dropped: %s; all edges: %v", want, edgeKeys(edges))
+		}
+	}
+}
+
+// C reaches Objective-C-LABELLED declarations for one reason only, the same one
+// that earns C++ the pair: the label follows the FILE. A `.h` is labelled
+// Objective-C the moment it holds a single `#import` or `@interface`, and such
+// headers keep declaring the plain C structs and functions a `.c` includes and
+// compiles verbatim.
+//
+// Measured on the fixture below before the `C -> Objective-C` edge existed, with
+// the plain-C `gadget.h` as the control -- the same two declarations, the same
+// `.c` consumer, differing only in the header's label:
+//
+//	C/renderGadget -> C/Gadget                    resolved   (control)
+//	C/callGadget   -> C/gadgetSize                resolved   (control)
+//	C/renderWidget -> Objective-C/Widget          DROPPED    (plain C struct)
+//	C/callWidth    -> Objective-C/widgetWidth     DROPPED    (plain C function)
+//
+// The widening must not cost the narrowing it sits on top of, so the other half
+// is asserted here as well: an `@interface` and a selector stay unreachable from
+// C, which cannot even declare them.
+func TestCNamesOnlyPlainCDeclarationsInObjectiveCFiles(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// Labelled Objective-C because of the `#import`, yet most of it is plain C.
+	writeFile(t, repo, "shape.h", `#import <Foundation/Foundation.h>
+
+@interface Shape : NSObject
+- (int)area;
+@end
+
+struct Widget { int w; };
+
+static inline int widgetWidth(struct Widget w) { return w.w; }
+`)
+	writeFile(t, repo, "impl.m", `#import "shape.h"
+
+@implementation Renderer
+- (int)computeArea { return 1; }
+@end
+`)
+	// The control: the same two plain C declarations in a header with no
+	// Objective-C syntax, so it keeps the C label.
+	writeFile(t, repo, "gadget.h", `struct Gadget { int g; };
+
+static inline int gadgetSize(struct Gadget g) { return g.g; }
+`)
+	writeFile(t, repo, "use.c", `#include "shape.h"
+#include "gadget.h"
+
+void renderWidget(struct Widget w) { }
+void renderShape(Shape s) { }
+int callWidth(void) { struct Widget w; return widgetWidth(w); }
+int callIt(void) { return computeArea(); }
+void renderGadget(struct Gadget g) { }
+int callGadget(void) { struct Gadget g; return gadgetSize(g); }
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edges := resolvedEdgeSet(t, snapshot)
+	// The control fixes the baseline: if these are missing, C type and call
+	// resolution broke generally and the assertions below say nothing about the
+	// language pair.
+	for _, control := range []string{
+		"USES_TYPE C/renderGadget->C/Gadget",
+		"CALLS C/callGadget->C/gadgetSize",
+	} {
+		if _, ok := edges[control]; !ok {
+			t.Fatalf("same-language C control edge is missing, the fixture proves nothing: %s; all edges: %v", control, edgeKeys(edges))
+		}
+	}
+	// The widening: the plain C half of an Objective-C-labelled header is
+	// reachable from a `.c` exactly as the control is.
+	for _, want := range []string{
+		"USES_TYPE C/renderWidget->Objective-C/Widget",
+		"PARAM_TYPE C/renderWidget->Objective-C/Widget",
+		"CALLS C/callWidth->Objective-C/widgetWidth",
+	} {
+		if _, ok := edges[want]; !ok {
+			t.Fatalf("plain C declaration in an Objective-C-labelled header is unreachable from a C source: %s; all edges: %v", want, edgeKeys(edges))
+		}
+	}
+	// The narrowing it must not undo: the Objective-C half stays out of reach.
+	for _, impossible := range []string{
+		"USES_TYPE C/renderShape->Objective-C/Shape",
+		"PARAM_TYPE C/renderShape->Objective-C/Shape",
+		"CALLS C/callIt->Objective-C/computeArea",
+		"DATA_FLOWS Objective-C/computeArea->C/callIt",
+	} {
+		if relation, ok := edges[impossible]; ok {
+			t.Fatalf("C bound an Objective-C-only declaration: %s (resolution=%s); all edges: %v",
+				impossible, relation.Resolution, edgeKeys(edges))
 		}
 	}
 }
