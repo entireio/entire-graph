@@ -12478,6 +12478,46 @@ end
 	}
 }
 
+func TestJuliaModuleIsNotCreditedWithItsOwnMacros(t *testing.T) {
+	// A module's block spans its members' definition lines, and a macro's head
+	// reads as a call: `macro mymac(x)` contains `mymac(x)`. The module-own-block
+	// mask blanks child BODIES by line range -- which covers a multi-line macro --
+	// but the head line is deliberately kept (a one-line module puts a real call
+	// there), and a one-line macro has no body line to blank at all. Both mask
+	// helpers therefore have to know `macro`, not just `function`, or the module
+	// gains a fabricated call to each macro plus every call a one-line macro makes.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/M.jl", `module M
+
+function helper(x)
+    return x
+end
+
+macro mymac(x)
+    helper(x)
+end
+
+macro oneline(x) helper(x) end
+
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	for _, want := range [][2]string{{"M.mymac", "M.helper"}, {"M.oneline", "M.helper"}} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Fatalf("missing real macro-body CALLS %s->%s: %#v", want[0], want[1], calls)
+		}
+	}
+	for _, forbidden := range [][2]string{{"M", "M.mymac"}, {"M", "M.oneline"}, {"M", "M.helper"}} {
+		if hasRelationByLastSegment(snapshot.Relations, "CALLS", forbidden[0], forbidden[1]) {
+			t.Fatalf("module credited with its own macro CALLS %s->%s: %#v", forbidden[0], forbidden[1], calls)
+		}
+	}
+}
+
 func TestJuliaBareCallsStayInsideTheirModule(t *testing.T) {
 	// `module M ... end` is a hard namespace boundary in Julia: from outside M,
 	// its definitions are reachable only as `M.name(...)`. Resolving bare calls

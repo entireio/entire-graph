@@ -1987,7 +1987,11 @@ func juliaModuleOwnBlock(from SymbolRecord, block string, fileSymbols []SymbolRe
 // Depth is counted over Julia's block openers, because a definition may contain
 // them and the FIRST `end` is then not its own.
 func juliaMaskLongFormDefinition(block, name string) string {
-	head := regexp.MustCompile(`\bfunction\s+` + regexp.QuoteMeta(name) + `\b`)
+	// `macro name(...) ... end` is a definition with a body exactly like
+	// `function`, and Julia closes both with the same `end`. Leaving it out
+	// left a one-line macro's body unmasked, crediting the enclosing module
+	// with every call the macro makes.
+	head := regexp.MustCompile(`\b(?:function|macro)\s+` + regexp.QuoteMeta(name) + `\b`)
 	openers := regexp.MustCompile(`\b(function|if|for|while|begin|let|do|try|quote|struct|module|macro)\b`)
 	end := regexp.MustCompile(`\bend\b`)
 	// Block tokens are matched against a copy whose STRING and COMMENT bodies are
@@ -2051,6 +2055,10 @@ func juliaMaskDefinitionHeads(block string, names []string) string {
 		quoted := regexp.QuoteMeta(name)
 		for _, pattern := range []string{
 			`\bfunction\s+` + quoted + `\b`,
+			// A macro definition head reads as a call: `macro mymac(x)`
+			// contains `mymac(x)`. Unmasked, the module was credited with
+			// calling its own macro.
+			`\bmacro\s+` + quoted + `\b`,
 			// Short form, masked THROUGH ITS RIGHT-HAND SIDE. `f() = helper()`
 			// occupies one line, so no body line is blanked for it, and masking
 			// only the head left `helper()` in the module's block -- crediting
