@@ -4672,6 +4672,118 @@ def unrelated():
 	}
 }
 
+// Confining a function-local import is only sound where Python's own scoping
+// agrees, and it cuts both ways: a name it hides loses the import evidence its
+// call edge rests on, so a hidden import DELETES an edge, while a name it
+// leaves visible where Python would not can bind a call the caller cannot
+// reach. Both directions are asserted here.
+func TestPythonImportScopeFollowsLexicalScoping(t *testing.T) {
+	const foreign = `int compute(int value) {
+	return value + 1;
+}
+`
+
+	// `def _load(): global np; import numpy as np` is a real idiom: the import
+	// binds the MODULE's name, so every other function in the file sees it and
+	// confining it to _load deleted their edges.
+	t.Run("an import declared global is visible file-wide", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `def _load():
+    global compute
+    from frobnicate import compute
+
+
+def run():
+    return compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("a global-declared import was hidden from the rest of its file: %#v", calls[0])
+		}
+	})
+
+	// `nonlocal` is the bounded half of the same rule: the binding is the
+	// ENCLOSING function's, so a sibling def inside that function sees it.
+	t.Run("an import declared nonlocal is visible in the enclosing function", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `def outer():
+    def _load():
+        nonlocal compute
+        from frobnicate import compute
+
+    def use():
+        return compute(1)
+
+    _load()
+    return use()
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:use")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of use, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("a nonlocal-declared import was hidden from its enclosing function: %#v", calls[0])
+		}
+	})
+
+	// A class body is not a lexical scope for the functions defined in it:
+	// Python skips class scope when resolving a name inside a method, so the
+	// method below raises NameError rather than calling the import. Treating
+	// the class body as an enclosing scope bound it at import_resolved
+	// confidence, across a language boundary, to a function it never reaches.
+	t.Run("a class-body import is not visible inside its methods", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `class Runner:
+    from frobnicate import compute
+
+    def run(self):
+        return compute(1)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:method:Runner.run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("a class-body import must not bind a method's call: %#v", call)
+			}
+		}
+	})
+
+	// The negative fence: a nested `def` really does see the import its
+	// enclosing FUNCTION made, and a module-level import stays visible
+	// everywhere, so neither rule above may cost those edges.
+	t.Run("a function-local import still reaches the defs inside it", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `class Runner:
+    def load(self):
+        from frobnicate import compute
+
+        def inner():
+            return compute(2)
+
+        return inner()
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:method:Runner.inner")
+		found := false
+		for _, call := range calls {
+			if strings.Contains(call.ToID, "frobnicate.c:function:compute") && call.Resolution == "import_resolved" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("a nested def lost the import its enclosing method made: %#v", calls)
+		}
+	})
+}
+
 // The bare-call import tier is the one place that reads PAST the language
 // filter, so it carries the same ambiguity rule as the qualified one: module
 // paths are matched by suffix, so a single import can match same-named

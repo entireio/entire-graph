@@ -581,6 +581,7 @@ type pythonImportScope struct {
 	importLine int
 	startLine  int
 	endLine    int
+	isClass    bool // the scope is a `class` body, which encloses no name lookup
 }
 
 // visibleTo reports whether a symbol can see this import. Two ways: the import
@@ -591,6 +592,14 @@ type pythonImportScope struct {
 func (scope pythonImportScope) visibleTo(from SymbolRecord) bool {
 	if from.StartLine <= scope.importLine && scope.importLine <= from.EndLine {
 		return true
+	}
+	// A class body is not a lexical scope for the functions defined in it:
+	// Python skips class scope when it resolves a name inside a method, so a
+	// method that names a class-body import raises NameError rather than
+	// calling it. Only the class body's own statements -- which the first
+	// branch already answers -- can see it.
+	if scope.isClass {
+		return false
 	}
 	return scope.startLine <= from.StartLine && from.EndLine <= scope.endLine
 }
@@ -619,6 +628,7 @@ func pythonLocalOnlyImportScopes(content string) map[string][]pythonImportScope 
 		}
 		indents[i] = len(line) - len(body)
 	}
+	declared := pythonScopedNameDeclarations(lines, indents)
 	local := map[string][]pythonImportScope{}
 	moduleLevel := map[string]struct{}{}
 	for i := range lines {
@@ -642,8 +652,28 @@ func pythonLocalOnlyImportScopes(content string) map[string][]pythonImportScope 
 				moduleLevel[name] = struct{}{}
 				continue
 			}
-			scope.importLine = i + 1
-			local[name] = append(local[name], scope)
+			// `global name` in the same scope declares that the import binds
+			// the MODULE's name, which every other function in the file then
+			// sees (`def _load(): global np; import numpy as np`). Confining it
+			// hides a real import, and a hidden import deletes the call edge it
+			// was the evidence for, so it is treated as module-level.
+			// `nonlocal name` binds in the enclosing function instead: the
+			// scope widens to that function rather than to the whole file.
+			visible := scope
+			if declared[pythonNameDeclaration{name: name, kind: "global", scope: pythonScopeKey{scope.startLine, scope.endLine}}] {
+				moduleLevel[name] = struct{}{}
+				continue
+			}
+			if declared[pythonNameDeclaration{name: name, kind: "nonlocal", scope: pythonScopeKey{scope.startLine, scope.endLine}}] {
+				outer, enclosing := pythonEnclosingScopeRange(lines, indents, scope.startLine-1)
+				if !enclosing {
+					moduleLevel[name] = struct{}{}
+					continue
+				}
+				visible = outer
+			}
+			visible.importLine = i + 1
+			local[name] = append(local[name], visible)
 		}
 	}
 	for name := range moduleLevel {
@@ -653,6 +683,52 @@ func pythonLocalOnlyImportScopes(content string) map[string][]pythonImportScope 
 		return nil
 	}
 	return local
+}
+
+// pythonScopeKey identifies one `def`/`class` body by its line range.
+type pythonScopeKey struct{ start, end int }
+
+// pythonNameDeclaration is one `global`/`nonlocal` name declared in one scope.
+type pythonNameDeclaration struct {
+	name  string
+	kind  string
+	scope pythonScopeKey
+}
+
+// pythonScopedNameDeclarations records every `global`/`nonlocal` declaration in
+// the file with the scope that made it, so an import of that name in the same
+// scope can be read as the binding it really is: a module global, or the
+// enclosing function's local, rather than this function's own.
+func pythonScopedNameDeclarations(lines []string, indents []int) map[pythonNameDeclaration]bool {
+	declared := map[pythonNameDeclaration]bool{}
+	for i, line := range lines {
+		if indents[i] <= 0 {
+			// A module-level `global` declares nothing new, and `nonlocal`
+			// there is a syntax error.
+			continue
+		}
+		body := strings.TrimSpace(line)
+		match := pythonNonLocalDeclRe.FindStringSubmatch(body)
+		if match == nil {
+			continue
+		}
+		kind := "nonlocal"
+		if strings.HasPrefix(body, "global") {
+			kind = "global"
+		}
+		scope, enclosed := pythonEnclosingScopeRange(lines, indents, i)
+		if !enclosed {
+			continue
+		}
+		for _, part := range strings.Split(match[1], ",") {
+			name := strings.TrimSpace(part)
+			if name == "" {
+				continue
+			}
+			declared[pythonNameDeclaration{name: name, kind: kind, scope: pythonScopeKey{scope.startLine, scope.endLine}}] = true
+		}
+	}
+	return declared
 }
 
 // pythonEnclosingScopeRange returns the line range of the innermost `def` or
@@ -678,7 +754,7 @@ func pythonEnclosingScopeRange(lines []string, indents []int, at int) (pythonImp
 			end = j
 			break
 		}
-		return pythonImportScope{startLine: i + 1, endLine: end}, true
+		return pythonImportScope{startLine: i + 1, endLine: end, isClass: strings.HasPrefix(body, "class")}, true
 	}
 	return pythonImportScope{}, false
 }

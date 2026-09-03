@@ -277,6 +277,38 @@ def run():
 			filewide: []string{"compute"},
 		},
 		{
+			// `global name` in the scope that imports it says the import binds
+			// the MODULE's name (`def _load(): global np; import numpy as np`),
+			// which every other function in the file can then see. Confining it
+			// hides a real import, and a hidden import deletes the call edge it
+			// was the evidence for.
+			name: "an import declared global in its scope binds at module scope",
+			source: `def _load():
+    global compute
+    from frobnicate import compute
+
+
+def run():
+    return compute(1)
+`,
+			filewide: []string{"compute"},
+		},
+		{
+			// `nonlocal` is the bounded half of the same rule: the binding is
+			// the ENCLOSING function's, so it stays confined -- to that
+			// function, not to the nested def that imported it.
+			name: "an import declared nonlocal stays confined to the enclosing function",
+			source: `def outer():
+    def _load():
+        nonlocal compute
+        from frobnicate import compute
+
+    def use():
+        return compute(1)
+`,
+			confined: []string{"compute"},
+		},
+		{
 			name: "an indented import no definition encloses binds at module scope",
 			source: `if TYPE_CHECKING:
     from frobnicate import compute
