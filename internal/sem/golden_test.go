@@ -933,3 +933,47 @@ func TestJuliaOneLineLongFormDefinitionIsNotTheModuleBody(t *testing.T) {
 		t.Errorf("the child's own call was masked away with it: %v", edges)
 	}
 }
+
+// TestJuliaShortFormWithReturnTypeOrConstraint pins the shapes a short-form definition
+// may take before its `=`.
+//
+// Julia writes a return type or a constraint between the argument list and the equals
+// sign -- `f(x)::Int = helper()` and `g(x) where T = helper()` are both definitions.
+// Requiring `=` to follow the parenthesis immediately left those bodies in the module's
+// block, so the module was credited both with defining them and with every call they make.
+func TestJuliaShortFormWithReturnTypeOrConstraint(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	for name, content := range map[string]string{
+		"s.jl": "module S\nhelper() = 1\nf(x)::Int = helper()\nend\n",
+		"w.jl": "module W\nhelper() = 1\ng(x) where T = helper()\nend\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	edges := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" {
+			edges[symbolsByID[relation.FromID].QualifiedName+" -> "+symbolsByID[relation.ToID].QualifiedName] = true
+		}
+	}
+	for _, want := range []string{"S.f -> S.helper", "W.g -> W.helper"} {
+		if !edges[want] {
+			t.Errorf("the definition's own call was lost: missing %q in %v", want, edges)
+		}
+	}
+	for _, unwanted := range []string{"S -> S.helper", "S -> S.f", "W -> W.helper", "W -> W.g"} {
+		if edges[unwanted] {
+			t.Errorf("the module was credited with %q: %v", unwanted, edges)
+		}
+	}
+}

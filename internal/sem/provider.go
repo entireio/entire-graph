@@ -2050,13 +2050,19 @@ func juliaMaskDefinitionHeads(block string, names []string) string {
 			// only the head left `helper()` in the module's block -- crediting
 			// the module with every call the child's body makes.
 			//
+			// Anything but `=`, `;` or a newline may sit between the argument
+			// list and the `=`, because Julia writes a return type or a
+			// constraint there: `f(x)::Int = ...` and `f(x) where T = ...` are
+			// both definitions, and requiring `=` to follow the parenthesis
+			// immediately left them in the module's block.
+			//
 			// The mask stops at `;` as well as at the line end, because that is
 			// where the definition stops: `module M; setup() = 1; setup(); end`
 			// puts a real module-level call after the semicolon, and running to
 			// the line end would swallow it.
 			//
 			// The `=` must be a single one: `f() == x` is a comparison.
-			`\b` + quoted + `\s*\([^()]*\)\s*=([^=;\n][^;\n]*)?`,
+			`\b` + quoted + `\s*\([^()]*\)[^=;\n]*=([^=;\n][^;\n]*)?`,
 		} {
 			re, err := regexp.Compile(pattern)
 			if err != nil {
