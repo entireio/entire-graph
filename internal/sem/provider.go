@@ -2031,18 +2031,78 @@ func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
 	return false
 }
 
+// fsharpModuleAbbreviationPattern matches an F# module abbreviation
+// (`module Json = Newtonsoft.Json`), which binds a LOCAL name to a module or
+// namespace path. The uppercase first letter of the right-hand side separates
+// it from the nested-module block form `module M = begin ... end`; a plain
+// `module Nested =` heading a block has nothing after the `=` at all.
+var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]+([A-Za-z_][A-Za-z0-9_']*)[ \t]*=[ \t]*[A-Z]`)
+
+// fsharpValueBindingPattern matches a `let`/`use` VALUE binding
+// (`let Json = Newtonsoft.Json.JsonConvert`, `let Json : JsonConvert = ...`),
+// which also binds the name lexically. A function binding carries parameters
+// between the name and the `=` and never matches, so `let encode (x: int) = x`
+// is left alone.
+var fsharpValueBindingPattern = regexp.MustCompile(`(?m)^[ \t]*(?:let|use)[ \t]+(?:mutable[ \t]+)?([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::[^=\n]*)?=`)
+
+// fsharpFileQualifierShadows lists the names this file binds lexically, so a
+// dotted prefix spelling one of them can be recognised as NOT naming a project
+// module.
+//
+// A qualifier was classified by the project's module declarations alone, which
+// is the wrong question whenever the file rebinds the name: with
+// `module Json = Newtonsoft.Json` (or `let Json = ...`) at the top of a file and
+// an unrelated project module `Json` elsewhere, `Json.serialize` was held to the
+// project module and fabricated the edge into it. The local binding wins in F#'s
+// own scoping, so the qualifier names the alias, not the module, and belongs in
+// the same class as `System.Text.encode` and `svc.encode`: it names no project
+// module, so it records bare and resolves unrestricted rather than being pinned
+// to a module the source never meant.
+//
+// Block comments are masked first so a `module X = Y` inside `(* ... *)` is not
+// a binding. The set is per file because F# `let` and module abbreviations are
+// lexically scoped to the file that writes them, unlike module declarations
+// themselves, which are project-scoped.
+func fsharpFileQualifierShadows(content string) map[string]bool {
+	masked := maskFSharpBlockComments(content)
+	shadows := map[string]bool{}
+	for _, pattern := range []*regexp.Regexp{fsharpModuleAbbreviationPattern, fsharpValueBindingPattern} {
+		for _, match := range pattern.FindAllStringSubmatch(masked, -1) {
+			shadows[match[1]] = true
+		}
+	}
+	return shadows
+}
+
+// fsharpQualifierShadowed reports whether the file rebinds the name the
+// qualifier leads with. Only the FIRST segment can be shadowed: a local
+// `module Json = ...` rebinds `Json` and therefore `Json.Linq`, but says
+// nothing about `Newtonsoft.Json`.
+func fsharpQualifierShadowed(shadows map[string]bool, qualifier string) bool {
+	if len(shadows) == 0 {
+		return false
+	}
+	head := qualifier
+	if cut := strings.Index(qualifier, "."); cut >= 0 {
+		head = qualifier[:cut]
+	}
+	return shadows[head]
+}
+
 // recordFSharpCallQualifier remembers which module a qualified call named, so
 // resolution can keep `A.convert` off `B.convert`. EVERY distinct qualifier is
 // kept, because each one is its own call site: a caller writing
 // `x |> A.convert |> B.convert` calls two different functions, and collapsing
 // them onto one entry for the name loses one of the two edges. A call written
-// without a qualifier the project declares records the empty string: that spelling
-// names no module, so it means "the definition in scope" and is resolved
-// unrestricted -- alongside, not instead of, the qualified sightings.
-func recordFSharpCallQualifier(qualifiers map[string]map[string]struct{}, declared map[string]bool, name, target string) {
+// without a qualifier the project declares -- or spelling a name the FILE
+// rebinds, which is the same thing once F#'s own scoping is applied -- records
+// the empty string: that spelling names no module, so it means "the definition
+// in scope" and is resolved unrestricted -- alongside, not instead of, the
+// qualified sightings.
+func recordFSharpCallQualifier(qualifiers map[string]map[string]struct{}, declared map[string]bool, shadows map[string]bool, name, target string) {
 	qualifier := ""
 	if cut := strings.LastIndex(target, "."); cut > 0 {
-		if candidate := target[:cut]; fsharpModulePathDeclared(declared, candidate) {
+		if candidate := target[:cut]; !fsharpQualifierShadowed(shadows, candidate) && fsharpModulePathDeclared(declared, candidate) {
 			qualifier = candidate
 		}
 	}
@@ -3552,8 +3612,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 		var fsharpModulePathBySymbolID map[string]string
 		var fsharpDeclaredModulePaths map[string]bool
+		var fsharpShadowedQualifiers map[string]bool
 		if file.Language == "F#" && fileNeedsCallScan {
 			fsharpModulePathBySymbolID, fsharpDeclaredModulePaths = fsharpProjectModulePathBySymbolID, fsharpProjectDeclaredModulePaths
+			// Module abbreviations and value bindings are file-scoped, so this
+			// is read per file rather than merged into the project-wide map.
+			fsharpShadowedQualifiers = fsharpFileQualifierShadows(content)
 		}
 		var jsSymbolNamespaces map[string]string
 		var jsScan *jsScanState
@@ -3734,7 +3798,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// the same reason the targets are: a call inside `(* ... *)`
 					// is not a call site.
 					for name := range callLikeIdentifiers(masked, file.Language) {
-						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, name, name)
+						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers, name, name)
 					}
 					for target := range fsharpCallTargets(masked) {
 						name := lastDottedCallSegment(target)
@@ -3742,7 +3806,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							continue
 						}
 						callNames[name] = struct{}{}
-						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, name, target)
+						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers, name, target)
 					}
 				}
 				if file.Language == "Lua" {
@@ -4220,7 +4284,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// seen only by the generic scanner, so it has to clear the
 					// qualifier here too.
 					for name := range callLikeIdentifiers(masked, file.Language) {
-						recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, name, name)
+						recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers, name, name)
 					}
 					for target := range fsharpCallTargets(masked) {
 						name := lastDottedCallSegment(target)
@@ -4228,7 +4292,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							continue
 						}
 						topLevelNames[name] = struct{}{}
-						recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, name, target)
+						recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers, name, target)
 					}
 				}
 				if file.Language == "Lua" {

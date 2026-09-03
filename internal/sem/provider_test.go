@@ -17064,3 +17064,81 @@ let charLiteral = '"'
 		}
 	}
 }
+
+func TestFSharpQualifierShadowedByALocalBindingIsNotAModuleQualifier(t *testing.T) {
+	// A dotted prefix was classified by the PROJECT's module declarations alone.
+	// That is the wrong question when the file rebinds the name: an F# module
+	// abbreviation (`module Json = Newtonsoft.Json`) and an ordinary value
+	// binding (`let Json = ...`) both shadow the module of that name, so
+	// `Json.serialize` names the alias, not the project's `Json` module -- and
+	// holding it to that module pinned the call to a definition the source never
+	// named, over the `serialize` actually in scope.
+	//
+	// The shadowed spelling joins the class the gate already documents -- a .NET
+	// namespace (`System.Text.encode`), a value receiver (`svc.encode`) -- and
+	// records bare, resolving unrestricted instead of inside a module it does
+	// not mean. The unshadowed control proves the gate itself is untouched.
+	callee := func(t *testing.T, useSource string) string {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+		writeFile(t, repo, "src/Use.fs", useSource)
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		symbolsByID := map[string]SymbolRecord{}
+		for _, symbol := range snapshot.Symbols {
+			symbolsByID[symbol.ID] = symbol
+		}
+		reached := ""
+		for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+			to, isSymbol := symbolsByID[relation.ToID]
+			if !isSymbol || to.Name != "serialize" {
+				continue
+			}
+			if from, fromIsSymbol := symbolsByID[relation.FromID]; !fromIsSymbol || from.Name != "run" {
+				continue
+			}
+			reached = filepath.Base(to.FilePath)
+		}
+		return reached
+	}
+
+	for _, shadow := range []struct{ name, binding string }{
+		{"module abbreviation", "module Json = Newtonsoft.Json"},
+		{"value binding", "let Json = Newtonsoft.Json.JsonConvert"},
+	} {
+		t.Run(shadow.name, func(t *testing.T) {
+			got := callee(t, `module Use
+
+`+shadow.binding+`
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+			if got != "Use.fs" {
+				t.Errorf("`Json.serialize` under a local `%s` resolved into %q, want the `serialize` in scope (Use.fs)", shadow.binding, got)
+			}
+		})
+	}
+
+	t.Run("unshadowed control", func(t *testing.T) {
+		// Nothing rebinds `Json` here, so the qualifier really does name the
+		// project module and must still be held to it -- otherwise this fix
+		// would have deleted the restriction rather than narrowed it.
+		got := callee(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if got != "Json.fs" {
+			t.Errorf("`Json.serialize` with no local binding resolved into %q, want the named module (Json.fs)", got)
+		}
+	})
+}
