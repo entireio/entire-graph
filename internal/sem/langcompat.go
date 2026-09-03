@@ -157,6 +157,13 @@ func languagesShareTypes(from, target string) bool {
 // TESTS resolution reads the same index and is also NOT routed through here: a
 // test name is a convention, not a type reference, so type interop is the wrong
 // question to ask of it. See testRelations.
+//
+// Import-resolved receiver calls are the other exception, for the same reason
+// in a different shape: an import whose module path resolves to the callee's
+// FILE is direct evidence the two files interoperate, and that outranks a
+// language-pair heuristic about naming types. See importedReceiverCallTargets,
+// which prefers these candidates and consults the unfiltered set only when it
+// names exactly one target.
 func sharedTypeCandidates(from SymbolRecord, candidates []SymbolRecord) []SymbolRecord {
 	filtered := candidates[:0:0]
 	for _, candidate := range candidates {

@@ -6760,6 +6760,61 @@ func importedExternalCallRelationsForName(from SymbolRecord, name string, module
 	return relations
 }
 
+// importedReceiverCallTargets resolves `receiver.method(...)`, where `receiver`
+// is a name the file imports, against the WORKSPACE-WIDE short-name index.
+//
+// That index is keyed by name alone, so every lookup into it is cross-language
+// by construction, and elsewhere it is narrowed by sharedTypeCandidates. Here
+// that filter alone is the wrong guard. The language-compatibility relation
+// answers one question -- may source written in language A name a type DECLARED
+// in language B -- and this binding is not a type reference. It is an explicit
+// import whose module path resolves to the callee's FILE, which is direct
+// evidence that these two files interoperate. A Python module calling into a
+// locally built C extension is exactly the shape the relation refuses: Python/C
+// is deliberately absent from it because the dynamic language never names the C
+// struct, yet `import frobnicate` beside `frobnicate.c` really does call its
+// exported functions. Measured before this change the resolved edge was
+// discarded and replaced by an unresolved `external:symbol:frobnicate.compute`
+// target, even though the module path matched a parsed local file.
+//
+// Import evidence outranks the language-pair heuristic only while it is
+// unambiguous. Module paths are matched by suffix, so one import can match
+// same-named callables in several languages at once; nothing then says which of
+// them the import actually bound, and both emitting the fanout and picking a
+// winner invent an FFI edge. So the type-sharing candidates are still preferred
+// whenever they resolve anything -- leaving every previously resolved call,
+// same-language fanout included, exactly as it was -- and the unfiltered set is
+// consulted only when it names exactly one target.
+func importedReceiverCallTargets(from SymbolRecord, modules []string, candidates []SymbolRecord) []resolvedCallTarget {
+	var matched []SymbolRecord
+	for _, to := range candidates {
+		if to.ID == from.ID || to.Kind == "field" {
+			continue
+		}
+		if importedNameMatchesFile(modules, from.FilePath, to.FilePath) {
+			matched = append(matched, to)
+		}
+	}
+	resolved := sharedTypeCandidates(from, matched)
+	if len(resolved) == 0 {
+		if len(matched) != 1 {
+			return nil
+		}
+		resolved = matched
+	}
+	var targets []resolvedCallTarget
+	for _, to := range resolved {
+		targets = append(targets, resolvedCallTarget{
+			SymbolRecord: to,
+			Confidence:   0.84,
+			Reason:       "receiver call resolved through imported module path",
+			Resolution:   "import_resolved",
+			Scope:        "module",
+		})
+	}
+	return targets
+}
+
 func importedReceiverCallRelations(from SymbolRecord, block string, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
@@ -6767,21 +6822,7 @@ func importedReceiverCallRelations(from SymbolRecord, block string, importsByNam
 	var relations []RelationRecord
 	seen := map[string]bool{}
 	for _, call := range receiverCalls(block) {
-		var localTargets []resolvedCallTarget
-		for _, to := range sharedTypeCandidates(from, symbolsByShortName[call.Method]) {
-			if to.ID == from.ID || to.Kind == "field" {
-				continue
-			}
-			if importedNameMatchesFile(importsByName[call.Receiver], from.FilePath, to.FilePath) {
-				localTargets = append(localTargets, resolvedCallTarget{
-					SymbolRecord: to,
-					Confidence:   0.84,
-					Reason:       "receiver call resolved through imported module path",
-					Resolution:   "import_resolved",
-					Scope:        "module",
-				})
-			}
-		}
+		localTargets := importedReceiverCallTargets(from, importsByName[call.Receiver], symbolsByShortName[call.Method])
 		if len(localTargets) > 0 {
 			for _, target := range localTargets {
 				key := target.ID

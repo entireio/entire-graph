@@ -3936,6 +3936,114 @@ func TestTestsRelationCrossesLanguageBoundaries(t *testing.T) {
 	}
 }
 
+// importedReceiverCallsFrom returns the CALLS edges leaving `from` in the
+// snapshot of `repo`, so a test can assert on the target the receiver call
+// actually bound rather than on the whole graph.
+func importedReceiverCallsFrom(t *testing.T, repo, from string) []RelationRecord {
+	t.Helper()
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" && strings.Contains(relation.FromID, from) {
+			calls = append(calls, relation)
+		}
+	}
+	return calls
+}
+
+// A receiver call bound by an explicit IMPORT must not be gated on the
+// cross-language type-sharing relation. That relation answers whether source in
+// one language may name a type DECLARED in another; an import whose module path
+// resolves to the callee's file is direct evidence the two files interoperate,
+// which outranks the language-pair heuristic. Python/C is deliberately absent
+// from the relation -- a Python caller never names a C struct -- but `import
+// frobnicate` beside a locally parsed `frobnicate.c` really does call its
+// exported functions, and the filter threw the whole edge away and replaced it
+// with an unresolved external target. The identical Python-to-Python fixture
+// resolved, so the language pair was the only difference.
+func TestImportedReceiverCallResolvesAcrossFFIBoundary(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `import frobnicate
+
+def run():
+    return frobnicate.compute(1)
+`)
+
+	calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 {
+		t.Fatalf("want one call edge out of run, got %#v", calls)
+	}
+	if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("import-resolved call was not bound to the C unit: %#v", calls[0])
+	}
+	if calls[0].Resolution != "import_resolved" {
+		t.Fatalf("want import_resolved, got %q: %#v", calls[0].Resolution, calls[0])
+	}
+}
+
+// Import evidence outranks the language-pair heuristic only while it is
+// unambiguous. Module paths are matched by suffix, so one import can match
+// same-named callables in several languages at once; nothing then says which the
+// import bound, so the edge must be SUPPRESSED rather than fanned out or guessed
+// at. Where the type-sharing relation does resolve a candidate it still wins, so
+// a same-language module beside a foreign one keeps the same-language target
+// alone.
+func TestImportedReceiverCallSuppressesCrossLanguageAmbiguity(t *testing.T) {
+	t.Run("ambiguous across languages", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.rb", `def compute(value)
+  value + 1
+end
+`)
+		writeFile(t, repo, "app.py", `import frobnicate
+
+def run():
+    return frobnicate.compute(1)
+`)
+
+		for _, call := range importedReceiverCallsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("ambiguous cross-language import must not resolve to a local symbol: %#v", call)
+			}
+		}
+	})
+
+	t.Run("type-sharing candidate still wins", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.py", `def compute(value):
+    return value + 1
+`)
+		writeFile(t, repo, "app.py", `import frobnicate
+
+def run():
+    return frobnicate.compute(1)
+`)
+
+		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "lib/frobnicate.py:function:compute") {
+			t.Fatalf("want the same-language module to win, got %#v", calls[0])
+		}
+	})
+}
+
 // Regression for the jdx/mise report: a bare type name in a signature must
 // resolve through the file's import bindings before any global fallback, and
 // an ambiguous name with no import evidence must resolve to nothing. mise's
