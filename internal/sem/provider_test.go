@@ -13427,11 +13427,15 @@ A.convert(2) |> ignore
 	for _, symbol := range snapshot.Symbols {
 		symbolsByID[symbol.ID] = symbol
 	}
-	// B.mix means B's own convert (line 5), not A's (line 2).
-	mixSeen := false
+	// B.mix means B's own convert (line 5), not A's (line 2). The qualified
+	// `A.convert(x)` beside it is a SEPARATE call site and keeps its own edge to
+	// line 2 -- that half is pinned by
+	// TestFSharpBareAndQualifiedCallsBothKeepTheirEdge -- so this asserts only
+	// that the bare spelling still reaches the definition in scope.
+	mixLines := map[int]bool{}
 	// The file-level statement means the file-level convert (line 1), not the
 	// one module A declares (line 4).
-	topLevelSeen := false
+	topLevelLines := map[int]bool{}
 	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
 		to := symbolsByID[relation.ToID]
 		if to.Name != "convert" {
@@ -13440,22 +13444,80 @@ A.convert(2) |> ignore
 		from, isSymbol := symbolsByID[relation.FromID]
 		switch {
 		case isSymbol && from.Name == "mix":
-			mixSeen = true
-			if to.StartLine != 5 {
-				t.Fatalf("bare convert(x) in module B resolved to the definition on line %d, want line 5", to.StartLine)
-			}
+			mixLines[to.StartLine] = true
 		case !isSymbol && strings.Contains(relation.FromID, "script.fsx"):
-			topLevelSeen = true
-			if to.StartLine != 1 {
-				t.Fatalf("top-level convert(1) resolved to the definition on line %d, want line 1", to.StartLine)
-			}
+			topLevelLines[to.StartLine] = true
 		}
 	}
-	if !mixSeen {
-		t.Fatalf("missing F# CALLS mix->convert: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	if !mixLines[5] {
+		t.Fatalf("bare convert(x) in module B did not reach its own definition on line 5; reached %v", sortedIntKeys(mixLines))
 	}
-	if !topLevelSeen {
-		t.Fatalf("missing top-level F# CALLS script.fsx->convert: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	if !topLevelLines[1] {
+		t.Fatalf("top-level convert(1) did not reach the file-level definition on line 1; reached %v", sortedIntKeys(topLevelLines))
+	}
+}
+
+// TestFSharpBareAndQualifiedCallsBothKeepTheirEdge pins that the two spellings
+// of a call are two call sites, both of which reach the graph.
+//
+// `convert(x)` and `A.convert(x)` in one caller MEAN different things: the bare
+// one names no module and F# resolves it by scope, to B's own `convert`; the
+// qualified one names module A and can only be A's. Qualifier state recorded
+// both, but a bare sighting was treated as a veto -- it reported no qualifiers
+// at all, so BOTH sites went through unrestricted resolution, which emits only
+// the same-name definition nearest the call site. The `A.convert` edge was
+// dropped outright, and a reader asking who calls `A.convert` was told nobody.
+// Both scan paths carried it: the per-symbol one and the file-level one.
+func TestFSharpBareAndQualifiedCallsBothKeepTheirEdge(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Mixed.fs", `module A =
+    let convert (x: int) = x + 1
+
+module B =
+    let convert (x: int) = x * 2
+
+    let mix (x: int) = convert(x) + A.convert(x)
+`)
+	writeFile(t, repo, "script.fsx", `let convert (x: int) = x + 1
+
+module A =
+    let convert (x: int) = x * 2
+
+convert(1) |> ignore
+A.convert(2) |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	mixLines := map[int]bool{}
+	topLevelLines := map[int]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "convert" {
+			continue
+		}
+		from, isSymbol := symbolsByID[relation.FromID]
+		switch {
+		case isSymbol && from.Name == "mix":
+			mixLines[to.StartLine] = true
+		case !isSymbol && strings.Contains(relation.FromID, "script.fsx"):
+			topLevelLines[to.StartLine] = true
+		}
+	}
+	// A.convert is on line 2 and B's own on line 5, so `convert(x) + A.convert(x)`
+	// reaches exactly both.
+	if want := map[int]bool{2: true, 5: true}; !reflect.DeepEqual(mixLines, want) {
+		t.Fatalf("mix wrote convert(x) and A.convert(x) but reached definitions on lines %v, want %v", sortedIntKeys(mixLines), sortedIntKeys(want))
+	}
+	// The script's own convert is on line 1 and module A's on line 4.
+	if want := map[int]bool{1: true, 4: true}; !reflect.DeepEqual(topLevelLines, want) {
+		t.Fatalf("top-level convert(1) and A.convert(2) reached definitions on lines %v, want %v", sortedIntKeys(topLevelLines), sortedIntKeys(want))
 	}
 }
 

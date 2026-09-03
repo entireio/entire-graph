@@ -1918,9 +1918,9 @@ func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
 // kept, because each one is its own call site: a caller writing
 // `x |> A.convert |> B.convert` calls two different functions, and collapsing
 // them onto one entry for the name loses one of the two edges. A call written
-// without a qualifier this file declares records the empty string, which is the
-// one sighting that cannot be split: it says only "the definition in scope", so
-// it drops the restriction for the whole name rather than guessing.
+// without a qualifier this file declares records the empty string: that spelling
+// names no module, so it means "the definition in scope" and is resolved
+// unrestricted -- alongside, not instead of, the qualified sightings.
 func recordFSharpCallQualifier(qualifiers map[string]map[string]struct{}, declared map[string]bool, name, target string) {
 	qualifier := ""
 	if cut := strings.LastIndex(target, "."); cut > 0 {
@@ -1934,14 +1934,21 @@ func recordFSharpCallQualifier(qualifiers map[string]map[string]struct{}, declar
 	qualifiers[name][qualifier] = struct{}{}
 }
 
-// fsharpResolvableQualifiers lists the in-file module qualifiers a name must be
-// resolved under, one target per qualifier. It reports nothing when the name was
-// also called bare: an unqualified sighting names no module, so the name falls
-// back to unrestricted resolution exactly as it did before.
+// fsharpResolvableQualifiers lists the spellings a name was called with, one
+// resolution per spelling.
+//
+// The two spellings MEAN different things and are different call sites. A bare
+// `convert(x)` names no module: F# resolves it by scope, to whatever `convert`
+// is in scope at that point. A qualified `A.convert(x)` names module A
+// explicitly and can only be A's. A caller writing both therefore makes two
+// calls, and both edges exist.
+//
+// The empty string is one of those spellings, not a veto over the others.
+// Treating it as a veto -- reporting nothing, so the whole name fell back to
+// unrestricted resolution -- resolved `A.convert(x)` as if it had been written
+// bare, and unrestricted resolution emits only the same-name definition nearest
+// the call site, so A's edge was dropped outright.
 func fsharpResolvableQualifiers(qualifiers map[string]struct{}) []string {
-	if _, unqualified := qualifiers[""]; unqualified {
-		return nil
-	}
 	return sortedKeysOf(qualifiers)
 }
 
@@ -1949,6 +1956,12 @@ func fsharpResolvableQualifiers(qualifiers map[string]struct{}) []string {
 // out. Symbols from other files are untouched: the qualifier is only known to
 // name a module here, so it cannot speak for anywhere else.
 func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier, callerPath string, pathBySymbolID map[string]string) []SymbolRecord {
+	if qualifier == "" {
+		// The BARE spelling restricts nothing: it names no module, so it means
+		// the definition in scope and resolves over every candidate, exactly as
+		// the unrestricted path does.
+		return symbols
+	}
 	// A relative qualifier is read from the caller outwards, so resolve it
 	// against the caller's own module before falling back to a suffix. With both
 	// `ScriptGeneration` and `LoadingScripts.ScriptGeneration` declaring `f`, a
@@ -3588,14 +3601,17 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
 					} else if quals := fsharpResolvableQualifiers(fsharpCallQualifiers[name]); len(quals) > 0 {
-						// One resolution per qualifier, not one per name: with both
+						// One resolution per SPELLING, not one per name: with both
 						// `A.convert` and `B.convert` written in this caller, a single
 						// entry had to pick one module or neither, and picking neither
 						// left `resolveCallTargets` choosing the same-file definition
 						// nearest the call site -- one real call dropped and the
 						// survivor decided by line distance rather than by what was
-						// written. Targets are de-duplicated because two qualifiers may
-						// name the same module by different relative paths.
+						// written. A bare sighting is a spelling too, resolved
+						// unrestricted BESIDE the qualified ones rather than
+						// cancelling them. Targets are de-duplicated because two
+						// qualifiers may name the same module by different relative
+						// paths, and because a bare and a qualified sighting can agree.
 						seenTargets := map[string]bool{}
 						for _, qualifier := range quals {
 							for _, to := range resolveCallTargets(name, from,
@@ -4031,9 +4047,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else if quals := fsharpResolvableQualifiers(topLevelFSharpQualifiers[name]); len(quals) > 0 {
-						// Same as the per-symbol path: each qualifier resolves on its
-						// own so a statement-position `1 |> A.convert |> B.convert`
-						// keeps both edges.
+						// Same as the per-symbol path: each spelling resolves on its
+						// own, so a statement-position `1 |> A.convert |> B.convert`
+						// keeps both edges and a file that writes `convert(1)` as
+						// well as `A.convert(2)` keeps both of those.
 						seenTargets := map[string]bool{}
 						for _, qualifier := range quals {
 							for _, to := range resolveCallTargets(name, fileSource,
