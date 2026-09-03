@@ -210,9 +210,11 @@ jobs:
           assets=(dist/entire-graph_* dist/checksums.txt)
           # SemVer puts a `-` between the version core and a prerelease
           # identifier, so `v1.2.3-nightly.<ts>.<sha>` and `v1.2.3-rc.1` are
-          # prereleases and `v1.2.3` is not.
+          # prereleases and `v1.2.3` is not. Build metadata follows `+` and
+          # does not affect that classification.
+          version_without_build=${VERSION%%+*}
           prerelease=false
-          case "$VERSION" in
+          case "$version_without_build" in
             *-*) prerelease=true ;;
           esac
           if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
