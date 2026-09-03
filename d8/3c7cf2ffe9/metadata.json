@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "d83c7cf2ffe9",
+  "strategy": "manual-commit",
+  "branch": "fix144",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/release.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d8/3c7cf2ffe9/0/metadata.json",
+      "transcript": "/d8/3c7cf2ffe9/0/full.jsonl",
+      "compact_transcript": "/d8/3c7cf2ffe9/0/transcript.jsonl",
+      "content_hash": "/d8/3c7cf2ffe9/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8420,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2520320,
+    "output_tokens": 2709,
+    "api_call_count": 23
+  }
+}
