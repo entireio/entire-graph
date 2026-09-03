@@ -324,7 +324,13 @@ func IndexReplacedNonRegularPaths(ctx context.Context, repo string, nonRegular m
 		if !known {
 			continue
 		}
-		current, err := readFileAtMost(filepath.Join(repo, filepath.FromSlash(path)), len(indexed))
+		// One byte MORE than the blob. A bounded read of exactly the indexed
+		// length returns only a prefix if the file grew after the Lstat above,
+		// and a replacement whose first bytes happen to match the link target
+		// then read as untouched -- hidden by the very bound that makes the
+		// read safe. The extra byte is still bounded, and its presence is
+		// itself the answer: a longer file is a different file.
+		current, err := readFileAtMost(filepath.Join(repo, filepath.FromSlash(path)), len(indexed)+1)
 		if err != nil {
 			continue
 		}
