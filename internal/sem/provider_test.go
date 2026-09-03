@@ -12478,6 +12478,27 @@ end
 	}
 }
 
+func TestJuliaDefinitionsSharingOneLineDoNotCrossAttribute(t *testing.T) {
+	// A call-scan block is line-granular: SymbolRecord carries StartLine and
+	// EndLine and nothing finer, so two definitions written on ONE line each take
+	// that whole line as their block and read the other's definition head as a
+	// call. `helper`'s block contains `function f`, which the name scanner read as
+	// a call, emitting a `M.helper -> M.f` that is not in the source.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/M.jl", "module M; helper()=1; function f(); helper(); end; end\n")
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M.f", "M.helper") {
+		t.Fatalf("missing the real CALLS M.f->M.helper: %#v", calls)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M.helper", "M.f") {
+		t.Fatalf("a definition head on a shared line was read as a call: %#v", calls)
+	}
+}
+
 func TestJuliaModuleIsNotCreditedWithItsOwnMacros(t *testing.T) {
 	// A module's block spans its members' definition lines, and a macro's head
 	// reads as a call: `macro mymac(x)` contains `mymac(x)`. The module-own-block

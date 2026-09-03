@@ -1941,6 +1941,41 @@ func juliaModuleScopedTargetReachable(from, to SymbolRecord) bool {
 // Lines are blanked rather than deleted so the remaining text keeps its offsets, and
 // only DIRECT children are removed: a nested module is itself a child, and its own body
 // is scanned when its turn comes.
+// juliaMaskSiblingDefinitionHeads removes the definition heads of a symbol's
+// SIBLINGS from its call-scan block.
+//
+// A block is line-granular -- SymbolRecord carries StartLine and EndLine and
+// nothing finer -- so two definitions written on ONE line each take that whole
+// line as their block and read the other's head as a call. For
+// `module M; helper()=1; function f(); helper(); end; end` the snapshot emitted
+// `M.helper -> M.f`, because `function f` sits inside helper's block.
+//
+// Sub-line spans are the real fix and are not reachable from here. Masking the
+// heads is, and it cannot hide a call site: the patterns match `function NAME`,
+// `macro NAME` and a short-form `NAME(...) = ...`, all definition-shaped, so a
+// genuine `NAME()` elsewhere in the block still registers.
+//
+// Only siblings are masked -- same container, not `from` itself. A nested
+// definition's head is inside its parent's block legitimately, and masking a
+// short form there would take its right-hand side with it, changing which
+// symbol owns those calls.
+func juliaMaskSiblingDefinitionHeads(from SymbolRecord, block string, fileSymbols []SymbolRecord) string {
+	var names []string
+	for _, other := range fileSymbols {
+		if other.ID == from.ID || other.ContainerID != from.ContainerID {
+			continue
+		}
+		if other.StartLine > from.EndLine || other.EndLine < from.StartLine {
+			continue
+		}
+		names = append(names, other.Name)
+	}
+	if len(names) == 0 {
+		return block
+	}
+	return juliaMaskDefinitionHeads(block, names)
+}
+
 func juliaModuleOwnBlock(from SymbolRecord, block string, fileSymbols []SymbolRecord) string {
 	lines := strings.Split(block, "\n")
 	var childNames []string
@@ -3446,6 +3481,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				if from.Language == "Julia" && from.Kind == "module" {
 					callBlock = juliaModuleOwnBlock(from, callBlock, currentFileSymbols)
 					blockIsOwnBody = true
+				}
+				if from.Language == "Julia" && from.Kind != "module" {
+					callBlock = juliaMaskSiblingDefinitionHeads(from, callBlock, currentFileSymbols)
 				}
 				if file.Language == "Rust" {
 					callBlock = stripRustCodegenMacroBodies(block)
