@@ -217,6 +217,12 @@ func (cw *contextChunkWriter) Write(b []byte) (int, error) {
 	return written, nil
 }
 
+// Unwrap exposes the sink underneath so callers that need the CONCRETE writer
+// still find it through the wrapper. isTerminal type-asserts *os.File to decide
+// `index`'s output format and whether to draw a progress bar; without this,
+// wrapping stdout would silently turn a terminal into a pipe.
+func (cw *contextChunkWriter) Unwrap() io.Writer { return cw.w }
+
 // writeBytesWithContext writes b to w in chunks, returning ctx.Err() as soon as
 // the context is canceled. A cache hit can be megabytes; a plain Write would
 // ignore SIGINT until the whole buffer is flushed.
@@ -235,6 +241,23 @@ func Run(ctx context.Context, opts Options, args []string) error {
 	if opts.Stderr == nil {
 		opts.Stderr = io.Discard
 	}
+
+	// Every command's output goes through the cancellable writer, not just the
+	// ones that stream a graph. Execute trades the first SIGINT's "terminate the
+	// process" for "cancel this context", and that trade is only honest if every
+	// path HAS an observation point: a command that writes straight to a pipe
+	// whose reader has stalled parks inside write(2), where no cancellation can
+	// reach it, and the operator who already pressed Ctrl-C has to press it
+	// again — strictly worse than the no-handler behavior this replaced. Wrapping
+	// once here covers the paths with no long-running work of their own (help,
+	// capabilities, version, agent-guide, init-agents, snapshot-query, doctor)
+	// and the diagnostics on stderr (progress events, partial-snapshot warnings)
+	// without threading a context through each of them. The streaming commands
+	// below wrap again for their own sinks; a second wrapper only re-chunks
+	// bytes that are already 64 KiB or smaller, and its ctx check is the same
+	// check.
+	opts.Stdout = &contextChunkWriter{ctx: ctx, w: opts.Stdout}
+	opts.Stderr = &contextChunkWriter{ctx: ctx, w: opts.Stderr}
 
 	if len(args) == 0 {
 		printHelp(opts.Stdout)
