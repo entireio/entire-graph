@@ -17142,3 +17142,91 @@ let run (x: int) = Json.serialize x
 		}
 	})
 }
+
+func TestFSharpQualifierShadowAppliesOnlyWhereTheBindingIsInScope(t *testing.T) {
+	// The shadow set was collected file-wide, so it ignored where the shadowing
+	// binding actually sits and when it comes into scope. A `let Json = ...`
+	// inside ONE function, or written AFTER the call, still un-qualified every
+	// `Json.serialize` in the file -- and because a bare qualifier resolves
+	// unrestricted, the call did not merely lose a restriction, it bound the
+	// same-file `serialize` instead of the project module the source named.
+	//
+	// F#'s scoping is lexical and ordered: a binding indented inside a function
+	// body is gone at the dedent that ends it, and a module-level binding is
+	// invisible to everything written above it. The last case is the control
+	// for the opposite error -- narrowing the shadow must not lose it where the
+	// binding genuinely does apply.
+	callee := func(t *testing.T, useSource string) string {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+		writeFile(t, repo, "src/Use.fs", useSource)
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		symbolsByID := map[string]SymbolRecord{}
+		for _, symbol := range snapshot.Symbols {
+			symbolsByID[symbol.ID] = symbol
+		}
+		reached := ""
+		for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+			to, isSymbol := symbolsByID[relation.ToID]
+			if !isSymbol || to.Name != "serialize" {
+				continue
+			}
+			if from, fromIsSymbol := symbolsByID[relation.FromID]; !fromIsSymbol || from.Name != "run" {
+				continue
+			}
+			reached = filepath.Base(to.FilePath)
+		}
+		return reached
+	}
+
+	t.Run("binding local to a sibling function", func(t *testing.T) {
+		got := callee(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+
+let render (x: int) =
+    let Json = Newtonsoft.Json.JsonConvert
+    Json.ToString x
+`)
+		if got != "Json.fs" {
+			t.Errorf("`Json.serialize` in `run` resolved into %q, want the named module (Json.fs): the `let Json` binding is scoped to `render`", got)
+		}
+	})
+
+	t.Run("binding declared after the call", func(t *testing.T) {
+		got := callee(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+
+let Json = Newtonsoft.Json.JsonConvert
+`)
+		if got != "Json.fs" {
+			t.Errorf("`Json.serialize` above the binding resolved into %q, want the named module (Json.fs): the `let Json` binding is not in scope yet", got)
+		}
+	})
+
+	t.Run("binding in scope at the call still shadows", func(t *testing.T) {
+		got := callee(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Newtonsoft.Json.JsonConvert
+    Json.serialize(x)
+`)
+		if got != "Use.fs" {
+			t.Errorf("`Json.serialize` under its own function-local `let Json` resolved into %q, want the `serialize` in scope (Use.fs)", got)
+		}
+	})
+}

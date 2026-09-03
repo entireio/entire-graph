@@ -2045,37 +2045,125 @@ var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]
 // is left alone.
 var fsharpValueBindingPattern = regexp.MustCompile(`(?m)^[ \t]*(?:let|use)[ \t]+(?:mutable[ \t]+)?([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::[^=\n]*)?=`)
 
-// fsharpFileQualifierShadows lists the names this file binds lexically, so a
-// dotted prefix spelling one of them can be recognised as NOT naming a project
-// module.
+// fsharpShadowBinding is one name a file binds lexically, together with the
+// lines that binding governs. F# scoping is ordered and offside-based: a
+// binding is invisible to everything written above it, and it dies at the
+// dedent that closes the block it was written in.
+type fsharpShadowBinding struct {
+	name string
+	// line is where the binding is written, 1-based in file coordinates.
+	line int
+	// throughLine is the last line the binding still shadows the name on.
+	throughLine int
+}
+
+// fsharpFileShadowBindings lists the bindings this file makes, so a dotted
+// prefix spelling one of them can be recognised as NOT naming a project module
+// at the call sites the binding actually reaches.
 //
 // A qualifier was classified by the project's module declarations alone, which
 // is the wrong question whenever the file rebinds the name: with
-// `module Json = Newtonsoft.Json` (or `let Json = ...`) at the top of a file and
-// an unrelated project module `Json` elsewhere, `Json.serialize` was held to the
+// `module Json = Newtonsoft.Json` (or `let Json = ...`) above a call and an
+// unrelated project module `Json` elsewhere, `Json.serialize` was held to the
 // project module and fabricated the edge into it. The local binding wins in F#'s
 // own scoping, so the qualifier names the alias, not the module, and belongs in
 // the same class as `System.Text.encode` and `svc.encode`: it names no project
 // module, so it records bare and resolves unrestricted rather than being pinned
 // to a module the source never meant.
 //
+// Each binding keeps its position because a file-wide set answers the question
+// in the wrong place as well as the right one. A `let Json = ...` inside ONE
+// function, or written BELOW the call, un-qualified every `Json.serialize` in
+// the file; and since a bare qualifier resolves unrestricted, those calls did
+// not merely lose a restriction, they bound whatever same-name definition sat
+// nearest instead of the module the source named.
+//
 // Block comments are masked first so a `module X = Y` inside `(* ... *)` is not
-// a binding. The set is per file because F# `let` and module abbreviations are
+// a binding. Bindings are per file because F# `let` and module abbreviations are
 // lexically scoped to the file that writes them, unlike module declarations
 // themselves, which are project-scoped.
-func fsharpFileQualifierShadows(content string) map[string]bool {
-	masked := maskFSharpBlockComments(content)
+func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
+	lines := strings.Split(maskFSharpBlockComments(content), "\n")
+	var bindings []fsharpShadowBinding
+	for index, line := range lines {
+		for _, pattern := range []*regexp.Regexp{fsharpModuleAbbreviationPattern, fsharpValueBindingPattern} {
+			match := pattern.FindStringSubmatch(line)
+			if match == nil {
+				continue
+			}
+			bindings = append(bindings, fsharpShadowBinding{
+				name:        match[1],
+				line:        index + 1,
+				throughLine: fsharpBindingScopeEnd(lines, index),
+			})
+			break
+		}
+	}
+	return bindings
+}
+
+// fsharpBindingScopeEnd returns the last line the binding written on
+// lines[index] is still in scope for. F#'s offside rule closes the block a
+// binding lives in at the first following line indented less than the binding
+// itself, so a function-local binding ends with its function; a binding at its
+// module's own level is closed by nothing and reaches the end of the file.
+// Blank and comment-only lines carry no indentation of their own, so they never
+// close a block.
+func fsharpBindingScopeEnd(lines []string, index int) int {
+	indent := fsharpIndentWidth(lines[index])
+	for i := index + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if fsharpIndentWidth(lines[i]) < indent {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+func fsharpIndentWidth(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " \t"))
+}
+
+// fsharpShadowsInScope narrows a file's bindings to the names actually shadowed
+// inside one call block, which starts at startLine in the file and whose blank
+// lines hold no call site (the module-init and file-level blocks blank out the
+// members they span, so their live lines are exactly their own).
+//
+// A binding counts when any line the block holds code on lies within the
+// binding's scope. Within a single block that is as fine as this pass can see:
+// the call scanners report names, not offsets, so a binding a block writes and
+// then uses is applied to the whole block rather than to the lines below it.
+func fsharpShadowsInScope(bindings []fsharpShadowBinding, block string, startLine int) map[string]bool {
+	if len(bindings) == 0 {
+		return nil
+	}
+	if startLine < 1 {
+		startLine = 1
+	}
 	shadows := map[string]bool{}
-	for _, pattern := range []*regexp.Regexp{fsharpModuleAbbreviationPattern, fsharpValueBindingPattern} {
-		for _, match := range pattern.FindAllStringSubmatch(masked, -1) {
-			shadows[match[1]] = true
+	for offset, line := range strings.Split(block, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		at := startLine + offset
+		for _, binding := range bindings {
+			if shadows[binding.name] {
+				continue
+			}
+			if binding.line <= at && at <= binding.throughLine {
+				shadows[binding.name] = true
+			}
 		}
 	}
 	return shadows
 }
 
-// fsharpQualifierShadowed reports whether the file rebinds the name the
-// qualifier leads with. Only the FIRST segment can be shadowed: a local
+// fsharpQualifierShadowed reports whether the shadows in scope at the call site
+// rebind the name the qualifier leads with. Only the FIRST segment can be
+// shadowed: a local
 // `module Json = ...` rebinds `Json` and therefore `Json.Linq`, but says
 // nothing about `Newtonsoft.Json`.
 func fsharpQualifierShadowed(shadows map[string]bool, qualifier string) bool {
@@ -3612,12 +3700,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 		var fsharpModulePathBySymbolID map[string]string
 		var fsharpDeclaredModulePaths map[string]bool
-		var fsharpShadowedQualifiers map[string]bool
+		var fsharpShadowBindings []fsharpShadowBinding
 		if file.Language == "F#" && fileNeedsCallScan {
 			fsharpModulePathBySymbolID, fsharpDeclaredModulePaths = fsharpProjectModulePathBySymbolID, fsharpProjectDeclaredModulePaths
 			// Module abbreviations and value bindings are file-scoped, so this
 			// is read per file rather than merged into the project-wide map.
-			fsharpShadowedQualifiers = fsharpFileQualifierShadows(content)
+			// They keep their positions: which of them shadows a qualifier is a
+			// question each call block answers for itself, below.
+			fsharpShadowBindings = fsharpFileShadowBindings(content)
 		}
 		var jsSymbolNamespaces map[string]string
 		var jsScan *jsScanState
@@ -3786,6 +3876,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// name, but the qualifier is kept so a call naming a module this
 					// file declares stays inside it.
 					masked := maskFSharpBlockComments(callBlock)
+					// Shadowing is lexical, so only the file's bindings that
+					// reach THIS block's lines may un-qualify a call in it: a
+					// binding local to a sibling function, or written below the
+					// block, is not in scope here and leaves the qualifier alone.
+					fsharpShadowedQualifiers := fsharpShadowsInScope(fsharpShadowBindings, masked, from.StartLine)
 					// An unqualified call written with parentheses (`convert(x)`)
 					// has no dot and no pipe, so only the generic scanner above
 					// sees it and it reached no qualifier record. A block holding
@@ -4280,6 +4375,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// .fsx script, or in a module body) are bound to no symbol, so the
 					// per-symbol scan above never sees them.
 					masked := maskFSharpBlockComments(topLevel)
+					// The top-level block spans the file with every symbol's
+					// lines blanked, so its live lines are exactly the
+					// statement-position ones and a binding buried in a function
+					// body reaches none of them.
+					fsharpShadowedQualifiers := fsharpShadowsInScope(fsharpShadowBindings, masked, 1)
 					// Same as the per-symbol path: a parenthesised bare call is
 					// seen only by the generic scanner, so it has to clear the
 					// qualifier here too.
