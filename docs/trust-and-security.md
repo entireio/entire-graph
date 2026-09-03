@@ -208,9 +208,10 @@ these rules existed misses instead of re-emitting the paths it named.
   gives git's config a second name that resolves to `CLAUDE.md`, spells no
   `.git` component and stats as an ordinary regular file. An inode's other names
   cannot be read back from it, so a managed target is refused unless every name
-  it has is another managed target — which also refuses a hard link to a
-  harmless file, including one outside the project. Sharing an instruction file
-  between `AGENTS.md` and `CLAUDE.md` is what the symlink alias is for.
+  it has is `AGENTS.md` or `CLAUDE.md`. Those two instruction files may share
+  one inode; the generated `.entire/graph-agent.md` guide must remain distinct.
+  This also refuses a hard link to a harmless file, including one outside the
+  project. A symlink remains the preferred instruction-file alias.
 - `index --report <path>` writes a Markdown graph report to the path you give
   it.
 - `verify --record-baseline <path>` creates parent directories as needed and

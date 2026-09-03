@@ -325,6 +325,44 @@ func TestInitAgentsWritesSameFileOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestInitAgentsRegeneratesOwnerWriteOnlyGuide(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission semantics are required")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits do not constrain root")
+	}
+
+	repo := t.TempDir()
+	guideDir := filepath.Join(repo, ".entire")
+	if err := os.Mkdir(guideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	guidePath := filepath.Join(guideDir, "graph-agent.md")
+	if err := os.WriteFile(guidePath, []byte("stale guide\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(guidePath, 0o200); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(guidePath, 0o600) })
+
+	runInitAgentsForTest(t, repo)
+	info, err := os.Stat(guidePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o200 {
+		t.Fatalf("guide mode changed during regeneration: got %#o, want %#o", got, 0o200)
+	}
+	if err := os.Chmod(guidePath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFileForTest(t, guidePath); got != agentGuide {
+		t.Fatalf("write-only guide was not regenerated:\n%s", got)
+	}
+}
+
 func TestInitAgentsValidatePointerMarkersRequiresOneOrderedPair(t *testing.T) {
 	valid := []string{
 		"# No managed markers\n",

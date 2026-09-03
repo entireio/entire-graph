@@ -1731,7 +1731,11 @@ var errSharedInodeManagedTarget = errors.New("refusing to write through a hard l
 
 // ensureNoSharedInode is refuseSharedInode asked of a target that is not being written yet, so
 // that the refusal lands in the preflight rather than after the guide has already been created or
-// overwritten. A missing target has no inode to share and is left for the write to create.
+// overwritten. It opens write-only because a pre-existing guide may deliberately be owner-write-
+// only: regeneration needs that permission, but preflight must not reject it merely because it
+// cannot be read. The open has neither create nor truncate flags, so it is non-mutating; the
+// write-time guard remains the race-safe enforcement point. A missing target has no inode to
+// share and is left for the write to create.
 func ensureNoSharedInode(root *os.Root, name string, managed ...string) error {
 	resolved, err := resolveContainedName(root, name)
 	if err != nil {
@@ -1740,7 +1744,7 @@ func ensureNoSharedInode(root *os.Root, name string, managed ...string) error {
 		}
 		return err
 	}
-	file, err := root.Open(resolved)
+	file, err := root.OpenFile(resolved, os.O_WRONLY, 0)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil

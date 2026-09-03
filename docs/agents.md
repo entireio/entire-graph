@@ -96,11 +96,11 @@ target that is some other existing file — a `Makefile`, `.envrc`, or
 appended to it. A target that does not exist yet is still created, which is what
 the dangling-alias case below relies on, and a target this command wrote on an
 earlier run stays writable whatever it is named. Hard links are supported only
-between the managed targets themselves: `AGENTS.md`, `CLAUDE.md` and the guide
-may be hard-linked to one another and are updated once. A managed target whose
-inode carries any other name is refused before anything is written, because an
-inode's other names cannot be read back from the file — `ln .git/config
-CLAUDE.md` resolves to `CLAUDE.md`, spells no `.git` component and looks like an
+between `AGENTS.md` and `CLAUDE.md`, which may share one inode and are updated
+once. The generated `.entire/graph-agent.md` guide must remain a distinct file.
+A managed target whose inode carries any other name is refused before anything
+is written, because an inode's other names cannot be read back from the file —
+`ln .git/config CLAUDE.md` resolves to `CLAUDE.md`, spells no `.git` component and looks like an
 ordinary regular file — so a second name that reaches `config`, a hook or a
 build file cannot be told from a harmless one. Share an instruction file through
 a symlink instead. A directory, named pipe,
