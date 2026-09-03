@@ -159,12 +159,14 @@ func languagesShareTypes(from, target string) bool {
 // test name is a convention, not a type reference, so type interop is the wrong
 // question to ask of it. See testRelations.
 //
-// Import-resolved receiver calls are the other exception, for the same reason
-// in a different shape: an import whose module path resolves to the callee's
-// FILE is direct evidence the two files interoperate, and that outranks a
-// language-pair heuristic about naming types. See importedReceiverCallTargets,
-// which prefers these candidates and consults the unfiltered set only when it
-// names exactly one target.
+// Import-resolved calls are the other exception, for the same reason in a
+// different shape: an import whose module path resolves to the callee's FILE is
+// direct evidence the two files interoperate, and that outranks a language-pair
+// heuristic about naming types. Both spellings of such a call are excepted --
+// the qualified `frobnicate.compute()` in importedReceiverCallTargets and the
+// bare `compute()` in resolveCallTargets -- and both apply the same rule: prefer
+// these candidates, and consult the unfiltered set only when it names exactly
+// one target.
 func sharedTypeCandidates(from SymbolRecord, candidates []SymbolRecord) []SymbolRecord {
 	filtered := candidates[:0:0]
 	for _, candidate := range candidates {

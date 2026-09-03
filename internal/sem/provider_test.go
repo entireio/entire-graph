@@ -4235,10 +4235,10 @@ func TestTestsRelationCrossesLanguageBoundaries(t *testing.T) {
 	}
 }
 
-// importedReceiverCallsFrom returns the CALLS edges leaving `from` in the
-// snapshot of `repo`, so a test can assert on the target the receiver call
-// actually bound rather than on the whole graph.
-func importedReceiverCallsFrom(t *testing.T, repo, from string) []RelationRecord {
+// callRelationsFrom returns the CALLS edges leaving `from` in the snapshot of
+// `repo`, so a test can assert on the target a call actually bound rather than
+// on the whole graph.
+func callRelationsFrom(t *testing.T, repo, from string) []RelationRecord {
 	t.Helper()
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -4275,7 +4275,7 @@ def run():
     return frobnicate.compute(1)
 `)
 
-	calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
 	if len(calls) != 1 {
 		t.Fatalf("want one call edge out of run, got %#v", calls)
 	}
@@ -4311,7 +4311,7 @@ def run():
     return frobnicate.compute(1)
 `)
 
-		for _, call := range importedReceiverCallsFrom(t, repo, "app.py:function:run") {
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
 			if call.RelationScope != "external" {
 				t.Fatalf("ambiguous cross-language import must not resolve to a local symbol: %#v", call)
 			}
@@ -4333,7 +4333,98 @@ def run():
     return frobnicate.compute(1)
 `)
 
-		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "lib/frobnicate.py:function:compute") {
+			t.Fatalf("want the same-language module to win, got %#v", calls[0])
+		}
+	})
+}
+
+// A BARE call bound by an explicit import carries the same evidence as the
+// module-qualified spelling and must be treated the same way. `import
+// frobnicate; frobnicate.compute(1)` resolves to a locally parsed frobnicate.c
+// (TestImportedReceiverCallResolvesAcrossFFIBoundary), but `from frobnicate
+// import compute; compute(1)` did not: the candidates were narrowed by the
+// language-compatibility relation BEFORE the import tier ran, so the C
+// declaration was gone before its module path was ever compared and the call
+// degraded to an unresolved external target. That relation answers whether
+// source in one language may name a type DECLARED in another; an import that
+// resolves to the callee's file is direct evidence of interop and outranks it.
+func TestBareImportedCallResolvesAcrossFFIBoundary(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 {
+		t.Fatalf("want one call edge out of run, got %#v", calls)
+	}
+	if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("import-resolved bare call was not bound to the C unit: %#v", calls[0])
+	}
+	if calls[0].Resolution != "import_resolved" {
+		t.Fatalf("want import_resolved, got %q: %#v", calls[0].Resolution, calls[0])
+	}
+}
+
+// The bare-call import tier is the one place that reads PAST the language
+// filter, so it carries the same ambiguity rule as the qualified one: module
+// paths are matched by suffix, so a single import can match same-named
+// callables in several languages at once and nothing then says which it bound.
+// Two same-named declarations in different languages must therefore produce no
+// local edge rather than an arbitrary pick. Where the compatibility relation
+// does resolve a candidate it still wins outright, which is what leaves every
+// previously resolved call exactly as it was.
+func TestBareImportedCallSuppressesCrossLanguageAmbiguity(t *testing.T) {
+	t.Run("ambiguous across languages", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.rb", `def compute(value)
+  value + 1
+end
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("ambiguous cross-language import must not resolve to a local symbol: %#v", call)
+			}
+		}
+	})
+
+	t.Run("type-sharing candidate still wins", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.py", `def compute(value):
+    return value + 1
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
 		if len(calls) != 1 {
 			t.Fatalf("want one call edge out of run, got %#v", calls)
 		}

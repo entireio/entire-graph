@@ -2103,11 +2103,15 @@ func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, 
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
-	// candidates arrive ALREADY filtered to languages the caller can name: every
-	// call site wraps its symbolsByShortName lookup in sharedTypeCandidates,
-	// because that is where the referring symbol is known. Re-filtering here
-	// would be a second application of an idempotent function and, worse, would
-	// look like the guard when the call sites are the guard.
+	// candidates arrive UNFILTERED. The workspace short-name index is keyed by
+	// name alone, so every lookup into it is cross-language by construction and
+	// must be narrowed to declarations the caller could actually name; that
+	// narrowing happens HERE, not at the call sites, because one tier below
+	// deliberately reads the wider set. Keeping both is what lets the
+	// import-resolved tier prefer the compatible candidates and consult the rest
+	// only when they name exactly one target.
+	allCandidates := candidates
+	candidates = sharedTypeCandidates(from, candidates)
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
 		// A bare `name()` call resolves to a function, not a class method (methods
@@ -2143,6 +2147,29 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	if imported := resolveImportedCallTargets(name, from, candidates, importsByName, allowMethodTargets); len(imported) > 0 {
 		return imported
+	}
+	// An explicit import whose module path resolves to the callee's FILE is
+	// direct evidence that the two files interoperate, and that outranks the
+	// language-compatibility relation, which answers a different question --
+	// may source in language A name a type DECLARED in language B. Python/C is
+	// deliberately absent from the relation because the dynamic language never
+	// names the C struct, yet `from frobnicate import compute` beside a locally
+	// parsed frobnicate.c really does call its exported function. Filtering the
+	// candidates before this tier discarded that edge and replaced it with an
+	// unresolved external target, even though the module-QUALIFIED spelling of
+	// the very same call resolves -- see importedReceiverCallTargets, whose rule
+	// this mirrors.
+	//
+	// The evidence outranks the relation only while it is unambiguous. Module
+	// paths are matched by suffix, so one import can match same-named callables
+	// in several languages at once; nothing then says which of them it bound, so
+	// anything but a single target resolves to nothing rather than to a guess.
+	// The compatible candidates are still preferred whenever they resolve
+	// anything, which leaves every previously resolved call exactly as it was.
+	if len(allCandidates) != len(candidates) {
+		if imported := resolveImportedCallTargets(name, from, allCandidates, importsByName, allowMethodTargets); len(imported) == 1 {
+			return imported
+		}
 	}
 
 	// Same-package resolution: in Go every file in a directory is the same
@@ -3664,7 +3691,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
 					} else {
-						targets = resolveCallTargets(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), currentFileSymbols, callImportsByName, false)
+						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
 						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols, juliaLocalBindings)
 						genericSameContainerType := len(targets) == 1 && typeLikeKind(targets[0].Kind) &&
 							targets[0].FilePath == from.FilePath && targets[0].ContainerID == from.ContainerID
@@ -3759,7 +3786,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), currentFileSymbols, importsByName, false) {
+					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
 						if typeLikeKind(to.Kind) {
 							continue // construction, not an async call
 						}
@@ -3812,7 +3839,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if flow.Name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(flow.Name, from, sharedTypeCandidates(from, symbolsByShortName[flow.Name]), currentFileSymbols, importsByName, true) {
+					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName, true) {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}
@@ -4132,7 +4159,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else {
-						targets = resolveCallTargets(name, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[name]), currentFileSymbols, importsByName, false)
+						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false)
 					}
 					for _, to := range targets {
 						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
