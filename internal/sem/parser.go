@@ -3677,6 +3677,17 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		for _, definition := range cFamilyInlineTypeDefinitions(node, language) {
 			walkEntitiesScoped(definition, src, language, scope, inFunc, entities)
 		}
+		// An ANONYMOUS aggregate with a named instance --
+		// `union { int i; float f; } value;` -- declares no type symbol, so the
+		// loop above skips it and its members had no symbol at all: `i` and `f`
+		// simply vanished. Filing them under the enclosing type would be wrong,
+		// which is why that loop refuses them -- but the INSTANCE is where they
+		// are reached from (`packet.value.i`), so its scope is where they belong.
+		for _, body := range cFamilyAnonymousAggregateBodies(node, language) {
+			for _, instance := range fieldDeclNames(node, src) {
+				walkEntitiesScoped(body, src, language, qualify(scope, instance), inFunc, entities)
+			}
+		}
 		return
 	}
 	entity, ok := entityFromNode(node, src, language, scope)
@@ -7642,6 +7653,37 @@ func initializerTypeBodies(node *sitter.Node) []*sitter.Node {
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		walk(node.NamedChild(i))
+	}
+	return out
+}
+
+// cFamilyAnonymousAggregateBodies returns the bodies of the ANONYMOUS aggregates a
+// C/C++ member declaration defines inline: the `{ int i; float f; }` of
+// `union { int i; float f; } value;`.
+//
+// cFamilyInlineTypeDefinitions deliberately refuses these, because an anonymous
+// aggregate declares no type symbol and its members are not members of the
+// enclosing type. They are members of the INSTANCE, which is what the caller
+// scopes them to; without that they had no symbol anywhere.
+func cFamilyAnonymousAggregateBodies(node *sitter.Node, language string) []*sitter.Node {
+	if language != "C" && language != "C++" {
+		return nil
+	}
+	if node.Type() != "field_declaration" {
+		return nil
+	}
+	var out []*sitter.Node
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "struct_specifier", "union_specifier", "enum_specifier", "class_specifier":
+		default:
+			continue
+		}
+		body := child.ChildByFieldName("body")
+		if validNode(body) && !validNode(child.ChildByFieldName("name")) {
+			out = append(out, body)
+		}
 	}
 	return out
 }

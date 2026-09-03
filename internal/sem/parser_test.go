@@ -3495,3 +3495,35 @@ func TestCFamilyBitFieldWidthIsPartOfTheField(t *testing.T) {
 			oneBit.Signature, oneBit.BodyHash, plain.Signature, plain.BodyHash)
 	}
 }
+
+// TestAnonymousAggregateMembersAreScopedToTheirInstance pins where an anonymous
+// aggregate's members live.
+//
+// `union { int i; float f; } value;` declares no type symbol, so the inline-type descent
+// refuses it -- correctly, because `i` and `f` are not members of the enclosing struct.
+// They were then filed nowhere at all and vanished from the graph entirely: no symbol, no
+// CONTAINS relation, and a search for the field could not find it. They belong to the
+// INSTANCE, which is how the code reaches them (`packet.value.i`).
+func TestAnonymousAggregateMembersAreScopedToTheirInstance(t *testing.T) {
+	t.Parallel()
+
+	entities, _, _ := TreeSitterParser{}.ParseWithStatus("packet.cpp",
+		"struct Packet {\n  union { int i; float f; } value;\n  int plain;\n};\n")
+	names := map[string]string{}
+	for _, entity := range entities {
+		names[entity.Name] = entity.Kind
+	}
+
+	for _, want := range []string{"Packet.value", "Packet.value.i", "Packet.value.f", "Packet.plain"} {
+		if names[want] == "" {
+			t.Errorf("missing %q; got %v", want, names)
+		}
+	}
+	// Not members of the enclosing type: that is the filing the inline-type descent
+	// refuses, and this must not reintroduce it.
+	for _, unwanted := range []string{"Packet.i", "Packet.f"} {
+		if names[unwanted] != "" {
+			t.Errorf("%q was filed on the enclosing type: %v", unwanted, names)
+		}
+	}
+}
