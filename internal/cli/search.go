@@ -641,10 +641,35 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// own header cannot survive being re-classified from bytes alone.
 	quarantinedCluster, literalClusterForged := searchQuarantineLiteralCluster(response.LiteralCluster)
 	literalCluster := sem.RenderSearchLiteralCluster(quarantinedCluster)
+	// THE NOTICE IS DECIDED FROM THE BYTES THIS RENDERER ACTUALLY PRODUCED, so the sections are
+	// rendered into a buffer first and the disclosure is written in front of them.
+	//
+	// The notice says "some source lines quoted below", and the diet below means the response is
+	// not the payload: a ranked body past searchTextMaxFullBodies collapses to a locator and a
+	// related site prints as one line with no source at all. Asking the RESPONSE therefore warned
+	// about a line no reader could see, which is a false sentence and costs an honest repository
+	// the "pays nothing for it" property searchForgeryNotice is documented to have. It cannot be
+	// answered by predicting the diet either — a second copy of that decision is a copy that can
+	// disagree with the loop, and disagreeing in the other direction drops the notice off a body
+	// that IS printed. The rendered bytes are the one question no later step can outrun; it is the
+	// sink test writeAgentSearch already applies (searchPayloadDisclosesItsQuarantine), asked here
+	// in the other direction.
+	//
+	// searchResultsCarryForgedRecords stays in front as the allocation-free pre-filter it is: only
+	// a response holding a record-shaped line at all pays for the produced-line set.
+	var rendered strings.Builder
+	if err := writeTextSearchSections(&rendered, response, literalCluster); err != nil {
+		return err
+	}
+	forged := literalClusterForged
+	if !forged && searchResultsCarryForgedRecords(response.Results) {
+		forged = searchBodyCarriesQuarantinedLine(rendered.String(),
+			searchResponseQuarantinedLines(response.Results, nil))
+	}
 	// Ahead of everything, including the closed-set warning: it is the only block that says the
 	// payload's own bytes may be lying about who wrote them, and a reader who has already acted on
 	// a forged line will not come back for it.
-	if literalClusterForged || searchResultsCarryForgedRecords(response.Results) {
+	if forged {
 		if _, err := out.Write(searchForgeryNotice); err != nil {
 			return err
 		}
@@ -654,6 +679,15 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			return err
 		}
 	}
+	_, err := out.Write([]byte(rendered.String()))
+	return err
+}
+
+// writeTextSearchSections renders everything below the two leading notices, into a writer the
+// caller supplies rather than straight to the terminal sink. The split exists so the forgery
+// disclosure — which has to come FIRST — can be decided by what these sections printed; the caller
+// escapes the result once, exactly as it escaped the incremental writes before.
+func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, literalCluster []byte) error {
 	// The closed-set warning precedes everything, including the map: it is the only block that
 	// changes what the patch has to CONTAIN, and a reader who has already written the edit will not
 	// come back for it.
