@@ -1854,12 +1854,75 @@ func nameCallMayTargetMethod(lang string) bool {
 	return implicitReceiverLanguage(lang) || lang == "Rust"
 }
 
+// fsharpNamespaceScope is one `namespace X` declaration: the line it opens on
+// and the dotted path it nests everything below it under.
+type fsharpNamespaceScope struct {
+	line   int
+	prefix string
+}
+
+// A namespace declaration is a top-level form, so it starts at column 0. `rec`
+// is allowed between the keyword and the path (`namespace rec X.Y`).
+var fsharpNamespaceDeclPattern = regexp.MustCompile(`(?m)^namespace[ \t]+(?:rec[ \t]+)?([A-Za-z_][A-Za-z0-9_'.]*)[ \t]*\r?$`)
+
+// fsharpNamespaceScopes lists the namespaces an F# file opens, in source order.
+//
+// F# writes `namespace X` when a file's contents nest under a path without
+// introducing a module of that name, and the parser emits NO symbol for it --
+// a namespace holds no bindings of its own, so there is nothing to emit. The
+// container chain a module path is built from therefore starts at the module,
+// and `namespace X` + `module A` recorded its members under `A`. The call that
+// names them, `X.A.f`, then matched no declared module at all: it was not
+// recognised as a module qualifier, recorded bare, resolved unrestricted, and
+// bound to whichever same-named definition sat nearest -- or, once a second
+// module declared that name too, emitted no edge whatsoever despite naming its
+// target in full.
+//
+// Literals and comments are masked first, so a `namespace` line inside a
+// triple-quoted string or a `(* ... *)` block cannot open a scope. `namespace
+// global` is the root namespace and adds no prefix.
+func fsharpNamespaceScopes(content string) []fsharpNamespaceScope {
+	if !strings.Contains(content, "namespace") {
+		return nil
+	}
+	masked := maskFSharpLiteralsAndLineComments(maskFSharpBlockComments(content))
+	matches := fsharpNamespaceDeclPattern.FindAllStringSubmatchIndex(masked, -1)
+	scopes := make([]fsharpNamespaceScope, 0, len(matches))
+	for _, match := range matches {
+		prefix := masked[match[2]:match[3]]
+		if prefix == "global" {
+			prefix = ""
+		}
+		scopes = append(scopes, fsharpNamespaceScope{line: 1 + strings.Count(masked[:match[0]], "\n"), prefix: prefix})
+	}
+	return scopes
+}
+
+// fsharpNamespaceAt returns the namespace a line sits in -- the last one
+// declared at or above it. A file may open several in sequence, and anything
+// above the first declaration is in none.
+func fsharpNamespaceAt(scopes []fsharpNamespaceScope, line int) string {
+	prefix := ""
+	for _, scope := range scopes {
+		if scope.line > line {
+			break
+		}
+		prefix = scope.prefix
+	}
+	return prefix
+}
+
 // fsharpModulePaths maps each symbol in an F# file to the dotted path of the
 // modules it is declared in ("A", "LoadingScripts.ScriptGeneration"), and
 // returns the set of paths the file declares. F# files routinely hold several
 // modules, so a call written `A.convert` must be held to module A's members
 // instead of binding to whichever same-named definition sits nearest.
-func fsharpModulePaths(fileSymbols []SymbolRecord) (map[string]string, map[string]bool) {
+//
+// The file's namespace declarations are part of that path even though no
+// symbol carries them (see fsharpNamespaceScopes): a file-heading `module
+// A.B.C` already spells its whole path in the symbol's name, and `namespace X`
+// + `module A` must record the same `X.A` rather than a bare `A`.
+func fsharpModulePaths(fileSymbols []SymbolRecord, namespaces []fsharpNamespaceScope) (map[string]string, map[string]bool) {
 	byID := make(map[string]SymbolRecord, len(fileSymbols))
 	for _, symbol := range fileSymbols {
 		byID[symbol.ID] = symbol
@@ -1881,6 +1944,16 @@ func fsharpModulePaths(fileSymbols []SymbolRecord) (map[string]string, map[strin
 			container = parent.ContainerID
 		}
 		path := strings.Join(segments, ".")
+		// The namespace the declaration sits in prefixes the whole chain: it is
+		// a container the symbol set does not model, not one the walk above
+		// missed.
+		if prefix := fsharpNamespaceAt(namespaces, symbol.StartLine); prefix != "" {
+			if path == "" {
+				path = prefix
+			} else {
+				path = prefix + "." + path
+			}
+		}
 		pathBySymbolID[symbol.ID] = path
 		if symbol.Kind == "module" {
 			own := symbol.Name
@@ -1912,14 +1985,20 @@ func fsharpModulePaths(fileSymbols []SymbolRecord) (map[string]string, map[strin
 // instead of being held to an empty scope and losing its edge.
 //
 // Container chains never cross files, so merging the per-file maps is exact.
-func fsharpProjectModulePaths(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]string, map[string]bool) {
+func fsharpProjectModulePaths(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) (map[string]string, map[string]bool) {
 	pathBySymbolID := map[string]string{}
 	declared := map[string]bool{}
 	for _, file := range files {
 		if file.Language != "F#" {
 			continue
 		}
-		filePaths, fileDeclared := fsharpModulePaths(recordsByFile[file.Path])
+		// The file's namespace declarations carry no symbol, so the path map
+		// has to read them out of the source.
+		var namespaces []fsharpNamespaceScope
+		if content, ok := readContent(file.Path); ok {
+			namespaces = fsharpNamespaceScopes(content)
+		}
+		filePaths, fileDeclared := fsharpModulePaths(recordsByFile[file.Path], namespaces)
 		for id, path := range filePaths {
 			pathBySymbolID[id] = path
 		}
@@ -2006,7 +2085,16 @@ func fsharpResolvableQualifiers(qualifiers map[string]struct{}) []string {
 // `LoadingScripts.ScriptGeneration`, which is where `ScriptGeneration.build`
 // really points. The outermost scope is the empty one, so a qualifier naming a
 // top-level module resolves exactly rather than by suffix.
+//
+// A caller in no module at all -- a statement at file level, the normal shape
+// of an .fsx script -- has exactly one reading: the qualifier spelled from the
+// project root. It is the outermost step of the same walk with nothing above
+// it, so it is returned alone; concatenating it onto an empty caller path would
+// produce the leading-dot `.A`, which names nothing.
 func fsharpRelativeQualifierPaths(callerPath, qualifier string) []string {
+	if callerPath == "" {
+		return []string{qualifier}
+	}
 	paths := []string{callerPath + "." + qualifier}
 	for scope := callerPath; scope != ""; {
 		cut := strings.LastIndex(scope, ".")
@@ -2040,47 +2128,55 @@ func fsharpQualifiedScope(symbols []SymbolRecord, qualifier, callerPath string, 
 	// `ScriptGeneration` and `LoadingScripts.ScriptGeneration` declaring `f`, a
 	// plain suffix admits BOTH and the winner then depends on caller scope and
 	// source order. From inside `LoadingScripts`, `ScriptGeneration.f` names the
-	// nested one, and that reading is exact rather than ambiguous. A file-level
-	// caller has no enclosing module and passes "", keeping the old behaviour.
-	if callerPath != "" {
-		// Innermost reading first: a module the caller's own module declares
-		// shadows the outer binding of the same name. Concatenating
-		// unconditionally repeated the segment
-		// (`...ScriptGeneration.ScriptGeneration`), matched nothing, and
-		// dropped to the plain suffix, which admits the nested module AND an
-		// unrelated top-level `ScriptGeneration`; the winner was then the
-		// definition nearest the call site rather than the one written.
-		// Which reading applies is a property of the PROJECT's declarations, not
-		// of the symbol set being filtered. F# modules are project-scoped and the
-		// usual layout is one module per file, so the sibling a relative
-		// qualifier names is normally declared somewhere ELSE: with `Outer.A` in
-		// one file and `Outer.Caller` in another, picking the reading by which
-		// candidate sat in the caller's own file made `Outer.A` unmatchable, and
-		// the call fell through to the plain suffix -- which admits `Outer.A` AND
-		// an unrelated top-level `A`. That lost the call both ways: ambiguous
-		// candidates dropped the edge outright, and where the top-level `A` was
-		// declared in the caller's own file it matched the OUTERMOST reading and
-		// won, so the nearer scope the caller actually meant was shadowed by the
-		// farther one. Reading against `declared` also keeps the two scopes this
-		// is called on -- the project-wide candidates and the caller file's own
-		// symbols -- agreeing on ONE reading; choosing per set let the narrower
-		// one settle on an outer reading the wider one had already rejected, and
-		// the same-file branch of resolveCallTargets then won with it.
-		for _, exact := range fsharpRelativeQualifierPaths(callerPath, qualifier) {
-			if !declared[exact] {
-				continue
-			}
-			scoped := make([]SymbolRecord, 0, len(symbols))
-			for _, symbol := range symbols {
-				// Symbols with no known module path (another language's) are
-				// left alone, exactly as the suffix fallback below leaves them:
-				// an F# module qualifier says nothing about them.
-				if path, known := pathBySymbolID[symbol.ID]; !known || path == exact {
-					scoped = append(scoped, symbol)
-				}
-			}
-			return scoped
+	// nested one, and that reading is exact rather than ambiguous.
+	//
+	// A file-level caller passes "" and has exactly one reading, the qualifier
+	// itself -- and it was skipped entirely, so those calls went straight to the
+	// suffix. That is too loose: at file level `A.build` names the top-level
+	// module A, while the suffix admits a nested `Outer.A` as well, and the
+	// nearest-definition tie-break then bound the call to a module the source
+	// never named. Trying the exact reading first fixes that without touching
+	// the case the suffix exists for -- a qualifier naming a module only ever
+	// declared inside another one, reached through an `open` this does not
+	// model, still finds no exact reading and still falls through.
+	//
+	// Innermost reading first: a module the caller's own module declares
+	// shadows the outer binding of the same name. Concatenating
+	// unconditionally repeated the segment
+	// (`...ScriptGeneration.ScriptGeneration`), matched nothing, and
+	// dropped to the plain suffix, which admits the nested module AND an
+	// unrelated top-level `ScriptGeneration`; the winner was then the
+	// definition nearest the call site rather than the one written.
+	// Which reading applies is a property of the PROJECT's declarations, not
+	// of the symbol set being filtered. F# modules are project-scoped and the
+	// usual layout is one module per file, so the sibling a relative
+	// qualifier names is normally declared somewhere ELSE: with `Outer.A` in
+	// one file and `Outer.Caller` in another, picking the reading by which
+	// candidate sat in the caller's own file made `Outer.A` unmatchable, and
+	// the call fell through to the plain suffix -- which admits `Outer.A` AND
+	// an unrelated top-level `A`. That lost the call both ways: ambiguous
+	// candidates dropped the edge outright, and where the top-level `A` was
+	// declared in the caller's own file it matched the OUTERMOST reading and
+	// won, so the nearer scope the caller actually meant was shadowed by the
+	// farther one. Reading against `declared` also keeps the two scopes this
+	// is called on -- the project-wide candidates and the caller file's own
+	// symbols -- agreeing on ONE reading; choosing per set let the narrower
+	// one settle on an outer reading the wider one had already rejected, and
+	// the same-file branch of resolveCallTargets then won with it.
+	for _, exact := range fsharpRelativeQualifierPaths(callerPath, qualifier) {
+		if !declared[exact] {
+			continue
 		}
+		scoped := make([]SymbolRecord, 0, len(symbols))
+		for _, symbol := range symbols {
+			// Symbols with no known module path (another language's) are
+			// left alone, exactly as the suffix fallback below leaves them:
+			// an F# module qualifier says nothing about them.
+			if path, known := pathBySymbolID[symbol.ID]; !known || path == exact {
+				scoped = append(scoped, symbol)
+			}
+		}
+		return scoped
 	}
 	// Every F# symbol in the project has a known module path, so a qualified
 	// call is held to the module it names WHEREVER that module is declared.
@@ -3262,7 +3358,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	var fsharpProjectModulePathBySymbolID map[string]string
 	var fsharpProjectDeclaredModulePaths map[string]bool
 	if needsCallScan {
-		fsharpProjectModulePathBySymbolID, fsharpProjectDeclaredModulePaths = fsharpProjectModulePaths(files, recordsByFile)
+		fsharpProjectModulePathBySymbolID, fsharpProjectDeclaredModulePaths = fsharpProjectModulePaths(files, recordsByFile, readContent)
 	}
 
 	for _, file := range files {

@@ -16708,3 +16708,143 @@ module A =
 		t.Fatalf("`A.build` inside `Outer.Caller`/`Outer.Caller2` reached %v, want %v", reached, want)
 	}
 }
+
+func TestFSharpQualifierNamingAModuleInANamespace(t *testing.T) {
+	// `namespace X` nests everything below it under X, and F# emits no symbol
+	// for it -- a namespace holds no bindings of its own, so there is nothing
+	// to emit. The module path built from the container chain therefore started
+	// at the module and recorded `A` where the source says `X.A`, and the call
+	// naming that member in full, `X.A.convert`, matched no declared module at
+	// all: it recorded as an unqualified `convert`, resolved unrestricted, and
+	// with `Y.A` declaring the same name the ambiguity dropped the edge
+	// outright -- the one call form that named its target exactly was the one
+	// that lost it.
+	//
+	// The relative spelling lost the same way: from inside `X.Caller2`,
+	// `A.convert` read as the bare `A`, which BOTH namespaces' modules matched.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `namespace X
+
+module A =
+    let convert (x: int) = x * 2
+`)
+	writeFile(t, repo, "src/B.fs", `namespace Y
+
+module A =
+    let convert (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/Caller.fs", `module Caller
+
+let run (x: int) = X.A.convert x
+`)
+	writeFile(t, repo, "src/Sibling.fs", `namespace X
+
+module Caller2 =
+    let run2 (x: int) = A.convert x
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// Both callers name module `X.A`, whose `convert` is src/A.fs line 4 --
+	// never `Y.A`'s on src/B.fs line 4.
+	reached := map[string]string{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if to.Name != "convert" || (from.Name != "run" && from.Name != "run2") {
+			continue
+		}
+		reached[from.Name] = fmt.Sprintf("%s:%d", filepath.Base(to.FilePath), to.StartLine)
+	}
+	want := map[string]string{"run": "A.fs:4", "run2": "A.fs:4"}
+	if !reflect.DeepEqual(reached, want) {
+		t.Fatalf("`X.A.convert` / `A.convert` inside namespace X reached %v, want %v", reached, want)
+	}
+}
+
+func TestFSharpFileLevelQualifierNamesTheTopLevelModule(t *testing.T) {
+	// A statement at file level -- the normal shape of an .fsx script -- sits in
+	// no module, so it passes the empty caller path, and that reading skipped
+	// the exact-path walk entirely and went straight to the suffix. The suffix
+	// admits a NESTED `Outer.A` for the qualifier `A`, and here the nested one
+	// is declared in the script's own file, so the same-file branch of
+	// resolveCallTargets bound `A.build` to `Outer.A.build` -- a module the
+	// script never named -- instead of the top-level `A.build` it did.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Top.fs", `module A =
+    let build (x: int) = x + 1
+`)
+	writeFile(t, repo, "script.fsx", `module Outer =
+    module A =
+        let build (x: int) = x * 2
+
+A.build 3 |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// The caller is the FILE (a file-level statement belongs to no symbol), so
+	// only the target is named here.
+	var reached []string
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if from.ID != "" || to.Name != "build" {
+			continue
+		}
+		reached = append(reached, fmt.Sprintf("%s:%d", filepath.Base(to.FilePath), to.StartLine))
+	}
+	want := []string{"Top.fs:2"}
+	if !reflect.DeepEqual(reached, want) {
+		t.Fatalf("file-level `A.build` reached %v, want %v", reached, want)
+	}
+}
+
+func TestFSharpFileLevelQualifierStillFallsBackToTheSuffix(t *testing.T) {
+	// The case the suffix fallback exists for, held from a file-level caller: a
+	// qualifier naming a module only ever declared INSIDE another one, reached
+	// through an `open` this does not model. Nothing declares a top-level `A`,
+	// so `A.build` has no exact reading, and narrowing the file-level path to
+	// the exact reading must not cost this edge -- the suffix still finds
+	// `Outer.A.build`.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Sibling.fs", `module Outer =
+    module A =
+        let build (x: int) = x * 2
+`)
+	writeFile(t, repo, "script.fsx", `open Outer
+
+A.build 3 |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	var reached []string
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if from.ID != "" || to.Name != "build" {
+			continue
+		}
+		reached = append(reached, fmt.Sprintf("%s:%d", filepath.Base(to.FilePath), to.StartLine))
+	}
+	want := []string{"Sibling.fs:3"}
+	if !reflect.DeepEqual(reached, want) {
+		t.Fatalf("file-level `A.build` naming a module declared only inside `Outer` reached %v, want %v", reached, want)
+	}
+}
