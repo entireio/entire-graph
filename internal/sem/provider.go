@@ -20206,9 +20206,46 @@ func maskFSharpLiteralsAndLineComments(text string) string {
 	return maskFSharpSource(text, false, true)
 }
 
+// fsharpLiteral is the F# string form the masker is currently inside.
+//
+// `dollars` is the number of `$` sigils the literal opened with, and it is the
+// width of its interpolation delimiter: `$"{x}"` holds an expression in ONE
+// brace, `$$"""{{x}}"""` in two. Zero means the literal is not interpolated and
+// has no holes at all.
+type fsharpLiteral struct {
+	verbatim bool
+	triple   bool
+	dollars  int
+}
+
+// fsharpHole is an OPEN interpolation hole: the literal to resume when it
+// closes, how deeply bracketed the expression inside it currently is, and
+// whether the scan has passed the `,`/`:` that ends the expression and begins
+// the alignment/format text.
+type fsharpHole struct {
+	lit    fsharpLiteral
+	nested int
+	format bool
+}
+
 // maskFSharpSource walks F# source once, tracking the block comment depth and
 // the literal it is inside, and blanks whichever of the two the caller asked
 // for. Blanking is always length- and line-preserving.
+//
+// The holes of an INTERPOLATED string are the exception: they are not literal
+// text, they are expressions the compiler evaluates, so `$"{value |> normalize}"`
+// really does call normalize. Blanking the whole literal deleted that call and
+// every other one written in a hole. Only the literal text around a hole is
+// blanked; the expression inside it is left standing as the code it is, and a
+// hole is entered by leaving string state entirely, so a string nested inside
+// one (`$"{f (g "a |> helper")}"`) is masked by the same machine.
+//
+// What is deliberately NOT modelled: a run of `{` longer than the delimiter in
+// a `$$`-style raw literal is read as escapes plus one opener, which is the
+// rule F# states for `$` and merely extends to the wider delimiter; and the
+// alignment/format text after an unbracketed `,` or `:` is blanked as the
+// literal text it is, so a `::`, `:>` or `:?` operator is spelled out here to
+// keep a cons or a cast from being mistaken for one.
 func maskFSharpSource(text string, blankComments, blankLiterals bool) string {
 	out := []byte(text)
 	blank := func(from, to int) {
@@ -20218,13 +20255,26 @@ func maskFSharpSource(text string, blankComments, blankLiterals bool) string {
 	}
 	depth := 0
 	inString := false
-	verbatim := false
-	triple := false
+	var cur fsharpLiteral
+	var holes []fsharpHole
 	for i := 0; i < len(out); i++ {
 		if inString {
 			start := i
+			if cur.dollars > 0 && out[i] == '{' {
+				// A run of `{` inside an interpolated literal either OPENS A
+				// HOLE or is an escaped brace. Either way the braces themselves
+				// are literal syntax and go; what follows an opener is code.
+				run := fsharpBraceRun(out, i, '{')
+				blank(start, i+run)
+				i += run - 1
+				if fsharpHoleOpens(run, cur.dollars) {
+					holes = append(holes, fsharpHole{lit: cur})
+					inString = false
+				}
+				continue
+			}
 			switch {
-			case triple:
+			case cur.triple:
 				// A TRIPLE-QUOTED string is raw and ends only at the next
 				// `"""`, so the unescaped quotes it exists to hold are
 				// ordinary content. Ending it at the first one left the rest
@@ -20233,22 +20283,58 @@ func maskFSharpSource(text string, blankComments, blankLiterals bool) string {
 				// pipeline after it was blanked away.
 				if out[i] == '"' && i+2 < len(out) && out[i+1] == '"' && out[i+2] == '"' {
 					i += 2
-					inString, triple = false, false
+					inString = false
 				}
-			case !verbatim && out[i] == '\\' && i+1 < len(out):
+			case !cur.verbatim && out[i] == '\\' && i+1 < len(out):
 				// An escape consumes the next byte, so a `\"` does not end the
 				// string and expose the code after it to the comment scanner.
 				i++
 			case out[i] == '"':
-				if verbatim && i+1 < len(out) && out[i+1] == '"' {
+				if cur.verbatim && i+1 < len(out) && out[i+1] == '"' {
 					i++ // "" is one escaped quote inside a verbatim string
 					blank(start, i+1)
 					continue
 				}
-				inString, verbatim = false, false
+				inString = false
 			}
 			blank(start, i+1)
 			continue
+		}
+		if n := len(holes); n > 0 {
+			hole := &holes[n-1]
+			if out[i] == '}' && hole.nested == 0 && fsharpBraceRun(out, i, '}') >= hole.lit.dollars {
+				// The hole CLOSES: its delimiter is literal syntax, and the
+				// text after it is literal text again.
+				blank(i, i+hole.lit.dollars)
+				i += hole.lit.dollars - 1
+				cur, inString = hole.lit, true
+				holes = holes[:n-1]
+				continue
+			}
+			if hole.format {
+				blank(i, i+1)
+				continue
+			}
+			switch out[i] {
+			case '(', '[', '{':
+				hole.nested++
+			case ')', ']', '}':
+				if hole.nested > 0 {
+					hole.nested--
+				}
+			case ',', ':':
+				// `,` and `:` end the expression and begin the alignment and
+				// FORMAT text, which is literal: a date format's dots
+				// (`$"{d:yyyy.MM.dd}"`) would otherwise read as a qualified
+				// call. `::`, `:>` and `:?` are operators, not a format.
+				if out[i] == ':' && i+1 < len(out) && (out[i+1] == ':' || out[i+1] == '>' || out[i+1] == '?') {
+					i++
+					continue
+				}
+				hole.format = true
+				blank(i, i+1)
+				continue
+			}
 		}
 		switch {
 		case depth == 0 && out[i] == '/' && i+1 < len(out) && out[i+1] == '/':
@@ -20281,19 +20367,18 @@ func maskFSharpSource(text string, blankComments, blankLiterals bool) string {
 			// that never closed, and the rest of the block -- every real
 			// pipeline in it -- was blanked away, dropping those calls silently.
 			start := i
-			inString = true
-			verbatim = i > 0 && out[i-1] == '@'
+			prefix, lit := fsharpLiteralPrefix(out, i)
+			cur, inString = lit, true
 			// `@"""x"""` is a VERBATIM string whose `""` are escaped
 			// quotes, not a triple-quoted one, so the `@` is read first and
 			// only an unprefixed `"""` opens the raw form.
-			if !verbatim && i+2 < len(out) && out[i+1] == '"' && out[i+2] == '"' {
-				triple = true
+			if !cur.verbatim && i+2 < len(out) && out[i+1] == '"' && out[i+2] == '"' {
+				cur.triple = true
 				i += 2
 			}
-			if verbatim {
-				// The `@` belongs to the literal, not to the code around it.
-				blank(start-1, start)
-			}
+			// The `$` and `@` sigils belong to the literal, not to the code
+			// around it.
+			blank(prefix, start)
 			blank(start, i+1)
 		case i+1 < len(out) && out[i] == '(' && out[i+1] == '*':
 			depth++
@@ -20317,6 +20402,48 @@ func maskFSharpSource(text string, blankComments, blankLiterals bool) string {
 		}
 	}
 	return string(out)
+}
+
+// fsharpLiteralPrefix reads the `$` and `@` sigils in front of the quote at
+// `quote`, returning where they start and the literal form they describe.
+//
+// The number of `$` is load-bearing: it sets how many braces open a hole, so
+// `$$"""{{x}}"""` is read with a two-brace delimiter and its single braces stay
+// literal text. `@` may come on either side of the `$` (`$@"..."`, `@$"..."`).
+func fsharpLiteralPrefix(out []byte, quote int) (int, fsharpLiteral) {
+	var lit fsharpLiteral
+	start := quote
+	for start > 0 && (out[start-1] == '$' || out[start-1] == '@') {
+		start--
+		if out[start] == '$' {
+			lit.dollars++
+		} else {
+			lit.verbatim = true
+		}
+	}
+	return start, lit
+}
+
+// fsharpBraceRun counts the run of `brace` bytes starting at i.
+func fsharpBraceRun(out []byte, i int, brace byte) int {
+	run := 0
+	for i+run < len(out) && out[i+run] == brace {
+		run++
+	}
+	return run
+}
+
+// fsharpHoleOpens reports whether a run of `run` opening braces in a literal
+// whose delimiter is `dollars` wide opens an interpolation hole.
+//
+// In a one-`$` literal `{{` is an ESCAPED brace, so pairs cancel and only an
+// odd brace is left to open a hole -- `$"{{x}}"` prints `{x}` and calls
+// nothing. The same rule read at the wider delimiter covers `$$`.
+func fsharpHoleOpens(run, dollars int) bool {
+	if dollars == 1 {
+		return run%2 == 1
+	}
+	return run >= dollars
 }
 
 // fsharpCharLiteralEnd returns the index of the closing quote of the F#

@@ -1042,6 +1042,174 @@ func TestFSharpLiteralFormsCorruptTheCallGraph(t *testing.T) {
 	}
 }
 
+// TestFSharpInterpolationHolesKeepTheirCalls pins that the expression inside an
+// F# interpolated string is scanned as the code it is.
+//
+// The literal masker blanked interpolated strings whole, and the holes of one
+// are not literal text: `$"{value |> normalize}"` really does call normalize,
+// and every call written in a hole -- the idiomatic place to put one, since a
+// hole is the only way to get a computed value into an F# string -- was deleted
+// along with the text around it. Every interpolated form lost them: `$"..."`,
+// the verbatim `$@"..."`/`@$"..."`, the raw `$"""..."""`, and the wide-delimiter
+// `$$"""{{...}}"""`.
+//
+// The guards are the other direction, which is the defect this masker exists to
+// prevent: ordinary literal text must still be masked, whether it sits outside
+// a hole, between two of them, behind an escaped `{{`, inside a nested string
+// in a hole, or in the alignment/format text after a `:`.
+func TestFSharpInterpolationHolesKeepTheirCalls(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+		want       []string
+	}{
+		// The reported defect, in each interpolated form.
+		{
+			"a pipeline in an interpolation hole",
+			"let run v =\n    let s = $\"{v |> normalize}\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a qualified call in an interpolation hole",
+			"let run v =\n    let s = $\"x{A.normalize(v)}y\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a hole in a verbatim interpolated string",
+			"let run v =\n    let s = $@\"{v |> normalize}\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a hole in an interpolated string spelled @$",
+			"let run v =\n    let s = @$\"{v |> normalize}\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a hole in a triple-quoted interpolated string",
+			"let run v =\n    let s = $\"\"\"{v |> normalize}\"\"\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a doubled-brace hole in a $$ interpolated string",
+			"let run v =\n    let s = $$\"\"\"{{v |> normalize}}\"\"\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a hole spanning lines in a triple-quoted string",
+			"let run v =\n    let s = $\"\"\"\n{v |> normalize}\n\"\"\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		// Guards. The literal text of an interpolated string is still text, and
+		// reading any of these as code is the fabrication the masker prevents.
+		{
+			"a pipe in the text of an interpolated string",
+			"let s = $\"x |> helper\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a pipe in the text after a hole",
+			"let run v =\n    let s = $\"{v |> normalize} |> helper \"\n    v |> other\n",
+			[]string{"helper"}, []string{"normalize", "other"},
+		},
+		{
+			"an escaped brace is not a hole",
+			"let s = $\"{{x |> helper}}\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a single brace is text in a $$ interpolated string",
+			"let s = $$\"\"\"{x |> helper}\"\"\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a string nested inside a hole is still masked",
+			"let run v =\n    let s = $\"{v |> normalize (g \"a |> helper\")}\"\n    v |> other\n",
+			[]string{"helper"}, []string{"normalize", "other"},
+		},
+		// A format specifier is literal text, and a date format's dots would
+		// otherwise be read as a qualified call.
+		{
+			"a dotted format specifier is not a call",
+			"let s = $\"{dt:yyyy.MM.dd}\"\nlet run v = v |> other\n",
+			[]string{"dd", "MM"}, []string{"other"},
+		},
+		// ... but `::` is the cons operator, not the start of a format.
+		{
+			"a cons operator in a hole is not a format specifier",
+			"let run v =\n    let s = $\"{x :: xs |> normalize}\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			// The production composition order: the masker sees raw source, and
+			// the scanners mask literals themselves afterwards.
+			targets := fsharpCallTargetNames(fsharpCallTargets(maskFSharpBlockComments(testCase.source)))
+			for _, invented := range testCase.fabricated {
+				if _, ok := targets[invented]; ok {
+					t.Errorf("a call inside literal TEXT, %q, was scanned as a real one: %v", invented, targets)
+				}
+			}
+			for _, real := range testCase.want {
+				if _, ok := targets[real]; !ok {
+					t.Errorf("the real call %q was blanked away with the literal: %v", real, targets)
+				}
+			}
+		})
+	}
+}
+
+// TestFSharpInterpolationHolesReachTheCallGraph is the same defect at the graph
+// level: the call written in a hole is missing from CALLS entirely.
+//
+// One form per interpolated spelling, because each opens the literal
+// differently and the masker has to read the sigils to know how wide the
+// hole delimiter is.
+func TestFSharpInterpolationHolesReachTheCallGraph(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", "module A\n"+
+		"\n"+
+		"let normalize (value: int) = value + 1\n"+
+		"\n"+
+		"let other (value: int) = value * 2\n"+
+		"\n"+
+		"let interpolated (v: int) =\n"+
+		"    let s = $\"{v |> normalize}\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let verbatim (v: int) =\n"+
+		"    let s = $@\"{v |> normalize}\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let raw (v: int) =\n"+
+		"    let s = $\"\"\"{v |> normalize}\"\"\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let doubled (v: int) =\n"+
+		"    let s = $$\"\"\"{{v |> normalize}}\"\"\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let tail (v: int) =\n"+
+		"    v |> other\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caller := range []string{"interpolated", "verbatim", "raw", "doubled"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "normalize") {
+			t.Errorf("missing CALLS %s->normalize; the mask blanked an interpolation hole: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "other") {
+			t.Errorf("missing CALLS %s->other; a literal mask ate a real pipeline: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
 // TestFSharpStrandedMaskerCorruptsTheCallGraph is the same defect at the graph
 // level: the fabricated edge and the deleted one both reach CALLS.
 func TestFSharpStrandedMaskerCorruptsTheCallGraph(t *testing.T) {
@@ -1127,6 +1295,24 @@ func TestLiteralMaskersPreserveLengthAndLineStructure(t *testing.T) {
 		"@",
 		"let trailing = '",
 		"let escape = '\\''\nlet run v = v |> other\n",
+		// Interpolated forms: the masker now blanks the literal text AROUND a
+		// hole and leaves the hole itself, so both edges of every hole are a
+		// place a byte could go missing.
+		"let s = $\"{v |> normalize}\"\nlet run v = v |> other\n",
+		"let s = $@\"{v |> normalize}\"\n",
+		"let s = @$\"{v |> normalize}\"\n",
+		"let s = $\"\"\"{v |> normalize}\"\"\"\n",
+		"let s = $$\"\"\"{{v |> normalize}}\"\"\"\n",
+		"let s = $\"{{x |> helper}}\"\n",
+		"let s = $\"{dt:yyyy.MM.dd}\"\n",
+		"let s = $\"{v |> f (g \"a |> h\")}\"\n",
+		"let s = $\"\"\"\r\n{v |> f}\r\n\"\"\"\r\n",
+		"let s = $\"{v |> f\nlet t = 1\n",
+		"$\"{",
+		"$\"",
+		"$$\"\"\"{{",
+		"$",
+		"{}",
 		"x = \"a\" // b\nfunction f() { /* c */ return `t`; }\n\r\n",
 		"'",
 		"\"",
