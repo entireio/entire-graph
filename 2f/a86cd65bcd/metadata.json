@@ -1,0 +1,52 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "2fa86cd65bcd",
+  "strategy": "manual-commit",
+  "branch": "codex/pr161-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/call_scanners.go",
+    "internal/sem/julia_alias_flow_performance_test.go",
+    "internal/sem/julia_bindings.go",
+    "internal/sem/julia_callable_object_ownership_test.go",
+    "internal/sem/julia_data_flow_audit_test.go",
+    "internal/sem/julia_data_flows.go",
+    "internal/sem/julia_definition_head_audit_test.go",
+    "internal/sem/julia_flow_facts.go",
+    "internal/sem/julia_import_visibility_audit_test.go",
+    "internal/sem/julia_multiline_import_audit_test.go",
+    "internal/sem/julia_parameter_metadata_audit_test.go",
+    "internal/sem/julia_qualified_calls_test.go",
+    "internal/sem/julia_qualified_selector_audit_test.go",
+    "internal/sem/julia_quote_scope_audit_test.go",
+    "internal/sem/julia_scope_guard_audit_test.go",
+    "internal/sem/julia_structural_tokens.go",
+    "internal/sem/model.go",
+    "internal/sem/parameters.go",
+    "internal/sem/parser.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go",
+    "internal/sem/records_cache.go",
+    "internal/sem/search_cache.go",
+    "internal/sem/search_cache_test.go",
+    "internal/sem/testdata/fixtures/julia-r-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/quality_coverage.json",
+    "internal/sem/types.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/2f/a86cd65bcd/0/metadata.json",
+      "transcript": "/2f/a86cd65bcd/0/full.jsonl",
+      "compact_transcript": "/2f/a86cd65bcd/0/transcript.jsonl",
+      "content_hash": "/2f/a86cd65bcd/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1122183,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 87491072,
+    "output_tokens": 326284,
+    "api_call_count": 805
+  }
+}
