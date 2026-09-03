@@ -26,6 +26,21 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("name: test (windows-latest)", workflow)
         self.assertIn("windows-test-verify.result", workflow)
 
+    def test_windows_components_follow_the_existing_test_name_scheme(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        component_names = [
+            "compile and plan",
+            "shard ${{ matrix.shard }}",
+            "non-heavy packages",
+            "vet",
+            "coverage and integrity",
+        ]
+        for component_name in component_names:
+            self.assertIn(
+                f"name: test (windows-latest) / {component_name}", workflow
+            )
+        self.assertNotIn("name: Windows test /", workflow)
+
     def test_workflow_uses_only_ephemeral_hosted_runners_and_no_baseline(self):
         workflow = WORKFLOW.read_text(encoding="utf-8").lower()
         self.assertNotIn("self-hosted", workflow)

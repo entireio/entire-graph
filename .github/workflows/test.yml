@@ -55,7 +55,7 @@ jobs:
       - run: go test -timeout 30m ./...
 
   windows-test-prepare:
-    name: Windows test / compile and plan
+    name: test (windows-latest) / compile and plan
     runs-on: windows-latest
     timeout-minutes: 30
     outputs:
@@ -110,7 +110,7 @@ jobs:
           retention-days: 3
 
   windows-test-shards:
-    name: Windows test / shard ${{ matrix.shard }}
+    name: test (windows-latest) / shard ${{ matrix.shard }}
     needs: windows-test-prepare
     runs-on: windows-latest
     timeout-minutes: 105
@@ -158,7 +158,7 @@ jobs:
           retention-days: 3
 
   windows-test-other:
-    name: Windows test / non-heavy packages
+    name: test (windows-latest) / non-heavy packages
     needs: windows-test-prepare
     runs-on: windows-latest
     timeout-minutes: 40
@@ -200,7 +200,7 @@ jobs:
           retention-days: 3
 
   windows-test-vet:
-    name: Windows test / vet
+    name: test (windows-latest) / vet
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -214,7 +214,7 @@ jobs:
       - run: go vet ./...
 
   windows-test-verify:
-    name: Windows test / coverage and integrity
+    name: test (windows-latest) / coverage and integrity
     needs: [windows-test-prepare, windows-test-shards, windows-test-other]
     if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
     runs-on: ubuntu-latest
