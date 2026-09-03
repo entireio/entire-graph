@@ -2042,6 +2042,66 @@ func nameCallMayTargetMethod(lang string) bool {
 	return implicitReceiverLanguage(lang) || lang == "Rust"
 }
 
+// resolveJuliaSameContainerMethodCallTargets is a conservative fallback for
+// module-scoped Julia definitions, which the parser represents as methods.
+// found distinguishes "no module candidate" from ambiguous overloads, while
+// blocked prevents a shadowed name from falling through to an external edge.
+func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, sameFile []SymbolRecord, localBindings map[string]struct{}) (targets []resolvedCallTarget, found, blocked bool) {
+	if from.Language != "Julia" || from.Kind != "method" || from.Local || from.ContainerID == "" {
+		return nil, false, false
+	}
+	if localBindings == nil {
+		return nil, false, false
+	}
+	parameters := symbolFlowParameterNames(from)
+	if !from.parameterNamesKnown {
+		// A short-form signature includes its RHS; stop at the first balanced
+		// argument list so calls on the RHS are not mistaken for parameters.
+		if open := strings.Index(from.Signature, "("); open >= 0 {
+			if close := matchingParen(from.Signature, open); close > open {
+				parameters = parameterNames(from.Signature[:close+1])
+			}
+		}
+	}
+	if parameters[name] {
+		return nil, true, true
+	}
+	if _, shadowed := localBindings[name]; shadowed {
+		// Decline only this additive Julia-method fallback. Existing generic
+		// targets and external resolution must retain their pre-PR behavior.
+		return nil, false, false
+	}
+	hasNestedCallable := false
+	for _, to := range sameFile {
+		if to.ID != from.ID && to.FilePath == from.FilePath && to.Local && callableTargetKind(to.Kind) &&
+			from.StartLine <= to.StartLine && to.EndLine <= from.EndLine {
+			hasNestedCallable = true
+		}
+		if to.ID == from.ID || to.FilePath != from.FilePath || to.Language != from.Language || to.Name != name ||
+			to.Kind != "method" || to.ContainerID != from.ContainerID || !localReachable(from, to) {
+			continue
+		}
+		found = true
+		if to.Local {
+			return nil, true, true
+		}
+		targets = append(targets, resolvedCallTarget{
+			SymbolRecord: to,
+			Confidence:   0.92,
+			Reason:       "direct Julia call expression resolved to same-container symbol",
+			Resolution:   "exact",
+			Scope:        "file",
+		})
+	}
+	if hasNestedCallable {
+		return nil, false, false
+	}
+	if len(targets) != 1 {
+		return nil, found, false
+	}
+	return targets, true, false
+}
+
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
@@ -3392,7 +3452,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				return
 			}
 			block := symbolBlockFromLines(lines, from)
-			if file.Language == "JavaScript" || file.Language == "TypeScript" {
+			if file.Language == "JavaScript" || file.Language == "TypeScript" || file.Language == "Julia" {
 				if exact, ok := exactSymbolSource(content, from); ok {
 					block = exact
 				}
@@ -3455,8 +3515,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				callNames := callLikeIdentifiers(callBlock, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
+				var juliaLocalBindings map[string]struct{}
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
+					if len(callNames) > 0 && from.Kind == "method" && !from.Local && from.ContainerID != "" {
+						juliaLocalBindings = juliaLocalBindingNames(callBlock)
+					}
 				}
 				if file.Language == "Rust" {
 					for name := range rustTurbofishCallIdentifiers(callBlock) {
@@ -3582,6 +3646,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						continue
 					}
 					var targets []resolvedCallTarget
+					suppressExternal := false
 					if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
 						// Same-file namespace members first, then members of a
 						// merged same-file value declaration, then the terminal-name
@@ -3595,6 +3660,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						})
 					} else {
 						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
+						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols, juliaLocalBindings)
+						genericSameContainerType := len(targets) == 1 && typeLikeKind(targets[0].Kind) &&
+							targets[0].FilePath == from.FilePath && targets[0].ContainerID == from.ContainerID
+						if blocked {
+							targets = nil
+							suppressExternal = true
+						} else if found && !genericSameContainerType {
+							targets = juliaTargets
+							suppressExternal = len(juliaTargets) == 0
+						}
 					}
 					for _, to := range targets {
 						// A bare identifier passed as an argument may be a callback, but
@@ -3663,7 +3738,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							continue
 						}
 					}
-					if len(targets) == 0 {
+					if len(targets) == 0 && !suppressExternal {
 						for _, relation := range importedExternalCallRelationsForName(from, name, callImportsByName[name]) {
 							emit(relation)
 						}
