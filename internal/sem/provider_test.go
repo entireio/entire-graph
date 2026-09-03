@@ -13346,6 +13346,73 @@ module Caller =
 	}
 }
 
+func TestFSharpUnqualifiedCallKeepsItsOwnDefinition(t *testing.T) {
+	// `A.convert(x)` restricts the name `convert` to module A for the whole
+	// block it appears in. An unqualified `convert(x)` in that same block has no
+	// dot and no pipe, so only the generic `name(` scanner saw it and it
+	// recorded no qualifier of its own -- it inherited A's and bound to
+	// A.convert instead of the definition in scope. A bare PIPE
+	// (`x |> convert`) already cleared the restriction, so the two spellings of
+	// the same call disagreed. Both scan paths carried it: the per-symbol one
+	// and the file-level one.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Mixed.fs", `module A =
+    let convert (x: int) = x + 1
+
+module B =
+    let convert (x: int) = x * 2
+
+    let mix (x: int) = convert(x) + A.convert(x)
+`)
+	writeFile(t, repo, "script.fsx", `let convert (x: int) = x + 1
+
+module A =
+    let convert (x: int) = x * 2
+
+convert(1) |> ignore
+A.convert(2) |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// B.mix means B's own convert (line 5), not A's (line 2).
+	mixSeen := false
+	// The file-level statement means the file-level convert (line 1), not the
+	// one module A declares (line 4).
+	topLevelSeen := false
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "convert" {
+			continue
+		}
+		from, isSymbol := symbolsByID[relation.FromID]
+		switch {
+		case isSymbol && from.Name == "mix":
+			mixSeen = true
+			if to.StartLine != 5 {
+				t.Fatalf("bare convert(x) in module B resolved to the definition on line %d, want line 5", to.StartLine)
+			}
+		case !isSymbol && strings.Contains(relation.FromID, "script.fsx"):
+			topLevelSeen = true
+			if to.StartLine != 1 {
+				t.Fatalf("top-level convert(1) resolved to the definition on line %d, want line 1", to.StartLine)
+			}
+		}
+	}
+	if !mixSeen {
+		t.Fatalf("missing F# CALLS mix->convert: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !topLevelSeen {
+		t.Fatalf("missing top-level F# CALLS script.fsx->convert: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
 func TestSwiftProtocolDeclarationsEmitted(t *testing.T) {
 	// tree-sitter-swift emits protocol_declaration; an Objective-C-only gate
 	// on that node type silently dropped every Swift protocol (regression

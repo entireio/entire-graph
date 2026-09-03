@@ -3419,7 +3419,22 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// the generic `name(` one sees them. Resolution matches on the
 					// name, but the qualifier is kept so a call naming a module this
 					// file declares stays inside it.
-					for target := range fsharpCallTargets(maskFSharpBlockComments(callBlock)) {
+					masked := maskFSharpBlockComments(callBlock)
+					// An unqualified call written with parentheses (`convert(x)`)
+					// has no dot and no pipe, so only the generic scanner above
+					// sees it and it reached no qualifier record. A block holding
+					// both `A.convert(x)` and `convert(x)` was then restricted to
+					// A, and the bare site -- which meant this module's own
+					// `convert` -- resolved to A's. Record the generic names
+					// first, unqualified, exactly as a bare pipe target is
+					// recorded, so both spellings of a bare call clear the
+					// restriction alike. They are read from the masked block for
+					// the same reason the targets are: a call inside `(* ... *)`
+					// is not a call site.
+					for name := range callLikeIdentifiers(masked, file.Language) {
+						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, name, name)
+					}
+					for target := range fsharpCallTargets(masked) {
 						name := lastDottedCallSegment(target)
 						if name == "" {
 							continue
@@ -3881,7 +3896,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// Statement-position pipelines (`"x" |> normalize |> ignore` in an
 					// .fsx script, or in a module body) are bound to no symbol, so the
 					// per-symbol scan above never sees them.
-					for target := range fsharpCallTargets(maskFSharpBlockComments(topLevel)) {
+					masked := maskFSharpBlockComments(topLevel)
+					// Same as the per-symbol path: a parenthesised bare call is
+					// seen only by the generic scanner, so it has to clear the
+					// qualifier here too.
+					for name := range callLikeIdentifiers(masked, file.Language) {
+						recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, name, name)
+					}
+					for target := range fsharpCallTargets(masked) {
 						name := lastDottedCallSegment(target)
 						if name == "" {
 							continue
