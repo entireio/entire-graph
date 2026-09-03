@@ -1887,6 +1887,13 @@ func juliaCallerScope(from SymbolRecord) string {
 // its container for an ordinary definition, and itself for a module.
 func juliaScopeName(symbol SymbolRecord) string {
 	if symbol.Kind == "module" {
+		// The QUALIFIED name, because a child of a nested module records its
+		// container qualified too: `Outer.Inner`, not `Inner`. Comparing the
+		// short name rejected every module-body call to a child of a nested
+		// module before the same-container check could accept it.
+		if symbol.QualifiedName != "" {
+			return symbol.QualifiedName
+		}
 		return symbol.Name
 	}
 	return containerName(symbol.QualifiedName)
@@ -1972,9 +1979,12 @@ func juliaMaskDefinitionHeads(block string, names []string) string {
 		quoted := regexp.QuoteMeta(name)
 		for _, pattern := range []string{
 			`\bfunction\s+` + quoted + `\b`,
-			// Short form, and only where a single `=` assigns: `setup() == x` is
-			// a comparison, not a definition.
-			`\b` + quoted + `\s*\([^()]*\)\s*=(?:[^=]|$)`,
+			// Short form, masked THROUGH ITS RIGHT-HAND SIDE. `f() = helper()`
+			// occupies one line, so no body line is blanked for it, and masking
+			// only the head left `helper()` in the module's block -- crediting
+			// the module with every call the child's body makes. The `=` must be
+			// a single one: `f() == x` is a comparison, not a definition.
+			`\b` + quoted + `\s*\([^()]*\)\s*=([^=][^\n]*)?`,
 		} {
 			re, err := regexp.Compile(pattern)
 			if err != nil {

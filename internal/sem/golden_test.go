@@ -849,3 +849,49 @@ func TestJuliaOneLineModuleKeepsItsOwnCall(t *testing.T) {
 		t.Errorf("a definition head was read as a call: %v", edges)
 	}
 }
+
+// TestJuliaShortFormAndNestedModuleScope pins two shapes the module-body narrowing has to
+// get right.
+//
+// SHORT FORM: `f() = helper()` is one line, so no body line is blanked for it. Masking
+// only the definition HEAD left `helper()` in the module's block and credited the module
+// with a call its child makes. The mask now covers the right-hand side too.
+//
+// NESTED MODULE: a child of `Outer.Inner` records its container qualified, so comparing
+// the module's SHORT name rejected every module-body call inside a nested module before
+// the same-container check could accept it.
+func TestJuliaShortFormAndNestedModuleScope(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	for name, content := range map[string]string{
+		"sf.jl":   "module S\nhelper() = 1\nf() = helper()\nend\n",
+		"nest.jl": "module Outer\nmodule Inner\nfunction setup()\n    return 1\nend\nsetup()\nend\nend\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	edges := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" {
+			edges[symbolsByID[relation.FromID].QualifiedName+" -> "+symbolsByID[relation.ToID].QualifiedName] = true
+		}
+	}
+	if !edges["S.f -> S.helper"] {
+		t.Errorf("the short-form child's own call was lost: %v", edges)
+	}
+	if edges["S -> S.helper"] {
+		t.Errorf("the module was credited with a call its child makes: %v", edges)
+	}
+	if !edges["Inner -> Inner.setup"] {
+		t.Errorf("a nested module's own body call was rejected: %v", edges)
+	}
+}
