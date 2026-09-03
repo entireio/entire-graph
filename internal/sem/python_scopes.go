@@ -70,6 +70,7 @@ type pythonBindingScope struct {
 	parent    *pythonBindingScope
 	class     bool
 	comp      bool
+	header    bool
 	bindings  map[string][]pythonBindingEvent
 	locals    map[string]bool // function-local declarations shadow enclosing bindings everywhere
 	globals   map[string]bool
@@ -114,6 +115,9 @@ func (s *pythonBindingScope) importModules(name string, byteOffset int) []string
 	if modules := s.bindingAt(name, byteOffset); modules != nil || s.hasBindingAt(name, byteOffset) {
 		return modules
 	}
+	if s.header {
+		return s.parent.importModules(name, byteOffset)
+	}
 	return s.lexicalParent().importModules(name, byteOffset)
 }
 
@@ -130,6 +134,17 @@ func (s *pythonBindingScope) lexicalParent() *pythonBindingScope {
 		p = p.parent
 	}
 	return p
+}
+
+// headerNestedParent applies the class-body exception to scopes nested inside a
+// method header. Defaults and eager annotations execute in the class namespace,
+// while a nested lambda and the non-first portions of a comprehension use their
+// ordinary lexical scope and must skip class bindings.
+func (s *pythonBindingScope) headerNestedParent() *pythonBindingScope {
+	if s == nil || !s.header {
+		return s
+	}
+	return s.parent.lexicalContainer()
 }
 
 func (s *pythonBindingScope) lexicalContainer() *pythonBindingScope {
@@ -166,7 +181,8 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 			// Attribute their calls to the function while resolving names through
 			// the lexical parent; deliberately skip decorators to retain their
 			// established handling.
-			header := newPythonBindingScope(matched.ID, scope.lexicalContainer())
+			header := newPythonBindingScope(matched.ID, scope)
+			header.header = true
 			w.walk(node.ChildByFieldName("parameters"), header, depth+1)
 			w.walk(node.ChildByFieldName("return_type"), header, depth+1)
 			w.publish(header)
@@ -197,7 +213,7 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 		return
 	case "lambda":
 		if scope != nil {
-			child := newPythonBindingScope(scope.owner, scope)
+			child := newPythonBindingScope(scope.owner, scope.headerNestedParent())
 			parameters := node.ChildByFieldName("parameters")
 			if !validNode(parameters) {
 				for i := 0; i < int(node.NamedChildCount()); i++ {
@@ -278,9 +294,10 @@ func (w *pythonScopeWalker) walkComprehension(node *sitter.Node, parent *pythonB
 	if parent == nil {
 		return
 	}
-	child := newPythonBindingScope(parent.owner, parent)
+	child := newPythonBindingScope(parent.owner, parent.headerNestedParent())
 	child.comp = true
 	var result []*sitter.Node
+	firstIterable := true
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		part := node.NamedChild(i)
 		if part.Type() != "for_in_clause" {
@@ -290,7 +307,12 @@ func (w *pythonScopeWalker) walkComprehension(node *sitter.Node, parent *pythonB
 		// Each iterable is evaluated before its own target is bound. Later
 		// clauses and the result expression see that target in the isolated
 		// comprehension scope.
-		w.walk(part.ChildByFieldName("right"), child, depth+1)
+		if firstIterable {
+			w.walk(part.ChildByFieldName("right"), parent, depth+1)
+			firstIterable = false
+		} else {
+			w.walk(part.ChildByFieldName("right"), child, depth+1)
+		}
 		w.addTarget(child, part.ChildByFieldName("left"))
 		for j := 0; j < int(part.NamedChildCount()); j++ {
 			clause := part.NamedChild(j)

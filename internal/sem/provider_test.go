@@ -1393,12 +1393,74 @@ func TestPythonFunctionHeadersUseLexicalImportScope(t *testing.T) {
 def run(value=compute(1)):
     compute = lambda value: value
     return value
+
+def lambda_default(value=(lambda: compute(1))()):
+    return value
+
+def comprehension_default(value=[compute(1) for _ in range(1)]):
+    return value
 `)
 
 	calls := callRelationsFrom(t, repo, "app.py:function:run")
 	if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
 		t.Fatalf("function-header call must use the lexical import, not its body-local binding or same-name fallback: %#v", calls)
 	}
+	for _, caller := range []string{"lambda_default", "comprehension_default"} {
+		calls := callRelationsFrom(t, repo, "app.py:function:"+caller)
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("%s lost the module import inside its nested header expression: %#v", caller, calls)
+		}
+	}
+}
+
+func TestPythonMethodHeadersUseClassExecutionScopeOnlyWherePythonDoes(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "modulemod.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "classmod.c", "int compute(int value) { return value - 1; }\n")
+	writeFile(t, repo, "app.py", `from modulemod import compute
+
+class Service:
+    from classmod import compute
+
+    def direct(value=compute(1)):
+        return value
+
+    def annotated(value: compute()):
+        return value
+
+    def body():
+        return compute(1)
+
+    def lambda_default(value=(lambda: compute(1))()):
+        return value
+
+    def result_default(value=[compute(1) for _ in range(1)]):
+        return value
+
+    def filter_default(value=[value for value in range(1) if compute(1)]):
+        return value
+
+    def iterable_default(value=[value for value in compute(1)]):
+        return value
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTarget := func(caller, target string) {
+		t.Helper()
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", caller, "app.py", "compute", target) {
+			t.Fatalf("%s did not resolve compute through %s: %#v", caller, target, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+	assertTarget("direct", "classmod.c")
+	assertTarget("annotated", "classmod.c")
+	assertTarget("body", "modulemod.c")
+	assertTarget("lambda_default", "modulemod.c")
+	assertTarget("result_default", "modulemod.c")
+	assertTarget("filter_default", "modulemod.c")
+	assertTarget("iterable_default", "classmod.c")
 }
 
 func TestParenthesizedPythonFromImportKeepsScopedFFIAndImportScannersAligned(t *testing.T) {
