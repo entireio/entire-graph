@@ -102,21 +102,7 @@ var languageMatrix = []languageFixture{
 	{dir: "hcl", symbols: []string{"block:region", "block:ledger", "block:ledger_bucket"}, relations: []string{"DEFINES", "CONFIGURES", "RESOURCE_DEPENDS_ON"}},
 	{dir: "java", symbols: []string{"class:Ledger", "field:total", "method:add", "method:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "javascript", symbols: []string{"class:Ledger", "method:constructor", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
-	{
-		dir:     "julia",
-		symbols: []string{"module:Ledgers", "struct:Ledger", "method:add", "method:double"},
-		// Idiomatic Julia wraps a package in `module ... end`, which makes every
-		// definition module-qualified and therefore emitted as a method. Bare
-		// `add(...)` — Julia's only call syntax — is excluded from resolving to a
-		// method, so a module-scoped package produces no same-file CALLS.
-		relations: []string{"DEFINES", "CONTAINS", "CONSTRUCTS", "PARAM_TYPE", "USES_TYPE"},
-		callsGap:  "a Julia definition inside `module ... end` is emitted as a method, and bare calls are barred from resolving to methods",
-		// The whole gap reduces to one rule: bare-call resolution skips method
-		// targets for Julia. Reading it here rather than restating its
-		// consequence means the fix that admits Julia retires this entry on its
-		// own, and that a wrong diagnosis is caught instead of recorded.
-		callsGapHolds: func(languageMatrixResult) bool { return !nameCallMayTargetMethod("Julia") },
-	},
+	{dir: "julia", symbols: []string{"module:Ledgers", "struct:Ledger", "method:add", "method:double"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS", "PARAM_TYPE", "USES_TYPE"}},
 	{dir: "kotlin", symbols: []string{"class:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "lua", symbols: []string{"function:new", "function:add", "function:ledger_double"}, relations: []string{"DEFINES", "CALLS"}},
 	{
