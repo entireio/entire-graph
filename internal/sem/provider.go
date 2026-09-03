@@ -1984,16 +1984,53 @@ func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier, callerPat
 	return out
 }
 
-// fsharpModuleEmitsNameCalls reports whether a symbol's own block is a place F#
-// call names may be attributed to it.
+// fsharpModuleInitBlock returns an F# module's own source with every binding
+// nested under it blanked out, so what is left is the module's
+// initialisation code.
 //
-// An F# `module` block spans every binding declared under it, so a scan of the
-// module's own text sees the pipelines and calls written inside its FUNCTIONS.
-// Those calls belong to the functions, which emit them already; crediting the
-// module too produced a second edge from a symbol that never made the call --
-// `B.run |> helper` appeared as both `run -> helper` and `B -> helper`.
-func fsharpModuleEmitsNameCalls(from SymbolRecord) bool {
-	return !(from.Language == "F#" && from.Kind == "module")
+// A `module` block spans every binding declared under it, so a scan of the
+// module's whole text sees the pipelines and calls written inside its
+// FUNCTIONS; crediting the module too produced a second edge from a symbol
+// that never made the call -- `B.run |> helper` appeared as both
+// `run -> helper` and `B -> helper`. Withdrawing every module-attributed call
+// cured that but also dropped the calls the module really does make: a
+// statement-position expression or a `do` binding runs when the module
+// initialises, belongs to no nested symbol, and cannot be recovered by the
+// file-level pass, which masks the module's whole line range. Blanking the
+// nested symbols separates the two: the members' bodies -- and their
+// definition heads, which read as calls to the generic scanner -- go, the
+// module's own statements stay.
+//
+// Only symbols strictly inside the module are blanked: an enclosing module
+// spans this one entirely and would blank all of it, and a symbol sharing the
+// module's exact range would do the same.
+//
+// Line numbering is preserved (nested lines become empty, they are not
+// removed) so the block stays comparable to the unmasked one.
+func fsharpModuleInitBlock(lines []string, symbol SymbolRecord, fileSymbols []SymbolRecord) string {
+	start := maxInt(1, symbol.StartLine)
+	if start > len(lines) {
+		return ""
+	}
+	end := maxInt(start, symbol.EndLine)
+	if end > len(lines) {
+		end = len(lines)
+	}
+	own := append([]string(nil), lines[start-1:end]...)
+	for _, other := range fileSymbols {
+		if other.ID == symbol.ID {
+			continue
+		}
+		otherStart := maxInt(1, other.StartLine)
+		otherEnd := maxInt(otherStart, other.EndLine)
+		if otherStart < start || otherEnd > end || (otherStart == start && otherEnd == end) {
+			continue
+		}
+		for i := otherStart; i <= otherEnd; i++ {
+			own[i-start] = ""
+		}
+	}
+	return strings.Join(own, "\n")
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
@@ -3350,6 +3387,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			} else if fileNeedsCallScan && !typeLikeKind(from.Kind) {
 				callBlock := block
+				if file.Language == "F#" && from.Kind == "module" {
+					// A module's block spans its members, so scanning it whole
+					// credits the module with the calls its FUNCTIONS make.
+					// Its own initialisation code is what is left once those
+					// are blanked out, and it is the only scan that can see it.
+					callBlock = fsharpModuleInitBlock(lines, from, currentFileSymbols)
+				}
 				if file.Language == "Rust" {
 					callBlock = stripRustCodegenMacroBodies(block)
 				}
@@ -3507,9 +3551,6 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 				for _, name := range sortedKeysOf(callNames) {
 					if name == from.Name {
-						continue
-					}
-					if !fsharpModuleEmitsNameCalls(from) {
 						continue
 					}
 					// A container's block spans its members' definition lines, which

@@ -13485,6 +13485,69 @@ module D =
 	}
 }
 
+func TestFSharpModuleInitCallsSurvive(t *testing.T) {
+	// A module-level `do` binding is initialisation code: it runs when the
+	// module loads, it belongs to no nested binding, and the file-level pass
+	// cannot see it because that pass masks the module's whole line range.
+	// Withdrawing EVERY call attributed to an F# module -- the blunt cure for a
+	// module being credited with the calls its members make -- therefore took
+	// these real edges with it. Scanning the module's own source with its
+	// members blanked out keeps both halves honest, so this pins the three
+	// facts together: the init call is emitted, the member's call is NOT
+	// re-attributed to the module, and the member still emits it itself.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Init.fs", `module Registry =
+    let register (n: int) = n
+
+    let touch (n: int) = n
+
+    let dead (n: int) = n
+
+module Startup =
+    let boot (n: int) = Registry.touch n
+
+    (* disabled: 9 |> Registry.dead (* nested *) |> ignore *)
+    do Registry.register 1 |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	edges := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		edges[from.Name+"->"+to.Name] = true
+	}
+	// The `do` binding is the module's own call.
+	if !edges["Startup->register"] {
+		t.Errorf("module-init `do Registry.register 1` lost its CALLS edge: %v", sortedKeysOf(edges))
+	}
+	// `Registry.touch` is written inside `boot`, so it stays boot's alone: the
+	// module's block spans boot, and crediting the module too invents a caller.
+	if edges["Startup->touch"] {
+		t.Errorf("module Startup credited with boot's call to touch: %v", sortedKeysOf(edges))
+	}
+	if !edges["boot->touch"] {
+		t.Errorf("the real edge boot -> touch was withdrawn: %v", sortedKeysOf(edges))
+	}
+	// A module must not be credited with calling the definitions it declares:
+	// `let boot (n: int) = ...` is a definition head, not a call site.
+	for _, fabricated := range []string{"Startup->boot", "Registry->register", "Registry->touch", "Registry->dead"} {
+		if edges[fabricated] {
+			t.Errorf("a definition head was scanned as a call: %s in %v", fabricated, sortedKeysOf(edges))
+		}
+	}
+	// Nested `(* ... *)` masking has to hold on the module-init block too.
+	if edges["Startup->dead"] {
+		t.Errorf("a commented-out call was scanned as a module-init call: %v", sortedKeysOf(edges))
+	}
+}
+
 func sortedIntKeys(m map[int]bool) []int {
 	out := make([]int, 0, len(m))
 	for key := range m {
