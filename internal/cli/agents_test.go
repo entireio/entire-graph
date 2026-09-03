@@ -325,6 +325,44 @@ func TestInitAgentsWritesSameFileOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestInitAgentsRegeneratesOwnerWriteOnlyGuide(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission semantics are required")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits do not constrain root")
+	}
+
+	repo := t.TempDir()
+	guideDir := filepath.Join(repo, ".entire")
+	if err := os.Mkdir(guideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	guidePath := filepath.Join(guideDir, "graph-agent.md")
+	if err := os.WriteFile(guidePath, []byte("stale guide\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(guidePath, 0o200); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(guidePath, 0o600) })
+
+	runInitAgentsForTest(t, repo)
+	info, err := os.Stat(guidePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o200 {
+		t.Fatalf("guide mode changed during regeneration: got %#o, want %#o", got, 0o200)
+	}
+	if err := os.Chmod(guidePath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFileForTest(t, guidePath); got != agentGuide {
+		t.Fatalf("write-only guide was not regenerated:\n%s", got)
+	}
+}
+
 func TestInitAgentsValidatePointerMarkersRequiresOneOrderedPair(t *testing.T) {
 	valid := []string{
 		"# No managed markers\n",
@@ -2745,6 +2783,137 @@ func TestInitAgentsRefusesManagedTargetHardLinkedIntoGitDirectory(t *testing.T) 
 				t.Fatalf(".git/config was written through a hard link:\n%s", after)
 			}
 		})
+	}
+}
+
+// TestInitAgentsRefusesAHardLinkedTargetBeforeWritingAnything pins WHEN the hard-link refusal
+// lands, not just that it lands.
+//
+// The guard is enforced on the write, because an open handle is the only thing that can be asked
+// about an inode — but the first write that reaches it is the one that creates or overwrites the
+// guide. Measured on this branch before the preflight: `AGENTS.md` hard-linked to `.git/config`
+// printed "wrote .entire/graph-agent.md", left that file behind, and — where the user already had
+// a guide of their own — replaced its contents with the managed guide, all while exiting non-zero.
+// The error path does not call rollback, and rollback could not have restored an overwritten guide
+// in any case, so the only place this can be refused without damage is before the first write.
+//
+// The second case is also the one docs/agents.md used to promise worked. An inode's other names
+// cannot be enumerated from a handle, so a name that is not a managed target is refused whatever it
+// is — the docs now say so, and this pins the behavior they describe.
+func TestInitAgentsRefusesAHardLinkedTargetBeforeWritingAnything(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name string
+		// plant returns the path AGENTS.md is hard-linked to.
+		plant func(t *testing.T, repo string) string
+	}{
+		{
+			name: "second name in the git directory",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				victim := filepath.Join(repo, ".git", "config")
+				mkdirAllForTest(t, filepath.Dir(victim))
+				writeFileForTest(t, victim, gitAdministrativeConfig)
+				return victim
+			},
+		},
+		{
+			name: "second name is an ordinary file outside the project",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				outside := filepath.Join(t.TempDir(), "shared-AGENTS.md")
+				writeFileForTest(t, outside, "# shared house rules\n")
+				return outside
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, guide := range []string{"missing", "already the user's own"} {
+				t.Run(guide, func(t *testing.T) {
+					t.Parallel()
+					repo := t.TempDir()
+
+					victim := testCase.plant(t, repo)
+					if err := os.Link(victim, filepath.Join(repo, "AGENTS.md")); err != nil {
+						t.Skipf("hard links unavailable on this filesystem: %v", err)
+					}
+
+					guidePath := filepath.Join(repo, ".entire", "graph-agent.md")
+					const ownGuide = "# my own graph notes\n"
+					if guide != "missing" {
+						mkdirAllForTest(t, filepath.Dir(guidePath))
+						writeFileForTest(t, guidePath, ownGuide)
+					}
+
+					var out bytes.Buffer
+					runErr := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+					if runErr == nil {
+						t.Fatalf("init-agents wrote through an unaccounted hard link:\n%s", out.String())
+					}
+					if !errors.Is(runErr, errSharedInodeManagedTarget) {
+						t.Fatalf("want a hard-link refusal, got %v\n%s", runErr, out.String())
+					}
+					if out.Len() != 0 {
+						t.Fatalf("the refusal reported an install it then abandoned:\n%s", out.String())
+					}
+
+					if guide == "missing" {
+						if _, err := os.Lstat(guidePath); !os.IsNotExist(err) {
+							t.Fatalf("partial install: the guide exists after the refusal (%v)", err)
+						}
+					} else if got := readFileForTest(t, guidePath); got != ownGuide {
+						t.Fatalf("the user's own guide was replaced despite the refusal:\n%s", got)
+					}
+					if _, err := os.Lstat(filepath.Join(repo, "CLAUDE.md")); !os.IsNotExist(err) {
+						t.Fatalf("partial install: CLAUDE.md exists after the refusal (%v)", err)
+					}
+					if got := readFileForTest(t, victim); strings.Contains(got, agentPointerBegin) {
+						t.Fatalf("the shared inode was written through:\n%s", got)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestInitAgentsWritesThroughADirectorySpelledLikeTheGitDirectory keeps the case-folded `.git`
+// refusal from outliving the reason it folds.
+//
+// The fold exists because macOS and Windows resolve a repository-chosen link target
+// case-insensitively, so `CLAUDE.md -> .GIT/config` opens `.git/config` there and an exact
+// comparison would be a bypass — TestInitAgentsRefusesManagedTargetInsideGitDirectory pins that,
+// and skips where the spelling names nothing. On a case-sensitive filesystem `.GIT` is an ordinary
+// directory git has never used, and the alias below is a contained markdown landing like any other.
+// Measured before the filesystem check, on a case-sensitive volume: init-agents refused it as
+// "inside the repository's git directory", which it is not.
+func TestInitAgentsWritesThroughADirectorySpelledLikeTheGitDirectory(t *testing.T) {
+	t.Parallel()
+	skipIfSymlinksUnrepresentable(t)
+
+	repo := t.TempDir()
+	if caseInsensitiveFilesystem(t, repo) {
+		t.Skip("filesystem folds case, so `.GIT` IS the git directory here")
+	}
+	plantGitAdministrativeDirectory(t, filepath.Join(repo, ".git"))
+	mkdirAllForTest(t, filepath.Join(repo, ".GIT"))
+	const ownRules = "# team rules\n"
+	writeFileForTest(t, filepath.Join(repo, ".GIT", "rules.md"), ownRules)
+	symlinkForTest(t, filepath.Join(".GIT", "rules.md"), filepath.Join(repo, "AGENTS.md"))
+
+	var out bytes.Buffer
+	if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo}); err != nil {
+		t.Fatalf("init-agents refused an ordinary directory named .GIT: %v\n%s", err, out.String())
+	}
+	got := readFileForTest(t, filepath.Join(repo, ".GIT", "rules.md"))
+	if !strings.Contains(got, ownRules) || !strings.Contains(got, agentPointerBegin) {
+		t.Fatalf("the alias target was not updated in place:\n%s", got)
+	}
+	// The real git directory is beside it and must still be untouched.
+	if config := readFileForTest(t, filepath.Join(repo, ".git", "config")); config != gitAdministrativeConfig {
+		t.Fatalf("the git directory was written through:\n%s", config)
 	}
 }
 
