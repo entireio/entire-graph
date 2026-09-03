@@ -19617,11 +19617,17 @@ func scanPythonImports(content string) []string {
 			seen[module] = struct{}{}
 		}
 	}
-	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*(?:from\s+(\.*[A-Za-z0-9_\.]+)\s+import|import\s+([A-Za-z0-9_\.]+))`)) {
+	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`)) {
 		if strings.HasPrefix(module, ".") && strings.Trim(module, ".") == "" {
 			continue
 		}
 		add(module)
+	}
+	for _, statement := range pythonFromImportStatements(content) {
+		if strings.HasPrefix(statement.module, ".") && strings.Trim(statement.module, ".") == "" {
+			continue
+		}
+		add(statement.module)
 	}
 	runtimeImportCalls := []string{`importlib\s*\.\s*import_module`, `__import__`}
 	for _, match := range regexp.MustCompile(`(?m)^\s*import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
@@ -19635,12 +19641,12 @@ func scanPythonImports(content string) []string {
 			}
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*from\s+importlib\s+import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
-		if len(match) != 2 {
+	for _, statement := range pythonFromImportStatements(content) {
+		if statement.module != "importlib" {
 			continue
 		}
-		for _, imported := range strings.Split(match[1], ",") {
-			fields := strings.Fields(strings.TrimSpace(imported))
+		for _, imported := range statement.items {
+			fields := strings.Fields(imported)
 			if len(fields) == 1 && fields[0] == "import_module" {
 				runtimeImportCalls = append(runtimeImportCalls, regexp.QuoteMeta(fields[0]))
 			}
@@ -19664,15 +19670,12 @@ func scanPythonImports(content string) []string {
 			add(module)
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		module := strings.TrimSpace(match[1])
+	for _, statement := range pythonFromImportStatements(content) {
+		module := statement.module
 		if module == "" {
 			continue
 		}
-		for _, item := range strings.Split(match[2], ",") {
+		for _, item := range statement.items {
 			name, _ := parsePythonImportItem(item)
 			if name == "" || name == "*" {
 				continue
@@ -20300,6 +20303,141 @@ func importedPythonImportForms(content string) map[string]map[string]pythonImpor
 	return forms
 }
 
+type pythonFromImportStatement struct {
+	line   int
+	module string
+	items  []string
+}
+
+var pythonFromImportRE = regexp.MustCompile(`(?s)^from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import(?:[ \t]+(.*))?$`)
+
+// pythonFromImportStatements parses the parenthesized and one-line forms of
+// `from module import item [, item ...]`. The ordinary import scanners share
+// it with the AST scope walker so multiline bindings cannot diverge between
+// call resolution, import records, and router discovery.
+func pythonFromImportStatements(content string) []pythonFromImportStatement {
+	lines := strings.Split(content, "\n")
+	var statements []pythonFromImportStatement
+	for line := 0; line < len(lines); line++ {
+		startLine := line
+		text := strings.TrimLeft(lines[line], " \t")
+		if strings.HasPrefix(strings.TrimSpace(text), "#") {
+			continue
+		}
+		module, rawItems, ok := pythonFromImportParts(text)
+		if !ok {
+			continue
+		}
+		continued, validContinuation := pythonImportContinuation(rawItems)
+		if !validContinuation {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(rawItems), "(") {
+			depth := pythonImportParenDepth(rawItems)
+			for (depth > 0 || continued) && line+1 < len(lines) {
+				line++
+				rawItems += "\n" + lines[line]
+				depth = pythonImportParenDepth(rawItems)
+				continued, validContinuation = pythonImportContinuation(rawItems)
+				if !validContinuation {
+					break
+				}
+			}
+			if !validContinuation || depth != 0 || continued {
+				continue
+			}
+		} else if continued {
+			for continued && line+1 < len(lines) {
+				if pythonImportContinuationTargetEmpty(lines[line+1]) {
+					validContinuation = false
+					break
+				}
+				line++
+				rawItems += "\n" + lines[line]
+				continued, validContinuation = pythonImportContinuation(rawItems)
+				if !validContinuation {
+					break
+				}
+			}
+			if !validContinuation || continued {
+				continue
+			}
+		}
+		items := pythonFromImportItems(rawItems)
+		if len(items) > 0 {
+			statements = append(statements, pythonFromImportStatement{line: startLine, module: module, items: items})
+		}
+	}
+	return statements
+}
+
+func pythonFromImportParts(text string) (module, items string, ok bool) {
+	matches := pythonFromImportRE.FindStringSubmatch(text)
+	if len(matches) != 3 {
+		return "", "", false
+	}
+	return strings.TrimSpace(matches[1]), matches[2], true
+}
+
+func pythonImportParenDepth(items string) int {
+	depth := 0
+	for _, line := range strings.Split(items, "\n") {
+		line = strings.SplitN(line, "#", 2)[0]
+		depth += strings.Count(line, "(") - strings.Count(line, ")")
+	}
+	return depth
+}
+
+// pythonImportContinuation reports whether the final physical import line
+// explicitly continues and whether its backslash placement is syntactically
+// valid. A backslash before a comment does not continue Python source.
+func pythonImportContinuation(items string) (continued, valid bool) {
+	lines := strings.Split(items, "\n")
+	if len(lines) == 0 {
+		return false, true
+	}
+	last := lines[len(lines)-1]
+	code, _, hasComment := strings.Cut(last, "#")
+	slash := strings.LastIndex(code, "\\")
+	if slash < 0 {
+		return false, true
+	}
+	if strings.TrimSuffix(code[slash+1:], "\r") != "" {
+		return false, false
+	}
+	if hasComment {
+		return false, false
+	}
+	return true, true
+}
+
+func pythonImportContinuationTargetEmpty(line string) bool {
+	line = strings.TrimSpace(line)
+	return line == "" || strings.HasPrefix(line, "#")
+}
+
+func pythonFromImportItems(items string) []string {
+	var uncommented []string
+	for _, line := range strings.Split(items, "\n") {
+		line = strings.SplitN(line, "#", 2)[0]
+		line = strings.TrimSuffix(strings.TrimSpace(line), "\\")
+		uncommented = append(uncommented, line)
+	}
+	items = strings.TrimSpace(strings.Join(uncommented, "\n"))
+	if strings.HasPrefix(items, "(") {
+		items = strings.TrimSpace(strings.TrimPrefix(items, "("))
+		items = strings.TrimSpace(strings.TrimSuffix(items, ")"))
+	}
+	var out []string
+	for _, item := range strings.Split(items, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 // importedPythonNamesAndForms is the single parser shared by importedPythonNames
 // and importedPythonImportForms, so the module strings and their recorded forms
 // can never drift apart.
@@ -20312,11 +20450,29 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 		}
 		forms[local][module] = form
 	}
+	fromByLine := map[int]pythonFromImportStatement{}
+	for _, statement := range pythonFromImportStatements(content) {
+		fromByLine[statement.line] = statement
+	}
 	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
-	fromRe := regexp.MustCompile(`^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+(.+)$`)
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for lineNumber, text := range strings.Split(content, "\n") {
+		if statement, ok := fromByLine[lineNumber]; ok {
+			for _, item := range statement.items {
+				name, alias := parsePythonImportItem(item)
+				if name == "" || name == "*" {
+					continue
+				}
+				local := alias
+				if local == "" {
+					local = name
+				}
+				importedModule := pythonFromImportModuleSpec(statement.module, name)
+				imports[local] = append(imports[local], importedModule)
+				recordForm(local, importedModule, pythonFromImport)
+			}
+			continue
+		}
+		line := strings.TrimSpace(text)
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -20336,22 +20492,6 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 				recordForm(local, module, form)
 			}
 			continue
-		}
-		if matches := fromRe.FindStringSubmatch(line); len(matches) == 3 {
-			module := matches[1]
-			for _, item := range strings.Split(matches[2], ",") {
-				name, alias := parsePythonImportItem(item)
-				if name == "" || name == "*" {
-					continue
-				}
-				local := alias
-				if local == "" {
-					local = name
-				}
-				importedModule := pythonFromImportModuleSpec(module, name)
-				imports[local] = append(imports[local], importedModule)
-				recordForm(local, importedModule, pythonFromImport)
-			}
 		}
 	}
 	return imports, forms
@@ -23309,11 +23449,27 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 			Imported: strings.TrimSpace(imported),
 		})
 	}
+	fromByLine := map[int]pythonFromImportStatement{}
+	for _, statement := range pythonFromImportStatements(content) {
+		fromByLine[statement.line] = statement
+	}
 	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
-	fromRe := regexp.MustCompile(`^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+(.+)$`)
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for lineNumber, text := range strings.Split(content, "\n") {
+		if statement, ok := fromByLine[lineNumber]; ok {
+			for _, item := range statement.items {
+				name, alias := parsePythonImportItem(item)
+				if name == "" || name == "*" {
+					continue
+				}
+				local := alias
+				if local == "" {
+					local = name
+				}
+				add(local, statement.module, name)
+			}
+			continue
+		}
+		line := strings.TrimSpace(text)
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -23330,20 +23486,6 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 				add(local, module, "")
 			}
 			continue
-		}
-		if matches := fromRe.FindStringSubmatch(line); len(matches) == 3 {
-			module := matches[1]
-			for _, item := range strings.Split(matches[2], ",") {
-				name, alias := parsePythonImportItem(item)
-				if name == "" || name == "*" {
-					continue
-				}
-				local := alias
-				if local == "" {
-					local = name
-				}
-				add(local, module, name)
-			}
 		}
 	}
 	return imports

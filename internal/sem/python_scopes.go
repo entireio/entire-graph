@@ -159,8 +159,18 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 		if scope != nil {
 			scope.addName(w.fieldName(node, "name"), int(node.StartByte()), false)
 		}
-		child := w.functionScope(node, scope)
-		if child != nil {
+		matched, ok := w.functionSymbol(node)
+		if ok && scope != nil {
+			// Defaults and annotations execute while the definition is evaluated,
+			// before the function body scope (and its local declarations) exists.
+			// Attribute their calls to the function while resolving names through
+			// the lexical parent; deliberately skip decorators to retain their
+			// established handling.
+			header := newPythonBindingScope(matched.ID, scope.lexicalContainer())
+			w.walk(node.ChildByFieldName("parameters"), header, depth+1)
+			w.walk(node.ChildByFieldName("return_type"), header, depth+1)
+			w.publish(header)
+			child := w.functionScopeForSymbol(node, scope, matched)
 			w.walk(node.ChildByFieldName("body"), child, depth+1)
 			w.publish(child)
 		}
@@ -295,7 +305,7 @@ func (w *pythonScopeWalker) walkComprehension(node *sitter.Node, parent *pythonB
 	w.publish(child)
 }
 
-func (w *pythonScopeWalker) functionScope(node *sitter.Node, parent *pythonBindingScope) *pythonBindingScope {
+func (w *pythonScopeWalker) functionSymbol(node *sitter.Node) (SymbolRecord, bool) {
 	start, end := int(node.StartByte()), int(node.EndByte())
 	var matched SymbolRecord
 	found := false
@@ -319,8 +329,12 @@ func (w *pythonScopeWalker) functionScope(node *sitter.Node, parent *pythonBindi
 		}
 	}
 	if !found {
-		return nil
+		return SymbolRecord{}, false
 	}
+	return matched, true
+}
+
+func (w *pythonScopeWalker) functionScopeForSymbol(node *sitter.Node, parent *pythonBindingScope, matched SymbolRecord) *pythonBindingScope {
 	scope := newPythonBindingScope(matched.ID, parent.lexicalContainer())
 	w.addParameters(scope, node.ChildByFieldName("parameters"))
 	w.collectFunctionBindings(node.ChildByFieldName("body"), scope, 0)
@@ -586,13 +600,12 @@ func (w *pythonScopeWalker) importBindings(node *sitter.Node) []pythonScopedImpo
 	if node.Type() != "import_from_statement" {
 		return nil
 	}
-	parts := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(text, "from")), " import ", 2)
-	if len(parts) != 2 {
+	statements := pythonFromImportStatements(text)
+	if len(statements) != 1 {
 		return nil
 	}
-	module := strings.TrimSpace(parts[0])
 	var out []pythonScopedImport
-	for _, item := range strings.Split(parts[1], ",") {
+	for _, item := range statements[0].items {
 		name, alias := parsePythonImportItem(item)
 		if name == "" || name == "*" {
 			continue
@@ -601,7 +614,7 @@ func (w *pythonScopeWalker) importBindings(node *sitter.Node) []pythonScopedImpo
 		if local == "" {
 			local = name
 		}
-		out = append(out, pythonScopedImport{name: local, modules: []string{module}})
+		out = append(out, pythonScopedImport{name: local, modules: []string{statements[0].module}})
 	}
 	return out
 }

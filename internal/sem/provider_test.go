@@ -1382,6 +1382,123 @@ helper()
 	t.Fatalf("top-level scoped relative import lost its local call: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 }
 
+func TestPythonFunctionHeadersUseLexicalImportScope(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "other.py", `def compute(value):
+    return value - 1
+`)
+	writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(value=compute(1)):
+    compute = lambda value: value
+    return value
+`)
+
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("function-header call must use the lexical import, not its body-local binding or same-name fallback: %#v", calls)
+	}
+}
+
+func TestParenthesizedPythonFromImportKeepsScopedFFIAndImportScannersAligned(t *testing.T) {
+	content := `from frobnicate import (
+    compute, # imported callable
+    helper as local_helper, # alias
+) # closing delimiter
+`
+	if modules := importedPythonNames(content)["compute"]; len(modules) != 1 || modules[0] != "frobnicate" {
+		t.Fatalf("parenthesized from-import names = %#v", modules)
+	}
+	bindings := importedPythonBindings(content)["local_helper"]
+	if len(bindings) != 1 || bindings[0].Module != "frobnicate" || bindings[0].Imported != "helper" {
+		t.Fatalf("parenthesized from-import bindings = %#v", bindings)
+	}
+	if modules := scanPythonImports(content); !slices.Contains(modules, "frobnicate.compute") {
+		t.Fatalf("parenthesized from-import scan omitted member module: %#v", modules)
+	}
+	if modules := importedPythonNames("from\tother import value\n")["value"]; len(modules) != 1 || modules[0] != "other" {
+		t.Fatalf("tab-separated from-import names = %#v", modules)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "other.py", `def compute(value):
+    return value - 1
+`)
+	writeFile(t, repo, "app.py", content+`
+def run():
+    return compute(1)
+`)
+
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("parenthesized FFI import must outrank same-name fallback: %#v", calls)
+	}
+}
+
+func TestPythonFromImportParsersPreserveSourceOrder(t *testing.T) {
+	content := `from first import handler
+import second as handler
+`
+	if got := importedPythonNames(content)["handler"]; !slices.Equal(got, []string{"first", "second"}) {
+		t.Fatalf("from/import binding order = %#v", got)
+	}
+	bindings := importedPythonBindings(content)["handler"]
+	if len(bindings) != 2 || bindings[0].Module != "first" || bindings[0].Imported != "handler" || bindings[1].Module != "second" || bindings[1].Imported != "" {
+		t.Fatalf("router binding order = %#v", bindings)
+	}
+}
+
+func TestPythonFromImportParserHandlesExplicitContinuationAndRejectsMalformedKeywords(t *testing.T) {
+	content := "from frobnicate import compute, \\\n    helper as local_helper\n"
+	if modules := importedPythonNames(content)["compute"]; len(modules) != 1 || modules[0] != "frobnicate" {
+		t.Fatalf("continued from-import names = %#v", modules)
+	}
+	bindings := importedPythonBindings(content)["local_helper"]
+	if len(bindings) != 1 || bindings[0].Module != "frobnicate" || bindings[0].Imported != "helper" {
+		t.Fatalf("continued from-import bindings = %#v", bindings)
+	}
+	if modules := scanPythonImports(content); !slices.Contains(modules, "frobnicate.compute") {
+		t.Fatalf("continued from-import scan omitted member module: %#v", modules)
+	}
+	parenthesized := "from pkg import (\n    first, \\\n    # an ordinary parenthesized comment\n\n    second,\n)\n"
+	if names := importedPythonNames(parenthesized); !slices.Equal(names["first"], []string{"pkg"}) || !slices.Equal(names["second"], []string{"pkg"}) {
+		t.Fatalf("parenthesized continuation lost imports around comments: %#v", names)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "other.py", `def compute(value):
+    return value - 1
+`)
+	writeFile(t, repo, "app.py", content+`
+def run():
+    return compute(1)
+`)
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("continued FFI import must outrank same-name fallback: %#v", calls)
+	}
+
+	for _, malformed := range []string{
+		"from pkg importfoo\n",
+		"from pkg import_foo\n",
+		"from pkg import value, \\",
+		"from pkg import value, \\ # comment\nnext_item\n",
+		"from pkg import value, \\   \nnext_item\n",
+		"from pkg import value, \\\n# continuation target\nnext_item\n",
+		"from pkg import value, \\\n    \nnext_item\n",
+	} {
+		if names := importedPythonNames(malformed); len(names) != 0 {
+			t.Fatalf("malformed from-import created names %#v for %q", names, malformed)
+		}
+		if modules := scanPythonImports(malformed); len(modules) != 0 {
+			t.Fatalf("malformed from-import created modules %#v for %q", modules, malformed)
+		}
+	}
+}
+
 func TestPythonDottedImportedModuleCallsResolveToLocalSymbols(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/acme_pkg/__init__.py", "")
