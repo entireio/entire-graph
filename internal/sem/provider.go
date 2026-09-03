@@ -1952,6 +1952,39 @@ func fsharpResolvableQualifiers(qualifiers map[string]struct{}) []string {
 	return sortedKeysOf(qualifiers)
 }
 
+// fsharpRelativeQualifierPaths lists the module paths a relative qualifier may
+// name from inside callerPath, innermost enclosing scope first.
+//
+// A qualifier is read from the caller OUTWARDS, so every enclosing scope is a
+// reading, not just the caller's own module: inside `Root.Caller`, `A.f` means
+// the sibling `Root.A`. Trying only `callerPath + "." + qualifier` matched
+// nothing there and dropped to the plain suffix, which admits `Root.A` AND an
+// unrelated top-level `A` -- and `resolveCallTargets` then picked whichever sat
+// nearer the call site.
+//
+// The walk subsumes the caller's own path as a reading in its own right: from
+// inside `LoadingScripts.ScriptGeneration`, the scope `LoadingScripts` yields
+// `LoadingScripts.ScriptGeneration`, which is where `ScriptGeneration.build`
+// really points. The outermost scope is the empty one, so a qualifier naming a
+// top-level module resolves exactly rather than by suffix.
+func fsharpRelativeQualifierPaths(callerPath, qualifier string) []string {
+	paths := []string{callerPath + "." + qualifier}
+	for scope := callerPath; scope != ""; {
+		cut := strings.LastIndex(scope, ".")
+		if cut < 0 {
+			scope = ""
+		} else {
+			scope = scope[:cut]
+		}
+		if scope == "" {
+			paths = append(paths, qualifier)
+			break
+		}
+		paths = append(paths, scope+"."+qualifier)
+	}
+	return paths
+}
+
 // fsharpQualifiedScope drops the symbols of this file that the qualifier rules
 // out. Symbols from other files are untouched: the qualifier is only known to
 // name a module here, so it cannot speak for anywhere else.
@@ -1971,19 +2004,13 @@ func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier, callerPat
 	// caller has no enclosing module and passes "", keeping the old behaviour.
 	if callerPath != "" {
 		// Innermost reading first: a module the caller's own module declares
-		// shadows the outer binding of the same name. Then the caller's own
-		// path, for when it ALREADY ends with the qualifier -- inside
-		// `LoadingScripts.ScriptGeneration`, `ScriptGeneration.build` names
-		// that module's own build. Concatenating unconditionally repeated the
-		// segment (`...ScriptGeneration.ScriptGeneration`), matched nothing,
-		// and dropped to the plain suffix, which admits the nested module AND
-		// an unrelated top-level `ScriptGeneration`; the winner was then the
+		// shadows the outer binding of the same name. Concatenating
+		// unconditionally repeated the segment
+		// (`...ScriptGeneration.ScriptGeneration`), matched nothing, and
+		// dropped to the plain suffix, which admits the nested module AND an
+		// unrelated top-level `ScriptGeneration`; the winner was then the
 		// definition nearest the call site rather than the one written.
-		exactPaths := []string{callerPath + "." + qualifier}
-		if fsharpQualifierMatchesModulePath(callerPath, qualifier) {
-			exactPaths = append(exactPaths, callerPath)
-		}
-		for _, exact := range exactPaths {
+		for _, exact := range fsharpRelativeQualifierPaths(callerPath, qualifier) {
 			nearest := make([]SymbolRecord, 0, len(symbols))
 			for _, symbol := range symbols {
 				if symbol.FilePath == filePath && pathBySymbolID[symbol.ID] == exact {

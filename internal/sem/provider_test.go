@@ -16499,3 +16499,54 @@ let piped (a: int) (b: int) = (a, b) ||> combine
 		t.Fatalf("missing CALLS piped->combine for the tuple pipe `||>`: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 	}
 }
+
+func TestFSharpRelativeQualifierResolvesFromAnEnclosingScope(t *testing.T) {
+	// A relative qualifier is read from the caller OUTWARDS, one enclosing module
+	// at a time. Only the innermost reading (`callerPath + "." + qualifier`) and
+	// the caller's own path were tried, so a qualifier naming a SIBLING module --
+	// `A.build` from inside `Outer.Caller`, meaning `Outer.A` -- matched neither
+	// and dropped to the plain suffix, which admits `Outer.A` AND an unrelated
+	// top-level `A`. `resolveCallTargets` then picked by line distance, landing
+	// on the top-level definition the caller cannot mean.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Sibling.fs", `module Outer =
+    module A =
+        let build (x: int) = x * 2
+
+    module Caller =
+        let pad1 (x: int) = x
+        let pad2 (x: int) = x
+        let pad3 (x: int) = x
+        let pad4 (x: int) = x
+        let pad5 (x: int) = x
+        let run (x: int) = A.build x
+
+module A =
+    let build (x: int) = x + 1
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// From inside `Outer.Caller`, `A.build` names the sibling `Outer.A` (line 3),
+	// never the top-level `A` (line 14) that merely sits nearer the call.
+	seen := false
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if from.Name != "run" || to.Name != "build" {
+			continue
+		}
+		seen = true
+		if to.StartLine != 3 {
+			t.Fatalf("A.build from inside Outer.Caller resolved to the definition on line %d, want line 3", to.StartLine)
+		}
+	}
+	if !seen {
+		t.Fatalf("missing F# CALLS run->build: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
