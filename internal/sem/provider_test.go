@@ -12768,6 +12768,110 @@ end
 		}
 	}
 }
+func TestJuliaCallScopeIsTheEnclosingModuleNotTheImmediateContainer(t *testing.T) {
+	// The module gate asks whether a bare call can see a module-scoped
+	// definition, and the answer depends on the module the CALLER's code is
+	// written in -- which is not always the caller's immediate container. A
+	// Julia inner constructor is contained by its STRUCT (`Boxed.Boxed` under
+	// `struct Boxed`), so reading the immediate container made its scope
+	// `Boxed`, and every call it makes to its own module's definitions was
+	// dropped.
+	//
+	// Walking to the nearest MODULE is the fix, and walking no further is the
+	// other half of it: a nested `module` does not inherit its parent's names in
+	// Julia, so an ancestor-prefix rule would wrongly admit `NestInner.innerCaller
+	// -> NestOuter.outerHelper`. Both directions are pinned here, along with the
+	// cross-module guard the gate exists for.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Ctor.jl", `module Ctor
+
+function check(v)
+    return v
+end
+
+struct Boxed
+    x::Int
+    Boxed(x) = new(check(x))
+end
+
+end
+`)
+	writeFile(t, repo, "src/Nest.jl", `module NestOuter
+
+function outerHelper(x)
+    return x
+end
+
+module NestInner
+
+function innerCaller(y)
+    return outerHelper(y)
+end
+
+end
+
+end
+`)
+	writeFile(t, repo, "src/Guard.jl", `module GuardA
+
+function guardTarget(x)
+    return 1
+end
+
+end
+
+module GuardB
+
+function guardCaller(y)
+    return guardTarget(y)
+end
+
+end
+`)
+	writeFile(t, repo, "src/Flat.jl", `module Flat
+
+function flatHelper(x)
+    return x
+end
+
+function flatOuter(y)
+    function flatInner(z)
+        return flatHelper(z)
+    end
+    return flatInner(y)
+end
+
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	for _, want := range [][2]string{
+		// An inner constructor sits under the struct, and the struct under the
+		// module: its calls still reach the module's own definitions.
+		{"Boxed.Boxed", "Ctor.check"},
+		// A function nested in another function is recorded flat under the
+		// module, and must keep reaching it.
+		{"Flat.flatInner", "Flat.flatHelper"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Errorf("missing in-module Julia CALLS %s->%s: %#v", want[0], want[1], calls)
+		}
+	}
+	for _, forbidden := range [][2]string{
+		// A nested module does NOT see its parent's names.
+		{"NestInner.innerCaller", "NestOuter.outerHelper"},
+		// The guard the gate was added for: a bare call in one module must not
+		// bind a globally unique method of another.
+		{"GuardB.guardCaller", "GuardA.guardTarget"},
+	} {
+		if hasRelationByLastSegment(snapshot.Relations, "CALLS", forbidden[0], forbidden[1]) {
+			t.Errorf("cross-module Julia CALLS %s->%s must not resolve: %#v", forbidden[0], forbidden[1], calls)
+		}
+	}
+}
 
 func TestClojureSemanticExtraction(t *testing.T) {
 	// Clojure was promoted from inventory to the semantic tier (vendored

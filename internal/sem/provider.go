@@ -1899,7 +1899,75 @@ func juliaScopeName(symbol SymbolRecord) string {
 	return containerName(symbol.QualifiedName)
 }
 
-func juliaModuleScopedTargetReachable(from, to SymbolRecord) bool {
+// juliaModuleScope identifies the module a Julia symbol's own code is written
+// in: the module symbol's ID, for comparing scopes inside one file, and its
+// NAME, for the namespace comparison that has to survive a module spanning
+// several files through `include`.
+type juliaModuleScope struct {
+	id   string
+	name string
+}
+
+// juliaModuleScopesByID maps every Julia symbol to the module its code is
+// written in, found by walking the CONTAINER CHAIN to the nearest module rather
+// than reading the immediate container.
+//
+// The immediate container is not always the module. A Julia inner constructor is
+// contained by its struct -- `struct Boxed; Boxed(x) = new(check(x)); end` emits
+// `Boxed.Boxed` under `Boxed`, which is under the module -- so the immediate
+// container made the caller's scope `Boxed` and dropped every call it makes to
+// its own module's definitions.
+//
+// Stopping at the nearest module, rather than accepting any ancestor, is the
+// other half of the rule: a nested `module Inner` inside `module Outer` does NOT
+// see Outer's names in Julia, so `Inner.f` resolves in Inner and must keep
+// failing to reach `Outer.g`. A module ancestor ends the walk; a struct or
+// function ancestor does not.
+//
+// Built once over the whole symbol pass because the walk is otherwise repeated
+// per candidate call target.
+func juliaModuleScopesByID(symbolsByID map[string]SymbolRecord) map[string]juliaModuleScope {
+	scopes := make(map[string]juliaModuleScope, len(symbolsByID))
+	var resolve func(symbol SymbolRecord, depth int) juliaModuleScope
+	resolve = func(symbol SymbolRecord, depth int) juliaModuleScope {
+		if scope, ok := scopes[symbol.ID]; ok {
+			return scope
+		}
+		if symbol.Kind == "module" {
+			// The calls attributed to a module are the ones written in its own
+			// body, so a module is its own scope.
+			scope := juliaModuleScope{id: symbol.ID, name: juliaScopeName(symbol)}
+			scopes[symbol.ID] = scope
+			return scope
+		}
+		var scope juliaModuleScope
+		// The depth bound is belt and braces: container links form a tree, but a
+		// malformed one must not spin here. A symbol inside no module at all
+		// keeps the zero scope, which reaches nothing module-scoped -- the
+		// pre-existing behaviour for a top-level definition.
+		if parent, ok := symbolsByID[symbol.ContainerID]; ok && depth < len(symbolsByID) {
+			scope = resolve(parent, depth+1)
+		}
+		scopes[symbol.ID] = scope
+		return scope
+	}
+	for _, symbol := range symbolsByID {
+		resolve(symbol, 0)
+	}
+	return scopes
+}
+
+// juliaCallerModuleScope is the scope lookup with a fallback for a caller the
+// index does not carry: the immediate container, which IS the module for every
+// definition written directly in one.
+func juliaCallerModuleScope(from SymbolRecord, moduleScopeByID map[string]juliaModuleScope) juliaModuleScope {
+	if scope, ok := moduleScopeByID[from.ID]; ok {
+		return scope
+	}
+	return juliaModuleScope{id: juliaCallerScope(from), name: juliaScopeName(from)}
+}
+
+func juliaModuleScopedTargetReachable(from, to SymbolRecord, moduleScopeByID map[string]juliaModuleScope) bool {
 	if from.Language != "Julia" || to.Kind != "method" {
 		return true
 	}
@@ -1920,13 +1988,14 @@ func juliaModuleScopedTargetReachable(from, to SymbolRecord) bool {
 	// Module NAMES are compared rather than container ids, because a Julia
 	// module routinely spans files through `include` and each file gives it a
 	// different container id while it stays one namespace.
-	if toModule := containerName(to.QualifiedName); toModule != "" && toModule != juliaScopeName(from) {
+	scope := juliaCallerModuleScope(from, moduleScopeByID)
+	if toModule := containerName(to.QualifiedName); toModule != "" && toModule != scope.name {
 		return false
 	}
 	if to.FilePath != from.FilePath {
 		return true
 	}
-	return to.ContainerID == juliaCallerScope(from)
+	return to.ContainerID == scope.id
 }
 
 // juliaModuleOwnBlock returns a module's block with its nested definitions blanked
@@ -2287,13 +2356,13 @@ func juliaMaskDefinitionHeads(block string, names []string) string {
 	return block
 }
 
-func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
+func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, juliaModuleScopeByID map[string]juliaModuleScope, allowMethodTargets bool) []resolvedCallTarget {
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
 		// A bare `name()` call resolves to a function, not a class method (methods
 		// require a receiver and are resolved by receiverCallRelations) — matching
 		// a same-named method here is a false edge.
-		if to.ID == from.ID || to.Name != name || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) || !juliaModuleScopedTargetReachable(from, to) {
+		if to.ID == from.ID || to.Name != name || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) || !juliaModuleScopedTargetReachable(from, to, juliaModuleScopeByID) {
 			continue
 		}
 		local = append(local, resolvedCallTarget{
@@ -2385,7 +2454,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var remaining []SymbolRecord
 	for _, to := range candidates {
-		if to.ID != from.ID && callableTargetKind(to.Kind) && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) && juliaModuleScopedTargetReachable(from, to) {
+		if to.ID != from.ID && callableTargetKind(to.Kind) && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) && juliaModuleScopedTargetReachable(from, to, juliaModuleScopeByID) {
 			remaining = append(remaining, to)
 		}
 	}
@@ -3008,6 +3077,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	needsGlobalSymbolsByFile := needsGlobalSymbolsByShortName
 	symbolsByShortName := map[string][]SymbolRecord{}
 	symbolsByFile := map[string][]SymbolRecord{}
+	juliaSymbolsByID := map[string]SymbolRecord{}
 	childNamesByContainer := map[string]map[string]bool{}
 	methodsByContainer := map[string]map[string]SymbolRecord{}
 	fieldsByContainer := map[string]map[string]SymbolRecord{}
@@ -3157,6 +3227,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			if needsGlobalSymbolsByFile {
 				symbolsByFile[symbol.FilePath] = append(symbolsByFile[symbol.FilePath], symbol)
 			}
+			// Julia call resolution needs a caller's enclosing MODULE, which is
+			// reached by following container links; index the symbols the walk
+			// has to step through. Julia-only, so every other repo pays nothing.
+			if symbol.Language == "Julia" {
+				juliaSymbolsByID[symbol.ID] = symbol
+			}
 			if symbol.ContainerID != "" && (needsCallScan || needsReceiverCalls || needsFields || needsOverrides) {
 				if childNamesByContainer[symbol.ContainerID] == nil {
 					childNamesByContainer[symbol.ContainerID] = map[string]bool{}
@@ -3199,6 +3275,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 		}
 	}
+	juliaModuleScopeByID := juliaModuleScopesByID(juliaSymbolsByID)
 	// PHP declares return types in docblocks far more often than in native
 	// hints (WordPress uses docblocks exclusively), and the signature pass
 	// above cannot see them. Harvest '@return Type' from the docblock
@@ -3803,7 +3880,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
 					} else {
-						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
+						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, juliaModuleScopeByID, false)
 					}
 					for _, to := range targets {
 						// A bare identifier passed as an argument may be a callback, but
@@ -3888,7 +3965,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
+					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName, juliaModuleScopeByID, false) {
 						if typeLikeKind(to.Kind) {
 							continue // construction, not an async call
 						}
@@ -3919,7 +3996,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if flow.Name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName, true) {
+					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName, juliaModuleScopeByID, true) {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}
@@ -4208,7 +4285,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else {
-						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false)
+						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, juliaModuleScopeByID, false)
 					}
 					for _, to := range targets {
 						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
