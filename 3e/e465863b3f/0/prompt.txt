@@ -1,0 +1,57 @@
+Pull main. Check all open PRs and their respective Entire trails. Decide which to merge next.
+
+---
+
+Sort your table by suggested merge timing
+
+---
+
+Walk me through the first four, fix or dismiss open findings, review if the fixes create new findings, ask me for needed decisions. When done with the PR/trail, ask for my approval and then merge.
+
+---
+
+Strict refusal
+
+---
+
+1
+
+---
+
+Yes, approved
+
+---
+
+Just merged it. Move to the next one.
+
+---
+
+1
+
+---
+
+Approve the trail, then merge, then on to the next one
+
+---
+
+Are we reviewing a PR or rebuilding it all?
+
+---
+
+9000 lines? Are you nuts? What was the prompt I gave you?
+
+---
+
+What's Julia?
+
+---
+
+Ok, and it needs 9000 lines to fix what?
+
+---
+
+PR not ready doesn't help us either. Is there no cheaper fix?
+
+---
+
+Don't change 161. Instead, open a new branch from main, implement the fix, then open a new PR. Compare both PRs with each other, then recommend the next step.
