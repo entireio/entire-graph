@@ -3482,6 +3482,16 @@ func TestCFamilyBitFieldWidthIsPartOfTheField(t *testing.T) {
 		return Entity{}
 	}
 
+	// A bit-field's name may be WRAPPED: `unsigned (ready) : 1` puts it under a
+	// parenthesized declarator, where a direct-child match never saw it and the
+	// width was dropped again.
+	wrappedOne := fieldOf(t, "struct S { unsigned (ready) : 1; };")
+	wrappedTwo := fieldOf(t, "struct S { unsigned (ready) : 2; };")
+	if wrappedOne.Signature == wrappedTwo.Signature || wrappedOne.BodyHash == wrappedTwo.BodyHash {
+		t.Fatalf("a parenthesized bit-field lost its width: %q/%q vs %q/%q",
+			wrappedOne.Signature, wrappedOne.BodyHash, wrappedTwo.Signature, wrappedTwo.BodyHash)
+	}
+
 	oneBit := fieldOf(t, "struct S { unsigned ready : 1; };")
 	twoBits := fieldOf(t, "struct S { unsigned ready : 2; };")
 	plain := fieldOf(t, "struct S { unsigned ready; };")

@@ -4204,6 +4204,13 @@ func fieldBitfieldWidth(node *sitter.Node, src []byte, name string) string {
 		switch child.Type() {
 		case "field_identifier":
 			named = strings.TrimSpace(child.Content(src)) == name
+		case "pointer_declarator", "array_declarator", "reference_declarator",
+			"parenthesized_declarator", "function_declarator":
+			// A bit-field's name may be wrapped: `unsigned (ready) : 1` puts it
+			// under a parenthesized_declarator, so matching only a direct
+			// field_identifier never saw the name and dropped the width -- the
+			// same silent diff miss the width was added to close.
+			named = cFamilyMemberDeclaratorName(child, src) == name
 		case "bitfield_clause":
 			if named {
 				return " " + strings.TrimSpace(child.Content(src))
