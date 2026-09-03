@@ -2102,7 +2102,19 @@ func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, 
 	return targets, true, false
 }
 
-func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
+func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool, localBindings map[string]struct{}) []resolvedCallTarget {
+	// A name the caller's own body binds -- a parameter, an assignment target, a
+	// loop or context variable -- IS that binding at every call site in the body,
+	// so it is not the same-named file-level or imported callable and no tier
+	// below may bind it to one. The import tiers make this load-bearing rather
+	// than cosmetic: they read an explicit import as evidence that outranks the
+	// language-compatibility relation, which turns a shadowed name into a
+	// CONFIDENT cross-language edge to a foreign function the caller never
+	// reaches. Callers supply the set only for scopes where it means shadowing;
+	// at module scope a `def` binds the very symbol a call is meant to reach.
+	if _, shadowed := localBindings[name]; shadowed {
+		return nil
+	}
 	// candidates arrive UNFILTERED. The workspace short-name index is keyed by
 	// name alone, so every lookup into it is cross-language by construction and
 	// must be narrowed to declarations the caller could actually name; that
@@ -3489,6 +3501,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					block = exact
 				}
 			}
+			// Python binds a function-local name for the whole body, so every
+			// call site in this block that names one calls the binding, not a
+			// same-named callable elsewhere. Type-like blocks are excluded
+			// because a class body's `def`s are its methods, which the member
+			// paths resolve, not local variables.
+			var pythonLocalBindings map[string]struct{}
+			if file.Language == "Python" && !typeLikeKind(from.Kind) {
+				pythonLocalBindings = pythonLocalBindingNames(block)
+			}
 			if fileNeedsCallScan && !typeLikeKind(from.Kind) && file.Language == "Erlang" {
 				// Erlang call sites carry information the generic scanner cannot
 				// use: a bare call is module-local by language rule, and a remote
@@ -3691,7 +3712,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
 					} else {
-						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
+						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false, pythonLocalBindings)
 						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols, juliaLocalBindings)
 						genericSameContainerType := len(targets) == 1 && typeLikeKind(targets[0].Kind) &&
 							targets[0].FilePath == from.FilePath && targets[0].ContainerID == from.ContainerID
@@ -3786,7 +3807,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
+					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName, false, pythonLocalBindings) {
 						if typeLikeKind(to.Kind) {
 							continue // construction, not an async call
 						}
@@ -3839,7 +3860,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if flow.Name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName, true) {
+					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName, true, pythonLocalBindings) {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}
@@ -4159,7 +4180,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else {
-						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false)
+						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false, nil)
 					}
 					for _, to := range targets {
 						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
