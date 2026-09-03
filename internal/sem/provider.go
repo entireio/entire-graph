@@ -2102,23 +2102,28 @@ func juliaBlankAfterClosingEnd(block string) string {
 }
 
 // juliaBlankThroughClosingEnd blanks a child's final line up to and including
-// the `end` that closes it, and preserves whatever follows.
+// the `end` that closes it, and preserves whatever follows. `openDepth` is how
+// many blocks the child's EARLIER lines leave open -- at least one, the child's
+// own definition.
 //
 // Depth is counted rather than stopping at the first `end`, because that `end`
 // may close a block nested inside the child (`  if c; helper(); end; end; g()`)
 // and stopping there would credit the enclosing module with the child's own
-// calls. Counting reaches the `end` that returns to depth zero -- the child's --
-// so only the text after it survives.
+// calls. The nesting is not all visible on this line: a multi-line child ending
+// `end; helper(); end; g()` opens its `if` on an earlier one, so counting from a
+// fixed depth of one cut at the `if`'s `end` and handed `helper()` -- the
+// child's own call -- to the module. Counting down from `openDepth` reaches the
+// `end` that closes the child, so only the text after it survives.
 //
 // The scan runs on a copy whose string and comment bodies are blanked, so an
 // `end` inside `"..."` or `#= ... =#` is not read as a terminator; both
 // strippers preserve length, so an offset found here indexes the same byte in
 // the original.
-func juliaBlankThroughClosingEnd(line string) string {
+func juliaBlankThroughClosingEnd(line string, openDepth int) string {
 	scan := maskJuliaBlockComments(stripCodeLiteralsAndComments(line))
 	openers := regexp.MustCompile(`\b(function|if|for|while|begin|let|do|try|quote|struct|module|macro)\b`)
 	end := regexp.MustCompile(`\bend\b`)
-	depth := 0
+	depth := openDepth
 	cursor := 0
 	for cursor < len(scan) {
 		nextOpen := openers.FindStringIndex(scan[cursor:])
@@ -2131,18 +2136,67 @@ func juliaBlankThroughClosingEnd(line string) string {
 			cursor += nextOpen[1]
 			continue
 		}
-		if depth == 0 {
-			cut := cursor + nextEnd[1]
-			return sameLengthReplacement("", cut) + line[cut:]
-		}
 		depth--
 		cursor += nextEnd[1]
+		if depth <= 0 {
+			return sameLengthReplacement("", cursor) + line[cursor:]
+		}
 	}
 	return sameLengthReplacement("", len(line))
 }
 
+// juliaOpenBlockDepth counts the block openers `text` leaves unclosed, so a scan
+// resuming on a later line knows which `end` closes what. It reads the same
+// blanked copy as the scans it feeds, so an `end` inside a string or a comment
+// does not close anything.
+func juliaOpenBlockDepth(text string) int {
+	scan := maskJuliaBlockComments(stripCodeLiteralsAndComments(text))
+	openers := regexp.MustCompile(`\b(function|if|for|while|begin|let|do|try|quote|struct|module|macro)\b`)
+	end := regexp.MustCompile(`\bend\b`)
+	depth := 0
+	cursor := 0
+	for cursor < len(scan) {
+		nextOpen := openers.FindStringIndex(scan[cursor:])
+		nextEnd := end.FindStringIndex(scan[cursor:])
+		switch {
+		case nextOpen == nil && nextEnd == nil:
+			cursor = len(scan)
+		case nextEnd == nil || (nextOpen != nil && nextOpen[0] < nextEnd[0]):
+			depth++
+			cursor += nextOpen[1]
+		default:
+			depth--
+			cursor += nextEnd[1]
+		}
+	}
+	if depth < 1 {
+		return 1
+	}
+	return depth
+}
+
+// juliaJoinLines joins lines[start:stop) with the out-of-range ends clamped away,
+// so a child whose recorded span runs past the block it was cut from still yields
+// the text that is actually there.
+func juliaJoinLines(lines []string, start, stop int) string {
+	if start < 0 {
+		start = 0
+	}
+	if stop > len(lines) {
+		stop = len(lines)
+	}
+	if start >= stop {
+		return ""
+	}
+	return strings.Join(lines[start:stop], "\n")
+}
+
 func juliaModuleOwnBlock(from SymbolRecord, block string, fileSymbols []SymbolRecord) string {
 	lines := strings.Split(block, "\n")
+	// The closing-end scan below needs the child's earlier lines to know how deep
+	// it already is, and `lines` is blanked as children are processed, so the
+	// depth is measured against an untouched copy.
+	original := strings.Split(block, "\n")
 	var childNames []string
 	var oneLineChildren []string
 	for _, child := range fileSymbols {
@@ -2174,8 +2228,11 @@ func juliaModuleOwnBlock(from SymbolRecord, block string, fileSymbols []SymbolRe
 				// blanking the line whole deleted a real module-to-setup call
 				// (and left the same call inside the child's own block, so it
 				// was credited to the child instead). A SymbolRecord carries no
-				// column, so the cut point is found by scanning.
-				lines[index] = juliaBlankThroughClosingEnd(lines[index])
+				// column, so the cut point is found by scanning -- from the depth
+				// the child's earlier lines leave open, because an `end` on this
+				// line may close one of THOSE blocks rather than the child.
+				lines[index] = juliaBlankThroughClosingEnd(lines[index],
+					juliaOpenBlockDepth(juliaJoinLines(original, child.StartLine-from.StartLine, child.EndLine-from.StartLine)))
 				continue
 			}
 			lines[index] = ""

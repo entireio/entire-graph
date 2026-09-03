@@ -12595,14 +12595,60 @@ func TestJuliaClosingEndScanCountsDepthAndIgnoresLiterals(t *testing.T) {
 	// one: an `end` closing a block nested inside the child would hand the
 	// child's own calls to the module. An `end` inside a string is not a
 	// terminator at all.
-	for _, tc := range []struct{ in, want string }{
-		{"end; setup()", "   ; setup()"},
-		{"  if c; helper(); end; end; g()", "                          ; g()"},
-		{`  x = "end"; end; g()`, "                ; g()"},
+	for _, tc := range []struct {
+		in        string
+		openDepth int
+		want      string
+	}{
+		{"end; setup()", 1, "   ; setup()"},
+		{"  if c; helper(); end; end; g()", 1, "                          ; g()"},
+		{`  x = "end"; end; g()`, 1, "                ; g()"},
+		// The nesting need not start on this line: a child that opened an `if`
+		// earlier reaches its last line already two blocks deep, and counting
+		// from one cut at the `if`'s `end`, handing the child's own call to the
+		// enclosing module.
+		{"    end; helper(); end; setup()", 2, "                      ; setup()"},
 	} {
-		if got := juliaBlankThroughClosingEnd(tc.in); got != tc.want {
-			t.Errorf("juliaBlankThroughClosingEnd(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := juliaBlankThroughClosingEnd(tc.in, tc.openDepth); got != tc.want {
+			t.Errorf("juliaBlankThroughClosingEnd(%q, %d) = %q, want %q", tc.in, tc.openDepth, got, tc.want)
 		}
+	}
+}
+
+func TestJuliaNestingFromEarlierLinesSurvivesToTheClosingEndScan(t *testing.T) {
+	// The cut on a child's last line is the `end` that closes the CHILD, and the
+	// blocks it has to count through are not all on that line. `end; helper();
+	// end; setup()` closes an `if` opened two lines earlier before it closes the
+	// function, and a scan that started from a fixed depth of one stopped at the
+	// `if`'s `end` -- handing `helper()`, a call inside the function's own body,
+	// to the enclosing module.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/M.jl", `module M
+function setup()
+    1
+end
+function helper()
+    2
+end
+function f()
+    if true
+        3
+    end; helper(); end; setup()
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.helper") {
+		t.Errorf("an `end` closing a block opened on an earlier line was read as the child's, crediting the module with the child's call: %#v", calls)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M.f", "M.helper") {
+		t.Errorf("the child lost its own body call: %#v", calls)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.setup") {
+		t.Errorf("module-level code after the child's real closing `end` was blanked: %#v", calls)
 	}
 }
 
