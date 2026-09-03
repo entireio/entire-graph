@@ -16942,3 +16942,125 @@ func TestFSharpQualifierKeepsANonFSharpCandidateItsModuleCannotSupply(t *testing
 		t.Errorf("`Codec.encode` from Use.fs reached %v, want %v", sortedKeysOf(reached), sortedKeysOf(want))
 	}
 }
+
+func TestFSharpInterpolatedStringsKeepTheirEnclosingDefinition(t *testing.T) {
+	// The vendored ionide/tree-sitter-fsharp grammar knows only `$"..."` and
+	// `$"""..."""`. Three ordinary interpolation spellings misparse, and the
+	// damage lands on the ENCLOSING declaration, not the literal:
+	//
+	//   - `$@"..."` (interpolated verbatim) has no rule, so the `$` reads as an
+	//     infix operator and `let verbatimHost x = ...` degrades to a
+	//     value_declaration_left -- the function is extracted as kind
+	//     `variable`;
+	//   - `$$"""..."""` (F# 8 doubled sigil) leaves one `$` over as that same
+	//     infix operator, demoting the binding the same way;
+	//   - `$"...{{x}}..."` (doubled-brace escape) fails to a root ERROR node,
+	//     which costs the FILE every symbol in it, `module Interp` included.
+	//
+	// A demoted or absent definition cannot be a call target, so the assertion
+	// that matters is the edge: every CALLS into these three vanished with
+	// them, and the module's truncated end line mis-scoped the rest of the file.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Interp.fs", `module Interp
+
+let verbatimHost x =
+    let s = $@"hi {x} there"
+    s
+
+let doubledRawHost x =
+    let s = $$"""hi {{x}} there"""
+    s
+
+let escapedHost x =
+    let s = $"hi {{x}} there"
+    s
+
+let tail x = x + 1
+`)
+	writeFile(t, repo, "src/Caller.fs", `module Caller
+
+let run x =
+    Interp.verbatimHost(x)
+    Interp.doubledRawHost(x)
+    Interp.escapedHost(x)
+    Interp.tail(x)
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	moduleEnd := 0
+	for _, symbol := range snapshot.Symbols {
+		if symbol.Language != "F#" || symbol.FilePath != "src/Interp.fs" {
+			continue
+		}
+		kinds[symbol.Name] = symbol.Kind
+		if symbol.Name == "Interp" {
+			moduleEnd = symbol.EndLine
+		}
+	}
+	for _, name := range []string{"verbatimHost", "doubledRawHost", "escapedHost", "tail"} {
+		if kinds[name] != "function" {
+			t.Errorf("F# `%s` extracted as %q, want \"function\": %#v", name, kinds[name], kinds)
+		}
+	}
+	// `let tail` is the last line of the file; a module that stops short of it
+	// mis-scopes every declaration below the interpolated string.
+	if moduleEnd != 15 {
+		t.Errorf("module Interp ends at line %d, want 15: %#v", moduleEnd, kinds)
+	}
+	for _, callee := range []string{"verbatimHost", "doubledRawHost", "escapedHost", "tail"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "run", callee) {
+			t.Errorf("missing CALLS run->%s: %#v", callee, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+func TestMaskFSharpUnsupportedSyntaxPreservesOffsets(t *testing.T) {
+	// Entity names and signatures are sliced out of the UNMASKED source at the
+	// offsets the masked parse reports, so the mask has to be byte-length- and
+	// line-preserving. It also has to leave alone the two forms the grammar
+	// does parse, and the `$` that is an op-char rather than a sigil.
+	source := `module M
+
+let ($|>) a b = a + b
+// a comment with $@"not a string
+(* a (* nested *) comment with $"{{x}} *)
+let fine x = $"hi {x}"
+let alsoFine x = $"""hi {x}"""
+let verbatim x = $@"hi {x}
+spanning"
+let raw x = $$"""hi {{x}}
+spanning"""
+let escaped x = $"hi {{x}}"
+let charLiteral = '"'
+`
+	masked := maskFSharpUnsupportedSyntax(source)
+	if len(masked) != len(source) {
+		t.Fatalf("mask changed byte length: %d != %d", len(masked), len(source))
+	}
+	if strings.Count(masked, "\n") != strings.Count(source, "\n") {
+		t.Fatalf("mask changed line count: %d != %d", strings.Count(masked, "\n"), strings.Count(source, "\n"))
+	}
+	for _, keep := range []string{
+		"let ($|>) a b = a + b",          // `$` as an op-char, not a sigil
+		`let fine x = $"hi {x}"`,         // format_string: parsed natively
+		`let alsoFine x = $"""hi {x}"""`, // format_triple_quoted_string: parsed natively
+		`// a comment with $@"not a string`,
+		`(* a (* nested *) comment with $"{{x}} *)`,
+	} {
+		if !strings.Contains(masked, keep) {
+			t.Errorf("mask rewrote %q, which the grammar already parses:\n%s", keep, masked)
+		}
+	}
+	for _, want := range []string{
+		"let verbatim x =  @\"hi {x}\nspanning\"",      // `$@"` -> ` @"`, body untouched
+		"let raw x =   \"\"\"hi {{x}}\nspanning\"\"\"", // `$$"""` -> `   """`
+		"let escaped x =  \"hi {{x}}\"",                // `$"` -> ` "`
+	} {
+		if !strings.Contains(masked, want) {
+			t.Errorf("mask did not produce %q:\n%s", want, masked)
+		}
+	}
+}

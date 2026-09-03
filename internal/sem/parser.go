@@ -238,6 +238,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "OCaml" && strings.EqualFold(filepath.Ext(path), ".mli") {
 		parseSrc = []byte(maskOCamlInterfaceSyntax(content))
 	}
+	if spec.language == "F#" {
+		parseSrc = []byte(maskFSharpUnsupportedSyntax(content))
+	}
 	if spec.language == "YAML" {
 		parseSrc = []byte(maskYAMLUnsupportedSyntax(content))
 	}
@@ -1046,6 +1049,211 @@ func maskOCamlInterfaceSyntax(content string) string {
 // StreamView<List<int>>` parses as an ERROR node and the class symbol is lost
 // (its factory constructor gets recovered as a bare function instead).
 var dartClassModifierPattern = regexp.MustCompile(`\b(final|base|interface|sealed|mixin)(\s+)(class\b)`)
+
+// fsharpStringOpener locates an F# string-literal opener: the run of
+// interpolation sigils (`$`), the offset of a verbatim `@` (-1 when absent),
+// and the offset and length of the opening quote run.
+type fsharpStringOpener struct {
+	sigils int
+	at     int
+	quote  int
+	quotes int
+}
+
+// readFSharpStringOpener reads a string-literal opener at i -- `"`, `@"`,
+// `"""`, `$"`, `$"""`, `$@"`, `@$"`, `$$"""` -- and reports whether one is
+// there. A `$` or `@` not followed by a quote run (the `$|>` custom operator,
+// the `@` list-append operator, an `@identifier`) opens nothing.
+func readFSharpStringOpener(src []byte, i int) (fsharpStringOpener, bool) {
+	open := fsharpStringOpener{at: -1}
+	j := i
+	for j < len(src) {
+		if src[j] == '$' {
+			open.sigils++
+			j++
+			continue
+		}
+		if src[j] == '@' && open.at < 0 {
+			open.at = j
+			j++
+			continue
+		}
+		break
+	}
+	if j >= len(src) || src[j] != '"' {
+		return fsharpStringOpener{}, false
+	}
+	open.quote = j
+	open.quotes = runLength(src, j, '"')
+	return open, true
+}
+
+// fsharpStringEnd returns the offset just past the literal opened by open, so
+// the scan resumes on real code instead of re-reading the body. A raw string
+// ends at the next quote run of at least the opening width; a verbatim string
+// escapes only `""` and takes backslash literally; an ordinary or interpolated
+// string escapes with a backslash. An unterminated literal ends at EOF.
+func fsharpStringEnd(src []byte, open fsharpStringOpener) int {
+	body := open.quote + open.quotes
+	if open.quotes >= 3 {
+		return indexOfQuoteRun(src, body, open.quotes)
+	}
+	if open.at >= 0 {
+		for k := body; k < len(src); k++ {
+			if src[k] != '"' {
+				continue
+			}
+			if k+1 < len(src) && src[k+1] == '"' {
+				k++
+				continue
+			}
+			return k + 1
+		}
+		return len(src)
+	}
+	for k := body; k < len(src); k++ {
+		switch src[k] {
+		case '\\':
+			k++
+		case '"':
+			return k + 1
+		}
+	}
+	return len(src)
+}
+
+// fsharpHoleEscapeInBody reports whether a literal body spells a doubled brace,
+// the escape for a literal `{`/`}` inside an interpolated string.
+func fsharpHoleEscapeInBody(src []byte, start, end int) bool {
+	if end > len(src) {
+		end = len(src)
+	}
+	for k := start; k+1 < end; k++ {
+		if (src[k] == '{' && src[k+1] == '{') || (src[k] == '}' && src[k+1] == '}') {
+			return true
+		}
+	}
+	return false
+}
+
+// fsharpInterpolationNeedsMasking reports whether the vendored
+// ionide/tree-sitter-fsharp grammar can parse this interpolated literal. It
+// knows exactly two forms: `$"..."` (format_string, holes parsed) and
+// `$"""..."""` (format_triple_quoted_string, body opaque). Everything else
+// misparses:
+//
+//   - `$@"..."` / `@$"..."` (interpolated verbatim) has no rule at all, so the
+//     stray `$` reads as an infix operator and the whole binding degrades to an
+//     infix_expression;
+//   - `$$"""..."""` (doubled sigil, F# 8 raw interpolation) leaves one `$` over
+//     as that same infix operator;
+//   - `$"...{{...}}..."` defeats the format_string scanner outright -- the
+//     doubled brace is not a hole and not literal text to it -- and the parse
+//     fails all the way up to a root ERROR.
+//
+// Only single- and triple-quoted openers are considered: a wider quote run is
+// not an F# literal and the grammar cannot parse it either way, so leaving it
+// alone keeps this from making it worse.
+func fsharpInterpolationNeedsMasking(src []byte, open fsharpStringOpener, end int) bool {
+	if open.sigils == 0 || (open.quotes != 1 && open.quotes != 3) {
+		return false
+	}
+	if open.at >= 0 || open.sigils >= 2 {
+		return true
+	}
+	return open.quotes == 1 && fsharpHoleEscapeInBody(src, open.quote+1, end)
+}
+
+// maskFSharpUnsupportedSyntax blanks the interpolation sigils on the F# string
+// literals the vendored grammar cannot parse, rewriting each to the plain,
+// verbatim, or raw literal of the same shape -- which the grammar does parse --
+// so the enclosing declaration keeps its tree.
+//
+// The damage is not confined to the literal. `let f x = $@"...{x}..."` parsed
+// its binding as a value_declaration_left, so f was extracted as kind
+// `variable` instead of `function`; `let f x = $"...{{x}}..."` failed to the
+// root and cost the file every symbol in it, module included. A definition that
+// is demoted or missing cannot be a call target either, so every CALLS edge
+// into it disappeared with it, and a module whose end line was truncated
+// mis-scoped the rest of the file.
+//
+// Only the sigils are touched: the body stays byte-identical, so any
+// declaration a hole contains still parses, and the mask is byte-length- and
+// newline-preserving because entity names and signatures are sliced out of the
+// unmasked source at these offsets. Comments and char literals are stepped over
+// so a `$"` inside them cannot open a phantom literal.
+//
+// This is the ENTITY side. The call scanners work on the unmasked source and
+// model interpolation themselves (see the F# maskers in call_scanners.go), so
+// they are unaffected.
+func maskFSharpUnsupportedSyntax(content string) string {
+	src := []byte(content)
+	for i := 0; i < len(src); i++ {
+		switch src[i] {
+		case '/':
+			if i+1 < len(src) && src[i+1] == '/' {
+				for i < len(src) && src[i] != '\n' {
+					i++
+				}
+			}
+		case '(':
+			if i+1 < len(src) && src[i+1] == '*' {
+				i = fsharpBlockCommentEnd(src, i) - 1
+			}
+		case '\'':
+			// `'a` type variables and `x'` identifiers are not literals, so
+			// only the one char literal that could desynchronize the quote
+			// scan is stepped over.
+			if i+2 < len(src) && src[i+1] == '"' && src[i+2] == '\'' {
+				i += 2
+			}
+		case '"', '@', '$':
+			open, ok := readFSharpStringOpener(src, i)
+			if !ok {
+				continue
+			}
+			end := fsharpStringEnd(src, open)
+			if fsharpInterpolationNeedsMasking(src, open, end) {
+				for p := i; p < open.quote; p++ {
+					src[p] = ' '
+				}
+				// A verbatim body escapes `""` and takes backslash literally,
+				// so it stays a verbatim literal: the `@` moves to sit against
+				// the quote (`@$"` as well as `$@"`), which is length-
+				// preserving. Dropping it would reread `\` as an escape and
+				// break on the ordinary `$@"C:\path"`.
+				if open.at >= 0 && open.quotes == 1 {
+					src[open.quote-1] = '@'
+				}
+			}
+			i = end - 1
+		}
+	}
+	return string(src)
+}
+
+// fsharpBlockCommentEnd returns the offset just past the nested `(* ... *)`
+// comment opening at i, or EOF if it is unterminated.
+func fsharpBlockCommentEnd(src []byte, i int) int {
+	depth := 0
+	for k := i; k+1 < len(src); {
+		if src[k] == '(' && src[k+1] == '*' {
+			depth++
+			k += 2
+			continue
+		}
+		if src[k] == '*' && src[k+1] == ')' {
+			depth--
+			k += 2
+			if depth <= 0 {
+				return k
+			}
+			continue
+		}
+		k++
+	}
+	return len(src)
+}
 
 // maskDartUnsupportedSyntax blanks Dart 3 class modifiers the grammar cannot
 // parse, preserving byte length so node offsets keep pointing into the
