@@ -1141,33 +1141,61 @@ func (m *ignoreMatcher) loadOptionalSameVolume(base, file string, includeMode bo
 	return nil
 }
 
-// repoIgnoreFileIsRegular is the no-follow gate for a REPOSITORY-controlled
-// ignore file, and it is a function rather than a rule written out at each
-// reader because the two readers that need it sit in different files: the
-// uncached matcher builds through loadPath, and a cache-enabled search captures
-// the same file in captureIgnorePolicy. A second copy of the rule is how the two
-// came to disagree -- capture stat'd THROUGH the link and handed the target's
-// bytes on as repository-controlled rules, so a symlinked .graphignore turned
-// the repo_ignored disclosure into an arbitrary local-file read on exactly the
-// runs that use the cache.
+// readRepoIgnoreFile is the no-follow READER for a REPOSITORY-controlled ignore
+// file, and it is a function rather than a rule written out at each caller
+// because the two readers that need it sit in different files: the uncached
+// matcher builds through loadPath, and a cache-enabled search captures the same
+// file in captureIgnorePolicy. A second copy of the rule is how the two came to
+// disagree -- capture stat'd THROUGH the link and handed the target's bytes on
+// as repository-controlled rules, so a symlinked .graphignore turned the
+// repo_ignored disclosure into an arbitrary local-file read on exactly the runs
+// that use the cache.
 //
-// It reports whether the file is present and readable as a regular file. Lstat,
-// not Stat: the link itself must fail IsRegular here so the target is never
-// opened.
-func repoIgnoreFileIsRegular(file, label string, required bool) (bool, error) {
+// Lstat, not Stat: a .graphignore that is itself a symlink must fail IsRegular
+// here so the target is never opened. But an Lstat that only DECIDES, followed
+// by a reader that resolves the path a second time, checks one object and reads
+// another. A process writing in the repository -- the same party that authors
+// these files -- can rename a link over the path in that window, and the second
+// resolution follows it: the check passes on the regular file and the bytes come
+// from wherever the link pointed. That is not theoretical; hammering the swap
+// leaked an outside file through both readers within a few thousand attempts.
+//
+// So the check and the use are one object here. The path is opened with
+// no-follow semantics, and readOpenedBoundedRegularFile re-stats THAT descriptor
+// and requires os.SameFile against the inode Lstat approved. A link raced in
+// fails the open; a different regular file raced in fails the identity check.
+// Neither can be read.
+func readRepoIgnoreFile(file, label string, required bool) ([]byte, bool, error) {
+	missing := func() ([]byte, bool, error) {
+		if required {
+			return nil, false, fmt.Errorf("%s %q does not exist", label, file)
+		}
+		return nil, false, nil
+	}
 	info, err := os.Lstat(file)
 	switch {
 	case isMissingPathError(err):
-		if required {
-			return false, fmt.Errorf("%s %q does not exist", label, file)
-		}
-		return false, nil
+		return missing()
 	case err != nil:
-		return false, fmt.Errorf("read %s %q: %w", label, file, err)
+		return nil, false, fmt.Errorf("read %s %q: %w", label, file, err)
 	case !info.Mode().IsRegular():
-		return false, fmt.Errorf("%s %q is not a regular file", label, file)
+		return nil, false, fmt.Errorf("%s %q is not a regular file", label, file)
+	case info.Size() > maxIgnoreFileBytes:
+		return nil, false, fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, maxIgnoreFileBytes)
 	}
-	return true, nil
+	opened, err := openRepoIgnoreFile(file)
+	if isMissingPathError(err) {
+		return missing()
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	defer opened.Close()
+	content, err := readOpenedBoundedRegularFile(opened, info, file, label, maxIgnoreFileBytes)
+	if err != nil {
+		return nil, false, err
+	}
+	return content, true, nil
 }
 
 func (m *ignoreMatcher) loadRequired(file string, includeMode bool, origin ignoreOrigin) error {
@@ -1176,32 +1204,32 @@ func (m *ignoreMatcher) loadRequired(file string, includeMode bool, origin ignor
 
 func (m *ignoreMatcher) loadPath(file string, includeMode, required bool, origin ignoreOrigin) error {
 	label := ignoreFileLabel(includeMode)
-	// Lstat, not the Stat inside readBoundedRegularFile, but ONLY for a
-	// REPOSITORY-controlled ignore file (.gitignore, .graphignore). Such a file
-	// that is ITSELF a symlink can be made to point outside the repository — at a
-	// sibling .env, say — and the disclosure below echoes the matched PATTERN TEXT
-	// of whichever rule decided a path into the JSON/NDJSON response
-	// (repoExclusion's Rule field). readBoundedRegularFile stats through the link
-	// and reads the external target as if it were the repository's own rules,
-	// which turns that disclosure into an arbitrary local-file-read primitive.
-	// Lstat reports the link itself and fails IsRegular() here, the same hard
-	// failure an existing non-regular file already produced, so the target is
-	// never opened or read.
+	// A no-follow read on a held handle, not readBoundedRegularFile's stat-then-open,
+	// but ONLY for a REPOSITORY-controlled ignore file (.gitignore, .graphignore).
+	// Such a file that is ITSELF a symlink can be made to point outside the
+	// repository — at a sibling .env, say — and the disclosure below echoes the
+	// matched PATTERN TEXT of whichever rule decided a path into the JSON/NDJSON
+	// response (repoExclusion's Rule field). readBoundedRegularFile stats through
+	// the link and reads the external target as if it were the repository's own
+	// rules, which turns that disclosure into an arbitrary local-file-read
+	// primitive. readRepoIgnoreFile refuses the link, and — because it validates
+	// the descriptor it actually reads rather than re-resolving the path — refuses
+	// one swapped in after the check too.
 	//
 	// A CALLER-controlled source (--ignore-file, --include-file, .git/info/exclude)
 	// is the opposite case: ignoreOrigin's own doc says only a repo-controlled rule
 	// is ever disclosed, so a symlink there carries none of the leak above, and Git
 	// follows one itself. Unchanged for that branch.
-	if !origin.callerControlled {
-		present, err := repoIgnoreFileIsRegular(file, label, required)
-		if err != nil {
-			return err
-		}
-		if !present {
-			return nil
-		}
+	var (
+		content []byte
+		present bool
+		err     error
+	)
+	if origin.callerControlled {
+		content, present, err = readBoundedRegularFile(file, label, required, maxIgnoreFileBytes)
+	} else {
+		content, present, err = readRepoIgnoreFile(file, label, required)
 	}
-	content, present, err := readBoundedRegularFile(file, label, required, maxIgnoreFileBytes)
 	if err != nil {
 		return err
 	}
