@@ -1360,6 +1360,28 @@ def open_stream():
 	}
 }
 
+func TestPythonScopedBareCallsRetainResolvedRelativeImportsAtTopLevel(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/util.py", `def helper():
+    return 1
+`)
+	writeFile(t, repo, "src/consumer.py", `from .util import helper
+
+helper()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" && strings.HasSuffix(relation.FromID, "file:src/consumer.py") && strings.Contains(relation.ToID, "src/util.py:function:helper") {
+			return
+		}
+	}
+	t.Fatalf("top-level scoped relative import lost its local call: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+}
+
 func TestPythonDottedImportedModuleCallsResolveToLocalSymbols(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/acme_pkg/__init__.py", "")

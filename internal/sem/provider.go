@@ -2106,7 +2106,12 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 	return resolveCallTargetsWithRawImport(name, from, candidates, nil, nil, sameFile, importsByName, allowMethodTargets)
 }
 
-func importsWithName(imports map[string][]string, name string, modules []string) map[string][]string {
+// importsWithName replaces one binding in the normal import map with the
+// modules visible at a particular Python call site. The normal map contains
+// tagged repository-local paths beside authored specifiers; rebuild those tags
+// for the selected scope bindings so ordinary same-language import resolution
+// retains its exact-file match without restoring hidden/rebound imports.
+func importsWithName(imports map[string][]string, name string, modules []string, importingPath string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) map[string][]string {
 	copy := make(map[string][]string, len(imports))
 	for key, value := range imports {
 		copy[key] = value
@@ -2114,7 +2119,13 @@ func importsWithName(imports map[string][]string, name string, modules []string)
 	if len(modules) == 0 {
 		delete(copy, name)
 	} else {
-		copy[name] = modules
+		resolved := append([]string(nil), modules...)
+		for _, module := range modules {
+			if path, ok := resolveImportSpecPath(importingPath, module, manifestImports, knownFiles, readContent); ok && path != "" {
+				resolved = append(resolved, resolvedImportPathPrefix+path)
+			}
+		}
+		copy[name] = uniqueStrings(resolved)
 	}
 	return copy
 }
@@ -3725,7 +3736,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// the raw cross-language exception, never ordinary imports.
 						if pythonBareScopes.complete {
 							rawImportModuleSets = pythonBareScopes.importModuleSets(from, name)
-							importsForCall = importsWithName(callImportsByName, name, pythonBareScopes.importModules(from, name))
+							importsForCall = importsWithName(callImportsByName, name, pythonBareScopes.importModules(from, name), file.Path, manifestImports, knownFiles, readContent)
 						} else {
 							rawImportModuleSets = nil
 							rawCandidates = nil
@@ -4225,7 +4236,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if file.Language == "Python" {
 						if pythonBareScopes.complete {
 							rawImportModuleSets = pythonBareScopes.importModuleSets(fileSource, name)
-							importsForCall = importsWithName(importsByName, name, pythonBareScopes.importModules(fileSource, name))
+							importsForCall = importsWithName(importsByName, name, pythonBareScopes.importModules(fileSource, name), file.Path, manifestImports, knownFiles, readContent)
 						} else {
 							rawImportModuleSets = nil
 							rawCandidates = nil
