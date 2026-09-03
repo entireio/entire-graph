@@ -12606,6 +12606,46 @@ func TestJuliaClosingEndScanCountsDepthAndIgnoresLiterals(t *testing.T) {
 	}
 }
 
+func TestJuliaOperatorsEndingInEqualsAreNotShortFormDefinitions(t *testing.T) {
+	// Julia spells many operators with a trailing `=` -- `>=`, `<=`, `!=`, the
+	// update operators -- and `=>` builds a Pair. Requiring only that the `=` not
+	// be FOLLOWED by another `=` still masked all of those as definitions, and
+	// each one silently took the real module-to-`f` edge with it.
+	for _, op := range []string{">=", "<=", "!=", "==", "=>", "+="} {
+		repo := t.TempDir()
+		writeFile(t, repo, "src/M.jl", "module M\nfunction f(x); x; end\nf(2) "+op+" 3\nend\n")
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatalf("build snapshot: %v", err)
+		}
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.f") {
+			t.Errorf("`f(2) %s 3` was masked as a definition, losing CALLS M->M.f: %#v",
+				op, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+func TestJuliaShortFormDefinitionFormsStayMasked(t *testing.T) {
+	// The counterpart: tightening the `=` guard must not stop a real short form
+	// being masked, including the forms that put a return type or a constraint
+	// between the argument list and the `=`.
+	for _, def := range []string{"g(x) = helper(x)", "g(x)::Int = helper(x)", "g(x) where T = helper(x)"} {
+		repo := t.TempDir()
+		writeFile(t, repo, "src/M.jl", "module M\n"+def+"\nfunction helper(y); y; end\nend\n")
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatalf("build snapshot: %v", err)
+		}
+		calls := relationsOfType(snapshot.Relations, "CALLS")
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M.g", "M.helper") {
+			t.Errorf("%q lost its own body call: %#v", def, calls)
+		}
+		if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.helper") {
+			t.Errorf("%q left its body in the module's block: %#v", def, calls)
+		}
+	}
+}
+
 func TestJuliaModuleIsNotCreditedWithItsOwnMacros(t *testing.T) {
 	// A module's block spans its members' definition lines, and a macro's head
 	// reads as a call: `macro mymac(x)` contains `mymac(x)`. The module-own-block

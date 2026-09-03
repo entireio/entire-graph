@@ -2252,7 +2252,16 @@ func juliaMaskDefinitionHeads(block string, names []string) string {
 			// puts a real module-level call after the semicolon, and running to
 			// the line end would swallow it.
 			//
-			// The `=` must be a single one: `f() == x` is a comparison.
+			// The `=` must be an ASSIGNMENT, which is not the same as "not
+			// followed by another `=`". Julia spells many operators with a
+			// trailing `=` -- `>=`, `<=`, `!=`, `~=`, and every update operator
+			// (`+=`, `*=`, ...) -- and `=>` is the Pair constructor. Excluding
+			// only a following `=` caught `f(2) == 3` but still masked
+			// `f(2) >= 3` and `f(2) => v` as definitions, silently dropping the
+			// real module-to-`f` edge in each. RE2 has no lookaround, so the
+			// character on EITHER side of the `=` has to prove itself: the one
+			// before it may not be an operator character, and the one after it
+			// may be neither `=` nor `>`.
 			// Go's regexp is RE2 and has no lookahead, so "not followed by
 			// another `=`" cannot be asserted directly. Making the suffix
 			// OPTIONAL was the bug: it let the match end right after the first
@@ -2260,13 +2269,13 @@ func juliaMaskDefinitionHeads(block string, names []string) string {
 			// genuine module-scope `f(2) == 3` was masked away with the real
 			// `M -> M.f` edge in it. Requiring the suffix makes the next
 			// character prove itself.
-			`\b` + quoted + `\s*\([^()]*\)[^=;\n]*=[^=;\n][^;\n]*`,
+			`\b` + quoted + `\s*\([^()]*\)(?:[^=;\n]*[^=;\n<>!~+\-*/\\^%&|])?=[^=;\n>][^;\n]*`,
 			// A short form may also put its body on the NEXT line
 			// (`f(x) =` then an indented body), which the required suffix above
 			// cannot match. `(?m)$` is zero-width, so the newline survives and
 			// line numbering is unchanged; only spaces or tabs may sit between,
 			// so this still cannot reach the second `=` of `==`.
-			`(?m)\b` + quoted + `\s*\([^()]*\)[^=;\n]*=[ \t]*$`,
+			`(?m)\b` + quoted + `\s*\([^()]*\)(?:[^=;\n]*[^=;\n<>!~+\-*/\\^%&|])?=[ \t]*$`,
 		} {
 			re, err := regexp.Compile(pattern)
 			if err != nil {
