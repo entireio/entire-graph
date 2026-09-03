@@ -16652,3 +16652,59 @@ module A =
 		t.Fatalf("missing F# CALLS run->build: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 	}
 }
+
+func TestFSharpRelativeQualifierNamingASiblingModuleInAnotherFile(t *testing.T) {
+	// The same relative reading, across files -- which is the NORMAL case,
+	// because F# modules are project-scoped and the usual layout is one module
+	// per file. `Outer.A` lives in Sibling.fs and its sibling `Outer.Caller` in
+	// Caller.fs, so `A.build` written inside `Outer.Caller` means `Outer.A`.
+	// Deciding which reading applies from the candidates that sat in the
+	// CALLER's file made that reading unmatchable and dropped every caller to
+	// the plain suffix, which admits `Outer.A` AND an unrelated top-level `A` --
+	// and it went wrong in both directions at once:
+	//
+	//   run  (Caller.fs) also declares the top-level `A` in its own file, so the
+	//        OUTERMOST reading matched there and won: the farther scope shadowed
+	//        the nearer one the caller actually meant.
+	//   run2 (Other.fs)  declares neither, so no reading matched at all and the
+	//        two suffix candidates left the call ambiguous -- no edge emitted.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Sibling.fs", `module Outer =
+    module A =
+        let build (x: int) = x * 2
+`)
+	writeFile(t, repo, "src/Caller.fs", `module Outer =
+    module Caller =
+        let run (x: int) = A.build x
+
+module A =
+    let build (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/Other.fs", `module Outer =
+    module Caller2 =
+        let run2 (x: int) = A.build x
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// Both callers must land on `Outer.A.build`, Sibling.fs line 3 -- never on
+	// the top-level `A.build` that merely sits in Caller.fs.
+	reached := map[string]string{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if to.Name != "build" || (from.Name != "run" && from.Name != "run2") {
+			continue
+		}
+		reached[from.Name] = fmt.Sprintf("%s:%d", filepath.Base(to.FilePath), to.StartLine)
+	}
+	want := map[string]string{"run": "Sibling.fs:3", "run2": "Sibling.fs:3"}
+	if !reflect.DeepEqual(reached, want) {
+		t.Fatalf("`A.build` inside `Outer.Caller`/`Outer.Caller2` reached %v, want %v", reached, want)
+	}
+}

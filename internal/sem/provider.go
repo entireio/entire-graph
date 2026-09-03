@@ -2028,7 +2028,7 @@ func fsharpRelativeQualifierPaths(callerPath, qualifier string) []string {
 // modules are project-scoped, so this reaches other files too: `A.convert`
 // written in C.fs is module A's, wherever A is declared. Symbols of another
 // language have no module path and are left alone.
-func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier, callerPath string, pathBySymbolID map[string]string) []SymbolRecord {
+func fsharpQualifiedScope(symbols []SymbolRecord, qualifier, callerPath string, pathBySymbolID map[string]string, declared map[string]bool) []SymbolRecord {
 	if qualifier == "" {
 		// The BARE spelling restricts nothing: it names no module, so it means
 		// the definition in scope and resolves over every candidate, exactly as
@@ -2050,24 +2050,36 @@ func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier, callerPat
 		// dropped to the plain suffix, which admits the nested module AND an
 		// unrelated top-level `ScriptGeneration`; the winner was then the
 		// definition nearest the call site rather than the one written.
+		// Which reading applies is a property of the PROJECT's declarations, not
+		// of the symbol set being filtered. F# modules are project-scoped and the
+		// usual layout is one module per file, so the sibling a relative
+		// qualifier names is normally declared somewhere ELSE: with `Outer.A` in
+		// one file and `Outer.Caller` in another, picking the reading by which
+		// candidate sat in the caller's own file made `Outer.A` unmatchable, and
+		// the call fell through to the plain suffix -- which admits `Outer.A` AND
+		// an unrelated top-level `A`. That lost the call both ways: ambiguous
+		// candidates dropped the edge outright, and where the top-level `A` was
+		// declared in the caller's own file it matched the OUTERMOST reading and
+		// won, so the nearer scope the caller actually meant was shadowed by the
+		// farther one. Reading against `declared` also keeps the two scopes this
+		// is called on -- the project-wide candidates and the caller file's own
+		// symbols -- agreeing on ONE reading; choosing per set let the narrower
+		// one settle on an outer reading the wider one had already rejected, and
+		// the same-file branch of resolveCallTargets then won with it.
 		for _, exact := range fsharpRelativeQualifierPaths(callerPath, qualifier) {
-			nearest := make([]SymbolRecord, 0, len(symbols))
-			for _, symbol := range symbols {
-				if symbol.FilePath == filePath && pathBySymbolID[symbol.ID] == exact {
-					nearest = append(nearest, symbol)
-				}
-			}
-			if len(nearest) == 0 {
+			if !declared[exact] {
 				continue
 			}
-			// Other files stay untouched: the qualifier is only known to name
-			// a module HERE, so it cannot speak for anywhere else.
+			scoped := make([]SymbolRecord, 0, len(symbols))
 			for _, symbol := range symbols {
-				if symbol.FilePath != filePath {
-					nearest = append(nearest, symbol)
+				// Symbols with no known module path (another language's) are
+				// left alone, exactly as the suffix fallback below leaves them:
+				// an F# module qualifier says nothing about them.
+				if path, known := pathBySymbolID[symbol.ID]; !known || path == exact {
+					scoped = append(scoped, symbol)
 				}
 			}
-			return nearest
+			return scoped
 		}
 	}
 	// Every F# symbol in the project has a known module path, so a qualified
@@ -3699,8 +3711,8 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						seenTargets := map[string]bool{}
 						for _, qualifier := range quals {
 							for _, to := range resolveCallTargets(name, from,
-								fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID),
-								fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID),
+								fsharpQualifiedScope(symbolsByShortName[name], qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
+								fsharpQualifiedScope(currentFileSymbols, qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
 								callImportsByName, false) {
 								if seenTargets[to.ID] {
 									continue
@@ -4138,8 +4150,8 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						seenTargets := map[string]bool{}
 						for _, qualifier := range quals {
 							for _, to := range resolveCallTargets(name, fileSource,
-								fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, "", fsharpModulePathBySymbolID),
-								fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, "", fsharpModulePathBySymbolID),
+								fsharpQualifiedScope(symbolsByShortName[name], qualifier, "", fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
+								fsharpQualifiedScope(currentFileSymbols, qualifier, "", fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
 								importsByName, false) {
 								if seenTargets[to.ID] {
 									continue
