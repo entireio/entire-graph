@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "c0f0378c4021",
+  "strategy": "manual-commit",
+  "branch": "fix117",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/agents.md",
+    "docs/trust-and-security.md",
+    "internal/cli/agents.go",
+    "internal/cli/agents_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c0/f0378c4021/0/metadata.json",
+      "transcript": "/c0/f0378c4021/0/full.jsonl",
+      "compact_transcript": "/c0/f0378c4021/0/transcript.jsonl",
+      "content_hash": "/c0/f0378c4021/0/content_hash.txt",
+      "prompt": "/c0/f0378c4021/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 69957,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 472064,
+    "output_tokens": 6633,
+    "api_call_count": 12
+  },
+  "has_review": true
+}
