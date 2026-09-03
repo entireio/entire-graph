@@ -65,6 +65,60 @@ func TestPythonLocalBindingNames(t *testing.T) {
 			unbound: []string{"sorted", "key"},
 		},
 		{
+			// A lambda's parameters are the lambda's scope. Carrying them into
+			// the enclosing body made an unrelated later call of the same name
+			// look shadowed, which deletes its edge outright.
+			name: "a lambda parameter does not escape the lambda",
+			source: `def run(source):
+    handler = lambda compute: compute(1)
+    return handler(compute(source))`,
+			bound:   []string{"handler", "source"},
+			unbound: []string{"compute"},
+		},
+		{
+			// Python 3 scopes a comprehension's variables to the comprehension,
+			// list and generator alike.
+			name: "a comprehension variable does not escape the comprehension",
+			source: `def run(values):
+    labels = [compute for compute in values]
+    total = sum(scale for scale in values)
+    return compute(scale), labels, total`,
+			bound:   []string{"labels", "total", "values"},
+			unbound: []string{"compute", "scale"},
+		},
+		{
+			// A confined comprehension variable is still a binding: nothing
+			// outside the brackets can mean anything else by that name.
+			name: "a comprehension variable used only inside it binds",
+			source: `def run(values):
+    return [value(1) for value in values]`,
+			bound: []string{"value", "values"},
+		},
+		{
+			name: "a nested def's parameters and locals stay in the nested def",
+			source: `def run(source):
+    def helper(compute):
+        cache = source
+        return compute(cache)
+    return helper, cache, compute(source)`,
+			bound:   []string{"helper", "source"},
+			unbound: []string{"compute", "cache"},
+		},
+		{
+			// `global`/`nonlocal` declare the opposite of a local binding: the
+			// name is the module's or the enclosing function's, which is the
+			// symbol a call by that name is meant to reach.
+			name: "global and nonlocal are not local bindings",
+			source: `def run(source):
+    global compute
+    nonlocal scale
+    compute = source
+    scale = source
+    return compute(scale)`,
+			bound:   []string{"source"},
+			unbound: []string{"compute", "scale"},
+		},
+		{
 			name: "an attribute, an element and a keyword argument bind nothing",
 			source: `def run(source):
     self.compute = source

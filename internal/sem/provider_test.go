@@ -4414,6 +4414,69 @@ def run(values):
 		}
 	})
 
+	// A `lambda`'s parameters bind in the lambda, not in the body around it, so
+	// an unrelated call of the same name elsewhere in that body still reaches
+	// the import. Getting this wrong is worse than the shadowing it guards
+	// against: resolveCallTargets declines a bound name before any tier runs,
+	// so a name wrongly reported as bound deletes a real edge outright.
+	t.Run("a lambda parameter does not shadow the enclosing body", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(source):
+    handler = lambda compute: compute(1)
+    return compute(source)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("a lambda parameter suppressed an unrelated import-resolved call: %#v", calls[0])
+		}
+	})
+
+	// Python 3 scopes a comprehension's variables to the comprehension, so they
+	// shadow nothing in the body that holds it either.
+	t.Run("a comprehension variable does not shadow the enclosing body", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    labels = [compute for compute in values]
+    return labels, compute(values)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("a comprehension variable suppressed an unrelated import-resolved call: %#v", calls[0])
+		}
+	})
+
+	// The other direction of the same rule: a lambda parameter still shadows
+	// the import for the calls inside that lambda.
+	t.Run("a lambda parameter still shadows inside the lambda", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    return sorted(values, key=lambda compute: compute(1))
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("a lambda parameter must not bind the foreign function: %#v", call)
+			}
+		}
+	})
+
 	// Module scope is not a shadowing scope: a `def` or an assignment there is
 	// the file's own symbol, so the file-level call scan must keep resolving
 	// through the same import evidence the per-symbol scan uses.
