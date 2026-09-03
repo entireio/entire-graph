@@ -13548,6 +13548,59 @@ module Startup =
 	}
 }
 
+func TestFSharpQualifierNamingTheCallersOwnModule(t *testing.T) {
+	// A qualifier is resolved relative to the caller by concatenation
+	// (`callerPath + "." + qualifier`). When the caller is ALREADY inside the
+	// module the qualifier names, that repeats the last segment
+	// (`LoadingScripts.ScriptGeneration` + `ScriptGeneration`), the exact match
+	// finds nothing, and the plain-suffix fallback admits BOTH the nested
+	// `LoadingScripts.ScriptGeneration` and an unrelated top-level
+	// `ScriptGeneration`. `resolveCallTargets` then picks by line distance, so
+	// the edge lands on whichever definition happens to sit nearer the call --
+	// here the top-level one, which the caller cannot mean.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Nested.fs", `module LoadingScripts =
+    module ScriptGeneration =
+        let build (x: int) = x * 2
+        let pad1 (x: int) = x
+        let pad2 (x: int) = x
+        let pad3 (x: int) = x
+        let pad4 (x: int) = x
+        let pad5 (x: int) = x
+        let pad6 (x: int) = x
+        let run (x: int) = ScriptGeneration.build x
+
+module ScriptGeneration =
+    let build (x: int) = x + 1
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// From inside `LoadingScripts.ScriptGeneration`, `ScriptGeneration.build`
+	// names that module's own build (line 3), never the top-level one (line 13),
+	// which is merely the nearer of the two to the call site on line 10.
+	seen := false
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if from.Name != "run" || to.Name != "build" {
+			continue
+		}
+		seen = true
+		if to.StartLine != 3 {
+			t.Fatalf("ScriptGeneration.build from inside LoadingScripts.ScriptGeneration resolved to the definition on line %d, want line 3", to.StartLine)
+		}
+	}
+	if !seen {
+		t.Fatalf("missing F# CALLS run->build: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
 func sortedIntKeys(m map[int]bool) []int {
 	out := make([]int, 0, len(m))
 	for key := range m {

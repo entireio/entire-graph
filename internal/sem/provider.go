@@ -1957,14 +1957,29 @@ func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier, callerPat
 	// nested one, and that reading is exact rather than ambiguous. A file-level
 	// caller has no enclosing module and passes "", keeping the old behaviour.
 	if callerPath != "" {
-		exact := callerPath + "." + qualifier
-		nearest := make([]SymbolRecord, 0, len(symbols))
-		for _, symbol := range symbols {
-			if symbol.FilePath == filePath && pathBySymbolID[symbol.ID] == exact {
-				nearest = append(nearest, symbol)
-			}
+		// Innermost reading first: a module the caller's own module declares
+		// shadows the outer binding of the same name. Then the caller's own
+		// path, for when it ALREADY ends with the qualifier -- inside
+		// `LoadingScripts.ScriptGeneration`, `ScriptGeneration.build` names
+		// that module's own build. Concatenating unconditionally repeated the
+		// segment (`...ScriptGeneration.ScriptGeneration`), matched nothing,
+		// and dropped to the plain suffix, which admits the nested module AND
+		// an unrelated top-level `ScriptGeneration`; the winner was then the
+		// definition nearest the call site rather than the one written.
+		exactPaths := []string{callerPath + "." + qualifier}
+		if fsharpQualifierMatchesModulePath(callerPath, qualifier) {
+			exactPaths = append(exactPaths, callerPath)
 		}
-		if len(nearest) > 0 {
+		for _, exact := range exactPaths {
+			nearest := make([]SymbolRecord, 0, len(symbols))
+			for _, symbol := range symbols {
+				if symbol.FilePath == filePath && pathBySymbolID[symbol.ID] == exact {
+					nearest = append(nearest, symbol)
+				}
+			}
+			if len(nearest) == 0 {
+				continue
+			}
 			// Other files stay untouched: the qualifier is only known to name
 			// a module HERE, so it cannot speak for anywhere else.
 			for _, symbol := range symbols {
