@@ -1982,9 +1982,15 @@ func juliaMaskDefinitionHeads(block string, names []string) string {
 			// Short form, masked THROUGH ITS RIGHT-HAND SIDE. `f() = helper()`
 			// occupies one line, so no body line is blanked for it, and masking
 			// only the head left `helper()` in the module's block -- crediting
-			// the module with every call the child's body makes. The `=` must be
-			// a single one: `f() == x` is a comparison, not a definition.
-			`\b` + quoted + `\s*\([^()]*\)\s*=([^=][^\n]*)?`,
+			// the module with every call the child's body makes.
+			//
+			// The mask stops at `;` as well as at the line end, because that is
+			// where the definition stops: `module M; setup() = 1; setup(); end`
+			// puts a real module-level call after the semicolon, and running to
+			// the line end would swallow it.
+			//
+			// The `=` must be a single one: `f() == x` is a comparison.
+			`\b` + quoted + `\s*\([^()]*\)\s*=([^=;\n][^;\n]*)?`,
 		} {
 			re, err := regexp.Compile(pattern)
 			if err != nil {
