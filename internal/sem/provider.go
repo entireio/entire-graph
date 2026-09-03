@@ -8986,7 +8986,18 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 			if subject == "" {
 				continue
 			}
-			target, resolution, ok := resolveTestSubject(subject, symbol, sharedTypeCandidates(symbol, symbolsByShortName[subject]), resolvedImportsByFile[path])
+			// The workspace short-name lookup is deliberately NOT filtered
+			// through sharedTypeCandidates. That relation answers whether
+			// source in one language may name a type DECLARED in another, and
+			// a TESTS edge names no type: it records the convention that
+			// `test_frobnicate` covers `frobnicate`. Harnesses cross language
+			// boundaries as a matter of course — pytest over a C extension, a
+			// shell script over a compiled binary, JS specs over a WASM module
+			// — so gating them on type interop dropped those edges wholesale,
+			// and asymmetrically at that, since the C-family relation is
+			// directional and C names nothing at all. Precision comes from
+			// resolveTestSubject's evidence order instead.
+			target, resolution, ok := resolveTestSubject(subject, symbol, symbolsByShortName[subject], resolvedImportsByFile[path])
 			if !ok {
 				continue
 			}

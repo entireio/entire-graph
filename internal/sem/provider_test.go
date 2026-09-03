@@ -3897,6 +3897,45 @@ func TestParseArray(t *testing.T) {}
 	}
 }
 
+// A TESTS edge records a naming convention between a test and the unit it
+// covers, not a type reference, so the cross-language TYPE-sharing relation
+// must not gate it. That relation answers "may source in language A name a
+// type DECLARED in language B"; a harness routinely exercises an
+// implementation it can never name a type from — pytest over a C extension,
+// a shell script over a compiled binary, JS specs over a WASM module.
+// Filtering the subject candidates through it dropped those edges wholesale,
+// and because the C-family relation is directional it dropped them
+// asymmetrically: C names nothing, so a C test could not reach a non-C unit
+// however unambiguous the subject name.
+func TestTestsRelationCrossesLanguageBoundaries(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/frobnicate.c", `int frobnicate(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "tests/test_frobnicate.py", `def test_frobnicate():
+    assert frobnicate(1) == 2
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var tests []RelationRecord
+	for _, r := range snapshot.Relations {
+		if r.Type == "TESTS" {
+			tests = append(tests, r)
+		}
+	}
+	if len(tests) != 1 {
+		t.Fatalf("want the Python test to cover the C unit, got %#v", tests)
+	}
+	if !strings.Contains(tests[0].FromID, "tests/test_frobnicate.py") || !strings.Contains(tests[0].ToID, "src/frobnicate.c") {
+		t.Fatalf("unexpected TESTS edge: %#v", tests[0])
+	}
+}
+
 // Regression for the jdx/mise report: a bare type name in a signature must
 // resolve through the file's import bindings before any global fallback, and
 // an ambiguous name with no import evidence must resolve to nothing. mise's

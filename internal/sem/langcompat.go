@@ -139,7 +139,7 @@ func languagesShareTypes(from, target string) bool {
 // The index is keyed by name alone, so every lookup into it is a cross-language
 // lookup by construction. resolveTypeReference was filtered first because the
 // Erlang-record-becomes-an-R-type case was found there, but the same index feeds
-// call, constructor, inheritance and test resolution, and each of those selects
+// call, constructor and inheritance resolution, and each of those selects
 // a target the same way: take the candidates with this name, pick one. Measured
 // before this filter, a Ruby `Point.new.process` resolved to a GO method
 // (`Ruby/make -> Go/Point.process`, resolution=type_inferred) purely because Go
@@ -153,6 +153,10 @@ func languagesShareTypes(from, target string) bool {
 // Same-file and same-package candidate lists are NOT routed through here. They
 // cannot cross a language boundary in the first place, and filtering them would
 // cost a pass over every lookup for no possible change in result.
+//
+// TESTS resolution reads the same index and is also NOT routed through here: a
+// test name is a convention, not a type reference, so type interop is the wrong
+// question to ask of it. See testRelations.
 func sharedTypeCandidates(from SymbolRecord, candidates []SymbolRecord) []SymbolRecord {
 	filtered := candidates[:0:0]
 	for _, candidate := range candidates {
