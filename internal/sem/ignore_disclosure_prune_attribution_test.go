@@ -148,3 +148,73 @@ func TestCallerIncludeFileKeepsAPrunedDescendantOutOfTheDisclosure(t *testing.T)
 		}
 	}
 }
+
+// TestPrunedGitPointerFileIsNotAttributedToTheRule is the git-metadata half of
+// the same attribution question, and the one with a security edge.
+//
+// A linked worktree's or a nested clone's `.git` is a regular FILE, so the
+// directory decision inside the prune accounting (skipVendoredDir, which refuses
+// anything with a `.git` component) never sees it. The listing this accounting is
+// the counterfactual for drops that path unconditionally and independently of any
+// ignore rule — gitDirs.excluded runs on every file it reaches, before the ignore
+// decision — so no repository rule can be what removed it.
+//
+// Recorded anyway, the disclosure hands the reader a git-metadata path as
+// something the project's own `.graphignore` hid and invites them to open it, and
+// the count of what the rule removed is one too high. It also charges the
+// counterfactual listing a position for a path that never held one, so the file
+// cap the ledger tests exclusions against is one short for every such pointer.
+//
+// FAILS AT RUNTIME before the fix: Files = 3 over a tree the rule removed one
+// file from, Sample names both `.git` pointers, and the counterfactual listing
+// position reads 5 against the 3 paths the listing actually holds.
+func TestPrunedGitPointerFileIsNotAttributedToTheRule(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package main\n\nfunc main() {}\n")
+	write(t, repo, graphIgnoreFileName, "hidden/\n")
+	write(t, repo, "hidden/other.go", "package hidden\n\nfunc Other() {}\n")
+	// The pointer of a nested clone, inside the pruned tree: a FILE named `.git`.
+	write(t, repo, "hidden/dep/.git", "gitdir: ../../.dep-git\n")
+	// And one a component deeper, so the check cannot be a leading-name test.
+	write(t, repo, "hidden/dep/nested/work/.git", "gitdir: ../../../../.work-git\n")
+
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &repoIgnoreLedger{}
+	paths, _, err := walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false }, ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if strings.Contains(path, ".git") {
+			t.Fatalf("fixture is wrong: %q is in the corpus, so the listing does not drop it "+
+				"independently and the attribution question below is not the one this test asks", path)
+		}
+	}
+	report := ledger.report()
+	if report == nil {
+		t.Fatal("a pruned source tree left the corpus with no disclosure at all")
+	}
+	for _, exclusion := range report.Sample {
+		if hasGitDirComponent(exclusion.Path) {
+			t.Errorf("the disclosure names a git-metadata path as content the repository's own rule "+
+				"removed, and points the reader at it: %+v", exclusion)
+		}
+	}
+	if report.Files != 1 {
+		t.Errorf("files = %d, want 1: only hidden/other.go left the corpus because of the rule; a git "+
+			"pointer the listing drops on its own is not the rule's doing", report.Files)
+	}
+	// The same paths must not take positions in the counterfactual listing
+	// either: the outer walk skips a git path before noteListingCandidate, so a
+	// position counted here that the listing never holds makes every later
+	// exclusion test as further inside the file cap than it really is.
+	if want := len(paths) + 1; ledger.listingPosition != want {
+		t.Errorf("counterfactual listing position = %d, want %d (%d kept paths plus hidden/other.go): a "+
+			"git path the listing never offers must not take a position in it",
+			ledger.listingPosition, want, len(paths))
+	}
+}

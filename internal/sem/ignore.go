@@ -2088,6 +2088,16 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		if !entry.Type().IsRegular() {
 			return nil
 		}
+		// A linked worktree's or a nested clone's `.git` is a FILE, so the
+		// directory decision above — skipVendoredDir, which refuses a `.git`
+		// component at any depth — never sees it. The outer walk drops it here
+		// too, unconditionally and before the ignore decision (gitDirs.excluded
+		// in visitWalkWorktreeFilesWithRawLimit), so no repository rule can be
+		// what removed it: recording it credited `.graphignore` with hiding git
+		// metadata and put that path in a report the reader is invited to open.
+		if hasGitDirComponent(childRel) {
+			return nil
+		}
 		// Lockfiles and source maps: the outer walk drops them by name wherever
 		// they sit, so no ignore rule can be what removed them.
 		if isVendoredScanFile(childRel, entry.Name()) {
