@@ -67,27 +67,37 @@ struct Config {
 	}
 }
 
-// TestCPlusPlusOperatorDeclarationsStayUnextracted pins a deliberate omission.
-// maskCPlusPlusOperatorCall rewrites `operator=(` to `op(` before tree-sitter
-// sees the file, so the parsed name is not the written name AND every masked
-// operator collapses onto the same `op` — extracting them would put two symbols
-// with one name on a class that overloads more than one operator. Recovering
-// the real name belongs with the mask.
-func TestCPlusPlusOperatorDeclarationsStayUnextracted(t *testing.T) {
+// TestCPlusPlusOperatorDeclarationsExtractRealNames pins that a bodyless
+// operator overload is extracted under the name it is written with.
+// maskCPlusPlusOperatorCall rewrites the operator token before tree-sitter sees
+// the file, so the stand-in identifier is padded to the width of the operator's
+// own name (`operator=` -> `op_______`). Names are sliced from the UNMASKED
+// source at the node's byte range, so preserving that width is what makes the
+// real spelling readable — and what keeps two overloads on one class from
+// collapsing onto a single `op`.
+func TestCPlusPlusOperatorDeclarationsExtractRealNames(t *testing.T) {
 	t.Parallel()
 	got := memberIndex(t, "ledger.hpp", `class Ledger {
 public:
     Ledger& operator=(const Ledger& other);
     bool operator==(const Ledger& other) const;
+    bool operator!=(const Ledger& other) const;
     int Add(int amount) const;
 };
 `)
-	if _, ok := got["method:Ledger.Add"]; !ok {
-		t.Errorf("missing method:Ledger.Add: %#v", mapKeys(got))
+	for _, want := range []string{
+		"method:Ledger.Add",
+		"method:Ledger.operator=",
+		"method:Ledger.operator==",
+		"method:Ledger.operator!=",
+	} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("missing %s: %#v", want, mapKeys(got))
+		}
 	}
 	for name := range got {
-		if name == "method:Ledger.op" || name == "method:Ledger.operator=" || name == "method:Ledger.operator==" {
-			t.Errorf("extracted an operator overload under a masked or colliding name %q: %#v", name, mapKeys(got))
+		if strings.Contains(name, "op_") || name == "method:Ledger.op" {
+			t.Errorf("leaked a masked stand-in name %q: %#v", name, mapKeys(got))
 		}
 	}
 }

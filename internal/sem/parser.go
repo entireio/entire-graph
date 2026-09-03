@@ -2888,10 +2888,28 @@ func maskCPlusPlusMemberOperatorCall(text string) string {
 
 func maskCPlusPlusOperatorCall(text string) string {
 	return cPlusPlusOperatorCallPattern.ReplaceAllStringFunc(text, func(match string) string {
-		if strings.HasPrefix(match, "::") {
-			return sameLengthReplacement("::op(", len(match))
+		// The stand-in identifier keeps the width of the OPERATOR NAME, not just
+		// of the whole match. A symbol's name is sliced from the UNMASKED content
+		// at the node's byte range, so a narrower stand-in reads the wrong bytes
+		// back: `op` is two characters where `operator=` is nine. Padding with
+		// '_' keeps it one identifier token, and the slice then returns the
+		// operator's real spelling.
+		paren := strings.LastIndexByte(match, '(')
+		if paren < 0 {
+			return match
 		}
-		return sameLengthReplacement("op(", len(match))
+		name := strings.TrimRight(match[:paren], " \t")
+		if name == "" {
+			return match
+		}
+		stand := "op"
+		if strings.HasPrefix(name, "::") {
+			stand = "::op"
+		}
+		if len(stand) > len(name) {
+			stand = stand[:len(name)]
+		}
+		return stand + strings.Repeat("_", len(name)-len(stand)) + match[len(name):]
 	})
 }
 
