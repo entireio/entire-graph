@@ -768,6 +768,155 @@ int callGadget(void) { struct Gadget g; return gadgetSize(g); }
 	}
 }
 
+// A DUAL-USE header -- the `#ifdef __cplusplus` / `extern "C" {` header written
+// precisely SO a C translation unit can include it -- is labelled C++:
+// looksLikeCPlusPlusHeader fires on the `extern "C"` marker itself. C names no
+// C++ target in typeSharingLanguageEdges, and correctly so, because a template,
+// an overload set, a class and a namespaced function are declarations a `.c`
+// genuinely cannot name. The consequence was that a `.c` including such a header
+// reached NOTHING in it.
+//
+// Measured on the fixture below before the fix, with the plain-C `gadget.h` as
+// the control -- the same two declarations, the same `.c` consumer, differing
+// only in the header that holds them:
+//
+//	C/renderGadget -> C/Gadget            resolved   (control)
+//	C/callGadget   -> C/gadgetSize        resolved   (control)
+//	C/renderWidget -> C++/Widget          DROPPED    (declared `extern "C"`)
+//	C/callWidth    -> C++/widgetWidth     DROPPED    (declared `extern "C"`)
+//
+// Both halves are pinned here, because the widening is per DECLARATION and not
+// per language: what the header put under C linkage is reachable, and the C++
+// half of the SAME header -- a class, a namespaced function and an overload set
+// -- is not.
+func TestCNamesOnlyExternCDeclarationsInCPlusPlusHeaders(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// Labelled C++ because of the `extern "C"` marker, yet its C-linkage block
+	// is plain C that a `.c` includes and compiles verbatim.
+	writeFile(t, repo, "engine.h", `#ifndef ENGINE_H
+#define ENGINE_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct Widget { int w; };
+
+static inline int widgetWidth(struct Widget w) { return w.w; }
+
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+
+namespace detail {
+inline int helperCount(void) { return 1; }
+}
+
+inline int overloaded(int a) { return a; }
+inline double overloaded(double a) { return a * 2; }
+
+class Engine {
+public:
+  int run() { return 0; }
+};
+
+#endif
+
+#endif
+`)
+	// The control: the same two plain C declarations in a header with no C++
+	// syntax at all, so it keeps the C label.
+	writeFile(t, repo, "gadget.h", `struct Gadget { int g; };
+
+static inline int gadgetSize(struct Gadget g) { return g.g; }
+`)
+	writeFile(t, repo, "use.c", `#include "engine.h"
+#include "gadget.h"
+
+void renderWidget(struct Widget w) { }
+int callWidth(void) { struct Widget w; return widgetWidth(w); }
+void renderEngine(Engine e) { }
+int callHelper(void) { return helperCount(); }
+int callOverloaded(void) { return overloaded(1); }
+void renderGadget(struct Gadget g) { }
+int callGadget(void) { struct Gadget g; return gadgetSize(g); }
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Precondition, and the first thing that broke: an `extern "C" {` block was
+	// blanked out of the source before the C++ grammar ever saw it, and -- since
+	// the canonical dual-use header closes with a bare `}` rather than the
+	// annotated `}  // extern "C"` -- the blanking ran to END OF FILE. The
+	// header contributed no declarations at all, so no language rule could have
+	// made one reachable.
+	declared := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		if symbol.FilePath == "engine.h" {
+			declared[symbol.Name] = symbol
+		}
+	}
+	for _, name := range []string{"Widget", "widgetWidth", "helperCount", "overloaded", "Engine"} {
+		if _, ok := declared[name]; !ok {
+			t.Fatalf("engine.h declares %q and the parser produced no symbol for it; declared: %v", name, sortedSymbolNames(declared))
+		}
+	}
+
+	edges := resolvedEdgeSet(t, snapshot)
+	// The control fixes the baseline: if these are missing, C type and call
+	// resolution broke generally and the assertions below say nothing about the
+	// language pair.
+	for _, control := range []string{
+		"USES_TYPE C/renderGadget->C/Gadget",
+		"CALLS C/callGadget->C/gadgetSize",
+	} {
+		if _, ok := edges[control]; !ok {
+			t.Fatalf("same-language C control edge is missing, the fixture proves nothing: %s; all edges: %v", control, edgeKeys(edges))
+		}
+	}
+	// The widening: what the header declared `extern "C"` is reachable from a
+	// `.c` exactly as the control is.
+	for _, want := range []string{
+		"USES_TYPE C/renderWidget->C++/Widget",
+		"PARAM_TYPE C/renderWidget->C++/Widget",
+		"CALLS C/callWidth->C++/widgetWidth",
+	} {
+		if _, ok := edges[want]; !ok {
+			t.Fatalf("declaration inside `extern \"C\"` is unreachable from a C source: %s; all edges: %v", want, edgeKeys(edges))
+		}
+	}
+	// The narrowing the widening must not cost: the C++ half of the SAME header
+	// stays out of reach. A `.c` cannot name a class, resolve an overload set or
+	// call a namespaced function, and none of the three carries C linkage.
+	for _, impossible := range []string{
+		"USES_TYPE C/renderEngine->C++/Engine",
+		"PARAM_TYPE C/renderEngine->C++/Engine",
+		"CALLS C/callHelper->C++/helperCount",
+		"CALLS C/callOverloaded->C++/overloaded",
+		"DATA_FLOWS C++/helperCount->C/callHelper",
+		"DATA_FLOWS C++/overloaded->C/callOverloaded",
+	} {
+		if relation, ok := edges[impossible]; ok {
+			t.Fatalf("C bound a C++-only declaration: %s (resolution=%s); all edges: %v",
+				impossible, relation.Resolution, edgeKeys(edges))
+		}
+	}
+}
+
+func sortedSymbolNames(symbols map[string]SymbolRecord) []string {
+	names := make([]string, 0, len(symbols))
+	for name := range symbols {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // Objective-C names Swift declarations through the generated `<Module>-Swift.h`
 // header, and that header holds only what Swift exposes to the Objective-C
 // runtime. Binding by bare name alone offered it the whole module.

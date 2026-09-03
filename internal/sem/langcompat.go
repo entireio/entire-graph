@@ -218,6 +218,32 @@ const clojurePortableExt = ".cljc"
 // which is right — a JVM Clojure file cannot name a ClojureScript-only
 // declaration either.
 func candidateSharesDeclarations(from, candidate SymbolRecord) bool {
+	if from.Language == "C" && candidate.Language == "C++" {
+		// C++ as a LANGUAGE stays unreachable from C, which is why the pair is
+		// absent from typeSharingLanguageEdges and stays absent: a template, an
+		// overload set, a namespaced function and a class are declarations a C
+		// source cannot name, and licensing the pair would bind all of them.
+		//
+		// One construct is different, and it is the reason a `.h` gets the C++
+		// label in the first place. `extern "C" { ... }` is how a C++ header
+		// states which of its declarations have C linkage, i.e. exactly which
+		// ones a `.c` may include and call. The dual-use header -- guarded with
+		// `#ifdef __cplusplus` / `extern "C" {` and written precisely SO a C
+		// translation unit can include it -- is labelled C++ by
+		// looksLikeCPlusPlusHeader, which fires on that very marker. Measured
+		// over a fixture whose `.c` includes such a header and an otherwise
+		// identical plain-C control:
+		//
+		//	C/renderGadget -> C/Gadget            resolved (control)
+		//	C/renderWidget -> C++/Widget          DROPPED  (same declaration)
+		//	C/callWidth    -> C++/widgetWidth     DROPPED  (same declaration)
+		//
+		// So the widening is per DECLARATION, not per language: only what the
+		// header itself put under C linkage is offered to C. Everything outside
+		// the block -- the template, the class, the overload, the namespaced
+		// function -- keeps cLinkage false and stays filtered out.
+		return candidate.cLinkage
+	}
 	if !languagesShareTypes(from.Language, candidate.Language) {
 		return false
 	}

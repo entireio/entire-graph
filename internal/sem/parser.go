@@ -2477,17 +2477,6 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 				lines[i] = maskLineText(text) + newline
 			} else if strings.HasPrefix(trimmed, "FMT_PRAGMA_") {
 				lines[i] = maskLineText(text) + newline
-			} else if trimmed == `extern "C" {` {
-				for {
-					lines[i] = maskLineText(text) + newline
-					if (strings.HasPrefix(strings.TrimSpace(text), `}  // extern "C"`) || strings.HasPrefix(strings.TrimSpace(text), `} // extern "C"`)) || i+1 >= len(lines) {
-						break
-					}
-					i++
-					text, newline = splitLineEnding(lines[i])
-				}
-			} else if strings.HasPrefix(trimmed, `}  // extern "C"`) || strings.HasPrefix(trimmed, `} // extern "C"`) {
-				lines[i] = maskLineText(text) + newline
 			} else if strings.HasPrefix(trimmed, "(void)") && (strings.Contains(trimmed, "{}") || strings.Contains(trimmed, "{};")) {
 				lines[i] = paddedReplacement(leadingWhitespace(text), "(void)0;", len(text)) + newline
 			} else if strings.HasPrefix(trimmed, ": std::conditional<") {
@@ -3922,6 +3911,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	childInFunc := inFunc
 	if ok {
 		setEntitySourceRange(&entity, node, language, src)
+		entity.cLinkage = declaredWithCLinkage(language, node, src)
 		if entity.Kind == "function" || entity.Kind == "method" {
 			if language == "JavaScript" || language == "TypeScript" {
 				entity.parameterNames = jsEntityParameterNames(node, src)
@@ -8311,6 +8301,40 @@ func qualify(scope, name string) string {
 
 func validNode(node *sitter.Node) bool {
 	return node != nil && !node.IsNull()
+}
+
+// declaredWithCLinkage reports whether a declaration sits inside an
+// `extern "C" { ... }` linkage specification.
+//
+// That block is the ONE construct a C++ header uses to say which of its
+// declarations a C translation unit may name, and it is why the dual-use header
+// -- the one written precisely so a `.c` can include it -- exists at all. The
+// language label follows the FILE, so such a header is labelled C++ (see
+// looksLikeCPlusPlusHeader, which fires on the `extern "C"` marker itself), and
+// nothing else in a symbol record distinguishes the C-linkage half from the
+// templates, overloads, namespaces and classes around it. This flag is that
+// distinction; candidateSharesDeclarations is its only consumer.
+//
+// `extern "C++"` is deliberately not matched: it says the opposite.
+func declaredWithCLinkage(language string, node *sitter.Node, src []byte) bool {
+	switch language {
+	case "C", "C++", "Objective-C", "Objective-C++":
+	default:
+		return false
+	}
+	for parent := node; validNode(parent); parent = parent.Parent() {
+		if parent.Type() != "linkage_specification" {
+			continue
+		}
+		value := parent.ChildByFieldName("value")
+		if !validNode(value) {
+			continue
+		}
+		if strings.Trim(value.Content(src), `"`) == "C" {
+			return true
+		}
+	}
+	return false
 }
 
 func normalize(value string) string {

@@ -346,7 +346,12 @@ type SymbolRecord struct {
 	// Call resolution uses it to tell an overload set apart from genuinely
 	// ambiguous same-name definitions. Private, so the frozen schema and the
 	// compound-v1 IDs are unchanged.
-	bodyless       bool
+	bodyless bool
+	// cLinkage: this symbol is declared inside an `extern "C" { ... }` block
+	// (see Entity.cLinkage). candidateSharesDeclarations reads it to tell the
+	// C-linkage half of a dual-use header from the C++ half. Private, so the
+	// frozen schema and the compound-v1 IDs are unchanged.
+	cLinkage       bool
 	parameterNames []string
 	// parameterNamesKnown distinguishes an AST-confirmed empty parameter list
 	// from missing parser metadata. This stays private to preserve the frozen
@@ -1877,6 +1882,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			sourceStartByte: entity.sourceStartByte,
 			sourceEndByte:   entity.sourceEndByte,
 			bodyless:        entity.bodyless,
+			cLinkage:        entity.cLinkage,
 		}
 		// Carried for every language: the parser marks parameterNamesKnown only
 		// when it actually read the names off the parse tree, so a grammar with
@@ -9968,8 +9974,16 @@ func typeNameOccursBare(signature, name string) bool {
 // same-name declaration no longer suppresses the real, resolvable edge.
 func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecord, symbolsByShortName map[string][]SymbolRecord, importsByName, qualifiedImportsByName map[string][]string) (SymbolRecord, string, string, float64, bool) {
 	var candidates []SymbolRecord
+	// The language filter is sharedTypeCandidates' job and only its job. Repeating
+	// languagesShareTypes here re-asked the LANGUAGE-pair question about a list
+	// already filtered by candidateSharesDeclarations, which is the finer of the
+	// two: it answers per DECLARATION where a language pair cannot. The duplicate
+	// silently overrode the finer answer -- a `struct` declared `extern "C"` in a
+	// C++-labelled header passed the candidate filter and was then dropped again
+	// here, so `C/renderWidget -> C++/Widget` was missing while the CALLS edge to
+	// the function beside it resolved.
 	for _, sym := range sharedTypeCandidates(from, symbolsByShortName[name]) {
-		if sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind) && languagesShareTypes(from.Language, sym.Language) {
+		if sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind) {
 			candidates = append(candidates, sym)
 		}
 	}
