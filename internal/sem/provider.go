@@ -3400,8 +3400,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		// NameModules only appends resolved file paths, so the original dotted
 		// modules the form map keys on survive in importsByName.
 		var pythonImportForms map[string]map[string]pythonImportForm
+		var pythonImportBindings map[string]pythonImportBindingInfo
 		if file.Language == "Python" {
 			pythonImportForms = importedPythonImportForms(content)
+			pythonImportBindings = importedPythonImportBindings(content)
 		}
 		if skipFastProfilePerSymbolScan(spec, file.Language) {
 			continue
@@ -3728,6 +3730,8 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if modules := callImportsByName[name]; len(modules) > 0 {
 						rawImportModuleSets = [][]string{modules}
 					}
+					pythonAliasMember := ""
+					pythonModuleOnlyName := false
 					if file.Language == "Python" {
 						// The raw FFI exception is valid only for imports visible at an
 						// unshadowed AST call site in this callable. Ordinary filtered
@@ -3744,6 +3748,8 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						if len(rawImportModuleSets) == 0 {
 							rawCandidates = nil
 						}
+						pythonAliasMember, _ = pythonImportedMemberName(pythonImportBindings, name)
+						pythonModuleOnlyName = pythonImportBindsModuleOnly(pythonImportBindings, name)
 					}
 					// A container's block spans its members' definition lines, which
 					// look like calls (e.g. `def validate(self):`). Skip the names of
@@ -3767,6 +3773,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						})
 					} else {
 						targets = resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
+						if len(targets) == 0 && pythonAliasMember != "" {
+							targets = pythonAliasImportCallTargets(pythonAliasMember, from, sharedTypeCandidates(from, symbolsByShortName[pythonAliasMember]), symbolsByShortName[pythonAliasMember], rawImportModuleSets, importsForCall[name], false)
+						}
 						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols, juliaLocalBindings)
 						genericSameContainerType := len(targets) == 1 && typeLikeKind(targets[0].Kind) &&
 							targets[0].FilePath == from.FilePath && targets[0].ContainerID == from.ContainerID
@@ -3845,8 +3854,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							continue
 						}
 					}
-					if len(targets) == 0 && !suppressExternal {
-						for _, relation := range importedExternalCallRelationsForName(from, name, importsForCall[name]) {
+					if len(targets) == 0 && !suppressExternal && !pythonModuleOnlyName {
+						// An unresolved alias still names its member, not itself:
+						// `from mod import compute as c` makes the external target
+						// mod.compute. mod.c names nothing.
+						externalName := name
+						if pythonAliasMember != "" {
+							externalName = pythonAliasMember
+						}
+						for _, relation := range importedExternalCallRelationsForName(from, externalName, importsForCall[name]) {
 							emit(relation)
 						}
 					}
@@ -4233,6 +4249,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if modules := importsByName[name]; len(modules) > 0 {
 						rawImportModuleSets = [][]string{modules}
 					}
+					pythonAliasMember := ""
 					if file.Language == "Python" {
 						if pythonBareScopes.complete {
 							rawImportModuleSets = pythonBareScopes.importModuleSets(fileSource, name)
@@ -4244,6 +4261,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						if len(rawImportModuleSets) == 0 {
 							rawCandidates = nil
 						}
+						pythonAliasMember, _ = pythonImportedMemberName(pythonImportBindings, name)
 					}
 					var targets []resolvedCallTarget
 					if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
@@ -4253,6 +4271,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else {
 						targets = resolveCallTargetsWithRawImport(name, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
+						if len(targets) == 0 && pythonAliasMember != "" {
+							targets = pythonAliasImportCallTargets(pythonAliasMember, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[pythonAliasMember]), symbolsByShortName[pythonAliasMember], rawImportModuleSets, importsForCall[name], false)
+						}
 					}
 					for _, to := range targets {
 						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
@@ -20287,7 +20308,7 @@ const (
 )
 
 func importedPythonNames(content string) map[string][]string {
-	names, _ := importedPythonNamesAndForms(content)
+	names, _, _ := importedPythonNamesAndForms(content)
 	return names
 }
 
@@ -20296,21 +20317,107 @@ func importedPythonNames(content string) map[string][]string {
 // string (the same module strings importedPythonNames records), so the
 // dotted-call composer can look up forms[local][module].
 func importedPythonImportForms(content string) map[string]map[string]pythonImportForm {
-	_, forms := importedPythonNamesAndForms(content)
+	_, forms, _ := importedPythonNamesAndForms(content)
 	return forms
 }
 
-// importedPythonNamesAndForms is the single parser shared by importedPythonNames
-// and importedPythonImportForms, so the module strings and their recorded forms
-// can never drift apart.
-func importedPythonNamesAndForms(content string) (map[string][]string, map[string]map[string]pythonImportForm) {
+// pythonImportBindingInfo records WHAT a Python import binds to one local name,
+// which the module strings alone cannot say. `from mod import compute as c`
+// binds a MEMBER of mod, and the member's own name -- not the local alias -- is
+// the name the workspace symbol index is keyed by, so an alias is unresolvable
+// until the original is carried alongside it. `import mod [as m]` binds the
+// MODULE object itself, which names no member at all.
+type pythonImportBindingInfo struct {
+	members     []string
+	bindsModule bool
+}
+
+// importedPythonImportBindings returns, per local binding name, the member
+// names a from-import binds to it and whether any plain import binds a module
+// to it.
+func importedPythonImportBindings(content string) map[string]pythonImportBindingInfo {
+	_, _, bindings := importedPythonNamesAndForms(content)
+	return bindings
+}
+
+// pythonImportedMemberName returns the member name behind a Python import
+// alias: after `from mod import compute as c`, the call `c(...)` is a call to
+// `compute`, which is what the workspace short-name index holds. It answers only
+// when the file binds that local name unambiguously to exactly one member and
+// never to a module, so an alias reused for two different members -- or one
+// that also names a module -- stays unresolved rather than becoming a guess.
+func pythonImportedMemberName(bindings map[string]pythonImportBindingInfo, local string) (string, bool) {
+	info, ok := bindings[local]
+	if !ok || info.bindsModule || len(info.members) != 1 {
+		return "", false
+	}
+	member := info.members[0]
+	if member == "" || member == local {
+		return "", false
+	}
+	return member, true
+}
+
+// pythonImportBindsModuleOnly reports that every import binding for this local
+// name names a MODULE (`import mod`, `import mod as m`). A module object is not
+// callable, so a bare `m(...)` names no member of mod; reporting it as an
+// external call to `mod.m` invents a symbol that cannot exist.
+func pythonImportBindsModuleOnly(bindings map[string]pythonImportBindingInfo, local string) bool {
+	info, ok := bindings[local]
+	return ok && info.bindsModule && len(info.members) == 0
+}
+
+// pythonAliasImportCallTargets resolves a bare call made through a Python
+// import alias. The alias is looked up under the MEMBER name because that is
+// what the callee is actually called, and only the two import tiers run: the
+// alias itself is defined nowhere, so a same-file or workspace-wide name match
+// on it would be a coincidence of spelling. Running exactly the tiers the
+// un-aliased spelling uses is what makes `import compute as c` produce the same
+// edge as `import compute`, ambiguity suppression included.
+func pythonAliasImportCallTargets(member string, from SymbolRecord, candidates, rawCandidates []SymbolRecord, rawImportModuleSets [][]string, modules []string, allowMethodTargets bool) []resolvedCallTarget {
+	if member == "" || len(modules) == 0 {
+		return nil
+	}
+	imports := map[string][]string{member: modules}
+	if targets := resolveImportedCallTargets(member, from, candidates, imports, allowMethodTargets); len(targets) > 0 {
+		return targets
+	}
+	if len(rawImportModuleSets) > 0 {
+		if targets, _ := resolveUniqueRawImportedCallTarget(member, from, rawCandidates, rawImportModuleSets, allowMethodTargets); len(targets) > 0 {
+			return targets
+		}
+	}
+	return nil
+}
+
+// importedPythonNamesAndForms is the single parser shared by importedPythonNames,
+// importedPythonImportForms and importedPythonImportBindings, so the module
+// strings, their recorded forms and the member names behind their aliases can
+// never drift apart.
+func importedPythonNamesAndForms(content string) (map[string][]string, map[string]map[string]pythonImportForm, map[string]pythonImportBindingInfo) {
 	imports := map[string][]string{}
 	forms := map[string]map[string]pythonImportForm{}
+	bindings := map[string]pythonImportBindingInfo{}
 	recordForm := func(local, module string, form pythonImportForm) {
 		if forms[local] == nil {
 			forms[local] = map[string]pythonImportForm{}
 		}
 		forms[local][module] = form
+	}
+	recordModuleBinding := func(local string) {
+		info := bindings[local]
+		info.bindsModule = true
+		bindings[local] = info
+	}
+	recordMemberBinding := func(local, member string) {
+		info := bindings[local]
+		for _, existing := range info.members {
+			if existing == member {
+				return
+			}
+		}
+		info.members = append(info.members, member)
+		bindings[local] = info
 	}
 	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
 	fromRe := regexp.MustCompile(`^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+(.+)$`)
@@ -20334,6 +20441,7 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 				}
 				imports[local] = append(imports[local], module)
 				recordForm(local, module, form)
+				recordModuleBinding(local)
 			}
 			continue
 		}
@@ -20351,10 +20459,11 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 				importedModule := pythonFromImportModuleSpec(module, name)
 				imports[local] = append(imports[local], importedModule)
 				recordForm(local, importedModule, pythonFromImport)
+				recordMemberBinding(local, name)
 			}
 		}
 	}
-	return imports, forms
+	return imports, forms, bindings
 }
 
 func parsePythonImportItem(item string) (name, alias string) {

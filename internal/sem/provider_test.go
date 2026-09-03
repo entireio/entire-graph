@@ -5101,6 +5101,176 @@ def run():
 	})
 }
 
+// `from mod import compute as c` binds `c` to mod's `compute`, so `c(...)` is a
+// call to compute and must produce the edge the un-aliased spelling produces.
+// It did not: every tier looks the call name up in the workspace short-name
+// index, and `c` is defined nowhere, so the resolved edge was lost and replaced
+// by an external target named mod.c -- a symbol that does not exist anywhere,
+// which is strictly worse than the missing edge it stood in for. Carrying the
+// original member name alongside the alias is what makes the lookup possible;
+// the un-aliased fixture in TestBareImportedCallResolvesAcrossFFIBoundary is the
+// oracle and every field of the edge must match it.
+func TestAliasedImportedCallResolvesToItsOriginalName(t *testing.T) {
+	const foreign = `int compute(int value) {
+	return value + 1;
+}
+`
+
+	t.Run("alias resolves to the member it renames", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `def run(v):
+    from frobnicate import compute as c
+    return c(v)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("aliased import was not bound to the member it renames: %#v", calls[0])
+		}
+		if calls[0].Resolution != "import_resolved" {
+			t.Fatalf("want import_resolved, got %q: %#v", calls[0].Resolution, calls[0])
+		}
+		if strings.Contains(calls[0].ToID, "frobnicate.c\"") || strings.HasSuffix(calls[0].ToID, ":c") {
+			t.Fatalf("edge names the alias rather than the member: %#v", calls[0])
+		}
+	})
+
+	// The alias must reach exactly the same edge as the spelling it renames:
+	// same target, resolution, scope and confidence. Anything else would mean
+	// the alias took a different path through the resolver.
+	t.Run("identical to the un-aliased edge", func(t *testing.T) {
+		build := func(source string) RelationRecord {
+			t.Helper()
+			repo := t.TempDir()
+			writeFile(t, repo, "frobnicate.c", foreign)
+			writeFile(t, repo, "app.py", source)
+			calls := callRelationsFrom(t, repo, "app.py:function:run")
+			if len(calls) != 1 {
+				t.Fatalf("want one call edge out of run, got %#v", calls)
+			}
+			return calls[0]
+		}
+		aliased := build(`def run(v):
+    from frobnicate import compute as c
+    return c(v)
+`)
+		plain := build(`def run(v):
+    from frobnicate import compute
+    return compute(v)
+`)
+		// Each fixture gets its own temp repo, so the ID's repo-key prefix
+		// differs by construction; everything after it must not.
+		target := func(id string) string { return id[strings.Index(id, ":")+1:] }
+		if target(aliased.ToID) != target(plain.ToID) || aliased.Resolution != plain.Resolution ||
+			aliased.RelationScope != plain.RelationScope || aliased.Confidence != plain.Confidence ||
+			aliased.Reason != plain.Reason {
+			t.Fatalf("aliased edge diverged from its un-aliased oracle:\n alias = %#v\n plain = %#v", aliased, plain)
+		}
+	})
+
+	// The alias reads PAST the language filter exactly as the un-aliased bare
+	// call does, so it carries the same ambiguity rule: two same-named units
+	// behind one import are not a licence to pick one.
+	t.Run("ambiguity behind the alias stays suppressed", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "lib/frobnicate.rb", `def compute(value)
+  value + 1
+end
+`)
+		writeFile(t, repo, "app.py", `def run(v):
+    from frobnicate import compute as c
+    return c(v)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("ambiguous cross-language alias must not resolve to a local symbol: %#v", call)
+			}
+			if !strings.HasSuffix(call.ToID, "frobnicate.compute") {
+				t.Fatalf("unresolved alias must still name its member, got %#v", call)
+			}
+		}
+	})
+
+	// `import mod as m` binds the MODULE, not one of its members. A module
+	// object is not callable, so a bare `m(...)` names nothing: neither a local
+	// symbol nor an external `mod.m`, which would be an invented member.
+	t.Run("module alias names no member", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `def run(v):
+    import frobnicate as m
+    return m(v)
+`)
+
+		if calls := callRelationsFrom(t, repo, "app.py:function:run"); len(calls) != 0 {
+			t.Fatalf("a bare call on a module alias must emit no edge, got %#v", calls)
+		}
+	})
+
+	// Python scopes a function-local import to that function, and the alias is
+	// no exception: the member name it carries must not reach a sibling that
+	// never imported it. Getting this wrong is worse than a missing edge,
+	// because an import outranks the language-compatibility relation and the
+	// leak would land as a confident cross-language edge.
+	t.Run("a function-local alias does not leak to a sibling", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `def run(v):
+    from frobnicate import compute as c
+    return c(v)
+
+
+def unrelated(v):
+    return c(v)
+`)
+
+		if calls := callRelationsFrom(t, repo, "app.py:function:unrelated"); len(calls) != 0 {
+			t.Fatalf("a function-local aliased import leaked to an unrelated function: %#v", calls)
+		}
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("the importing function lost its aliased edge: %#v", calls)
+		}
+	})
+
+	// Two imports renaming DIFFERENT members onto one local name leave nothing
+	// to resolve to; the resolver must decline rather than pick the first.
+	t.Run("an alias bound to two members resolves to nothing", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+
+int measure(int value) {
+	return value + 2;
+}
+`)
+		writeFile(t, repo, "app.py", `def run(v):
+    from frobnicate import compute as c
+    return c(v)
+
+
+def other(v):
+    from frobnicate import measure as c
+    return c(v)
+`)
+
+		for _, from := range []string{"app.py:function:run", "app.py:function:other"} {
+			for _, call := range callRelationsFrom(t, repo, from) {
+				if call.RelationScope != "external" {
+					t.Fatalf("%s bound an ambiguous alias to a local symbol: %#v", from, call)
+				}
+			}
+		}
+	})
+}
+
 // Regression for the jdx/mise report: a bare type name in a signature must
 // resolve through the file's import bindings before any global fallback, and
 // an ambiguous name with no import evidence must resolve to nothing. mise's
