@@ -3364,8 +3364,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		// NameModules only appends resolved file paths, so the original dotted
 		// modules the form map keys on survive in importsByName.
 		var pythonImportForms map[string]map[string]pythonImportForm
+		// An `import` inside a Python function binds only in that function, yet
+		// the import-name map above is built for the whole FILE. Collect the
+		// names only such an import binds, with the scopes they are visible in,
+		// so a caller elsewhere in the file is not offered them.
+		var pythonLocalImportScopes map[string][]pythonImportScope
 		if file.Language == "Python" {
 			pythonImportForms = importedPythonImportForms(content)
+			pythonLocalImportScopes = pythonLocalOnlyImportScopes(content)
 		}
 		if skipFastProfilePerSymbolScan(spec, file.Language) {
 			continue
@@ -3509,6 +3515,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			var pythonLocalBindings map[string]struct{}
 			if file.Language == "Python" && !typeLikeKind(from.Kind) {
 				pythonLocalBindings = pythonLocalBindingNames(block)
+			}
+			// The import tiers read an explicit import as evidence that outranks
+			// the language-compatibility relation, so a function-local import
+			// leaking to the rest of the file did not merely add a weak edge: it
+			// bound an unrelated function to a foreign callable at
+			// import_resolved confidence. Every call path below therefore
+			// resolves against the imports THIS symbol can see.
+			visibleImportsByName := importsByName
+			if len(pythonLocalImportScopes) > 0 {
+				visibleImportsByName = pythonImportsVisibleTo(importsByName, pythonLocalImportScopes, from)
 			}
 			if fileNeedsCallScan && !typeLikeKind(from.Kind) && file.Language == "Erlang" {
 				// Erlang call sites carry information the generic scanner cannot
@@ -3675,7 +3691,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						callNames[name] = struct{}{}
 					}
 				}
-				callImportsByName := importsByName
+				callImportsByName := visibleImportsByName
 				// Python module-qualified dotted calls (`pkg.mod.fn()`) are resolved
 				// by a dedicated, strictly module-scoped path (emitted after the
 				// generic loop below): the generic resolver ignores the module
@@ -3807,7 +3823,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName, false, pythonLocalBindings) {
+					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, visibleImportsByName, false, pythonLocalBindings) {
 						if typeLikeKind(to.Kind) {
 							continue // construction, not an async call
 						}
@@ -3860,7 +3876,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if flow.Name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName, true, pythonLocalBindings) {
+					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, visibleImportsByName, true, pythonLocalBindings) {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}

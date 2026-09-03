@@ -467,3 +467,151 @@ func pythonSplitTopLevel(source string) []string {
 	}
 	return append(parts, source[start:])
 }
+
+// pythonImportScope is one function-local `import` and the scope it is visible
+// in: the line the import sits on, plus the line range (1-based, inclusive) of
+// the `def`/`class` whose body holds it.
+type pythonImportScope struct {
+	importLine int
+	startLine  int
+	endLine    int
+}
+
+// visibleTo reports whether a symbol can see this import. Two ways: the import
+// statement is inside the symbol's own block, or the scope holding the import
+// encloses the symbol -- a nested `def` really does see the import its
+// enclosing function made, so confining the import to its own function alone
+// would delete that call instead of the unrelated one.
+func (scope pythonImportScope) visibleTo(from SymbolRecord) bool {
+	if from.StartLine <= scope.importLine && scope.importLine <= from.EndLine {
+		return true
+	}
+	return scope.startLine <= from.StartLine && from.EndLine <= scope.endLine
+}
+
+// pythonLocalOnlyImportScopes returns, for every name bound ONLY by an import
+// inside a `def`/`class` body in this file, the scopes those imports are
+// visible in.
+//
+// The import-name map the call resolver reads is built for a whole FILE, so
+// `from frobnicate import compute` inside one function offered `compute` as an
+// import-resolved target -- across a language boundary, at confidence 0.86 --
+// to every other function in the file, none of which can see it.
+//
+// A name any module-level import also binds is left out entirely: it is visible
+// everywhere in the file already, and the point of this map is to say which
+// names are NOT. An indented import that no `def`/`class` encloses (the
+// `if TYPE_CHECKING:` idiom) binds at module scope and is treated the same way.
+func pythonLocalOnlyImportScopes(content string) map[string][]pythonImportScope {
+	lines := strings.Split(content, "\n")
+	indents := make([]int, len(lines))
+	for i, line := range lines {
+		body := strings.TrimLeft(line, " \t")
+		if body == "" {
+			indents[i] = -1
+			continue
+		}
+		indents[i] = len(line) - len(body)
+	}
+	local := map[string][]pythonImportScope{}
+	moduleLevel := map[string]struct{}{}
+	for i := range lines {
+		if indents[i] <= 0 {
+			// A module-level import (or a blank line): read it only to learn
+			// which names need no confinement at all.
+			if indents[i] == 0 {
+				for name := range importedPythonNames(lines[i]) {
+					moduleLevel[name] = struct{}{}
+				}
+			}
+			continue
+		}
+		names := importedPythonNames(lines[i])
+		if len(names) == 0 {
+			continue
+		}
+		scope, enclosed := pythonEnclosingScopeRange(lines, indents, i)
+		for name := range names {
+			if !enclosed {
+				moduleLevel[name] = struct{}{}
+				continue
+			}
+			scope.importLine = i + 1
+			local[name] = append(local[name], scope)
+		}
+	}
+	for name := range moduleLevel {
+		delete(local, name)
+	}
+	if len(local) == 0 {
+		return nil
+	}
+	return local
+}
+
+// pythonEnclosingScopeRange returns the line range of the innermost `def` or
+// `class` whose body holds line `at`. A shallower line that is not a
+// definition header -- an `if`, a `try`, a `with` -- opens no scope, so the
+// walk continues outwards past it.
+func pythonEnclosingScopeRange(lines []string, indents []int, at int) (pythonImportScope, bool) {
+	indent := indents[at]
+	for i := at - 1; i >= 0; i-- {
+		if indents[i] < 0 || indents[i] >= indent {
+			continue
+		}
+		body := strings.TrimLeft(lines[i], " \t")
+		if !pythonNestedScopeHeaderRe.MatchString(body) {
+			indent = indents[i]
+			continue
+		}
+		end := len(lines)
+		for j := at + 1; j < len(lines); j++ {
+			if indents[j] < 0 || indents[j] > indents[i] {
+				continue
+			}
+			end = j
+			break
+		}
+		return pythonImportScope{startLine: i + 1, endLine: end}, true
+	}
+	return pythonImportScope{}, false
+}
+
+// pythonImportsVisibleTo narrows a file-wide import-name map to the imports one
+// symbol can actually see, dropping the function-local bindings declared
+// somewhere else in the file. The map is returned unchanged -- not copied --
+// whenever nothing is hidden, which is every symbol in a file whose imports are
+// all module-level.
+func pythonImportsVisibleTo(imports map[string][]string, localOnly map[string][]pythonImportScope, from SymbolRecord) map[string][]string {
+	var hidden map[string]struct{}
+	for name, scopes := range localOnly {
+		if _, imported := imports[name]; !imported {
+			continue
+		}
+		visible := false
+		for _, scope := range scopes {
+			if scope.visibleTo(from) {
+				visible = true
+				break
+			}
+		}
+		if visible {
+			continue
+		}
+		if hidden == nil {
+			hidden = map[string]struct{}{}
+		}
+		hidden[name] = struct{}{}
+	}
+	if len(hidden) == 0 {
+		return imports
+	}
+	visible := make(map[string][]string, len(imports))
+	for name, modules := range imports {
+		if _, drop := hidden[name]; drop {
+			continue
+		}
+		visible[name] = modules
+	}
+	return visible
+}

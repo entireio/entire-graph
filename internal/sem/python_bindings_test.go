@@ -161,3 +161,72 @@ func TestPythonLocalBindingNames(t *testing.T) {
 		})
 	}
 }
+
+// pythonLocalOnlyImportScopes answers which imported names are NOT visible
+// file-wide. Getting that wrong in the other direction hides a real import, so
+// every shape that binds at module scope must stay out of the map entirely.
+func TestPythonLocalOnlyImportScopes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		source   string
+		confined []string
+		filewide []string
+	}{
+		{
+			name: "an import inside a function is confined to it",
+			source: `def run():
+    from frobnicate import compute
+    return compute(1)
+`,
+			confined: []string{"compute"},
+		},
+		{
+			name: "a module-level import is never confined",
+			source: `from frobnicate import compute
+
+
+def run():
+    return compute(1)
+`,
+			filewide: []string{"compute"},
+		},
+		{
+			name: "a name imported at module scope as well stays file-wide",
+			source: `from frobnicate import compute
+
+
+def run():
+    from other import compute
+    return compute(1)
+`,
+			filewide: []string{"compute"},
+		},
+		{
+			name: "an indented import no definition encloses binds at module scope",
+			source: `if TYPE_CHECKING:
+    from frobnicate import compute
+
+
+def run():
+    return compute(1)
+`,
+			filewide: []string{"compute"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			scopes := pythonLocalOnlyImportScopes(tc.source)
+			for _, name := range tc.confined {
+				if len(scopes[name]) == 0 {
+					t.Fatalf("%q must be confined to its own scope; got %v", name, sortedKeysOf(scopes))
+				}
+			}
+			for _, name := range tc.filewide {
+				if len(scopes[name]) != 0 {
+					t.Fatalf("%q is visible file-wide and must not be confined; got %v", name, sortedKeysOf(scopes))
+				}
+			}
+		})
+	}
+}

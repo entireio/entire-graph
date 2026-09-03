@@ -4532,6 +4532,54 @@ def run():
 	}
 }
 
+// The import-name map that tier reads is built for a whole FILE, but Python
+// scopes an `import` inside a function to that function. The map therefore
+// offered `compute` to every other function in the file, and because an import
+// outranks the language-compatibility relation the result was not a weak edge
+// but a confident cross-language one:
+//
+//	Python/unrelated -> C/compute   res=import_resolved conf=0.86   WRONG
+//
+// A nested `def` is the other half of the rule and is asserted here too: it
+// really does see the import its enclosing function made, so confining the
+// import to its own function alone would delete that call instead.
+func TestBareImportedCallIgnoresImportLocalToAnotherFunction(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `def uses_import():
+    from frobnicate import compute
+
+    def inner():
+        return compute(2)
+
+    return compute(1) + inner()
+
+
+def unrelated():
+    return compute(3)
+`)
+
+	if calls := callRelationsFrom(t, repo, "app.py:function:unrelated"); len(calls) != 0 {
+		t.Fatalf("a function-local import leaked to an unrelated function: %#v", calls)
+	}
+	// Still resolves: the importing function itself, and the nested def inside it.
+	for _, from := range []string{"app.py:function:uses_import", "app.py:function:inner"} {
+		calls := callRelationsFrom(t, repo, from)
+		found := false
+		for _, call := range calls {
+			if strings.Contains(call.ToID, "frobnicate.c:function:compute") && call.Resolution == "import_resolved" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s lost its import-resolved call to the C unit: %#v", from, calls)
+		}
+	}
+}
+
 // The bare-call import tier is the one place that reads PAST the language
 // filter, so it carries the same ambiguity rule as the qualified one: module
 // paths are matched by suffix, so a single import can match same-named
