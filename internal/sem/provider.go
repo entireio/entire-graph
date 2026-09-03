@@ -2067,7 +2067,9 @@ func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, 
 		return nil, true, true
 	}
 	if _, shadowed := localBindings[name]; shadowed {
-		return nil, true, true
+		// Decline only this additive Julia-method fallback. Existing generic
+		// targets and external resolution must retain their pre-PR behavior.
+		return nil, false, false
 	}
 	hasNestedCallable := false
 	for _, to := range sameFile {

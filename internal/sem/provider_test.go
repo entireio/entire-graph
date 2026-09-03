@@ -12746,7 +12746,7 @@ func TestJuliaSameContainerMethodCallTargetsFailClosed(t *testing.T) {
 		wantBlocked bool
 	}{
 		{name: "unique same-container target", candidates: []SymbolRecord{target}, wantID: target.ID, wantFound: true},
-		{name: "local binding blocks resolution", candidates: []SymbolRecord{target}, wantFound: true, wantBlocked: true},
+		{name: "local binding declines fallback", candidates: []SymbolRecord{target}},
 		{name: "sibling module", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.ContainerID = "module-b"; return s }()}},
 		{name: "different file", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.FilePath = "src/other.jl"; return s }()}},
 		{name: "different language", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.Language = "Java"; return s }()}},
@@ -12758,7 +12758,7 @@ func TestJuliaSameContainerMethodCallTargetsFailClosed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			bindings := map[string]struct{}{}
-			if tt.name == "local binding blocks resolution" {
+			if tt.name == "local binding declines fallback" {
 				bindings["target"] = struct{}{}
 			}
 			targets, found, blocked := resolveJuliaSameContainerMethodCallTargets("target", from, tt.candidates, bindings)
@@ -12854,6 +12854,13 @@ function inline_catch()
     try
     catch; helper; helper(); end
 end
+struct Widget end
+function constructor_control(callback)
+    Widget()
+    let Widget = callback
+        Widget()
+    end
+end
 end
 `)
 	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
@@ -12884,6 +12891,18 @@ end
 		if !callsHelper {
 			t.Fatalf("non-shadowing Bound.%s lost its call to Bound.helper: %#v", name, relationsOfType(snapshot.Relations, "CALLS"))
 		}
+	}
+	widget := symbolByKindAndName(snapshot.Symbols, "struct", "Widget")
+	constructorControl := symbolByKindAndName(snapshot.Symbols, "method", "Bound.constructor_control")
+	if widget.ID == "" || constructorControl.ID == "" {
+		t.Fatalf("missing constructor-control symbols: %#v", snapshot.Symbols)
+	}
+	constructsWidget := false
+	for _, relation := range snapshot.Relations {
+		constructsWidget = constructsWidget || relation.Type == "CONSTRUCTS" && relation.FromID == constructorControl.ID && relation.ToID == widget.ID
+	}
+	if !constructsWidget {
+		t.Fatalf("local-binding veto removed existing constructor resolution: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
 	}
 }
 
