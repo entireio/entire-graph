@@ -170,6 +170,19 @@ func runInitAgents(opts Options, args []string) error {
 		return fmt.Errorf("init-agents: %w", err)
 	}
 
+	// The hard-link refusal is enforced on the WRITE, because an open handle is the only thing
+	// that can be asked about an inode. But the first write that can reach it is the one that
+	// creates or overwrites the guide, so a refusal raised there leaves a partial installation,
+	// and rollback cannot restore a guide it did not create. Ask the same question here, with the
+	// rest of the preflight, so a repository holding an unaccounted hard link fails before the
+	// first byte is written. The write-time guard stays: the preflight is not the enforcement, and
+	// a link swapped in afterwards is still refused by the write that finds it.
+	for _, name := range []string{guideName, agentsName, claudeName} {
+		if err := ensureNoSharedInode(repoRoot, name, guideName, agentsName, claudeName); err != nil {
+			return fmt.Errorf("init-agents: %w", err)
+		}
+	}
+
 	agentsInfo, err := inspectInstructionFile(repoRoot, agentsName, agentsPath)
 	if err != nil {
 		return fmt.Errorf("init-agents: %w", err)
@@ -713,7 +726,7 @@ func resolveContainedNameWithOptions(root *os.Root, name string, allowMissingDir
 	if err != nil {
 		return "", err
 	}
-	if sem.PathLandsInGitDir(resolved) {
+	if sem.PathLandsInGitDir(resolved) && gitDirSpellingReachesTheGitDir(root, resolved) {
 		return "", fmt.Errorf(
 			"%w: %s resolves to %s, inside the repository's git directory, where init-agents must never write",
 			errGitDirManagedTarget, name, filepath.ToSlash(resolved),
@@ -738,6 +751,50 @@ func resolveContainedNameWithOptions(root *os.Root, name string, allowMissingDir
 
 // errGitDirManagedTarget marks a managed target whose resolution lands in the git directory.
 var errGitDirManagedTarget = errors.New("refusing to write into the git directory")
+
+// gitDirSpellingReachesTheGitDir confirms with THIS filesystem the question sem.PathLandsInGitDir
+// answers from the name alone.
+//
+// The fold is there because macOS and Windows resolve a repository-chosen link target
+// case-insensitively, so a committed `CLAUDE.md -> .GIT/config` opens `.git/config` and an exact
+// comparison would be a bypass on exactly the two platforms most development happens on. Where the
+// kernel does NOT fold, that reasoning describes nothing: `.GIT` is then an ordinary directory no
+// git command has ever used, and refusing a contained markdown landing inside it rejects a
+// legitimate alias — `AGENTS.md -> .GIT/rules.md` — for a spelling alone.
+//
+// So the fold is kept and then CHECKED. An exact `.git` component is the git directory whatever
+// the filesystem does. A case variant is one only when the two spellings open the same directory,
+// which is a question for the filesystem rather than for the text. Anything unanswerable keeps the
+// fold's answer, so this can only ever confirm a refusal the name rule already raised, never
+// withdraw one it could not decide.
+func gitDirSpellingReachesTheGitDir(root *os.Root, resolved string) bool {
+	components := splitPathComponents(resolved)
+	for i, component := range components {
+		if component == ".git" {
+			return true
+		}
+		if !strings.EqualFold(component, ".git") {
+			continue
+		}
+		spelled, spelledErr := root.Stat(filepath.Join(components[:i+1]...))
+		if spelledErr != nil {
+			// The variant names nothing that can be compared. On a folding filesystem it
+			// would name `.git` whenever `.git` exists, so this is either a case-sensitive
+			// filesystem with nothing there yet or an unreadable ancestry; neither is
+			// evidence, and the fold stands.
+			return true
+		}
+		exact, exactErr := root.Stat(filepath.Join(append(components[:i:i], ".git")...))
+		if exactErr != nil {
+			// There is no `.git` beside it for the variant to be an alias OF.
+			continue
+		}
+		if os.SameFile(spelled, exact) {
+			return true
+		}
+	}
+	return false
+}
 
 // landsInGitAdministrativeDirectory reports the git administrative directory a resolved landing is
 // inside, whatever that directory is NAMED, and whether it found one.
@@ -1671,6 +1728,28 @@ func refuseSharedInode(root *os.Root, file *os.File, name, resolved string, mana
 // errSharedInodeManagedTarget marks a managed target that shares its inode with
 // another directory entry.
 var errSharedInodeManagedTarget = errors.New("refusing to write through a hard link")
+
+// ensureNoSharedInode is refuseSharedInode asked of a target that is not being written yet, so
+// that the refusal lands in the preflight rather than after the guide has already been created or
+// overwritten. A missing target has no inode to share and is left for the write to create.
+func ensureNoSharedInode(root *os.Root, name string, managed ...string) error {
+	resolved, err := resolveContainedName(root, name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	file, err := root.Open(resolved)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+	return refuseSharedInode(root, file, name, resolved, managed)
+}
 
 // writeNewContainedFile is the create-only counterpart to writeContainedFile. The returned
 // FileInfo identifies the entry this call acquired even if writing or closing it subsequently
