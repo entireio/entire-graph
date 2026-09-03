@@ -977,3 +977,38 @@ func TestJuliaShortFormWithReturnTypeOrConstraint(t *testing.T) {
 		}
 	}
 }
+
+// TestJuliaBlockMaskIgnoresEndInsideAString pins what counts as a block terminator.
+//
+// `function f(); println("end"); helper(); end` contains the word `end` inside a STRING.
+// Counting it as syntax ended the mask early and left the rest of the definition -- every
+// call in it -- attributed to the enclosing module, which is the fabrication the mask
+// exists to prevent, produced by the mask itself.
+func TestJuliaBlockMaskIgnoresEndInsideAString(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "m.jl"),
+		[]byte("module M; helper()=1; function f(); println(\"end\"); helper(); end; end\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	edges := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" {
+			edges[symbolsByID[relation.FromID].QualifiedName+" -> "+symbolsByID[relation.ToID].QualifiedName] = true
+		}
+	}
+	if edges["M -> M.helper"] {
+		t.Errorf("the mask stopped at a string and left the body to the module: %v", edges)
+	}
+	if !edges["M.f -> M.helper"] {
+		t.Errorf("the definition's own call was lost: %v", edges)
+	}
+}

@@ -1990,15 +1990,21 @@ func juliaMaskLongFormDefinition(block, name string) string {
 	head := regexp.MustCompile(`\bfunction\s+` + regexp.QuoteMeta(name) + `\b`)
 	openers := regexp.MustCompile(`\b(function|if|for|while|begin|let|do|try|quote|struct|module|macro)\b`)
 	end := regexp.MustCompile(`\bend\b`)
+	// Block tokens are matched against a copy whose STRING and COMMENT bodies are
+	// blanked, because `println("end")` is not a block terminator. Counting it as
+	// one ended the mask early and left the rest of the definition -- every call
+	// in it -- attributed to the enclosing module. The stripper preserves length,
+	// so an offset found here indexes the same byte in the original.
+	scan := stripCodeLiteralsAndComments(block)
 	for {
-		where := head.FindStringIndex(block)
+		where := head.FindStringIndex(scan)
 		if where == nil {
 			return block
 		}
 		depth, cursor := 0, where[0]
-		for cursor < len(block) {
-			nextOpen := openers.FindStringIndex(block[cursor:])
-			nextEnd := end.FindStringIndex(block[cursor:])
+		for cursor < len(scan) {
+			nextOpen := openers.FindStringIndex(scan[cursor:])
+			nextEnd := end.FindStringIndex(scan[cursor:])
 			if nextEnd == nil {
 				// Unterminated: mask to the end rather than leave the body.
 				return maskRangeKeepingNewlines(block, where[0], len(block))
