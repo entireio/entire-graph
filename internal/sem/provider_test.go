@@ -13261,6 +13261,20 @@ func TestFSharpPipelineScannerSkipsLambdasAndLiterals(t *testing.T) {
 		{"alternative combinator without spaces", "let p = digit<|>helper", nil},
 		{"backward pipe", "let f x = helper <| x", nil},
 		{"pipes chained without spaces", "let f xs = xs|>helper|>g", []string{"helper", "g"}},
+		// F# lexes a run of operator characters as one token and lets users
+		// define their own, so many legal operators merely contain `|>`. Their
+		// right operand is the custom operator's argument, not a function being
+		// applied, so matching the bare substring fabricates a call.
+		{"custom operator containing a pipe", "let f x = x +|> helper", nil},
+		{"custom operator with a caret", "let f x = x ^|> helper", nil},
+		{"custom operator with a dot", "let f x = x .|> helper", nil},
+		{"custom operator with a bang", "let f x = x !|> helper", nil},
+		{"custom operator without spaces", "let f x = x+|>helper", nil},
+		{"FParsec map operator", "let p = a |>> helper", nil},
+		// The genuine tuple pipes stay pipes: they feed the token on their
+		// right more arguments, but it is still the function being applied.
+		{"double pipe without spaces", "let f a b = (a, b)||>helper", []string{"helper"}},
+		{"triple pipe without spaces", "let f a b c = (a, b, c)|||>helper", []string{"helper"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := fsharpPipelineCallIdentifiers(tc.content)
@@ -13273,6 +13287,38 @@ func TestFSharpPipelineScannerSkipsLambdasAndLiterals(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFSharpCustomOperatorContainingAPipeIsNotACall(t *testing.T) {
+	// A user-defined symbolic operator whose name contains `|>` (`+|>`) is one
+	// operator token, not a forward pipe: its right operand is that operator's
+	// argument, so reading the substring as a pipe attributes an argument to a
+	// function that was never applied. The genuine tuple pipe `||>` in the same
+	// file must still resolve.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Operators.fs", `module Operators
+
+let helper (value: int) = value + 1
+
+let combine (a: int) (b: int) = a + b
+
+let (+|>) (left: int) (right: int) = left + right
+
+let custom (value: int) = value +|> helper
+
+let piped (a: int) (b: int) = (a, b) ||> combine
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "custom", "helper") {
+		t.Fatalf("fabricated CALLS custom->helper from the custom operator `+|>`: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "piped", "combine") {
+		t.Fatalf("missing CALLS piped->combine for the tuple pipe `||>`: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 	}
 }
 

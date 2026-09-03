@@ -312,7 +312,7 @@ func fsharpPipelineCallTargets(content string) map[string]struct{} {
 		if len(match) < 4 || match[2] < 0 {
 			continue
 		}
-		if fsharpBackwardAlternative(stripped, match[0]) {
+		if !fsharpIsForwardPipeOperator(stripped, match[0]) {
 			continue
 		}
 		target := stripped[match[2]:match[3]]
@@ -324,19 +324,48 @@ func fsharpPipelineCallTargets(content string) map[string]struct{} {
 	return out
 }
 
-// fsharpBackwardAlternative reports whether the `|>` starting at pipeStart is
-// really the tail of `<|>`, the alternative combinator FParsec and FSharpPlus
-// define (`digit <|> letter`). It contains a literal `|>` but applies nothing:
-// its right operand is an alternative value, not a function being handed the
-// left one, so reading it as a pipe invents a call. `||>` and `|||>` are
-// genuine forward pipes and differ only in arity, so the leading run of `|` is
-// walked back over before the preceding byte is judged.
-func fsharpBackwardAlternative(s string, pipeStart int) bool {
-	i := pipeStart
-	for i > 0 && s[i-1] == '|' {
-		i--
+// fsharpIsForwardPipeOperator reports whether the `|>` starting at pipeStart is
+// a whole forward-pipe operator rather than a fragment of a longer one.
+//
+// F# lexes a run of operator characters as a single token and lets users define
+// their own, so plenty of legal operators merely *contain* `|>`: FParsec's and
+// FSharpPlus's alternative combinator `<|>` (`digit <|> letter`), and any custom
+// `+|>`, `^|>`, `.|>`. In those the right operand is an alternative or the
+// custom operator's own argument, not a function being handed the left one, so
+// reading them as pipes invents a call. Matching the substring therefore is not
+// enough: the surrounding run of operator characters is walked out and the whole
+// token compared.
+//
+// `||>` and `|||>` are kept as pipes, not merely excluded. They are the standard
+// tuple pipes and differ from `|>` only in how many arguments they feed: the
+// token to their right is still definitionally the function being applied, which
+// is exactly the property the scanner reads.
+func fsharpIsForwardPipeOperator(s string, pipeStart int) bool {
+	start := pipeStart
+	for start > 0 && isFSharpOperatorChar(s[start-1]) {
+		start--
 	}
-	return i > 0 && s[i-1] == '<'
+	end := pipeStart + len("|>")
+	for end < len(s) && isFSharpOperatorChar(s[end]) {
+		end++
+	}
+	switch s[start:end] {
+	case "|>", "||>", "|||>":
+		return true
+	default:
+		return false
+	}
+}
+
+// isFSharpOperatorChar reports whether b may appear in a symbolic operator name,
+// per the `op-char` production of the F# spec.
+func isFSharpOperatorChar(b byte) bool {
+	switch b {
+	case '!', '%', '&', '*', '+', '-', '.', '/', '<', '=', '>', '@', '^', '|', '~', '?':
+		return true
+	default:
+		return false
+	}
 }
 
 // fsharpPipelineTargetIgnored drops the keywords that can follow a pipe and
