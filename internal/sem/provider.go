@@ -1872,43 +1872,7 @@ func juliaCallerScope(from SymbolRecord) string {
 	return from.ContainerID
 }
 
-// juliaModuleScopedTargetReachable keeps the Julia arm of nameCallMayTargetMethod
-// honest. Admitting methods let bare `name(args...)` — Julia's only call form —
-// reach module-scoped definitions, but `module M ... end` is a hard namespace
-// boundary: from outside M, its definitions are reachable only as `M.name(...)`.
-// Without this, one file holding two modules resolved a bare call to whichever
-// same-named definition happened to be declared nearest, and a top-level call
-// reached into a module it cannot see.
-//
-// The gate is deliberately narrow — same file, method kind — so it can only
-// withdraw candidates the method arm itself introduced, never a target that
-// resolved before it.
-// juliaScopeName is the name of the module a symbol's own code is written in:
-// its container for an ordinary definition, and itself for a module.
-func juliaScopeName(symbol SymbolRecord) string {
-	if symbol.Kind == "module" {
-		// The QUALIFIED name, because a child of a nested module records its
-		// container qualified too: `Outer.Inner`, not `Inner`. Comparing the
-		// short name rejected every module-body call to a child of a nested
-		// module before the same-container check could accept it.
-		if symbol.QualifiedName != "" {
-			return symbol.QualifiedName
-		}
-		return symbol.Name
-	}
-	return containerName(symbol.QualifiedName)
-}
-
-// juliaModuleScope identifies the module a Julia symbol's own code is written
-// in: the module symbol's ID, for comparing scopes inside one file, and its
-// NAME, for the namespace comparison that has to survive a module spanning
-// several files through `include`.
-type juliaModuleScope struct {
-	id   string
-	name string
-}
-
-// juliaModuleScopesByID maps every Julia symbol to the module its code is
+// juliaModuleScopesByID maps every Julia symbol to the ID of the module its code is
 // written in, found by walking the CONTAINER CHAIN to the nearest module rather
 // than reading the immediate container.
 //
@@ -1926,21 +1890,20 @@ type juliaModuleScope struct {
 //
 // Built once over the whole symbol pass because the walk is otherwise repeated
 // per candidate call target.
-func juliaModuleScopesByID(symbolsByID map[string]SymbolRecord) map[string]juliaModuleScope {
-	scopes := make(map[string]juliaModuleScope, len(symbolsByID))
-	var resolve func(symbol SymbolRecord, depth int) juliaModuleScope
-	resolve = func(symbol SymbolRecord, depth int) juliaModuleScope {
+func juliaModuleScopesByID(symbolsByID map[string]SymbolRecord) map[string]string {
+	scopes := make(map[string]string, len(symbolsByID))
+	var resolve func(symbol SymbolRecord, depth int) string
+	resolve = func(symbol SymbolRecord, depth int) string {
 		if scope, ok := scopes[symbol.ID]; ok {
 			return scope
 		}
 		if symbol.Kind == "module" {
 			// The calls attributed to a module are the ones written in its own
 			// body, so a module is its own scope.
-			scope := juliaModuleScope{id: symbol.ID, name: juliaScopeName(symbol)}
-			scopes[symbol.ID] = scope
-			return scope
+			scopes[symbol.ID] = symbol.ID
+			return symbol.ID
 		}
-		var scope juliaModuleScope
+		var scope string
 		// The depth bound is belt and braces: container links form a tree, but a
 		// malformed one must not spin here. A symbol inside no module at all
 		// keeps the zero scope, which reaches nothing module-scoped -- the
@@ -1960,14 +1923,25 @@ func juliaModuleScopesByID(symbolsByID map[string]SymbolRecord) map[string]julia
 // juliaCallerModuleScope is the scope lookup with a fallback for a caller the
 // index does not carry: the immediate container, which IS the module for every
 // definition written directly in one.
-func juliaCallerModuleScope(from SymbolRecord, moduleScopeByID map[string]juliaModuleScope) juliaModuleScope {
+func juliaCallerModuleScope(from SymbolRecord, moduleScopeByID map[string]string) string {
 	if scope, ok := moduleScopeByID[from.ID]; ok {
 		return scope
 	}
-	return juliaModuleScope{id: juliaCallerScope(from), name: juliaScopeName(from)}
+	return juliaCallerScope(from)
 }
 
-func juliaModuleScopedTargetReachable(from, to SymbolRecord, moduleScopeByID map[string]juliaModuleScope) bool {
+// juliaModuleScopedTargetReachable keeps the Julia arm of nameCallMayTargetMethod
+// honest. Admitting methods let bare `name(args...)` — Julia's only call form —
+// reach module-scoped definitions, but `module M ... end` is a hard namespace
+// boundary: from outside M, its definitions are reachable only as `M.name(...)`.
+// Without this, one file holding two modules resolved a bare call to whichever
+// same-named definition happened to be declared nearest, and a top-level call
+// reached into a module it cannot see.
+//
+// The gate is deliberately narrow — method kind, and only within Julia — so it
+// can only withdraw candidates the method arm itself introduced, never a target
+// that resolved before it.
+func juliaModuleScopedTargetReachable(from, to SymbolRecord, moduleScopeByID map[string]string) bool {
 	if from.Language != "Julia" || to.Kind != "method" {
 		return true
 	}
@@ -1985,17 +1959,26 @@ func juliaModuleScopedTargetReachable(from, to SymbolRecord, moduleScopeByID map
 	// call in module B bind a globally unique method of module A purely because
 	// their files differed.
 	//
-	// Module NAMES are compared rather than container ids, because a Julia
-	// module routinely spans files through `include` and each file gives it a
-	// different container id while it stays one namespace.
+	// Module IDENTITY is compared, not module NAME. Comparing names was meant
+	// to survive a module spanning files through `include`, but it does not
+	// have to: an `include`d file carries BARE definitions, which are recorded
+	// with no container at all, so they never reach a name comparison. What
+	// name equality did admit was two INDEPENDENT packages that each declare
+	// `module Utils` -- distinct namespaces in Julia, where a second
+	// `module M ... end` defines a new module rather than reopening the first
+	// -- letting a bare call in one package bind a globally unique method of
+	// the other. A module symbol's ID carries its file, so identity separates
+	// them.
 	scope := juliaCallerModuleScope(from, moduleScopeByID)
-	if toModule := containerName(to.QualifiedName); toModule != "" && toModule != scope.name {
-		return false
-	}
-	if to.FilePath != from.FilePath {
+	if to.ContainerID == scope {
 		return true
 	}
-	return to.ContainerID == scope.id
+	// A target written at a file's top level names no module of its own: it is
+	// either genuinely top-level or the body of an `include`d file spliced into
+	// whichever module included it. Cross-file, that is the only bare-call
+	// target left to accept; within one file the container check above has
+	// already settled it.
+	return containerName(to.QualifiedName) == "" && to.FilePath != from.FilePath
 }
 
 // juliaModuleOwnBlock returns a module's block with its nested definitions blanked
@@ -2493,7 +2476,7 @@ func juliaArgumentListEnd(scan string, from int) int {
 	return -1
 }
 
-func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, juliaModuleScopeByID map[string]juliaModuleScope, allowMethodTargets bool) []resolvedCallTarget {
+func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, juliaModuleScopeByID map[string]string, allowMethodTargets bool) []resolvedCallTarget {
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
 		// A bare `name()` call resolves to a function, not a class method (methods

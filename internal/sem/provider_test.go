@@ -12867,6 +12867,103 @@ end
 		}
 	}
 }
+func TestJuliaEqualModuleNamesInDifferentFilesAreDifferentNamespaces(t *testing.T) {
+	// The cross-file half of the module gate compared module NAMES, on the
+	// reasoning that a Julia module spans files through `include` and each file
+	// gives it a different container id while it stays one namespace. The first
+	// clause does not follow from the second: an `include`d file carries BARE
+	// definitions, recorded with no container at all, so the include case never
+	// reached a name comparison. What name equality did admit was two unrelated
+	// packages that each declare `module Utils` -- distinct namespaces in Julia,
+	// where a second `module M ... end` binds a NEW module rather than reopening
+	// the first -- so a bare call in one package fabricated a CALLS edge to a
+	// globally unique method of the other.
+	//
+	// Both directions are pinned: a module spanning files through `include`
+	// still resolves across them, and two same-named but distinct modules do
+	// not resolve into each other.
+	repo := t.TempDir()
+	// Two independent packages, each declaring `module Utils`. Only pkgA
+	// defines `helper`, so it is globally unique and the name-only fallback is
+	// the branch under test.
+	writeFile(t, repo, "pkgA/src/Utils.jl", `module Utils
+
+function helper(x)
+    return x + 1
+end
+
+end
+`)
+	writeFile(t, repo, "pkgB/src/Utils.jl", `module Utils
+
+function localHelper(x)
+    return x - 1
+end
+
+function run(y)
+    return helper(y) + localHelper(y)
+end
+
+end
+`)
+	// A module that genuinely spans files: declared once, its body extended by
+	// an `include`d file of bare definitions.
+	writeFile(t, repo, "pkgC/src/MyPkg.jl", `module MyPkg
+
+include("shared.jl")
+
+function invoke(z)
+    return sharedHelper(z)
+end
+
+end
+`)
+	writeFile(t, repo, "pkgC/src/shared.jl", `function sharedHelper(x)
+    return x * 2
+end
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Last-segment matching cannot tell the two `Utils` modules apart, so match
+	// on the file a symbol is defined in as well as its qualified name.
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	type site struct{ file, qualified string }
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	hasCall := func(from, to site) bool {
+		for _, relation := range calls {
+			fromSymbol, fromOK := symbolsByID[relation.FromID]
+			toSymbol, toOK := symbolsByID[relation.ToID]
+			if !fromOK || !toOK {
+				continue
+			}
+			if fromSymbol.FilePath == from.file && fromSymbol.QualifiedName == from.qualified &&
+				toSymbol.FilePath == to.file && toSymbol.QualifiedName == to.qualified {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Same-named, genuinely distinct modules must NOT resolve into each other.
+	if hasCall(site{"pkgB/src/Utils.jl", "Utils.run"}, site{"pkgA/src/Utils.jl", "Utils.helper"}) {
+		t.Errorf("bare call in pkgB's Utils must not reach pkgA's same-named Utils: %#v", calls)
+	}
+	// ...while the gate stays narrow: the caller's own module still resolves.
+	if !hasCall(site{"pkgB/src/Utils.jl", "Utils.run"}, site{"pkgB/src/Utils.jl", "Utils.localHelper"}) {
+		t.Errorf("missing in-module Julia CALLS Utils.run->Utils.localHelper: %#v", calls)
+	}
+	// A module spanning files through `include` still resolves across them.
+	if !hasCall(site{"pkgC/src/MyPkg.jl", "MyPkg.invoke"}, site{"pkgC/src/shared.jl", "sharedHelper"}) {
+		t.Errorf("missing include-spanned Julia CALLS MyPkg.invoke->sharedHelper: %#v", calls)
+	}
+}
+
 func TestJuliaCallScopeIsTheEnclosingModuleNotTheImmediateContainer(t *testing.T) {
 	// The module gate asks whether a bare call can see a module-scoped
 	// definition, and the answer depends on the module the CALLER's code is
