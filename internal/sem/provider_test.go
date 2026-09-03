@@ -16467,3 +16467,35 @@ func TestSearchRepositoryStillIndexesSourceTreeNamedLikeAGitDir(t *testing.T) {
 		t.Errorf("search did not return testdata/parser/objects/loader.go; results = %v", paths)
 	}
 }
+
+func TestFSharpCustomOperatorContainingADollarIsNotACall(t *testing.T) {
+	// `$` is an op-char in F#'s own lexer (`let op_char = '!'|'$'|'%'|...`), so
+	// `$|>` is ONE operator token exactly as `+|>` is. Omitting `$` from the
+	// scanner's op-char set stopped the walk that finds the token's real extent:
+	// `value $|> helper` was read as a plain forward pipe and fabricated a call
+	// to helper, which is the custom operator's right operand.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Dollars.fs", `module Dollars
+
+let helper (value: int) = value + 1
+
+let combine (a: int) (b: int) = a + b
+
+let ($|>) (left: int) (right: int) = left + right
+
+let custom (value: int) = value $|> helper
+
+let piped (a: int) (b: int) = (a, b) ||> combine
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "custom", "helper") {
+		t.Fatalf("fabricated CALLS custom->helper from the custom operator `$|>`: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "piped", "combine") {
+		t.Fatalf("missing CALLS piped->combine for the tuple pipe `||>`: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}

@@ -359,9 +359,15 @@ func fsharpIsForwardPipeOperator(s string, pipeStart int) bool {
 
 // isFSharpOperatorChar reports whether b may appear in a symbolic operator name,
 // per the `op-char` production of the F# spec.
+//
+// `$` belongs in the set -- the compiler's own lexer spells it
+// `let op_char = '!'|'$'|'%'|...` -- and leaving it out cut the walk short in
+// the middle of an operator that contains one: `value $|> helper` was read as a
+// plain `|>` and fabricated a call to helper, which is really the right operand
+// of the custom `$|>`.
 func isFSharpOperatorChar(b byte) bool {
 	switch b {
-	case '!', '%', '&', '*', '+', '-', '.', '/', '<', '=', '>', '@', '^', '|', '~', '?':
+	case '!', '$', '%', '&', '*', '+', '-', '.', '/', '<', '=', '>', '@', '^', '|', '~', '?':
 		return true
 	default:
 		return false
