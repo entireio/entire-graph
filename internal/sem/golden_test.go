@@ -895,3 +895,41 @@ func TestJuliaShortFormAndNestedModuleScope(t *testing.T) {
 		t.Errorf("a nested module's own body call was rejected: %v", edges)
 	}
 }
+
+// TestJuliaOneLineLongFormDefinitionIsNotTheModuleBody pins the last shape the module-body
+// narrowing has to handle.
+//
+// A long-form definition written on ONE line -- `function f(); helper(); end` -- has no
+// body line to blank, and masking its head alone left the body in the module's block, so
+// the module was credited with the call its child makes. The definition is masked
+// textually instead, from its head through the MATCHING `end`; depth is counted over
+// Julia's block openers, because a definition may contain them and the first `end` is
+// then not its own.
+func TestJuliaOneLineLongFormDefinitionIsNotTheModuleBody(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "m.jl"),
+		[]byte("module M; helper()=1; function f(); helper(); end; end\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	edges := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" {
+			edges[symbolsByID[relation.FromID].QualifiedName+" -> "+symbolsByID[relation.ToID].QualifiedName] = true
+		}
+	}
+	if edges["M -> M.helper"] {
+		t.Errorf("the module was credited with a call inside its child's one-line body: %v", edges)
+	}
+	if !edges["M.f -> M.helper"] {
+		t.Errorf("the child's own call was masked away with it: %v", edges)
+	}
+}

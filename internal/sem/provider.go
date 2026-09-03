@@ -1944,11 +1944,19 @@ func juliaModuleScopedTargetReachable(from, to SymbolRecord) bool {
 func juliaModuleOwnBlock(from SymbolRecord, block string, fileSymbols []SymbolRecord) string {
 	lines := strings.Split(block, "\n")
 	var childNames []string
+	var oneLineChildren []string
 	for _, child := range fileSymbols {
 		if child.ID == from.ID || child.ContainerID != from.ID {
 			continue
 		}
 		childNames = append(childNames, child.Name)
+		if child.StartLine == child.EndLine {
+			// Entirely on one line, so the body-blanking below has no line to
+			// take and the head mask alone leaves the body in place. Masked
+			// textually instead, from `function name` through its matching
+			// `end`.
+			oneLineChildren = append(oneLineChildren, child.Name)
+		}
 		// The child's BODY is blanked, but not the line its definition starts
 		// on. A one-line module -- `module M; setup() = 1; setup(); end` -- puts
 		// the child, the module and a real module-level call on that same line,
@@ -1961,7 +1969,65 @@ func juliaModuleOwnBlock(from SymbolRecord, block string, fileSymbols []SymbolRe
 			}
 		}
 	}
-	return juliaMaskDefinitionHeads(strings.Join(lines, "\n"), childNames)
+	masked := strings.Join(lines, "\n")
+	for _, name := range oneLineChildren {
+		masked = juliaMaskLongFormDefinition(masked, name)
+	}
+	return juliaMaskDefinitionHeads(masked, childNames)
+}
+
+// juliaMaskLongFormDefinition blanks `function name ... end` through its MATCHING
+// `end`, leaving everything around it.
+//
+// It exists for a definition that occupies a single line, where there is no body
+// line to blank and masking the head alone leaves the body in the module's block:
+// `module M; helper()=1; function f(); helper(); end; end` credited the module with
+// calling helper, and cross-attributed the children to each other.
+//
+// Depth is counted over Julia's block openers, because a definition may contain
+// them and the FIRST `end` is then not its own.
+func juliaMaskLongFormDefinition(block, name string) string {
+	head := regexp.MustCompile(`\bfunction\s+` + regexp.QuoteMeta(name) + `\b`)
+	openers := regexp.MustCompile(`\b(function|if|for|while|begin|let|do|try|quote|struct|module|macro)\b`)
+	end := regexp.MustCompile(`\bend\b`)
+	for {
+		where := head.FindStringIndex(block)
+		if where == nil {
+			return block
+		}
+		depth, cursor := 0, where[0]
+		for cursor < len(block) {
+			nextOpen := openers.FindStringIndex(block[cursor:])
+			nextEnd := end.FindStringIndex(block[cursor:])
+			if nextEnd == nil {
+				// Unterminated: mask to the end rather than leave the body.
+				return maskRangeKeepingNewlines(block, where[0], len(block))
+			}
+			if nextOpen != nil && nextOpen[0] < nextEnd[0] {
+				depth++
+				cursor += nextOpen[1]
+				continue
+			}
+			depth--
+			cursor += nextEnd[1]
+			if depth == 0 {
+				return maskRangeKeepingNewlines(block, where[0], cursor)
+			}
+		}
+		return maskRangeKeepingNewlines(block, where[0], len(block))
+	}
+}
+
+// maskRangeKeepingNewlines blanks [start,stop) but keeps line breaks, so every
+// offset and line number around the masked span is unchanged.
+func maskRangeKeepingNewlines(block string, start, stop int) string {
+	out := []byte(block)
+	for i := start; i < stop && i < len(out); i++ {
+		if out[i] != '\n' {
+			out[i] = ' '
+		}
+	}
+	return string(out)
 }
 
 // juliaMaskDefinitionHeads blanks the definition HEADS of the given names, leaving
