@@ -2021,6 +2021,40 @@ func juliaModuleOwnBlock(from SymbolRecord, block string, fileSymbols []SymbolRe
 //
 // Depth is counted over Julia's block openers, because a definition may contain
 // them and the FIRST `end` is then not its own.
+// maskJuliaBlockComments blanks the bodies of Julia's `#= ... =#` comments,
+// preserving length so an offset found in the result indexes the same byte in
+// the original.
+//
+// The generic stripper does not know this form, so `function f(); #= end =#;
+// helper(); end` still carried an `end` inside a comment, and the block-token
+// scan below counted it as the definition's terminator: the mask stopped early
+// and left `helper()` credited to the enclosing module.
+//
+// Julia block comments NEST -- `#= a #= b =# c =#` is one comment -- so this
+// tracks depth rather than stopping at the first `=#`.
+func maskJuliaBlockComments(text string) string {
+	out := []byte(text)
+	depth := 0
+	for i := 0; i < len(out); i++ {
+		if i+1 < len(out) && out[i] == '#' && out[i+1] == '=' {
+			depth++
+			out[i], out[i+1] = ' ', ' '
+			i++
+			continue
+		}
+		if depth > 0 && i+1 < len(out) && out[i] == '=' && out[i+1] == '#' {
+			depth--
+			out[i], out[i+1] = ' ', ' '
+			i++
+			continue
+		}
+		if depth > 0 && out[i] != '\n' {
+			out[i] = ' '
+		}
+	}
+	return string(out)
+}
+
 func juliaMaskLongFormDefinition(block, name string) string {
 	// `macro name(...) ... end` is a definition with a body exactly like
 	// `function`, and Julia closes both with the same `end`. Leaving it out
@@ -2034,7 +2068,7 @@ func juliaMaskLongFormDefinition(block, name string) string {
 	// one ended the mask early and left the rest of the definition -- every call
 	// in it -- attributed to the enclosing module. The stripper preserves length,
 	// so an offset found here indexes the same byte in the original.
-	scan := stripCodeLiteralsAndComments(block)
+	scan := maskJuliaBlockComments(stripCodeLiteralsAndComments(block))
 	for {
 		where := head.FindStringIndex(scan)
 		if where == nil {
@@ -2111,7 +2145,20 @@ func juliaMaskDefinitionHeads(block string, names []string) string {
 			// the line end would swallow it.
 			//
 			// The `=` must be a single one: `f() == x` is a comparison.
-			`\b` + quoted + `\s*\([^()]*\)[^=;\n]*=([^=;\n][^;\n]*)?`,
+			// Go's regexp is RE2 and has no lookahead, so "not followed by
+			// another `=`" cannot be asserted directly. Making the suffix
+			// OPTIONAL was the bug: it let the match end right after the first
+			// `=` of `==`, which is exactly the case the guard was for, and a
+			// genuine module-scope `f(2) == 3` was masked away with the real
+			// `M -> M.f` edge in it. Requiring the suffix makes the next
+			// character prove itself.
+			`\b` + quoted + `\s*\([^()]*\)[^=;\n]*=[^=;\n][^;\n]*`,
+			// A short form may also put its body on the NEXT line
+			// (`f(x) =` then an indented body), which the required suffix above
+			// cannot match. `(?m)$` is zero-width, so the newline survives and
+			// line numbering is unchanged; only spaces or tabs may sit between,
+			// so this still cannot reach the second `=` of `==`.
+			`(?m)\b` + quoted + `\s*\([^()]*\)[^=;\n]*=[ \t]*$`,
 		} {
 			re, err := regexp.Compile(pattern)
 			if err != nil {

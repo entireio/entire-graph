@@ -12499,6 +12499,66 @@ func TestJuliaDefinitionsSharingOneLineDoNotCrossAttribute(t *testing.T) {
 	}
 }
 
+func TestJuliaBlockCommentDoesNotTerminateADefinitionMask(t *testing.T) {
+	// Julia block comments nest and the generic stripper does not know the form,
+	// so `#= end =#` left an `end` for the block-token scan to count as the
+	// definition's terminator: the mask stopped inside the comment and left the
+	// rest of the body -- and every call in it -- credited to the module.
+	if got := juliaMaskLongFormDefinition("function f(); #= end =#; helper(); end", "f"); strings.TrimSpace(got) != "" {
+		t.Errorf("the mask stopped at an `end` inside a comment: %q", got)
+	}
+	if got := maskJuliaBlockComments("a #= x #= y =# z =# b"); got != "a                   b" {
+		t.Errorf("nested block comment not fully masked: %q", got)
+	}
+}
+
+func TestJuliaComparisonIsNotMaskedAsAShortFormDefinition(t *testing.T) {
+	// The single-`=` guard was expressed as an OPTIONAL suffix, so the match
+	// could end right after the first `=` of `==` -- exactly the case the guard
+	// was for. A genuine module-scope `f(2) == 3` was masked away, taking the
+	// real `M -> M.f` edge with it.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/M.jl", `module M
+function f(x); x; end
+f(2) == 3
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.f") {
+		t.Fatalf("a module-scope comparison was masked as a definition, losing CALLS M->M.f: %#v", calls)
+	}
+}
+
+func TestJuliaShortFormDefinitionsStayMasked(t *testing.T) {
+	// The counterpart to the above: tightening the guard must not stop real
+	// short forms being masked, including one whose body is on the next line.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/M.jl", `module M
+g(x) = helper(x)
+h(x) =
+    helper(x)
+function helper(y); y; end
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	for _, want := range [][2]string{{"M.g", "M.helper"}, {"M.h", "M.helper"}} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Fatalf("missing real short-form body CALLS %s->%s: %#v", want[0], want[1], calls)
+		}
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.helper") {
+		t.Fatalf("a short form's body was credited to the module: %#v", calls)
+	}
+}
+
 func TestJuliaModuleIsNotCreditedWithItsOwnMacros(t *testing.T) {
 	// A module's block spans its members' definition lines, and a macro's head
 	// reads as a call: `macro mymac(x)` contains `mymac(x)`. The module-own-block
