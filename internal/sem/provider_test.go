@@ -4235,10 +4235,10 @@ func TestTestsRelationCrossesLanguageBoundaries(t *testing.T) {
 	}
 }
 
-// importedReceiverCallsFrom returns the CALLS edges leaving `from` in the
-// snapshot of `repo`, so a test can assert on the target the receiver call
-// actually bound rather than on the whole graph.
-func importedReceiverCallsFrom(t *testing.T, repo, from string) []RelationRecord {
+// callRelationsFrom returns the CALLS edges leaving `from` in the snapshot of
+// `repo`, so a test can assert on the target a call actually bound rather than
+// on the whole graph.
+func callRelationsFrom(t *testing.T, repo, from string) []RelationRecord {
 	t.Helper()
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -4275,7 +4275,7 @@ def run():
     return frobnicate.compute(1)
 `)
 
-	calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
 	if len(calls) != 1 {
 		t.Fatalf("want one call edge out of run, got %#v", calls)
 	}
@@ -4326,7 +4326,7 @@ def run():
     return compute(1)
 `)
 
-		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
 		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") || calls[0].Resolution != "import_resolved" {
 			t.Fatalf("bare Python import did not resolve to its unique C target: %#v", calls)
 		}
@@ -4348,7 +4348,7 @@ def run():
     return compute(1)
 `)
 
-		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
 		if len(calls) != 1 || calls[0].ToID != externalID("symbol", "frobnicate.compute") {
 			t.Fatalf("ambiguous bare FFI import must remain external: %#v", calls)
 		}
@@ -4369,7 +4369,7 @@ def run():
     return compute(1)
 `)
 
-		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
 		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
 			t.Fatalf("bare FFI import lost to unrelated Python name: %#v", calls)
 		}
@@ -4405,7 +4405,7 @@ def sibling():
     compute(1)
     from frobnicate import compute
 `)
-		if calls := importedReceiverCallsFrom(t, repo, "app.py:function:run"); len(calls) != 0 {
+		if calls := callRelationsFrom(t, repo, "app.py:function:run"); len(calls) != 0 {
 			t.Fatalf("call before import must not resolve through the later import: %#v", calls)
 		}
 	})
@@ -4445,7 +4445,7 @@ def sibling():
 			t.Fatal("malformed scope unexpectedly completed")
 		}
 		writeFile(t, repo, "app.py", content)
-		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
 		if len(calls) != 1 || calls[0].ToID != externalID("symbol", "lib.compute") || calls[0].Resolution != "import_external" {
 			t.Fatalf("malformed function scope did not preserve imported external fallback: %#v", calls)
 		}
@@ -4480,7 +4480,7 @@ def sibling():
     from othermod import compute
     compute(1)
 `)
-		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
 		if len(calls) != 2 || !strings.Contains(calls[0].ToID, ".c:function:compute") || !strings.Contains(calls[1].ToID, ".c:function:compute") || calls[0].ToID == calls[1].ToID {
 			t.Fatalf("sequential imports must retain each concrete FFI target: %#v", calls)
 		}
@@ -4548,7 +4548,7 @@ def run(compute):
     return compute(1)
 `)
 
-		for _, call := range importedReceiverCallsFrom(t, repo, "app.py:function:run") {
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
 			if strings.Contains(call.ToID, "frobnicate.c:function:compute") || call.Resolution == "import_external" {
 				t.Fatalf("parameter-shadowed import resolved through the import: %#v", call)
 			}
@@ -4753,7 +4753,7 @@ def run():
     return frobnicate.compute(1)
 `)
 
-		for _, call := range importedReceiverCallsFrom(t, repo, "app.py:function:run") {
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
 			if call.RelationScope != "external" {
 				t.Fatalf("ambiguous cross-language import must not resolve to a local symbol: %#v", call)
 			}
@@ -4775,7 +4775,301 @@ def run():
     return frobnicate.compute(1)
 `)
 
-		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "lib/frobnicate.py:function:compute") {
+			t.Fatalf("want the same-language module to win, got %#v", calls[0])
+		}
+	})
+}
+
+// The import tiers read an explicit import as evidence that OUTRANKS the
+// language-compatibility relation, so a name they bind wrongly becomes a
+// confident cross-language edge rather than a merely unresolved one. That makes
+// Python's scoping load-bearing here: a name the caller's own body binds -- a
+// parameter, an assignment target, a loop or context variable -- is that
+// binding at every call site in the body, so it is NOT the imported callable it
+// shares a name with and must not be bound to one. The guard is scoped to
+// callable bodies, because at module scope a `def` binds the very symbol a call
+// is meant to reach.
+func TestBareImportedCallIgnoresPythonLocalBinding(t *testing.T) {
+	const foreign = `int compute(int value) {
+	return value + 1;
+}
+`
+
+	t.Run("a parameter shadows the imported name", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(compute):
+    return compute(1)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("a parameter shadowing the import must not bind the foreign function: %#v", call)
+			}
+		}
+	})
+
+	t.Run("an assignment rebinds the imported name", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(callback):
+    compute = callback
+    return compute(1)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("a local rebinding must not bind the foreign function: %#v", call)
+			}
+		}
+	})
+
+	// The guard must cost nothing when the imported name is not the one bound:
+	// a body full of locals still calls the import it never rebinds.
+	t.Run("an unrelated local leaves the call alone", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    total = 0
+    for value in values:
+        total += compute(value)
+    return total
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("an unrelated local suppressed a real import-resolved call: %#v", calls[0])
+		}
+	})
+
+	// A `lambda`'s parameters bind in the lambda, not in the body around it, so
+	// an unrelated call of the same name elsewhere in that body still reaches
+	// the import. Getting this wrong is worse than the shadowing it guards
+	// against: resolveCallTargets declines a bound name before any tier runs,
+	// so a name wrongly reported as bound deletes a real edge outright.
+	t.Run("a lambda parameter does not shadow the enclosing body", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(source):
+    handler = lambda compute: compute(1)
+    return compute(source)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("a lambda parameter suppressed an unrelated import-resolved call: %#v", calls[0])
+		}
+	})
+
+	// Python 3 scopes a comprehension's variables to the comprehension, so they
+	// shadow nothing in the body that holds it either.
+	t.Run("a comprehension variable does not shadow the enclosing body", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    labels = [compute for compute in values]
+    return labels, compute(values)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("a comprehension variable suppressed an unrelated import-resolved call: %#v", calls[0])
+		}
+	})
+
+	// The other direction of the same rule: a lambda parameter still shadows
+	// the import for the calls inside that lambda.
+	t.Run("a lambda parameter still shadows inside the lambda", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    return sorted(values, key=lambda compute: compute(1))
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("a lambda parameter must not bind the foreign function: %#v", call)
+			}
+		}
+	})
+
+	// Module scope is not a shadowing scope: a `def` or an assignment there is
+	// the file's own symbol, so the file-level call scan must keep resolving
+	// through the same import evidence the per-symbol scan uses.
+	t.Run("module scope is not a shadowing scope", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+result = compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "file:app.py")
+		if len(calls) != 1 {
+			t.Fatalf("want one top-level call edge out of app.py, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("module-scope import-resolved call was not bound to the C unit: %#v", calls[0])
+		}
+	})
+}
+
+// A BARE call bound by an explicit import carries the same evidence as the
+// module-qualified spelling and must be treated the same way. `import
+// frobnicate; frobnicate.compute(1)` resolves to a locally parsed frobnicate.c
+// (TestImportedReceiverCallResolvesAcrossFFIBoundary), but `from frobnicate
+// import compute; compute(1)` did not: the candidates were narrowed by the
+// language-compatibility relation BEFORE the import tier ran, so the C
+// declaration was gone before its module path was ever compared and the call
+// degraded to an unresolved external target. That relation answers whether
+// source in one language may name a type DECLARED in another; an import that
+// resolves to the callee's file is direct evidence of interop and outranks it.
+func TestBareImportedCallResolvesAcrossFFIBoundary(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 {
+		t.Fatalf("want one call edge out of run, got %#v", calls)
+	}
+	if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("import-resolved bare call was not bound to the C unit: %#v", calls[0])
+	}
+	if calls[0].Resolution != "import_resolved" {
+		t.Fatalf("want import_resolved, got %q: %#v", calls[0].Resolution, calls[0])
+	}
+}
+
+// The import-name map that tier reads is built for a whole FILE, but Python
+// scopes an `import` inside a function to that function. The map therefore
+// offered `compute` to every other function in the file, and because an import
+// outranks the language-compatibility relation the result was not a weak edge
+// but a confident cross-language one:
+//
+//	Python/unrelated -> C/compute   res=import_resolved conf=0.86   WRONG
+//
+// A nested `def` is the other half of the rule and is asserted here too: it
+// really does see the import its enclosing function made, so confining the
+// import to its own function alone would delete that call instead.
+func TestBareImportedCallIgnoresImportLocalToAnotherFunction(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `def uses_import():
+    from frobnicate import compute
+
+    def inner():
+        return compute(2)
+
+    return compute(1) + inner()
+
+
+def unrelated():
+    return compute(3)
+`)
+
+	if calls := callRelationsFrom(t, repo, "app.py:function:unrelated"); len(calls) != 0 {
+		t.Fatalf("a function-local import leaked to an unrelated function: %#v", calls)
+	}
+	// Still resolves: the importing function itself, and the nested def inside it.
+	for _, from := range []string{"app.py:function:uses_import", "app.py:function:inner"} {
+		calls := callRelationsFrom(t, repo, from)
+		found := false
+		for _, call := range calls {
+			if strings.Contains(call.ToID, "frobnicate.c:function:compute") && call.Resolution == "import_resolved" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s lost its import-resolved call to the C unit: %#v", from, calls)
+		}
+	}
+}
+
+// The bare-call import tier is the one place that reads PAST the language
+// filter, so it carries the same ambiguity rule as the qualified one: module
+// paths are matched by suffix, so a single import can match same-named
+// callables in several languages at once and nothing then says which it bound.
+// Two same-named declarations in different languages must therefore produce no
+// local edge rather than an arbitrary pick. Where the compatibility relation
+// does resolve a candidate it still wins outright, which is what leaves every
+// previously resolved call exactly as it was.
+func TestBareImportedCallSuppressesCrossLanguageAmbiguity(t *testing.T) {
+	t.Run("ambiguous across languages", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.rb", `def compute(value)
+  value + 1
+end
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("ambiguous cross-language import must not resolve to a local symbol: %#v", call)
+			}
+		}
+	})
+
+	t.Run("type-sharing candidate still wins", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.py", `def compute(value):
+    return value + 1
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
 		if len(calls) != 1 {
 			t.Fatalf("want one call edge out of run, got %#v", calls)
 		}

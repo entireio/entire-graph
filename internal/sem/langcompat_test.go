@@ -569,3 +569,184 @@ func TestPortableClojureConsumerMayNameEitherDialect(t *testing.T) {
 		})
 	}
 }
+
+// resolvedEdgeSet is typeEdgeSet widened to every symbol-to-symbol relation, so
+// a test can assert on a CALLS edge as well as a signature-type one.
+func resolvedEdgeSet(t *testing.T, snapshot ProviderSnapshot) map[string]RelationRecord {
+	t.Helper()
+	byID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		byID[symbol.ID] = symbol
+	}
+	edges := map[string]RelationRecord{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CONTAINS" {
+			continue
+		}
+		from, okFrom := byID[relation.FromID]
+		to, okTo := byID[relation.ToID]
+		if !okFrom || !okTo {
+			continue
+		}
+		edges[fmt.Sprintf("%s %s/%s->%s/%s", relation.Type, from.Language, from.Name, to.Language, to.Name)] = relation
+	}
+	return edges
+}
+
+// C++ may name Objective-C-LABELLED declarations only because the label follows
+// the FILE: a header holding any Objective-C syntax is labelled Objective-C even
+// where it also declares the plain C structs and functions a `.cpp` compiles
+// unchanged. Treating every candidate under that label as visible to C++ also
+// handed it the declarations that are Objective-C in their own right.
+//
+// Measured on the fixture below before the refinement, all three edges resolved
+// and two of them are impossible:
+//
+//	C++/renderShape  -> Objective-C/Shape        WRONG — an @interface class
+//	C++/callIt       -> Objective-C/computeArea  WRONG — a selector, message-send only
+//	C++/renderWidget -> Objective-C/Widget       correct — a plain C struct
+//
+// The last one is the reason the pair is kept rather than removed, so it is
+// asserted here too: the narrowing must not swallow it.
+func TestCppNamesOnlyPlainCDeclarationsInObjectiveCFiles(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "shape.h", `#import <Foundation/Foundation.h>
+
+@interface Shape : NSObject
+- (int)area;
+@end
+`)
+	writeFile(t, repo, "impl.m", `#import "shape.h"
+
+@implementation Renderer
+- (int)computeArea { return 1; }
+@end
+`)
+	writeFile(t, repo, "render.cpp", `void renderShape(Shape s) { }
+int callIt() { return computeArea(); }
+`)
+	// The legitimate half of the pair: an Objective-C-labelled header (it is
+	// labelled that way because of the `#import`) declaring a plain C struct,
+	// named from a `.cpp`.
+	writeFile(t, repo, "legit.h", `#import <Foundation/Foundation.h>
+
+struct Widget { int w; };
+`)
+	writeFile(t, repo, "legit.cpp", `void renderWidget(Widget w) { }
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edges := resolvedEdgeSet(t, snapshot)
+	for _, impossible := range []string{
+		"USES_TYPE C++/renderShape->Objective-C/Shape",
+		"PARAM_TYPE C++/renderShape->Objective-C/Shape",
+		"CALLS C++/callIt->Objective-C/computeArea",
+		"DATA_FLOWS Objective-C/computeArea->C++/callIt",
+	} {
+		if relation, ok := edges[impossible]; ok {
+			t.Fatalf("C++ bound an Objective-C-only declaration: %s (resolution=%s); all edges: %v",
+				impossible, relation.Resolution, edgeKeys(edges))
+		}
+	}
+	// Still resolves: narrowing the candidates must not cost the plain C
+	// declarations that are the only reason C++ -> Objective-C exists.
+	for _, want := range []string{
+		"USES_TYPE C++/renderWidget->Objective-C/Widget",
+		"PARAM_TYPE C++/renderWidget->Objective-C/Widget",
+	} {
+		if _, ok := edges[want]; !ok {
+			t.Fatalf("plain C declaration in an Objective-C-labelled header was dropped: %s; all edges: %v", want, edgeKeys(edges))
+		}
+	}
+}
+
+// Objective-C names Swift declarations through the generated `<Module>-Swift.h`
+// header, and that header holds only what Swift exposes to the Objective-C
+// runtime. Binding by bare name alone offered it the whole module.
+//
+// Measured on the fixture below before the refinement:
+//
+//	Objective-C/useLedger  -> Swift/Ledger    WRONG — a struct is never bridged
+//	Objective-C/useEngine  -> Swift/Engine    WRONG — a pure-Swift root class
+//	Objective-C/go         -> Swift/freeFunc  WRONG — a global func is not bridged
+//	Objective-C/useBridged -> Swift/Bridged   correct — @objc class Bridged: NSObject
+func TestObjectiveCNamesOnlySwiftDeclarationsExposedToIt(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "models.swift", `struct Ledger { var id: Int }
+class Engine { func start() {} }
+@objc class Bridged: NSObject { }
+func freeFunc(x: Int) -> Int { return x }
+`)
+	writeFile(t, repo, "use.m", `#import <Foundation/Foundation.h>
+#import "Proj-Swift.h"
+
+@implementation Consumer
+- (void)useLedger:(Ledger *)l { }
+- (void)useEngine:(Engine *)e { }
+- (void)useBridged:(Bridged *)b { }
+- (void)go { freeFunc(1); }
+@end
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edges := resolvedEdgeSet(t, snapshot)
+	for _, impossible := range []string{
+		"USES_TYPE Objective-C/useLedger->Swift/Ledger",
+		"USES_TYPE Objective-C/useEngine->Swift/Engine",
+		"CALLS Objective-C/go->Swift/freeFunc",
+	} {
+		if relation, ok := edges[impossible]; ok {
+			t.Fatalf("Objective-C bound a Swift declaration absent from the generated header: %s (resolution=%s); all edges: %v",
+				impossible, relation.Resolution, edgeKeys(edges))
+		}
+	}
+	// Still resolves: an `@objc` class IS in `<Module>-Swift.h`, and that edge is
+	// the whole reason the Objective-C -> Swift direction exists.
+	if _, ok := edges["USES_TYPE Objective-C/useBridged->Swift/Bridged"]; !ok {
+		t.Fatalf("the @objc Swift class edge was dropped; all edges: %v", edgeKeys(edges))
+	}
+}
+
+// swiftDeclarationVisibleToObjectiveC decides from a declaration's own
+// signature, so the shapes it must read are pinned directly: the attribute in
+// every spelling it can carry, and the inheritance clause that separates a
+// bridgeable class from a pure-Swift root class.
+func TestSwiftDeclarationVisibleToObjectiveC(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		kind      string
+		signature string
+		want      bool
+	}{
+		{"class", "@objc class Bridged: NSObject", true},
+		{"class", "@objcMembers class Members: NSObject", true},
+		{"class", "@objc(RenamedThing) class Renamed: NSObject", true},
+		{"class", "class Engine: NSObject", true},
+		{"class", "class Sub: Engine", true},
+		{"class", "class Engine", false},
+		{"struct", "struct Ledger", false},
+		{"enum", "enum Plain", false},
+		{"enum", "@objc enum Level: Int", true},
+		{"protocol", "protocol Pinger", false},
+		{"protocol", "@objc protocol Pinger", true},
+		{"function", "func freeFunc(x: Int) -> Int", false},
+		// Unproven shapes are kept: a member's exposure follows its container,
+		// which a candidate-level check cannot see, and an unparsed signature
+		// says nothing at all.
+		{"method", "func start()", true},
+		{"class", "", true},
+	} {
+		got := swiftDeclarationVisibleToObjectiveC(SymbolRecord{Kind: tc.kind, Signature: tc.signature, Language: "Swift"})
+		if got != tc.want {
+			t.Fatalf("swiftDeclarationVisibleToObjectiveC(%s %q) = %v, want %v", tc.kind, tc.signature, got, tc.want)
+		}
+	}
+}
