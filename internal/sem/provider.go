@@ -1914,22 +1914,35 @@ func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
 }
 
 // recordFSharpCallQualifier remembers which module a qualified call named, so
-// resolution can keep `A.convert` off `B.convert`. A name that also appears
-// unqualified in the same block, or under two different in-file qualifiers,
-// loses the restriction: the block no longer says which definition each site
-// meant, and guessing would cost an edge that resolves correctly today.
-func recordFSharpCallQualifier(qualifiers map[string]string, declared map[string]bool, name, target string) {
+// resolution can keep `A.convert` off `B.convert`. EVERY distinct qualifier is
+// kept, because each one is its own call site: a caller writing
+// `x |> A.convert |> B.convert` calls two different functions, and collapsing
+// them onto one entry for the name loses one of the two edges. A call written
+// without a qualifier this file declares records the empty string, which is the
+// one sighting that cannot be split: it says only "the definition in scope", so
+// it drops the restriction for the whole name rather than guessing.
+func recordFSharpCallQualifier(qualifiers map[string]map[string]struct{}, declared map[string]bool, name, target string) {
 	qualifier := ""
 	if cut := strings.LastIndex(target, "."); cut > 0 {
 		if candidate := target[:cut]; fsharpModulePathDeclared(declared, candidate) {
 			qualifier = candidate
 		}
 	}
-	if previous, seen := qualifiers[name]; seen && previous != qualifier {
-		qualifiers[name] = ""
-		return
+	if qualifiers[name] == nil {
+		qualifiers[name] = map[string]struct{}{}
 	}
-	qualifiers[name] = qualifier
+	qualifiers[name][qualifier] = struct{}{}
+}
+
+// fsharpResolvableQualifiers lists the in-file module qualifiers a name must be
+// resolved under, one target per qualifier. It reports nothing when the name was
+// also called bare: an unqualified sighting names no module, so the name falls
+// back to unrestricted resolution exactly as it did before.
+func fsharpResolvableQualifiers(qualifiers map[string]struct{}) []string {
+	if _, unqualified := qualifiers[""]; unqualified {
+		return nil
+	}
+	return sortedKeysOf(qualifiers)
 }
 
 // fsharpQualifiedScope drops the symbols of this file that the qualifier rules
@@ -3360,7 +3373,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				callNames := callLikeIdentifiers(callBlock, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
-				fsharpCallQualifiers := map[string]string{}
+				fsharpCallQualifiers := map[string]map[string]struct{}{}
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
 				}
@@ -3518,11 +3531,28 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						targets = resolveJSNamespaceCallChain(name, from, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, func(terminal string) bool {
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
-					} else if qualifier := fsharpCallQualifiers[name]; qualifier != "" {
-						targets = resolveCallTargets(name, from,
-							fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID),
-							fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID),
-							callImportsByName, false)
+					} else if quals := fsharpResolvableQualifiers(fsharpCallQualifiers[name]); len(quals) > 0 {
+						// One resolution per qualifier, not one per name: with both
+						// `A.convert` and `B.convert` written in this caller, a single
+						// entry had to pick one module or neither, and picking neither
+						// left `resolveCallTargets` choosing the same-file definition
+						// nearest the call site -- one real call dropped and the
+						// survivor decided by line distance rather than by what was
+						// written. Targets are de-duplicated because two qualifiers may
+						// name the same module by different relative paths.
+						seenTargets := map[string]bool{}
+						for _, qualifier := range quals {
+							for _, to := range resolveCallTargets(name, from,
+								fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID),
+								fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID),
+								callImportsByName, false) {
+								if seenTargets[to.ID] {
+									continue
+								}
+								seenTargets[to.ID] = true
+								targets = append(targets, to)
+							}
+						}
 					} else {
 						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
 					}
@@ -3868,7 +3898,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
-				topLevelFSharpQualifiers := map[string]string{}
+				topLevelFSharpQualifiers := map[string]map[string]struct{}{}
 				if file.Language == "Julia" {
 					topLevelNames = juliaCallIdentifiers(topLevel)
 				}
@@ -3944,11 +3974,23 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// file-level pseudo-symbol has no self-call or member names
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
-					} else if qualifier := topLevelFSharpQualifiers[name]; qualifier != "" {
-						targets = resolveCallTargets(name, fileSource,
-							fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, "", fsharpModulePathBySymbolID),
-							fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, "", fsharpModulePathBySymbolID),
-							importsByName, false)
+					} else if quals := fsharpResolvableQualifiers(topLevelFSharpQualifiers[name]); len(quals) > 0 {
+						// Same as the per-symbol path: each qualifier resolves on its
+						// own so a statement-position `1 |> A.convert |> B.convert`
+						// keeps both edges.
+						seenTargets := map[string]bool{}
+						for _, qualifier := range quals {
+							for _, to := range resolveCallTargets(name, fileSource,
+								fsharpQualifiedScope(symbolsByShortName[name], file.Path, qualifier, "", fsharpModulePathBySymbolID),
+								fsharpQualifiedScope(currentFileSymbols, file.Path, qualifier, "", fsharpModulePathBySymbolID),
+								importsByName, false) {
+								if seenTargets[to.ID] {
+									continue
+								}
+								seenTargets[to.ID] = true
+								targets = append(targets, to)
+							}
+						}
 					} else {
 						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false)
 					}

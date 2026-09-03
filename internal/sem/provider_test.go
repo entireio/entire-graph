@@ -13413,6 +13413,87 @@ A.convert(2) |> ignore
 	}
 }
 
+func TestFSharpEachQualifierResolvesToItsOwnModule(t *testing.T) {
+	// `x |> A.convert |> B.convert` is TWO calls, to two different modules'
+	// functions. Qualifier state was collapsed to one entry per short name, so
+	// the second qualifier conflicted with the first and cleared the restriction
+	// altogether; `resolveCallTargets` then fell back to the same-file definition
+	// nearest the call site and emitted a single edge -- one real call lost, and
+	// the survivor picked by line distance rather than by what was written (here
+	// it landed on `D.convert`, which only ever appears inside a comment).
+	// Both scan paths carried it: the per-symbol one and the file-level one.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Two.fs", `module A =
+    let convert (x: int) = x + 1
+
+module B =
+    let convert (x: int) = x * 2
+
+module D =
+    let convert (x: int) = x - 1
+
+module C =
+    let run (x: int) =
+        (* dead: x |> D.convert (* nested *) |> ignore *)
+        x |> A.convert |> B.convert
+`)
+	writeFile(t, repo, "script.fsx", `module A =
+    let convert (x: int) = x + 1
+
+module B =
+    let convert (x: int) = x * 2
+
+module D =
+    let convert (x: int) = x - 1
+
+(* dead: 1 |> D.convert (* nested *) |> ignore *)
+1 |> A.convert |> B.convert |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// A.convert is declared on line 2, B.convert on line 5, and the only mention
+	// of D.convert (line 8) is commented out, so each caller must reach exactly
+	// lines 2 and 5.
+	runLines := map[int]bool{}
+	topLevelLines := map[int]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "convert" {
+			continue
+		}
+		from, isSymbol := symbolsByID[relation.FromID]
+		switch {
+		case isSymbol && from.Name == "run":
+			runLines[to.StartLine] = true
+		case !isSymbol && strings.Contains(relation.FromID, "script.fsx"):
+			topLevelLines[to.StartLine] = true
+		}
+	}
+	want := map[int]bool{2: true, 5: true}
+	if !reflect.DeepEqual(runLines, want) {
+		t.Fatalf("run |> A.convert |> B.convert reached definitions on lines %v, want %v", sortedIntKeys(runLines), sortedIntKeys(want))
+	}
+	if !reflect.DeepEqual(topLevelLines, want) {
+		t.Fatalf("top-level 1 |> A.convert |> B.convert reached definitions on lines %v, want %v", sortedIntKeys(topLevelLines), sortedIntKeys(want))
+	}
+}
+
+func sortedIntKeys(m map[int]bool) []int {
+	out := make([]int, 0, len(m))
+	for key := range m {
+		out = append(out, key)
+	}
+	sort.Ints(out)
+	return out
+}
+
 func TestSwiftProtocolDeclarationsEmitted(t *testing.T) {
 	// tree-sitter-swift emits protocol_declaration; an Objective-C-only gate
 	// on that node type silently dropped every Swift protocol (regression
