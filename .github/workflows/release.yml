@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
 
+# A tag push and a nightly's explicit dispatch can both build the same release.
+# Serialize them by release version so an existing draft is completed in place.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: build (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -204,6 +210,9 @@ jobs:
           assets=(dist/entire-graph_* dist/checksums.txt)
           if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$VERSION" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+            # Keep the release and its existing prerelease/latest settings; only
+            # complete an unfinished draft after all its assets are present.
+            gh release edit "$VERSION" --draft=false --repo "$GITHUB_REPOSITORY"
           else
             flags=(
               --repo "$GITHUB_REPOSITORY"

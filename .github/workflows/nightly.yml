@@ -34,15 +34,20 @@ jobs:
             # landed since the last nightly -- but it is also what a RETRY sees
             # after a run pushed the tag and then failed or was cancelled
             # (cancel-in-progress makes that window real) before dispatching the
-            # release. Telling those apart by whether the tag has a release
-            # keeps the retry able to finish, instead of skipping that commit's
-            # release permanently.
+            # release. Telling those apart by whether the tag has a *published*
+            # release keeps the retry able to finish, instead of skipping that
+            # commit's release permanently. A draft is intentionally unfinished:
+            # release.yml uploads its artifacts and publishes that same draft.
             EXISTING=$(git tag -l "v*-nightly.*.$(git rev-parse --short HEAD)" | sort | tail -1)
-            if [ -n "$EXISTING" ] && ! gh release view "$EXISTING" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "Nightly tag $EXISTING has no release yet — resuming its dispatch."
+            RELEASE_STATE=published
+            if [ -n "$EXISTING" ]; then
+              RELEASE_STATE=$(gh release view "$EXISTING" --repo "$GITHUB_REPOSITORY" --json isDraft --jq 'if .isDraft then "draft" else "published" end' 2>/dev/null || printf 'missing')
+            fi
+            if [ -n "$EXISTING" ] && [ "$RELEASE_STATE" != published ]; then
+              echo "Nightly tag $EXISTING has a $RELEASE_STATE release — resuming its dispatch."
               echo "tag=$EXISTING" >> "$GITHUB_OUTPUT"
             else
-              echo "Skipping — HEAD already has a nightly tag and a release."
+              echo "Skipping — HEAD already has a nightly tag and a published release."
               echo "tag=" >> "$GITHUB_OUTPUT"
             fi
             exit 0
