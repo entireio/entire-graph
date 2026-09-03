@@ -12559,6 +12559,53 @@ end
 	}
 }
 
+func TestJuliaCodeAfterAChildsEndBelongsToTheModule(t *testing.T) {
+	// `end; setup()` is valid Julia: a function's closing line can carry
+	// module-level code. Blanking the child's lines through EndLine deleted that
+	// call from the module's block, while the child's own block still contained
+	// it -- so one real module-to-setup call was lost from the module and
+	// credited to the function instead. A SymbolRecord carries no column, so both
+	// halves find the cut by counting block depth to the `end` that closes the
+	// child.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/M.jl", `module M
+function setup()
+    1
+end
+function f()
+    2
+end; setup()
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.setup") {
+		t.Fatalf("module-level code after a child's `end` was blanked, losing CALLS M->M.setup: %#v", calls)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M.f", "M.setup") {
+		t.Fatalf("module-level code after a child's `end` was also credited to the child: %#v", calls)
+	}
+}
+
+func TestJuliaClosingEndScanCountsDepthAndIgnoresLiterals(t *testing.T) {
+	// The cut is the `end` that returns the scan to depth zero, not the first
+	// one: an `end` closing a block nested inside the child would hand the
+	// child's own calls to the module. An `end` inside a string is not a
+	// terminator at all.
+	for _, tc := range []struct{ in, want string }{
+		{"end; setup()", "   ; setup()"},
+		{"  if c; helper(); end; end; g()", "                          ; g()"},
+		{`  x = "end"; end; g()`, "                ; g()"},
+	} {
+		if got := juliaBlankThroughClosingEnd(tc.in); got != tc.want {
+			t.Errorf("juliaBlankThroughClosingEnd(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestJuliaModuleIsNotCreditedWithItsOwnMacros(t *testing.T) {
 	// A module's block spans its members' definition lines, and a macro's head
 	// reads as a call: `macro mymac(x)` contains `mymac(x)`. The module-own-block
