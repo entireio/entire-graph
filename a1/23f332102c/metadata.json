@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "a123f332102c",
+  "strategy": "manual-commit",
+  "branch": "codex/pr161-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/julia_import_visibility_audit_test.go",
+    "internal/sem/provider.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a1/23f332102c/0/metadata.json",
+      "transcript": "/a1/23f332102c/0/full.jsonl",
+      "compact_transcript": "/a1/23f332102c/0/transcript.jsonl",
+      "content_hash": "/a1/23f332102c/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 27074,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 10547840,
+    "output_tokens": 6045,
+    "api_call_count": 67
+  }
+}
