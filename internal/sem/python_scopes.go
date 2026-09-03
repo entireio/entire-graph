@@ -132,6 +132,17 @@ func (s *pythonBindingScope) lexicalParent() *pythonBindingScope {
 	return p
 }
 
+// signatureView is the enclosing scope as one nested function's signature sees
+// it: the same bindings (a walrus in a default argument really does bind out
+// here), reattributed to that function's owner and starting with no calls of
+// its own so the enclosing scope's calls are published once.
+func (s *pythonBindingScope) signatureView(owner string) *pythonBindingScope {
+	view := *s
+	view.owner = owner
+	view.calls = nil
+	return &view
+}
+
 func (s *pythonBindingScope) lexicalContainer() *pythonBindingScope {
 	for s != nil && s.class {
 		s = s.parent
@@ -161,6 +172,22 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 		}
 		child := w.functionScope(node, scope)
 		if child != nil {
+			// Default arguments and annotations are evaluated where the `def`
+			// runs, not inside the call frame, so they read the ENCLOSING
+			// bindings and never the parameters they sit beside. The call scan
+			// still credits them to the callable whose signature line holds
+			// them, so resolve them against the enclosing scope and publish them
+			// under the function's own owner.
+			if scope != nil {
+				signature := scope.signatureView(child.owner)
+				body := node.ChildByFieldName("body")
+				for i := 0; i < int(node.NamedChildCount()); i++ {
+					if part := node.NamedChild(i); !samePythonNode(part, body) {
+						w.walk(part, signature, depth+1)
+					}
+				}
+				w.publish(signature)
+			}
 			w.walk(node.ChildByFieldName("body"), child, depth+1)
 			w.publish(child)
 		}

@@ -430,3 +430,166 @@ sub go {
 		t.Fatalf("run -> go resolved to the wrong target: %#v", to)
 	}
 }
+
+// pythonFFICallEdges builds a repo whose only `compute` lives in C, so the
+// name-only tier cannot rescue the edge: an import binding either survives
+// Python scope analysis and resolves across the FFI boundary, or the edge is
+// gone entirely.
+func pythonFFICallEdges(t *testing.T, app string) []RelationRecord {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", app)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []RelationRecord
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && strings.HasSuffix(r.ToID, "frobnicate.c:function:compute") {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// assertOneImportResolvedComputeEdge demands the exact edge an unshadowed
+// imported call in a plain function body produces, so a signature call is held
+// to the body oracle rather than to a weaker surviving tier.
+func assertOneImportResolvedComputeEdge(t *testing.T, edges []RelationRecord, fromSuffix string) {
+	t.Helper()
+	if len(edges) != 1 {
+		t.Fatalf("want exactly one CALLS edge to the imported C `compute`, got %d: %#v", len(edges), edges)
+	}
+	if !strings.HasSuffix(edges[0].FromID, fromSuffix) {
+		t.Fatalf("edge came from %q, want a symbol ending %q", edges[0].FromID, fromSuffix)
+	}
+	if edges[0].Resolution != "import_resolved" {
+		t.Fatalf("want the import tier to bind the call, got resolution %q: %#v", edges[0].Resolution, edges[0])
+	}
+}
+
+// Python evaluates decorators, default arguments and annotations where the
+// `def` statement runs -- in the ENCLOSING scope -- not inside the call frame.
+// The scope walker descended only into the function body, so a call in the
+// signature was recorded in no scope at all. That is not a harmless omission:
+// the call scan still attributes it to the function whose signature line holds
+// it, and a `complete` scope view that reports no modules for the name makes
+// importsWithName DELETE the file-level import binding. The imported call then
+// loses its resolution tier outright. Decorators already worked -- tree-sitter
+// hangs them off `decorated_definition`, outside the function node -- so this
+// covers the signature itself, and keeps the enclosing scope authoritative so a
+// shadowed name still fails closed.
+func TestPythonSignatureCallsResolveThroughEnclosingImports(t *testing.T) {
+	t.Run("body call is the oracle", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return compute(1)
+`), "app.py:function:plain")
+	})
+
+	t.Run("default argument", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def defaulted(value=compute()):
+    return value
+`), "app.py:function:defaulted")
+	})
+
+	t.Run("parameter annotation", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def annotated(value: compute()):
+    return value
+`), "app.py:function:annotated")
+	})
+
+	t.Run("return annotation", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def returned() -> compute():
+    return 1
+`), "app.py:function:returned")
+	})
+
+	t.Run("method default reads the class body scope chain", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+class Holder:
+    def method(self, value=compute()):
+        return value
+`), "app.py:method:Holder.method")
+	})
+
+	t.Run("decorator was already enclosing-scoped", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+@compute()
+def decorated():
+    return 1
+`), "file:app.py")
+	})
+
+	t.Run("a parameter never shadows its own default", func(t *testing.T) {
+		// The default is evaluated before the parameter exists, so `compute`
+		// here is the module-level import, not the parameter beside it.
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def shadowing(compute=compute()):
+    return compute
+`), "app.py:function:shadowing")
+	})
+
+	t.Run("an enclosing local still fails closed", func(t *testing.T) {
+		if edges := pythonFFICallEdges(t, `from frobnicate import compute
+
+def outer():
+    compute = 1
+    def inner(value=compute()):
+        return value
+    return inner
+`); len(edges) != 0 {
+			t.Fatalf("the enclosing function rebound `compute`, so its nested default must not reach the import: %#v", edges)
+		}
+	})
+}
+
+// `from mod import (compute,)` splits on commas into `(compute` and `)`, so the
+// grouping parentheses were parsed as part of the bound name. The scope walker
+// then bound a name no call can ever match, reported the scope as complete, and
+// importsWithName deleted the real `compute` binding -- taking the resolved
+// CALLS edge with it. The multi-line form is the one Python code actually
+// writes, and the line-oriented import scanners cannot see past its first line
+// at all, so the AST-derived scope binding is the only thing that restores it.
+func TestPythonParenthesizedFromImportBindsTheImportedMember(t *testing.T) {
+	t.Run("single line", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import (compute,)
+
+def plain():
+    return compute(1)
+`), "app.py:function:plain")
+	})
+
+	t.Run("multi line", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import (
+    compute,
+)
+
+def plain():
+    return compute(1)
+`), "app.py:function:plain")
+	})
+
+	t.Run("parenthesised alias resolves to the member it renames", func(t *testing.T) {
+		edges := pythonFFICallEdges(t, `from frobnicate import (compute as c,)
+
+def plain():
+    return c(1)
+`)
+		assertOneImportResolvedComputeEdge(t, edges, "app.py:function:plain")
+	})
+}

@@ -20467,7 +20467,12 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 }
 
 func parsePythonImportItem(item string) (name, alias string) {
-	item = strings.TrimSpace(item)
+	// A parenthesised import list -- `from mod import (compute,)` and its
+	// multi-line form -- carries the grouping parentheses into the first and
+	// last comma-separated items. They are punctuation: a dotted name or alias
+	// never contains one, so trimming them leaves the real binding instead of
+	// the unusable `(compute`.
+	item = strings.TrimSpace(strings.Trim(strings.TrimSpace(item), "()"))
 	if item == "" {
 		return "", ""
 	}
