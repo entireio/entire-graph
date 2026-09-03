@@ -2167,32 +2167,57 @@ func fsharpQualifiedScope(symbols []SymbolRecord, qualifier, callerPath string, 
 		if !declared[exact] {
 			continue
 		}
-		scoped := make([]SymbolRecord, 0, len(symbols))
-		for _, symbol := range symbols {
-			// Symbols with no known module path (another language's) are
-			// left alone, exactly as the suffix fallback below leaves them:
-			// an F# module qualifier says nothing about them.
-			if path, known := pathBySymbolID[symbol.ID]; !known || path == exact {
-				scoped = append(scoped, symbol)
-			}
-		}
-		return scoped
+		return fsharpNarrowToModule(symbols, pathBySymbolID, func(path string) bool { return path == exact })
 	}
 	// Every F# symbol in the project has a known module path, so a qualified
 	// call is held to the module it names WHEREVER that module is declared.
 	// Exempting other files -- correct only while the qualifier's meaning was
 	// read from this file alone -- meant a cross-file `A.convert` never narrowed
 	// anything, so `B.convert` stayed a candidate and the ambiguity dropped the
-	// edge. Symbols with no known path (another language's) are left alone: an
-	// F# module qualifier says nothing about them.
-	out := make([]SymbolRecord, 0, len(symbols))
+	// edge.
+	return fsharpNarrowToModule(symbols, pathBySymbolID, func(path string) bool {
+		return fsharpQualifierMatchesModulePath(path, qualifier)
+	})
+}
+
+// fsharpNarrowToModule keeps the candidates an F# module qualifier admits.
+// `admits` is asked only about F# symbols; a symbol with no entry in
+// pathBySymbolID belongs to another language and has no F# module path to
+// judge.
+//
+// Those pathless symbols are the whole difficulty, because the candidate set is
+// the project's, not the language's. Keeping them unconditionally -- right in
+// the sense that an F# module qualifier says nothing about another language --
+// left every same-named foreign symbol standing beside the one member the
+// qualifier had just singled out, and resolveCallTargets, seeing two candidates
+// for the name, emitted NO edge: a Python `convert` anywhere in the repository
+// silently cost `A.convert` its edge. Dropping them unconditionally trades that
+// for the opposite loss, because an F# module name is not reserved: with module
+// `Codec` declaring only `decode`, `Codec.encode` is not module Codec's at all
+// and the pathless `encode` is the real target.
+//
+// So the module answers first and the other languages answer only if it cannot:
+// where the named module supplies the name, that member IS the call and the
+// foreign homonyms are noise; where it supplies nothing, the qualifier has
+// nothing to say and the candidates go on to the ordinary cross-language
+// resolution untouched. Repositories of one language are unaffected either way
+// -- with no pathless candidate the two branches return the same set.
+func fsharpNarrowToModule(symbols []SymbolRecord, pathBySymbolID map[string]string, admits func(path string) bool) []SymbolRecord {
+	scoped := make([]SymbolRecord, 0, len(symbols))
+	var foreign []SymbolRecord
 	for _, symbol := range symbols {
 		path, known := pathBySymbolID[symbol.ID]
-		if !known || fsharpQualifierMatchesModulePath(path, qualifier) {
-			out = append(out, symbol)
+		switch {
+		case !known:
+			foreign = append(foreign, symbol)
+		case admits(path):
+			scoped = append(scoped, symbol)
 		}
 	}
-	return out
+	if len(scoped) > 0 {
+		return scoped
+	}
+	return foreign
 }
 
 // fsharpModuleInitBlock returns an F# module's own source with every binding

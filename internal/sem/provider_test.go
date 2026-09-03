@@ -16848,3 +16848,97 @@ A.build 3 |> ignore
 		t.Fatalf("file-level `A.build` naming a module declared only inside `Outer` reached %v, want %v", reached, want)
 	}
 }
+
+func TestFSharpQualifierIsNotBlockedByAnotherLanguagesSameName(t *testing.T) {
+	// A repository is rarely one language. `A.convert` names module A's
+	// `convert` and nothing else, but the candidate set is global and holds
+	// every same-named symbol in the project -- including a Python `convert`
+	// that carries no F# module path at all. Exempting pathless symbols from
+	// the qualifier (right for the modules it cannot speak about) left the
+	// Python one standing beside the F# one, and `resolveCallTargets` saw two
+	// candidates for a name the qualifier had already made unique: no edge.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module A =
+    let convert (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/C.fs", `module C =
+    let run (x: int) = x |> A.convert
+`)
+	writeFile(t, repo, "script.fsx", `1 |> A.convert |> ignore
+`)
+	writeFile(t, repo, "tools/util.py", `def convert(x):
+    return x + 1
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	runFiles := map[string]bool{}
+	topLevelFiles := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "convert" {
+			continue
+		}
+		from, isSymbol := symbolsByID[relation.FromID]
+		switch {
+		case isSymbol && from.Name == "run":
+			runFiles[filepath.Base(to.FilePath)] = true
+		case !isSymbol && strings.Contains(relation.FromID, "script.fsx"):
+			topLevelFiles[filepath.Base(to.FilePath)] = true
+		}
+	}
+	if want := map[string]bool{"A.fs": true}; !reflect.DeepEqual(runFiles, want) {
+		t.Errorf("`x |> A.convert` from C.fs reached %v, want %v", sortedKeysOf(runFiles), sortedKeysOf(want))
+	}
+	if want := map[string]bool{"A.fs": true}; !reflect.DeepEqual(topLevelFiles, want) {
+		t.Errorf("top-level `1 |> A.convert` reached %v, want %v", sortedKeysOf(topLevelFiles), sortedKeysOf(want))
+	}
+}
+
+func TestFSharpQualifierKeepsANonFSharpCandidateItsModuleCannotSupply(t *testing.T) {
+	// The other direction, and the reason the qualifier cannot simply delete
+	// every pathless symbol: an F# module name may also name a module of
+	// another language in the same repository. Here module `Codec` supplies
+	// `decode` only, so `Codec.encode` is not module Codec's -- it is the
+	// Python `encode`, which carries no F# module path. A qualifier must keep
+	// the candidates its own module cannot supply and leave them to the
+	// ordinary cross-language resolution.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Codec.fs", `module Codec =
+    let decode (x: int) = x - 1
+`)
+	writeFile(t, repo, "src/Use.fs", `module Use =
+    let run (x: int) = x |> Codec.encode
+`)
+	writeFile(t, repo, "tools/codec.py", `def encode(x):
+    return x + 1
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	reached := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "encode" {
+			continue
+		}
+		if from, isSymbol := symbolsByID[relation.FromID]; isSymbol && from.Name == "run" {
+			reached[filepath.Base(to.FilePath)] = true
+		}
+	}
+	if want := map[string]bool{"codec.py": true}; !reflect.DeepEqual(reached, want) {
+		t.Errorf("`Codec.encode` from Use.fs reached %v, want %v", sortedKeysOf(reached), sortedKeysOf(want))
+	}
+}
