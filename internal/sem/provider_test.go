@@ -16681,3 +16681,60 @@ func TestSearchRepositoryStillIndexesSourceTreeNamedLikeAGitDir(t *testing.T) {
 		t.Errorf("search did not return testdata/parser/objects/loader.go; results = %v", paths)
 	}
 }
+
+func TestJuliaBangNamedDefinitionsStayMasked(t *testing.T) {
+	// Julia's convention is that a MUTATING function's name ends in `!`
+	// (`push!`, `sort!`, `empty!`), so the name is a large share of every real
+	// codebase's definitions. The definition masks anchored the name with a
+	// trailing `\b`, which can never match after `!`: `!` is already a non-word
+	// character, and so is the `(` that follows it. Every bang definition was
+	// therefore left unmasked in its module's block -- the head read as a call
+	// to the child, and a one-line or short-form definition's whole body was
+	// credited to the module as well.
+	for _, def := range []string{
+		"function update!(x = helper(1))\n    return x\nend",
+		"function update!(x); helper(x); end",
+		"update!(x) = helper(x)",
+	} {
+		repo := t.TempDir()
+		writeFile(t, repo, "src/M.jl", "module M\nfunction helper(y); y; end\n"+def+"\nend\n")
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatalf("build snapshot: %v", err)
+		}
+		calls := relationsOfType(snapshot.Relations, "CALLS")
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M.update!", "M.helper") {
+			t.Errorf("%q lost its own call to helper: %#v", def, calls)
+		}
+		if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.helper") {
+			t.Errorf("%q left its body in the module's block: %#v", def, calls)
+		}
+		if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.update!") {
+			t.Errorf("%q head read as a module-level call to the definition itself: %#v", def, calls)
+		}
+	}
+
+	// The same boundary in the other direction: `!` is an identifier character,
+	// so a bang name is not the shorter sibling it starts with. `\blog\b`
+	// matched inside `function log!`, masking only `function log` there and
+	// leaving `!(x); other(x); end` -- the bang definition's whole body -- in the
+	// module's block.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/M.jl", `module M
+function log(x); x; end
+function log!(x); other(x); end
+function other(y); y; end
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M.log!", "M.other") {
+		t.Errorf("the bang definition lost its own body call: %#v", calls)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.other") {
+		t.Errorf("a shorter sibling's mask cut the bang definition open: %#v", calls)
+	}
+}

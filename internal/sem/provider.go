@@ -2381,7 +2381,10 @@ func juliaMaskLongFormDefinition(block, name string) string {
 	// `function`, and Julia closes both with the same `end`. Leaving it out
 	// left a one-line macro's body unmasked, crediting the enclosing module
 	// with every call the macro makes.
-	head := regexp.MustCompile(`\b(?:function|macro)\s+` + regexp.QuoteMeta(name) + `\b`)
+	// No trailing `\b`: see juliaNameContinues. The boundary is checked below
+	// instead, because `\b` neither matches after a bang name's `!` nor rejects
+	// `update!` found inside `update!!`.
+	head := regexp.MustCompile(`\b(?:function|macro)\s+` + regexp.QuoteMeta(name))
 	openers := regexp.MustCompile(`\b(function|if|for|while|begin|let|do|try|quote|struct|module|macro)\b`)
 	end := regexp.MustCompile(`\bend\b`)
 	// Block tokens are matched against a copy whose STRING and COMMENT bodies are
@@ -2390,18 +2393,25 @@ func juliaMaskLongFormDefinition(block, name string) string {
 	// in it -- attributed to the enclosing module. The stripper preserves length,
 	// so an offset found here indexes the same byte in the original.
 	scan := juliaBlockScanText(block)
-	for {
-		where := head.FindStringIndex(scan)
+	for searchFrom := 0; searchFrom <= len(scan); {
+		where := head.FindStringIndex(scan[searchFrom:])
 		if where == nil {
 			return block
 		}
-		depth, cursor := 0, where[0]
+		from, nameEnd := searchFrom+where[0], searchFrom+where[1]
+		if juliaNameContinues(scan, nameEnd) {
+			// A longer name that merely starts with this one --
+			// `function update!!` when masking `update!`.
+			searchFrom = nameEnd
+			continue
+		}
+		depth, cursor := 0, from
 		for cursor < len(scan) {
 			nextOpen := openers.FindStringIndex(scan[cursor:])
 			nextEnd := end.FindStringIndex(scan[cursor:])
 			if nextEnd == nil {
 				// Unterminated: mask to the end rather than leave the body.
-				return maskRangeKeepingNewlines(block, where[0], len(block))
+				return maskRangeKeepingNewlines(block, from, len(block))
 			}
 			if nextOpen != nil && nextOpen[0] < nextEnd[0] {
 				depth++
@@ -2411,11 +2421,31 @@ func juliaMaskLongFormDefinition(block, name string) string {
 			depth--
 			cursor += nextEnd[1]
 			if depth == 0 {
-				return maskRangeKeepingNewlines(block, where[0], cursor)
+				return maskRangeKeepingNewlines(block, from, cursor)
 			}
 		}
-		return maskRangeKeepingNewlines(block, where[0], len(block))
+		return maskRangeKeepingNewlines(block, from, len(block))
 	}
+	return block
+}
+
+// juliaNameContinues reports whether the byte at `at` continues a Julia
+// identifier, and is the trailing boundary the definition masks use instead of
+// a regexp `\b`.
+//
+// `\b` is the wrong boundary for Julia in BOTH directions, because `!` is an
+// identifier character here and a word character to RE2 in neither position.
+// Julia's convention is that a mutating function's name ends in `!` -- `push!`,
+// `sort!`, `empty!` -- so `\bupdate!\b` never matched at all: `!` is a
+// non-word character and so is the `(` that follows it, leaving every bang
+// definition unmasked in its module's block. And `\bhelper\b` matched inside
+// `helper!`, masking a different function's definition as if it were this one.
+func juliaNameContinues(scan string, at int) bool {
+	if at < 0 || at >= len(scan) {
+		return false
+	}
+	c := scan[at]
+	return c == '!' || c == '_' || (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
 // maskRangeKeepingNewlines blanks [start,stop) but keeps line breaks, so every
@@ -2449,7 +2479,7 @@ func juliaMaskDefinitionHeads(block string, names []string) string {
 		// head line -- the one line of a multi-line definition the module's block
 		// deliberately keeps -- so the module was credited with calling helper
 		// alongside the real `M.f -> M.helper` edge.
-		block = juliaMaskDefinitionAt(block, regexp.MustCompile(`\b(?:function|macro)\s+`+quoted+`\b`), nil)
+		block = juliaMaskDefinitionAt(block, regexp.MustCompile(`\b(?:function|macro)\s+`+quoted), nil)
 		// Short form, masked THROUGH ITS RIGHT-HAND SIDE. `f() = helper()`
 		// occupies one line, so no body line is blanked for it, and masking
 		// only the head left `helper()` in the module's block -- crediting
@@ -2485,7 +2515,7 @@ func juliaMaskDefinitionHeads(block string, names []string) string {
 		// followed by `) = `, and reading that as a short-form head masked the
 		// line from the default value onwards -- destroying `g`'s own argument
 		// list before the mask for `g` could balance it.
-		reference := regexp.MustCompile(`\b` + quoted + `\b`)
+		reference := regexp.MustCompile(`\b` + quoted)
 		for _, tail := range []*regexp.Regexp{
 			regexp.MustCompile(`(?:[^=;()\n]*[^=;()\n<>!~+\-*/\\^%&|])?=[^=;\n>][^;\n]*`),
 			// A short form may also put its body on the NEXT line
@@ -2528,6 +2558,12 @@ func juliaMaskDefinitionAt(block string, head *regexp.Regexp, tail *regexp.Regex
 		}
 		from, nameEnd := cursor+where[0], cursor+where[1]
 		cursor = nameEnd
+		if juliaNameContinues(scan, nameEnd) {
+			// The head patterns carry no trailing `\b` -- it cannot match
+			// after a bang name's `!` -- so the boundary is checked here, and
+			// checking it here also stops `helper` masking `helper!`.
+			continue
+		}
 		stop := juliaArgumentListEnd(scan, nameEnd)
 		if stop < 0 {
 			if tail != nil {
