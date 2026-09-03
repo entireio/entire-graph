@@ -82,7 +82,24 @@ var typeSharingLanguageGroups = [][]string{
 // file, not the declaration: a header holding any Objective-C syntax is labelled
 // Objective-C even where it also declares plain C structs and functions, which
 // C++ compiles unchanged. Refusing the pair dropped those edges wholesale.
+//
+// C reaches them for exactly that reason and no other, which is why it is the
+// single target C names. A `.h` is labelled Objective-C the moment it contains
+// one `#import` or one `@interface` (see looksLikeObjectiveC), and such headers
+// routinely go on declaring the plain C structs, typedefs and functions a `.c`
+// includes and compiles verbatim. Measured before this edge, over a fixture
+// whose `.c` includes an Objective-C-labelled header and an otherwise identical
+// plain-C one:
+//
+//	C/renderGadget -> C/Gadget                    resolved
+//	C/renderWidget -> Objective-C/Widget          DROPPED (same declaration)
+//
+// The edge stays one-way at the family level: C still cannot name a C++ class or
+// template, nor a Swift declaration, so nothing else moves. It is narrowed by
+// kind in candidateSharesDeclarations exactly as the C++ edge is -- an
+// `@interface` or a selector is no more nameable from C than from C++.
 var typeSharingLanguageEdges = map[string][]string{
+	"C":             {"Objective-C"},
 	"C++":           {"C", "Objective-C"},
 	"Objective-C":   {"C", "Swift"},
 	"Objective-C++": {"C", "C++", "Objective-C"},
@@ -207,20 +224,25 @@ func candidateSharesDeclarations(from, candidate SymbolRecord) bool {
 	if from.Language == candidate.Language {
 		return true
 	}
-	if from.Language == "C++" && candidate.Language == "Objective-C" {
-		// The pair exists only because the Objective-C LABEL follows the file:
+	if isCFamilyPlainConsumer(from.Language) && candidate.Language == "Objective-C" {
+		// Both pairs exist only because the Objective-C LABEL follows the file:
 		// a header holding any Objective-C syntax is Objective-C even where it
-		// also declares the plain C structs and functions a `.cpp` compiles
-		// unchanged. The declarations that are Objective-C in their own right --
-		// an `@interface`/`@implementation` (kind "class"), an `@protocol`
-		// (kind "interface"), and a method, which is reachable only by message
-		// send -- are not among them, and binding one made a `.cpp` name a class
-		// it cannot even declare. Measured before this refinement, over a
-		// fixture with an `@interface Shape` header and a `.m` method:
+		// also declares the plain C structs and functions a `.c` or `.cpp`
+		// compiles unchanged. The declarations that are Objective-C in their own
+		// right -- an `@interface`/`@implementation` (kind "class"), an
+		// `@protocol` (kind "interface"), and a method, which is reachable only
+		// by message send -- are not among them, and binding one made the
+		// consumer name a class it cannot even declare. Measured before this
+		// refinement, over a fixture with an `@interface Shape` header and a
+		// `.m` method:
 		//
 		//	C++/renderShape -> Objective-C/Shape        WRONG (@interface)
 		//	C++/callIt      -> Objective-C/computeArea  WRONG (message send)
 		//	C++/renderWidget -> Objective-C/Widget      correct (plain C struct)
+		//
+		// C is held to the same rule, not a looser one: it reaches the label for
+		// the same reason and is even less able to name an Objective-C class
+		// than C++ is.
 		return !objectiveCOnlyDeclaration(candidate.Kind)
 	}
 	if from.Language == "Objective-C" && candidate.Language == "Swift" {
@@ -239,6 +261,14 @@ func candidateSharesDeclarations(from, candidate SymbolRecord) bool {
 		return strings.EqualFold(path.Ext(candidate.FilePath), clojurePortableExt)
 	}
 	return true
+}
+
+// isCFamilyPlainConsumer reports whether a language compiles the plain C half of
+// an Objective-C-labelled file verbatim. C and C++ both do, and neither can name
+// the Objective-C half; Objective-C++ is excluded because it genuinely speaks
+// Objective-C and must keep naming classes and selectors.
+func isCFamilyPlainConsumer(language string) bool {
+	return language == "C" || language == "C++"
 }
 
 func isClojureDialect(language string) bool {
