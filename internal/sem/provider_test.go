@@ -13593,6 +13593,108 @@ module D =
 	}
 }
 
+func TestFSharpQualifierNamingAModuleInAnotherFile(t *testing.T) {
+	// F# modules are project-scoped and the usual layout is one module per
+	// file, so a qualifier almost always names a module the CALLER file does
+	// not declare. Deciding retention from the caller file's own declarations
+	// therefore discarded the qualifier on the common case: `x |> A.convert`
+	// written in C.fs was recorded as bare `convert`, and with `convert`
+	// declared in both A and B the globally-unique fallback then emitted NO
+	// edge at all -- the explicit qualifier cost the call its edge instead of
+	// pinning it. Both scan paths carried it: the per-symbol one and the
+	// file-level one.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module A =
+    let convert (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/B.fs", `module B =
+    let convert (x: int) = x * 2
+`)
+	writeFile(t, repo, "src/C.fs", `module C =
+    let run (x: int) = x |> A.convert
+`)
+	writeFile(t, repo, "script.fsx", `1 |> B.convert |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// A.convert and B.convert are both on line 2 of their own file, so the
+	// definition is identified by file, not by line.
+	runFiles := map[string]bool{}
+	topLevelFiles := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "convert" {
+			continue
+		}
+		from, isSymbol := symbolsByID[relation.FromID]
+		switch {
+		case isSymbol && from.Name == "run":
+			runFiles[filepath.Base(to.FilePath)] = true
+		case !isSymbol && strings.Contains(relation.FromID, "script.fsx"):
+			topLevelFiles[filepath.Base(to.FilePath)] = true
+		}
+	}
+	if want := map[string]bool{"A.fs": true}; !reflect.DeepEqual(runFiles, want) {
+		t.Errorf("`x |> A.convert` from C.fs reached %v, want %v", sortedKeysOf(runFiles), sortedKeysOf(want))
+	}
+	if want := map[string]bool{"B.fs": true}; !reflect.DeepEqual(topLevelFiles, want) {
+		t.Errorf("top-level `1 |> B.convert` reached %v, want %v", sortedKeysOf(topLevelFiles), sortedKeysOf(want))
+	}
+}
+
+func TestFSharpQualifierNamingNoDeclaredModuleKeepsItsEdge(t *testing.T) {
+	// The other half of the same gate, and the reason it cannot simply be
+	// dropped: most dotted call prefixes in F# are NOT project modules. A .NET
+	// namespace (`System.Text.encode`) and a value receiver (`svc.encode`) name
+	// no module this project declares, so they restrict nothing and the call
+	// resolves by name as an unqualified one does. Holding them to the module
+	// path they spell would restrict resolution to an empty scope and drop the
+	// edge outright -- trading the cross-file bug above for a worse one.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Codec.fs", `module Codec =
+    let encode (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/Use.fs", `module Use =
+    let viaNamespace (x: int) = System.Text.encode x
+
+    let viaValue (svc: Svc) (x: int) = svc.encode x
+`)
+	writeFile(t, repo, "script.fsx", `System.Text.encode 1 |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	callers := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "encode" || filepath.Base(to.FilePath) != "Codec.fs" {
+			continue
+		}
+		if from, isSymbol := symbolsByID[relation.FromID]; isSymbol {
+			callers[from.Name] = true
+		} else if strings.Contains(relation.FromID, "script.fsx") {
+			callers["script.fsx"] = true
+		}
+	}
+	want := map[string]bool{"viaNamespace": true, "viaValue": true, "script.fsx": true}
+	if !reflect.DeepEqual(callers, want) {
+		t.Errorf("a dotted prefix naming no declared module lost its edge: reached from %v, want %v", sortedKeysOf(callers), sortedKeysOf(want))
+	}
+}
+
 func TestFSharpModuleInitCallsSurvive(t *testing.T) {
 	// A module-level `do` binding is initialisation code: it runs when the
 	// module loads, it belongs to no nested binding, and the file-level pass

@@ -1893,6 +1893,43 @@ func fsharpModulePaths(fileSymbols []SymbolRecord) (map[string]string, map[strin
 	return pathBySymbolID, declared
 }
 
+// fsharpProjectModulePaths is fsharpModulePaths over every F# file at once.
+//
+// F# modules are PROJECT-scoped, not file-scoped, and the usual layout is one
+// module per file, so `A.convert` written anywhere in the project names module
+// A wherever A is declared. Deciding what a qualifier may name from the caller
+// FILE's declarations alone therefore threw the restriction away on exactly the
+// calls that most need it: a cross-file `A.convert` was recorded as bare
+// `convert`, and once a second module declared a `convert` too, the
+// globally-unique fallback emitted NO edge at all despite the explicit
+// qualifier. The path map has to widen with it, because the scope a cross-file
+// qualifier names lives in another file and a map keyed on this file's symbols
+// cannot filter it.
+//
+// A qualifier naming no module the project declares -- a .NET namespace
+// (`System.Text.encode`), a value receiver (`svc.encode`) -- is still not a
+// qualifier here and still records as bare, so it keeps resolving unrestricted
+// instead of being held to an empty scope and losing its edge.
+//
+// Container chains never cross files, so merging the per-file maps is exact.
+func fsharpProjectModulePaths(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]string, map[string]bool) {
+	pathBySymbolID := map[string]string{}
+	declared := map[string]bool{}
+	for _, file := range files {
+		if file.Language != "F#" {
+			continue
+		}
+		filePaths, fileDeclared := fsharpModulePaths(recordsByFile[file.Path])
+		for id, path := range filePaths {
+			pathBySymbolID[id] = path
+		}
+		for path := range fileDeclared {
+			declared[path] = true
+		}
+	}
+	return pathBySymbolID, declared
+}
+
 // fsharpQualifierMatchesModulePath reports whether a call's qualifier names the
 // module a symbol is declared in. A qualifier may be written relative to the
 // enclosing scope (`ScriptGeneration.f` inside `LoadingScripts`), so a suffix on
@@ -1901,9 +1938,11 @@ func fsharpQualifierMatchesModulePath(path, qualifier string) bool {
 	return path == qualifier || strings.HasSuffix(path, "."+qualifier)
 }
 
-// fsharpModulePathDeclared reports whether the qualifier names a module this
-// file declares. Cross-file qualifiers (`InstallProcess.InstallIntoProjects`
-// from another file's module) stay unrestricted and resolve by name as before.
+// fsharpModulePathDeclared reports whether the qualifier names a module the
+// PROJECT declares -- see fsharpProjectModulePaths for why the caller file's
+// own declarations are the wrong question. A qualifier that names no declared
+// module is not a module qualifier at all (a .NET namespace, a value receiver),
+// so it stays unrestricted and resolves by name.
 func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
 	for path := range declared {
 		if fsharpQualifierMatchesModulePath(path, qualifier) {
@@ -1918,7 +1957,7 @@ func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
 // kept, because each one is its own call site: a caller writing
 // `x |> A.convert |> B.convert` calls two different functions, and collapsing
 // them onto one entry for the name loses one of the two edges. A call written
-// without a qualifier this file declares records the empty string: that spelling
+// without a qualifier the project declares records the empty string: that spelling
 // names no module, so it means "the definition in scope" and is resolved
 // unrestricted -- alongside, not instead of, the qualified sightings.
 func recordFSharpCallQualifier(qualifiers map[string]map[string]struct{}, declared map[string]bool, name, target string) {
@@ -1985,9 +2024,10 @@ func fsharpRelativeQualifierPaths(callerPath, qualifier string) []string {
 	return paths
 }
 
-// fsharpQualifiedScope drops the symbols of this file that the qualifier rules
-// out. Symbols from other files are untouched: the qualifier is only known to
-// name a module here, so it cannot speak for anywhere else.
+// fsharpQualifiedScope drops the symbols that the qualifier rules out. F#
+// modules are project-scoped, so this reaches other files too: `A.convert`
+// written in C.fs is module A's, wherever A is declared. Symbols of another
+// language have no module path and are left alone.
 func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier, callerPath string, pathBySymbolID map[string]string) []SymbolRecord {
 	if qualifier == "" {
 		// The BARE spelling restricts nothing: it names no module, so it means
@@ -2030,9 +2070,17 @@ func fsharpQualifiedScope(symbols []SymbolRecord, filePath, qualifier, callerPat
 			return nearest
 		}
 	}
+	// Every F# symbol in the project has a known module path, so a qualified
+	// call is held to the module it names WHEREVER that module is declared.
+	// Exempting other files -- correct only while the qualifier's meaning was
+	// read from this file alone -- meant a cross-file `A.convert` never narrowed
+	// anything, so `B.convert` stayed a candidate and the ambiguity dropped the
+	// edge. Symbols with no known path (another language's) are left alone: an
+	// F# module qualifier says nothing about them.
 	out := make([]SymbolRecord, 0, len(symbols))
 	for _, symbol := range symbols {
-		if symbol.FilePath != filePath || fsharpQualifierMatchesModulePath(pathBySymbolID[symbol.ID], qualifier) {
+		path, known := pathBySymbolID[symbol.ID]
+		if !known || fsharpQualifierMatchesModulePath(path, qualifier) {
 			out = append(out, symbol)
 		}
 	}
@@ -3196,6 +3244,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 
+	// Every F# module path in the project, collected once: an F# qualifier is
+	// read against the whole project, not against the caller file. Repos with no
+	// F# file get two empty maps for one pass over the file list.
+	var fsharpProjectModulePathBySymbolID map[string]string
+	var fsharpProjectDeclaredModulePaths map[string]bool
+	if needsCallScan {
+		fsharpProjectModulePathBySymbolID, fsharpProjectDeclaredModulePaths = fsharpProjectModulePaths(files, recordsByFile)
+	}
+
 	for _, file := range files {
 		if shouldStop != nil && shouldStop() {
 			return
@@ -3363,7 +3420,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		var fsharpModulePathBySymbolID map[string]string
 		var fsharpDeclaredModulePaths map[string]bool
 		if file.Language == "F#" && fileNeedsCallScan {
-			fsharpModulePathBySymbolID, fsharpDeclaredModulePaths = fsharpModulePaths(currentFileSymbols)
+			fsharpModulePathBySymbolID, fsharpDeclaredModulePaths = fsharpProjectModulePathBySymbolID, fsharpProjectDeclaredModulePaths
 		}
 		var jsSymbolNamespaces map[string]string
 		var jsScan *jsScanState
