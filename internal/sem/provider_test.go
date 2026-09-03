@@ -12734,6 +12734,272 @@ end
 	}
 }
 
+func TestJuliaSameContainerMethodCallTargetsFailClosed(t *testing.T) {
+	from := SymbolRecord{ID: "caller", Kind: "method", Name: "caller", FilePath: "src/app.jl", Language: "Julia", ContainerID: "module-a", StartLine: 1, EndLine: 100}
+	target := SymbolRecord{ID: "target", Kind: "method", Name: "target", FilePath: from.FilePath, Language: from.Language, ContainerID: from.ContainerID, StartLine: 110, EndLine: 120}
+
+	tests := []struct {
+		name        string
+		candidates  []SymbolRecord
+		wantID      string
+		wantFound   bool
+		wantBlocked bool
+	}{
+		{name: "unique same-container target", candidates: []SymbolRecord{target}, wantID: target.ID, wantFound: true},
+		{name: "local binding declines fallback", candidates: []SymbolRecord{target}},
+		{name: "sibling module", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.ContainerID = "module-b"; return s }()}},
+		{name: "different file", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.FilePath = "src/other.jl"; return s }()}},
+		{name: "different language", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.Language = "Java"; return s }()}},
+		{name: "type target remains generic", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.Kind = "struct"; return s }()}},
+		{name: "ambiguous overloads", candidates: []SymbolRecord{target, func() SymbolRecord { s := target; s.ID = "target-overload"; return s }()}, wantFound: true},
+		{name: "local declaration blocks resolution", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.Local = true; s.StartLine = 10; s.EndLine = 20; return s }()}, wantFound: true, wantBlocked: true},
+		{name: "nested callable disables fallback", candidates: []SymbolRecord{target, {ID: "inner", Kind: "method", Name: "inner", FilePath: from.FilePath, Language: from.Language, ContainerID: from.ContainerID, Local: true, StartLine: 10, EndLine: 20}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bindings := map[string]struct{}{}
+			if tt.name == "local binding declines fallback" {
+				bindings["target"] = struct{}{}
+			}
+			targets, found, blocked := resolveJuliaSameContainerMethodCallTargets("target", from, tt.candidates, bindings)
+			if found != tt.wantFound || blocked != tt.wantBlocked {
+				t.Fatalf("found, blocked = %v, %v; want %v, %v", found, blocked, tt.wantFound, tt.wantBlocked)
+			}
+			if tt.wantID == "" {
+				if len(targets) != 0 {
+					t.Fatalf("unsafe targets emitted: %#v", targets)
+				}
+				return
+			}
+			if len(targets) != 1 || targets[0].ID != tt.wantID {
+				t.Fatalf("targets = %#v, want only %q", targets, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestJuliaModuleCallResolutionRejectsLocalBindingShadows(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/bindings.jl", `
+module Bound
+helper() = 1
+plain(callback) = (helper = callback; helper())
+function looped(callbacks)
+    for helper in callbacks
+        helper()
+    end
+end
+function caught(callback)
+    try
+        callback()
+    catch helper
+        helper()
+    end
+end
+function lexical(callback)
+    let helper = callback
+        helper()
+    end
+end
+function destructured(callbacks)
+    local (helper::Function, other...) = callbacks
+    helper()
+end
+function closure(callback)
+    map([callback]) do helper
+        helper()
+    end
+end
+function generated(callbacks)
+    [helper() for helper in callbacks]
+end
+function multi_let(callback)
+    let unrelated = callback, helper = callback
+        helper()
+    end
+end
+function multiline_let()
+    let unrelated,
+        helper
+        helper()
+    end
+end
+function commented_let(callback)
+    let #= header comment =# helper = callback
+        helper()
+    end
+end
+function control()
+    unrelated = identity
+    helper()
+end
+function bare_let()
+    let
+        helper
+        helper()
+    end
+end
+function bare_catch()
+    try
+        error()
+    catch
+        helper
+        helper()
+    end
+end
+function inline_let()
+    let; helper; helper(); end
+end
+function inline_catch()
+    try
+    catch; helper; helper(); end
+end
+struct Widget end
+function constructor_control(callback)
+    Widget()
+    let Widget = callback
+        Widget()
+    end
+end
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := symbolByKindAndName(snapshot.Symbols, "method", "Bound.helper")
+	if helper.ID == "" {
+		t.Fatalf("missing Bound.helper: %#v", snapshot.Symbols)
+	}
+	for _, name := range []string{"plain", "looped", "caught", "lexical", "destructured", "closure", "generated", "multi_let", "multiline_let", "commented_let"} {
+		caller := symbolByKindAndName(snapshot.Symbols, "method", "Bound."+name)
+		if caller.ID == "" {
+			t.Fatalf("missing Bound.%s: %#v", name, snapshot.Symbols)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && relation.FromID == caller.ID && relation.ToID == helper.ID {
+				t.Fatalf("local binding in Bound.%s resolved to module helper: %#v", name, relation)
+			}
+		}
+	}
+	for _, name := range []string{"control", "bare_let", "bare_catch", "inline_let", "inline_catch"} {
+		caller := symbolByKindAndName(snapshot.Symbols, "method", "Bound."+name)
+		callsHelper := false
+		for _, relation := range snapshot.Relations {
+			callsHelper = callsHelper || relation.Type == "CALLS" && relation.FromID == caller.ID && relation.ToID == helper.ID
+		}
+		if !callsHelper {
+			t.Fatalf("non-shadowing Bound.%s lost its call to Bound.helper: %#v", name, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+	widget := symbolByKindAndName(snapshot.Symbols, "struct", "Widget")
+	constructorControl := symbolByKindAndName(snapshot.Symbols, "method", "Bound.constructor_control")
+	if widget.ID == "" || constructorControl.ID == "" {
+		t.Fatalf("missing constructor-control symbols: %#v", snapshot.Symbols)
+	}
+	constructsWidget := false
+	for _, relation := range snapshot.Relations {
+		constructsWidget = constructsWidget || relation.Type == "CONSTRUCTS" && relation.FromID == constructorControl.ID && relation.ToID == widget.ID
+	}
+	if !constructsWidget {
+		t.Fatalf("local-binding veto removed existing constructor resolution: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+	}
+}
+
+func TestJuliaModuleCallResolutionIsContainerScoped(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/scopes.jl", `
+target() = 0
+
+module A
+shared(x::Int) = x
+shared(x::String) = x
+caller() = shared(1)
+end
+
+module B
+only() = 1
+end
+
+module C
+caller() = only()
+end
+
+module D; helper() = 1; function f(); helper(); end; end
+
+module E
+target(x) = x
+caller() = target(1)
+end
+
+module F
+struct Widget end
+Widget(x::Int) = Widget()
+caller() = Widget(1)
+end
+
+module G
+shadow() = 0
+function caller()
+    shadow() = 1
+end
+end
+
+module H
+helper() = 1
+function outer()
+    function inner()
+        helper()
+    end
+end
+end
+
+module I
+helper() = 1
+caller(helper) = helper()
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbol := func(kind, name string) SymbolRecord {
+		got := symbolByKindAndName(snapshot.Symbols, kind, name)
+		if got.ID == "" {
+			t.Fatalf("missing %s %s: %#v", kind, name, snapshot.Symbols)
+		}
+		return got
+	}
+	aCaller, cCaller := symbol("method", "A.caller"), symbol("method", "C.caller")
+	dHelper, dF := symbol("method", "D.helper"), symbol("method", "D.f")
+	eTarget, eCaller := symbol("method", "E.target"), symbol("method", "E.caller")
+	fWidget, fCaller := symbol("struct", "Widget"), symbol("method", "F.caller")
+	gCaller, hOuter := symbol("method", "G.caller"), symbol("method", "H.outer")
+	iCaller := symbol("method", "I.caller")
+
+	has := func(relationType string, from, to SymbolRecord) bool {
+		for _, relation := range snapshot.Relations {
+			if relation.Type == relationType && relation.FromID == from.ID && relation.ToID == to.ID {
+				return true
+			}
+		}
+		return false
+	}
+	for _, from := range []SymbolRecord{aCaller, cCaller, dHelper, gCaller, hOuter, iCaller} {
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && relation.FromID == from.ID {
+				t.Fatalf("unsafe Julia CALLS from %s: %#v", from.QualifiedName, relation)
+			}
+		}
+	}
+	if !has("CALLS", dF, dHelper) || !has("CALLS", eCaller, eTarget) {
+		t.Fatalf("missing container-scoped Julia CALLS: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !has("CONSTRUCTS", fCaller, fWidget) {
+		t.Fatalf("existing Julia constructor resolution changed: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+	}
+}
+
 func TestClojureSemanticExtraction(t *testing.T) {
 	// Clojure was promoted from inventory to the semantic tier (vendored
 	// grammar). tree-sitter-clojure only produces generic list_lit nodes, so
