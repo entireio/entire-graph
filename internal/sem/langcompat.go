@@ -2,6 +2,7 @@ package sem
 
 import (
 	"path"
+	"regexp"
 	"strings"
 )
 
@@ -206,6 +207,25 @@ func candidateSharesDeclarations(from, candidate SymbolRecord) bool {
 	if from.Language == candidate.Language {
 		return true
 	}
+	if from.Language == "C++" && candidate.Language == "Objective-C" {
+		// The pair exists only because the Objective-C LABEL follows the file:
+		// a header holding any Objective-C syntax is Objective-C even where it
+		// also declares the plain C structs and functions a `.cpp` compiles
+		// unchanged. The declarations that are Objective-C in their own right --
+		// an `@interface`/`@implementation` (kind "class"), an `@protocol`
+		// (kind "interface"), and a method, which is reachable only by message
+		// send -- are not among them, and binding one made a `.cpp` name a class
+		// it cannot even declare. Measured before this refinement, over a
+		// fixture with an `@interface Shape` header and a `.m` method:
+		//
+		//	C++/renderShape -> Objective-C/Shape        WRONG (@interface)
+		//	C++/callIt      -> Objective-C/computeArea  WRONG (message send)
+		//	C++/renderWidget -> Objective-C/Widget      correct (plain C struct)
+		return !objectiveCOnlyDeclaration(candidate.Kind)
+	}
+	if from.Language == "Objective-C" && candidate.Language == "Swift" {
+		return swiftDeclarationVisibleToObjectiveC(candidate)
+	}
 	if isClojureDialect(from.Language) && isClojureDialect(candidate.Language) {
 		// A PORTABLE consumer may name either dialect. `.cljc` is compiled by both
 		// readers, and a reader conditional -- `#?(:cljs ...)` -- is exactly how it
@@ -223,4 +243,81 @@ func candidateSharesDeclarations(from, candidate SymbolRecord) bool {
 
 func isClojureDialect(language string) bool {
 	return language == "Clojure" || language == "ClojureScript"
+}
+
+// objectiveCOnlyDeclaration reports whether a declaration the Objective-C
+// parser produced is an Objective-C construct rather than one of the plain C
+// declarations that share the file's language label. `class` is
+// `@interface`/`@implementation` (tree-sitter-objc reuses the same node for
+// `@class Foo;`), `interface` is `@protocol`, and `method` is a
+// `method_definition` -- a selector, callable only as `[receiver selector]`.
+// Everything else the extractor emits from an Objective-C file (function,
+// struct, enum, union, typedef, field, variable, macro) is C that a C++
+// translation unit compiles verbatim.
+func objectiveCOnlyDeclaration(kind string) bool {
+	switch kind {
+	case "class", "interface", "method":
+		return true
+	}
+	return false
+}
+
+// swiftObjCExposureAttributeRe matches the attributes that put a Swift
+// declaration into the generated header: `@objc`, `@objc(RenamedThing)` and
+// `@objcMembers`. The extractor keeps a declaration's attributes in its
+// signature, including when they sit on their own line above it.
+var swiftObjCExposureAttributeRe = regexp.MustCompile(`@objc(?:Members)?\b`)
+
+// swiftDeclarationVisibleToObjectiveC reports whether a Swift declaration could
+// appear in the generated `<Module>-Swift.h` header, which is the ONLY way an
+// Objective-C source names a Swift declaration. The language pair is real --
+// that header exists and is imported -- but it covers far less than the whole
+// Swift module, and binding by bare name alone produced edges no compiler
+// could: measured before this refinement,
+//
+//	Objective-C/useLedger -> Swift/Ledger    WRONG (a struct is never bridged)
+//	Objective-C/useEngine -> Swift/Engine    WRONG (a pure-Swift root class)
+//	Objective-C/go        -> Swift/freeFunc  WRONG (a global func is not bridged)
+//	Objective-C/useBridged -> Swift/Bridged  correct (@objc class Bridged: NSObject)
+//
+// Only what the language rules make impossible is refused. A declaration whose
+// exposure this cannot decide from its own signature -- a member, an extension,
+// a subclass whose chain to NSObject runs through classes a candidate-level
+// check cannot follow -- is kept, because dropping a candidate here deletes the
+// edge rather than merely adding one.
+func swiftDeclarationVisibleToObjectiveC(candidate SymbolRecord) bool {
+	signature := candidate.Signature
+	if signature == "" {
+		// Nothing to judge on: leave the candidate exactly as it was.
+		return true
+	}
+	if swiftObjCExposureAttributeRe.MatchString(signature) {
+		return true
+	}
+	switch candidate.Kind {
+	case "struct", "enum", "protocol", "function":
+		// Categorical, and none of them is reachable by adding an attribute
+		// elsewhere: a Swift struct is never bridged; an enum reaches
+		// Objective-C only as `@objc enum`, a protocol only as `@objc protocol`,
+		// and a global `func` is never emitted into the generated header at all.
+		return false
+	case "class":
+		// A Swift class is exposed only by inheriting an Objective-C class --
+		// `@objc` on a root class is rejected by the compiler -- so a
+		// declaration with no inheritance clause at all cannot be in the header.
+		return swiftClassDeclaresInheritance(signature)
+	}
+	return true
+}
+
+// swiftClassDeclaresInheritance reports whether a Swift class signature names
+// anything after its inheritance colon. A generic constraint (`class Box<T:
+// Equatable>`) counts, which keeps a root class that only looks inherited --
+// the direction that keeps an edge rather than deleting one.
+func swiftClassDeclaresInheritance(signature string) bool {
+	keyword := strings.Index(signature, "class ")
+	if keyword < 0 {
+		return true
+	}
+	return strings.Contains(signature[keyword+len("class "):], ":")
 }
