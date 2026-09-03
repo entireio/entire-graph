@@ -4925,10 +4925,10 @@ func collectPackageVarTypes(content string) map[string]pkgQualType {
 // reference by the Go convention that a package's import alias equals its
 // directory basename (json.Encoder -> the Encoder in .../json/). Requires a
 // unique match so an ambiguous alias resolves to nothing rather than wrongly.
-func resolveQualifiedType(qt pkgQualType, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
+func resolveQualifiedType(from SymbolRecord, qt pkgQualType, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
 	var match SymbolRecord
 	found := 0
-	for _, cand := range symbolsByShortName[qt.typeName] {
+	for _, cand := range sharedTypeCandidates(from, symbolsByShortName[qt.typeName]) {
 		if !typeLikeKind(cand.Kind) {
 			continue
 		}
@@ -5486,7 +5486,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// convention resolveQualifiedType already encodes) so the method
 				// lookup below runs against the right declaration. For an interface
 				// that declaration's members are its method requirements.
-				sym, ok := resolveQualifiedType(qt, symbolsByShortName)
+				sym, ok := resolveQualifiedType(from, qt, symbolsByShortName)
 				if !ok {
 					continue
 				}
@@ -5498,7 +5498,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// Package-level var of a package-qualified type (alias.Type). Resolve
 				// the specific imported type so an ambiguous bare name (Encoder in
 				// both json and cbor) maps to the right one.
-				sym, ok := resolveQualifiedType(qt, symbolsByShortName)
+				sym, ok := resolveQualifiedType(from, qt, symbolsByShortName)
 				if !ok {
 					continue
 				}
@@ -6586,7 +6586,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 	}
 	for _, call := range chainedReturnCalls {
-		for _, typeName := range methodReturnChainTypes(call.TypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+		for _, typeName := range methodReturnChainTypes(from, call.TypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
 			sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 			if !ok {
 				continue
@@ -6627,7 +6627,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 		intermediateMethods := call.Methods[:len(call.Methods)-1]
 		finalMethod := call.Methods[len(call.Methods)-1]
-		for _, typeName := range methodReturnChainTypes(call.TypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+		for _, typeName := range methodReturnChainTypes(from, call.TypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
 			sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 			if !ok {
 				continue
@@ -6664,7 +6664,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	}
 	for _, call := range returnedChainCalls {
 		for _, factoryTypeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
-			for _, typeName := range methodReturnChainTypes(factoryTypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			for _, typeName := range methodReturnChainTypes(from, factoryTypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
 				sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 				if !ok {
 					continue
@@ -6708,7 +6708,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		intermediateMethods := call.Methods[:len(call.Methods)-1]
 		finalMethod := call.Methods[len(call.Methods)-1]
 		for _, factoryTypeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
-			for _, typeName := range methodReturnChainTypes(factoryTypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			for _, typeName := range methodReturnChainTypes(from, factoryTypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
 				sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 				if !ok {
 					continue
@@ -7101,7 +7101,7 @@ func receiverDeepChainSuffixes(chained []typedMethodDeepChainCall, returned []re
 	return suffixes
 }
 
-func methodReturnChainTypes(typeName string, methodNames []string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
+func methodReturnChainTypes(from SymbolRecord, typeName string, methodNames []string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
 	if typeName == "" {
 		return nil
 	}
@@ -7113,7 +7113,7 @@ func methodReturnChainTypes(typeName string, methodNames []string, methodsByCont
 		var next []string
 		seen := map[string]bool{}
 		for _, currentType := range types {
-			for _, returnedType := range methodReturnTypes(currentType, methodName, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			for _, returnedType := range methodReturnTypes(from, currentType, methodName, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
 				if returnedType == "" || seen[returnedType] {
 					continue
 				}
@@ -7126,8 +7126,8 @@ func methodReturnChainTypes(typeName string, methodNames []string, methodsByCont
 	return types
 }
 
-func methodReturnTypes(typeName, methodName string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
-	typeSymbol, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+func methodReturnTypes(from SymbolRecord, typeName, methodName string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
+	typeSymbol, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 	if !ok {
 		return nil
 	}

@@ -7466,6 +7466,34 @@ export function labelFromAssignedFactory(): string {
 export function labelFor(widget: Widget): string {
   return widget.label()
 }
+
+// ForeignStart exists only in Go. Its return annotation can name Widget, but
+// that must not manufacture a TypeScript CALLS edge from this constructor.
+export function foreignInitialChain(): string {
+  return new ForeignStart().next().label()
+}
+
+class Start {
+  first(): ForeignBridge {
+    return null as unknown as ForeignBridge
+  }
+}
+
+// ForeignBridge exists only in Go. It is an intermediate receiver in this
+// chain, so each return-hop lookup must honor the caller's language too.
+export function foreignIntermediateChain(): string {
+  return new Start().first().second().label()
+}
+`)
+	writeFile(t, repo, "foreign/bridge.go", `package foreign
+
+type ForeignStart struct{}
+
+func (ForeignStart) next() Widget { return Widget{} }
+
+type ForeignBridge struct{}
+
+func (ForeignBridge) second() Widget { return Widget{} }
 `)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
@@ -7520,11 +7548,45 @@ export function labelFor(widget: Widget): string {
 	if r, ok := inferred["labelFor->Widget.label"]; !ok || r.Confidence != 0.83 {
 		t.Fatalf("typed-parameter call not resolved (0.83): %#v", inferred)
 	}
+	for _, source := range []string{"foreignInitialChain", "foreignIntermediateChain"} {
+		if r, ok := inferred[source+"->Widget.label"]; ok {
+			t.Fatalf("%s fabricated a TypeScript call through a foreign Go receiver: %#v", source, r)
+		}
+	}
 	// other.mystery(): receiver type unknown -> no fabricated edge.
 	for key := range inferred {
 		if strings.Contains(key, "mystery") {
 			t.Fatalf("fabricated edge for unknown receiver: %s", key)
 		}
+	}
+}
+
+func TestMethodReturnChainTypesRejectsForeignReceiverHops(t *testing.T) {
+	from := SymbolRecord{Language: "TypeScript"}
+	start := SymbolRecord{ID: "ts:start", Language: "TypeScript", Kind: "class", Name: "Start", FilePath: "src.ts"}
+	foreignStart := SymbolRecord{ID: "go:foreign-start", Language: "Go", Kind: "type", Name: "ForeignStart", FilePath: "foreign/start.go"}
+	foreignBridge := SymbolRecord{ID: "go:foreign-bridge", Language: "Go", Kind: "type", Name: "ForeignBridge", FilePath: "foreign/bridge.go"}
+	symbols := map[string][]SymbolRecord{
+		"Start":         {start},
+		"ForeignStart":  {foreignStart},
+		"ForeignBridge": {foreignBridge},
+	}
+	methods := map[string]map[string]SymbolRecord{
+		start.ID:         {"first": {Name: "first", FilePath: "src.ts"}},
+		foreignStart.ID:  {"next": {Name: "next", FilePath: "foreign/start.go"}},
+		foreignBridge.ID: {"second": {Name: "second", FilePath: "foreign/bridge.go"}},
+	}
+	returns := map[string]map[string][]string{
+		"first":  {"src.ts": {"ForeignBridge"}},
+		"next":   {"foreign/start.go": {"Widget"}},
+		"second": {"foreign/bridge.go": {"Widget"}},
+	}
+
+	if got := methodReturnChainTypes(from, "ForeignStart", []string{"next"}, methods, symbols, returns); len(got) != 0 {
+		t.Fatalf("foreign initial receiver produced return types: %v", got)
+	}
+	if got := methodReturnChainTypes(from, "Start", []string{"first", "second"}, methods, symbols, returns); len(got) != 0 {
+		t.Fatalf("foreign intermediate receiver produced return types: %v", got)
 	}
 }
 

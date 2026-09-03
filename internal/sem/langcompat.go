@@ -121,8 +121,9 @@ func buildTypeSharingLanguages(groups [][]string, edges map[string][]string) map
 
 // languagesShareTypes reports whether a bare type name written in language
 // `from` may bind to a type declared in language `target`. Identical languages
-// always share; different languages share only when they appear together in one
-// typeSharingLanguageGroups entry. An unknown (empty) language shares with
+// always share; different languages share when they appear together in a
+// symmetric typeSharingLanguageGroups relationship or in a directional
+// typeSharingLanguageEdges entry. An unknown (empty) language shares with
 // nothing but itself, so a symbol the parser could not attribute never anchors
 // a cross-language edge.
 func languagesShareTypes(from, target string) bool {
@@ -150,9 +151,9 @@ func languagesShareTypes(from, target string) bool {
 // not count towards ambiguity either, or it suppresses the real edge instead of
 // merely adding a false one.
 //
-// Same-file and same-package candidate lists are NOT routed through here. They
-// cannot cross a language boundary in the first place, and filtering them would
-// cost a pass over every lookup for no possible change in result.
+// Same-file and same-package candidate lists are NOT routed through here.
+// Their resolution scopes are already direct declaration evidence, so filtering
+// them would cost a pass over every lookup without strengthening this guard.
 //
 // TESTS resolution reads the same index and is also NOT routed through here: a
 // test name is a convention, not a type reference, so type interop is the wrong
