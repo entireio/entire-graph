@@ -3,7 +3,7 @@
   "checkpoint_id": "c0f0378c4021",
   "strategy": "manual-commit",
   "branch": "fix117",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "docs/agents.md",
     "docs/trust-and-security.md",
@@ -17,14 +17,21 @@
       "compact_transcript": "/c0/f0378c4021/0/transcript.jsonl",
       "content_hash": "/c0/f0378c4021/0/content_hash.txt",
       "prompt": "/c0/f0378c4021/0/prompt.txt"
+    },
+    {
+      "metadata": "/c0/f0378c4021/1/metadata.json",
+      "transcript": "/c0/f0378c4021/1/full.jsonl",
+      "compact_transcript": "/c0/f0378c4021/1/transcript.jsonl",
+      "content_hash": "/c0/f0378c4021/1/content_hash.txt",
+      "prompt": "/c0/f0378c4021/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 69957,
+    "input_tokens": 125459,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 472064,
-    "output_tokens": 6633,
-    "api_call_count": 12
+    "cache_read_tokens": 628224,
+    "output_tokens": 11315,
+    "api_call_count": 18
   },
   "has_review": true
 }
