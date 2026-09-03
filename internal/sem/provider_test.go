@@ -4477,6 +4477,98 @@ def run(values):
 		}
 	})
 
+	// A lambda parameter and a comprehension both bind only within themselves,
+	// and both are masked out of the enclosing body's own text. Deciding a
+	// nested scope's name may join the body's set by testing only that masked
+	// text therefore missed the use in the SIBLING nested scope, and the
+	// lambda's parameter deleted the comprehension's call to the import.
+	t.Run("a nested scope's binding does not shadow a sibling nested scope", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    ranked = sorted(values, key=lambda compute: compute)
+    return ranked, [compute(v) for v in values]
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("a lambda parameter suppressed a sibling scope's import-resolved call: %#v", calls[0])
+		}
+	})
+
+	// Brackets that never close are a parse failure. The comprehension is then
+	// not recognised as a scope, and reading its `for` as a statement invents a
+	// body-wide binding -- which, because resolveCallTargets declines a bound
+	// name before any tier runs, deletes the call after it. A scan that could
+	// not be completed must report fewer bindings, never invented ones.
+	t.Run("brackets that never close do not fabricate a shadowing binding", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    labels = [compute for compute in values
+    return compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("an unparseable comprehension suppressed a real import-resolved call: %#v", calls[0])
+		}
+	})
+
+	// The same rule on well-formed source: a keyword argument binds nothing,
+	// and moving it onto its own line inside the call's parentheses does not
+	// make it an assignment statement.
+	t.Run("a keyword argument on its own line does not shadow the import", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    schedule(
+        compute=1,
+    )
+    return compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("a multi-line keyword argument suppressed a real import-resolved call: %#v", calls[0])
+		}
+	})
+
+	// The other direction, and the one place a comprehension does bind outside
+	// itself: PEP 572 scopes an assignment expression to the scope CONTAINING
+	// the comprehension, so the later call names that local, not the import.
+	t.Run("a comprehension's walrus target shadows the import", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    labels = [compute for value in values if (compute := value)]
+    return labels, compute(1)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("a comprehension's walrus target must not bind the foreign function: %#v", call)
+			}
+		}
+	})
+
 	// Module scope is not a shadowing scope: a `def` or an assignment there is
 	// the file's own symbol, so the file-level call scan must keep resolving
 	// through the same import evidence the per-symbol scan uses.

@@ -91,6 +91,16 @@ func pythonScopeBindingNames(scope string, depth int) map[string]struct{} {
 
 	inner := pythonInnerScopes(scope)
 	own := pythonMaskRanges(scope, inner)
+	// The statement scanners below are line-oriented, and a line is only a
+	// statement of THIS scope where it is not inside brackets. A bracketed
+	// region carries no statement of its own: its `for` is a comprehension's
+	// (already a scope of its own, and unmasked only when the brackets do not
+	// close), and a line of it that begins `name=` is a keyword ARGUMENT, which
+	// binds nothing. Reading either as a binding fabricates one, and a
+	// fabricated binding deletes a real call edge outright -- so when the
+	// brackets do not balance, everything after them is left out rather than
+	// guessed at.
+	statements := pythonStatementText(scope, own)
 
 	for _, header := range pythonDefHeaderRe.FindAllStringIndex(own, -1) {
 		for _, param := range pythonParameterNames(own[header[1]-1:]) {
@@ -100,8 +110,20 @@ func pythonScopeBindingNames(scope string, depth int) map[string]struct{} {
 	for _, match := range pythonWalrusRe.FindAllStringSubmatch(own, -1) {
 		add(match[1])
 	}
+	// PEP 572: an assignment expression inside a comprehension binds in the
+	// scope that CONTAINS the comprehension, not in the comprehension. The
+	// comprehension is masked out of `own` above, so its walrus targets are
+	// collected from the comprehension's own text and hoisted here.
+	for _, nested := range inner {
+		if !nested.comprehension {
+			continue
+		}
+		for _, name := range pythonComprehensionWalrusNames(nested.body, depth) {
+			add(name)
+		}
+	}
 	declaredNonLocal := map[string]struct{}{}
-	for _, line := range strings.Split(own, "\n") {
+	for _, line := range strings.Split(statements, "\n") {
 		for _, statement := range strings.Split(line, ";") {
 			statement = strings.TrimSpace(statement)
 			if match := pythonAssignTargetRe.FindStringSubmatch(statement); match != nil {
@@ -133,12 +155,21 @@ func pythonScopeBindingNames(scope string, depth int) map[string]struct{} {
 	}
 	// A name an inner scope binds is bound only there, so it may join this
 	// scope's set only when no use of it escapes that scope.
-	for _, nested := range inner {
+	for i, nested := range inner {
 		for name := range pythonInnerScopeBindings(nested, depth) {
 			if _, already := bindings[name]; already {
 				continue
 			}
 			if pythonNameOccursIn(own, name) {
+				continue
+			}
+			// Every use outside the scope that binds the name counts, and a
+			// SIBLING nested scope is outside it too: `key=lambda compute:
+			// compute` beside `[compute(v) for v in values]` binds `compute`
+			// only in the lambda, yet both are masked out of `own`, so testing
+			// `own` alone reported the lambda's parameter as body-wide and
+			// deleted the comprehension's call to the import.
+			if pythonNameOccursInSiblingScope(inner, i, name) {
 				continue
 			}
 			add(name)
@@ -154,10 +185,11 @@ func pythonScopeBindingNames(scope string, depth int) map[string]struct{} {
 // scope of its own: a nested `def`/`class` body, a `lambda`, or a
 // comprehension.
 type pythonInnerScope struct {
-	start, end int      // half-open byte range within the enclosing scope's text
-	name       string   // what a nested `def`/`class` binds in the ENCLOSING scope
-	params     []string // a lambda's parameters
-	body       string   // the text whose bindings are the inner scope's own
+	start, end    int      // half-open byte range within the enclosing scope's text
+	name          string   // what a nested `def`/`class` binds in the ENCLOSING scope
+	params        []string // a lambda's parameters
+	body          string   // the text whose bindings are the inner scope's own
+	comprehension bool     // a comprehension, whose walrus targets bind OUTSIDE it
 }
 
 // pythonInnerScopeBindings returns the names bound inside one nested scope.
@@ -169,6 +201,80 @@ func pythonInnerScopeBindings(scope pythonInnerScope, depth int) map[string]stru
 		}
 	}
 	return bindings
+}
+
+// pythonComprehensionWalrusNames returns the assignment-expression targets a
+// comprehension binds in the scope AROUND it (PEP 572), descending through
+// nested comprehensions -- which hoist to the same containing scope -- but not
+// through a lambda or a nested `def`, each of which is where its own walrus
+// stops.
+func pythonComprehensionWalrusNames(body string, depth int) []string {
+	if depth > pythonScopeNestingLimit {
+		return nil
+	}
+	inner := pythonInnerScopes(body)
+	own := pythonMaskRanges(body, inner)
+	var names []string
+	for _, match := range pythonWalrusRe.FindAllStringSubmatch(own, -1) {
+		names = append(names, match[1])
+	}
+	for _, nested := range inner {
+		if !nested.comprehension {
+			continue
+		}
+		names = append(names, pythonComprehensionWalrusNames(nested.body, depth+1)...)
+	}
+	return names
+}
+
+// pythonStatementText blanks every byte of own that sits inside brackets in
+// scope, keeping offsets and line breaks so the line-oriented scanners still
+// see the statements around them. Bracket depth is counted on the UNMASKED
+// scope text, whose brackets balance across a masked inner scope; a depth that
+// never returns to zero -- unbalanced source, or a block cut short -- leaves the
+// remainder blank, which reports fewer bindings rather than invented ones.
+func pythonStatementText(scope, own string) string {
+	if !strings.ContainsAny(scope, "([{") {
+		return own
+	}
+	masked := []byte(own)
+	depth := 0
+	for i := 0; i < len(scope) && i < len(masked); i++ {
+		switch scope[i] {
+		case '(', '[', '{':
+			depth++
+			continue
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth > 0 && masked[i] != '\n' && masked[i] != '\r' {
+			masked[i] = ' '
+		}
+	}
+	return string(masked)
+}
+
+// pythonNameOccursInSiblingScope reports whether name is used in one of the
+// nested scopes BESIDE inner[self] -- the part of the enclosing scope's text
+// that masking every nested scope takes out of view.
+func pythonNameOccursInSiblingScope(inner []pythonInnerScope, self int, name string) bool {
+	for i, other := range inner {
+		if i == self {
+			continue
+		}
+		if pythonNameOccursIn(other.body, name) {
+			return true
+		}
+		for _, param := range other.params {
+			if param == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // pythonInnerScopes locates the scopes nested inside one scope's text. Nested
@@ -216,7 +322,7 @@ func pythonInnerScopes(scope string) []pythonInnerScope {
 		if len(open) > 0 && pythonWordAt(scope, i, "for") {
 			start := open[len(open)-1]
 			if end, ok := pythonBracketEnd(scope, start); ok {
-				scopes = append(scopes, pythonInnerScope{start: start, end: end, body: scope[start+1 : end-1]})
+				scopes = append(scopes, pythonInnerScope{start: start, end: end, body: scope[start+1 : end-1], comprehension: true})
 				open = open[:len(open)-1]
 				i = end - 1
 				continue

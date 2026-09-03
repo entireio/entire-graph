@@ -95,6 +95,80 @@ func TestPythonLocalBindingNames(t *testing.T) {
 			bound: []string{"value", "values"},
 		},
 		{
+			// PEP 572: an assignment expression inside a comprehension binds in
+			// the scope that CONTAINS the comprehension, unlike the loop
+			// variable beside it. Treating it as the comprehension's own left
+			// the later call resolving to a same-named import instead.
+			name: "a comprehension's walrus target binds in the scope around it",
+			source: `def run(values):
+    labels = [total for value in values if (total := value)]
+    return total(1)`,
+			bound: []string{"labels", "total", "values"},
+		},
+		{
+			// The walrus in a lambda is the lambda's own, so a use of that name
+			// in the body around it is not the lambda's binding.
+			name: "a lambda's walrus target does not shadow the body around it",
+			source: `def run(values):
+    cb = lambda v: (compute := v)
+    return compute(cb(values))`,
+			bound:   []string{"cb", "values"},
+			unbound: []string{"compute"},
+		},
+		{
+			// Both nested scopes are masked out of the enclosing body's own
+			// text, so testing only that text reported the lambda's parameter
+			// as body-wide and deleted the comprehension's call.
+			name: "a nested scope's binding does not shadow a sibling nested scope",
+			source: `def run(values):
+    ranked = sorted(values, key=lambda compute: compute)
+    return [compute(v) for v in values]`,
+			bound:   []string{"ranked", "values"},
+			unbound: []string{"compute"},
+		},
+		{
+			// Brackets that never close are a parse failure, not a clean
+			// result: the comprehension is no longer recognised, and reading
+			// its `for` as a statement fabricated a body-wide binding that
+			// deletes the call after it. Fewer bindings is the safe answer.
+			name: "brackets that never close fabricate no binding",
+			source: `def run(values):
+    labels = [compute for compute in values
+    return compute(1)`,
+			bound:   []string{"labels", "values"},
+			unbound: []string{"compute"},
+		},
+		{
+			// The same rule for well-formed source: a keyword argument binds
+			// nothing, and putting it on its own line inside the call's
+			// parentheses does not turn it into an assignment statement.
+			name: "a keyword argument on its own line is not an assignment",
+			source: `def run(values):
+    schedule(
+        compute=1,
+    )
+    return compute(1)`,
+			bound:   []string{"values"},
+			unbound: []string{"compute", "schedule"},
+		},
+		{
+			// The negative fence for the two above: a statement whose brackets
+			// do close still binds everything it binds, on one line or several.
+			name: "a bracketed expression that closes leaves the statements around it readable",
+			source: `def run(values):
+    total = sum(
+        values,
+    )
+    for compute in (
+        values
+    ):
+        pass
+    with open(total) as handle:
+        pass
+    return compute(handle)`,
+			bound: []string{"total", "compute", "handle", "values"},
+		},
+		{
 			name: "a nested def's parameters and locals stay in the nested def",
 			source: `def run(source):
     def helper(compute):
