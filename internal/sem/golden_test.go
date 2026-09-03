@@ -771,3 +771,141 @@ func TestFSharpBlockCommentDoesNotFabricateACall(t *testing.T) {
 		})
 	}
 }
+
+// TestFSharpQuoteThatIsNotAStringDoesNotStrandTheMasker pins that a `"` which is
+// not a string delimiter cannot flip the F# comment masker's string state.
+//
+// maskFSharpBlockComments runs on RAW source -- the generic stripper runs after
+// it, inside the scanners -- so it is the pass that meets `// prose with a "` and
+// F#'s `'"'` character literal first. It counted both as string openers, and
+// because an F# string may legally span newlines nothing closed them again, so
+// everything after was read in the wrong state. That went wrong in both
+// directions: a `(* v |> helper *)` below such a line was left unmasked and
+// became a CALLS edge to a function the code does not call, and a later `"(*"`
+// re-synchronised the state the other way, opening a comment that never closed
+// and blanking every genuine pipeline to the end of the block.
+func TestFSharpQuoteThatIsNotAStringDoesNotStrandTheMasker(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+	}{
+		{"a quote in a line comment", "let run v =\n    // the marker is a \" character\n    (* v |> helper *)\n    v |> other\n", []string{"helper"}},
+		{"a quote character literal", "let run v =\n    let quote = '\"'\n    (* v |> helper *)\n    v |> other\n", []string{"helper"}},
+		// The other direction: the stranded state closes on the NEXT quote, and
+		// the `(*` behind it then opens a comment that runs to the end of the
+		// block, silently deleting the real call.
+		{"a comment opener re-synchronising after a line comment", "let run v =\n    // a \" here\n    let s = \"(*\"\n    v |> other\n", nil},
+		{"a comment opener re-synchronising after a character literal", "let run v =\n    let quote = '\"'\n    let s = \"(*\"\n    v |> other\n", nil},
+		// Guards on the two new cases. A generic type parameter and a primed
+		// identifier are spelled with the same apostrophe as a character
+		// literal and must be left exactly as they were.
+		{"a generic type parameter is not a character literal", "let run (v: 'T) =\n    (* v |> helper *)\n    v |> other\n", []string{"helper"}},
+		{"a primed identifier is not a character literal", "let run v =\n    let v' = v\n    (* v' |> helper *)\n    v' |> other\n", []string{"helper"}},
+		// A line comment is only a line comment outside a string and outside a
+		// block comment: inside either it is ordinary text, and treating it as
+		// a comment would hide the `(*` or the closing `*)` after it.
+		{"a line comment inside a string literal", "let marker = \"// (*\"\nlet run v =\n    v |> other\n", nil},
+		{"a line comment inside a block comment", "let run v =\n    (* // v |> helper *)\n    v |> other\n", []string{"helper"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			// The production composition order: the masker sees raw source, and
+			// the scanners strip literals and line comments afterwards.
+			targets := fsharpCallTargets(maskFSharpBlockComments(testCase.source))
+			for _, commented := range testCase.fabricated {
+				if _, ok := targets[commented]; ok {
+					t.Errorf("a commented call %q was scanned as a real one: %v", commented, targets)
+				}
+			}
+			if _, ok := targets["other"]; !ok {
+				t.Fatalf("the real pipeline call was masked away: %v", targets)
+			}
+		})
+	}
+}
+
+// TestFSharpStrandedMaskerCorruptsTheCallGraph is the same defect at the graph
+// level: the fabricated edge and the deleted one both reach CALLS.
+func TestFSharpStrandedMaskerCorruptsTheCallGraph(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module A
+
+let helper (value: int) = value + 1
+
+let other (value: int) = value * 2
+
+let run (v: int) =
+    // the marker is a " character
+    (* v |> helper *)
+    v |> other
+
+let dropped (v: int) =
+    let quote = '"'
+    let s = "(*"
+    v |> other
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "run", "helper") {
+		t.Errorf("fabricated CALLS run->helper from a commented pipeline: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "run", "other") {
+		t.Errorf("missing CALLS run->other: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "dropped", "other") {
+		t.Errorf("missing CALLS dropped->other; the masker blanked a real pipeline: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+// TestLiteralMaskersPreserveLengthAndLineStructure pins the invariant every
+// caller of these two maskers depends on.
+//
+// stripRustCodegenMacroBodies blanks bytes of the ORIGINAL text at offsets it
+// found in the masked copy, and every language mask that chains into these two
+// (maskCSharpTextBlocks, maskSwiftMultilineStrings, maskKotlinRawStrings,
+// maskGroovyLiteralsAndComments, the Flow mask) reports entity line numbers read
+// from the masked text. A masker that added or dropped a single byte, or moved
+// one line break, would silently misalign all of them, so the invariant is
+// asserted rather than assumed.
+func TestLiteralMaskersPreserveLengthAndLineStructure(t *testing.T) {
+	t.Parallel()
+
+	sources := []string{
+		"let run v =\n    // the marker is a \" character\n    (* v |> helper *)\n    v |> other\n",
+		"let quote = '\"'\nlet s = \"(*\"\nlet run v = v |> other\n",
+		"let m = @\"a\"\"b(*\"\nlet run v = v |> other\n",
+		"let unterminated = \"abc\n(* v |> helper\n",
+		"let trailing = '",
+		"let escape = '\\''\nlet run v = v |> other\n",
+		"x = \"a\" // b\nfunction f() { /* c */ return `t`; }\n\r\n",
+		"'",
+		"\"",
+		"(*",
+		"",
+	}
+	for _, source := range sources {
+		for name, mask := range map[string]func(string) string{
+			"maskFSharpBlockComments":      maskFSharpBlockComments,
+			"stripCodeLiteralsAndComments": stripCodeLiteralsAndComments,
+		} {
+			got := mask(source)
+			if len(got) != len(source) {
+				t.Fatalf("%s changed length of %q: %d -> %d", name, source, len(source), len(got))
+			}
+			for i := 0; i < len(source); i++ {
+				if source[i] == '\n' || source[i] == '\r' {
+					if got[i] != source[i] {
+						t.Fatalf("%s moved the line break at %d of %q", name, i, source)
+					}
+				}
+			}
+		}
+	}
+}

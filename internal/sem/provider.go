@@ -19963,6 +19963,27 @@ func maskFSharpBlockComments(text string) string {
 			continue
 		}
 		switch {
+		case depth == 0 && out[i] == '/' && i+1 < len(out) && out[i+1] == '/':
+			// A LINE COMMENT is not code, and it is the likeliest place in a
+			// file for a lone `"` -- prose, or a quoted word. Counting that
+			// quote as a string opener left the scan stuck inside a string for
+			// the rest of the block, so a `(* xs |> helper *)` below it was
+			// never masked and the pipeline scanner emitted a CALLS edge to a
+			// function the code does not call. The generic stripper blanks
+			// these later; this pass only has to stop misreading them.
+			for i+1 < len(out) && out[i+1] != '\n' {
+				i++
+			}
+		case depth == 0 && out[i] == '\'':
+			// A CHARACTER LITERAL is one token: the quote in `'"'` opens
+			// nothing. Reading it as a string opener stranded the scan the same
+			// way a line comment did. F# spells generic type parameters with
+			// the same leading apostrophe (`'T`, `'a`) and allows a trailing
+			// one in identifiers (`f'`), so only a well-formed literal is
+			// consumed and anything else is left exactly as before.
+			if end := fsharpCharLiteralEnd(out, i); end > i {
+				i = end
+			}
 		case depth == 0 && out[i] == '"':
 			// A STRING is not code. `let marker = "(*"` used to open a comment
 			// that never closed, and the rest of the block -- every real
@@ -19982,6 +20003,37 @@ func maskFSharpBlockComments(text string) string {
 		}
 	}
 	return string(out)
+}
+
+// fsharpCharLiteralEnd returns the index of the closing quote of the F#
+// character literal starting at the apostrophe at i, or -1 when that apostrophe
+// is not one. F# reuses the apostrophe for generic type parameters (`'T`) and
+// permits it inside identifiers (`f'`), so the shape is checked rather than
+// assumed: a bare `'` is left untouched and the caller's state is unchanged.
+func fsharpCharLiteralEnd(b []byte, i int) int {
+	if i+2 >= len(b) {
+		return -1
+	}
+	if b[i+1] == '\\' {
+		// An escape runs to the closing quote: `'\n'`, `'\''`, `'\u0041'`,
+		// `'\U0001F600'`. Bounded so a stray backslash cannot swallow the file.
+		for j := i + 2; j < len(b) && j <= i+12; j++ {
+			if b[j] == '\n' || b[j] == '\r' {
+				return -1
+			}
+			if b[j] == '\'' {
+				return j
+			}
+		}
+		return -1
+	}
+	if b[i+1] == '\'' || b[i+1] == '\n' || b[i+1] == '\r' {
+		return -1
+	}
+	if b[i+2] == '\'' {
+		return i + 2
+	}
+	return -1
 }
 
 func stripCodeLiteralsAndComments(content string) string {
