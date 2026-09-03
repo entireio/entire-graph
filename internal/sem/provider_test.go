@@ -12746,6 +12746,7 @@ func TestJuliaSameContainerMethodCallTargetsFailClosed(t *testing.T) {
 		wantBlocked bool
 	}{
 		{name: "unique same-container target", candidates: []SymbolRecord{target}, wantID: target.ID, wantFound: true},
+		{name: "local binding blocks resolution", candidates: []SymbolRecord{target}, wantFound: true, wantBlocked: true},
 		{name: "sibling module", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.ContainerID = "module-b"; return s }()}},
 		{name: "different file", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.FilePath = "src/other.jl"; return s }()}},
 		{name: "different language", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.Language = "Java"; return s }()}},
@@ -12756,7 +12757,11 @@ func TestJuliaSameContainerMethodCallTargetsFailClosed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			targets, found, blocked := resolveJuliaSameContainerMethodCallTargets("target", from, tt.candidates)
+			bindings := map[string]struct{}{}
+			if tt.name == "local binding blocks resolution" {
+				bindings["target"] = struct{}{}
+			}
+			targets, found, blocked := resolveJuliaSameContainerMethodCallTargets("target", from, tt.candidates, bindings)
 			if found != tt.wantFound || blocked != tt.wantBlocked {
 				t.Fatalf("found, blocked = %v, %v; want %v, %v", found, blocked, tt.wantFound, tt.wantBlocked)
 			}
@@ -12770,6 +12775,115 @@ func TestJuliaSameContainerMethodCallTargetsFailClosed(t *testing.T) {
 				t.Fatalf("targets = %#v, want only %q", targets, tt.wantID)
 			}
 		})
+	}
+}
+
+func TestJuliaModuleCallResolutionRejectsLocalBindingShadows(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/bindings.jl", `
+module Bound
+helper() = 1
+plain(callback) = (helper = callback; helper())
+function looped(callbacks)
+    for helper in callbacks
+        helper()
+    end
+end
+function caught(callback)
+    try
+        callback()
+    catch helper
+        helper()
+    end
+end
+function lexical(callback)
+    let helper = callback
+        helper()
+    end
+end
+function destructured(callbacks)
+    local (helper::Function, other...) = callbacks
+    helper()
+end
+function closure(callback)
+    map([callback]) do helper
+        helper()
+    end
+end
+function generated(callbacks)
+    [helper() for helper in callbacks]
+end
+function multi_let(callback)
+    let unrelated = callback, helper = callback
+        helper()
+    end
+end
+function multiline_let()
+    let unrelated,
+        helper
+        helper()
+    end
+end
+function commented_let(callback)
+    let #= header comment =# helper = callback
+        helper()
+    end
+end
+function control()
+    unrelated = identity
+    helper()
+end
+function bare_let()
+    let
+        helper
+        helper()
+    end
+end
+function bare_catch()
+    try
+        error()
+    catch
+        helper
+        helper()
+    end
+end
+function inline_let()
+    let; helper; helper(); end
+end
+function inline_catch()
+    try
+    catch; helper; helper(); end
+end
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := symbolByKindAndName(snapshot.Symbols, "method", "Bound.helper")
+	if helper.ID == "" {
+		t.Fatalf("missing Bound.helper: %#v", snapshot.Symbols)
+	}
+	for _, name := range []string{"plain", "looped", "caught", "lexical", "destructured", "closure", "generated", "multi_let", "multiline_let", "commented_let"} {
+		caller := symbolByKindAndName(snapshot.Symbols, "method", "Bound."+name)
+		if caller.ID == "" {
+			t.Fatalf("missing Bound.%s: %#v", name, snapshot.Symbols)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && relation.FromID == caller.ID && relation.ToID == helper.ID {
+				t.Fatalf("local binding in Bound.%s resolved to module helper: %#v", name, relation)
+			}
+		}
+	}
+	for _, name := range []string{"control", "bare_let", "bare_catch", "inline_let", "inline_catch"} {
+		caller := symbolByKindAndName(snapshot.Symbols, "method", "Bound."+name)
+		callsHelper := false
+		for _, relation := range snapshot.Relations {
+			callsHelper = callsHelper || relation.Type == "CALLS" && relation.FromID == caller.ID && relation.ToID == helper.ID
+		}
+		if !callsHelper {
+			t.Fatalf("non-shadowing Bound.%s lost its call to Bound.helper: %#v", name, relationsOfType(snapshot.Relations, "CALLS"))
+		}
 	}
 }
 

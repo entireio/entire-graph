@@ -2046,8 +2046,11 @@ func nameCallMayTargetMethod(lang string) bool {
 // module-scoped Julia definitions, which the parser represents as methods.
 // found distinguishes "no module candidate" from ambiguous overloads, while
 // blocked prevents a shadowed name from falling through to an external edge.
-func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, sameFile []SymbolRecord) (targets []resolvedCallTarget, found, blocked bool) {
+func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, sameFile []SymbolRecord, localBindings map[string]struct{}) (targets []resolvedCallTarget, found, blocked bool) {
 	if from.Language != "Julia" || from.Kind != "method" || from.Local || from.ContainerID == "" {
+		return nil, false, false
+	}
+	if localBindings == nil {
 		return nil, false, false
 	}
 	parameters := symbolFlowParameterNames(from)
@@ -2061,6 +2064,9 @@ func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, 
 		}
 	}
 	if parameters[name] {
+		return nil, true, true
+	}
+	if _, shadowed := localBindings[name]; shadowed {
 		return nil, true, true
 	}
 	hasNestedCallable := false
@@ -3507,8 +3513,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				callNames := callLikeIdentifiers(callBlock, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
+				var juliaLocalBindings map[string]struct{}
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
+					if len(callNames) > 0 && from.Kind == "method" && !from.Local && from.ContainerID != "" {
+						juliaLocalBindings = juliaLocalBindingNames(callBlock)
+					}
 				}
 				if file.Language == "Rust" {
 					for name := range rustTurbofishCallIdentifiers(callBlock) {
@@ -3648,7 +3658,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						})
 					} else {
 						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
-						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols)
+						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols, juliaLocalBindings)
 						genericSameContainerType := len(targets) == 1 && typeLikeKind(targets[0].Kind) &&
 							targets[0].FilePath == from.FilePath && targets[0].ContainerID == from.ContainerID
 						if blocked {
