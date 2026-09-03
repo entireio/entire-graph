@@ -2103,6 +2103,27 @@ func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, 
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
+	return resolveCallTargetsWithRawImport(name, from, candidates, nil, nil, sameFile, importsByName, allowMethodTargets)
+}
+
+func importsWithName(imports map[string][]string, name string, modules []string) map[string][]string {
+	copy := make(map[string][]string, len(imports))
+	for key, value := range imports {
+		copy[key] = value
+	}
+	if len(modules) == 0 {
+		delete(copy, name)
+	} else {
+		copy[name] = modules
+	}
+	return copy
+}
+
+// resolveCallTargetsWithRawImport keeps the normal language-filtered candidate
+// set for every ordinary resolution tier. A bare imported call may additionally
+// retain the raw workspace candidates so an explicit, unique import path can
+// bind a local FFI target that the type-sharing policy deliberately excludes.
+func resolveCallTargetsWithRawImport(name string, from SymbolRecord, candidates, rawCandidates []SymbolRecord, rawImportModuleSets [][]string, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	// candidates arrive ALREADY filtered to languages the caller can name: every
 	// call site wraps its symbolsByShortName lookup in sharedTypeCandidates,
 	// because that is where the referring symbol is known. Re-filtering here
@@ -2143,6 +2164,11 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	if imported := resolveImportedCallTargets(name, from, candidates, importsByName, allowMethodTargets); len(imported) > 0 {
 		return imported
+	}
+	if rawCandidates != nil {
+		if imported, bound := resolveUniqueRawImportedCallTarget(name, from, rawCandidates, rawImportModuleSets, allowMethodTargets); bound {
+			return imported
+		}
 	}
 
 	// Same-package resolution: in Go every file in a directory is the same
@@ -2260,6 +2286,44 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 		}
 	}
 	return nil
+}
+
+// resolveUniqueRawImportedCallTarget is the narrow FFI exception to the
+// language-filtered short-name index. The imported binding is authoritative
+// only when its module path names exactly one callable workspace target. A
+// missing or ambiguous raw match blocks same-package/global-name fallback for
+// this imported name, leaving the ordinary external edge in place instead of
+// guessing from an unrelated declaration with the same spelling.
+func resolveUniqueRawImportedCallTarget(name string, from SymbolRecord, candidates []SymbolRecord, moduleSets [][]string, allowMethodTargets bool) ([]resolvedCallTarget, bool) {
+	if len(moduleSets) == 0 {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	var targets []resolvedCallTarget
+	bound := false
+	for _, modules := range moduleSets {
+		var matched []SymbolRecord
+		for _, to := range candidates {
+			if to.ID == from.ID || to.Name != name || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+				continue
+			}
+			if importedNameMatchesFile(modules, from.FilePath, to.FilePath) {
+				matched = append(matched, to)
+			}
+		}
+		bound = true
+		if len(matched) == 1 && !seen[matched[0].ID] {
+			seen[matched[0].ID] = true
+			targets = append(targets, resolvedCallTarget{
+				SymbolRecord: matched[0],
+				Confidence:   0.84,
+				Reason:       "direct call expression resolved through imported module path",
+				Resolution:   "import_resolved",
+				Scope:        "module",
+			})
+		}
+	}
+	return targets, bound
 }
 
 // resolveJSNamespaceCallTargets resolves a namespace-qualified call against
@@ -3338,6 +3402,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		// inventory-only `document` symbols (whose block is the whole file) and
 		// over data/markup languages, inventing cross-language call edges.
 		fileNeedsCallScan := needsCallScan && callExtractionLanguage(file.Language) && !skipFastCFamilyCallScan(spec, file.Language)
+		var pythonBareScopes *pythonBareImportScopes
+		if fileNeedsCallScan && file.Language == "Python" {
+			pythonBareScopes = newPythonBareImportScopes(content, currentFileSymbols)
+		}
 		fileNeedsRouteScan := spec.emits("HANDLES_ROUTE") && routeScanLanguage(file.Language)
 		fileNeedsHTTPScan := spec.emits("HTTP_CALLS") && httpScanLanguage(file.Language)
 		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language)
@@ -3643,6 +3711,29 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
+					rawCandidates := symbolsByShortName[name]
+					var rawImportModuleSets [][]string
+					importsForCall := callImportsByName
+					if modules := callImportsByName[name]; len(modules) > 0 {
+						rawImportModuleSets = [][]string{modules}
+					}
+					if file.Language == "Python" {
+						// The raw FFI exception is valid only for imports visible at an
+						// unshadowed AST call site in this callable. Ordinary filtered
+						// resolution keeps its established file-level map when scope
+						// analysis is incomplete; that incomplete view may only disable
+						// the raw cross-language exception, never ordinary imports.
+						if pythonBareScopes.complete {
+							rawImportModuleSets = pythonBareScopes.importModuleSets(from, name)
+							importsForCall = importsWithName(callImportsByName, name, pythonBareScopes.importModules(from, name))
+						} else {
+							rawImportModuleSets = nil
+							rawCandidates = nil
+						}
+						if len(rawImportModuleSets) == 0 {
+							rawCandidates = nil
+						}
+					}
 					// A container's block spans its members' definition lines, which
 					// look like calls (e.g. `def validate(self):`). Skip the names of
 					// direct children so a class is not credited with calling its own
@@ -3664,7 +3755,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
 					} else {
-						targets = resolveCallTargets(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), currentFileSymbols, callImportsByName, false)
+						targets = resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
 						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols, juliaLocalBindings)
 						genericSameContainerType := len(targets) == 1 && typeLikeKind(targets[0].Kind) &&
 							targets[0].FilePath == from.FilePath && targets[0].ContainerID == from.ContainerID
@@ -3744,7 +3835,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						}
 					}
 					if len(targets) == 0 && !suppressExternal {
-						for _, relation := range importedExternalCallRelationsForName(from, name, callImportsByName[name]) {
+						for _, relation := range importedExternalCallRelationsForName(from, name, importsForCall[name]) {
 							emit(relation)
 						}
 					}
@@ -4125,6 +4216,24 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				for _, name := range sortedKeysOf(topLevelNames) {
+					rawCandidates := symbolsByShortName[name]
+					var rawImportModuleSets [][]string
+					importsForCall := importsByName
+					if modules := importsByName[name]; len(modules) > 0 {
+						rawImportModuleSets = [][]string{modules}
+					}
+					if file.Language == "Python" {
+						if pythonBareScopes.complete {
+							rawImportModuleSets = pythonBareScopes.importModuleSets(fileSource, name)
+							importsForCall = importsWithName(importsByName, name, pythonBareScopes.importModules(fileSource, name))
+						} else {
+							rawImportModuleSets = nil
+							rawCandidates = nil
+						}
+						if len(rawImportModuleSets) == 0 {
+							rawCandidates = nil
+						}
+					}
 					var targets []resolvedCallTarget
 					if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
 						// Same chain as the per-symbol namespace path above; the
@@ -4132,7 +4241,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else {
-						targets = resolveCallTargets(name, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[name]), currentFileSymbols, importsByName, false)
+						targets = resolveCallTargetsWithRawImport(name, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
 					}
 					for _, to := range targets {
 						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {

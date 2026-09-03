@@ -4287,6 +4287,448 @@ def run():
 	}
 }
 
+func TestBareImportedCallResolvesUniqueFFITarget(t *testing.T) {
+	t.Run("module scope unique C target", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+compute(1)
+`)
+
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && lastSegment(relation.FromID) == "app.py" && strings.Contains(relation.ToID, "frobnicate.c:function:compute") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("module-scope bare Python import did not resolve to C: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+
+	t.Run("unique C target", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") || calls[0].Resolution != "import_resolved" {
+			t.Fatalf("bare Python import did not resolve to its unique C target: %#v", calls)
+		}
+	})
+
+	t.Run("ambiguous foreign targets stay external", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.rb", `def compute(value)
+  value + 1
+end
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || calls[0].ToID != externalID("symbol", "frobnicate.compute") {
+			t.Fatalf("ambiguous bare FFI import must remain external: %#v", calls)
+		}
+	})
+
+	t.Run("explicit FFI import outranks unrelated same-language name", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "other.py", `def compute(value):
+    return value - 1
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("bare FFI import lost to unrelated Python name: %#v", calls)
+		}
+	})
+
+	t.Run("function-local import does not leak to sibling", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "othermod.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def local():
+    from othermod import compute
+    return compute(1)
+
+def sibling():
+    return compute(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "local", "app.py", "compute", "othermod.c") ||
+			!hasRelationBySymbolNameAndFile(snapshot, "CALLS", "sibling", "app.py", "compute", "frobnicate.c") {
+			t.Fatalf("lexical Python imports resolved to the wrong FFI targets: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+
+	t.Run("call before local import has no imported edge", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "app.py", `def run():
+    compute(1)
+    from frobnicate import compute
+`)
+		if calls := importedReceiverCallsFrom(t, repo, "app.py:function:run"); len(calls) != 0 {
+			t.Fatalf("call before import must not resolve through the later import: %#v", calls)
+		}
+	})
+
+	t.Run("incomplete scope disables raw FFI but retains imported external fallback", func(t *testing.T) {
+		deep := strings.Repeat("(", maxParseWalkDepth+10) + "0" + strings.Repeat(")", maxParseWalkDepth+10)
+		scopes := newPythonBareImportScopes("from lib import compute\nvalue = "+deep+"\n", nil)
+		if scopes.complete {
+			t.Fatal("deep scope walk unexpectedly completed")
+		}
+		from := SymbolRecord{ID: "app", Name: "run", Kind: "function", Language: "Python", FilePath: "app.py"}
+		rawC := SymbolRecord{ID: "c", Name: "compute", Kind: "function", Language: "C", FilePath: "lib.c"}
+		imports := map[string][]string{"compute": {"lib"}}
+		if targets := resolveCallTargetsWithRawImport("compute", from, nil, []SymbolRecord{rawC}, nil, nil, imports, false); len(targets) != 0 {
+			t.Fatalf("incomplete scope enabled raw Python-to-C FFI: %#v", targets)
+		}
+		external := importedExternalCallRelationsForName(from, "compute", imports["compute"])
+		if len(external) != 1 || external[0].ToID != externalID("symbol", "lib.compute") {
+			t.Fatalf("incomplete scope lost imported external fallback: %#v", external)
+		}
+	})
+
+	t.Run("incomplete scope preserves normal same-language imports", func(t *testing.T) {
+		from := SymbolRecord{ID: "app", Name: "run", Kind: "function", Language: "Python", FilePath: "app.py"}
+		localPython := SymbolRecord{ID: "py", Name: "compute", Kind: "function", Language: "Python", FilePath: "lib.py"}
+		targets := resolveCallTargetsWithRawImport("compute", from, []SymbolRecord{localPython}, nil, nil, nil, map[string][]string{"compute": {"lib"}}, false)
+		if len(targets) != 1 || targets[0].ID != localPython.ID || targets[0].Resolution != "import_resolved" {
+			t.Fatalf("incomplete scope lost normal same-language import: %#v", targets)
+		}
+	})
+
+	t.Run("malformed scope keeps function imports external and blocks raw C", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "lib.c", "int compute(int value) { return value + 1; }\n")
+		content := "from lib import compute\n\ndef run():\n    return compute(1)\n\nbroken = (\n"
+		if newPythonBareImportScopes(content, nil).complete {
+			t.Fatal("malformed scope unexpectedly completed")
+		}
+		writeFile(t, repo, "app.py", content)
+		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || calls[0].ToID != externalID("symbol", "lib.compute") || calls[0].Resolution != "import_external" {
+			t.Fatalf("malformed function scope did not preserve imported external fallback: %#v", calls)
+		}
+	})
+
+	t.Run("malformed scope blocks raw C at top level", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "lib.c", "int compute(int value) { return value + 1; }\n")
+		content := "from lib import compute\n\ncompute(1)\n\nbroken = (\n"
+		if newPythonBareImportScopes(content, nil).complete {
+			t.Fatal("malformed scope unexpectedly completed")
+		}
+		writeFile(t, repo, "app.py", content)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.Contains(relation.ToID, "lib.c:function:compute") {
+				t.Fatalf("malformed top-level scope enabled raw Python-to-C FFI: %#v", relation)
+			}
+		}
+	})
+
+	t.Run("sequential local imports retain both visible FFI targets", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "othermod.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", `def run():
+    from frobnicate import compute
+    compute(1)
+    from othermod import compute
+    compute(1)
+`)
+		calls := importedReceiverCallsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 2 || !strings.Contains(calls[0].ToID, ".c:function:compute") || !strings.Contains(calls[1].ToID, ".c:function:compute") || calls[0].ToID == calls[1].ToID {
+			t.Fatalf("sequential imports must retain each concrete FFI target: %#v", calls)
+		}
+	})
+
+	t.Run("nested global and nonlocal imports do not leak outward", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "othermod.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def global_child():
+    global compute
+    from othermod import compute
+
+def sibling():
+    return compute(1)
+
+def outer():
+    from frobnicate import compute
+    def child():
+        nonlocal compute
+        from othermod import compute
+    return compute(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "sibling", "app.py", "compute", "frobnicate.c") ||
+			!hasRelationBySymbolNameAndFile(snapshot, "CALLS", "outer", "app.py", "compute", "frobnicate.c") {
+			t.Fatalf("nested global/nonlocal imports leaked into outer callers: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+
+	t.Run("method skips class-local imports", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "othermod.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+class Service:
+    from othermod import compute
+    def run(self):
+        return compute(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "run", "app.py", "compute", "frobnicate.c") {
+			t.Fatalf("method inherited the class-local import instead of module binding: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+
+	t.Run("parameter shadows imported binding", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(compute):
+    return compute(1)
+`)
+
+		for _, call := range importedReceiverCallsFrom(t, repo, "app.py:function:run") {
+			if strings.Contains(call.ToID, "frobnicate.c:function:compute") || call.Resolution == "import_external" {
+				t.Fatalf("parameter-shadowed import resolved through the import: %#v", call)
+			}
+		}
+	})
+}
+
+func TestPythonBareImportFFIRespectsASTScopes(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def assignment():
+    compute = lambda value: value
+    return compute(1)
+
+def annotated():
+    compute: object = None
+    return compute(1)
+
+def augmented():
+    compute = 0
+    compute += 1
+    return compute(1)
+
+def deleted():
+    del compute
+    return compute(1)
+
+def destructuring():
+    value, compute = 1, lambda value: value
+    return compute(value)
+
+def loop(values):
+    for compute in values:
+        return compute(1)
+
+def with_as():
+    with open("x") as compute:
+        return compute(1)
+
+def except_as():
+    try:
+        raise RuntimeError()
+    except RuntimeError as compute:
+        return compute(1)
+
+def walrus():
+    if compute := (lambda value: value):
+        return compute(1)
+
+def comprehension_walrus(values):
+    return [compute(1) for value in values if (compute := (lambda value: value))]
+
+def subscript_target(obj):
+    obj[compute] = 1
+    return compute(1)
+
+def lambda_walrus():
+    return (lambda: (compute(1), (compute := (lambda value: value))))()
+
+def local_import():
+    from localmod import compute
+    return compute(1)
+
+def nested_def():
+    def compute(value):
+        return value
+    return compute(1)
+
+def nested_class():
+    class compute:
+        pass
+    return compute()
+
+def nested_callable():
+    def inner():
+        return compute(1)
+    return inner()
+
+def global_decl():
+    global compute
+    return compute(1)
+
+def nonlocal_outer():
+    compute = lambda value: value
+    def nonlocal_inner():
+        nonlocal compute
+        return compute(1)
+    return nonlocal_inner()
+
+def comprehension_bound(values):
+    return [compute(value) for compute in values]
+
+def comprehension_unbound(values):
+    return [compute(value) for value in values]
+
+def parameter(compute):
+    return compute(1)
+
+def lambda_parameter():
+    return (lambda compute: compute(1))(lambda value: value)
+
+def comp_iterable(values):
+    return [value for value in compute(values)]
+
+def class_base():
+    class Inner(compute(1)):
+        pass
+    return Inner
+
+def class_body():
+    class Inner:
+        compute(1)
+    return Inner
+
+def except_type():
+    try:
+        raise RuntimeError()
+    except compute():
+        return 1
+
+def plain_import():
+    import frobnicate.extra
+    return frobnicate()
+
+def local_import_child():
+    from localmod import compute
+    def child():
+        return compute(1)
+    return child()
+
+def valid():
+    return compute(1)
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// End-to-end coverage for a simple unshadowed function body remains in
+	// TestBareImportedCallResolvesUniqueFFITarget. This fixture isolates the AST
+	// eligibility decision, avoiding a broad change to Python call attribution.
+	content, err := os.ReadFile(filepath.Join(repo, "app.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes := newPythonBareImportScopes(string(content), snapshot.Symbols)
+	byName := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		if symbol.FilePath == "app.py" && symbol.Name != "compute" {
+			byName[symbol.Name] = symbol
+		}
+	}
+	for _, name := range []string{
+		"assignment", "annotated", "augmented", "deleted", "destructuring", "loop", "with_as", "except_as", "walrus", "comprehension_walrus", "nested_def", "nested_class", "nonlocal_outer", "nonlocal_inner", "comprehension_bound", "parameter", "lambda_parameter", "lambda_walrus", "except_type",
+	} {
+		if modules := scopes.importModules(byName[name], "compute"); len(modules) > 0 {
+			t.Fatalf("%s shadowed the imported name but remained FFI-eligible through %q", name, modules)
+		}
+	}
+	if modules := scopes.importModules(byName["local_import"], "compute"); len(modules) != 1 || modules[0] != "localmod" {
+		t.Fatalf("function-local import did not replace the module binding: %q", modules)
+	}
+	for _, name := range []string{"inner", "global_decl", "comprehension_unbound", "comp_iterable", "class_base", "class_body", "subscript_target", "valid"} {
+		if modules := scopes.importModules(byName[name], "compute"); len(modules) == 0 || modules[0] != "frobnicate" {
+			t.Fatalf("%s has an unshadowed imported call but got modules %q", name, modules)
+		}
+	}
+	if modules := scopes.importModules(byName["plain_import"], "frobnicate"); len(modules) != 1 || modules[0] != "frobnicate.extra" {
+		t.Fatalf("plain dotted import did not bind its root name: %q", modules)
+	}
+	if modules := scopes.importModules(byName["child"], "compute"); len(modules) != 1 || modules[0] != "localmod" {
+		t.Fatalf("nested callable did not inherit the function-local import: %q", modules)
+	}
+}
+
 // Import evidence outranks the language-pair heuristic only while it is
 // unambiguous. Module paths are matched by suffix, so one import can match
 // same-named callables in several languages at once; nothing then says which the
