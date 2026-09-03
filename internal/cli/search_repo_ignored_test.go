@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -170,5 +171,92 @@ func TestTextSearchDisclosureIsChargedAgainstTheContextBudget(t *testing.T) {
 	}
 	if !strings.Contains(withRoomyBudget.String(), "EXCLUDED:") {
 		t.Fatalf("a ceiling comfortably larger than the disclosure block must still show it:\n%s", withRoomyBudget.String())
+	}
+}
+
+// TestTextSearchDisclosureDegradesRatherThanVanishesWhenTheBudgetIsSpent
+// reproduces the trail finding.
+//
+// Charging the disclosure against the REMAINING headroom stopped it from blowing
+// past --max-context-bytes, but it also made it disappear from the payload where
+// it matters most. The fitter spends the ceiling down to the last few bytes — a
+// real run measured result_bytes 1993 against a 2000-byte ceiling, and 3977
+// against 4000 — so a repository with enough material to answer the query has no
+// headroom left for anything. `--format text` renders no warnings and no fallback
+// marker of its own, so the disclosure was the only signal that a committed
+// ignore rule had removed content, and it went out in silence: the busier the
+// repository and the more it excluded, the more complete its answer looked.
+//
+// The requirement is not that the full block survives — its size is chosen by the
+// repository, so it must not. It is that SOMETHING says the corpus is not whole.
+func TestTextSearchDisclosureDegradesRatherThanVanishesWhenTheBudgetIsSpent(t *testing.T) {
+	sample := make([]sem.RepoExclusion, 0, 10)
+	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"} {
+		sample = append(sample, sem.RepoExclusion{
+			Path: "vendor/" + name + "/parser.c", Source: ".graphignore", Rule: "parser.c",
+		})
+	}
+	response := repoIgnoredResponse(23, sample)
+	// The measured shape of a saturated payload: the ranking was fitted to the
+	// ceiling and left 7 bytes behind it.
+	response.Stats.ContextBudgetBytes = 2000
+	response.Stats.ResultBytes = 1993
+
+	var out bytes.Buffer
+	if err := writeTextSearch(&out, response); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.HasPrefix(text, "EXCLUDED:") {
+		t.Fatalf("a payload whose ranking spent the whole ceiling disclosed nothing about the 23 files"+
+			" the repository's own rules removed; --format text has no other channel that says so:\n%s", text)
+	}
+	// Degraded, not merely admitted: the repository-controlled path list is exactly
+	// what may not ride on top of a budget the ranking has already spent.
+	if strings.Contains(text, "vendor/a/parser.c") {
+		t.Fatalf("the repository-sized path list was printed on top of a spent ceiling:\n%s", text)
+	}
+	disclosure, _, _ := strings.Cut(text, "\n")
+	if len(disclosure)+1 > 160 {
+		t.Fatalf("the disclosure that survives a spent budget must be bounded, got %d bytes: %q",
+			len(disclosure)+1, disclosure)
+	}
+	if !strings.Contains(disclosure, "23 files") || !strings.Contains(disclosure, "repo_ignored") {
+		t.Fatalf("the degraded disclosure must still carry the count and point at the full report: %q", disclosure)
+	}
+}
+
+// TestSearchCommandDisclosesExclusionsAtEveryBudget is the same finding proved end
+// to end, through the real fitter rather than a hand-built response: one committed
+// `.graphignore` rule hides a file, and every ceiling the caller might pick must
+// still say so. Before the fix the sweep failed at 600, 1400, 2000 and 4000 —
+// the budgets at which the ranking had enough material to consume the ceiling.
+func TestSearchCommandDisclosesExclusionsAtEveryBudget(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	write(t, repo, ".graphignore", "hidden/\n")
+	write(t, repo, "hidden/auth.go", "package hidden\n\n"+
+		"// ValidateToken checks the bearer token presented on a request.\n"+
+		"func ValidateToken(token string) bool { return len(token) == 64 }\n")
+	for i := 1; i <= 8; i++ {
+		name := fmt.Sprintf("visible/auth_stub%d.go", i)
+		write(t, repo, name, fmt.Sprintf("package visible\n\n"+
+			"// ValidateTokenStub%d checks the bearer token presented on a request.\n"+
+			"func ValidateTokenStub%d(token string) bool {\n\tif token == \"\" {\n\t\treturn false\n\t}\n"+
+			"\tif len(token) != 64 {\n\t\treturn false\n\t}\n\treturn true\n}\n", i, i))
+	}
+	for _, budget := range []string{"600", "1400", "2000", "4000", "24576"} {
+		var out bytes.Buffer
+		err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
+			"search", "--repo", repo, "--query", "bearer token validation", "--format", "text",
+			"--profile", "syntax-only", "--worktree", "--max-context-bytes", budget,
+		})
+		if err != nil {
+			t.Fatalf("budget %s: %v", budget, err)
+		}
+		if !strings.Contains(out.String(), "EXCLUDED:") {
+			t.Fatalf("budget %s: a committed ignore rule removed hidden/auth.go and the payload said"+
+				" nothing about it:\n%s", budget, out.String())
+		}
 	}
 }

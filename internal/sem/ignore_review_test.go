@@ -380,3 +380,57 @@ func TestDisclosureRendersAnUncountableExclusion(t *testing.T) {
 		t.Fatalf("nil report rendered %q", got)
 	}
 }
+
+// TestRepoIgnoreDisclosureFloorIsBoundedAndRepositoryFree pins the property the
+// whole degrade-instead-of-omit rule rests on.
+//
+// The full disclosure is sized by the repository being searched, which is why the
+// text renderer may only print it when it fits the remaining context headroom.
+// The floor is what gets printed when it does not, and it is admitted against the
+// ceiling rather than the headroom — so it may push a payload past
+// --max-context-bytes. That is only defensible while the push is bounded by a
+// number THIS file picks: the floor must name no repository-controlled bytes at
+// all, and must stay under maxRepoIgnoreFloorBytes however hostile the report is.
+func TestRepoIgnoreDisclosureFloorIsBoundedAndRepositoryFree(t *testing.T) {
+	t.Parallel()
+	hostile := strings.Repeat("h", 4096)
+	report := &RepoIgnoreReport{
+		Files:           20000,
+		Sources:         []RepoIgnoreSource{{File: hostile + "/.gitignore", Files: 20000}},
+		Sample:          []RepoExclusion{{Path: hostile + "/secret.go", Source: hostile, Rule: hostile}},
+		SampleTruncated: true,
+		CountIncomplete: true,
+		Unreadable:      []string{hostile + "/broken"},
+	}
+	full := string(RenderRepoIgnoreDisclosure(report))
+	if len(full) <= maxRepoIgnoreFloorBytes {
+		t.Fatalf("fixture is not hostile enough to exercise the floor: full block is %d bytes", len(full))
+	}
+	floor := string(RenderRepoIgnoreDisclosureFloor(report))
+	if len(floor) > maxRepoIgnoreFloorBytes {
+		t.Fatalf("floor is %d bytes, want at most %d — a floor the repository can grow is not a floor:\n%s",
+			len(floor), maxRepoIgnoreFloorBytes, floor)
+	}
+	if strings.Contains(floor, "h") && strings.Contains(floor, hostile[:64]) {
+		t.Fatalf("floor carries repository-controlled bytes:\n%s", floor)
+	}
+	// It still has to be a disclosure: the marker readers scan for, the count, and
+	// where the names it dropped can be found.
+	for _, want := range []string{"EXCLUDED:", "at least 20000 files", "repo_ignored"} {
+		if !strings.Contains(floor, want) {
+			t.Fatalf("floor omitted %q:\n%s", want, floor)
+		}
+	}
+	// A shortfall with nothing counted is still something to disclose — same rule
+	// the full block applies, and for the same reason.
+	unknown := string(RenderRepoIgnoreDisclosureFloor(&RepoIgnoreReport{CountIncomplete: true}))
+	if !strings.Contains(unknown, "EXCLUDED:") || !strings.Contains(unknown, "unknown") {
+		t.Fatalf("an uncountable exclusion must still disclose itself:\n%s", unknown)
+	}
+	if got := RenderRepoIgnoreDisclosureFloor(&RepoIgnoreReport{}); got != nil {
+		t.Fatalf("a repository that excluded nothing must pay no bytes: %q", got)
+	}
+	if got := RenderRepoIgnoreDisclosureFloor(nil); got != nil {
+		t.Fatalf("a nil report must render nothing: %q", got)
+	}
+}

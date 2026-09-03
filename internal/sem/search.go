@@ -801,6 +801,47 @@ func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
 	return out.Bytes()
 }
 
+// maxRepoIgnoreFloorBytes bounds RenderRepoIgnoreDisclosureFloor.
+//
+// The bound is the whole point of the floor. The full disclosure's size is set by
+// the repository being searched — excluded path names, ignore-file names,
+// unreadable directory names — which is why it may only be printed when it fits
+// the remaining context headroom. The floor carries none of those: one sentence,
+// one integer, and a pointer at the JSON channel that holds the rest. Its size is
+// therefore a property of this file, so a caller can state in advance the most a
+// payload can exceed --max-context-bytes by in order to stay honest about its own
+// corpus. TestRepoIgnoreDisclosureFloorIsBoundedAndRepositoryFree pins it.
+const maxRepoIgnoreFloorBytes = 160
+
+// RenderRepoIgnoreDisclosureFloor renders the IRREDUCIBLE form of the disclosure:
+// the fact that the repository's own rules removed content, and where the details
+// are. It is what a text payload prints when the full block (above) cannot be
+// afforded — because the alternative, printing nothing, tells the one reader who
+// only ever sees `--format text` that the corpus was whole.
+//
+// It names no repository-controlled bytes on purpose. That is what lets it be
+// admitted against a budget the ranked results have already spent: the overshoot
+// it can cause is bounded by maxRepoIgnoreFloorBytes and chosen here, not by the
+// repository being searched.
+func RenderRepoIgnoreDisclosureFloor(report *RepoIgnoreReport) []byte {
+	if report == nil || (report.Files == 0 && !report.CountIncomplete && !report.GitListingUnavailable) {
+		return nil
+	}
+	// A count of zero beside a shortfall is not "nothing was excluded" — same rule
+	// as the full block, and for the same reason: an ignored tree that could not be
+	// enumerated excludes an unknown amount.
+	if report.Files == 0 {
+		return []byte("EXCLUDED: repo ignore rules removed content from this corpus, amount unknown" +
+			" (--format json: repo_ignored)\n")
+	}
+	atLeast := ""
+	if report.CountIncomplete {
+		atLeast = "at least "
+	}
+	return fmt.Appendf(nil, "EXCLUDED: %s%d file%s removed from this corpus by repo ignore rules"+
+		" (--format json: repo_ignored)\n", atLeast, report.Files, pluralS(report.Files))
+}
+
 type searchQuery struct {
 	raw         string
 	rawLower    string

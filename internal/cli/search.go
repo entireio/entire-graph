@@ -606,10 +606,10 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// .graphignore file names, unreadable directory names) and is written here
 	// AHEAD of the ranked results that response.Stats.ResultBytes was already fit
 	// to response.Stats.ContextBudgetBytes for — so it is charged against that
-	// same ceiling rather than added on top of it. A caller who asked for a tiny
-	// ceiling gets no disclosure rather than a payload that blows past the
-	// ceiling before a single ranked result is printed; the JSON channel still
-	// carries the full, uncapped report regardless (response.RepoIgnored).
+	// same ceiling rather than added on top of it. What a ceiling too small for it
+	// buys is a SHORTER disclosure, never a missing one (see the floor below); the
+	// JSON channel carries the full, uncapped report regardless
+	// (response.RepoIgnored).
 	if block := sem.RenderRepoIgnoreDisclosure(response.RepoIgnored); len(block) > 0 {
 		budget := response.Stats.ContextBudgetBytes
 		// Charged against the REMAINING headroom, not against the whole ceiling.
@@ -622,7 +622,32 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		// The three terms are the ones validateSearchContextBlockBudget funds
 		// from inside the ceiling (search_blocks.go); keep them in step.
 		funded := response.Stats.ResultBytes + response.Stats.TypeCardBytes + response.Stats.SignatureTypeBytes
-		if budget <= 0 || funded+len(block) <= budget {
+		// DEGRADE, NEVER OMIT. Charging the block against the headroom is right; going
+		// silent when that headroom is gone is not, and it failed in exactly the case
+		// this disclosure exists for. The fitter spends the ceiling down to the last few
+		// bytes (measured end to end: result_bytes 1993 of a 2000-byte ceiling, 3977 of
+		// 4000), so a repository with enough material to answer the query leaves no
+		// headroom — and `--format text` renders no warnings and no fallback marker of
+		// its own, so the ONLY signal that a committed rule removed content disappeared.
+		// The busy repository with many exclusions got the most complete-LOOKING answer.
+		//
+		// The full block still has to fit the headroom, because the repository sizes it.
+		// Under it sits an irreducible floor carrying no repository-controlled bytes at
+		// all — one sentence, one integer, a pointer at the JSON channel — and the floor
+		// is admitted against the CEILING rather than the headroom. That is the trade: a
+		// payload may exceed --max-context-bytes by at most the floor's documented bound,
+		// an amount this repository picks and a caller can budget for, rather than stay
+		// byte-exact by telling a reader a corpus was whole when it was not.
+		//
+		// A ceiling smaller than the floor itself prints nothing: the caller asked for
+		// less room than the shortest honest disclosure needs.
+		if budget > 0 && funded+len(block) > budget {
+			block = sem.RenderRepoIgnoreDisclosureFloor(response.RepoIgnored)
+			if len(block) > budget {
+				block = nil
+			}
+		}
+		if len(block) > 0 {
 			if _, err := out.Write(block); err != nil {
 				return err
 			}
