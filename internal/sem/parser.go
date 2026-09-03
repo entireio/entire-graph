@@ -2433,7 +2433,7 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 				}
 				text = replacePatternSameLength(text, cPlusPlusAnonymousEnumPattern, "enum cxx_enum")
 				text = replacePatternSameLength(text, cPlusPlusExplicitOperatorCallPattern, "call(")
-				text = replacePatternSameLength(text, cPlusPlusConversionOperatorDeclPattern, "convert()")
+				text = maskCPlusPlusConversionOperatorDecl(text)
 				lines[i] = maskCPlusPlusAnnotationMacros(text) + newline
 			}
 		}
@@ -2883,6 +2883,37 @@ func maskCPlusPlusMemberOperatorCall(text string) string {
 			return sameLengthReplacement("->op", len(match))
 		}
 		return sameLengthReplacement(".op", len(match))
+	})
+}
+
+// maskCPlusPlusConversionOperatorDecl rewrites `operator T()` to a plain identifier
+// followed by `()`, keeping the IDENTIFIER the same width as the operator's own name.
+//
+// Width parity matters twice here. The whole match keeps its width, as every mask in
+// this file does, so offsets around it are unchanged. But the identifier has to keep
+// its width too: a symbol's name is sliced from the UNMASKED content at the node's
+// byte range, so a shorter stand-in read the wrong bytes back. `convert` is seven
+// characters and `operator int` is twelve, which is exactly why that member came out
+// named `operato` -- the first seven bytes of the real name -- and why every plain-target
+// conversion operator in a repository collapsed onto that one symbol.
+//
+// The padding is '_' rather than a space so the stand-in stays a single identifier
+// token; a space would end it and change what tree-sitter parses.
+func maskCPlusPlusConversionOperatorDecl(text string) string {
+	return cPlusPlusConversionOperatorDeclPattern.ReplaceAllStringFunc(text, func(match string) string {
+		paren := strings.IndexByte(match, '(')
+		if paren < 0 {
+			return match
+		}
+		name := strings.TrimRight(match[:paren], " \t")
+		if len(name) == 0 {
+			return match
+		}
+		stand := "convert"
+		if len(stand) > len(name) {
+			stand = stand[:len(name)]
+		}
+		return stand + strings.Repeat("_", len(name)-len(stand)) + match[len(name):]
 	})
 }
 
