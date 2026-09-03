@@ -205,9 +205,20 @@ jobs:
           if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$VERSION" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$VERSION" "${assets[@]}" \
-              --repo "$GITHUB_REPOSITORY" \
-              --verify-tag \
-              --generate-notes \
+            flags=(
+              --repo "$GITHUB_REPOSITORY"
+              --verify-tag
+              --generate-notes
               --title "$VERSION"
+            )
+            # SemVer puts a `-` between the version core and a prerelease
+            # identifier, so `v1.2.3-nightly.<ts>.<sha>` and `v1.2.3-rc.1` are
+            # prereleases and `v1.2.3` is not. A prerelease-looking TAG does not
+            # by itself mark the RELEASE as one: without these flags a nightly
+            # publishes to the normal channel and, being newest, takes the
+            # "Latest" badge from the current stable release.
+            case "$VERSION" in
+              *-*) flags+=(--prerelease --latest=false) ;;
+            esac
+            gh release create "$VERSION" "${assets[@]}" "${flags[@]}"
           fi
