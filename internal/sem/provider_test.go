@@ -12652,6 +12652,59 @@ end
 	}
 }
 
+func TestJuliaShortFormWithParenthesesInItsArgumentListStaysMasked(t *testing.T) {
+	// The short-form mask required an argument list with NO nested parentheses,
+	// so an ordinary default value -- `g(x = (1, 2)) = other(x)`, `g(x = h(1)) =
+	// other(x)` -- matched nothing and the whole line stayed in the module's
+	// block: the definition head read as a module-to-`g` call, and the
+	// right-hand side's calls were credited to the module as well.
+	for _, def := range []string{"g(x = (1, 2)) = other(x)", "g(x = (1, 2))::Int = other(x)", "g(x = other(1)) = other(x)"} {
+		repo := t.TempDir()
+		writeFile(t, repo, "src/M.jl", "module M\nfunction other(y); y; end\n"+def+"\nend\n")
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatalf("build snapshot: %v", err)
+		}
+		calls := relationsOfType(snapshot.Relations, "CALLS")
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M.g", "M.other") {
+			t.Errorf("%q lost its own body call: %#v", def, calls)
+		}
+		if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.other") {
+			t.Errorf("%q left its right-hand side in the module's block: %#v", def, calls)
+		}
+		if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.g") {
+			t.Errorf("%q left its own definition head in the module's block, read as a call: %#v", def, calls)
+		}
+	}
+}
+
+func TestJuliaLongFormSignatureIsNotTheModuleBody(t *testing.T) {
+	// A multi-line definition's body lines are blanked from the module's block
+	// but its HEAD line is deliberately kept, and only `function NAME` was masked
+	// there. Julia writes default values in the signature, so `function f(x =
+	// helper(1))` left `(x = helper(1))` behind and the module was credited with
+	// calling helper beside the real `M.f -> M.helper` edge.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/M.jl", `module M
+function helper(y); y; end
+function f(x = helper(1))
+    return x
+end
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	calls := relationsOfType(snapshot.Relations, "CALLS")
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M.f", "M.helper") {
+		t.Errorf("the definition lost the call in its own signature: %#v", calls)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.helper") {
+		t.Errorf("a default argument in a definition's signature was credited to the module: %#v", calls)
+	}
+}
+
 func TestJuliaOperatorsEndingInEqualsAreNotShortFormDefinitions(t *testing.T) {
 	// Julia spells many operators with a trailing `=` -- `>=`, `<=`, `!=`, the
 	// update operators -- and `=>` builds a Pair. Requiring only that the `=` not

@@ -2356,61 +2356,141 @@ func juliaMaskDefinitionHeads(block string, names []string) string {
 			continue
 		}
 		quoted := regexp.QuoteMeta(name)
-		for _, pattern := range []string{
-			`\bfunction\s+` + quoted + `\b`,
-			// A macro definition head reads as a call: `macro mymac(x)`
-			// contains `mymac(x)`. Unmasked, the module was credited with
-			// calling its own macro.
-			`\bmacro\s+` + quoted + `\b`,
-			// Short form, masked THROUGH ITS RIGHT-HAND SIDE. `f() = helper()`
-			// occupies one line, so no body line is blanked for it, and masking
-			// only the head left `helper()` in the module's block -- crediting
-			// the module with every call the child's body makes.
-			//
-			// Anything but `=`, `;` or a newline may sit between the argument
-			// list and the `=`, because Julia writes a return type or a
-			// constraint there: `f(x)::Int = ...` and `f(x) where T = ...` are
-			// both definitions, and requiring `=` to follow the parenthesis
-			// immediately left them in the module's block.
-			//
-			// The mask stops at `;` as well as at the line end, because that is
-			// where the definition stops: `module M; setup() = 1; setup(); end`
-			// puts a real module-level call after the semicolon, and running to
-			// the line end would swallow it.
-			//
-			// The `=` must be an ASSIGNMENT, which is not the same as "not
-			// followed by another `=`". Julia spells many operators with a
-			// trailing `=` -- `>=`, `<=`, `!=`, `~=`, and every update operator
-			// (`+=`, `*=`, ...) -- and `=>` is the Pair constructor. Excluding
-			// only a following `=` caught `f(2) == 3` but still masked
-			// `f(2) >= 3` and `f(2) => v` as definitions, silently dropping the
-			// real module-to-`f` edge in each. RE2 has no lookaround, so the
-			// character on EITHER side of the `=` has to prove itself: the one
-			// before it may not be an operator character, and the one after it
-			// may be neither `=` nor `>`.
-			// Go's regexp is RE2 and has no lookahead, so "not followed by
-			// another `=`" cannot be asserted directly. Making the suffix
-			// OPTIONAL was the bug: it let the match end right after the first
-			// `=` of `==`, which is exactly the case the guard was for, and a
-			// genuine module-scope `f(2) == 3` was masked away with the real
-			// `M -> M.f` edge in it. Requiring the suffix makes the next
-			// character prove itself.
-			`\b` + quoted + `\s*\([^()]*\)(?:[^=;\n]*[^=;\n<>!~+\-*/\\^%&|])?=[^=;\n>][^;\n]*`,
+		// Long form. The mask runs from the keyword THROUGH the argument list,
+		// not just through the name: Julia writes default values in the
+		// signature, and `function f(x = helper())` left `(x = helper())` on the
+		// head line -- the one line of a multi-line definition the module's block
+		// deliberately keeps -- so the module was credited with calling helper
+		// alongside the real `M.f -> M.helper` edge.
+		block = juliaMaskDefinitionAt(block, regexp.MustCompile(`\b(?:function|macro)\s+`+quoted+`\b`), nil)
+		// Short form, masked THROUGH ITS RIGHT-HAND SIDE. `f() = helper()`
+		// occupies one line, so no body line is blanked for it, and masking
+		// only the head left `helper()` in the module's block -- crediting
+		// the module with every call the child's body makes.
+		//
+		// Anything but `=`, `;` or a newline may sit between the argument
+		// list and the `=`, because Julia writes a return type or a
+		// constraint there: `f(x)::Int = ...` and `f(x) where T = ...` are
+		// both definitions, and requiring `=` to follow the parenthesis
+		// immediately left them in the module's block.
+		//
+		// The mask stops at `;` as well as at the line end, because that is
+		// where the definition stops: `module M; setup() = 1; setup(); end`
+		// puts a real module-level call after the semicolon, and running to
+		// the line end would swallow it.
+		//
+		// The `=` must be an ASSIGNMENT, which is not the same as "not
+		// followed by another `=`". Julia spells many operators with a
+		// trailing `=` -- `>=`, `<=`, `!=`, `~=`, and every update operator
+		// (`+=`, `*=`, ...) -- and `=>` is the Pair constructor. Excluding
+		// only a following `=` caught `f(2) == 3` but still masked
+		// `f(2) >= 3` and `f(2) => v` as definitions, silently dropping the
+		// real module-to-`f` edge in each. RE2 has no lookaround, so the
+		// character on EITHER side of the `=` has to prove itself: the one
+		// before it may not be an operator character, and the one after it
+		// may be neither `=` nor `>`. Making that suffix OPTIONAL was the
+		// earlier bug: the match could end right after the first `=` of `==`,
+		// which is exactly the case the guard was for.
+		//
+		// No PARENTHESIS may sit between the argument list and the `=` either.
+		// A return type or a `where` clause never closes one, but a default
+		// value does: in `g(x = other(1)) = other(x)` the inner `other(1)` is
+		// followed by `) = `, and reading that as a short-form head masked the
+		// line from the default value onwards -- destroying `g`'s own argument
+		// list before the mask for `g` could balance it.
+		reference := regexp.MustCompile(`\b` + quoted + `\b`)
+		for _, tail := range []*regexp.Regexp{
+			regexp.MustCompile(`(?:[^=;()\n]*[^=;()\n<>!~+\-*/\\^%&|])?=[^=;\n>][^;\n]*`),
 			// A short form may also put its body on the NEXT line
 			// (`f(x) =` then an indented body), which the required suffix above
 			// cannot match. `(?m)$` is zero-width, so the newline survives and
 			// line numbering is unchanged; only spaces or tabs may sit between,
 			// so this still cannot reach the second `=` of `==`.
-			`(?m)\b` + quoted + `\s*\([^()]*\)(?:[^=;\n]*[^=;\n<>!~+\-*/\\^%&|])?=[ \t]*$`,
+			regexp.MustCompile(`(?m)(?:[^=;()\n]*[^=;()\n<>!~+\-*/\\^%&|])?=[ \t]*$`),
 		} {
-			re, err := regexp.Compile(pattern)
-			if err != nil {
-				continue
-			}
-			block = replacePatternSameLength(block, re, "")
+			block = juliaMaskDefinitionAt(block, reference, tail)
 		}
 	}
 	return block
+}
+
+// juliaMaskDefinitionAt blanks every definition that opens with `head`, running
+// from the head through its BALANCED argument list and then through `tail` when
+// one is given (the right-hand side of a short form). A head whose argument list
+// does not balance on its line, or whose tail does not match immediately after
+// it, is left alone -- it is a call, not a definition.
+//
+// Balancing is what the old `\([^()]*\)` could not do. Julia puts expressions in
+// a signature -- `f(x = g()) = helper()`, `f(x = (1, 2)) = helper()` -- and a
+// pattern that stopped at the first `)` did not match those definitions at all,
+// so the module's block kept the whole line: the head read as a call to the
+// child, and the right-hand side's calls were credited to the module as well.
+//
+// Offsets are found on a copy whose string and comment bodies are blanked, so a
+// parenthesis inside `"f(x) = 1"` neither opens an argument list nor balances
+// one; the strippers preserve length, so an offset found there indexes the same
+// byte in the original. The copy is taken per call because earlier masks have
+// already blanked their own spans.
+func juliaMaskDefinitionAt(block string, head *regexp.Regexp, tail *regexp.Regexp) string {
+	scan := maskJuliaBlockComments(stripCodeLiteralsAndComments(block))
+	cursor := 0
+	for cursor < len(scan) {
+		where := head.FindStringIndex(scan[cursor:])
+		if where == nil {
+			return block
+		}
+		from, nameEnd := cursor+where[0], cursor+where[1]
+		cursor = nameEnd
+		stop := juliaArgumentListEnd(scan, nameEnd)
+		if stop < 0 {
+			if tail != nil {
+				// A short form without an argument list is not a definition
+				// this mask recognises; `NAME` alone is just a reference.
+				continue
+			}
+			// `function f end` declares an empty generic function: no argument
+			// list to mask, but the head still must not read as a call.
+			stop = nameEnd
+		}
+		if tail != nil {
+			match := tail.FindStringIndex(scan[stop:])
+			if match == nil || match[0] != 0 {
+				continue
+			}
+			stop += match[1]
+		}
+		block = maskRangeKeepingNewlines(block, from, stop)
+		scan = maskRangeKeepingNewlines(scan, from, stop)
+		cursor = stop
+	}
+	return block
+}
+
+// juliaArgumentListEnd returns the offset just past the balanced argument list
+// opening at or after `from` on the same line, or -1 when none opens there.
+func juliaArgumentListEnd(scan string, from int) int {
+	cursor := from
+	for cursor < len(scan) && (scan[cursor] == ' ' || scan[cursor] == '\t') {
+		cursor++
+	}
+	if cursor >= len(scan) || scan[cursor] != '(' {
+		return -1
+	}
+	depth := 0
+	for ; cursor < len(scan); cursor++ {
+		switch scan[cursor] {
+		case '\n':
+			return -1
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return cursor + 1
+			}
+		}
+	}
+	return -1
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, juliaModuleScopeByID map[string]juliaModuleScope, allowMethodTargets bool) []resolvedCallTarget {
