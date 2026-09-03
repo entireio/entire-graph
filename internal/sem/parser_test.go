@@ -3527,3 +3527,39 @@ func TestAnonymousAggregateMembersAreScopedToTheirInstance(t *testing.T) {
 		}
 	}
 }
+
+// TestConversionOperatorWithAPlainTargetKeepsItsName pins the width of the mask's
+// stand-in identifier.
+//
+// `operator T()` is rewritten before tree-sitter sees it, and a symbol's name is later
+// sliced from the UNMASKED content at the node's byte range. The stand-in therefore has
+// to be as wide as the operator's OWN NAME, not merely leave the whole match the same
+// width: `convert` is seven characters and `operator int` is twelve, so the slice read
+// back the first seven bytes and the member was named `operato`. Every plain-target
+// conversion operator in a repository collapsed onto that one symbol -- one name, one id
+// -- while pointer and decltype targets, which this pattern does not match, named
+// correctly, which is what made it look like a naming bug rather than a masking one.
+func TestConversionOperatorWithAPlainTargetKeepsItsName(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		source string
+		want   string
+	}{
+		{"struct S {\n  operator int() { return 0; }\n};\n", "S.operator int"},
+		{"struct S {\n  operator bool() { return true; }\n};\n", "S.operator bool"},
+		{"struct S {\n  operator MyType() { return {}; }\n};\n", "S.operator MyType"},
+	} {
+		entities, _, _ := TreeSitterParser{}.ParseWithStatus("conv.cpp", testCase.source)
+		names := map[string]bool{}
+		for _, entity := range entities {
+			names[entity.Name] = true
+		}
+		if !names[testCase.want] {
+			t.Errorf("conversion operator %q not extracted; got %v", testCase.want, names)
+		}
+		if names["S.operato"] {
+			t.Errorf("the name was sliced short again: %v", names)
+		}
+	}
+}
