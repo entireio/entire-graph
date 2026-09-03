@@ -877,6 +877,171 @@ func TestFSharpTripleQuotedStringDoesNotStrandTheMasker(t *testing.T) {
 	}
 }
 
+// TestFSharpLiteralFormsTheGenericStripperDoesNotModel pins that the F# call
+// scanners read F#'s own literal forms, not the generic thirty-language ones.
+//
+// The scanners masked their input with stripCodeLiteralsAndComments, which
+// knows one string form: quote, backslash escapes, ends at the closing quote or
+// the line break. F# has three more, and each one broke a different way.
+//
+// A TRIPLE-QUOTED string is raw: it ends only at the next `"""`, and the
+// unescaped quotes it exists to hold are content. Pairing quotes two at a time
+// ended it at the first internal one and left the rest of the literal standing
+// as code, so `let s = """a " x |> helper """` fabricated a CALLS edge to
+// `helper` -- a function the file never calls.
+//
+// A VERBATIM string spells an escaped quote `""` and takes no backslash escape,
+// so a backslash in front of one (`@"a\"" |> helper"`) was consumed as an escape
+// that is not there, shifting the pairing by one quote and exposing the tail of
+// the literal the same way.
+//
+// Both of those forms, and F#'s ordinary strings, may SPAN NEWLINES. The generic
+// stripper abandons a string at the first line break, so everything a multi-line
+// literal covered below its opening line was read as code.
+//
+// And the apostrophe is not only a character literal in F#: it opens a generic
+// type parameter (`'T`) and may end an identifier (`f'`). Treating the first one
+// as a literal opener closed it on the next apostrophe on the line and blanked
+// the real code between them, so `let run (xs: 'T list) = xs |> other 'a'` lost
+// its call to `other` altogether.
+func TestFSharpLiteralFormsTheGenericStripperDoesNotModel(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+		want       []string
+	}{
+		// The four reproduced defects.
+		{
+			"an unescaped quote inside a triple-quoted string",
+			"let s = \"\"\"a \" x |> helper \"\"\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a triple-quoted string spanning newlines",
+			"let sql = \"\"\"\nselect x |> helper\n\"\"\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a verbatim string spanning newlines",
+			"let m = @\"a\nb |> helper\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a backslash before an escaped quote in a verbatim string",
+			"let m = @\"a\\\"\" |> helper\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		// The same defect deleting a real call rather than inventing one: `'T`
+		// is a type parameter, and the literal it opened swallowed the pipeline
+		// up to the next apostrophe.
+		{
+			"a generic type parameter before a character literal",
+			"let run (xs: 'T list) = xs |> other 'a'\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		// The dotted scanner shares the masker and the defect.
+		{
+			"a dotted call inside a triple-quoted string",
+			"let s = \"\"\"a \" A.helper(x) \"\"\"\nlet run v = B.other(v)\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		// Guards. These forms were already read correctly and must stay so: a
+		// plain raw string, a verbatim string with a proper `""` escape, a
+		// quote character literal, a line comment, and a primed identifier.
+		{
+			"a pipe inside a plain triple-quoted string",
+			"let s = \"\"\"x |> helper\"\"\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a pipe inside a verbatim string with an escaped quote",
+			"let m = @\"a\"\" |> helper\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a quote character literal",
+			"let c = '\"'\nlet s = \"x |> helper\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a pipe in a line comment",
+			"// x |> helper\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a primed identifier",
+			"let run' v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			// The production composition order: the masker sees raw source, and
+			// the scanners mask literals themselves afterwards.
+			targets := fsharpCallTargetNames(fsharpCallTargets(maskFSharpBlockComments(testCase.source)))
+			for _, invented := range testCase.fabricated {
+				if _, ok := targets[invented]; ok {
+					t.Errorf("a call inside a literal, %q, was scanned as a real one: %v", invented, targets)
+				}
+			}
+			for _, real := range testCase.want {
+				if _, ok := targets[real]; !ok {
+					t.Errorf("the real call %q was blanked away with the literal: %v", real, targets)
+				}
+			}
+		})
+	}
+}
+
+// TestFSharpLiteralFormsCorruptTheCallGraph is the same defect at the graph
+// level: the fabricated edge and the deleted one both reach CALLS.
+func TestFSharpLiteralFormsCorruptTheCallGraph(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", "module A\n"+
+		"\n"+
+		"let helper (value: int) = value + 1\n"+
+		"\n"+
+		"let other (value: int) = value * 2\n"+
+		"\n"+
+		"let raw (v: int) =\n"+
+		"    let doc = \"\"\"a \" v |> helper \"\"\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let spanning (v: int) =\n"+
+		"    let sql = \"\"\"\n"+
+		"select v |> helper\n"+
+		"\"\"\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let verbatim (v: int) =\n"+
+		"    let m = @\"a\\\"\" |> helper\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let generic (xs: 'T list) =\n"+
+		"    xs |> other 'a'\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caller := range []string{"raw", "spanning", "verbatim"} {
+		if hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "helper") {
+			t.Errorf("fabricated CALLS %s->helper from a pipeline inside a string literal: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+	// `'T` is a generic type parameter, not a character literal: reading it as
+	// one blanked the pipeline between it and the `'a'` that follows.
+	for _, caller := range []string{"raw", "spanning", "verbatim", "generic"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "other") {
+			t.Errorf("missing CALLS %s->other; a literal mask ate a real pipeline: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
 // TestFSharpStrandedMaskerCorruptsTheCallGraph is the same defect at the graph
 // level: the fabricated edge and the deleted one both reach CALLS.
 func TestFSharpStrandedMaskerCorruptsTheCallGraph(t *testing.T) {
@@ -946,6 +1111,20 @@ func TestLiteralMaskersPreserveLengthAndLineStructure(t *testing.T) {
 		"\"\"",
 		"let e = \"\"\nlet run v = v |> other\n",
 		"let unterminated = \"abc\n(* v |> helper\n",
+		// The forms the F# literal masker blanks rather than merely skipping:
+		// every one of them is a place a byte could go missing.
+		"let s = \"\"\"a \" x |> helper \"\"\"\nlet run v = v |> other\n",
+		"let sql = \"\"\"\nselect x |> helper\n\"\"\"\nlet run v = v |> other\n",
+		"let m = @\"a\nb |> helper\"\nlet run v = v |> other\n",
+		"let m = @\"a\\\"\" |> helper\"\nlet run v = v |> other\n",
+		"let run (xs: 'T list) = xs |> other 'a'\n",
+		"let c = '\"'\nlet s = \"x |> helper\"\nlet run v = v |> other\n",
+		"// x |> helper\r\nlet run' v = v |> other\r\n",
+		// A lone `\r` inside a block comment: the comment branch used to blank
+		// every byte that was not `\n`, which moved the break on a CRLF file.
+		"let run v =\r\n    (* v |> helper\r\n       more *)\r\n    v |> other\r\n",
+		"@\"",
+		"@",
 		"let trailing = '",
 		"let escape = '\\''\nlet run v = v |> other\n",
 		"x = \"a\" // b\nfunction f() { /* c */ return `t`; }\n\r\n",
@@ -956,8 +1135,9 @@ func TestLiteralMaskersPreserveLengthAndLineStructure(t *testing.T) {
 	}
 	for _, source := range sources {
 		for name, mask := range map[string]func(string) string{
-			"maskFSharpBlockComments":      maskFSharpBlockComments,
-			"stripCodeLiteralsAndComments": stripCodeLiteralsAndComments,
+			"maskFSharpBlockComments":           maskFSharpBlockComments,
+			"maskFSharpLiteralsAndLineComments": maskFSharpLiteralsAndLineComments,
+			"stripCodeLiteralsAndComments":      stripCodeLiteralsAndComments,
 		} {
 			got := mask(source)
 			if len(got) != len(source) {

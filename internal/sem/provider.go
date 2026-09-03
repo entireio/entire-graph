@@ -20055,13 +20055,53 @@ func maskFSharpBlockComments(text string) string {
 	if !strings.Contains(text, "(*") {
 		return text
 	}
+	return maskFSharpSource(text, true, false)
+}
+
+// maskFSharpLiteralsAndLineComments blanks F# STRING and CHARACTER literal
+// bodies and `//` line comments, preserving length and line structure.
+//
+// The F# call scanners used stripCodeLiteralsAndComments, which is shared by
+// thirty-odd languages and models none of F#'s literal forms. A triple-quoted
+// string is raw -- it ends only at the next `"""` -- but the generic stripper
+// pairs quotes two at a time, so `let s = """a " x |> helper """` left
+// `x |> helper` standing as code and the pipeline scanner emitted a CALLS edge
+// to a function the file never calls. The same held for anything a verbatim or
+// triple-quoted literal spanned a newline to reach, because the generic
+// stripper abandons a string at the first line break, and for `""` preceded by
+// a backslash, which it consumed as an escape a verbatim string does not have.
+// It went wrong in the other direction too: F# spells a generic type parameter
+// with the same apostrophe as a character literal, so `'T` opened a literal
+// that closed on the next `'` on the line and blanked the real pipeline between
+// them -- `let run (xs: 'T list) = xs |> other 'a'` lost its call to `other`.
+//
+// The state machine that already reads these forms correctly is the block
+// comment masker's, so it is shared rather than reimplemented. Only literals
+// are blanked here: `(* ... *)` is left exactly as it was, because in
+// production this runs on a block that maskFSharpBlockComments has already
+// masked, and on raw input the pipeline scanner deliberately matches its dotted
+// sibling instead of diverging from it.
+func maskFSharpLiteralsAndLineComments(text string) string {
+	return maskFSharpSource(text, false, true)
+}
+
+// maskFSharpSource walks F# source once, tracking the block comment depth and
+// the literal it is inside, and blanks whichever of the two the caller asked
+// for. Blanking is always length- and line-preserving.
+func maskFSharpSource(text string, blankComments, blankLiterals bool) string {
 	out := []byte(text)
+	blank := func(from, to int) {
+		if blankLiterals {
+			maskBytes(out, from, to)
+		}
+	}
 	depth := 0
 	inString := false
 	verbatim := false
 	triple := false
 	for i := 0; i < len(out); i++ {
 		if inString {
+			start := i
 			switch {
 			case triple:
 				// A TRIPLE-QUOTED string is raw and ends only at the next
@@ -20081,10 +20121,12 @@ func maskFSharpBlockComments(text string) string {
 			case out[i] == '"':
 				if verbatim && i+1 < len(out) && out[i+1] == '"' {
 					i++ // "" is one escaped quote inside a verbatim string
+					blank(start, i+1)
 					continue
 				}
 				inString, verbatim = false, false
 			}
+			blank(start, i+1)
 			continue
 		}
 		switch {
@@ -20094,25 +20136,30 @@ func maskFSharpBlockComments(text string) string {
 			// quote as a string opener left the scan stuck inside a string for
 			// the rest of the block, so a `(* xs |> helper *)` below it was
 			// never masked and the pipeline scanner emitted a CALLS edge to a
-			// function the code does not call. The generic stripper blanks
-			// these later; this pass only has to stop misreading them.
+			// function the code does not call.
+			start := i
 			for i+1 < len(out) && out[i+1] != '\n' {
 				i++
 			}
+			blank(start, i+1)
 		case depth == 0 && out[i] == '\'':
 			// A CHARACTER LITERAL is one token: the quote in `'"'` opens
 			// nothing. Reading it as a string opener stranded the scan the same
 			// way a line comment did. F# spells generic type parameters with
 			// the same leading apostrophe (`'T`, `'a`) and allows a trailing
 			// one in identifiers (`f'`), so only a well-formed literal is
-			// consumed and anything else is left exactly as before.
+			// consumed and anything else is left exactly as before -- blanking
+			// a `'T` and everything up to the next apostrophe is how the
+			// generic stripper deleted real calls.
 			if end := fsharpCharLiteralEnd(out, i); end > i {
+				blank(i, end+1)
 				i = end
 			}
 		case depth == 0 && out[i] == '"':
 			// A STRING is not code. `let marker = "(*"` used to open a comment
 			// that never closed, and the rest of the block -- every real
 			// pipeline in it -- was blanked away, dropping those calls silently.
+			start := i
 			inString = true
 			verbatim = i > 0 && out[i-1] == '@'
 			// `@"""x"""` is a VERBATIM string whose `""` are escaped
@@ -20122,16 +20169,30 @@ func maskFSharpBlockComments(text string) string {
 				triple = true
 				i += 2
 			}
+			if verbatim {
+				// The `@` belongs to the literal, not to the code around it.
+				blank(start-1, start)
+			}
+			blank(start, i+1)
 		case i+1 < len(out) && out[i] == '(' && out[i+1] == '*':
 			depth++
-			out[i], out[i+1] = ' ', ' '
+			if blankComments {
+				out[i], out[i+1] = ' ', ' '
+			}
 			i++
 		case depth > 0 && i+1 < len(out) && out[i] == '*' && out[i+1] == ')':
 			depth--
-			out[i], out[i+1] = ' ', ' '
+			if blankComments {
+				out[i], out[i+1] = ' ', ' '
+			}
 			i++
-		case depth > 0 && out[i] != '\n':
-			out[i] = ' '
+		case depth > 0 && blankComments:
+			// The line structure is load-bearing: callers index the masked copy
+			// at offsets they read from the original, and entity line numbers
+			// are counted in it. maskBytes leaves BOTH break bytes alone --
+			// blanking a lone `\r` inside a comment, which this branch used to
+			// do, breaks that invariant on a CRLF file.
+			maskBytes(out, i, i+1)
 		}
 	}
 	return string(out)

@@ -237,7 +237,7 @@ func fsharpDottedCallIdentifiers(content string) map[string]struct{} {
 // reducing `A.convert` to `convert` before matching lets the call bind to any
 // same-named definition in the file.
 func fsharpDottedCallTargets(content string) map[string]struct{} {
-	stripped := stripCodeLiteralsAndComments(content)
+	stripped := maskFSharpLiteralsAndLineComments(content)
 	out := map[string]struct{}{}
 	for _, match := range fsharpDottedCallRe.FindAllStringSubmatch(stripped, -1) {
 		if len(match) < 2 {
@@ -306,7 +306,7 @@ func fsharpPipelineCallIdentifiers(content string) map[string]struct{} {
 // fsharpPipelineCallTargets returns the piped call targets as written, keeping
 // the module qualifier of `xs |> A.convert` for resolution to hold the call to.
 func fsharpPipelineCallTargets(content string) map[string]struct{} {
-	stripped := stripCodeLiteralsAndComments(content)
+	stripped := maskFSharpLiteralsAndLineComments(content)
 	out := map[string]struct{}{}
 	for _, match := range fsharpPipelineCallRe.FindAllStringSubmatchIndex(stripped, -1) {
 		if len(match) < 4 || match[2] < 0 {
