@@ -827,6 +827,56 @@ func TestFSharpQuoteThatIsNotAStringDoesNotStrandTheMasker(t *testing.T) {
 	}
 }
 
+// TestFSharpTripleQuotedStringDoesNotStrandTheMasker pins that a `"""..."""`
+// string is read as ONE literal.
+//
+// A triple-quoted string is F#'s raw form: it exists precisely to hold
+// unescaped quotes, and it ends only at the next `"""`. The masker ended it at
+// the first internal quote, so the remainder of the literal was read as code --
+// `let doc = """a " (* b"""` opened a block comment that never closed, and every
+// genuine pipeline after it in the block was blanked away and its CALLS edge
+// silently lost.
+func TestFSharpTripleQuotedStringDoesNotStrandTheMasker(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+	}{
+		// The defect: an internal quote ends the literal early and the `(*`
+		// behind it swallows the rest of the block.
+		{"an unescaped quote inside a triple-quoted string", "let run v =\n    let doc = \"\"\"a \" (* b\"\"\"\n    v |> other\n", nil},
+		// A `(*` inside the literal is text, not a comment opener.
+		{"a comment opener inside a triple-quoted string", "let doc = \"\"\"(*\"\"\"\nlet run v =\n    v |> other\n", nil},
+		// ... and a `*)` inside one must not close a comment that is open.
+		{"a triple-quoted string after a real comment", "let run v =\n    (* v |> helper *)\n    let doc = \"\"\"x\"\"\"\n    v |> other\n", []string{"helper"}},
+		// A backslash is NOT an escape in a raw string, so it cannot consume
+		// the quote that ends it.
+		{"a backslash before the closing quotes", "let doc = \"\"\"a\\\"\"\"\nlet run v =\n    v |> other\n", nil},
+		// Guards. An empty ordinary string is two quotes, not the start of a
+		// raw one, and `@"""x"""` is a VERBATIM string whose `""` are escaped
+		// quotes -- reading either as triple-quoted would swallow the code
+		// after it.
+		{"an empty string is not a triple-quoted opener", "let e = \"\"\nlet run v =\n    v |> other\n", nil},
+		{"a verbatim string is not a triple-quoted one", "let m = @\"\"\"a\"\"\"\nlet run v =\n    v |> other\n", nil},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			// The production composition order: the masker sees raw source.
+			targets := fsharpCallTargets(maskFSharpBlockComments(testCase.source))
+			for _, commented := range testCase.fabricated {
+				if _, ok := targets[commented]; ok {
+					t.Errorf("a commented call %q was scanned as a real one: %v", commented, targets)
+				}
+			}
+			if _, ok := targets["other"]; !ok {
+				t.Fatalf("the real pipeline call was masked away: %v", targets)
+			}
+		})
+	}
+}
+
 // TestFSharpStrandedMaskerCorruptsTheCallGraph is the same defect at the graph
 // level: the fabricated edge and the deleted one both reach CALLS.
 func TestFSharpStrandedMaskerCorruptsTheCallGraph(t *testing.T) {
@@ -847,6 +897,10 @@ let dropped (v: int) =
     let quote = '"'
     let s = "(*"
     v |> other
+
+let raw (v: int) =
+    let doc = """a " (* b"""
+    v |> other
 `)
 
 	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
@@ -861,6 +915,11 @@ let dropped (v: int) =
 	}
 	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "dropped", "other") {
 		t.Errorf("missing CALLS dropped->other; the masker blanked a real pipeline: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	// A triple-quoted string is raw: it holds unescaped quotes, and ending it at
+	// the first one left `(*` reading as a comment opener that never closed.
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "raw", "other") {
+		t.Errorf("missing CALLS raw->other; a quote inside a triple-quoted string ended it early: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 	}
 }
 
@@ -881,6 +940,11 @@ func TestLiteralMaskersPreserveLengthAndLineStructure(t *testing.T) {
 		"let run v =\n    // the marker is a \" character\n    (* v |> helper *)\n    v |> other\n",
 		"let quote = '\"'\nlet s = \"(*\"\nlet run v = v |> other\n",
 		"let m = @\"a\"\"b(*\"\nlet run v = v |> other\n",
+		"let doc = \"\"\"a \" (* b\"\"\"\nlet run v = v |> other\n",
+		"let unterminated = \"\"\"abc\n(* v |> helper\n",
+		"\"\"\"",
+		"\"\"",
+		"let e = \"\"\nlet run v = v |> other\n",
 		"let unterminated = \"abc\n(* v |> helper\n",
 		"let trailing = '",
 		"let escape = '\\''\nlet run v = v |> other\n",

@@ -19946,9 +19946,21 @@ func maskFSharpBlockComments(text string) string {
 	depth := 0
 	inString := false
 	verbatim := false
+	triple := false
 	for i := 0; i < len(out); i++ {
 		if inString {
 			switch {
+			case triple:
+				// A TRIPLE-QUOTED string is raw and ends only at the next
+				// `"""`, so the unescaped quotes it exists to hold are
+				// ordinary content. Ending it at the first one left the rest
+				// of the literal being read as code: `"""a " (* b"""`
+				// opened a block comment that never closed, and every genuine
+				// pipeline after it was blanked away.
+				if out[i] == '"' && i+2 < len(out) && out[i+1] == '"' && out[i+2] == '"' {
+					i += 2
+					inString, triple = false, false
+				}
 			case !verbatim && out[i] == '\\' && i+1 < len(out):
 				// An escape consumes the next byte, so a `\"` does not end the
 				// string and expose the code after it to the comment scanner.
@@ -19990,6 +20002,13 @@ func maskFSharpBlockComments(text string) string {
 			// pipeline in it -- was blanked away, dropping those calls silently.
 			inString = true
 			verbatim = i > 0 && out[i-1] == '@'
+			// `@"""x"""` is a VERBATIM string whose `""` are escaped
+			// quotes, not a triple-quoted one, so the `@` is read first and
+			// only an unprefixed `"""` opens the raw form.
+			if !verbatim && i+2 < len(out) && out[i+1] == '"' && out[i+2] == '"' {
+				triple = true
+				i += 2
+			}
 		case i+1 < len(out) && out[i] == '(' && out[i+1] == '*':
 			depth++
 			out[i], out[i+1] = ' ', ' '
