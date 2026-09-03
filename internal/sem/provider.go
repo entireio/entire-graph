@@ -2028,6 +2028,104 @@ func juliaMaskSiblingDefinitionHeads(from SymbolRecord, block string, fileSymbol
 	return juliaMaskDefinitionHeads(block, names)
 }
 
+// juliaMaskGeneratorClauses blanks the `for` of a comprehension or generator --
+// and the `if` filter that may follow it -- because Julia closes those with the
+// BRACKET they sit in, never with `end`.
+//
+// The block-token scans read every `for` as an `end`-delimited opener, so
+// `[g(i) for i in xs]` and `sum(g(i) for i in xs)` each raised the synthetic
+// depth by a block that never closes. The `end` that really closed the
+// definition was then spent rebalancing, the scan ran past it, and trailing
+// module-level code stayed attributed to the definition -- `function f();
+// sum(x for x in xs); end; setup()` kept `setup()` inside f and lost it from the
+// module -- or was masked away with the definition entirely.
+//
+// A `for` belongs to a generator when the innermost construct still open at that
+// point is a BRACKET rather than a block. That distinction is what keeps a
+// genuine loop written inside an argument counted: in
+// `f(map(xs) do x; for i in ys; g(i); end; end)` the innermost open construct at
+// the `for` is the `do` block, not the paren, so it stays an opener.
+//
+// The comprehension's `if` filter is masked only once a generator `for` has been
+// seen in the SAME bracket, so an `if` EXPRESSION passed as an argument --
+// `f(if c; 1; else; 2; end)`, which really does close with `end` -- keeps its
+// depth.
+//
+// An `end` reached with a bracket innermost is an index -- `xs[end]`, the last
+// element -- and not a terminator, so it is blanked too rather than allowed to
+// close a block that is still open. Comprehensions index that way constantly
+// (`sum(xs[end] for x in xs)`), so the generator fix is only whole with it.
+//
+// Masked keywords become spaces, preserving length, so an offset found by a
+// caller still indexes the same byte in the original.
+func juliaMaskGeneratorClauses(scan string) string {
+	out := []byte(scan)
+	// Each frame is one open construct: a bracket, or a block awaiting `end`.
+	type frame struct {
+		bracket   bool
+		generator bool
+	}
+	var stack []frame
+	for _, at := range juliaScanTokens.FindAllStringIndex(scan, -1) {
+		switch token := scan[at[0]:at[1]]; token {
+		case "(", "[", "{":
+			stack = append(stack, frame{bracket: true})
+		case ")", "]", "}":
+			// Pop through any block frames left unclosed inside the bracket
+			// rather than trusting them to balance.
+			for len(stack) > 0 {
+				top := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				if top.bracket {
+					break
+				}
+			}
+		case "end":
+			if len(stack) == 0 || !stack[len(stack)-1].bracket {
+				// A real terminator: it closes the innermost block, and when
+				// nothing is open the scan began inside a block whose opener
+				// this text does not hold, so it is left for the caller's depth.
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+				continue
+			}
+			// An index, not a terminator.
+			for i := at[0]; i < at[1]; i++ {
+				out[i] = ' '
+			}
+		case "for", "if":
+			if len(stack) > 0 && stack[len(stack)-1].bracket &&
+				(token == "for" || stack[len(stack)-1].generator) {
+				stack[len(stack)-1].generator = true
+				for i := at[0]; i < at[1]; i++ {
+					out[i] = ' '
+				}
+				continue
+			}
+			stack = append(stack, frame{})
+		default:
+			stack = append(stack, frame{})
+		}
+	}
+	return string(out)
+}
+
+// juliaScanTokens matches everything juliaMaskGeneratorClauses has to track: the
+// block openers, `end`, and the brackets that tell a generator's `for` from a
+// loop's.
+var juliaScanTokens = regexp.MustCompile(
+	`\b(?:function|if|for|while|begin|let|do|try|quote|struct|module|macro|end)\b|[\[\](){}]`)
+
+// juliaBlockScanText is the copy the block-depth scans read: string and comment
+// bodies blanked so an `end` inside either terminates nothing, and generator
+// clauses blanked so a `for` that no `end` closes does not open a block. Every
+// step preserves length, so an offset found in the result indexes the same byte
+// in the original.
+func juliaBlockScanText(text string) string {
+	return juliaMaskGeneratorClauses(maskJuliaBlockComments(stripCodeLiteralsAndComments(text)))
+}
+
 // juliaBlankAfterClosingEnd is the counterpart to juliaBlankThroughClosingEnd,
 // applied to a definition's OWN block: it blanks whatever follows the `end`
 // that closes the definition on its last line.
@@ -2045,7 +2143,7 @@ func juliaBlankAfterClosingEnd(block string) string {
 	// The whole block is scanned, not just its last line: the `end` that closes
 	// the definition returns the scan to depth zero, and only a scan that has
 	// seen the opening `function` knows where that is.
-	scan := maskJuliaBlockComments(stripCodeLiteralsAndComments(block))
+	scan := juliaBlockScanText(block)
 	openers := regexp.MustCompile(`\b(function|if|for|while|begin|let|do|try|quote|struct|module|macro)\b`)
 	end := regexp.MustCompile(`\bend\b`)
 	depth, cursor := 0, 0
@@ -2109,7 +2207,7 @@ func juliaBlankAfterClosingEnd(block string) string {
 // strippers preserve length, so an offset found here indexes the same byte in
 // the original.
 func juliaBlankThroughClosingEnd(line string, openDepth int) string {
-	scan := maskJuliaBlockComments(stripCodeLiteralsAndComments(line))
+	scan := juliaBlockScanText(line)
 	openers := regexp.MustCompile(`\b(function|if|for|while|begin|let|do|try|quote|struct|module|macro)\b`)
 	end := regexp.MustCompile(`\bend\b`)
 	depth := openDepth
@@ -2139,7 +2237,7 @@ func juliaBlankThroughClosingEnd(line string, openDepth int) string {
 // blanked copy as the scans it feeds, so an `end` inside a string or a comment
 // does not close anything.
 func juliaOpenBlockDepth(text string) int {
-	scan := maskJuliaBlockComments(stripCodeLiteralsAndComments(text))
+	scan := juliaBlockScanText(text)
 	openers := regexp.MustCompile(`\b(function|if|for|while|begin|let|do|try|quote|struct|module|macro)\b`)
 	end := regexp.MustCompile(`\bend\b`)
 	depth := 0
@@ -2291,7 +2389,7 @@ func juliaMaskLongFormDefinition(block, name string) string {
 	// one ended the mask early and left the rest of the definition -- every call
 	// in it -- attributed to the enclosing module. The stripper preserves length,
 	// so an offset found here indexes the same byte in the original.
-	scan := maskJuliaBlockComments(stripCodeLiteralsAndComments(block))
+	scan := juliaBlockScanText(block)
 	for {
 		where := head.FindStringIndex(scan)
 		if where == nil {

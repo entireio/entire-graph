@@ -12771,6 +12771,87 @@ end
 	}
 }
 
+func TestJuliaGeneratorForIsNotAnEndDelimitedOpener(t *testing.T) {
+	// Julia's comprehensions and generators put a `for` -- and optionally an `if`
+	// filter -- inside a bracket, and close it with that bracket, never with
+	// `end`. The block-depth scans counted every `for` as an `end`-delimited
+	// opener, so each generator raised the depth by a block that never closes:
+	// the `end` that really closed the definition was spent rebalancing, the scan
+	// ran past it, and `end; setup()` left a module-level call credited to the
+	// function instead of the module -- or masked away with the function.
+	for _, body := range []string{
+		"sum(x for x in xs)",
+		"[g(i) for i in 1:3]",
+		"[i for i in 1:9 if iseven(i)]",
+		"sum(xs[end] for x in xs)",
+		"Dict{Int,Int}(i => i for i in 1:3)",
+	} {
+		for _, src := range []string{
+			"module M\nfunction setup(); 1; end\nfunction f()\n    " + body + "\nend; setup()\nend\n",
+			"module M\nfunction setup(); 1; end\nfunction f(); " + body + "; end; setup()\nend\n",
+		} {
+			repo := t.TempDir()
+			writeFile(t, repo, "src/M.jl", src)
+			snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+			if err != nil {
+				t.Fatalf("build snapshot: %v", err)
+			}
+			calls := relationsOfType(snapshot.Relations, "CALLS")
+			if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "M", "M.setup") {
+				t.Errorf("%q: a generator `for` inflated the depth, so the module lost the call after the child's `end`: %#v", src, calls)
+			}
+			if hasRelationByLastSegment(snapshot.Relations, "CALLS", "M.f", "M.setup") {
+				t.Errorf("%q: module-level code after the child's `end` stayed in the child's own scan: %#v", src, calls)
+			}
+		}
+	}
+}
+
+func TestJuliaBlockOpenersInsideBracketsAreStillOpeners(t *testing.T) {
+	// The counterpart: a `for` or an `if` inside a bracket is only a generator's
+	// when the innermost construct still open is the BRACKET. A real loop written
+	// in an argument's `do` block, and an `if` EXPRESSION passed as an argument,
+	// both close with `end` and must keep their depth -- otherwise the scan
+	// under-counts and cuts the definition short instead.
+	for _, tc := range []struct{ in, want string }{
+		// generator clauses: closed by the bracket, so the definition's own
+		// `end` is the cut and `setup()` belongs to the enclosing scope.
+		{"function f(); sum(x for x in xs); end; setup()",
+			"function f(); sum(x for x in xs); end         "},
+		{"function f(); [i for i in 1:9 if iseven(i)]; end; setup()",
+			"function f(); [i for i in 1:9 if iseven(i)]; end         "},
+		// `end` as an index is not a terminator either.
+		{"function f(); sum(xs[end] for x in xs); end; setup()",
+			"function f(); sum(xs[end] for x in xs); end         "},
+		{"function f(); h(xs[begin:end]); end; setup()",
+			"function f(); h(xs[begin:end]); end         "},
+		// real blocks inside brackets, which DO close with `end`.
+		{"function f(); g(map(ys) do y; for i in 1:3; h(i); end; end); end; setup()",
+			"function f(); g(map(ys) do y; for i in 1:3; h(i); end; end); end         "},
+		{"function f(); g(if c; 1; else; 2; end); end; setup()",
+			"function f(); g(if c; 1; else; 2; end); end         "},
+	} {
+		if got := juliaBlankAfterClosingEnd(tc.in); got != tc.want {
+			t.Errorf("juliaBlankAfterClosingEnd(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+		}
+	}
+	// The depth a child's earlier lines leave open feeds the closing-end scan, so
+	// a generator there mis-sets the cut on the last line as surely as one on it.
+	for _, tc := range []struct {
+		in   string
+		want int
+	}{
+		{"function f()\n    sum(x for x in xs)", 1},
+		{"function f()\n    [i for i in 1:9 if iseven(i)]", 1},
+		{"function f()\n    map(ys) do y; g(y); end", 1},
+		{"function f()\n    g(map(ys) do y; for i in 1:3; h(i); end", 2},
+	} {
+		if got := juliaOpenBlockDepth(tc.in); got != tc.want {
+			t.Errorf("juliaOpenBlockDepth(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestJuliaModuleIsNotCreditedWithItsOwnMacros(t *testing.T) {
 	// A module's block spans its members' definition lines, and a macro's head
 	// reads as a call: `macro mymac(x)` contains `mymac(x)`. The module-own-block
