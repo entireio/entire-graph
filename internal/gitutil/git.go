@@ -257,7 +257,29 @@ func IndexReplacedNonRegularPaths(ctx context.Context, repo string, nonRegular m
 	// under core.symlinks=false materializes EVERY tracked symlink as a regular
 	// file, so a per-entry `cat-file` pair meant hundreds of thousands of
 	// processes on a large repository and a worktree query that never returned.
-	sizes := catFileBatchCheckSizes(ctx, repo, sortedKeys(sizeOnDisk))
+	// A path holding a NEWLINE cannot ride the line-delimited batch: it would
+	// split into several requests and shift every later response onto the wrong
+	// path, which admits an untouched symlink as source or hides a replacement.
+	// Such paths are legal and vanishingly rare, so they are asked about one at
+	// a time rather than forcing a Git version this tool does not require.
+	var batchable, individual []string
+	for _, path := range sortedKeys(sizeOnDisk) {
+		if strings.ContainsRune(path, '\n') {
+			individual = append(individual, path)
+			continue
+		}
+		batchable = append(batchable, path)
+	}
+	sizes := catFileBatchCheckSizes(ctx, repo, batchable)
+	for _, path := range individual {
+		sized, err := run(ctx, repo, "git", "cat-file", "-s", indexObjectSpec(path))
+		if err != nil {
+			continue
+		}
+		if size, convErr := strconv.ParseInt(strings.TrimSpace(sized), 10, 64); convErr == nil {
+			sizes[path] = size
+		}
+	}
 	var needContent []string
 	for path, onDisk := range sizeOnDisk {
 		blobBytes, known := sizes[path]
@@ -281,7 +303,22 @@ func IndexReplacedNonRegularPaths(ctx context.Context, repo string, nonRegular m
 		return replaced
 	}
 	sort.Strings(needContent)
-	contents := catFileBatchContents(ctx, repo, needContent)
+	var batchContent, individualContent []string
+	for _, path := range needContent {
+		if strings.ContainsRune(path, '\n') {
+			individualContent = append(individualContent, path)
+			continue
+		}
+		batchContent = append(batchContent, path)
+	}
+	contents := catFileBatchContents(ctx, repo, batchContent)
+	for _, path := range individualContent {
+		blob, err := run(ctx, repo, "git", "cat-file", "blob", indexObjectSpec(path))
+		if err != nil {
+			continue
+		}
+		contents[path] = blob
+	}
 	for _, path := range needContent {
 		indexed, known := contents[path]
 		if !known {
@@ -306,14 +343,15 @@ func catFileBatchCheckSizes(ctx context.Context, repo string, paths []string) ma
 	var stdin bytes.Buffer
 	for _, path := range paths {
 		stdin.WriteString(indexObjectSpec(path))
-		stdin.WriteByte(0)
+		stdin.WriteByte('\n')
 	}
-	// NUL-delimited input. A Git pathname may hold any byte except NUL and '/',
-	// so a tracked path CONTAINING A NEWLINE split into several requests under
-	// the line-delimited protocol and shifted every later response onto the
-	// wrong path -- which silently admits an untouched symlink as source, or
-	// hides a replacement. NUL is the one byte a pathname cannot contain.
-	cmd := newCmd(ctx, repo, "git", "cat-file", "-z", "--batch-check=%(objectsize)")
+	// Line-delimited, and callers must pass only paths WITHOUT a newline. The
+	// NUL-delimited form would carry any path, but `cat-file -z` arrived in Git
+	// 2.38 and this tool supports 2.36 (README), where it fails outright and
+	// every materialized symlink is then misclassified as replaced. Splitting
+	// the rare newline-bearing path off costs one subprocess each and keeps the
+	// floor.
+	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch-check=%(objectsize)")
 	cmd.Stdin = &stdin
 	out, err := cmd.Output()
 	if err != nil {
@@ -342,12 +380,12 @@ func catFileBatchContents(ctx context.Context, repo string, paths []string) map[
 	var stdin bytes.Buffer
 	for _, path := range paths {
 		stdin.WriteString(indexObjectSpec(path))
-		stdin.WriteByte(0)
+		stdin.WriteByte('\n')
 	}
-	// NUL-delimited input, for the reason given on catFileBatchCheckSizes. The
-	// RESPONSE stays length-prefixed and is read by that length, so a newline in
-	// a path cannot desynchronize it either.
-	cmd := newCmd(ctx, repo, "git", "cat-file", "-z", "--batch=%(objectsize)")
+	// Line-delimited for the reason given on catFileBatchCheckSizes; callers
+	// pass only newline-free paths. The RESPONSE is length-prefixed and read by
+	// that length, so blob CONTENT holding a newline is already safe.
+	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch=%(objectsize)")
 	cmd.Stdin = &stdin
 	out, err := cmd.Output()
 	if err != nil {
