@@ -1937,6 +1937,43 @@ def run():
 	}
 }
 
+func TestPythonDirectImportCommentsPreserveAliasBindingsAndDottedCalls(t *testing.T) {
+	const importLine = "import frobnicate as m"
+	var baseline []string
+	for i, line := range []string{importLine, importLine + " # noqa"} {
+		content := line + "\n"
+		names, forms := importedPythonNamesAndForms(content)
+		if got := names["m"]; !slices.Equal(got, []string{"frobnicate"}) {
+			t.Fatalf("%q names[m] = %#v, want [frobnicate]", line, got)
+		}
+		if got := forms["m"]["frobnicate"]; got != pythonAliasRename {
+			t.Fatalf("%q form[m][frobnicate] = %v, want alias rename", line, got)
+		}
+		bindings := importedPythonBindings(content)["m"]
+		if len(bindings) != 1 || bindings[0].Module != "frobnicate" || bindings[0].Imported != "" {
+			t.Fatalf("%q bindings[m] = %#v, want frobnicate module alias", line, bindings)
+		}
+
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate/__init__.py", "")
+		writeFile(t, repo, "frobnicate/helper.py", "def fn():\n    return 1\n")
+		writeFile(t, repo, "consumer.py", content+"\n\ndef call_it():\n    return m.helper.fn()\n")
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets := callItTargetsNamed(t, snapshot, "fn")
+		if len(targets) != 1 || targets[0] != "frobnicate/helper.py" {
+			t.Fatalf("%q dotted call targets = %#v, want [frobnicate/helper.py]", line, targets)
+		}
+		if i == 0 {
+			baseline = targets
+		} else if !slices.Equal(targets, baseline) {
+			t.Fatalf("commented direct import changed dotted call targets: %#v vs %#v", targets, baseline)
+		}
+	}
+}
+
 func TestPythonFromImportParserKeepsLaterImportsVisibleAfterUnclosedList(t *testing.T) {
 	content := "from broken import (\n    thing,\nfrom mod import helper\n"
 	names := importedPythonNames(content)

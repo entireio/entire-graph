@@ -120,9 +120,17 @@ func (s *pythonBareImportScopes) genericCallAllowed(from SymbolRecord, name stri
 		return true
 	}
 	if from.Kind == "file" {
-		return s.moduleGeneric[name]
+		allowed, ok := s.moduleGeneric[name]
+		if !ok {
+			return true
+		}
+		return allowed
 	}
-	return s.genericAllowed[from.ID][name]
+	allowed, ok := s.genericAllowed[from.ID][name]
+	if !ok {
+		return true
+	}
+	return allowed
 }
 
 type pythonBindingScope struct {

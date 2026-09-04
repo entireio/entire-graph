@@ -85,6 +85,30 @@ def go():
 	}
 }
 
+func TestPythonDottedSameLanguageDataFlowRemainsAvailableWithoutGenericImport(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "auth.py", `class AuthService:
+    def validate(self, token):
+        return bool(token)
+
+
+def check_token(token):
+    service = AuthService()
+    return service.validate(token)
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && strings.HasSuffix(relation.FromID, "function:check_token") && strings.HasSuffix(relation.ToID, "method:AuthService.validate") {
+			return
+		}
+	}
+	t.Fatalf("missing same-language dotted DATA_FLOWS check_token -> validate: %#v", relationsOfType(snapshot.Relations, "DATA_FLOWS"))
+}
+
 // A dotted call into a genuinely external package (`import requests;
 // requests.sessions.session()`) has no in-repo symbol of the terminal name, so
 // the external fallback must still fire. The suppression is scoped to in-repo
