@@ -689,3 +689,50 @@ func TestTrackedToolCacheFixturesAreKept(t *testing.T) {
 		}
 	}
 }
+
+// TestVendoredNegationGlobSparesOnlyThePathsItNames is the second half of
+// TestVendoredNegationSparesOnlyTheReincludedPaths. The per-path verdict was
+// derived from the negation's LITERAL PREFIX — everything before the first
+// wildcard — so `!/mypkg/*.py` was read as `!/mypkg/`, and every descendant of
+// mypkg/ passed the vendored filter no matter what the rest of the glob says.
+// A negation re-includes what its own pattern matches: a `*` segment does not
+// cross a `/`, and a file the extension does not name was never re-included.
+func TestVendoredNegationGlobSparesOnlyThePathsItNames(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "app.py", "def app_entrypoint():\n    return True\n")
+	writeFile(t, repo, "vendor/.gitignore", "*\n!/mypkg/*.py\n")
+	writeFile(t, repo, "vendor/mypkg/lib.py", "def vendored_first_party():\n    return True\n")
+	writeFile(t, repo, "vendor/mypkg/nested/deep.py", "def vendored_nested_dependency():\n    return True\n")
+	writeFile(t, repo, "vendor/mypkg/helper.go", "package mypkg\n\nfunc vendoredGoHelper() {}\n")
+	writeFile(t, repo, "vendor/other/dep.py", "def real_dependency():\n    return True\n")
+	git(t, repo, "add", "-f", ".")
+	git(t, repo, "commit", "-m", "force-track a vendored tree with one glob negation")
+
+	for _, worktree := range []bool{false, true} {
+		mode := "head"
+		if worktree {
+			mode = "worktree"
+		}
+		t.Run(mode, func(t *testing.T) {
+			snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+				Worktree: worktree,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"app_entrypoint", "vendored_first_party"} {
+				if !snapshotHasSymbol(snapshot, name) {
+					t.Fatalf("%s snapshot dropped %q named by the negation glob: %#v",
+						mode, name, snapshot.Files)
+				}
+			}
+			for _, name := range []string{"vendored_nested_dependency", "vendoredGoHelper", "real_dependency"} {
+				if snapshotHasSymbol(snapshot, name) {
+					t.Fatalf("%s snapshot re-admitted %q, which `!/mypkg/*.py` does not name: %#v",
+						mode, name, snapshot.Files)
+				}
+			}
+		})
+	}
+}

@@ -233,3 +233,51 @@ func runScripts(comm foo.Communicator) error {
 		})
 	}
 }
+
+// TestPackageVarQualifiedTypeRequiresAnInModuleImport is the package-var half of
+// the qualifier rule, and pins BOTH directions. The declaration's directory was
+// accepted when it was any path suffix of a resolved import path, so
+// `import "external.example/realpkg"` — a third-party package this repository
+// does not contain — satisfied a lookup that the repository's own `realpkg/`
+// answered, and `Client.Do()` emitted a CALLS edge into a package the file never
+// imported. `Do` is deliberately declared twice here so the globally-unique-name
+// fallback cannot fire: the edge, when it appears, comes from this tier alone.
+//
+// The in-module arm is the other direction: with the module's own import path
+// written, the same call must still reach realpkg/thing.go, so the fix is a
+// narrowed rule and not a disabled resolver.
+func TestPackageVarQualifiedTypeRequiresAnInModuleImport(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		importPath string
+		wantEdge   bool
+	}{
+		{name: "in-module import resolves", importPath: "example.com/m/realpkg", wantEdge: true},
+		{name: "external import with the same last segment does not", importPath: "external.example/realpkg", wantEdge: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+			writeFile(t, repo, "go.mod", "module example.com/m\n\ngo 1.21\n")
+			writeFile(t, repo, "realpkg/thing.go", "package realpkg\n\ntype Thing struct{}\n\nfunc (t Thing) Do() {}\n")
+			// A second Do() keeps the unique-method-name fallback from
+			// resolving this call on its own.
+			writeFile(t, repo, "decoy/decoy.go", "package decoy\n\ntype Other struct{}\n\nfunc (o Other) Do() {}\n")
+			writeFile(t, repo, "app/app.go", "package app\n\nimport \""+tc.importPath+"\"\n\nvar Client = realpkg.Thing{}\n\nfunc Use() {\n\tClient.Do()\n}\n")
+
+			snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := relationTargetFiles(snapshot, "CALLS", "Use", "Do")
+			gotEdge := slices.Contains(files, "realpkg/thing.go")
+			if tc.wantEdge && !gotEdge {
+				t.Fatalf("in-module qualified package var lost its call target: %v", files)
+			}
+			if !tc.wantEdge && gotEdge {
+				t.Fatalf("an external import bound the repository's own realpkg/: %v", files)
+			}
+		})
+	}
+}

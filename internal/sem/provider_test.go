@@ -12093,6 +12093,50 @@ func TestRegistrationAliasDeclinesOnAmbiguousHandlerName(t *testing.T) {
 	}
 }
 
+// TestRegistrationAliasCountsOnlyCallableCandidates is the third side of
+// TestRegistrationTableAliasIndexing and
+// TestRegistrationAliasDeclinesOnAmbiguousHandlerName. The ambiguity count
+// included EVERY symbol sharing the handler's bare name, but a
+// commands/<name>.json entry binds a verb to a callable: a struct, a field, a
+// constant or a variable with that name is not a rival handler. One such symbol
+// anywhere in the corpus took the count to two and suppressed the only real
+// binding, so a command that IS implemented answered its own verb with nothing.
+//
+// The four-callable decline is still pinned by
+// TestRegistrationAliasDeclinesOnAmbiguousHandlerName; this test pins the other
+// direction, and asserts the non-callable namesakes never carry the verb either.
+func TestRegistrationAliasCountsOnlyCallableCandidates(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/commands/getrange.json", `{"function":"getrangeCommand"}`)
+	writeFile(t, repo, "src/t_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+	writeFile(t, repo, "unrelated/other.go", `package unrelated
+
+type getrangeCommand struct {
+	field int
+}
+
+const getrangeCommandLimit = 4
+
+var getrangeCommand2 = 1
+`)
+	writeFile(t, repo, "web/model.ts", "export interface getrangeCommand { id: number }\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var aliased []string
+	for _, symbol := range snapshot.Symbols {
+		if slices.Contains(symbol.Aliases, "getrange") {
+			aliased = append(aliased, symbol.Kind+" "+symbol.Name+" in "+symbol.FilePath)
+		}
+	}
+	want := "function getrangeCommand in src/t_string.go"
+	if len(aliased) != 1 || aliased[0] != want {
+		t.Fatalf("aliased = %v, want exactly [%q]", aliased, want)
+	}
+}
+
 func TestRegistrationTableAliasIndexing(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/commands/substr.json", `{"function":"getrangeCommand"}`)

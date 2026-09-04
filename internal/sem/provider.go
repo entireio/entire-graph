@@ -994,6 +994,19 @@ func collectRegistrationAliases(paths []string, read contentReader) map[string][
 	return aliasesByHandler
 }
 
+// registrationBindableKind reports whether a symbol kind is one a registration
+// table can bind a command verb to. A commands/<name>.json entry names a
+// FUNCTION; the corpus may also hold a type, field, constant or variable with
+// that same bare name, and those are not rival handlers — counting them as
+// ambiguity suppressed the only real binding.
+func registrationBindableKind(kind string) bool {
+	switch kind {
+	case "function", "method", "constructor", "procedure", "subroutine", "macro", "closure", "lambda":
+		return true
+	}
+	return false
+}
+
 // dedupeSortedStrings removes adjacent duplicates from a sorted slice in place.
 func dedupeSortedStrings(sorted []string) []string {
 	if len(sorted) < 2 {
@@ -1205,7 +1218,9 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 				applyCppSpecializationAliases(result.symbols)
 				for _, symbol := range result.symbols {
 					if len(aliasesByHandler[symbol.Name]) > 0 {
-						aliasCandidateCount[symbol.Name]++
+						if registrationBindableKind(symbol.Kind) {
+							aliasCandidateCount[symbol.Name]++
+						}
 						aliasCandidates = append(aliasCandidates, symbol)
 						continue
 					}
@@ -1232,11 +1247,16 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		return err
 	}
 	// Registration aliases resolved against the whole corpus: a handler name
-	// declared exactly once is the registered callable and carries the verb; an
-	// ambiguous name carries none, because a symbol that claims to be a command
-	// it does not implement is worse than a command with no symbol.
+	// declared exactly once AS A CALLABLE is the registered callable and carries
+	// the verb; an ambiguous name carries none, because a symbol that claims to
+	// be a command it does not implement is worse than a command with no symbol.
+	// Only callables are counted and only callables can carry the verb: a
+	// registration table binds a verb to a function, never to a type, field,
+	// constant or variable, so counting those kinds turned an unrelated
+	// same-named struct into a phantom rival and suppressed the one real
+	// handler.
 	for _, symbol := range aliasCandidates {
-		if aliasCandidateCount[symbol.Name] == 1 {
+		if registrationBindableKind(symbol.Kind) && aliasCandidateCount[symbol.Name] == 1 {
 			symbol.Aliases = appendUnique(symbol.Aliases, aliasesByHandler[symbol.Name]...)
 		}
 		if err := emit(symbol); err != nil {
@@ -4948,7 +4968,7 @@ func collectPackageVarTypes(content string) map[string]pkgQualType {
 // Encoder in .../json/) only stands in when the qualifier is unresolved.
 // Requires a unique match so an ambiguous qualifier resolves to nothing rather
 // than wrongly.
-func resolveQualifiedType(qt pkgQualType, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
+func resolveQualifiedType(qt pkgQualType, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord, goModule string) (SymbolRecord, bool) {
 	importPaths := importsByName[qt.alias]
 	var match SymbolRecord
 	found := 0
@@ -4956,7 +4976,7 @@ func resolveQualifiedType(qt pkgQualType, importsByName map[string][]string, sym
 		if !typeLikeKind(cand.Kind) {
 			continue
 		}
-		if qualifiedTypeDirMatches(cand.FilePath, qt.alias, importPaths) {
+		if qualifiedTypeDirMatches(cand.FilePath, qt.alias, goModule, importPaths) {
 			match = cand
 			found++
 		}
@@ -4968,12 +4988,21 @@ func resolveQualifiedType(qt pkgQualType, importsByName map[string][]string, sym
 }
 
 // qualifiedTypeDirMatches reports whether a declaration's directory is the
-// package a qualifier names. With resolved import paths the repo-relative
-// directory must be a path suffix of one of them (realpkg/x.go for
-// "example.com/m/realpkg"), which is exactly the layout Go requires of an
-// in-module package; with no resolved path the alias-equals-basename convention
-// is all the evidence there is.
-func qualifiedTypeDirMatches(filePath, alias string, importPaths []string) bool {
+// package a qualifier names.
+//
+// With resolved import paths the import must be one this MODULE owns, and the
+// declaration's repo-relative directory must be exactly the part of it below
+// the module path — the layout Go requires of an in-module package, and the
+// same mapping buildManifestImportResolver uses to index goPackages. A path
+// SUFFIX is not that test: `foo "external.example/realpkg"` ends in `/realpkg`,
+// so a suffix rule let a third-party import bind the repository's own
+// `realpkg/` directory and emit a CALLS edge into a package the file never
+// imported. An import outside the module resolves to nothing, because no
+// repository symbol can be its declaration.
+//
+// With no resolved path for the qualifier the alias-equals-basename convention
+// (json.Encoder -> the Encoder in .../json/) is all the evidence there is.
+func qualifiedTypeDirMatches(filePath, alias, goModule string, importPaths []string) bool {
 	dir := strings.Trim(filepath.ToSlash(filepath.Dir(filepath.ToSlash(filePath))), "/")
 	if dir == "." {
 		dir = ""
@@ -4981,9 +5010,15 @@ func qualifiedTypeDirMatches(filePath, alias string, importPaths []string) bool 
 	if len(importPaths) == 0 {
 		return dir != "" && path.Base(dir) == alias
 	}
+	if goModule == "" {
+		return false
+	}
+	want := goModule
+	if dir != "" {
+		want += "/" + dir
+	}
 	for _, importPath := range importPaths {
-		importPath = strings.Trim(filepath.ToSlash(importPath), "/")
-		if dir != "" && (importPath == dir || strings.HasSuffix(importPath, "/"+dir)) {
+		if strings.Trim(filepath.ToSlash(importPath), "/") == want {
 			return true
 		}
 	}
@@ -5533,7 +5568,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// convention resolveQualifiedType already encodes) so the method
 				// lookup below runs against the right declaration. For an interface
 				// that declaration's members are its method requirements.
-				sym, ok := resolveQualifiedType(qt, importsByName, symbolsByShortName)
+				sym, ok := resolveQualifiedType(qt, importsByName, symbolsByShortName, goModule)
 				if !ok {
 					continue
 				}
@@ -5545,7 +5580,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// Package-level var of a package-qualified type (alias.Type). Resolve
 				// the specific imported type so an ambiguous bare name (Encoder in
 				// both json and cbor) maps to the right one.
-				sym, ok := resolveQualifiedType(qt, importsByName, symbolsByShortName)
+				sym, ok := resolveQualifiedType(qt, importsByName, symbolsByShortName, goModule)
 				if !ok {
 					continue
 				}

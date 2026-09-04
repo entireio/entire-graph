@@ -1306,26 +1306,32 @@ func (m ignoreMatcher) ReincludesPath(rel string) bool {
 }
 
 // reincludesPathUnder is ReincludesPath for an ignore file that lives in dir
-// rather than at the repository root, mirroring reincludesDescendantUnder's
-// prefix resolution and its skip of basename-only negations.
+// rather than at the repository root: its patterns are relative to dir, so rel
+// is re-expressed relative to dir before the rules see it. Basename-only
+// negations are skipped exactly as reincludesDescendantUnder skips them.
+//
+// The rule is EVALUATED against the path and its ancestor directories rather
+// than reduced to its literal prefix. A prefix is not the pattern: taking
+// everything before the first wildcard turns `!/mypkg/*.go` into `!/mypkg/`,
+// which re-includes `mypkg/data.bin` and `mypkg/nested/other.go` — descendants
+// the negation never names. Ancestors still count, because a directory
+// negation (`!/mypkg/`) re-includes the files beneath it.
 func (m ignoreMatcher) reincludesPathUnder(dir, rel string) bool {
 	rel = cleanIgnorePath(rel)
 	if rel == "" {
 		return false
 	}
-	dir = cleanIgnorePath(dir)
+	sub, ok := pathUnder(cleanIgnorePath(dir), rel)
+	if !ok || sub == "" {
+		return false
+	}
 	for _, rule := range m.rules {
 		if rule.ignore || rule.includeFile || rule.basenameOnly {
 			continue
 		}
-		prefix := literalPatternPrefix(rule.pattern)
-		if prefix == "" {
-			continue
-		}
-		if dir != "" {
-			prefix = dir + "/" + prefix
-		}
-		if prefix == rel || strings.HasPrefix(rel, prefix+"/") {
+		// A listed path is a file: a directory-only negation can only reach it
+		// through an ancestor, which matchPath still reports.
+		if rule.matchKind(sub, false) != ignoreNoMatch {
 			return true
 		}
 	}
