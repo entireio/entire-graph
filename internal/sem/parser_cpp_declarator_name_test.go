@@ -125,8 +125,8 @@ void Widget::reset() {}
 }
 
 // An overload declares its name with `operator_name` (`operator new`) or, for a
-// conversion, `operator_cast` (`operator const char *`) — neither of which
-// contains an identifier node. A declarator walk that does not model them drops
+// conversion, `operator_cast` (`operator const char *`, canonicalised to
+// `operator const char*`) — neither of which contains an identifier node. A declarator walk that does not model them drops
 // out to the pre-order identifier search, which steps past the operator into
 // the parameter list, so `void *operator new(size_t n)` was named `n` and
 // `void operator delete(void *p, size_t n)` was named `p`.
@@ -165,14 +165,14 @@ void *operator new(size_t sz) { return nullptr; }
 `
 	kinds := parseCPlusPlus(t, src)
 	for name, want := range map[string]string{
-		"Grid.at":                    "method",
-		"Grid.cell":                  "method",
-		"Grid.ptr":                   "method",
-		"Grid.operator new":          "method",
-		"Grid.operator delete":       "method",
-		"Grid.operator new[]":        "method",
-		"Grid.operator const char *": "method",
-		"operator new":               "function",
+		"Grid.at":                   "method",
+		"Grid.cell":                 "method",
+		"Grid.ptr":                  "method",
+		"Grid.operator new":         "method",
+		"Grid.operator delete":      "method",
+		"Grid.operator new[]":       "method",
+		"Grid.operator const char*": "method",
+		"operator new":              "function",
 	} {
 		if kinds[name] != want {
 			t.Fatalf("C++ %q not extracted as a %s: %#v", name, want, kinds)

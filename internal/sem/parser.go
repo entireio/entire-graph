@@ -8231,8 +8231,9 @@ func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
 			// identifier-free operator_name into the parameter list and names
 			// the function after its FIRST PARAMETER — `operator new` became
 			// `n`, `operator delete` became `p`. The whole spelling is the
-			// name, exactly as C++ writes it.
-			return normalize(cur.Content(src))
+			// name, exactly as C++ writes it, with the optional whitespace C++
+			// allows between its tokens folded out.
+			return canonicalOperatorName(cur.Content(src))
 		case "operator_cast":
 			// A conversion operator (`operator const char*() const`) is named
 			// for the type it converts to, and carries no identifier either;
@@ -8271,7 +8272,7 @@ func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
 					text = text[:paren]
 				}
 			}
-			if name := normalize(text); name != "" {
+			if name := canonicalOperatorName(text); name != "" {
 				return name
 			}
 		case "qualified_identifier", "template_function":
@@ -8320,6 +8321,49 @@ func firstDeclaratorChild(node *sitter.Node) *sitter.Node {
 		}
 	}
 	return nil
+}
+
+// canonicalOperatorName folds an operator's name down to one spelling. C++
+// permits whitespace between every token of the name, so `operator const char*`,
+// `operator const char *` and `operator  const  char  *` all name the SAME
+// conversion, and `operator new[]`, `operator new []` the same allocation
+// function. The name feeds compound-v1 symbol identity, so carrying the
+// author's spacing into it gives one function a new ID after a whitespace-only
+// edit and gives two files that spell one operator differently two entities for
+// one function.
+//
+// Runs of whitespace collapse to a single space first, then every space that
+// touches a non-identifier byte is dropped. The surviving spaces are exactly
+// those separating two identifier tokens -- `const char`, `unsigned long`,
+// `operator new` -- where dropping the space would fuse two distinct tokens
+// into one and make genuinely different operators collide. Bytes >= 0x80 count
+// as identifier bytes so a UTF-8 identifier is never split or joined.
+func canonicalOperatorName(text string) string {
+	collapsed := normalize(text)
+	var b strings.Builder
+	b.Grow(len(collapsed))
+	for i := 0; i < len(collapsed); i++ {
+		c := collapsed[i]
+		if c == ' ' && i > 0 && i+1 < len(collapsed) &&
+			(!operatorNameWordByte(collapsed[i-1]) || !operatorNameWordByte(collapsed[i+1])) {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// operatorNameWordByte reports whether c can be part of an identifier token, so
+// that a space beside it is load-bearing rather than decoration.
+func operatorNameWordByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '_', c >= 0x80:
+		return true
+	default:
+		return false
+	}
 }
 
 // firstDescendantOfType returns the first node of nodeType in a pre-order
