@@ -404,9 +404,16 @@ _ARM_EXECUTABLES = {
     "ENTIRE_GRAPH_BIN": ("entire_client", None, "entire-graph"),
     "CMM_BIN": ("cmm_client", "_DEFAULT_BIN", None),
     "GRAPHIFY_PYTHON": ("graphify_client", "_DEFAULT_PYTHON", None),
+    # The bridge is a script GraphifyClient executes, so an overridden one
+    # changes all graphify ingest and search behaviour. Its default is computed
+    # rather than a constant, hence the callable default below.
+    "GRAPHIFY_BRIDGE": ("graphify_client", "_default_bridge_path", None),
 }
-# Source checkouts an arm imports at run time rather than executing.
-_ARM_SOURCE_DIRS = ("GRAPHIFY_SOURCE",)
+# Source checkouts an arm imports at run time rather than executing, with the
+# client's own default so an ordinary run binds the checkout it actually used.
+_ARM_SOURCE_DIRS = {
+    "GRAPHIFY_SOURCE": ("graphify_client", "_DEFAULT_SOURCE"),
+}
 
 _DIGEST_CACHE: dict = {}
 
@@ -425,6 +432,25 @@ def _file_digest(path: str) -> str:
     return _DIGEST_CACHE[path]
 
 
+def _client_default(module: str | None, attribute: str | None) -> str | None:
+    """The arm client's own default, read only if the run already imported it.
+
+    Reading from `sys.modules` keeps the arm that is actually running binding
+    its own default, with no import cost, no import failure, and no literal
+    duplicated here to drift. A computed default is a callable, so it is called.
+    """
+    if not (module and attribute):
+        return None
+    imported = sys.modules.get(f"{__package__}.{module}")
+    value = getattr(imported, attribute, None) if imported else None
+    if callable(value):
+        try:
+            value = value()
+        except Exception:  # noqa: BLE001 - provenance must never break a run
+            return None
+    return value if isinstance(value, str) and value else None
+
+
 def implementation_provenance() -> dict:
     """What each arm actually ran: resolved path + content digest.
 
@@ -435,9 +461,8 @@ def implementation_provenance() -> dict:
     for var, (module, attribute, fallback) in _ARM_EXECUTABLES.items():
         candidate, source = os.environ.get(var), "env"
         if not candidate:
-            imported = sys.modules.get(f"{__package__}.{module}") if module else None
-            candidate = getattr(imported, attribute, None) if attribute else None
-            candidate, source = candidate or fallback, "default"
+            candidate = _client_default(module, attribute) or fallback
+            source = "default"
         if not candidate:
             continue
         # A bare command name is executed through PATH by the adapters
@@ -452,11 +477,13 @@ def implementation_provenance() -> dict:
             "resolved_via": via,       # how it became a path: as written, or a PATH lookup
             "digest": _file_digest(resolved),
         }
-    for var in _ARM_SOURCE_DIRS:
-        root = os.environ.get(var)
+    for var, (module, attribute) in _ARM_SOURCE_DIRS.items():
+        root, source = os.environ.get(var), "env"
+        if not root:
+            root, source = _client_default(module, attribute), "default"
         if not root:
             continue
-        out[var] = {"path": root, "source": "env", **git_state(root)}
+        out[var] = {"path": root, "source": source, **git_state(root)}
     return dict(sorted(out.items()))
 
 

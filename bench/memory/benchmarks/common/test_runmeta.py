@@ -402,6 +402,48 @@ class ImplementationProvenanceTest(unittest.TestCase):
             recorded["digest"], "sha256:" + hashlib.sha256(b"default build\n").hexdigest()
         )
 
+    def test_the_graphify_bridge_is_bound(self) -> None:
+        """GraphifyClient executes the bridge; an overridden one changes all of
+        its ingest and search behaviour."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            bridge = Path(tempdir) / "bridge.py"
+            bridge.write_bytes(b"modified bridge\n")
+            with patch.dict("os.environ", {"GRAPHIFY_BRIDGE": str(bridge)}, clear=True):
+                recorded = runmeta.implementation_provenance()["GRAPHIFY_BRIDGE"]
+
+        self.assertEqual(recorded["source"], "env")
+        self.assertEqual(
+            recorded["digest"], "sha256:" + hashlib.sha256(b"modified bridge\n").hexdigest()
+        )
+
+    def test_a_computed_client_default_is_called(self) -> None:
+        """The bridge default is a function, not a constant."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            bridge = Path(tempdir) / "bridge.py"
+            bridge.write_bytes(b"default bridge\n")
+            module = types.SimpleNamespace(_default_bridge_path=lambda: str(bridge))
+            key = f"{runmeta.__package__}.graphify_client"
+            with patch.dict("sys.modules", {key: module}), \
+                    patch.dict("os.environ", {}, clear=True):
+                recorded = runmeta.implementation_provenance()["GRAPHIFY_BRIDGE"]
+
+        self.assertEqual(recorded["source"], "default")
+        self.assertEqual(
+            recorded["digest"], "sha256:" + hashlib.sha256(b"default bridge\n").hexdigest()
+        )
+
+    def test_the_default_source_checkout_is_bound(self) -> None:
+        """An arm that sets no override still imports a specific checkout."""
+        module = types.SimpleNamespace(_DEFAULT_SOURCE="/repos/graphify")
+        key = f"{runmeta.__package__}.graphify_client"
+        with patch.dict("sys.modules", {key: module}), \
+                patch.dict("os.environ", {}, clear=True):
+            recorded = runmeta.implementation_provenance()["GRAPHIFY_SOURCE"]
+
+        self.assertEqual(recorded["path"], "/repos/graphify")
+        self.assertEqual(recorded["source"], "default")
+        self.assertIn("commit", recorded)
+
     def test_an_unreadable_binary_is_recorded_as_unreadable(self) -> None:
         with patch.dict("os.environ", {"ENTIRE_GRAPH_BIN": "/nonexistent/entire-graph"}, clear=True):
             recorded = runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]
