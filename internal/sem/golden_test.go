@@ -1447,6 +1447,16 @@ func TestLiteralMaskersPreserveLengthAndLineStructure(t *testing.T) {
 		"@",
 		"let trailing = '",
 		"let escape = '\\''\nlet run v = v |> other\n",
+		// A quote RUN is not an opener width: `""` is an empty string, `@""` an
+		// empty verbatim one, and the leading `""` of `@"""a"" b"` an escaped
+		// quote -- each of them a place the scan used to run on to the next
+		// quote in the file, or to EOF, and skip whatever it crossed.
+		"let e = \"\"\nlet f x = $@\"hi {x}\"\n",
+		"let e = @\"\"\nlet f x = $@\"hi {x}\"\n",
+		"let m = @\"\"\"a\"\" b\"\nlet f x = $@\"hi {x}\"\n",
+		"let r = \"\"\"\"a\"\"\"\nlet f x = $@\"hi {x}\"\n",
+		"\"\"\"\"",
+		"@\"\"",
 		// Interpolated forms: the masker now blanks the literal text AROUND a
 		// hole and leaves the hole itself, so both edges of every hole are a
 		// place a byte could go missing.
@@ -1489,6 +1499,7 @@ func TestLiteralMaskersPreserveLengthAndLineStructure(t *testing.T) {
 		for name, mask := range map[string]func(string) string{
 			"maskFSharpBlockComments":           maskFSharpBlockComments,
 			"maskFSharpLiteralsAndLineComments": maskFSharpLiteralsAndLineComments,
+			"maskFSharpUnsupportedSyntax":       maskFSharpUnsupportedSyntax,
 			"stripCodeLiteralsAndComments":      stripCodeLiteralsAndComments,
 		} {
 			got := mask(source)

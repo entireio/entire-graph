@@ -17017,6 +17017,117 @@ let run x =
 	}
 }
 
+func TestFSharpEmptyStringDoesNotSwallowTheNextLiteral(t *testing.T) {
+	// The entity-side masker read the RUN of quotes standing at an opener as
+	// the width of that opener's delimiter. An empty string is a two-quote run,
+	// so `""` was taken for a two-quote opener and fsharpStringEnd went looking
+	// for a closing quote that had already been consumed -- on across newlines,
+	// because an ordinary string body is not stopped by one. A verbatim literal
+	// that opens on an escaped quote (`@"""a"" b"`) went wrong the same way: its
+	// three-quote run was read as the raw form, whose closing run is not there,
+	// so it ran to EOF.
+	//
+	// Either way the outer scan resumed deep inside -- or past -- the rest of
+	// the file and never saw the `$@"..."` after it. That form has no rule in
+	// the vendored grammar, so the binding holding it degrades to an
+	// infix_expression: the definition is extracted as `variable` instead of
+	// `function`, and a demoted definition cannot be a call target, so every
+	// CALLS edge into it disappears with it.
+	//
+	// Each hazard gets its own file: a later literal can resync the scan by
+	// luck, which would let one of them ride along on another's fix.
+	for name, hazard := range map[string]string{
+		"empty string":           `""`,
+		"empty verbatim string":  `@""`,
+		"verbatim escaped quote": `@"""a"" b"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, repo, "src/Interp.fs", `module Interp
+
+let hazard = `+hazard+`
+
+let host x =
+    let s = $@"hi {x} there"
+    s
+
+let tail x = x + 1
+`)
+			writeFile(t, repo, "src/Caller.fs", `module Caller
+
+let run x =
+    Interp.host(x)
+    Interp.tail(x)
+`)
+			snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			kinds := map[string]string{}
+			moduleEnd := 0
+			for _, symbol := range snapshot.Symbols {
+				if symbol.Language != "F#" || symbol.FilePath != "src/Interp.fs" {
+					continue
+				}
+				kinds[symbol.Name] = symbol.Kind
+				if symbol.Name == "Interp" {
+					moduleEnd = symbol.EndLine
+				}
+			}
+			for _, want := range []string{"host", "tail"} {
+				if kinds[want] != "function" {
+					t.Errorf("F# `%s` extracted as %q, want \"function\": %#v", want, kinds[want], kinds)
+				}
+			}
+			// `let tail` is the last line of the file; a module that stops short
+			// of it mis-scopes every declaration below the swallowed literal.
+			if moduleEnd != 9 {
+				t.Errorf("module Interp ends at line %d, want 9: %#v", moduleEnd, kinds)
+			}
+			for _, callee := range []string{"host", "tail"} {
+				if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "run", callee) {
+					t.Errorf("missing CALLS run->%s: %#v", callee, relationsOfType(snapshot.Relations, "CALLS"))
+				}
+			}
+		})
+	}
+}
+
+func TestFSharpInterpolationSigilInsideALiteralIsNotAnOpener(t *testing.T) {
+	// The OTHER direction. Reading `""` as an empty string means the scan walks
+	// on through the file instead of skipping ahead, so it now passes over
+	// every literal in between -- and it must still recognise their bodies as
+	// literal text. A `$@"` spelled inside a triple-quoted doc string or inside
+	// a verbatim string is text, not an opener: blanking its sigils there would
+	// rewrite the body of a literal the grammar already parses, and dropping a
+	// literal early would let the quotes inside it open phantom literals that
+	// desynchronise every mask after them.
+	source := "let empty = \"\"\n" +
+		"let doc = \"\"\"\nexample: $@\"not code\"\n\"\"\"\n" +
+		"let verb = @\"a \"\" $@\"\"not code\"\" b\"\n" +
+		"let real x = $@\"hi {x}\"\n"
+	masked := maskFSharpUnsupportedSyntax(source)
+	if len(masked) != len(source) {
+		t.Fatalf("mask changed byte length: %d != %d", len(masked), len(source))
+	}
+	if strings.Count(masked, "\n") != strings.Count(source, "\n") {
+		t.Fatalf("mask changed line count: %d != %d", strings.Count(masked, "\n"), strings.Count(source, "\n"))
+	}
+	for _, keep := range []string{
+		"example: $@\"not code\"",     // inside a triple-quoted literal
+		"a \"\" $@\"\"not code\"\" b", // inside a verbatim literal
+		"let empty = \"\"",
+	} {
+		if !strings.Contains(masked, keep) {
+			t.Errorf("mask rewrote %q, which is literal text:\n%s", keep, masked)
+		}
+	}
+	// ...and the one that really is an opener is still masked.
+	if want := "let real x =  @\"hi {x}\""; !strings.Contains(masked, want) {
+		t.Errorf("mask did not produce %q:\n%s", want, masked)
+	}
+}
+
 func TestMaskFSharpUnsupportedSyntaxPreservesOffsets(t *testing.T) {
 	// Entity names and signatures are sliced out of the UNMASKED source at the
 	// offsets the masked parse reports, so the mask has to be byte-length- and

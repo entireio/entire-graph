@@ -1052,7 +1052,8 @@ var dartClassModifierPattern = regexp.MustCompile(`\b(final|base|interface|seale
 
 // fsharpStringOpener locates an F# string-literal opener: the run of
 // interpolation sigils (`$`), the offset of a verbatim `@` (-1 when absent),
-// and the offset and length of the opening quote run.
+// and the offset and DELIMITER WIDTH of the opening quote -- 1 or 3, which is
+// not the same as the run of quotes standing there (see fsharpOpenerQuotes).
 type fsharpStringOpener struct {
 	sigils int
 	at     int
@@ -1084,8 +1085,31 @@ func readFSharpStringOpener(src []byte, i int) (fsharpStringOpener, bool) {
 		return fsharpStringOpener{}, false
 	}
 	open.quote = j
-	open.quotes = runLength(src, j, '"')
+	open.quotes = fsharpOpenerQuotes(runLength(src, j, '"'), open.at >= 0)
 	return open, true
+}
+
+// fsharpOpenerQuotes converts the run of quotes standing at a literal opener
+// into the width of the delimiter F# actually reads there. The run is NOT the
+// width: F# takes `"""` as the triple-quoted opener and every shorter run as a
+// one-quote opener, so `""` is an EMPTY string -- an opener and its own
+// terminator -- and never a two-quote delimiter. A verbatim `@` is read first
+// and wins over the raw form, so the leading `""` of `@"""a"" b"` is an
+// ESCAPED quote inside a one-quote literal, exactly as the call-side masker
+// already reads it.
+//
+// Carrying the raw run through as the delimiter sent fsharpStringEnd hunting
+// for a closing run that is not there: `""` scanned on to the NEXT quote in the
+// file (past newlines -- an ordinary string body is not stopped by one) and
+// `@"""a"" b"` ran to EOF. The outer scan then resumed inside, or past, every
+// literal in between, so an `$@"..."` after one of them was never masked,
+// tree-sitter misparsed the binding that held it, and the definition -- with
+// every CALLS edge into it -- was demoted or lost.
+func fsharpOpenerQuotes(run int, verbatim bool) int {
+	if run >= 3 && !verbatim {
+		return 3
+	}
+	return 1
 }
 
 // fsharpStringEnd returns the offset just past the literal opened by open, so
@@ -1151,9 +1175,9 @@ func fsharpHoleEscapeInBody(src []byte, start, end int) bool {
 //     doubled brace is not a hole and not literal text to it -- and the parse
 //     fails all the way up to a root ERROR.
 //
-// Only single- and triple-quoted openers are considered: a wider quote run is
-// not an F# literal and the grammar cannot parse it either way, so leaving it
-// alone keeps this from making it worse.
+// Only single- and triple-quoted openers are considered. fsharpOpenerQuotes
+// has already normalised open.quotes to one of those two widths, so the width
+// guard turns away only a zero-value opener that was never read.
 func fsharpInterpolationNeedsMasking(src []byte, open fsharpStringOpener, end int) bool {
 	if open.sigils == 0 || (open.quotes != 1 && open.quotes != 3) {
 		return false
