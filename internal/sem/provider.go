@@ -5331,6 +5331,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// file — an unrecognized name is never guessed into a call.
 					for name := range fsharpJuxtapositionCallIdentifiers(callBlock, fsharpCallableNames) {
 						callNames[name] = struct{}{}
+						// Juxtaposition is a bare spelling just like convert(x).
+						// Keep it beside any A.convert sighting with the same
+						// terminal name instead of inheriting A's restriction.
+						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, nil, name, name)
 					}
 				}
 				if file.Language == "Lua" {

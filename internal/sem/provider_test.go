@@ -15781,7 +15781,7 @@ A.convert(2) |> ignore
 // TestFSharpBareAndQualifiedCallsBothKeepTheirEdge pins that the two spellings
 // of a call are two call sites, both of which reach the graph.
 //
-// `convert(x)` and `A.convert(x)` in one caller MEAN different things: the bare
+// `convert x` and `A.convert x` in one caller MEAN different things: the bare
 // one names no module and F# resolves it by scope, to B's own `convert`; the
 // qualified one names module A and can only be A's. Qualifier state recorded
 // both, but a bare sighting was treated as a veto -- it reported no qualifiers
@@ -15797,7 +15797,7 @@ func TestFSharpBareAndQualifiedCallsBothKeepTheirEdge(t *testing.T) {
 module B =
     let convert (x: int) = x * 2
 
-    let mix (x: int) = convert(x) + A.convert(x)
+    let mix (x: int) = A.convert x; convert x
 `)
 	writeFile(t, repo, "script.fsx", `let convert (x: int) = x + 1
 
@@ -15831,10 +15831,10 @@ A.convert(2) |> ignore
 			topLevelLines[to.StartLine] = true
 		}
 	}
-	// A.convert is on line 2 and B's own on line 5, so `convert(x) + A.convert(x)`
-	// reaches exactly both.
+	// A.convert is on line 2 and B's own on line 5, so qualified and bare
+	// juxtaposition calls in the same block reach exactly both.
 	if want := map[int]bool{2: true, 5: true}; !reflect.DeepEqual(mixLines, want) {
-		t.Fatalf("mix wrote convert(x) and A.convert(x) but reached definitions on lines %v, want %v", sortedIntKeys(mixLines), sortedIntKeys(want))
+		t.Fatalf("mix wrote bare and qualified juxtaposition calls but reached definitions on lines %v, want %v", sortedIntKeys(mixLines), sortedIntKeys(want))
 	}
 	// The script's own convert is on line 1 and module A's on line 4.
 	if want := map[int]bool{1: true, 4: true}; !reflect.DeepEqual(topLevelLines, want) {
