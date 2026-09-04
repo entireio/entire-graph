@@ -3961,6 +3961,24 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			if language != "R" || node.Type() != "binary_operator" {
 				childInFunc = true // descendants of this callable are function-local
 			}
+			// A callable declared inside another callable's BODY is a
+			// function-local binding, not a member of the enclosing class, so it
+			// must not inherit the type scope. `function handler(){}` inside
+			// `Widget.render()` was qualified as the method `Widget.handler` —
+			// a symbol naming a member the class does not have, whose bare
+			// compound-v1 ID then collided with the real `Widget.handler` and
+			// pushed BOTH onto `#sig:`-suffixed IDs, so adding a callback in one
+			// method body silently re-identified an unrelated method. The `const
+			// handler = (a) => a` spelling of the same construct already emits an
+			// unqualified local `function` (the variable_declarator case never
+			// qualifies), so this only makes the `function` forms agree with it.
+			// Scoped to JS/TS: other languages' nested callables (Java's
+			// anonymous-class members reached through initializerTypeBodies,
+			// Python's nested defs) rely on the type scope to stay
+			// container-qualified.
+			if functionLocalScopeResets(language) {
+				childScope = ""
+			}
 		}
 	}
 	// In R the function body lives under the anonymous function_definition node
@@ -7701,6 +7719,20 @@ func isExportedTopLevelJSVariable(node *sitter.Node, language string) bool {
 	}
 	root := grandparent.Parent()
 	return validNode(root) && root.Type() == "program"
+}
+
+// functionLocalScopeResets reports whether entering a callable's body clears
+// the enclosing TYPE scope, so callables declared inside it are emitted as
+// unqualified function-local bindings rather than as members of that type.
+//
+// True only for JavaScript/TypeScript, where a nested `function name(){}` or
+// named function expression is a lexical binding of the enclosing function and
+// is never reachable as `Type.name`. Every other routed grammar keeps the type
+// scope for nested callables: Java's anonymous-class members are walked with the
+// outer scope on purpose (see initializerTypeBodies), and Python/Ruby nested
+// defs are qualified under their class today.
+func functionLocalScopeResets(language string) bool {
+	return language == "JavaScript" || language == "TypeScript"
 }
 
 func scopesChildren(language, kind string) bool {

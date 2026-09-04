@@ -336,3 +336,182 @@ func describeEntities(entities []Entity) string {
 	}
 	return out
 }
+
+// A callable declared inside a method BODY is a function-local binding, not a
+// member of the enclosing class.
+//
+// `function handler(){}` (declaration or named expression) inside
+// `Widget.render()` inherited the class scope and was emitted as the method
+// `Widget.handler` — a symbol naming a member the class does not have. It then
+// shared a base compound-v1 ID with the real `Widget.handler`, so the
+// disambiguation branch in entitySymbols fired for BOTH and the real method's
+// published ID moved during an ordinary edit to an unrelated method body:
+//
+//	before: local/r:JavaScript:widget.js:method:Widget.handler
+//	after:  local/r:JavaScript:widget.js:method:Widget.handler#sig:4bae429b24ae5cb3
+//
+// The rule pinned here: in JS/TS a nested callable is emitted UNQUALIFIED, with
+// kind "function", Local, and contained by its lexically enclosing symbol. That
+// is not a new scheme — the `const handler = (a) => a` spelling of the same
+// construct already produces exactly that (variable_declarator never qualifies),
+// and the third case below pins the two spellings to the same shape.
+func TestJavaScriptNestedCallableIsNotAClassMember(t *testing.T) {
+	const noNested = "class Widget {\n" +
+		"  render(a) { return a }\n" +
+		"  handler(a) { return a + 1 }\n" +
+		"}\n"
+	const wantMemberID = "local/r:JavaScript:widget.js:method:Widget.handler"
+
+	symbolsFor := func(t *testing.T, src string) []SymbolRecord {
+		t.Helper()
+		entities, _, status := TreeSitterParser{}.ParseWithStatus("widget.js", src)
+		if status.ParseError {
+			t.Fatalf("unexpected parse error: %s", status.Detail)
+		}
+		return entitySymbols("local/r", "widget.js", "JavaScript", entities)
+	}
+
+	// Control: with no nested callable the class member owns the bare ID.
+	if got := symbolsFor(t, noNested); len(got) != 3 || got[2].ID != wantMemberID {
+		t.Fatalf("baseline symbols = %s, want the member at the bare ID %s", symbolIDs(got), wantMemberID)
+	}
+
+	for _, testCase := range []struct {
+		name       string
+		src        string
+		wantNested SymbolRecord
+	}{{
+		name: "function declaration",
+		src: "class Widget {\n" +
+			"  render(a) {\n" +
+			"    function handler(v) { return v }\n" +
+			"    return handler(a)\n" +
+			"  }\n" +
+			"  handler(a) { return a + 1 }\n" +
+			"}\n",
+		wantNested: SymbolRecord{Kind: "function", Name: "handler", QualifiedName: "handler"},
+	}, {
+		name: "named function expression",
+		src: "class Widget {\n" +
+			"  render(a) {\n" +
+			"    return (0, function handler(v) { return v })(a)\n" +
+			"  }\n" +
+			"  handler(a) { return a + 1 }\n" +
+			"}\n",
+		wantNested: SymbolRecord{Kind: "function", Name: "handler", QualifiedName: "handler"},
+	}, {
+		// The already-correct spelling, pinned so the three cannot drift apart.
+		name: "arrow function bound to a const",
+		src: "class Widget {\n" +
+			"  render(a) {\n" +
+			"    const handler = (v) => v\n" +
+			"    return handler(a)\n" +
+			"  }\n" +
+			"  handler(a) { return a + 1 }\n" +
+			"}\n",
+		wantNested: SymbolRecord{Kind: "function", Name: "handler", QualifiedName: "handler"},
+	}} {
+		t.Run(testCase.name, func(t *testing.T) {
+			symbols := symbolsFor(t, testCase.src)
+
+			// Exactly one symbol may claim to be Widget.handler, and it is the
+			// class member: a second one is a symbol naming a member that does
+			// not exist, and `def Widget.handler` would then have two answers.
+			var members, nested []SymbolRecord
+			for _, symbol := range symbols {
+				switch symbol.QualifiedName {
+				case "Widget.handler":
+					members = append(members, symbol)
+				case "handler":
+					nested = append(nested, symbol)
+				}
+			}
+			if len(members) != 1 {
+				t.Fatalf("symbols claiming Widget.handler = %d, want 1: %s", len(members), symbolIDs(symbols))
+			}
+
+			// The member keeps the bare compound-v1 ID it had before the nested
+			// callable existed: adding one is an ordinary edit to another method.
+			if members[0].ID != wantMemberID {
+				t.Errorf("class member ID = %s, want the unchanged %s", members[0].ID, wantMemberID)
+			}
+			if members[0].Local {
+				t.Errorf("class member marked function-local: %#v", members[0])
+			}
+
+			// The nested callable survives as its own unqualified, function-local
+			// symbol contained by the method it is declared in.
+			if len(nested) != 1 {
+				t.Fatalf("unqualified nested symbols = %d, want 1: %s", len(nested), symbolIDs(symbols))
+			}
+			got := nested[0]
+			if got.Kind != testCase.wantNested.Kind || got.Name != testCase.wantNested.Name ||
+				got.QualifiedName != testCase.wantNested.QualifiedName {
+				t.Errorf("nested symbol = %s %s/%s, want %s %s/%s", got.Kind, got.Name, got.QualifiedName,
+					testCase.wantNested.Kind, testCase.wantNested.Name, testCase.wantNested.QualifiedName)
+			}
+			if !got.Local {
+				t.Errorf("nested callable not marked function-local: %#v", got)
+			}
+			if want := "local/r:JavaScript:widget.js:method:Widget.render"; got.ContainerID != want {
+				t.Errorf("nested container = %q, want the enclosing method %q", got.ContainerID, want)
+			}
+		})
+	}
+}
+
+// The scope reset is JS/TS-only, and that gate is load-bearing: it bounds the
+// blast radius of the fix above to two languages.
+//
+// Python's nested `def` reaches the same phantom-member shape (`C.helper` for a
+// helper defined inside `C.m`), and Java walks anonymous-class members with the
+// enclosing type scope on purpose (see initializerTypeBodies). Neither is
+// touched here — widening the gate would move every nested-callable compound-v1
+// ID in those languages, which is a separate decision with its own migration.
+// What this pins is only that the JS/TS fix did not silently make it for them.
+func TestNestedCallableScopeResetIsJavaScriptOnly(t *testing.T) {
+	for _, testCase := range []struct {
+		language string
+		want     bool
+	}{
+		{"JavaScript", true},
+		{"TypeScript", true},
+		{"Python", false},
+		{"Java", false},
+		{"Ruby", false},
+		{"Go", false},
+	} {
+		if got := functionLocalScopeResets(testCase.language); got != testCase.want {
+			t.Errorf("functionLocalScopeResets(%q) = %v, want %v", testCase.language, got, testCase.want)
+		}
+	}
+
+	// Behavioural half: a Python helper defined inside a method keeps the
+	// qualified name it has today, so no Python symbol ID moved.
+	const src = "class C:\n" +
+		"    def m(self):\n" +
+		"        def helper(v):\n" +
+		"            return v\n" +
+		"        return helper(1)\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("c.py", src)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error: %s", status.Detail)
+	}
+	found := false
+	for _, entity := range entities {
+		if entity.Name == "C.helper" && entity.Local {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Python nested def lost its class qualification; entities = %s", describeEntities(entities))
+	}
+}
+
+func symbolIDs(symbols []SymbolRecord) string {
+	out := ""
+	for _, symbol := range symbols {
+		out += fmt.Sprintf("{%s %s local=%v}", symbol.Kind, symbol.ID, symbol.Local)
+	}
+	return out
+}
