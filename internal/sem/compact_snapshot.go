@@ -124,28 +124,44 @@ func (encoder *CompactSnapshotEncoder) writeLine(value any) error {
 // side was configured with. Refusing at encode time is also the failure a caller
 // can act on — the alternative is a file written successfully and unreadable
 // later, which is the defect this whole area exists to remove.
+//
+// The limit is enforced by the writer rather than by measuring a copy first, so
+// the summary is never held twice.
 func (encoder *CompactSnapshotEncoder) writeSummaryLine(value any) error {
-	line, err := compactJSONLine(value)
-	if err != nil {
-		return err
-	}
 	limit := encoder.summaryLineLimit
 	if limit <= 0 {
 		limit = compactSnapshotSummaryLineCeiling
 	}
-	if len(line) > limit {
-		return fmt.Errorf("compact snapshot summary is %d bytes, past the %d-byte limit the decoder reads back", len(line), limit)
+	bounded := &boundedSummaryWriter{out: encoder.out, limit: limit}
+	lineEncoder := json.NewEncoder(bounded)
+	lineEncoder.SetEscapeHTML(false)
+	return lineEncoder.Encode(value)
+}
+
+// boundedSummaryWriter passes writes through until they would take the summary
+// past limit, and refuses the write that would.
+type boundedSummaryWriter struct {
+	out     io.Writer
+	limit   int
+	written int
+}
+
+func (writer *boundedSummaryWriter) Write(payload []byte) (int, error) {
+	if writer.written+len(payload) > writer.limit {
+		return 0, fmt.Errorf(
+			"compact snapshot summary is %d bytes, past the %d-byte limit the decoder reads back",
+			writer.written+len(payload), writer.limit,
+		)
 	}
-	written, err := encoder.out.Write(line)
-	if err != nil {
-		return err
+	written, err := writer.out.Write(payload)
+	writer.written += written
+	if err == nil && written != len(payload) {
+		// An io.Writer may report a short write with no error. The summary
+		// closes the artifact, so a truncated one is a snapshot no reader can
+		// finish.
+		return written, io.ErrShortWrite
 	}
-	if written != len(line) {
-		// io.Writer may report a short write with no error; the summary closes
-		// the artifact, so a truncated one is a snapshot no reader can finish.
-		return io.ErrShortWrite
-	}
-	return nil
+	return written, err
 }
 
 func compactJSONLine(value any) ([]byte, error) {
