@@ -76,7 +76,10 @@ other is installation.
   Caller-supplied ignore inputs are bounded to 1 MiB per file and 64 KiB per rule
   line. One listing retains at most 16,384 parsed external rules and observes at
   most 512 nested `.gitignore` files. A limit refusal is reported instead of
-  truncating the policy and silently changing the indexed corpus. Nested
+  truncating the policy and silently changing the indexed corpus, and so is a
+  `.git` this process cannot read while resolving `info/exclude`: absence of a
+  git directory degrades to "no exclude list", but a failure to READ one that is
+  there is refused rather than dropping the repository's own exclusions. Nested
   worktree ignore files are confined to the repository and are not followed
   through a symlink that escapes it. When Git cannot enumerate a worktree, the
   bounded filesystem fallback applies the ignore files it can observe and emits
