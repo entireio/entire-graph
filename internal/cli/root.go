@@ -492,14 +492,17 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if scip && flags.Progress {
 		return errors.New("--format scip cannot be combined with --progress; stderr is reserved for the JSON omission note")
 	}
-	if compact && flags.MaxSeconds > 0 {
-		// A compact artifact is DEFINED to be a complete snapshot: LoadCompactSnapshot
-		// and snapshot-query accept whatever prefix they are handed, with no place to
-		// carry E_ANALYSIS_BUDGET_EXCEEDED forward, so a truncated compact file turns
-		// every symbol that was never reached into a confident negative answer. The
-		// NDJSON stream can say "partial"; this format cannot, so the combination is
-		// refused rather than written.
-		return errors.New("--format compact-ndjson requires a complete snapshot and cannot be combined with --max-seconds; use --format ndjson (which reports E_ANALYSIS_BUDGET_EXCEEDED when truncated), or --max-seconds 0")
+	if (compact || scip) && flags.MaxSeconds > 0 {
+		// Both of these artifacts are DEFINED to be a complete snapshot, and
+		// neither has a record that can carry E_ANALYSIS_BUDGET_EXCEEDED forward.
+		// LoadCompactSnapshot and snapshot-query accept whatever compact prefix
+		// they are handed; a SCIP Index is a single binary protobuf message whose
+		// only truncation signal is a stderr note that does not travel with the
+		// file. Either way a truncated artifact turns every symbol that was never
+		// reached into a confident negative answer for every later consumer. The
+		// NDJSON stream can say "partial"; these formats cannot, so the
+		// combination is refused rather than written.
+		return fmt.Errorf("--format %s requires a complete snapshot and cannot be combined with --max-seconds; use --format ndjson (which reports E_ANALYSIS_BUDGET_EXCEEDED when truncated), or --max-seconds 0", flags.Format)
 	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {

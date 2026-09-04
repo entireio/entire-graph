@@ -498,10 +498,12 @@ following bounds are enforced:
     cache (`StoreProviderRecords`) and the search/preindex snapshot cache
     (`writeSearchSnapshot`, which returns `ErrTruncatedSnapshotNotCacheable`).
     The check lives in the writers so a new call site cannot reintroduce the hole.
-  - `--max-seconds` is **rejected with `--format compact-ndjson`.** A compact
-    artifact is defined to be a complete snapshot and has nowhere to carry
-    `E_ANALYSIS_BUDGET_EXCEEDED` forward, so a truncated one would make every
-    unreached symbol read as a confident negative.
+  - `--max-seconds` is **rejected with `--format compact-ndjson` and with
+    `--format scip`.** Both artifacts are defined to be a complete snapshot and
+    neither has anywhere to carry `E_ANALYSIS_BUDGET_EXCEEDED` forward -- a SCIP
+    `Index` is one binary protobuf message whose only truncation signal is a
+    stderr note that does not travel with the file -- so a truncated one would
+    make every unreached symbol read as a confident negative.
 
   This bound is what makes the relation phase's cost survivable rather than
   cheap. The phase is still quadratic in the nesting depth of a file's

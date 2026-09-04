@@ -78,7 +78,13 @@ func isOptInBudgetExceeded(ctx context.Context, gate budgetGate, budgetDeadline 
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return false
 	}
-	if callerDL, ok := ctx.Deadline(); ok && callerDL.Before(budgetDeadline) && !gate.now().Before(callerDL) {
+	// `!After` and not `Before`: when the caller's deadline lands on exactly the
+	// same instant as the opt-in deadline the caller's context is done too, and a
+	// context that is done is the caller's business to hear about. Classifying
+	// the tie as our truncation would hand back a short snapshot with a nil error
+	// while ctx.Err() is already DeadlineExceeded. A budget deadline strictly
+	// EARLIER than the caller's still fired first, so that stays our truncation.
+	if callerDL, ok := ctx.Deadline(); ok && !callerDL.After(budgetDeadline) && !gate.now().Before(callerDL) {
 		return false
 	}
 	return !gate.now().Before(budgetDeadline)
