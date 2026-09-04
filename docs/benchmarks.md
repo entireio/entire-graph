@@ -49,13 +49,21 @@ memory harness or selectors behind its historical README numbers.
 
 A separate comparison from the one above: eight memory systems (entire-graph, mem0 OSS, cognee,
 BM25, cmm, graphify, letta, supermemory) on all 1,540 questions of LoCoMo, under one shared reader
-model, one shared judge model, and a 200-item retrieval budget for every arm. Where the GraphMark
+model, one shared judge model, and a 200-item retrieval budget requested for every arm —
+supermemory's search API hard-caps that at 100, so it alone answered from half the budget, and its
+server was patched to reach the shared extraction model; both are disclosed in the full write-up. Where the GraphMark
 comparison above is attested against an unpublished bundle, this one's full methodology, every
 retraction, and every quoted number's provenance are committed in this repository.
 
-Measured 2026-08-14, entire-graph
-[v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0). Per-system versions and
-sources: [`UPSTREAM.md`](../bench/memory/UPSTREAM.md).
+Measured 2026-08-14 on the
+[#104](https://github.com/entireio/entire-graph/pull/104) branch, before it merged. The retrieval
+path it exercises first shipped in
+[v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0), tagged 2026-08-18 after
+further retrieval fixes — so the released tag itself was never benchmarked, and 94.74 should be
+quoted as the #104 branch result. The run id, `sw_eg_mr3`, has no row in
+[`RUN-INDEX.md`](../bench/memory/RUN-INDEX.md); the one registered run also scoring 94.74
+(`plan_f_hyb`) used a non-default ingest granularity and is not interchangeable evidence. Per-system
+versions and sources: [`UPSTREAM.md`](../bench/memory/UPSTREAM.md).
 
 entire-graph ranks first at **94.74**; the margin over the strongest inference-built competitor
 (mem0 OSS, 93.83) is **+0.91pp** and does not clear statistical significance (McNemar *p* = 0.125).
