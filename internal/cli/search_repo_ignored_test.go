@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -258,5 +259,79 @@ func TestSearchCommandDisclosesExclusionsAtEveryBudget(t *testing.T) {
 			t.Fatalf("budget %s: a committed ignore rule removed hidden/auth.go and the payload said"+
 				" nothing about it:\n%s", budget, out.String())
 		}
+	}
+}
+
+// writeRepoIgnoredBudgetRepo is the fixture of the sweep above: one committed
+// `.graphignore` rule hides a file, and eight visible files give the ranking
+// enough material to consume a tight ceiling.
+func writeRepoIgnoredBudgetRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	write(t, repo, ".graphignore", "hidden/\n")
+	write(t, repo, "hidden/auth.go", "package hidden\n\n"+
+		"// ValidateToken checks the bearer token presented on a request.\n"+
+		"func ValidateToken(token string) bool { return len(token) == 64 }\n")
+	for i := 1; i <= 8; i++ {
+		name := fmt.Sprintf("visible/auth_stub%d.go", i)
+		write(t, repo, name, fmt.Sprintf("package visible\n\n"+
+			"// ValidateTokenStub%d checks the bearer token presented on a request.\n"+
+			"func ValidateTokenStub%d(token string) bool {\n\tif token == \"\" {\n\t\treturn false\n\t}\n"+
+			"\tif len(token) != 64 {\n\t\treturn false\n\t}\n\treturn true\n}\n", i, i))
+	}
+	return repo
+}
+
+// The disclosure floor is funded from inside --max-context-bytes, and exactly one
+// renderer prints it. Charging every format for it deleted ranked source from the
+// formats that do not: at a 600-byte ceiling over an excluding repository, the
+// JSON payload lost its only result and bought nothing with the bytes, because
+// json/ndjson carry the exclusion facts as data outside the budget anyway.
+//
+// Both directions are asserted from one fixture and one ceiling: the format that
+// does not render the floor keeps its ranked source, and the format that does
+// still discloses.
+func TestSearchCommandChargesTheDisclosureFloorOnlyToTheFormatThatPrintsIt(t *testing.T) {
+	t.Parallel()
+	repo := writeRepoIgnoredBudgetRepo(t)
+	run := func(format string) string {
+		t.Helper()
+		var out bytes.Buffer
+		err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
+			"search", "--repo", repo, "--query", "bearer token validation", "--format", format,
+			"--profile", "syntax-only", "--worktree", "--max-context-bytes", "600",
+		})
+		if err != nil {
+			t.Fatalf("format %s: %v", format, err)
+		}
+		return out.String()
+	}
+	var decoded struct {
+		Results     []struct{} `json:"results"`
+		RepoIgnored *struct {
+			Files int `json:"files"`
+		} `json:"repo_ignored"`
+	}
+	payload := run("json")
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatalf("json payload: %v\n%s", err, payload)
+	}
+	if decoded.RepoIgnored == nil || decoded.RepoIgnored.Files == 0 {
+		t.Fatalf("the fixture excluded nothing, so this proves nothing:\n%s", payload)
+	}
+	if len(decoded.Results) == 0 {
+		t.Fatalf("a 600-byte ceiling returned no ranked source at all: the ranking was charged"+
+			" for a disclosure floor that --format json never prints\n%s", payload)
+	}
+	text := run("text")
+	if !strings.Contains(text, "EXCLUDED:") {
+		t.Fatalf("--format text renders the floor and must still disclose at the same ceiling:\n%s", text)
+	}
+	// The reservation is still charged to text, so the FULL disclosure block fits
+	// inside the ceiling. Withdrawing it there would let the ranking spend the
+	// bytes and degrade the same payload to the bounded floor.
+	if strings.Contains(text, "repo_ignored)") {
+		t.Fatalf("--format text degraded to the bounded floor at a 600-byte ceiling: the block it"+
+			" reserved for was not funded\n%s", text)
 	}
 }
