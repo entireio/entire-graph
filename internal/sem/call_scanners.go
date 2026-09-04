@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+const fsharpCallTargetSegmentPattern = "(?:[A-Za-z_][A-Za-z0-9_']*|``[^`\\r\\n]+``)"
+
 var (
 	clojureCallHeadRe       = regexp.MustCompile(`\(\s*([A-Za-z0-9_.$!?*+\-<>=/]+)`)
 	sqlRoutineCallRe        = regexp.MustCompile(`(?i)\b((?:@?[A-Za-z_][A-Za-z0-9_]*@?|"[^"]+")(?:\s*\.\s*(?:@?[A-Za-z_][A-Za-z0-9_]*@?|"[^"]+"))*)\s*\(`)
@@ -16,7 +18,7 @@ var (
 	// `|||>` all differ only in how many arguments they feed it. That makes the
 	// position unambiguous in a way bare juxtaposition (`add 1 2`) is not, so it
 	// is scanned on its own rather than waiting on a full F# application parser.
-	fsharpPipelineCallRe = regexp.MustCompile(`\|>\s*([A-Za-z_][A-Za-z0-9_']*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_']*)*)`)
+	fsharpPipelineCallRe = regexp.MustCompile(`\|>\s*(` + fsharpCallTargetSegmentPattern + `(?:\s*\.\s*` + fsharpCallTargetSegmentPattern + `)*)`)
 	juliaCallRe          = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:!)?)\s*(?:\{[^{}\n;()]*\})?\s*\(`)
 	luaDottedCallRe      = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:(?:\s*[.:]\s*)[A-Za-z_][A-Za-z0-9_]*)+)\s*\(`)
 	zigDottedCallRe      = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*\(`)
@@ -334,11 +336,32 @@ func fsharpCallTargetNames(targets map[string]struct{}) map[string]struct{} {
 // addFSharpCallSite records one sighting of target at offset, normalising the
 // whitespace F# allows around a dot out of the spelling.
 func addFSharpCallSite(out map[string][]int, target string, offset int) {
-	target = strings.Join(strings.Fields(target), "")
+	target = normalizeFSharpCallTarget(target)
 	if target == "" || lastDottedCallSegment(target) == "" {
 		return
 	}
 	out[target] = append(out[target], offset)
+}
+
+// normalizeFSharpCallTarget removes the optional whitespace around dots while
+// preserving whitespace inside double-backtick identifiers, where it is part
+// of the name (`Input.“normalize input```).
+func normalizeFSharpCallTarget(target string) string {
+	var out strings.Builder
+	escaped := false
+	for i := 0; i < len(target); i++ {
+		if target[i] == '`' && i+1 < len(target) && target[i+1] == '`' {
+			escaped = !escaped
+			out.WriteString("``")
+			i++
+			continue
+		}
+		if !escaped && isASCIISpace(target[i]) {
+			continue
+		}
+		out.WriteByte(target[i])
+	}
+	return out.String()
 }
 
 // fsharpPipelineCallIdentifiers returns the functions applied by F# forward

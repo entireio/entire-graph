@@ -15571,6 +15571,8 @@ func TestFSharpPipelineScannerSkipsLambdasAndLiterals(t *testing.T) {
 		// its sibling rather than diverging from it here.
 		{"block comment matches the dotted scanner", "let f () = 1 (* xs |> helper *)", []string{"helper"}},
 		{"qualified pipe", "let f xs = xs |> List.map g", []string{"map"}},
+		{"escaped identifier", "let f x = x |> ``normalize input``", []string{"``normalize input``"}},
+		{"qualified escaped identifiers", "let f x = x |> ``Input codec``.``normalize input``", []string{"``normalize input``"}},
 		{"bare pipe", "let f xs = xs |> helper", []string{"helper"}},
 		{"double pipe", "let f a b = (a, b) ||> helper", []string{"helper"}},
 		{"triple pipe", "let f a b c = (a, b, c) |||> helper", []string{"helper"}},
@@ -15608,6 +15610,25 @@ func TestFSharpPipelineScannerSkipsLambdasAndLiterals(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFSharpPipelineCallsEscapedIdentifiers(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Escaped.fs", "module Escaped\n\n"+
+		"let ``normalize input`` (value: int) = value + 1\n\n"+
+		"let runBare value = value |> ``normalize input``\n\n"+
+		"let runQualified value = value |> Escaped.``normalize input``\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caller := range []string{"runBare", "runQualified"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "``normalize input``") {
+			t.Fatalf("missing escaped F# pipeline CALLS %s->``normalize input``: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
 	}
 }
 
