@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "fb1babe1c782",
+  "strategy": "manual-commit",
+  "branch": "audit/lang-cpp-declarator-names",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/sem/parser.go",
+    "internal/sem/parser_cpp_declarator_name_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fb/1babe1c782/0/metadata.json",
+      "transcript": "/fb/1babe1c782/0/full.jsonl",
+      "compact_transcript": "/fb/1babe1c782/0/transcript.jsonl",
+      "content_hash": "/fb/1babe1c782/0/content_hash.txt",
+      "prompt": "/fb/1babe1c782/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 177635,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 6362240,
+    "output_tokens": 5680,
+    "api_call_count": 48
+  }
+}
