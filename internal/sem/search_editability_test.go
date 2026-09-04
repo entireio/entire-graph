@@ -426,7 +426,7 @@ func TestSeatForcedSearchUnitsPaysOnlyFromDeadWeight(t *testing.T) {
 	}
 	budget := searchResultsSize(planSizes(want))
 
-	plan, bodies, demoted := allocateSearchSnippets(results, enclosures, nil, budget, 0, 5, 2)
+	plan, bodies, demoted := allocateSearchSnippets(results, enclosures, nil, budget, 0, 5, 5, 2)
 	if bodies != 1 {
 		t.Fatalf("bodies = %d, want 1 (the forced unit)", bodies)
 	}
@@ -451,7 +451,7 @@ func TestSeatForcedSearchUnitsPaysOnlyFromDeadWeight(t *testing.T) {
 	}
 
 	// With no ceiling at all the same call must seat the unit and reclaim nothing.
-	unbounded, bodiesFree, demotedFree := allocateSearchSnippets(results, enclosures, nil, 0, 0, 5, 2)
+	unbounded, bodiesFree, demotedFree := allocateSearchSnippets(results, enclosures, nil, 0, 0, 5, 5, 2)
 	if bodiesFree != 1 || demotedFree != 0 {
 		t.Fatalf("unbounded: bodies=%d demoted=%d, want 1 and 0", bodiesFree, demotedFree)
 	}
@@ -494,14 +494,14 @@ func TestSeatForcedSearchUnitsNeverDemotesAnExistingBody(t *testing.T) {
 	forced[0] = searchEnclosure{start: 10, end: 400, lines: lines, symbol: forcedSymbol, forced: true}
 
 	// A ceiling that fits the control allocation (with rank 4's body) but NOT that plus rank 1's unit.
-	control, controlBodies, _ := allocateSearchSnippets(results, plain, nil, 0, searchEnclosureGrowthBytes, 5, 2)
+	control, controlBodies, _ := allocateSearchSnippets(results, plain, nil, 0, searchEnclosureGrowthBytes, 5, 5, 2)
 	if controlBodies != 1 || control[3].SnippetEndLine != 1008 {
 		t.Fatalf("control did not deliver the gold body: bodies=%d rank4=%d-%d",
 			controlBodies, control[3].SnippetStartLine, control[3].SnippetEndLine)
 	}
 	budget := serializedSearchResultBytes(control)
 
-	plan, bodies, _ := allocateSearchSnippets(results, forced, plain, budget, searchEnclosureGrowthBytes, 5, 2)
+	plan, bodies, _ := allocateSearchSnippets(results, forced, plain, budget, searchEnclosureGrowthBytes, 5, 5, 2)
 	if plan[3].SnippetStartLine != 882 || plan[3].SnippetEndLine != 1008 {
 		t.Fatalf("rank 4 = %d-%d, want the gold body 882-1008 intact — a forced unit must never "+
 			"demote another rank's existing allocation", plan[3].SnippetStartLine, plan[3].SnippetEndLine)
@@ -535,7 +535,7 @@ func TestSeatForcedSearchUnitsRefusesAUselesslySmallClip(t *testing.T) {
 	results, enclosures := forcedAllocationFixture()
 	ranked := searchResultsSize(planSizes(results))
 
-	plan, bodies, _ := allocateSearchSnippets(results, enclosures, nil, ranked, 0, 5, 2)
+	plan, bodies, _ := allocateSearchSnippets(results, enclosures, nil, ranked, 0, 5, 5, 2)
 	if got := searchResultsSize(planSizes(plan)); got > ranked {
 		t.Fatalf("plan is %d bytes over a %d-byte ceiling", got, ranked)
 	}
@@ -556,7 +556,7 @@ func TestSeatForcedSearchUnitsRefusesAUselesslySmallClip(t *testing.T) {
 	clipped := enclosures[0]
 	clipped.start, clipped.end = clipSearchUnitToCap(10, 300, results[0].FocusLine, searchForcedUnitMinLines+20)
 	mid := ranked + serializedSearchResultBytes(widenSearchResultToEnclosure(results[0], clipped))
-	midPlan, midBodies, _ := allocateSearchSnippets(results, enclosures, nil, mid, 0, 5, 2)
+	midPlan, midBodies, _ := allocateSearchSnippets(results, enclosures, nil, mid, 0, 5, 5, 2)
 	if span := midPlan[0].SnippetEndLine - midPlan[0].SnippetStartLine + 1; span < searchForcedUnitMinLines {
 		t.Fatalf("seated span = %d lines, want >= the %d-line floor or nothing",
 			span, searchForcedUnitMinLines)

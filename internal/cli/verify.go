@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -214,7 +215,11 @@ func verifyCompiledCommand(command string) bool {
 // runVerifyShell executes one command in the repository. It returns the exit code separately from the
 // error: a test suite exiting non-zero is the normal case and not a failure of this verb.
 func runVerifyShell(ctx context.Context, repo, command string) (string, int, error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	shell, err := verifyShellFor(runtime.GOOS, exec.LookPath)
+	if err != nil {
+		return "", 0, err
+	}
+	cmd := exec.CommandContext(ctx, shell, "-c", command)
 	cmd.Dir = repo
 	// The verb MUST NOT mutate the tree beyond what the command itself does, so nothing is written, no
 	// files are staged and no environment is injected beyond the caller's own.
@@ -227,6 +232,41 @@ func runVerifyShell(ctx context.Context, repo, command string) (string, int, err
 		return string(out), 0, err
 	}
 	return string(out), 0, nil
+}
+
+// verifyShellFor resolves the shell that runs --setup and --test.
+//
+// Every command this verb runs is POSIX sh: the VERIFY deriver emits `cd 'dir' && <runner>` with
+// POSIX single-quoting, and the exit-status capture around a `| <explain>` pipeline is written in
+// POSIX shell because `set -o pipefail` is fatal in dash. So the shell has to be a POSIX one, and
+// on Windows `sh` is not a given.
+//
+// A bare exec of "sh" there fails with `exec: "sh": executable file not found in %PATH%`, which is
+// a launch failure the caller cannot act on — entire-graph builds, ships and tests a Windows
+// binary, so the verb is reachable on a platform where it could never start. Git for Windows
+// installs `sh.exe` and `bash.exe` beside git, so the shell usually EXISTS; it just has to be
+// looked up rather than assumed.
+//
+// cmd.exe is deliberately not a fallback. It would launch, and then mis-run the very commands this
+// verb adjudicates — `cd 'dir'` enters a directory whose name includes the quotes — producing a
+// failed run that is an artifact of the shell rather than of the tree. This verb's dominant failure
+// mode is a confident verdict about a run that did not happen the way the verdict assumes, so an
+// unrunnable command must be refused loudly instead of half-run.
+func verifyShellFor(goos string, lookPath func(string) (string, error)) (string, error) {
+	if goos != "windows" {
+		// Unchanged on every POSIX platform, by name rather than by resolved path: the command is
+		// what it always was, and PATH resolution stays the operating system's job.
+		return "sh", nil
+	}
+	for _, candidate := range []string{"sh", "bash"} {
+		if resolved, err := lookPath(candidate); err == nil {
+			return resolved, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"verify runs its --setup and --test commands with a POSIX shell and found none on PATH " +
+			"(looked for sh, then bash): install Git for Windows, which provides sh.exe, or run " +
+			"verify from an environment whose PATH includes one")
 }
 
 // errorsAs is errors.As without importing the package name into every call site here.

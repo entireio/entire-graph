@@ -360,8 +360,25 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 			wantDerived: ".rspec + mirror test file path",
 		},
 		{
+			// No Gemfile: `bundle exec` here is a guaranteed "Could not locate Gemfile".
 			name: "minitest single file when the tests live under test/",
 			files: map[string]string{
+				"Rakefile":                     "task :test\n",
+				"lib/fluent/plugin/in_tail.rb": "",
+				"test/plugin/test_in_tail.rb":  "",
+			},
+			subject: searchVerifySubject{
+				sourcePath: "lib/fluent/plugin/in_tail.rb",
+				testPath:   "test/plugin/test_in_tail.rb", testEvidence: "mirror test file",
+			},
+			wantCommand: "ruby -Itest test/plugin/test_in_tail.rb",
+			wantTargets: "test/plugin/test_in_tail.rb",
+			wantDerived: "Rakefile + mirror test file path under test/",
+		},
+		{
+			name: "minitest single file goes through Bundler when a Gemfile exists",
+			files: map[string]string{
+				"Gemfile":                      "source 'https://rubygems.org'\n",
 				"Rakefile":                     "task :test\n",
 				"lib/fluent/plugin/in_tail.rb": "",
 				"test/plugin/test_in_tail.rb":  "",
@@ -952,8 +969,10 @@ func TestSearchVerifySuiteFallback(t *testing.T) {
 		{
 			name: "ruby minitest repo with no covering test falls back to rake test",
 			files: map[string]string{
-				"Gemfile":                       "source 'https://rubygems.org'\n",
-				"Rakefile":                      "task default: %w[test rubocop]\n",
+				"Gemfile": "source 'https://rubygems.org'\n",
+				"Rakefile": "require \"rake/testtask\"\n" +
+					"Rake::TestTask.new(:test)\n" +
+					"task default: %w[test rubocop]\n",
 				"lib/faker/default/internet.rb": "module Faker\nend\n",
 			},
 			subject:     searchVerifySubject{sourcePath: "lib/faker/default/internet.rb"},
@@ -998,14 +1017,14 @@ func TestSearchVerifySuiteFallback(t *testing.T) {
 			wantCommand: "",
 		},
 		{
-			name: "gradle nested module uses root wrapper",
+			name: "gradle nested module uses the root wrapper and names its own project",
 			files: map[string]string{
 				"gradlew":                  "",
 				"lib/build.gradle":         "",
 				"lib/src/main/kotlin/A.kt": "",
 			},
 			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
-			wantCommand: "./gradlew test",
+			wantCommand: "./gradlew -p lib test",
 		},
 		{
 			name: "gradle nested wrapper runs from module directory",

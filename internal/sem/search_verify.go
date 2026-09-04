@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -595,8 +596,16 @@ var searchVerifySuiteDerivations = []func(string, *searchVerifyEvidence) *Search
 // searchVerifySuiteCommand builds a whole-suite command, labeling both the target (no covering test
 // was found) and the derivation (whole suite) so the reader knows it is unfiltered and slow.
 func searchVerifySuiteCommand(dir, command, derived string) *SearchVerifyCommand {
+	return searchVerifySuiteCommandLiteral(searchVerifyRunIn(dir, command), derived)
+}
+
+// searchVerifySuiteCommandLiteral is searchVerifySuiteCommand for a derivation that has already
+// decided where the command runs. Maven's reactor is the case: a module is addressed from the
+// repository root with `-pl`, so prefixing a `cd` into the module would be wrong rather than
+// merely redundant.
+func searchVerifySuiteCommandLiteral(command, derived string) *SearchVerifyCommand {
 	return &SearchVerifyCommand{
-		Command:     searchVerifyRunIn(dir, command),
+		Command:     command,
 		Targets:     "whole test suite (no covering test identified)",
 		DerivedFrom: derived + " (whole suite)",
 	}
@@ -624,7 +633,7 @@ func deriveSearchVerifySuiteMaven(dir string, evidence *searchVerifyEvidence) *S
 	if !evidence.exists(manifest) {
 		return nil
 	}
-	return searchVerifySuiteCommand(dir, "mvn -q test", manifest)
+	return searchVerifySuiteCommandLiteral(searchVerifyMavenCommand(dir, "test", evidence), manifest)
 }
 
 func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
@@ -642,7 +651,20 @@ func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *
 	if !ok {
 		return nil
 	}
-	return searchVerifySuiteCommand(wrapperDir, "./gradlew test", manifest+" + "+wrapperPath)
+	// The wrapper may live above the build this derivation is about. Running `./gradlew test` from
+	// the wrapper's own directory then tests whatever build sits THERE — an unrelated root build,
+	// or nothing at all, because Gradle does not discover a descendant build by walking down. The
+	// build the manifest named is the subject, so name it: `-p` points Gradle at that directory,
+	// which is correct both for an included subproject and for a standalone nested build.
+	command := "./gradlew test"
+	if wrapperDir != dir {
+		relative, inside := searchVerifyRelative(wrapperDir, dir)
+		if !inside {
+			return nil
+		}
+		command = "./gradlew -p " + shellQuotePath(relative) + " test"
+	}
+	return searchVerifySuiteCommand(wrapperDir, command, manifest+" + "+wrapperPath)
 }
 
 func deriveSearchVerifySuiteNode(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
@@ -663,7 +685,63 @@ func deriveSearchVerifySuiteNode(dir string, evidence *searchVerifyEvidence) *Se
 	if runner == "" {
 		return nil
 	}
-	return searchVerifySuiteCommand(dir, "npm test", manifest+" "+evidenceKind)
+	manager, managerEvidence := searchVerifyNodePackageManager(dir, parsed, evidence)
+	derived := manifest + " " + evidenceKind
+	if managerEvidence != "" {
+		derived += " + " + managerEvidence
+	}
+	return searchVerifySuiteCommand(dir, manager, derived)
+}
+
+// searchVerifyNodePackageManager reads the repository's own statement of which package manager runs
+// its scripts, and returns the invocation that runs the `test` script with it.
+//
+// `npm test` is not a portable spelling of "run this package's test script". A Yarn Plug'n'Play
+// project has no `node_modules/.bin` for npm's lifecycle to find, and a pnpm workspace's leaf
+// package is not linked the way npm expects, so the hard-gate command fails in exactly the
+// repositories that most clearly declared what to use instead. Two pieces of evidence answer it,
+// both facts about the tree: Corepack's `packageManager` field, and the lockfile — searched from
+// the manifest's own directory outward, because a workspace keeps one lockfile at its root.
+func searchVerifyNodePackageManager(
+	dir string, parsed searchVerifyNodeManifest, evidence *searchVerifyEvidence,
+) (string, string) {
+	if name, _, found := strings.Cut(strings.TrimSpace(parsed.PackageManager), "@"); found || name != "" {
+		if command, ok := searchVerifyNodeManagers[name]; ok {
+			return command, "packageManager " + name
+		}
+	}
+	for _, candidate := range searchVerifyNodeLockfiles {
+		if _, lockPath, ok := searchVerifyAncestorFile(dir, candidate.lockfile, evidence); ok {
+			return candidate.command, lockPath
+		}
+	}
+	// npm is the floor, and it is reported as no extra evidence: it is what this block always
+	// emitted, so a repository that declares nothing keeps the byte-identical command it had.
+	return "npm test", ""
+}
+
+// searchVerifyNodeManagers maps a `packageManager` name to the invocation that runs the package's
+// own `test` script with it. `bun test` is bun's BUILT-IN runner rather than the script, so bun is
+// spelled `bun run test` — the script is what every other entry here runs.
+var searchVerifyNodeManagers = map[string]string{
+	"npm":  "npm test",
+	"yarn": "yarn test",
+	"pnpm": "pnpm test",
+	"bun":  "bun run test",
+}
+
+// searchVerifyNodeLockfiles is the lockfile evidence, most specific first: npm's lockfile is listed
+// last because a repository that also carries a yarn or pnpm lock is one that migrated, and the
+// other manager's lock is the stale one.
+var searchVerifyNodeLockfiles = []struct {
+	lockfile string
+	command  string
+}{
+	{lockfile: "pnpm-lock.yaml", command: "pnpm test"},
+	{lockfile: "yarn.lock", command: "yarn test"},
+	{lockfile: "bun.lockb", command: "bun run test"},
+	{lockfile: "bun.lock", command: "bun run test"},
+	{lockfile: "package-lock.json", command: "npm test"},
 }
 
 func deriveSearchVerifySuiteComposer(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
@@ -698,17 +776,53 @@ func deriveSearchVerifySuiteRuby(dir string, evidence *searchVerifyEvidence) *Se
 	if !hasGemfile && !hasRakefile {
 		return nil
 	}
+	bundle := searchVerifyBundlePrefix(hasGemfile)
 	if evidence.exists(searchVerifyJoin(dir, ".rspec")) {
-		return searchVerifySuiteCommand(dir, "bundle exec rspec", searchVerifyJoin(dir, ".rspec"))
+		return searchVerifySuiteCommand(dir, bundle+"rspec", searchVerifyJoin(dir, ".rspec"))
 	}
 	if hasRakefile {
 		content, _ := evidence.file(searchVerifyJoin(dir, "Rakefile"))
-		if strings.Contains(content, "test") || strings.Contains(content, "TestTask") {
-			return searchVerifySuiteCommand(dir, "bundle exec rake test", searchVerifyJoin(dir, "Rakefile")+" test task")
+		if searchVerifyRakefileDefinesTest(content) {
+			return searchVerifySuiteCommand(dir, bundle+"rake test", searchVerifyJoin(dir, "Rakefile")+" test task")
 		}
 	}
 	return nil
 }
+
+// searchVerifyBundlePrefix decides whether the command goes through Bundler.
+//
+// `bundle exec` is not a decoration: without a Gemfile it is a guaranteed failure ("Could not
+// locate Gemfile"), and the derivation admits a tree that has only a Rakefile. Emitting it there
+// turned a runnable `rake test` into a command that cannot start — a hard gate on the one repository
+// shape the Rakefile branch exists to serve.
+func searchVerifyBundlePrefix(hasGemfile bool) string {
+	if hasGemfile {
+		return "bundle exec "
+	}
+	return ""
+}
+
+// searchVerifyRakefileDefinesTest reports whether a Rakefile DECLARES a `test` task.
+//
+// Substring-matching "test" does not: `task default: %w[test rubocop]` names `test` as a
+// prerequisite of another task, a comment mentioning tests matches, and so does the word "latest".
+// Every one of those emitted `rake test` for a Rakefile that has no such task, and rake answers
+// "Don't know how to build task 'test'" — a hard-gate command that cannot run, which is strictly
+// worse than the silence this block prefers.
+//
+// What licenses the command is a declaration: `task :test`, `task "test"`, `task test: :deps`, or
+// the Rake::TestTask generator, which defines `:test` by default.
+func searchVerifyRakefileDefinesTest(content string) bool {
+	if strings.Contains(content, "Rake::TestTask.new") || strings.Contains(content, "TestTask.new") {
+		return true
+	}
+	return searchVerifyRakeTestTaskPattern.MatchString(content)
+}
+
+// searchVerifyRakeTestTaskPattern matches a `test` task DECLARATION at the start of a line, so a
+// prerequisite list (`task default: %w[test]`) and prose cannot license the command.
+var searchVerifyRakeTestTaskPattern = regexp.MustCompile(
+	`(?m)^[ \t]*task\s+(?::test\b|["']test["']|test\s*:)`)
 
 func deriveSearchVerifySuiteMake(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	content, ok := evidence.file(searchVerifyJoin(dir, "Makefile"))
@@ -958,29 +1072,51 @@ func deriveSearchVerifyMaven(dir string, subject searchVerifySubject, evidence *
 	if !evidence.exists(manifest) {
 		return nil
 	}
-	scope := ""
-	if dir != "" {
-		// Left as shellQuote deliberately: -pl takes a Maven module selector, not a path operand,
-		// and a ./-prefixed selector is not guaranteed to resolve. A module directory whose name
-		// starts with a dash stays shell-safe but may still be read as an option by mvn itself.
-		scope = " -pl " + shellQuote(dir) + " -am"
-	}
 	if subject.testPath != "" {
 		if _, inside := searchVerifyRelative(dir, subject.testPath); inside {
 			class := searchVerifyStem(subject.testPath)
 			return &SearchVerifyCommand{
-				Command: "mvn -q" + scope + " " + shellQuote("-Dtest="+class) +
-					" -DfailIfNoTests=false test",
+				Command: searchVerifyMavenCommand(dir,
+					shellQuote("-Dtest="+class)+" -DfailIfNoTests=false test", evidence),
 				Targets:     subject.testPath,
 				DerivedFrom: manifest + " module + " + subject.testEvidence + " class",
 			}
 		}
 	}
 	return &SearchVerifyCommand{
-		Command:     "mvn -q" + scope + " test",
+		Command:     searchVerifyMavenCommand(dir, "test", evidence),
 		Targets:     "module " + searchVerifyModuleLabel(dir),
 		DerivedFrom: manifest + " module",
 	}
+}
+
+// searchVerifyMavenCommand decides WHERE a Maven build for the module at `dir` is invoked from,
+// which is the one thing `-pl` cannot express on its own.
+//
+// `-pl <module> -am` is a selector into a REACTOR, and the reactor is the root aggregator POM. Run
+// from the repository root it is exactly right: it builds the module's sibling dependencies first,
+// without which a multi-module verification fails for reasons that have nothing to do with the
+// patch. But it is only runnable when a root `pom.xml` exists — in a polyglot repository whose only
+// POM is `<dir>/pom.xml`, `mvn -pl <dir> -am test` at the root dies with "there is no POM in this
+// directory" before a single test runs, and the block advertised it as the verification command.
+//
+// Conversely, `cd <dir> && mvn test` is right for that standalone module and WRONG for a reactor
+// module: Maven then resolves the module's siblings from the local repository instead of building
+// them, so verification fails unless someone had already installed them.
+//
+// So the root aggregator's existence is what picks between them, and it is a fact about the
+// repository rather than a guess.
+func searchVerifyMavenCommand(dir, goals string, evidence *searchVerifyEvidence) string {
+	if dir == "" {
+		return "mvn -q " + goals
+	}
+	if evidence.exists("pom.xml") {
+		// Left as shellQuote deliberately: -pl takes a Maven module selector, not a path operand,
+		// and a ./-prefixed selector is not guaranteed to resolve. A module directory whose name
+		// starts with a dash stays shell-safe but may still be read as an option by mvn itself.
+		return "mvn -q -pl " + shellQuote(dir) + " -am " + goals
+	}
+	return searchVerifyRunIn(dir, "mvn -q "+goals)
 }
 
 func searchVerifyModuleLabel(dir string) string {
@@ -1041,6 +1177,9 @@ var searchVerifyNodeRunners = []struct {
 }
 
 type searchVerifyNodeManifest struct {
+	// PackageManager is Corepack's `"packageManager": "yarn@4.1.0"` field: the repository stating,
+	// in its own manifest, which manager runs its scripts.
+	PackageManager  string            `json:"packageManager"`
 	Scripts         map[string]string `json:"scripts"`
 	DevDependencies map[string]string `json:"devDependencies"`
 	Dependencies    map[string]string `json:"dependencies"`
@@ -1183,16 +1322,17 @@ func deriveSearchVerifyRuby(dir string, subject searchVerifySubject, evidence *s
 	if !hasRakefile {
 		manifest = searchVerifyJoin(dir, "Gemfile")
 	}
+	bundle := searchVerifyBundlePrefix(hasGemfile)
 	switch {
 	case strings.HasPrefix(relative, "spec/") && evidence.exists(searchVerifyJoin(dir, ".rspec")):
 		return &SearchVerifyCommand{
-			Command:     searchVerifyRunIn(dir, "bundle exec rspec "+shellQuotePath(relative)),
+			Command:     searchVerifyRunIn(dir, bundle+"rspec "+shellQuotePath(relative)),
 			Targets:     subject.testPath,
 			DerivedFrom: searchVerifyJoin(dir, ".rspec") + " + " + subject.testEvidence + " path",
 		}
 	case strings.HasPrefix(relative, "test/"):
 		return &SearchVerifyCommand{
-			Command:     searchVerifyRunIn(dir, "bundle exec ruby -Itest "+shellQuotePath(relative)),
+			Command:     searchVerifyRunIn(dir, bundle+"ruby -Itest "+shellQuotePath(relative)),
 			Targets:     subject.testPath,
 			DerivedFrom: manifest + " + " + subject.testEvidence + " path under test/",
 		}
@@ -1650,7 +1790,7 @@ func deriveSearchVerifyCMake(dir string, subject searchVerifySubject, evidence *
 func searchVerifyRunner(command string) string {
 	remainder := strings.TrimSpace(command)
 	for strings.HasPrefix(remainder, "cd ") {
-		separator := strings.Index(remainder, "&&")
+		separator := searchVerifyStageSeparator(remainder)
 		if separator < 0 {
 			return ""
 		}
@@ -1750,7 +1890,7 @@ func searchVerifyDecorated(command *SearchVerifyCommand) string {
 	remainder := command.Command
 	head := ""
 	for strings.HasPrefix(remainder, "cd ") {
-		separator := strings.Index(remainder, "&&")
+		separator := searchVerifyStageSeparator(remainder)
 		if separator < 0 {
 			break
 		}
@@ -1758,6 +1898,38 @@ func searchVerifyDecorated(command *SearchVerifyCommand) string {
 		remainder = strings.TrimSpace(remainder[separator+2:])
 	}
 	return head + command.Prefix + " " + remainder
+}
+
+// searchVerifyStageSeparator returns the byte offset of the `&&` that ends the leading `cd <dir>`
+// stage, or -1 when there is none.
+//
+// It has to be quote-aware, and a plain strings.Index is not. searchVerifyRunIn single-quotes any
+// directory whose name is not shell-safe, so a repository laid out under `foo&&bar` emits
+// `cd 'foo&&bar' && npm test` — a correct command. Splitting it on the FIRST `&&` cuts inside the
+// quoted operand: the --verify-prefix decorator then produces `cd 'foo&& EGTOK bar' && npm test`,
+// and the runner probe reads the executable as `bar'`. Both consumers are wrong about a command
+// that was right, so the separator is found by walking the POSIX quoting this file emits — single
+// quotes, plus the backslash-escaped apostrophe shellQuote emits when it has to close, escape and
+// reopen a quoted token.
+func searchVerifyStageSeparator(command string) int {
+	quoted := false
+	for index := 0; index+1 < len(command); index++ {
+		character := command[index]
+		if !quoted && character == '\\' {
+			// A backslash outside quotes escapes the next byte; it is how shellQuote spells an
+			// apostrophe, and reading that byte as a quote would invert the state from there on.
+			index++
+			continue
+		}
+		if character == '\'' {
+			quoted = !quoted
+			continue
+		}
+		if !quoted && character == '&' && command[index+1] == '&' {
+			return index
+		}
+	}
+	return -1
 }
 
 // GUARD-AWARE DERIVATION

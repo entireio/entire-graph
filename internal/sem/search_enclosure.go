@@ -87,7 +87,7 @@ const (
 //   - the 160-LINE CAP. A callable longer than that keeps its focused window, which is exactly the
 //     case where reading the file back costs the most.
 //   - NO DEMOTABLE TAIL at small --top-k. allocateSearchSnippets scans cuts down to
-//     minInt(headRanks, len(results)); with --top-k 5 and headRanks 5 that loop can only ever
+//     minInt(protectedRanks, len(results)); with --top-k 5 and protectedRanks 5 that loop can only ever
 //     evaluate "demote nothing", so the whole body budget is the 10 kB growth allowance.
 //
 // --full-unit-top N bypasses all three for the first N ranks. The unit is resolved as the callable
@@ -884,9 +884,16 @@ func searchResultsSize(sizes []int) int {
 //     Everything else is funded by demoting the tail.
 //   - Complete bodies are applied greedily in rank order while the plan fits, so a symbol
 //     too large for the allowance degrades to its focused window instead of blowing it.
-//   - Only the head (`headRanks`) is eligible for a body. Below it the agent is deciding
+//   - Only the body head (`bodyRanks`) is eligible for a body. Below it the agent is deciding
 //     "is this worth opening", not editing, so a whole callable there spends the head's
 //     budget on code that will not be read.
+//   - `protectedRanks` is the SEPARATE, usually deeper head that is never demoted to a locator.
+//     The two limits answer different questions — "who may be shown a whole callable" and "who
+//     must at least stay a snippet" — and --body-head-ranks moves only the first. Collapsing them
+//     into one parameter made `--body-head-ranks=2` silently tersify ranks 3-5 as well, which is
+//     the opposite of that flag's contract: a tail locator is the only mention of its file, and
+//     the gold file sits at rank 6-8 on 17% of instances, so the locator head is deliberately
+//     left where it is. See the measurement above searchEnclosureHeadRanks' use in search.go.
 //   - Among the plans that deliver the most complete bodies, the CHEAPEST is chosen, so the
 //     tail pays for a body before the growth allowance does and demotion never happens
 //     without buying something. Ties go to the plan that demotes fewest results.
@@ -898,13 +905,18 @@ func allocateSearchSnippets(
 	results []SearchResult,
 	enclosures []searchEnclosure,
 	plain []searchEnclosure,
-	hardBudget, growth, headRanks, tailLines int,
+	hardBudget, growth, bodyRanks, protectedRanks, tailLines int,
 ) ([]SearchResult, int, int) {
 	if len(results) == 0 || len(enclosures) != len(results) {
 		return results, 0, 0
 	}
-	if headRanks < 0 {
-		headRanks = 0
+	if bodyRanks < 0 {
+		bodyRanks = 0
+	}
+	if protectedRanks < bodyRanks {
+		// A body rank that is not protected from demotion would be tersified and then upgraded in
+		// the same plan. The protected head is a floor under the body head, never above it.
+		protectedRanks = bodyRanks
 	}
 	if growth < 0 {
 		growth = 0
@@ -916,7 +928,7 @@ func allocateSearchSnippets(
 	if forcedEnd := forcedSearchEnclosureEnd(enclosures); forcedEnd > 0 {
 		control, bodies, demoted := allocateSearchSnippets(
 			results, unforcedSearchEnclosures(enclosures, plain), nil,
-			hardBudget, growth, headRanks, tailLines,
+			hardBudget, growth, bodyRanks, protectedRanks, tailLines,
 		)
 		return seatForcedSearchUnits(control, results, enclosures, hardBudget, forcedEnd, bodies, demoted)
 	}
@@ -939,8 +951,9 @@ func allocateSearchSnippets(
 	bestValue, bestBodies, bestSize, bestDemoted := 0.0, 0, 0, 0
 	// A ranking shorter than the protected head still needs the no-demotion plan evaluated,
 	// hence the clamp: without it a 1- or 2-result payload would never be allocated at all.
-	for demoteFrom := len(results); demoteFrom >= minInt(headRanks, len(results)); demoteFrom-- {
-		plan, bodies, windows, size := planWithDemotionFrom(results, enclosures, budget, headRanks, tailLines, demoteFrom)
+	for demoteFrom := len(results); demoteFrom >= minInt(protectedRanks, len(results)); demoteFrom-- {
+		plan, bodies, windows, size := planWithDemotionFrom(
+			results, enclosures, budget, bodyRanks, protectedRanks, tailLines, demoteFrom)
 		// A plan that delivered only WINDOWS is still worth taking: a head rank with 60 readable
 		// lines beats the same rank with two. So the "did this plan buy anything" test counts both,
 		// while the reported body count and the plan score still count complete bodies only.
@@ -950,7 +963,7 @@ func allocateSearchSnippets(
 		value := completeBodyValue(plan) + searchHeadWindowValue(plan)
 		if best == nil || value > bestValue || (value == bestValue && size < bestSize) {
 			best, bestValue, bestBodies, bestSize = plan, value, bodies, size
-			bestDemoted = maxInt(0, len(results)-maxInt(demoteFrom, headRanks))
+			bestDemoted = maxInt(0, len(results)-maxInt(demoteFrom, protectedRanks))
 		}
 	}
 	if best == nil {
@@ -1307,10 +1320,10 @@ func hasSearchSignal(result SearchResult, want string) bool {
 func planWithDemotionFrom(
 	results []SearchResult,
 	enclosures []searchEnclosure,
-	budget, headRanks, tailLines, demoteFrom int,
+	budget, bodyRanks, protectedRanks, tailLines, demoteFrom int,
 ) ([]SearchResult, int, int, int) {
 	plan := append([]SearchResult(nil), results...)
-	cut := maxInt(demoteFrom, headRanks)
+	cut := maxInt(demoteFrom, protectedRanks)
 	sizes := make([]int, len(plan))
 	for index := range plan {
 		if index >= cut {
@@ -1321,7 +1334,7 @@ func planWithDemotionFrom(
 	total := searchResultsSize(sizes)
 	bodies, windows := 0, 0
 	// The body upgrade is a head-only privilege; see allocateSearchSnippets' contract.
-	bodyLimit := headRanks
+	bodyLimit := bodyRanks
 	if bodyLimit > len(plan) {
 		bodyLimit = len(plan)
 	}
