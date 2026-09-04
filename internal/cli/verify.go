@@ -245,7 +245,7 @@ func writeVerifyBaseline(
 	baseline := verifyBaseline{
 		FormatVersion: verifyBaselineFormatVersion,
 		RecordedAt:    time.Now().UTC().Format(time.RFC3339),
-		Repo:          repo,
+		Repo:          verifyRecordedRepo(repo),
 		TestCommand:   flags.Test,
 		Parser:        parser,
 		ExitCode:      exitCode,
@@ -331,9 +331,33 @@ func validateVerifyBaseline(
 	return nil
 }
 
+// verifyRecordedRepo canonicalizes the --repo value for the BASELINE, at record time, which is the
+// only moment a relative spelling still means what the caller meant by it.
+//
+// resolveRepo returns the caller's argument verbatim, so `--repo .` reaches the baseline as ".", and
+// a "." on disk is a path relative to whatever directory the NEXT invocation happens to run in. That
+// broke the workflow both ways: adjudicating the same repository from anywhere else was refused as
+// "a different repository", and — the expensive half — a baseline recorded with `--repo .` in one
+// checkout compared EQUAL to `--repo .` in another, because "." is "." wherever each ran, so a
+// verdict was rendered about a repository the baseline never described.
+//
+// Only the recorded side can be fixed here. The current side is resolved against the working
+// directory of the invocation that is asking, which is where it belongs.
+func verifyRecordedRepo(repo string) string {
+	absolute, err := filepath.Abs(repo)
+	if err != nil {
+		// Abs fails only when the working directory cannot be read. Storing the caller's spelling is
+		// then no worse than what was stored before, and refusing to record at all would be worse.
+		return repo
+	}
+	return filepath.Clean(absolute)
+}
+
 // verifySameRepo compares two --repo values as locations rather than as strings, so recording with
 // `--repo .` and adjudicating with `--repo /abs/path` is not reported as a different repository.
-// resolveRepo returns the caller's argument verbatim, which is what makes this necessary.
+// resolveRepo returns the caller's argument verbatim, which is what makes this necessary; the
+// recorded side arrives already canonicalized (verifyRecordedRepo), so the resolution below applies
+// to the current invocation's own spelling.
 func verifySameRepo(recorded, current string) bool {
 	if recorded == current {
 		return true
@@ -423,7 +447,14 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 	// parsed, that exit code was the only remaining evidence the run was whole, and ignoring it let a
 	// suite that printed one newly passing test and then died be adjudicated "PASS — verification is
 	// complete". A nonzero exit is EXPLAINED only when the parsed results themselves carry a failure.
-	unexplainedExit := input.exitCode != 0 && !verifyResultsHaveFailure(input.current)
+	// The converse hole is just as expensive, and it is the one this rule opened: a single reported
+	// failure was then taken to explain ANY nonzero exit, so a run that failed a test AND died —
+	// interrupted, segfaulted, OOM-killed, or stopped by a collection or build error — was still
+	// adjudicated as merely a test failure. A failure explains an exit code only when that code is one
+	// the RUNNER uses to say "a test failed"; see verifyExitCodeMeansTestFailure.
+	unexplainedExit := input.exitCode != 0 &&
+		!(verifyResultsHaveFailure(input.current) &&
+			verifyExitCodeMeansTestFailure(input.parser, input.exitCode))
 
 	if len(newlyPassing) > 0 {
 		verifyWriteList(&buffer, "NEWLY PASSING", newlyPassing)
@@ -449,11 +480,17 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 			"VERDICT: INCOMPLETE — %d baseline test%s did not report in this run, so no claim "+
 				"about regressions can be made. Verification is NOT complete.\n",
 			len(notRun), pluralSuffix(len(notRun)))
+	case unexplainedExit && verifyResultsHaveFailure(input.current):
+		fmt.Fprintf(&buffer,
+			"VERDICT: INCOMPLETE — the runner %s, which is not how %s reports a test failure, so the "+
+				"run ALSO came apart for a reason its per-test output does not name (a crash, a "+
+				"signal, a collection or a build error). Verification is NOT complete.\n",
+			verifyExitDescription(input.exitCode), input.parser)
 	case unexplainedExit:
 		fmt.Fprintf(&buffer,
-			"VERDICT: INCOMPLETE — the runner exited %d while every test it reported passed, so it "+
+			"VERDICT: INCOMPLETE — the runner %s while every test it reported passed, so it "+
 				"failed for a reason its per-test output does not name. Verification is NOT complete.\n",
-			input.exitCode)
+			verifyExitDescription(input.exitCode))
 	case len(newlyPassing) > 0:
 		// The second sentence is a statement about the DELTA, not an instruction: a zero-regression,
 		// at-least-one-fix delta is by construction a complete verification of the change. See the
@@ -464,6 +501,59 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 		buffer.WriteString("VERDICT: NO EFFECT — the target tests behave exactly as before your edit.\n")
 	}
 	return verifyTruncateOutput(buffer.String(), input.maxBytes)
+}
+
+// verifyTestFailureExitCodes is each runner's own code for "a test failed", and nothing else. Every
+// other code these runners emit means the run itself came apart — pytest 2 interrupted, 3 internal
+// error, 4 usage error, 5 nothing collected; go test 2 for a command-line or build error; cargo's
+// harness failing at 101 while cargo itself exits 1 when it could not even build — and none of them
+// is explained by a test the run happened to report failing before it died.
+//
+// An unlisted runner keeps the old rule (any ordinary nonzero is plausible), because refusing a code
+// nobody has documented would be a guess in the loud direction about a runner this build does not
+// otherwise know. Where a runner IS listed the set is deliberately narrow: a false INCOMPLETE costs
+// the caller one investigation, while a false PASS is the failure class this whole verb exists to
+// prevent.
+var verifyTestFailureExitCodes = map[string][]int{
+	"pytest":      {1},
+	"cargo test":  {101},
+	"go test":     {1},
+	"phpunit":     {1},
+	"jest/vitest": {1},
+	"rspec":       {1},
+	"minitest":    {1},
+	"surefire":    {1},
+	"ctest":       {8},
+}
+
+// verifyExitCodeMeansTestFailure reports whether exitCode is one the named runner uses to report a
+// test failure — the only kind of nonzero exit a reported failure can explain.
+func verifyExitCodeMeansTestFailure(parser string, exitCode int) bool {
+	if exitCode < 0 || exitCode >= 128 {
+		// No exit status at all (killed before it could exit), or the shell's 128+N for a child that
+		// died of a signal. A segfault, an OOM kill and a timeout are not test results whatever the
+		// suite printed on its way down.
+		return false
+	}
+	codes, known := verifyTestFailureExitCodes[parser]
+	if !known {
+		return true
+	}
+	for _, code := range codes {
+		if code == exitCode {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyExitDescription names what the process did, so a status that is not a code does not get
+// printed as one.
+func verifyExitDescription(exitCode int) string {
+	if exitCode < 0 {
+		return "was killed without an exit status"
+	}
+	return fmt.Sprintf("exited %d", exitCode)
 }
 
 // verifyResultsHaveFailure reports whether the parsed results themselves explain a nonzero exit.
