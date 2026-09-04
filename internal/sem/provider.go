@@ -2189,6 +2189,49 @@ func bindCallImports(name string, from SymbolRecord, language string, scopes *py
 	return binding
 }
 
+// pythonAliasMemberFor returns the member name a Python import alias renames, or
+// "" for any other language and for a name this file does not bind to exactly
+// one member. Every bare-call site needs it, so the language test lives here
+// rather than being re-spelled per site.
+func pythonAliasMemberFor(language string, bindings map[string]pythonImportBindingInfo, name string) string {
+	if language != "Python" {
+		return ""
+	}
+	member, _ := pythonImportedMemberName(bindings, name)
+	return member
+}
+
+// resolveBareCallTargets resolves one bare call NAME at a call site: the
+// ordinary chain first and, ONLY when that resolved nothing, the Python
+// import-alias fallback, which looks the callee up under the MEMBER name the
+// alias renames.
+//
+// It exists for the reason callImportBinding does. Four sites resolve a bare
+// call name against the workspace short-name index -- CALLS per symbol, CALLS
+// for the file-level pseudo-symbol, and the ASYNC_CALLS and DATA_FLOWS scans --
+// and this second fallback, like the raw-import exception before it, was wired
+// into the two CALLS sites alone. `from frobnicate import compute as c`
+// therefore produced the CALLS edge and silently dropped the ASYNC_CALLS and
+// DATA_FLOWS edges the same call site justifies. Resolving in one place is what
+// keeps the four consistent.
+//
+// The fallback keeps pythonAliasImportCallTargets' bounds unchanged: it runs
+// only after the ordinary chain resolves nothing, runs the two IMPORT tiers
+// alone -- an alias is defined nowhere, so a same-file or workspace name match
+// on it would be a coincidence of spelling -- and binds only a unique target, so
+// ambiguity behind an alias fails closed. binding.rawModuleSets carries the
+// scope guard with it: it is nil when Python's call-site scope view is absent
+// (a profile may emit ASYNC_CALLS or DATA_FLOWS with callResolution "none"),
+// which disables the raw cross-language tier for the alias exactly as it does
+// for the spelling the alias renames.
+func resolveBareCallTargets(name, pythonAliasMember string, from SymbolRecord, binding callImportBinding, sameFile []SymbolRecord, symbolsByShortName map[string][]SymbolRecord, allowMethodTargets bool) []resolvedCallTarget {
+	targets := resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), binding.rawCandidates, binding.rawModuleSets, sameFile, binding.imports, allowMethodTargets)
+	if len(targets) > 0 || pythonAliasMember == "" {
+		return targets
+	}
+	return pythonAliasImportCallTargets(pythonAliasMember, from, sharedTypeCandidates(from, symbolsByShortName[pythonAliasMember]), symbolsByShortName[pythonAliasMember], binding.rawModuleSets, binding.imports[name], allowMethodTargets)
+}
+
 // resolveCallTargetsWithRawImport keeps the normal language-filtered candidate
 // set for every ordinary resolution tier. A bare imported call may additionally
 // retain the raw workspace candidates so an explicit, unique import path can
@@ -3784,13 +3827,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						continue
 					}
 					binding := bindCallImports(name, from, file.Language, pythonBareScopes, symbolsByShortName, callImportsByName, file.Path, manifestImports, knownFiles, readContent)
-					rawCandidates, rawImportModuleSets, importsForCall := binding.rawCandidates, binding.rawModuleSets, binding.imports
-					pythonAliasMember := ""
-					pythonModuleOnlyName := false
-					if file.Language == "Python" {
-						pythonAliasMember, _ = pythonImportedMemberName(pythonImportBindings, name)
-						pythonModuleOnlyName = pythonImportBindsModuleOnly(pythonImportBindings, name)
-					}
+					importsForCall := binding.imports
+					pythonAliasMember := pythonAliasMemberFor(file.Language, pythonImportBindings, name)
+					pythonModuleOnlyName := file.Language == "Python" && pythonImportBindsModuleOnly(pythonImportBindings, name)
 					// A container's block spans its members' definition lines, which
 					// look like calls (e.g. `def validate(self):`). Skip the names of
 					// direct children so a class is not credited with calling its own
@@ -3812,10 +3851,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
 					} else {
-						targets = resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
-						if len(targets) == 0 && pythonAliasMember != "" {
-							targets = pythonAliasImportCallTargets(pythonAliasMember, from, sharedTypeCandidates(from, symbolsByShortName[pythonAliasMember]), symbolsByShortName[pythonAliasMember], rawImportModuleSets, importsForCall[name], false)
-						}
+						targets = resolveBareCallTargets(name, pythonAliasMember, from, binding, currentFileSymbols, symbolsByShortName, false)
 						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols, juliaLocalBindings)
 						genericSameContainerType := len(targets) == 1 && typeLikeKind(targets[0].Kind) &&
 							targets[0].FilePath == from.FilePath && targets[0].ContainerID == from.ContainerID
@@ -3918,13 +3954,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						continue
 					}
 					// `await compute()` is the same call site the CALLS scan just
-					// resolved, so it gets the same import binding: an explicit
+					// resolved, so it resolves the same way: the same import
+					// binding, and the same alias fallback behind it. An explicit
 					// import that resolves to the callee's file outranks the
-					// language-pair heuristic here too. Without it a Python
+					// language-pair heuristic here too, and an awaited
+					// `from mod import compute as c` still names compute.
+					// Without them a Python
 					// `await compute()` bound to a parsed `frobnicate.c` kept its
 					// CALLS edge and lost its ASYNC_CALLS edge.
 					binding := bindCallImports(name, from, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
-					for _, to := range resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), binding.rawCandidates, binding.rawModuleSets, currentFileSymbols, binding.imports, false) {
+					for _, to := range resolveBareCallTargets(name, pythonAliasMemberFor(file.Language, pythonImportBindings, name), from, binding, currentFileSymbols, symbolsByShortName, false) {
 						if typeLikeKind(to.Kind) {
 							continue // construction, not an async call
 						}
@@ -3977,11 +4016,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if flow.Name == from.Name {
 						continue
 					}
-					// Same call site, same import binding as CALLS and ASYNC_CALLS:
-					// a wrapper whose `return compute(arg)` binds a parsed C unit
-					// by import kept the CALLS edge and lost both flow directions.
+					// Same call site, same resolution as CALLS and ASYNC_CALLS,
+					// alias fallback included: a wrapper whose `return compute(arg)`
+					// binds a parsed C unit by import kept the CALLS edge and lost
+					// both flow directions, and `return c(arg)` behind an alias lost
+					// them for a second reason.
 					binding := bindCallImports(flow.Name, from, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
-					for _, to := range resolveCallTargetsWithRawImport(flow.Name, from, sharedTypeCandidates(from, symbolsByShortName[flow.Name]), binding.rawCandidates, binding.rawModuleSets, currentFileSymbols, binding.imports, true) {
+					for _, to := range resolveBareCallTargets(flow.Name, pythonAliasMemberFor(file.Language, pythonImportBindings, flow.Name), from, binding, currentFileSymbols, symbolsByShortName, true) {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}
@@ -4295,11 +4336,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 				for _, name := range sortedKeysOf(topLevelNames) {
 					binding := bindCallImports(name, fileSource, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
-					rawCandidates, rawImportModuleSets, importsForCall := binding.rawCandidates, binding.rawModuleSets, binding.imports
-					pythonAliasMember := ""
-					if file.Language == "Python" {
-						pythonAliasMember, _ = pythonImportedMemberName(pythonImportBindings, name)
-					}
+					pythonAliasMember := pythonAliasMemberFor(file.Language, pythonImportBindings, name)
 					var targets []resolvedCallTarget
 					if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
 						// Same chain as the per-symbol namespace path above; the
@@ -4307,10 +4344,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else {
-						targets = resolveCallTargetsWithRawImport(name, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
-						if len(targets) == 0 && pythonAliasMember != "" {
-							targets = pythonAliasImportCallTargets(pythonAliasMember, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[pythonAliasMember]), symbolsByShortName[pythonAliasMember], rawImportModuleSets, importsForCall[name], false)
-						}
+						targets = resolveBareCallTargets(name, pythonAliasMember, fileSource, binding, currentFileSymbols, symbolsByShortName, false)
 					}
 					for _, to := range targets {
 						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {

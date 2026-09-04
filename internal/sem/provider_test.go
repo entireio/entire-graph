@@ -5513,6 +5513,220 @@ def other(v):
 	})
 }
 
+// The alias fallback is the CALLS sites' SECOND import tier, and it went the
+// same way the first one did: wired into the two CALLS sites and neither
+// sibling scan. `from frobnicate import compute as c` therefore resolved for a
+// plain call and for nothing else. Measured over these fixtures before the fix:
+//
+//	CALLS       Python/run -> C/compute  res=import_resolved conf=0.84  resolved
+//	ASYNC_CALLS (none)                                                  DROPPED
+//	DATA_FLOWS  (none, both directions)                                 DROPPED
+//
+// The oracle is the edge the un-aliased spelling produces, not a literal: an
+// alias must take the same path through the resolver, so target, resolution,
+// scope and confidence all have to match it. The evidence Detail legitimately
+// differs -- it records the spelling at the call site, which is the alias.
+func TestAsyncAndFlowAliasedImportedCallsResolveToTheirOriginalName(t *testing.T) {
+	const foreign = `int compute(int value) {
+	return value + 1;
+}
+`
+	// relationsFor snapshots one fixture and buckets the three relation types
+	// the same call site justifies, so the aliased spelling and the spelling it
+	// renames can be compared edge for edge.
+	relationsFor := func(t *testing.T, source string, extra ...[2]string) map[string][]RelationRecord {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		for _, file := range extra {
+			writeFile(t, repo, file[0], file[1])
+		}
+		writeFile(t, repo, "app.py", source)
+		out := map[string][]RelationRecord{}
+		for _, relType := range []string{"CALLS", "ASYNC_CALLS", "DATA_FLOWS"} {
+			out[relType] = relationsTouching(t, repo, "app.py:function:run", relType)
+		}
+		return out
+	}
+	// Each fixture gets its own temp repo, so the ID's repo-key prefix differs
+	// by construction; everything after it must not.
+	target := func(id string) string { return id[strings.Index(id, ":")+1:] }
+	edge := func(r RelationRecord) string { return target(r.FromID) + " -> " + target(r.ToID) }
+	sameEdge := func(a, b RelationRecord) bool {
+		return edge(a) == edge(b) && a.Type == b.Type && a.Resolution == b.Resolution &&
+			a.RelationScope == b.RelationScope && a.Confidence == b.Confidence && a.Reason == b.Reason
+	}
+	// A rival same-named declaration in a third language: one suffix-matching
+	// import cannot say which of the two it bound.
+	rival := [2]string{"lib/frobnicate.rb", "def compute(value)\n  value + 1\nend\n"}
+
+	t.Run("an awaited alias matches the un-aliased await", func(t *testing.T) {
+		aliased := relationsFor(t, `from frobnicate import compute as c
+
+async def run(v):
+    return await c(v)
+`)
+		plain := relationsFor(t, `from frobnicate import compute
+
+async def run(v):
+    return await compute(v)
+`)
+		if len(plain["ASYNC_CALLS"]) != 1 {
+			t.Fatalf("the oracle lost its async edge, so there is nothing to compare against: %#v", plain["ASYNC_CALLS"])
+		}
+		if len(aliased["ASYNC_CALLS"]) != 1 {
+			t.Fatalf("want one async call edge out of run, got %#v", aliased["ASYNC_CALLS"])
+		}
+		if !sameEdge(aliased["ASYNC_CALLS"][0], plain["ASYNC_CALLS"][0]) {
+			t.Fatalf("the awaited alias diverged from its un-aliased oracle:\n alias = %#v\n plain = %#v",
+				aliased["ASYNC_CALLS"][0], plain["ASYNC_CALLS"][0])
+		}
+		// And from the CALLS edge the SAME aliased call site already produced.
+		// The async cap is 0.85, above the 0.84 an import-resolved call carries,
+		// so confidence survives the await and is comparable here too.
+		if len(aliased["CALLS"]) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", aliased["CALLS"])
+		}
+		call, await := aliased["CALLS"][0], aliased["ASYNC_CALLS"][0]
+		if target(await.ToID) != target(call.ToID) || await.Resolution != call.Resolution || await.Confidence != call.Confidence {
+			t.Fatalf("the await diverged from the plain call at the same site:\n await = %#v\n call  = %#v", await, call)
+		}
+	})
+
+	t.Run("a flow through an alias matches the un-aliased flow", func(t *testing.T) {
+		aliased := relationsFor(t, `from frobnicate import compute as c
+
+def run(v):
+    return c(v)
+`)
+		plain := relationsFor(t, `from frobnicate import compute
+
+def run(v):
+    return compute(v)
+`)
+		if len(plain["DATA_FLOWS"]) != 2 {
+			t.Fatalf("the oracle must produce both flow directions, got %#v", plain["DATA_FLOWS"])
+		}
+		byEdge := map[string]RelationRecord{}
+		for _, flow := range aliased["DATA_FLOWS"] {
+			byEdge[edge(flow)] = flow
+		}
+		if len(byEdge) != len(plain["DATA_FLOWS"]) {
+			t.Fatalf("the aliased flows do not match the un-aliased oracle:\n alias = %#v\n plain = %#v",
+				aliased["DATA_FLOWS"], plain["DATA_FLOWS"])
+		}
+		for _, want := range plain["DATA_FLOWS"] {
+			got, ok := byEdge[edge(want)]
+			if !ok {
+				t.Fatalf("the aliased fixture is missing the oracle's flow %s: %#v", edge(want), aliased["DATA_FLOWS"])
+			}
+			if !sameEdge(got, want) {
+				t.Fatalf("an aliased flow diverged from its un-aliased oracle:\n alias = %#v\n plain = %#v", got, want)
+			}
+		}
+		// Both directions name the member the CALLS edge at this site resolved.
+		// Their confidence caps (0.75 back, 0.7 forward) sit below the call's
+		// 0.84 by design, so the call is the oracle for the target, not for it.
+		if len(aliased["CALLS"]) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", aliased["CALLS"])
+		}
+		call := aliased["CALLS"][0]
+		forward, back := false, false
+		for _, flow := range aliased["DATA_FLOWS"] {
+			if flow.Resolution != call.Resolution {
+				t.Fatalf("a flow resolved differently from the plain call at the same site:\n flow = %#v\n call = %#v", flow, call)
+			}
+			if target(flow.FromID) == target(call.FromID) && target(flow.ToID) == target(call.ToID) {
+				forward = true
+			}
+			if target(flow.FromID) == target(call.ToID) && target(flow.ToID) == target(call.FromID) {
+				back = true
+			}
+		}
+		if !forward || !back {
+			t.Fatalf("want both flow directions between the call's endpoints, got %#v", aliased["DATA_FLOWS"])
+		}
+	})
+
+	// The alias reads past the language filter exactly as the un-aliased bare
+	// call does, so it carries the same ambiguity rule into both new paths:
+	// module paths match by suffix, so one import can name same-named callables
+	// in several languages at once and nothing then says which it bound. Two of
+	// them must produce no edge rather than an arbitrary pick, and neither an
+	// await nor a flow has an external target to fall back to.
+	t.Run("ambiguity behind the alias fails closed", func(t *testing.T) {
+		async := relationsFor(t, `from frobnicate import compute as c
+
+async def run(v):
+    return await c(v)
+`, rival)
+		if len(async["ASYNC_CALLS"]) != 0 {
+			t.Fatalf("an ambiguous cross-language alias must not resolve an async call: %#v", async["ASYNC_CALLS"])
+		}
+		flow := relationsFor(t, `from frobnicate import compute as c
+
+def run(v):
+    return c(v)
+`, rival)
+		if len(flow["DATA_FLOWS"]) != 0 {
+			t.Fatalf("an ambiguous cross-language alias must not resolve a flow: %#v", flow["DATA_FLOWS"])
+		}
+	})
+
+	// `import mod as m` binds the MODULE. A module object is not callable, so a
+	// bare `m(...)` names no member: the two new paths must stay silent rather
+	// than invent one, exactly as the CALLS path does.
+	t.Run("a module alias names no member", func(t *testing.T) {
+		async := relationsFor(t, `import frobnicate as m
+
+async def run(v):
+    return await m(v)
+`)
+		if len(async["ASYNC_CALLS"]) != 0 {
+			t.Fatalf("a bare await on a module alias must emit no edge, got %#v", async["ASYNC_CALLS"])
+		}
+		flow := relationsFor(t, `import frobnicate as m
+
+def run(v):
+    return m(v)
+`)
+		if len(flow["DATA_FLOWS"]) != 0 {
+			t.Fatalf("a bare call on a module alias must emit no flow, got %#v", flow["DATA_FLOWS"])
+		}
+	})
+
+	// Python scopes a function-local import to that function, and widening the
+	// two sibling scans to the alias must not lose that: the member name behind
+	// an alias must not reach a sibling that never imported it.
+	t.Run("a function-local alias does not reach a sibling", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `async def uses_alias(v):
+    from frobnicate import compute as c
+
+    return await c(v)
+
+
+async def unrelated(v):
+    return await c(v)
+`)
+
+		if async := relationsTouching(t, repo, "app.py:function:unrelated", "ASYNC_CALLS"); len(async) != 0 {
+			t.Fatalf("a function-local alias leaked into an unrelated async call: %#v", async)
+		}
+		if flows := relationsTouching(t, repo, "app.py:function:unrelated", "DATA_FLOWS"); len(flows) != 0 {
+			t.Fatalf("a function-local alias leaked into an unrelated flow: %#v", flows)
+		}
+		async := relationsTouching(t, repo, "app.py:function:uses_alias", "ASYNC_CALLS")
+		if len(async) != 1 || !strings.Contains(async[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("the importing function lost its aliased async call: %#v", async)
+		}
+		if flows := relationsTouching(t, repo, "app.py:function:uses_alias", "DATA_FLOWS"); len(flows) == 0 {
+			t.Fatalf("the importing function lost its aliased flows: %#v", flows)
+		}
+	})
+}
+
 // Regression for the jdx/mise report: a bare type name in a signature must
 // resolve through the file's import bindings before any global fallback, and
 // an ambiguous name with no import evidence must resolve to nothing. mise's
