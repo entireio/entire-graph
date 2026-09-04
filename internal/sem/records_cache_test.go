@@ -541,6 +541,12 @@ func TestProviderRecordsKeyDiscriminatesRepoIdentity(t *testing.T) {
 // why the env path was easy to leave uncovered.
 func TestSearchSnapshotKeyDiscriminatesEnvFileCap(t *testing.T) {
 	repo := t.TempDir()
+	// The baseline has to be an ACTUALLY uncapped key, so clear the variable
+	// first. Reading the ambient environment made the assertion depend on how the
+	// suite was invoked: run with ENTIRE_GRAPH_MAX_FILES=5 already set, this
+	// "uncapped" key is the capped one and the test fails on a correct build —
+	// the one failure mode a cache-key test must not have.
+	t.Setenv(maxSourceFilesEnv, "")
 	uncapped, err := searchSnapshotKey(repo, "id", "v", "tree", ProviderSnapshotOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -577,6 +583,9 @@ func TestSearchSnapshotKeyDiscriminatesEnvFileCap(t *testing.T) {
 
 func TestProviderRecordsKeyDiscriminatesEnvFileCap(t *testing.T) {
 	repo := t.TempDir()
+	// Same reason as TestSearchSnapshotKeyDiscriminatesEnvFileCap: clear the
+	// variable so the baseline is uncapped whatever the caller's environment.
+	t.Setenv(maxSourceFilesEnv, "")
 	uncapped, err := providerRecordsKey(repo, "id", "v", "commit", "tree", "snapshot", ProviderSnapshotOptions{})
 	if err != nil {
 		t.Fatal(err)

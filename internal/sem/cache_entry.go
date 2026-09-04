@@ -28,6 +28,19 @@ type cacheEntry struct {
 }
 
 func newCacheEntry(cacheDir, family, version, key string) (cacheEntry, error) {
+	return newDerivedCacheEntry(cacheDir, family, version, "", key)
+}
+
+// newDerivedCacheEntry addresses an artifact that was DERIVED from another entry
+// and is only valid while that entry is. It nests the artifact in a directory
+// named by the entry it came from, which is what makes the dependent set
+// nameable: rebuilding the parent can discard all of them with one removal
+// instead of searching the cache for entries that happen to depend on it.
+//
+// groupKey is a cache key like any other, so it is held to the same
+// non-injectable digest shape as key; an empty groupKey addresses an
+// independent, top-level entry.
+func newDerivedCacheEntry(cacheDir, family, version, groupKey, key string) (cacheEntry, error) {
 	if cacheDir == "" {
 		return cacheEntry{}, fmt.Errorf("cache directory is empty")
 	}
@@ -37,10 +50,57 @@ func newCacheEntry(cacheDir, family, version, key string) (cacheEntry, error) {
 	if !validSHA256Hex(key) {
 		return cacheEntry{}, fmt.Errorf("invalid cache key: want %d lowercase hexadecimal characters", sha256.Size*2)
 	}
+	if groupKey == "" {
+		return cacheEntry{
+			root:     cacheDir,
+			relative: filepath.Join(family, version, key+".json.gz"),
+		}, nil
+	}
+	if !validSHA256Hex(groupKey) {
+		return cacheEntry{}, fmt.Errorf("invalid derived cache group key: want %d lowercase hexadecimal characters", sha256.Size*2)
+	}
 	return cacheEntry{
 		root:     cacheDir,
-		relative: filepath.Join(family, version, key+".json.gz"),
+		relative: filepath.Join(family, version, groupKey, key+".json.gz"),
 	}, nil
+}
+
+// removeDerivedCacheEntries discards every artifact derived from one cache
+// entry. It is the invalidation half of newDerivedCacheEntry: a rebuild that
+// replaces the parent must not leave dependents behind that are served ahead of
+// it, which is the whole point of asking for a rebuild.
+//
+// The family and version components are opened the same confined way writes
+// open them, so a redirecting component is refused here too rather than making
+// this a removal somewhere else. A cache directory that does not exist yet has
+// nothing to invalidate and is not an error.
+func removeDerivedCacheEntries(cacheDir, family, version, groupKey string) error {
+	if cacheDir == "" {
+		return nil
+	}
+	if !validCachePathComponent(family) || !validCachePathComponent(version) {
+		return fmt.Errorf("invalid cache family or version")
+	}
+	if !validSHA256Hex(groupKey) {
+		return fmt.Errorf("invalid derived cache group key: want %d lowercase hexadecimal characters", sha256.Size*2)
+	}
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(cacheDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	directory, err := openCacheDirectory(root, filepath.Join(family, version))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if err := directory.RemoveAll(groupKey); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func validCachePathComponent(value string) bool {

@@ -22,8 +22,11 @@ import (
 // unconditional-worktree-bypass transaction checks, and shared nested-ignore
 // resource policy were complete; v13 retires entries whose DATA_FLOWS records
 // carry a single evidence entry per edge rather than every flow; v14 retires
-// entries written before truncated records counted what they dropped.
-const searchSnapshotCacheVersion = "search-snapshot-v14"
+// entries written before truncated records counted what they dropped; v15
+// retires the flat selective entries written before a derived snapshot was
+// nested beneath the complete entry it came from, which would otherwise sit
+// unreachable inside a live version directory and defeat that cleanup rule.
+const searchSnapshotCacheVersion = "search-snapshot-v15"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -195,13 +198,32 @@ func loadOrBuildSearchSnapshot(
 		return snapshot, false, buildErr
 	}
 	repositoryKey := repoKey(ctx, absRepo)
-	key, err := searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree, options)
+	// A selective snapshot is DERIVED from the complete one for the same tree, so
+	// it is addressed beneath the complete entry rather than beside it. That is
+	// what lets a forced rebuild of the complete entry discard the views built
+	// from it; while they were flat siblings, `index --force` refreshed the
+	// complete entry and every selective query kept being served the entry it
+	// had asked to be rid of.
+	completeOptions := options
+	completeOptions.OnlyFiles = nil
+	completeKey, err := searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree, completeOptions)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	entry, err := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, key)
+	key := completeKey
+	entry, err := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, completeKey)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
+	}
+	if len(options.OnlyFiles) > 0 {
+		key, err = searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree, options)
+		if err != nil {
+			return ProviderSnapshot{}, false, err
+		}
+		entry, err = newDerivedCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, completeKey, key)
+		if err != nil {
+			return ProviderSnapshot{}, false, err
+		}
 	}
 	if cached, err := readSearchSnapshot(entry); err == nil && validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, options) {
 		// See loadCachedCompleteSearchSnapshot: tree-only keying means this hit
@@ -238,17 +260,11 @@ func loadOrBuildSearchSnapshot(
 				return selective, true, nil
 			}
 		}
-		fullOptions := options
-		fullOptions.OnlyFiles = nil
-		fullKey, keyErr := searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree, fullOptions)
-		if keyErr != nil {
-			return ProviderSnapshot{}, false, keyErr
-		}
-		fullEntry, entryErr := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, fullKey)
+		fullEntry, entryErr := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, completeKey)
 		if entryErr != nil {
 			return ProviderSnapshot{}, false, entryErr
 		}
-		if cached, readErr := readSearchSnapshot(fullEntry); readErr == nil && validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, fullOptions) {
+		if cached, readErr := readSearchSnapshot(fullEntry); readErr == nil && validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, completeOptions) {
 			cached = restampCachedSearchSnapshotCommit(cached, commit)
 			if selective, ok := deriveFromFull(cached.Snapshot); ok {
 				return selective, true, nil
@@ -388,6 +404,23 @@ func preindexProviderSnapshotWithPersistenceReader(
 		cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot)
 		if err := writeSearchSnapshot(entry, cache); err != nil {
 			return ProviderSnapshot{}, false, fmt.Errorf("persist preindex snapshot: %w", err)
+		}
+	}
+	if options.ForceRebuild {
+		// Refreshing the complete entry is not what --force promises. A selective
+		// search is served from its OWN entry before the complete one is ever
+		// consulted, so an entry that survives here keeps answering the query the
+		// rebuild was asked to correct — silently, and for as long as the tree is
+		// unchanged. Discarding the views derived from this entry is therefore
+		// part of the rebuild, not a cleanup, and a failure to do it is reported
+		// rather than swallowed: an invalidation that did not happen leaves the
+		// command claiming a rebuild it did not deliver.
+		//
+		// It runs AFTER the fresh complete entry is in place so that any
+		// derivation racing this call reads the new snapshot rather than the one
+		// being replaced.
+		if err := removeDerivedCacheEntries(cacheDir, "search", searchSnapshotCacheVersion, key); err != nil {
+			return ProviderSnapshot{}, false, fmt.Errorf("invalidate snapshots derived from the rebuilt preindex entry: %w", err)
 		}
 	}
 	return snapshot, cacheHit, nil
