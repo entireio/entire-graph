@@ -1127,30 +1127,51 @@ func TestSwiftDeclarationVisibleToObjectiveC(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		kind      string
+		name      string
 		signature string
 		want      bool
 	}{
-		{"class", "@objc class Bridged: NSObject", true},
-		{"class", "@objcMembers class Members: NSObject", true},
-		{"class", "@objc(RenamedThing) class Renamed: NSObject", false},
-		{"class", "class Engine: NSObject", true},
-		{"class", "class Sub: Engine", true},
-		{"class", "class Engine", false},
-		{"struct", "struct Ledger", false},
-		{"enum", "enum Plain", false},
-		{"enum", "@objc enum Level: Int", true},
-		{"protocol", "protocol Pinger", false},
-		{"protocol", "@objc protocol Pinger", true},
-		{"function", "func freeFunc(x: Int) -> Int", false},
+		{"class", "Bridged", "@objc class Bridged: NSObject", true},
+		{"class", "Members", "@objcMembers class Members: NSObject", true},
+		{"class", "Engine", "class Engine: NSObject", true},
+		{"class", "Sub", "class Sub: Engine", true},
+		{"class", "Engine", "class Engine", false},
+		{"struct", "Ledger", "struct Ledger", false},
+		{"enum", "Plain", "enum Plain", false},
+		{"enum", "Level", "@objc enum Level: Int", true},
+		{"protocol", "Pinger", "protocol Pinger", false},
+		{"protocol", "Pinger", "@objc protocol Pinger", true},
+		{"function", "freeFunc", "func freeFunc(x: Int) -> Int", false},
+		{"class", "Renamed", "@objc(RenamedThing) class Renamed: NSObject", false},
+		{"class", "Renamed", "@objc ( RenamedThing ) class Renamed: NSObject", false},
+		{"class", "Same", "@objc ( Same ) class Same: NSObject", true},
+		{"enum", "Level", "@objc(LevelObjC) enum Level: Int", false},
+		{"protocol", "Pinger", "@objc(PingerObjC) protocol Pinger", false},
+		{"method", "start", "@objc(startEngine) func start()", false},
+		{"method", "doThing", "@objc(doThing:with:) func doThing(x: Int, with y: Int)", true},
+		{"method", "doThing", "@objc(doThingWith:) func doThing(x: Int)", false},
+		{"class", "Same", `@available(*, renamed: "@objc(RenamedThing)") @objc ( Same ) class Same: NSObject`, true},
+		{"class", "Same", `@available(*, message: "escaped \" ( )") @objc ( Same ) class Same: NSObject`, true},
+		{"class", "Same", `@available(*, message: #"""contains (@objc(RenamedThing))"""#) @objc ( Same ) class Same: NSObject`, false},
+		{"class", "Same", `@available(*, message: "before" /* ( nested /* ) */ */) @objc ( Same ) class Same: NSObject`, false},
+		{"class", "Same", "@available(*, message: \"before\" // ignore this line\n) @objc ( Same ) class Same: NSObject", false},
+		{"class", "Same", `@MyModule.MyAttribute @objc ( Same ) class Same`, true},
+		{"function", "f", `func f(_ x: String = "@objc(RenamedThing)")`, false},
+		{"function", "f", `func f() -> String /* @objc(RenamedThing) */`, false},
+		{"function", "f", `func f() { let text = "@objc(RenamedThing)" }`, false},
+		{"function", "f", `@available(*, renamed: "@objc(RenamedThing)") func f()`, false},
 		// Unproven shapes are kept: a member's exposure follows its container,
 		// which a candidate-level check cannot see, and an unparsed signature
 		// says nothing at all.
-		{"method", "func start()", true},
-		{"class", "", true},
+		{"method", "start", "func start()", true},
+		{"class", "Engine", "", true},
+		{"class", "Renamed", "@objc(", false},
+		{"class", "Renamed", "@objc() class Renamed: NSObject", false},
+		{"class", "Renamed", "@属性 @objc(RenamedThing) class Renamed: NSObject {}", false},
 	} {
-		got := swiftDeclarationVisibleToObjectiveC(SymbolRecord{Kind: tc.kind, Signature: tc.signature, Language: "Swift"})
+		got := swiftDeclarationVisibleToObjectiveC(SymbolRecord{Kind: tc.kind, Name: tc.name, Signature: tc.signature, Language: "Swift"})
 		if got != tc.want {
-			t.Fatalf("swiftDeclarationVisibleToObjectiveC(%s %q) = %v, want %v", tc.kind, tc.signature, got, tc.want)
+			t.Fatalf("swiftDeclarationVisibleToObjectiveC(%s %s %q) = %v, want %v", tc.kind, tc.name, tc.signature, got, tc.want)
 		}
 	}
 }
@@ -1159,20 +1180,22 @@ func TestObjectiveCPlusPlusSwiftExposureCandidates(t *testing.T) {
 	t.Parallel()
 	from := SymbolRecord{Language: "Objective-C++", FilePath: "consumer.mm"}
 	for _, tc := range []struct {
-		name      string
-		signature string
-		kind      string
-		want      bool
+		name       string
+		symbolName string
+		signature  string
+		kind       string
+		want       bool
 	}{
-		{name: "bridged class", signature: "@objc class Bridged: NSObject", kind: "class", want: true},
-		{name: "objc members class", signature: "@objcMembers class Members: NSObject", kind: "class", want: true},
+		{name: "bridged class", symbolName: "Bridged", signature: "@objc class Bridged: NSObject", kind: "class", want: true},
+		{name: "objc members class", symbolName: "Members", signature: "@objcMembers class Members: NSObject", kind: "class", want: true},
+		{name: "custom same class", symbolName: "Same", signature: "@objc ( Same ) class Same: NSObject", kind: "class", want: true},
 		{name: "struct", signature: "struct Ledger", kind: "struct"},
 		{name: "root class", signature: "class Engine", kind: "class"},
 		{name: "free function", signature: "func freeFunc(x: Int) -> Int", kind: "function"},
-		{name: "custom renamed class", signature: "@objc(RenamedThing) class Renamed: NSObject", kind: "class"},
+		{name: "custom renamed class", symbolName: "Renamed", signature: "@objc(RenamedThing) class Renamed: NSObject", kind: "class"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			candidate := SymbolRecord{Language: "Swift", Kind: tc.kind, Signature: tc.signature, FilePath: "models.swift"}
+			candidate := SymbolRecord{Language: "Swift", Name: tc.symbolName, Kind: tc.kind, Signature: tc.signature, FilePath: "models.swift"}
 			if got := candidateSharesDeclarations(from, candidate); got != tc.want {
 				t.Fatalf("candidateSharesDeclarations(Objective-C++, %q) = %v, want %v", tc.signature, got, tc.want)
 			}

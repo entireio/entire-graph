@@ -2,7 +2,6 @@ package sem
 
 import (
 	"path"
-	"regexp"
 	"strings"
 )
 
@@ -334,14 +333,6 @@ func objectiveCOnlyDeclaration(kind string) bool {
 	return false
 }
 
-// swiftObjCExposureAttributeRe matches the attributes that put a Swift
-// declaration into the generated header: `@objc`, `@objc(RenamedThing)` and
-// `@objcMembers`. The extractor keeps a declaration's attributes in its
-// signature, including when they sit on their own line above it.
-var swiftObjCExposureAttributeRe = regexp.MustCompile(`@objc(?:Members)?\b`)
-
-var swiftObjCCustomNameAttributeRe = regexp.MustCompile(`@objc\s*\(`)
-
 // swiftDeclarationVisibleToObjectiveC reports whether a Swift declaration could
 // appear in the generated `<Module>-Swift.h` header, which is the ONLY way an
 // Objective-C source names a Swift declaration. The language pair is real --
@@ -365,14 +356,11 @@ func swiftDeclarationVisibleToObjectiveC(candidate SymbolRecord) bool {
 		// Nothing to judge on: leave the candidate exactly as it was.
 		return true
 	}
-	if swiftObjCCustomNameAttributeRe.MatchString(signature) {
-		// The extractor indexes the Swift declaration under its Swift spelling,
-		// while Objective-C names this declaration by the custom exported name.
-		// Without alias metadata, accepting either spelling would be unsound.
-		return false
-	}
-	if swiftObjCExposureAttributeRe.MatchString(signature) {
+	switch swiftLeadingObjCExposure(signature, candidate.Name) {
+	case swiftObjCExposed, swiftObjCCustomNameSame:
 		return true
+	case swiftObjCCustomNameDifferent, swiftObjCUncertain:
+		return false
 	}
 	switch candidate.Kind {
 	case "struct", "enum", "protocol", "function":
@@ -388,6 +376,107 @@ func swiftDeclarationVisibleToObjectiveC(candidate SymbolRecord) bool {
 		return swiftClassDeclaresInheritance(signature)
 	}
 	return true
+}
+
+type swiftObjCExposureState uint8
+
+const (
+	swiftObjCNoExposure swiftObjCExposureState = iota
+	swiftObjCExposed
+	swiftObjCCustomNameSame
+	swiftObjCCustomNameDifferent
+	swiftObjCUncertain
+)
+
+// swiftLeadingObjCExposure scans only a conservative leading attribute prefix.
+func swiftLeadingObjCExposure(signature, candidateName string) swiftObjCExposureState {
+	for offset := 0; ; {
+		prefix := strings.TrimLeft(signature[offset:], " \t\r\n")
+		offset = len(signature) - len(prefix)
+		if offset >= len(signature) || signature[offset] != '@' {
+			if offset < len(signature) && signature[offset] == '/' {
+				return swiftObjCUncertain
+			}
+			return swiftObjCNoExposure
+		}
+		start := offset + 1
+		for offset = start; offset < len(signature) && (strings.ContainsRune("_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", rune(signature[offset])) || signature[offset] == '.'); offset++ {
+		}
+		if offset == start {
+			return swiftObjCUncertain
+		}
+		attribute := signature[start:offset]
+		prefix = strings.TrimLeft(signature[offset:], " \t\r\n")
+		offset = len(signature) - len(prefix)
+		if offset < len(signature) && signature[offset] == '/' {
+			return swiftObjCUncertain
+		}
+		if offset >= len(signature) || signature[offset] != '(' {
+			if attribute == "objc" || attribute == "objcMembers" {
+				return swiftObjCExposed
+			}
+			continue
+		}
+		if attribute != "available" && attribute != "objc" {
+			return swiftObjCUncertain
+		}
+		end := swiftAttributeArgumentsEnd(signature, offset)
+		if end < 0 {
+			return swiftObjCUncertain
+		}
+		if attribute == "objc" {
+			return swiftCustomObjCExposure(signature[offset+1:end-1], candidateName)
+		}
+		offset = end
+	}
+}
+func swiftAttributeArgumentsEnd(text string, open int) int {
+	depth := 1
+	for offset := open + 1; offset < len(text); offset++ {
+		ch := text[offset]
+		if ch == '\n' || ch == '\r' || ch == '#' || (ch == '/' && offset+1 < len(text) && (text[offset+1] == '/' || text[offset+1] == '*')) {
+			return -1
+		}
+		if ch == '"' {
+			if offset+2 < len(text) && text[offset:offset+3] == "\"\"\"" {
+				return -1
+			}
+			for offset++; offset < len(text) && text[offset] != '"'; offset++ {
+				if text[offset] == '\n' || text[offset] == '\r' {
+					return -1
+				}
+				if text[offset] == '\\' {
+					offset++
+				}
+			}
+			if offset >= len(text) {
+				return -1
+			}
+			continue
+		}
+		if ch == '(' {
+			depth++
+		} else if ch == ')' {
+			depth--
+			if depth == 0 {
+				return offset + 1
+			}
+		}
+	}
+	return -1
+}
+func swiftCustomObjCExposure(exported, name string) swiftObjCExposureState {
+	if selector, _, found := strings.Cut(exported, ":"); found {
+		exported = selector
+	}
+	exported = strings.TrimSpace(exported)
+	if exported == "" || strings.Trim(exported, "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != "" || exported[0] >= '0' && exported[0] <= '9' {
+		return swiftObjCUncertain
+	}
+	if exported == name {
+		return swiftObjCCustomNameSame
+	}
+	return swiftObjCCustomNameDifferent
 }
 
 // swiftClassDeclaresInheritance reports whether a Swift class signature names
