@@ -9,6 +9,7 @@ only the standard library.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -49,6 +50,16 @@ def _clean_env(**overrides: str) -> dict:
     }
     env.update(overrides)
     return env
+
+
+def _in_directory(case: unittest.TestCase, directory: str) -> None:
+    """Run the rest of ``case`` from ``directory``, restoring the cwd afterwards.
+
+    A relative configuration value (``./binary``) is only meaningful against a
+    known cwd, and that is exactly the spelling these tests are about.
+    """
+    case.addCleanup(os.chdir, os.getcwd())
+    os.chdir(directory)
 
 
 class AdapterDefaultsArePortableTest(unittest.TestCase):
@@ -112,6 +123,93 @@ class GraphifyRequiredConfigurationTest(unittest.TestCase):
                 client = GraphifyClient()
         self.assertEqual(sys.executable, client.python)
         self.assertEqual(source, client.source)
+
+    @staticmethod
+    def _fake_interpreter(directory: str, name: str = "fake-python") -> str:
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def test_a_bare_interpreter_name_is_resolved_on_path(self) -> None:
+        """`GRAPHIFY_PYTHON=python3.12` is portable configuration, not a defect.
+
+        Requiring the arm to be configured is not the same as requiring a path:
+        a bare name is what `subprocess` itself accepts and is the spelling that
+        survives being moved to another machine, so it must resolve on PATH the
+        way a bare `CMM_BIN` already does.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            interpreter = self._fake_interpreter(tmp)
+            source = os.path.join(tmp, "graphify")
+            os.makedirs(source)
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    PATH=tmp,
+                    GRAPHIFY_PYTHON="fake-python",
+                    GRAPHIFY_SOURCE=source,
+                    GRAPHIFY_STATE_ROOT=os.path.join(tmp, "state"),
+                ),
+                clear=True,
+            ):
+                client = GraphifyClient()
+            self.assertEqual(interpreter, client.python)
+
+    def test_a_bare_interpreter_name_absent_from_path_is_still_rejected(self) -> None:
+        """The other direction: PATH resolution must not become "anything goes"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = os.path.join(tmp, "empty")
+            os.makedirs(empty)
+            source = os.path.join(tmp, "graphify")
+            os.makedirs(source)
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    PATH=empty,
+                    GRAPHIFY_PYTHON="no-such-python",
+                    GRAPHIFY_SOURCE=source,
+                ),
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    GraphifyClient()
+        self.assertIn("GRAPHIFY_PYTHON", str(ctx.exception))
+
+    def test_a_relative_interpreter_spelling_is_not_a_path_lookup(self) -> None:
+        """`./python` means "in this directory" and must not decay to a bare name.
+
+        `str(Path("./python"))` drops the `./`, after which the subprocess
+        resolves the name on PATH -- here, onto a different interpreter.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            here, elsewhere = os.path.join(tmp, "here"), os.path.join(tmp, "elsewhere")
+            source = os.path.join(tmp, "graphify")
+            for directory in (here, elsewhere, source):
+                os.makedirs(directory)
+            self._fake_interpreter(elsewhere)
+            self._fake_interpreter(here)
+            _in_directory(self, here)
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    PATH=elsewhere,
+                    GRAPHIFY_PYTHON="./fake-python",
+                    GRAPHIFY_SOURCE=source,
+                    GRAPHIFY_STATE_ROOT=os.path.join(tmp, "state"),
+                ),
+                clear=True,
+            ):
+                client = GraphifyClient()
+                self.assertTrue(
+                    os.path.isabs(client.python),
+                    f"a relative interpreter decayed to {client.python!r}, which "
+                    "a subprocess would look up on PATH",
+                )
+                self.assertEqual(
+                    os.path.join(os.getcwd(), "fake-python"), client.python
+                )
 
 
 class CmmBinaryResolutionTest(unittest.TestCase):
@@ -327,6 +425,68 @@ class CmmBinaryResolutionTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as ctx:
                     CmmClient()
         self.assertIn("CMM_BIN", str(ctx.exception))
+
+    def test_a_relative_binary_is_this_directory_not_path(self) -> None:
+        """`CMM_BIN=./codebase-memory-mcp` names the local build, and keeps it.
+
+        `str(Path("./cmm"))` drops the `./`, so the value fingerprinted here as
+        the patched build reached `subprocess` as a bare name and was resolved
+        on PATH -- onto the shipped build, whose score is a structural zero.
+        Both halves are pinned: the local build is accepted, and what would
+        actually be executed is still the binary that was verified.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            here, elsewhere = os.path.join(tmp, "here"), os.path.join(tmp, "elsewhere")
+            os.makedirs(here)
+            os.makedirs(elsewhere)
+            self._patched(here)
+            self._stock(elsewhere)
+            _in_directory(self, here)
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    PATH=elsewhere,
+                    CMM_BIN="./codebase-memory-mcp",
+                    CMM_STATE_ROOT=self._state(tmp),
+                ),
+                clear=True,
+            ):
+                client = CmmClient()
+                # What `subprocess` would launch, given how the value is spelled.
+                executed = (
+                    client.binary
+                    if os.path.isabs(client.binary)
+                    else shutil.which(client.binary)
+                )
+                self.assertEqual(
+                    {"patched"},
+                    cmm_client._fingerprints(executed),
+                    f"the run would execute {executed!r}, which is not the binary "
+                    "that was verified at construction",
+                )
+                self.assertEqual(
+                    os.path.join(os.getcwd(), "codebase-memory-mcp"), client.binary
+                )
+        self.assertEqual("patched", client.build)
+
+    def test_a_relative_shipped_binary_is_still_refused(self) -> None:
+        """Relative spellings are resolved, never trusted: verification is unchanged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            here = os.path.join(tmp, "here")
+            os.makedirs(here)
+            self._stock(here)
+            _in_directory(self, here)
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    CMM_BIN="./codebase-memory-mcp",
+                    CMM_STATE_ROOT=self._state(tmp),
+                ),
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    CmmClient()
+        self.assertIn("CMM_UNPATCHED_BINARY", str(ctx.exception))
 
 
 # The `## B9` rows that name an UPSTREAM harness file rather than one this kit

@@ -106,6 +106,13 @@ def _resolve_binary(value: str | None) -> str:
     separator must exist and be executable; a bare name is looked up on PATH.
     Either way the failure is one clear error naming ``CMM_BIN``, not a
     ``FileNotFoundError`` raised per subprocess once the run is under way.
+
+    The result is always ABSOLUTE, so the binary fingerprinted here is the
+    binary executed later. ``str(Path("./cmm"))`` drops the ``./`` and turns a
+    deliberate this-directory spelling into a bare name, which a later
+    subprocess resolves on PATH -- against a possibly different build, or not
+    at all. ``os.path.abspath`` only normalises and joins with the cwd; it does
+    not follow symlinks, so the validated target itself is unchanged.
     """
     value = (value or "").strip()
     if not value:
@@ -123,14 +130,14 @@ def _resolve_binary(value: str | None) -> str:
             raise RuntimeError(
                 f"CMM_BIN={value!r} is not an executable file."
             )
-        return str(path)
+        return os.path.abspath(path)
     found = shutil.which(value)
     if not found:
         raise RuntimeError(
             f"the cmm binary {value!r} named by CMM_BIN was not found on PATH. "
             "Put it on PATH, or export CMM_BIN=/path/to/codebase-memory-mcp."
         )
-    return found
+    return os.path.abspath(found)
 
 
 def _fingerprints(path: str) -> set[str]:

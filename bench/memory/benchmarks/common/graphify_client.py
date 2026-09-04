@@ -43,7 +43,8 @@ Graphify's; nothing here re-ranks or rewrites them.
 Env (GRAPHIFY_PYTHON and GRAPHIFY_SOURCE are REQUIRED -- graphify has no
 discoverable default on a fresh machine, so both are validated at construction
 instead of being defaulted to one contributor's directory layout):
-  GRAPHIFY_PYTHON        interpreter with graphify + networkx importable (required)
+  GRAPHIFY_PYTHON        interpreter with graphify + networkx importable (required;
+                         a path, or a bare name resolved on PATH)
   GRAPHIFY_SOURCE        graphify source checkout, added to sys.path (required)
   GRAPHIFY_BRIDGE        override bridge script path
   GRAPHIFY_STATE_ROOT    per-run state root (default: $HOME/memarms/state/graphify_corpora/<pid>)
@@ -71,6 +72,12 @@ _PYTHON_ENV = "GRAPHIFY_PYTHON"
 _SOURCE_ENV = "GRAPHIFY_SOURCE"
 
 
+def _is_pathish(value: str) -> bool:
+    """Is ``value`` spelled as a path rather than as a bare PATH-resolvable name?"""
+    separators = [os.sep] + ([os.altsep] if os.altsep else [])
+    return any(sep in value for sep in separators)
+
+
 def _require_configured_path(env: str, kind: str, what: str) -> str:
     """Read ``env``, and fail loudly if it is missing or does not resolve.
 
@@ -78,6 +85,16 @@ def _require_configured_path(env: str, kind: str, what: str) -> str:
     machine the published runs happened to use makes the arm unreproducible
     while looking configured, and the failure then surfaces mid-ingest as an
     opaque subprocess error. Fail here, once, with the variable to set.
+
+    Requiring configuration is not the same as requiring a *path*. A bare
+    interpreter name (``GRAPHIFY_PYTHON=python3.12``) is portable configuration
+    and is what ``subprocess`` itself accepts, so it is resolved on PATH the
+    same way a bare ``CMM_BIN`` is. A value spelled as a path stays a path:
+    ``./python`` means "in this directory", never "on PATH", and is returned
+    ABSOLUTE because ``str(Path("./python"))`` would silently drop the ``./``
+    and hand a bare name to the subprocess. ``os.path.abspath`` normalises and
+    joins with the cwd without following symlinks, so the validated target is
+    unchanged.
     """
     value = os.getenv(env, "").strip()
     if not value:
@@ -85,6 +102,14 @@ def _require_configured_path(env: str, kind: str, what: str) -> str:
             f"{env} is not set. The graphify arm needs {what}, and there is no "
             f"portable default for it. Export {env}=<path> before running this arm."
         )
+    if kind == "exe" and not _is_pathish(value):
+        found = shutil.which(value)
+        if not found:
+            raise RuntimeError(
+                f"{env}={value!r} was not found on PATH. It must name {what}, "
+                "either as a path or as a bare name resolvable on PATH."
+            )
+        return os.path.abspath(found)
     path = Path(value).expanduser()
     if kind == "exe":
         ok, expected = path.is_file() and os.access(path, os.X_OK), "an executable file"
@@ -94,7 +119,7 @@ def _require_configured_path(env: str, kind: str, what: str) -> str:
         raise RuntimeError(
             f"{env}={value!r} is not {expected}. It must point at {what}."
         )
-    return str(path)
+    return os.path.abspath(path)
 
 
 def _default_bridge_path() -> str:

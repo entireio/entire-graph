@@ -274,10 +274,10 @@ dependency lock as well as the benchmark code:
 
 ```
 51c48c7e947c8ce51581a65e789e5174  benchmarks/common/bm25_client.py
-f6c94d43cab55d51c82d7c4117a384cd  benchmarks/common/cmm_client.py
+0a1bd62be9d554b5e7fb8690d53858ac  benchmarks/common/cmm_client.py
 46b628c9f8f53f84f6c2ce07f07ba318  benchmarks/common/entire_client.py
 3f7d918dc36ccc066ebdd4cbad3e80dc  benchmarks/common/entra_auth.py
-055bae76ec1da3f7d86a4349aee31daf  benchmarks/common/graphify_client.py
+4e6e829800ac9e4d477d61499c592229  benchmarks/common/graphify_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 041f93a130c1a91d1b81f67622555b8c  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
