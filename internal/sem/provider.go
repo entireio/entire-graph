@@ -10441,7 +10441,14 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		// reports per-file read failures, but make every content read fail closed.
 		// The listing preflight already refuses a persistently execute-only root;
 		// this branch covers permissions changing between listing and reading.
-		return openManuallyConfinedWorktreeSource(repo, paths, ignores, warnings, maxReadBytes), nil
+		// The listing above already ran the ignore rules and filled the ledger,
+		// so the disclosure is owed on this branch exactly as on the one below.
+		// Losing it here would make an unreadable repository root the one place a
+		// repo-controlled exclusion goes unreported, which is the silence this
+		// report exists to close.
+		confined := openManuallyConfinedWorktreeSource(repo, paths, ignores, warnings, maxReadBytes)
+		confined.repoIgnored = worktreeLedger.report()
+		return confined, nil
 	}
 	// Taken once, from the descriptor os.OpenRoot just pinned, and consulted by
 	// every fallback read below. See pinnedRootIdentity.
