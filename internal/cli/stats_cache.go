@@ -34,7 +34,7 @@ const statsCacheSchema = "v1"
 // and rewriting the scope file costs more than re-parsing a handful of transcripts.
 const statsCacheMinTranscripts = 8
 
-// statsCacheMaxBytes bounds how much compressed cache is read back. A memo is a convenience;
+// statsCacheMaxBytes bounds both compressed and decompressed cache data. A memo is a convenience;
 // it is not worth unbounded memory if the file on disk is not what this code wrote.
 const statsCacheMaxBytes = 256 << 20
 
@@ -115,13 +115,26 @@ func (c *statsCache) load() {
 		return
 	}
 	defer func() { _ = handle.Close() }()
-	reader, err := gzip.NewReader(io.LimitReader(handle, statsCacheMaxBytes))
+	c.loadFrom(handle, statsCacheMaxBytes)
+}
+
+// loadFrom bounds decompression as well as disk input before accepting the memo.
+func (c *statsCache) loadFrom(handle io.Reader, maxBytes int64) {
+	reader, err := gzip.NewReader(io.LimitReader(handle, maxBytes))
 	if err != nil {
 		return
 	}
 	defer func() { _ = reader.Close() }()
 	var document statsCacheDocument
-	if err := json.NewDecoder(reader).Decode(&document); err != nil {
+	limited := &io.LimitedReader{R: reader, N: maxBytes + 1}
+	decoder := json.NewDecoder(limited)
+	if err := decoder.Decode(&document); err != nil {
+		return
+	}
+	// Decode can return a complete JSON object before gzip checks its footer.
+	// Require a clean EOF, rejecting checksum errors, truncation and trailing data.
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF || limited.N == 0 {
 		return
 	}
 	if document.Schema != statsCacheSchema || document.Entries == nil {

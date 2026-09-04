@@ -616,7 +616,7 @@ type sessionAcc struct {
 	kindCalls           map[string]int
 	kindResults         map[string]int
 	kindBytes           map[string]int64
-	seenCalls           map[string]bool
+	seenCalls           map[string]summaryCall
 	usageByID           map[string]statsTokens
 	unkeyed             statsTokens
 }
@@ -629,14 +629,14 @@ func newSessionAcc() *sessionAcc {
 		kindCalls:   map[string]int{},
 		kindResults: map[string]int{},
 		kindBytes:   map[string]int64{},
-		seenCalls:   map[string]bool{},
+		seenCalls:   map[string]summaryCall{},
 		usageByID:   map[string]statsTokens{},
 	}
 }
 
-// merge folds one transcript's summary into its owning session, skipping any call this session
-// has already counted from another of its transcripts. Files are merged in sorted path order, so
-// which occurrence wins — and therefore `firstLocate` — does not depend on what was cached.
+// merge folds one transcript's summary into its owning session. Replayed calls count once,
+// while later copies can supply missing results or more complete usage. Files are merged in
+// sorted path order, so firstLocate does not depend on what was cached.
 func (a *sessionAcc) merge(summary fileSummary) {
 	if summary.FirstUnixNano != 0 && (a.firstNano == 0 || summary.FirstUnixNano < a.firstNano) {
 		a.firstNano = summary.FirstUnixNano
@@ -646,10 +646,23 @@ func (a *sessionAcc) merge(summary fileSummary) {
 	}
 	for _, call := range summary.Calls {
 		if call.ID != "" {
-			if a.seenCalls[call.ID] {
+			if previous, seen := a.seenCalls[call.ID]; seen {
+				// A replay can complete a call whose first copy had no result.
+				// Keep its original classification and count the result only once.
+				if !previous.HasResult && call.HasResult {
+					previous.HasResult, previous.Bytes = true, call.Bytes
+					a.seenCalls[call.ID] = previous
+					if previous.Verb != "" {
+						a.verbResults[previous.Verb]++
+						a.verbBytes[previous.Verb] += call.Bytes
+					} else {
+						a.kindResults[previous.Kind]++
+						a.kindBytes[previous.Kind] += call.Bytes
+					}
+				}
 				continue
 			}
-			a.seenCalls[call.ID] = true
+			a.seenCalls[call.ID] = call
 		}
 		if call.Verb != "" {
 			a.verbCalls[call.Verb]++
@@ -672,7 +685,15 @@ func (a *sessionAcc) merge(summary fileSummary) {
 		}
 	}
 	for _, usage := range summary.Usage {
-		a.usageByID[usage.ID] = usage.Tokens
+		// Usage grows as a message streams. Filename order does not identify
+		// the final record, so a partial replay must not lower any counter.
+		previous := a.usageByID[usage.ID]
+		a.usageByID[usage.ID] = statsTokens{
+			Input:      max(previous.Input, usage.Tokens.Input),
+			CacheWrite: max(previous.CacheWrite, usage.Tokens.CacheWrite),
+			CacheRead:  max(previous.CacheRead, usage.Tokens.CacheRead),
+			Output:     max(previous.Output, usage.Tokens.Output),
+		}
 	}
 	a.unkeyed.Input += summary.Unkeyed.Input
 	a.unkeyed.CacheWrite += summary.Unkeyed.CacheWrite
