@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2052,9 +2053,17 @@ var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]
 // fsharpValueBindingPattern matches a `let`/`use` VALUE binding
 // (`let Json = Newtonsoft.Json.JsonConvert`, `let Json : JsonConvert = ...`),
 // which also binds the name lexically. A function binding carries parameters
-// between the name and the `=` and never matches, so `let encode (x: int) = x`
-// is left alone.
-var fsharpValueBindingPattern = regexp.MustCompile(`(?m)^[ \t]*(?:let|use)[ \t]+(?:mutable[ \t]+)?([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::[^=\n]*)?=`)
+// between the name and the `=`, so it never matches here -- its parameters are
+// read by fsharpFunctionParameterNames instead, which is the only other thing
+// a `let` line can bind.
+//
+// The bang forms `let!` and `use!` are the same binding written inside a
+// computation expression (`let! Json = fetch ()` in an `async { ... }`), with
+// the same ordered, offside-delimited scope. Requiring the bare keyword missed
+// every one of them, so a qualifier the CE had rebound was still classified by
+// the project's module declarations and pinned `Json.serialize` to an unrelated
+// project module named `Json`.
+var fsharpValueBindingPattern = regexp.MustCompile(`(?m)^[ \t]*(?:let|use)!?[ \t]+(?:mutable[ \t]+)?([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::[^=\n]*)?=`)
 
 // fsharpShadowBinding is one name a file binds lexically, together with the
 // lines that binding governs. F# scoping is ordered and offside-based: a
@@ -2097,15 +2106,27 @@ func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
 	lines := strings.Split(maskFSharpBlockComments(content), "\n")
 	var bindings []fsharpShadowBinding
 	for index, line := range lines {
-		name := fsharpShadowBindingName(line)
-		if name == "" {
+		if name := fsharpShadowBindingName(line); name != "" {
+			bindings = append(bindings, fsharpShadowBinding{
+				name:        name,
+				line:        index + 1,
+				throughLine: fsharpBindingScopeEnd(lines, index),
+			})
 			continue
 		}
-		bindings = append(bindings, fsharpShadowBinding{
-			name:        name,
-			line:        index + 1,
-			throughLine: fsharpBindingScopeEnd(lines, index),
-		})
+		// A function binding binds its PARAMETERS, and they shadow exactly as a
+		// `let` does: `let run (Json: JsonConvert) x = Json.serialize x` names
+		// the parameter, not the project module `Json`. Their scope is the body
+		// the header opens rather than the block the header sits in, so it is
+		// closed by the next line at the header's OWN indent -- the sibling
+		// binding after the function -- not only by a dedent past it.
+		for _, name := range fsharpFunctionParameterNames(line) {
+			bindings = append(bindings, fsharpShadowBinding{
+				name:        name,
+				line:        index + 1,
+				throughLine: fsharpParameterScopeEnd(lines, index),
+			})
+		}
 	}
 	return bindings
 }
@@ -2129,6 +2150,138 @@ func fsharpShadowBindingName(line string) string {
 	return ""
 }
 
+// fsharpFunctionHeaderPattern matches the head of a `let`/`use` FUNCTION
+// binding: the keyword, any modifiers, the name it binds, and the whitespace
+// before its first parameter. A VALUE binding writes `=` or a type annotation
+// straight after the name, so the two forms stay disjoint and a line is read as
+// one or the other, never both.
+var fsharpFunctionHeaderPattern = regexp.MustCompile(`^[ \t]*(?:let|use)!?[ \t]+(?:(?:rec|inline|mutable|private|internal|public)[ \t]+)*[A-Za-z_][A-Za-z0-9_']*[ \t]+`)
+
+// fsharpParameterBinderPattern matches a parameter that is a plain name,
+// carrying an optional type annotation (`Json`, `Json: JsonConvert`). Only the
+// NAME is captured: `let run (x: Json) = Json.serialize x` binds `x` and merely
+// MENTIONS the type `Json`, so reading an annotation as a binder would shadow a
+// qualifier nothing rebound -- and a shadowed qualifier resolves unrestricted,
+// which binds whatever same-name definition sits nearest instead of the module
+// the source wrote.
+var fsharpParameterBinderPattern = regexp.MustCompile(`^[ \t]*([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::.*)?$`)
+
+// fsharpFunctionParameterNames lists the names a function header binds through
+// its parameters. A parameter shadows a module qualifier exactly as a `let`
+// does -- `let run (Json: JsonConvert) x = Json.serialize x` names the
+// parameter -- but only value bindings were recognised, so the qualifier was
+// classified by the project's module declarations alone and the call was pinned
+// to an unrelated project module named `Json`.
+//
+// Only parameters written as a plain name are read, alone or inside parentheses
+// and tuples. A group in any other shape -- a union-case pattern (`(Some x)`),
+// an attribute, a list or record pattern -- is left unbound, because a name
+// standing there need not be a binding at all: `Some`, `None` and `Error` are
+// union CASES, and binding them would un-qualify calls that legitimately name a
+// module of that name. Missing a shadow leaves the previous answer; inventing
+// one changes a call's target, so the unknown shapes stay out.
+func fsharpFunctionParameterNames(line string) []string {
+	header := fsharpFunctionHeaderPattern.FindString(line)
+	if header == "" {
+		return nil
+	}
+	region, found := fsharpParameterRegion(line[len(header):])
+	if !found {
+		return nil
+	}
+	var names []string
+	for _, group := range fsharpSplitTopLevel(region, ' ', '\t') {
+		names = append(names, fsharpParameterGroupBinders(group)...)
+	}
+	return names
+}
+
+// fsharpParameterRegion returns the parameter text of a function header: what
+// stands between the name and the `=` that opens the body. Brackets are counted
+// so a `=` inside an attribute is not mistaken for the one ending the header,
+// and a top-level `:` ends the region too because what follows it is the RETURN
+// type, not a parameter. A header split across lines carries no `=` on this
+// line and binds nothing here -- the narrow answer, which keeps the previous
+// classification rather than inventing a shadow.
+func fsharpParameterRegion(rest string) (string, bool) {
+	depth := 0
+	for index := 0; index < len(rest); index++ {
+		switch rest[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case ':', '=':
+			if depth == 0 {
+				return rest[:index], true
+			}
+		}
+	}
+	return "", false
+}
+
+// fsharpParameterGroupBinders returns the names one parameter group binds. A
+// parenthesised group may be a tuple, whose parts each bind a name.
+func fsharpParameterGroupBinders(group string) []string {
+	if strings.HasPrefix(group, "(") && strings.HasSuffix(group, ")") {
+		var names []string
+		for _, part := range fsharpSplitTopLevel(group[1:len(group)-1], ',') {
+			if name := fsharpParameterBinderName(part); name != "" {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	if name := fsharpParameterBinderName(group); name != "" {
+		return []string{name}
+	}
+	return nil
+}
+
+// fsharpParameterBinderName returns the name a parameter binds, or "" when it
+// is not a plain name. The wildcard `_` binds nothing.
+func fsharpParameterBinderName(text string) string {
+	match := fsharpParameterBinderPattern.FindStringSubmatch(text)
+	if match == nil || match[1] == "_" {
+		return ""
+	}
+	return match[1]
+}
+
+// fsharpSplitTopLevel splits text on the separators, ignoring any that fall
+// inside brackets, and drops empty fields.
+func fsharpSplitTopLevel(text string, separators ...byte) []string {
+	var fields []string
+	depth, start := 0, -1
+	for index := 0; index < len(text); index++ {
+		character := text[index]
+		switch character {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth == 0 && slices.Contains(separators, character) {
+			if start >= 0 {
+				fields = append(fields, text[start:index])
+				start = -1
+			}
+			continue
+		}
+		if start < 0 {
+			start = index
+		}
+	}
+	if start >= 0 {
+		fields = append(fields, text[start:])
+	}
+	return fields
+}
+
 // fsharpBindingScopeEnd returns the last line the binding written on
 // lines[index] is still in scope for. F#'s offside rule closes the block a
 // binding lives in at the first following line indented less than the binding
@@ -2137,13 +2290,29 @@ func fsharpShadowBindingName(line string) string {
 // Blank and comment-only lines carry no indentation of their own, so they never
 // close a block.
 func fsharpBindingScopeEnd(lines []string, index int) int {
+	return fsharpScopeEnd(lines, index, false)
+}
+
+// fsharpParameterScopeEnd returns the last line the parameters declared by the
+// header on lines[index] are still in scope for. A parameter lives in the body
+// the header OPENS, and that body is written indented past the header, so the
+// next line back at the header's own indent -- the sibling `let` after the
+// function -- already ends it. Reusing the `let` rule instead would carry a
+// top-level function's parameters to the end of the file and un-qualify every
+// call below it, which is the wrong-definition direction of this same bug.
+func fsharpParameterScopeEnd(lines []string, index int) int {
+	return fsharpScopeEnd(lines, index, true)
+}
+
+func fsharpScopeEnd(lines []string, index int, closedByOwnIndent bool) int {
 	indent := fsharpIndentWidth(lines[index])
 	for i := index + 1; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
 			continue
 		}
-		if fsharpIndentWidth(lines[i]) < indent {
+		width := fsharpIndentWidth(lines[i])
+		if width < indent || (closedByOwnIndent && width == indent) {
 			return i
 		}
 	}

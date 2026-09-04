@@ -17369,6 +17369,132 @@ let run (x: int) =
 	})
 }
 
+func TestFSharpQualifierShadowedByAFunctionParameter(t *testing.T) {
+	// Shadow detection read only VALUE bindings, so the most common binder F#
+	// has -- a function's own parameters -- was invisible. `let run (Json:
+	// JsonConvert) x = Json.serialize x` names the PARAMETER, but the qualifier
+	// was still classified by the project's module declarations alone, so the
+	// call was pinned to an unrelated project module `Json` and fabricated an
+	// edge into a definition the source never wrote.
+	for _, shadow := range []struct{ name, source string }{
+		{"annotated parameter", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json: Newtonsoft.Json.JsonConvert) (x: int) = Json.serialize x
+`},
+		{"bare parameter", `module Use
+
+let serialize (x: int) = x * 2
+
+let run Json (x: int) = Json.serialize x
+`},
+		{"parameter over an indented body", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json: Newtonsoft.Json.JsonConvert) (x: int) =
+    Json.serialize(x)
+`},
+		{"tuple parameter", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json: Newtonsoft.Json.JsonConvert, x: int) = Json.serialize x
+`},
+	} {
+		t.Run(shadow.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, shadow.source)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under a %s named `Json` reached %v, want %v: the parameter shadows the project module `Json`", shadow.name, got, want)
+			}
+		})
+	}
+
+	// The opposite direction, which matters as much: a shadowed qualifier
+	// records bare and resolves UNRESTRICTED, so reading a binder where none is
+	// written does not merely lose a restriction -- it binds whatever same-name
+	// definition sits nearest instead of the module the source named.
+	for _, guard := range []struct{ name, why, source string }{
+		{"type annotation is not a binder", "`Json` here is the parameter's TYPE; the parameter is `x`", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: Json) = Json.serialize x
+`},
+		{"parameter does not outlive its own function", "a parameter lives in the body its header opens, and `helper` ends at the next binding at its own indent", `module Use
+
+let serialize (x: int) = x * 2
+
+let helper (Json: Newtonsoft.Json.JsonConvert) (x: int) = x
+
+let run (x: int) = Json.serialize x
+`},
+		{"union-case pattern is not a binder", "`Json payload` matches a union CASE and binds `payload`, not `Json`", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json payload) (x: int) = Json.serialize x
+`},
+	} {
+		t.Run(guard.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, guard.source)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` reached %v, want %v: %s, so nothing shadows the project module `Json`", got, want, guard.why)
+			}
+		})
+	}
+}
+
+func TestFSharpQualifierShadowedByAComputationExpressionBinding(t *testing.T) {
+	// `let!` and `use!` are the same value binding written inside a computation
+	// expression, with the same ordered, offside-delimited scope -- but the
+	// pattern demanded the bare keyword, so every one of them was missed and a
+	// qualifier the CE had rebound was still held to the project module of that
+	// name.
+	for _, shadow := range []struct{ name, binding string }{
+		{"let bang", "let! Json = fetch x"},
+		{"use bang", "use! Json = acquire x"},
+	} {
+		t.Run(shadow.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    async {
+        `+shadow.binding+`
+        return Json.serialize(x)
+    }
+`)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `%s` reached %v, want %v: the computation-expression binding shadows the project module `Json`", shadow.binding, got, want)
+			}
+		})
+	}
+
+	t.Run("binding does not escape its computation expression", func(t *testing.T) {
+		// The opposite direction: the `let!` is closed by the dedent that ends
+		// the block it was written in, so the call in the SIBLING function still
+		// names the project module.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let render (x: int) =
+    async {
+        let! Json = fetch x
+        return x
+    }
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` in a sibling function reached %v, want %v: the `let! Json` is scoped to `render`'s computation expression", got, want)
+		}
+	})
+}
+
 // TestFSharpJuxtaposedCallAfterABindingReachesTheCallGraph is the swallowed
 // application at the graph level: the CALLS edge is missing entirely.
 //
