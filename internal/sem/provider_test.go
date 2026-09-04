@@ -18946,6 +18946,8 @@ func TestSignatureNamesQualifiedMethodUsesTokenBoundaries(t *testing.T) {
 	}{
 		{"plain qualified definition", "int A::foo(int x)", "A", "foo", true},
 		{"template definition qualifies through its arguments", "int A<T>::foo(int x)", "A", "foo", true},
+		{"spaces around template arguments", "int A <T> ::foo(int x)", "A", "foo", true},
+		{"space after scope operator", "int A<T>:: foo(int x)", "A", "foo", true},
 		{"a longer class name is not this class", "int BA::foo(int x)", "A", "foo", false},
 		{"a longer method name is not this method", "int A::foobar(int x)", "A", "foo", false},
 		{"a different class does not match", "int B::foo(int x)", "A", "foo", false},

@@ -8919,7 +8919,7 @@ func signatureNamesQualifiedMethod(signature, container, name string) bool {
 		if start > 0 && isIdentifierByte(signature[start-1]) {
 			continue
 		}
-		rest := signature[offset:]
+		rest := strings.TrimLeft(signature[offset:], " \t\r\n")
 		// A template definition qualifies through its argument list
 		// (`A<T>::foo`), which is part of the same name. The list closes at the
 		// MATCHING `>`, not the first one seen: `A<std::vector<T>>::foo` and
@@ -8934,13 +8934,17 @@ func signatureNamesQualifiedMethod(signature, container, name string) bool {
 			if !closed {
 				continue
 			}
-			rest = after
+			rest = strings.TrimLeft(after, " \t\r\n")
 		}
-		if !strings.HasPrefix(rest, "::"+name) {
+		if !strings.HasPrefix(rest, "::") {
+			continue
+		}
+		rest = strings.TrimLeft(rest[2:], " \t\r\n")
+		if !strings.HasPrefix(rest, name) {
 			continue
 		}
 		// The name must end a token, so `A::foobar` does not match `A::foo`.
-		after := rest[len("::"+name):]
+		after := rest[len(name):]
 		if after == "" || !isIdentifierByte(after[0]) {
 			return true
 		}
