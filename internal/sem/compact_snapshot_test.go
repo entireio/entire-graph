@@ -1,11 +1,13 @@
 package sem
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -501,8 +503,13 @@ func TestCompactSnapshotDecoderRejectsRecordAfterSummary(t *testing.T) {
 func TestCompactSnapshotDecoderRejectsMissingSummary(t *testing.T) {
 	requireCompactDecodeError(t, compactHeaderLine(), "missing summary")
 }
-func TestCompactSnapshotDecoderRejectsLineOverLimit(t *testing.T) {
-	requireCompactDecodeError(t, strings.Repeat("x", 16*1024*1024+1), "compact snapshot scan:")
+
+// The decoder used to cap every line at 16 MiB, which it could not do and still
+// read its own encoder's output: the summary is written as ONE line and carries
+// a record per partial failure. An oversized line is still rejected when it is
+// not a record -- but on its content, not on its length.
+func TestCompactSnapshotDecoderRejectsOversizedNonRecordLine(t *testing.T) {
+	requireCompactDecodeError(t, strings.Repeat("x", 16*1024*1024+1), "invalid character 'x'")
 }
 
 // compactHeaderLine is the minimal valid header line: envelope version plus a
@@ -540,5 +547,87 @@ func TestSnapshotHasherUsesSHA256(t *testing.T) {
 	_ = h.Add(SnapshotHeader{})
 	if got := h.SumHex(); len(got) != hex.EncodedLen(sha256.Size) {
 		t.Fatalf("hash length = %d", len(got))
+	}
+}
+
+// The encoder writes the whole SnapshotSummary as ONE line, and that summary
+// carries a record per partial failure over a corpus of up to
+// defaultMaxSourceFiles files. A decoder that caps a line at a constant chosen
+// ahead of that cannot read every artifact this build can write: a repository
+// with enough parse/size failures encoded cleanly and then failed
+// snapshot-query with "bufio.Scanner: token too long".
+func TestCompactSnapshotDecodesSummaryLargerThanLegacyLineCap(t *testing.T) {
+	var buffer bytes.Buffer
+	encoder := NewCompactSnapshotEncoder(&buffer)
+	if err := encoder.Encode(SnapshotHeader{SchemaVersion: SchemaVersion}); err != nil {
+		t.Fatal(err)
+	}
+	summary := SnapshotSummary{RecordType: "summary", Languages: []string{}, Warnings: []ProviderWarning{}}
+	for index := 0; index < 90_000; index++ {
+		summary.PartialFailures = append(summary.PartialFailures, PartialFailure{
+			Code:                 "E_FILE_TOO_LARGE",
+			Severity:             "warning",
+			FilePath:             fmt.Sprintf("packages/vendor/bundle/chunk-%06d/dist/index.min.js", index),
+			EffectOnCompleteness: "file skipped because it exceeds the parse byte limit",
+			Detail:               "file exceeds the configured max parse bytes",
+		})
+	}
+	if err := encoder.Encode(summary); err != nil {
+		t.Fatal(err)
+	}
+	if buffer.Len() <= 16*1024*1024 {
+		t.Fatalf("encoded %d bytes, want more than the 16 MiB the decoder used to cap a line at", buffer.Len())
+	}
+
+	decoded := 0
+	var readBack SnapshotSummary
+	if _, err := DecodeCompactSnapshot(bytes.NewReader(buffer.Bytes()), func(record any) error {
+		decoded++
+		if typed, ok := record.(SnapshotSummary); ok {
+			readBack = typed
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded != 2 {
+		t.Fatalf("decoded %d records, want 2", decoded)
+	}
+	if len(readBack.PartialFailures) != len(summary.PartialFailures) {
+		t.Fatalf("partial failures = %d, want %d", len(readBack.PartialFailures), len(summary.PartialFailures))
+	}
+	if readBack.PartialFailures[89_999].FilePath != summary.PartialFailures[89_999].FilePath {
+		t.Fatalf("last partial failure path = %q", readBack.PartialFailures[89_999].FilePath)
+	}
+}
+
+// A record split across many reads of the underlying buffer must come back
+// byte-identical, and the surrounding line framing must be unchanged.
+func TestCompactSnapshotLineReaderFraming(t *testing.T) {
+	long := strings.Repeat("x", 300*1024)
+	input := "alpha\r\n" + long + "\nomega"
+	reader := bufio.NewReaderSize(strings.NewReader(input), 64)
+	var lines []string
+	for {
+		line, err := readCompactSnapshotLine(reader)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatal(err)
+		}
+		lines = append(lines, string(line))
+	}
+	if len(lines) != 3 {
+		t.Fatalf("lines = %d, want 3", len(lines))
+	}
+	if lines[0] != "alpha" {
+		t.Fatalf("line 1 = %q, want %q", lines[0], "alpha")
+	}
+	if lines[1] != long {
+		t.Fatalf("line 2 length = %d, want %d", len(lines[1]), len(long))
+	}
+	if lines[2] != "omega" {
+		t.Fatalf("line 3 = %q, want %q", lines[2], "omega")
 	}
 }

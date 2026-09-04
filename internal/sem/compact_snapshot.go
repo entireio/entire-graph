@@ -1060,16 +1060,21 @@ func shortDigest(value string) string {
 // a record in it.
 func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarning, error) {
 	var warnings []ProviderWarning
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	reader := bufio.NewReaderSize(in, 64*1024)
 	dictionary := []string{""}
 	known := map[string]bool{"": true}
 	seenHeader, seenSummary := false, false
 	tolerateSchemaAdditions := false
 	lineNumber := 0
-	for scanner.Scan() {
+	for {
+		line, readErr := readCompactSnapshotLine(reader)
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return warnings, fmt.Errorf("compact snapshot scan: %w", readErr)
+		}
 		lineNumber++
-		line := scanner.Bytes()
 		if len(line) == 0 {
 			return warnings, fmt.Errorf("compact snapshot line %d is blank", lineNumber)
 		}
@@ -1183,9 +1188,6 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 			return warnings, fmt.Errorf("unknown compact snapshot tag %q", tag)
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return warnings, fmt.Errorf("compact snapshot scan: %w", err)
-	}
 	if !seenHeader {
 		return warnings, errors.New("compact snapshot is missing header")
 	}
@@ -1193,6 +1195,43 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 		return warnings, errors.New("compact snapshot is missing summary")
 	}
 	return warnings, nil
+}
+
+// readCompactSnapshotLine returns the next line of a compact snapshot with its
+// line ending removed, and io.EOF once the reader is exhausted.
+//
+// This replaces a bufio.Scanner whose token cap was 16 MiB. The encoder writes
+// the entire SnapshotSummary as ONE line, and that summary carries a record per
+// partial failure over a source limit of defaultMaxSourceFiles files, so a
+// repository with enough parse/size failures produced a valid snapshot that the
+// same build could not read back ("bufio.Scanner: token too long"). A decoder
+// must accept every artifact its own encoder can emit, so the line length is
+// bounded by the artifact rather than by a constant chosen ahead of it.
+func readCompactSnapshotLine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		line = append(line, chunk...)
+		switch {
+		case err == nil:
+			return trimCompactSnapshotLineEnding(line), nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			// A final line with no trailing newline is still a record; only an
+			// exhausted reader with nothing buffered ends the stream.
+			if len(line) == 0 {
+				return nil, io.EOF
+			}
+			return trimCompactSnapshotLineEnding(line), nil
+		default:
+			return nil, err
+		}
+	}
+}
+
+func trimCompactSnapshotLineEnding(line []byte) []byte {
+	return bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
 }
 
 func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string, tolerateTrailingFields bool) (any, error) {
