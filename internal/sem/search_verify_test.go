@@ -1539,6 +1539,102 @@ func TestSearchVerifyExplainKeepsTheTestExitStatus(t *testing.T) {
 	}
 }
 
+// TestSearchVerifyExplainReportsAFailingExplainFilter pins the OTHER half of the composed line's
+// exit status: the half `exit $r` on its own gets wrong.
+//
+// Keeping the test's status means the wrapper reports only the test's status, so a green test whose
+// `explain` filter was missing, crashed, or could not write its output exits 0 — the line claims a
+// verification that never actually completed. That is the same class of error as the one the capture
+// was introduced to fix, pointed the other way.
+//
+// The ordering asserted here is: a nonzero TEST status always wins (a harness keying on `$?` must
+// keep reading the number the bare test produced), and a green test with a nonzero EXPLAIN status
+// exits with explain's status plus a stderr note naming the stage — the numbers collide, so only the
+// note can say which stage failed.
+//
+// As with the sibling above, the assertion is on a REAL execution in every POSIX-ish shell on the
+// machine, because the claim is about shell semantics rather than about a string.
+func TestSearchVerifyExplainReportsAFailingExplainFilter(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell semantics")
+	}
+	shells := []string{"sh"}
+	for _, candidate := range []string{"dash", "bash", "zsh"} {
+		if _, err := exec.LookPath(candidate); err == nil {
+			shells = append(shells, candidate)
+		}
+	}
+	const explainNote = "VERIFY: explain filter failed"
+	tests := []struct {
+		name     string
+		command  string
+		explain  string
+		wantExit int
+		wantNote bool
+	}{{
+		// The regression. A filter that cannot run at all is the common shape of this: a missing
+		// binary is exec's 127, and before the filter status was kept this exited 0.
+		name:     "missing filter on a green test",
+		command:  `sh -c 'echo the test output; exit 0'`,
+		explain:  "/nonexistent/explain",
+		wantExit: 127,
+		wantNote: true,
+	}, {
+		name:     "failing filter on a green test",
+		command:  `sh -c 'echo the test output; exit 0'`,
+		explain:  `sh -c 'cat >/dev/null; exit 3'`,
+		wantExit: 3,
+		wantNote: true,
+	}, {
+		// Precedence: the test's own status is the one a harness keys on, so it survives even when
+		// the filter failed as well, and the note is not written for a failure the test caused.
+		name:     "a failing test outranks a failing filter",
+		command:  `sh -c 'echo the test output; exit 7'`,
+		explain:  `sh -c 'cat >/dev/null; exit 3'`,
+		wantExit: 7,
+		wantNote: false,
+	}, {
+		name:     "a green run stays green and silent",
+		command:  `sh -c 'echo the test output; exit 0'`,
+		explain:  "cat",
+		wantExit: 0,
+		wantNote: false,
+	}}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			composed, overhead := composeSearchVerifyExplain(test.command, test.explain)
+			if overhead != len(composed)-len(test.command) {
+				t.Fatalf("overhead %d does not account for the whole wrapper (%d)",
+					overhead, len(composed)-len(test.command))
+			}
+			for _, shell := range shells {
+				t.Run(shell, func(t *testing.T) {
+					t.Parallel()
+					output, err := exec.Command(shell, "-c", composed).CombinedOutput()
+					exit := 0
+					if err != nil {
+						status, ok := err.(*exec.ExitError)
+						if !ok {
+							t.Fatalf("%s: %v (output %q)", shell, err, output)
+						}
+						exit = status.ExitCode()
+					}
+					if exit != test.wantExit {
+						t.Fatalf("%s: exit code = %d, want %d; command = %s output = %q",
+							shell, exit, test.wantExit, composed, output)
+					}
+					if got := strings.Contains(string(output), explainNote); got != test.wantNote {
+						t.Fatalf("%s: stderr note present = %v, want %v; output = %q",
+							shell, got, test.wantNote, output)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestSearchVerifyBuildCheckDoesNotExecuteRepositoryData is the build-check derivation's own
 // side-effect proof.
 //

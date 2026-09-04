@@ -1343,11 +1343,26 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 //
 // The cost is that output is buffered rather than streamed. `explain` reads its input to EOF before
 // it writes anything, so nothing downstream was streaming in the first place.
+//
+// Keeping the test's status is only half of it. `exit $r` alone reports ONLY the test's status, so
+// the converse error appears: a green test whose `explain` filter was missing, crashed, or could not
+// write its output exits 0 and the line claims a verification that never completed. `explain`'s own
+// status is therefore captured too, and the two are ordered:
+//
+//   - a nonzero TEST status always wins. That is the whole point of the capture, and a harness
+//     keying on `$?` must keep reading the same number the bare test would have produced.
+//   - a green test with a nonzero EXPLAIN status exits with explain's status. The run is
+//     inconclusive rather than passing, and nonzero is the safe direction for an inconclusive run.
+//
+// The two cases are told apart by a one-line stderr note rather than by the number, because the
+// numbers collide — a test and a filter both exit 1 — and the note is the only thing that can say
+// which stage produced it. It is written only when explain is the stage that failed.
 func composeSearchVerifyExplain(command, explain string) (composed string, overhead int) {
 	const (
 		prefix = "( o=$("
 		middle = " 2>&1); r=$?; printf '%s\\n' \"$o\" | "
-		suffix = "; exit $r )"
+		suffix = "; e=$?; [ \"$r\" -ne 0 ] && exit \"$r\"; " +
+			"[ \"$e\" -eq 0 ] || echo 'VERIFY: explain filter failed' >&2; exit \"$e\" )"
 	)
 	return prefix + command + middle + explain + suffix,
 		len(prefix) + len(middle) + len(suffix) + len(explain)
