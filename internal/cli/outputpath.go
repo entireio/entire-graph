@@ -415,8 +415,11 @@ func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
 		return repoOutputTarget{}, traversedSymlinkError(routed, path)
 	}
 	// Where the only link on the route is the caller's own, the on-disk destination
-	// stands, exactly as the os.WriteFile this helper replaced left it.
-	return repoOutputTarget{path: onDisk, given: path}, nil
+	// stands, exactly as the os.WriteFile this helper replaced left it. The route is
+	// carried out with it: openUnconfinedOutputFile walks it rather than reopening the
+	// destination this answer named, so the two cannot be answered about different
+	// filesystems.
+	return repoOutputTarget{path: onDisk, given: path, traversed: traversed}, nil
 }
 
 // realOutputPath makes path absolute the way the PLATFORM reads it: the directory
@@ -895,16 +898,27 @@ func traversedRepositorySymlink(roots []string, raw string) (string, bool) {
 			continue
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			for _, root := range roots {
-				if rel, ok := containedRel(root, next); ok {
-					return rel, true
-				}
+			if rel, ok := containedInAnyRoot(roots, next); ok {
+				return rel, true
 			}
 			if resolved, err := filepath.EvalSymlinks(next); err == nil {
 				next = resolved
 			}
 		}
 		prefix = next
+	}
+	return "", false
+}
+
+// containedInAnyRoot reports path's name beneath the FIRST implicated checkout that
+// owns it. Ownership is the question every refusal in this file turns on, and asking
+// it in one place is what keeps the route walk and the write that follows it from
+// disagreeing about which links belong to a repository.
+func containedInAnyRoot(roots []string, path string) (string, bool) {
+	for _, root := range roots {
+		if rel, ok := containedRel(root, path); ok {
+			return rel, true
+		}
 	}
 	return "", false
 }
@@ -976,14 +990,7 @@ func writeOutputFileUnderAny(
 		// unconfined, so it is an error rather than a default.
 		return fmt.Errorf("refusing to write %s: no confinement boundary was resolved", path)
 	}
-	if createParents {
-		if directory := filepath.Dir(outside.path); directory != "" && directory != "." {
-			if err := os.MkdirAll(directory, 0o755); err != nil {
-				return err
-			}
-		}
-	}
-	return os.WriteFile(outside.path, data, perm)
+	return writeUnconfinedOutputFile(confinements, outside, data, perm, createParents)
 }
 
 // writeConfinedOutputFile writes a target under the boundary that owns its
@@ -1013,6 +1020,248 @@ func writeConfinedOutputFile(
 		return err
 	}
 	return file.Close()
+}
+
+// outsideRouteHopLimit bounds the links the unconfined walk follows before it gives
+// up, so a cycle of caller-owned links is an error rather than a hang. It is the
+// Linux pathname limit, which is the most permissive of the families this tool runs
+// on; a chain the host itself would refuse fails at the host.
+const outsideRouteHopLimit = 40
+
+// writeUnconfinedOutputFile writes the caller-owned half of the rule at the top of
+// this file, and it exists for the same reason openConfinedOutputFile does.
+//
+// "Caller-owned" is a verdict about the DESTINATION, and it was reached by two
+// separate readings of the same spelling — realOutputPath, which resolves the
+// directory part, and traversedRepositorySymlink, which walks the route. Between them
+// the repository can change what a component IS, and the two answers then describe
+// two different filesystems: with `<repo>/link/../out.md`, the first reading sees a
+// committed link and lets the ".." step out of its TARGET, which puts the destination
+// outside the repository; the second sees an ordinary directory and finds no
+// committed link to refuse. Neither is wrong about what it saw, and the write then
+// went to the destination the repository chose, unconfined
+// (TestWriteOutputFileDoesNotWriteOutsideThroughALinkSwappedDuringClassification
+// truncated a file outside the repository through exactly that window).
+//
+// So the destination those checks named is not what is opened. The ROUTE is walked
+// once more, component by component, holding each directory open and verifying it by
+// identity, and the file is opened through the handle at the end of that walk. A
+// committed link on the route is refused wherever it is found rather than followed,
+// and a caller-owned one is followed, which is the same ownership rule the checks
+// apply — asked here of the objects the write actually uses.
+func writeUnconfinedOutputFile(
+	confinements []string, target repoOutputTarget, data []byte, perm os.FileMode, createParents bool,
+) error {
+	file, err := openUnconfinedOutputFile(confinements, target, perm, createParents)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+// openUnconfinedOutputFile walks target.traversed the way the kernel does — pinning
+// every directory it enters — and returns the destination open for writing.
+//
+// os.Root is used for the pinning and NOT for confinement: one root is opened per
+// directory component, so it bounds nothing except that single openat, and the walk
+// leaves it as soon as a caller-owned link says to. That is deliberate. The whole
+// point of the outside branch is that the caller may name any path on the machine,
+// and /tmp is itself a symlink on macOS; confining this walk would refuse the
+// documented `--record-baseline /tmp/base.json`.
+//
+// What it does NOT claim: it is not proof that no name on the route ever pointed
+// elsewhere. A walk that loses the race is refused, not silently redirected, and the
+// file it would have hit is untouched.
+func openUnconfinedOutputFile(
+	confinements []string, target repoOutputTarget, perm os.FileMode, createParents bool,
+) (*os.File, error) {
+	route := target.traversed
+	if route == "" || !filepath.IsAbs(route) {
+		// traversedPath only comes back empty when the spelling cannot be made
+		// absolute at all; the destination the classifier resolved is then the only
+		// route there is.
+		route = target.path
+	}
+	held, names, err := openVolumeRoot(route)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		for _, root := range held {
+			root.Close()
+		}
+	}()
+
+	pending := pathComponents(route)
+	hops := 0
+	for len(pending) > 0 {
+		component := pending[0]
+		pending = pending[1:]
+		switch component {
+		case ".":
+			continue
+		case "..":
+			// The prefix is link-free by construction — a link is either refused or
+			// followed before it is entered — so the parent of the directory being
+			// held IS the one the kernel would step back to, and it is already open.
+			if len(held) > 1 {
+				held[len(held)-1].Close()
+				held, names = held[:len(held)-1], names[:len(names)-1]
+			}
+			continue
+		}
+		directory := held[len(held)-1]
+		full := filepath.Join(names[len(names)-1], component)
+		info, statErr := directory.Lstat(component)
+		if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+			return nil, statErr
+		}
+		// Windows reports a junction as a symbolic link too (a non-symlink reparse
+		// point is ModeIrregular and does not redirect path resolution), so this one
+		// test covers every alias the kernel follows on both families.
+		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			if rel, ok := containedInAnyRoot(confinements, full); ok {
+				return nil, traversedSymlinkError(rel, target.given)
+			}
+			hops++
+			if hops > outsideRouteHopLimit {
+				return nil, fmt.Errorf(
+					"refusing to write %s: the path follows more than %d symbolic links",
+					target.given, outsideRouteHopLimit)
+			}
+			link, readErr := directory.Readlink(component)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if filepath.IsAbs(link) {
+				restarted, restartedNames, openErr := openVolumeRoot(link)
+				if openErr != nil {
+					return nil, openErr
+				}
+				for _, root := range held {
+					root.Close()
+				}
+				held, names = restarted, restartedNames
+			}
+			// A relative target is resolved against the link's PARENT, which is the
+			// directory still being held, so nothing is popped for it.
+			pending = append(pathComponents(link), pending...)
+			continue
+		}
+		if len(pending) == 0 {
+			return openUnconfinedLeaf(directory, component, full, target.given, perm)
+		}
+		if statErr != nil {
+			if !createParents {
+				// The same failure os.WriteFile produced, reported against the path
+				// the caller typed rather than against one component of it.
+				return nil, &fs.PathError{Op: "open", Path: target.path, Err: fs.ErrNotExist}
+			}
+			if err := directory.Mkdir(component, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+				return nil, err
+			}
+		}
+		next, err := directory.OpenRoot(component)
+		if err != nil {
+			return nil, err
+		}
+		held, names = append(held, next), append(names, full)
+		if err := refuseUnlessSameEntryOutside(confinements, directory, component, next, full, target.given); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("refusing to write %s: the path names no file", target.given)
+}
+
+// openVolumeRoot opens the volume an absolute path is anchored at, which is where a
+// pinned walk of it has to start. It returns the one-element stacks the walk grows.
+func openVolumeRoot(path string) ([]*os.Root, []string, error) {
+	volume := path[:len(filepath.VolumeName(path))] + string(filepath.Separator)
+	root, err := os.OpenRoot(volume)
+	if err != nil {
+		return nil, nil, err
+	}
+	return []*os.Root{root}, []string{volume}, nil
+}
+
+// openUnconfinedLeaf opens the final component through the directory handle the walk
+// is holding. The component is known not to be a symbolic link — one is followed or
+// refused before this is reached — so the identity check below can only fail on a
+// link swapped in afterwards, and that write is refused rather than redirected.
+//
+// The open order is openConfinedOutputFile's, and for the same reason: O_CREATE|O_EXCL
+// first, which Go documents as never following a symbolic link whatever the OS
+// returns, then a plain O_WRONLY when the entry already exists, so nothing is
+// destroyed before the identity check has run. The truncation happens through the
+// verified handle, where no name is left to swap.
+func openUnconfinedLeaf(
+	directory *os.Root, component, full, given string, perm os.FileMode,
+) (*os.File, error) {
+	file, err := directory.OpenFile(component, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if errors.Is(err, fs.ErrExist) {
+		file, err = directory.OpenFile(component, os.O_WRONLY, 0)
+	}
+	if err != nil {
+		return nil, err
+	}
+	named, err := directory.Lstat(component)
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	if !os.SameFile(named, opened) {
+		file.Close()
+		return nil, racedOutputPathError(full, given)
+	}
+	if err := file.Truncate(0); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+// refuseUnlessSameEntryOutside is refuseUnlessSameEntry for the unconfined walk. The
+// verdict is the same — the directory now HELD is not the object the name lstats to,
+// so a link was swapped in between the two — and only the wording differs, because
+// out here the link need not be the repository's. When it is, the message names it as
+// such; when it is not, the caller is told their own path moved under them.
+func refuseUnlessSameEntryOutside(
+	confinements []string, parent *os.Root, component string, held *os.Root, full, given string,
+) error {
+	named, err := parent.Lstat(component)
+	if err != nil {
+		return err
+	}
+	info, err := held.Stat(".")
+	if err != nil {
+		return err
+	}
+	if os.SameFile(named, info) {
+		return nil
+	}
+	if rel, ok := containedInAnyRoot(confinements, full); ok {
+		return traversedSymlinkError(rel, given)
+	}
+	return racedOutputPathError(full, given)
+}
+
+// racedOutputPathError reports a component that changed while the write was being
+// opened. It is not a refusal of the caller's path — it is a refusal to guess which
+// of the two things that path named in the same instant was meant.
+func racedOutputPathError(rel, given string) error {
+	return fmt.Errorf(
+		"refusing to write %s: %s changed while the write was being opened, so it no "+
+			"longer names the file the path was checked against. Run the command again",
+		given, rel)
 }
 
 // openConfinedOutputFile opens the confined destination for writing, and is where
