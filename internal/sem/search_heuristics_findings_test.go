@@ -629,3 +629,96 @@ func TestSearchFixturePriorRequiresTheEditVerbToGovernTheArtifact(t *testing.T) 
 		}
 	}
 }
+
+// A `--deep` search fuses sparse windows into a ranking that already contains prose-parent
+// regions, and a sparse window over a markdown document is prose text like any other. Containment
+// was decided from the RETRIEVAL SIGNAL rather than from the file, so a sparse window was never
+// checked against the region above it and the payload printed the same lines twice — the cost paid
+// again on every later turn that replays the payload.
+func TestSearchDeepDoesNotPrintOneProseWindowTwice(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	for document := 0; document < 6; document++ {
+		var body strings.Builder
+		fmt.Fprintf(&body, "# ledger renderer notes %d\n\n", document)
+		for section := 0; section < 6; section++ {
+			fmt.Fprintf(&body, "## amber ledger section %d-%d\n\n", document, section)
+			for paragraph := 0; paragraph < 8; paragraph++ {
+				fmt.Fprintf(&body, "the ledger renderer output amber blocker paragraph %d in "+
+					"section %d of note %d.\n\n", paragraph, section, document)
+				for filler := 0; filler < 6; filler++ {
+					fmt.Fprintf(&body, "filler %d-%d-%d text about unrelated matters.\n",
+						section, paragraph, filler)
+				}
+				body.WriteString("\n")
+			}
+		}
+		write(t, repo, fmt.Sprintf("notes/note-%02d.md", document), body.String())
+	}
+	response, err := SearchRepository(t.Context(), repo, "test",
+		"ledger renderer output amber blocker", SearchOptions{
+			Worktree: true,
+			Profile:  ProfileSyntaxOnly,
+			TopK:     12,
+			Deep:     true,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.SparseCandidates == 0 {
+		t.Fatal("the deep search built no sparse candidates, so it cannot exercise fusion")
+	}
+	sparse := false
+	for _, result := range response.Results {
+		if containsString(result.Signals, "sparse-region") {
+			sparse = true
+			break
+		}
+	}
+	if !sparse {
+		t.Fatal("no sparse window reached the payload, so containment was never exercised")
+	}
+	for index, result := range response.Results {
+		if result.SnippetStartLine <= 0 || result.SnippetEndLine < result.SnippetStartLine {
+			continue
+		}
+		for _, prior := range response.Results[:index] {
+			if prior.FilePath != result.FilePath || prior.SnippetStartLine <= 0 {
+				continue
+			}
+			if prior.SnippetStartLine <= result.SnippetStartLine &&
+				result.SnippetEndLine <= prior.SnippetEndLine {
+				t.Fatalf("%s lines %d-%d were printed again inside the higher-ranked %d-%d",
+					result.FilePath, result.SnippetStartLine, result.SnippetEndLine,
+					prior.SnippetStartLine, prior.SnippetEndLine)
+			}
+		}
+	}
+}
+
+// Widening the containment rule from the RETRIEVAL SIGNAL to the FILE has to widen it to prose
+// only. A contained CODE region is a different statement about the same lines — an inner function
+// inside the outer one that encloses it — and one region per unit already bounds how many of those
+// a file can contribute, so dropping it would take a distinct fix site out of the payload.
+func TestDropContainedResultsKeepsContainedCodeRegions(t *testing.T) {
+	t.Parallel()
+	code := []SearchResult{
+		{FilePath: "internal/ledger/render.go", Rank: 1, SnippetStartLine: 10, SnippetEndLine: 60},
+		{FilePath: "internal/ledger/render.go", Rank: 2, SnippetStartLine: 20, SnippetEndLine: 28},
+	}
+	if kept := dropContainedProseResults(code); len(kept) != 2 {
+		t.Fatalf("a nested code region was dropped as a duplicate: %#v", kept)
+	}
+	// The same shape in a document IS a duplicate: the enclosing window already printed it.
+	prose := []SearchResult{
+		{FilePath: "notes/design.md", Rank: 1, SnippetStartLine: 1, SnippetEndLine: 80},
+		{FilePath: "notes/design.md", Rank: 2, SnippetStartLine: 5, SnippetEndLine: 40},
+	}
+	kept := dropContainedProseResults(prose)
+	if len(kept) != 1 {
+		t.Fatalf("the contained prose window survived: %#v", kept)
+	}
+	if kept[0].SnippetStartLine != 1 || kept[0].SnippetEndLine != 80 {
+		t.Fatalf("containment kept the wrong window: %#v", kept[0])
+	}
+}

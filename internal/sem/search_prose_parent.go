@@ -402,7 +402,15 @@ func dropContainedProseResults(results []SearchResult) []SearchResult {
 }
 
 func searchResultIsProse(result SearchResult) bool {
-	return hasSearchSignal(result, proseParentRetrievalSignal) || hasSearchSignal(result, proseResolutionSignal)
+	// The PATH, not only the retrieval signal. A --deep search fuses sparse windows into the
+	// ranking beside the prose-parent regions, and a sparse window over a markdown document is
+	// prose text that the containment rule has exactly the same reason to deduplicate; asking only
+	// which retrieval mode produced it exempted every sparse row, so a deep payload printed one
+	// 80-line document head twice. The signals stay in the test because a docs-heavy repository
+	// admits its SOURCE files to prose-parent selection, and those carry no prose extension.
+	return proseParentPath(result.FilePath) ||
+		hasSearchSignal(result, proseParentRetrievalSignal) ||
+		hasSearchSignal(result, proseResolutionSignal)
 }
 
 func proseQueryRequestsMultipleParents(q searchQuery) bool {
