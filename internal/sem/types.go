@@ -1362,6 +1362,11 @@ func assignmentFlowEvents(block string) []assignmentFlowEvent {
 	return events
 }
 
+var (
+	destructuredAssignmentVariablesRe  = regexp.MustCompile(`[A-Za-z_$][\w$]*`)
+	destructuredAssignmentVariablesRe2 = regexp.MustCompile(`^[A-Za-z_$][\w$]*$`)
+)
+
 func destructuredAssignmentVariables(varList string) []string {
 	seen := map[string]struct{}{}
 	for _, part := range strings.Split(varList, ",") {
@@ -1370,13 +1375,13 @@ func destructuredAssignmentVariables(varList string) []string {
 			continue
 		}
 		if strings.ContainsAny(part, "{}[]=:") {
-			fields := regexp.MustCompile(`[A-Za-z_$][\w$]*`).FindAllString(part, -1)
+			fields := destructuredAssignmentVariablesRe.FindAllString(part, -1)
 			if len(fields) != 1 {
 				continue
 			}
 			part = fields[0]
 		}
-		if !regexp.MustCompile(`^[A-Za-z_$][\w$]*$`).MatchString(part) {
+		if !destructuredAssignmentVariablesRe2.MatchString(part) {
 			continue
 		}
 		seen[strings.TrimPrefix(part, "$")] = struct{}{}
@@ -1384,9 +1389,10 @@ func destructuredAssignmentVariables(varList string) []string {
 	return sortedStringSet(seen)
 }
 
+var branchAssignedReturnFlowsBranchRe = regexp.MustCompile(`(?s)\bif\s*\([^)]*\)\s*\{(.*?)\}\s*else\s*\{(.*?)\}.*?\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
+
 func branchAssignedReturnFlows(block string) []returnFlowCall {
-	branchRe := regexp.MustCompile(`(?s)\bif\s*\([^)]*\)\s*\{(.*?)\}\s*else\s*\{(.*?)\}.*?\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
-	matches := branchRe.FindAllStringSubmatch(block, -1)
+	matches := branchAssignedReturnFlowsBranchRe.FindAllStringSubmatch(block, -1)
 	if len(matches) == 0 {
 		return nil
 	}
@@ -1437,14 +1443,18 @@ func branchCallAssignments(block, variable string) []string {
 	return sortedStringSet(seen)
 }
 
+// flowCallSiteRe matches one unnested call site and its argument text. Nine of
+// the forwarding-flow scanners below read the same shape out of the same
+// stripped body, so they share one pattern rather than each compiling it.
+var flowCallSiteRe = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
+
 func argumentForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1484,10 +1494,9 @@ func parameterPropertyForwardingFlows(block string, params map[string]bool) []re
 	if len(params) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1523,12 +1532,18 @@ func parameterPropertyForwardingFlows(block string, params map[string]bool) []re
 	return flows
 }
 
+var (
+	forwardedParameterPropertyRe  = regexp.MustCompile(`^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$`)
+	forwardedParameterPropertyRe2 = regexp.MustCompile(`^([A-Za-z_$][\w$]*)\[\s*(?:"([^"]+)"|'([^']+)'|([0-9]+))\s*\]$`)
+	forwardedParameterPropertyRe3 = regexp.MustCompile(`^([A-Za-z_$][\w$]*)\[\s*\]$`)
+)
+
 func forwardedParameterProperty(arg string, params map[string]bool) (string, string, bool) {
 	arg = strings.TrimPrefix(strings.TrimSpace(arg), "$")
-	if match := regexp.MustCompile(`^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$`).FindStringSubmatch(arg); len(match) == 3 && params[match[1]] {
+	if match := forwardedParameterPropertyRe.FindStringSubmatch(arg); len(match) == 3 && params[match[1]] {
 		return match[1], "." + match[2], true
 	}
-	if match := regexp.MustCompile(`^([A-Za-z_$][\w$]*)\[\s*(?:"([^"]+)"|'([^']+)'|([0-9]+))\s*\]$`).FindStringSubmatch(arg); len(match) == 5 && params[match[1]] {
+	if match := forwardedParameterPropertyRe2.FindStringSubmatch(arg); len(match) == 5 && params[match[1]] {
 		key := match[2]
 		if key == "" {
 			key = match[3]
@@ -1538,19 +1553,20 @@ func forwardedParameterProperty(arg string, params map[string]bool) (string, str
 		}
 		return match[1], "[" + key + "]", true
 	}
-	if match := regexp.MustCompile(`^([A-Za-z_$][\w$]*)\[\s*\]$`).FindStringSubmatch(arg); len(match) == 2 && params[match[1]] {
+	if match := forwardedParameterPropertyRe3.FindStringSubmatch(arg); len(match) == 2 && params[match[1]] {
 		return match[1], "[]", true
 	}
 	return "", "", false
 }
+
+var parameterPropertyAliasForwardingFlowsAssignmentRe = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(\$?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:"[^"]*"|'[^']*'|[0-9]*)\s*\]))`)
 
 func parameterPropertyAliasForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
 	aliasToProperty := map[string]string{}
-	assignmentRe := regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(\$?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:"[^"]*"|'[^']*'|[0-9]*)\s*\]))`)
-	for _, match := range assignmentRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range parameterPropertyAliasForwardingFlowsAssignmentRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1564,10 +1580,9 @@ func parameterPropertyAliasForwardingFlows(block string, params map[string]bool)
 	if len(aliasToProperty) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1611,10 +1626,9 @@ func aliasForwardingFlows(block string, params map[string]bool, aliases map[stri
 	if len(aliases) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1674,10 +1688,9 @@ func destructuredAliasForwardingFlows(block string, params map[string]bool) []re
 	if len(aliases) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1725,7 +1738,7 @@ func destructuredObjectAliases(fields string) []string {
 			field = strings.TrimSpace(field[colon+1:])
 		}
 		field = strings.TrimSpace(strings.TrimPrefix(field, "..."))
-		if !regexp.MustCompile(`^[A-Za-z_$][\w$]*$`).MatchString(field) {
+		if !destructuredAssignmentVariablesRe2.MatchString(field) {
 			continue
 		}
 		seen[strings.TrimPrefix(field, "$")] = struct{}{}
@@ -1764,10 +1777,9 @@ func objectFieldForwardingFlows(block string, params map[string]bool, aliases ma
 	if len(fieldParamByObject) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1891,10 +1903,9 @@ func collectionElementForwardingFlows(block string, params map[string]bool, alia
 	if len(paramByCollection) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -2024,9 +2035,8 @@ func callsWithArgument(block, argName string) []string {
 	if argName == "" {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	seen := map[string]struct{}{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -2044,10 +2054,9 @@ func directLiteralForwardingFlows(block string, params map[string]bool, aliases 
 	if len(params) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -2503,10 +2512,11 @@ func kubernetesResourceConfigTargets(content string) []configTarget {
 	return targets
 }
 
+var kubernetesImageRefsRe = regexp.MustCompile(`(?im)^\s*image:\s*["']?([^"'\s#]+)`)
+
 func kubernetesImageRefs(content string) []string {
-	re := regexp.MustCompile(`(?im)^\s*image:\s*["']?([^"'\s#]+)`)
 	var refs []string
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesImageRefsRe.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			refs = append(refs, strings.TrimSpace(match[1]))
 		}
@@ -2514,11 +2524,12 @@ func kubernetesImageRefs(content string) []string {
 	return dedupeConfigValues(refs)
 }
 
+var kubernetesEnvVarRefsNameRe = regexp.MustCompile(`^\s*-\s*name:\s*["']?([A-Za-z_][A-Za-z0-9_]*)`)
+
 func kubernetesEnvVarRefs(content string) []string {
 	var refs []string
 	inEnv := false
 	envIndent := -1
-	nameRe := regexp.MustCompile(`^\s*-\s*name:\s*["']?([A-Za-z_][A-Za-z0-9_]*)`)
 	for _, line := range strings.Split(content, "\n") {
 		if yamlIgnoreLine(line) {
 			continue
@@ -2536,17 +2547,18 @@ func kubernetesEnvVarRefs(content string) []string {
 		if !inEnv {
 			continue
 		}
-		if match := nameRe.FindStringSubmatch(line); len(match) == 2 {
+		if match := kubernetesEnvVarRefsNameRe.FindStringSubmatch(line); len(match) == 2 {
 			refs = append(refs, match[1])
 		}
 	}
 	return dedupeConfigValues(refs)
 }
 
+var kubernetesPortRefsRe = regexp.MustCompile(`(?im)^\s*(?:-\s*)?(?:containerPort|targetPort|nodePort|port):\s*["']?([0-9]+)`)
+
 func kubernetesPortRefs(content string) []string {
-	re := regexp.MustCompile(`(?im)^\s*(?:-\s*)?(?:containerPort|targetPort|nodePort|port):\s*["']?([0-9]+)`)
 	var refs []string
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesPortRefsRe.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			refs = append(refs, strings.TrimSpace(match[1]))
 		}
@@ -2574,9 +2586,14 @@ func isKubernetesPath(path string) bool {
 	return strings.Contains(slash, "k8s/") || strings.Contains(slash, "kubernetes/") || strings.Contains(slash, "manifests/")
 }
 
+var (
+	looksLikeKubernetesManifestRe  = regexp.MustCompile(`(?m)^apiVersion:\s*`)
+	looksLikeKubernetesManifestRe2 = regexp.MustCompile(`(?m)^kind:\s*`)
+)
+
 func looksLikeKubernetesManifest(content string) bool {
-	return regexp.MustCompile(`(?m)^apiVersion:\s*`).MatchString(content) &&
-		regexp.MustCompile(`(?m)^kind:\s*`).MatchString(content)
+	return looksLikeKubernetesManifestRe.MatchString(content) &&
+		looksLikeKubernetesManifestRe2.MatchString(content)
 }
 
 // httpCall is an outbound HTTP client call to a (method, path).
@@ -2673,10 +2690,16 @@ func staticHTTPCallExpressionValue(expr string, constants map[string]string) (st
 	return route, false, ok
 }
 
+var (
+	normalizeRouteParamSyntaxRe  = regexp.MustCompile(`\[\.{0,3}([A-Za-z_][A-Za-z0-9_]*)\]`)
+	normalizeRouteParamSyntaxRe2 = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`)
+	normalizeRouteParamSyntaxRe3 = regexp.MustCompile(`<(?:(?:[A-Za-z_][A-Za-z0-9_]*):)?([A-Za-z_][A-Za-z0-9_]*)>`)
+)
+
 func normalizeRouteParamSyntax(path string) string {
-	path = regexp.MustCompile(`\[\.{0,3}([A-Za-z_][A-Za-z0-9_]*)\]`).ReplaceAllString(path, `{$1}`)
-	path = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`).ReplaceAllString(path, `{$1}`)
-	return regexp.MustCompile(`<(?:(?:[A-Za-z_][A-Za-z0-9_]*):)?([A-Za-z_][A-Za-z0-9_]*)>`).ReplaceAllString(path, `{$1}`)
+	path = normalizeRouteParamSyntaxRe.ReplaceAllString(path, `{$1}`)
+	path = normalizeRouteParamSyntaxRe2.ReplaceAllString(path, `{$1}`)
+	return normalizeRouteParamSyntaxRe3.ReplaceAllString(path, `{$1}`)
 }
 
 // httpPath reduces a URL literal to its path component. Absolute URLs return
@@ -3134,6 +3157,12 @@ func factoryReturnVarTypes(body symbolBody, filePath string, returnTypesBySymbol
 	return out
 }
 
+var (
+	parameterVarTypesColonParamRe     = regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\??\s*:\s*(?:&\s*)*(?:'[A-Za-z_]\w*\s+)?(?:mut\s+)?\??([A-Z][A-Za-z0-9_]*)\b`)
+	parameterVarTypesTypeFirstParamRe = regexp.MustCompile(`^\s*(?:(?:final|out|ref|in|params|this|scoped|readonly)\s+)*(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\s*\??\s+\$?([A-Za-z_][A-Za-z0-9_]*)\b`)
+	parameterVarTypesNameFirstParamRe = regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\s+(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\b`)
+)
+
 func parameterVarTypes(signature string) map[string]string {
 	out := map[string]string{}
 	start := strings.Index(signature, "(")
@@ -3145,27 +3174,24 @@ func parameterVarTypes(signature string) map[string]string {
 	// After `name:`, skip Rust reference / lifetime / mut prefixes (`&`, `&mut`,
 	// `&'a`) before the type, so `bytes: &mut Bytes` registers bytes -> Bytes.
 	// Harmless for the other colon-style languages (they have no such prefix).
-	colonParamRe := regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\??\s*:\s*(?:&\s*)*(?:'[A-Za-z_]\w*\s+)?(?:mut\s+)?\??([A-Z][A-Za-z0-9_]*)\b`)
 	// Leading modifiers cover Java (`final`) and C# parameter modifiers
 	// (`out`/`ref`/`in`/`params`/`this`/`scoped`/`readonly`); a trailing
 	// `?` on the type is C#'s nullable annotation (`out HttpConnectionPool?
 	// pool` must register pool -> HttpConnectionPool, not out -> ...).
-	typeFirstParamRe := regexp.MustCompile(`^\s*(?:(?:final|out|ref|in|params|this|scoped|readonly)\s+)*(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\s*\??\s+\$?([A-Za-z_][A-Za-z0-9_]*)\b`)
-	nameFirstParamRe := regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\s+(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\b`)
 	for _, param := range params {
 		param = strings.TrimSpace(strings.SplitN(param, "=", 2)[0])
 		if param == "" {
 			continue
 		}
-		if m := colonParamRe.FindStringSubmatch(param); len(m) == 3 {
+		if m := parameterVarTypesColonParamRe.FindStringSubmatch(param); len(m) == 3 {
 			out[m[1]] = m[2]
 			continue
 		}
-		if m := typeFirstParamRe.FindStringSubmatch(param); len(m) == 3 {
+		if m := parameterVarTypesTypeFirstParamRe.FindStringSubmatch(param); len(m) == 3 {
 			out[m[2]] = m[1]
 			continue
 		}
-		if m := nameFirstParamRe.FindStringSubmatch(param); len(m) == 3 {
+		if m := parameterVarTypesNameFirstParamRe.FindStringSubmatch(param); len(m) == 3 {
 			out[m[1]] = m[2]
 		}
 	}

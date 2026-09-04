@@ -3376,9 +3376,14 @@ func Supported(path string) bool {
 	return ok
 }
 
+var (
+	looksLikeFluxKustomizationManifestRe  = regexp.MustCompile(`(?m)^apiVersion:\s*kustomize\.toolkit\.fluxcd\.io/`)
+	looksLikeFluxKustomizationManifestRe2 = regexp.MustCompile(`(?m)^kind:\s*Kustomization\s*$`)
+)
+
 func looksLikeFluxKustomizationManifest(content string) bool {
-	return regexp.MustCompile(`(?m)^apiVersion:\s*kustomize\.toolkit\.fluxcd\.io/`).MatchString(content) &&
-		regexp.MustCompile(`(?m)^kind:\s*Kustomization\s*$`).MatchString(content)
+	return looksLikeFluxKustomizationManifestRe.MatchString(content) &&
+		looksLikeFluxKustomizationManifestRe2.MatchString(content)
 }
 
 // objcSelectorName returns the first selector segment of an Objective-C
@@ -3418,13 +3423,20 @@ func maskObjectiveCUnsupportedSyntax(content string) string {
 	return strings.Join(lines, "")
 }
 
+var (
+	looksLikeObjectiveCRe  = regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`)
+	looksLikeObjectiveCRe2 = regexp.MustCompile(`(?m)^\s*#import\s+[<"]`)
+)
+
 func looksLikeObjectiveC(content string) bool {
-	return regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`).MatchString(content) ||
-		regexp.MustCompile(`(?m)^\s*#import\s+[<"]`).MatchString(content)
+	return looksLikeObjectiveCRe.MatchString(content) ||
+		looksLikeObjectiveCRe2.MatchString(content)
 }
 
+var looksLikeCPlusPlusHeaderRe = regexp.MustCompile(`(?m)^\s*(namespace|template\s*<|class\s+\w|struct\s+\w+\s*:|using\s+\w+\s*=|(?:inline\s+)?auto\s+\w+\s*\()`)
+
 func looksLikeCPlusPlusHeader(content string) bool {
-	return regexp.MustCompile(`(?m)^\s*(namespace|template\s*<|class\s+\w|struct\s+\w+\s*:|using\s+\w+\s*=|(?:inline\s+)?auto\s+\w+\s*\()`).MatchString(content) ||
+	return looksLikeCPlusPlusHeaderRe.MatchString(content) ||
 		strings.Contains(content, "std::") ||
 		strings.Contains(content, "extern \"C\"") ||
 		strings.Contains(content, "::")
@@ -3571,16 +3583,17 @@ func kustomizeEntities(content string) []Entity {
 	return yamlKeyEntities(content, "kustomize")
 }
 
+var yamlKeyEntitiesKeyRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
+
 func yamlKeyEntities(content, prefix string) []Entity {
 	lines := strings.Split(content, "\n")
-	keyRe := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
 	var entities []Entity
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		match := keyRe.FindStringSubmatch(trimmed)
+		match := yamlKeyEntitiesKeyRe.FindStringSubmatch(trimmed)
 		if match == nil {
 			continue
 		}
@@ -3590,13 +3603,14 @@ func yamlKeyEntities(content, prefix string) []Entity {
 	return entities
 }
 
+var jsonLikeEntitiesKeyRe = regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
+
 func jsonLikeEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	keyRe := regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
-		match := keyRe.FindStringSubmatch(line)
+		match := jsonLikeEntitiesKeyRe.FindStringSubmatch(line)
 		if match == nil || seen[match[1]] {
 			continue
 		}
@@ -3606,18 +3620,21 @@ func jsonLikeEntities(content string) []Entity {
 	return entities
 }
 
+var (
+	tomlEntitiesSectionRe = regexp.MustCompile(`^\s*\[+\s*([A-Za-z0-9_.-]+)\s*\]+`)
+	tomlEntitiesKeyRe     = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
+)
+
 func tomlEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	sectionRe := regexp.MustCompile(`^\s*\[+\s*([A-Za-z0-9_.-]+)\s*\]+`)
-	keyRe := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
 		name := ""
 		kind := "section"
-		if match := sectionRe.FindStringSubmatch(line); match != nil {
+		if match := tomlEntitiesSectionRe.FindStringSubmatch(line); match != nil {
 			name = match[1]
-		} else if match := keyRe.FindStringSubmatch(line); match != nil {
+		} else if match := tomlEntitiesKeyRe.FindStringSubmatch(line); match != nil {
 			name = match[1]
 			kind = "setting"
 		}
@@ -3630,13 +3647,14 @@ func tomlEntities(content string) []Entity {
 	return entities
 }
 
+var xmlEntitiesTagRe = regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
+
 func xmlEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	tagRe := regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
-		match := tagRe.FindStringSubmatch(line)
+		match := xmlEntitiesTagRe.FindStringSubmatch(line)
 		if match == nil || strings.HasPrefix(match[1], "?") || seen[match[1]] {
 			continue
 		}
@@ -3646,15 +3664,16 @@ func xmlEntities(content string) []Entity {
 	return entities
 }
 
+var makeEntitiesTargetRe = regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
+
 func makeEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	targetRe := regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
 	var entities []Entity
 	for i, line := range lines {
 		if strings.HasPrefix(line, "\t") || strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
-		match := targetRe.FindStringSubmatch(line)
+		match := makeEntitiesTargetRe.FindStringSubmatch(line)
 		if match == nil || strings.Contains(match[1], "=") {
 			continue
 		}
@@ -3663,19 +3682,22 @@ func makeEntities(content string) []Entity {
 	return entities
 }
 
+var (
+	markdownEntitiesHeadingRe = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+	markdownEntitiesFenceRe   = regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
+)
+
 func markdownEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	headingRe := regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
-	fenceRe := regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
 	var entities []Entity
 	fenceIndex := 0
 	for i, line := range lines {
-		if match := headingRe.FindStringSubmatch(line); match != nil {
+		if match := markdownEntitiesHeadingRe.FindStringSubmatch(line); match != nil {
 			name := strings.TrimSpace(strings.Trim(match[2], "#"))
 			entities = append(entities, simpleFallbackEntity("section", slugName(name), "markdown heading "+name, i+1, i+1, strings.TrimSpace(line)))
 			continue
 		}
-		if match := fenceRe.FindStringSubmatch(line); match != nil {
+		if match := markdownEntitiesFenceRe.FindStringSubmatch(line); match != nil {
 			fenceIndex++
 			lang := match[1]
 			if lang == "" {
@@ -3688,15 +3710,16 @@ func markdownEntities(content string) []Entity {
 	return entities
 }
 
+var htmlEntitiesIdRe = regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
+
 func htmlEntities(path, content string) []Entity {
 	lines := strings.Split(content, "\n")
-	idRe := regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
 	var entities []Entity
 	seen := map[string]bool{}
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	entities = append(entities, simpleFallbackEntity("document", base, "html document "+base, 1, maxInt(1, len(lines)), base))
 	for i, line := range lines {
-		for _, match := range idRe.FindAllStringSubmatch(line, -1) {
+		for _, match := range htmlEntitiesIdRe.FindAllStringSubmatch(line, -1) {
 			name := slugName(match[1])
 			if name == "" || seen[name] {
 				continue
@@ -3708,12 +3731,13 @@ func htmlEntities(path, content string) []Entity {
 	return entities
 }
 
+var cssEntitiesSelectorRe = regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
+
 func cssEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	selectorRe := regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
 	var entities []Entity
 	for i, line := range lines {
-		match := selectorRe.FindStringSubmatch(line)
+		match := cssEntitiesSelectorRe.FindStringSubmatch(line)
 		if match == nil {
 			continue
 		}
@@ -4062,10 +4086,12 @@ func simpleFallbackEntity(kind, name, signature string, startLine, endLine int, 
 	}
 }
 
+var slugNameRe = regexp.MustCompile(`[^A-Za-z0-9_.:/-]+`)
+
 func slugName(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.Trim(name, `"'`)
-	name = regexp.MustCompile(`[^A-Za-z0-9_.:/-]+`).ReplaceAllString(name, "-")
+	name = slugNameRe.ReplaceAllString(name, "-")
 	name = strings.Trim(name, "-")
 	return name
 }
@@ -7458,6 +7484,8 @@ func javascriptVariableDeclaratorEnd(content string, valueStart int) int {
 	return len(content)
 }
 
+var javascriptAssignmentMethodEntitiesRe = regexp.MustCompile(`\s*\.\s*`)
+
 func javascriptAssignmentMethodEntities(content string) []Entity {
 	matches := jsAssignmentMethodPattern.FindAllStringSubmatchIndex(content, -1)
 	entities := make([]Entity, 0, len(matches))
@@ -7465,7 +7493,7 @@ func javascriptAssignmentMethodEntities(content string) []Entity {
 		if len(match) < 4 {
 			continue
 		}
-		name := strings.Join(regexp.MustCompile(`\s*\.\s*`).Split(strings.TrimSpace(content[match[2]:match[3]]), -1), ".")
+		name := strings.Join(javascriptAssignmentMethodEntitiesRe.Split(strings.TrimSpace(content[match[2]:match[3]]), -1), ".")
 		if name == "" || strings.HasPrefix(name, "module.exports.") || strings.HasPrefix(name, "exports.") {
 			// Export alias properties are useful exports, but not object/prototype
 			// method declarations with a stable receiver.

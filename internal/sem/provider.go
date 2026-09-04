@@ -8938,12 +8938,14 @@ func receiverQualifiedOverloadByArgReturnType(from SymbolRecord, call receiverCa
 	return SymbolRecord{}, false
 }
 
+var receiverCallArgumentReturnTypesRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+
 func receiverCallArgumentReturnTypes(args, filePath string, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, arg := range splitTopLevelStaticComma(args) {
 		arg = strings.TrimSpace(arg)
-		m := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*\(`).FindStringSubmatch(arg)
+		m := receiverCallArgumentReturnTypesRe.FindStringSubmatch(arg)
 		if len(m) != 2 {
 			continue
 		}
@@ -9320,9 +9322,10 @@ func dockerfileResourceDependsOnRelations(recordsByFile map[string][]SymbolRecor
 	return relations
 }
 
+var dockerCopyFromStagesRe = regexp.MustCompile(`(?im)^\s*COPY\s+(?:--[^\s=]+(?:=\S+)?\s+)*--from=([A-Za-z0-9_.-]+)\b`)
+
 func dockerCopyFromStages(content string) []string {
-	re := regexp.MustCompile(`(?im)^\s*COPY\s+(?:--[^\s=]+(?:=\S+)?\s+)*--from=([A-Za-z0-9_.-]+)\b`)
-	matches := re.FindAllStringSubmatch(content, -1)
+	matches := dockerCopyFromStagesRe.FindAllStringSubmatch(content, -1)
 	out := make([]string, 0, len(matches))
 	seen := map[string]bool{}
 	for _, match := range matches {
@@ -9387,6 +9390,28 @@ type resourceReference struct {
 	Confidence   float64
 }
 
+var (
+	kubernetesResourceReferencesRe   = regexp.MustCompile(`(?is)\bconfigMapRef:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe2  = regexp.MustCompile(`(?is)\bconfigMapKeyRef:[ \t]*\n(?:[ \t]+[A-Za-z0-9_-]+:[^\n]*\n)*[ \t]+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe3  = regexp.MustCompile(`(?im)^\s*(?:-\s*)?configMap:\s*\n\s+name:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe4  = regexp.MustCompile(`(?is)\bsecretRef:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe5  = regexp.MustCompile(`(?is)\bsecretKeyRef:[ \t]*\n(?:[ \t]+[A-Za-z0-9_-]+:[^\n]*\n)*[ \t]+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe6  = regexp.MustCompile(`(?im)^\s*(?:-\s*)?secret:\s*\n\s+name:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe7  = regexp.MustCompile(`(?im)^\s*secretName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe8  = regexp.MustCompile(`(?is)\bimagePullSecrets:\s*\n(?:\s+-\s*)?name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe9  = regexp.MustCompile(`(?im)^\s*serviceAccountName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe10 = regexp.MustCompile(`(?im)^\s*claimName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe11 = regexp.MustCompile(`(?im)^\s*storageClassName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe12 = regexp.MustCompile(`(?im)^\s*volumeName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe13 = regexp.MustCompile(`(?im)^\s*persistentVolumeClaimName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe14 = regexp.MustCompile(`(?im)^\s*ingressClassName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe15 = regexp.MustCompile(`(?im)^\s*runtimeClassName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe16 = regexp.MustCompile(`(?im)^\s*priorityClassName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe17 = regexp.MustCompile(`(?is)\bsubjects:\s*\n(?:\s+-\s*)?kind:\s*ServiceAccount\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe18 = regexp.MustCompile(`(?is)\bservice:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe19 = regexp.MustCompile(`(?im)^\s*serviceName:\s*([A-Za-z0-9_.-]+)\s*$`)
+)
+
 func kubernetesResourceReferences(content string) []resourceReference {
 	var refs []resourceReference
 	metadata := yamlMapAtPath(content, "metadata")
@@ -9406,40 +9431,40 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add("namespace", namespace, "kubernetes_metadata_namespace", 0.84)
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bconfigMapRef:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe.FindAllStringSubmatch(content, -1) {
 		add("configmap", match[1], "kubernetes_configmap_ref", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bconfigMapKeyRef:[ \t]*\n(?:[ \t]+[A-Za-z0-9_-]+:[^\n]*\n)*[ \t]+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe2.FindAllStringSubmatch(content, -1) {
 		add("configmap", match[1], "kubernetes_configmap_key_ref", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*(?:-\s*)?configMap:\s*\n\s+name:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe3.FindAllStringSubmatch(content, -1) {
 		add("configmap", match[1], "kubernetes_configmap_volume", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bsecretRef:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe4.FindAllStringSubmatch(content, -1) {
 		add("secret", match[1], "kubernetes_secret_ref", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bsecretKeyRef:[ \t]*\n(?:[ \t]+[A-Za-z0-9_-]+:[^\n]*\n)*[ \t]+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe5.FindAllStringSubmatch(content, -1) {
 		add("secret", match[1], "kubernetes_secret_key_ref", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*(?:-\s*)?secret:\s*\n\s+name:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe6.FindAllStringSubmatch(content, -1) {
 		add("secret", match[1], "kubernetes_secret_volume", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*secretName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe7.FindAllStringSubmatch(content, -1) {
 		add("secret", match[1], "kubernetes_secret_name", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bimagePullSecrets:\s*\n(?:\s+-\s*)?name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe8.FindAllStringSubmatch(content, -1) {
 		add("secret", match[1], "kubernetes_image_pull_secret", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*serviceAccountName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe9.FindAllStringSubmatch(content, -1) {
 		add("serviceaccount", match[1], "kubernetes_service_account", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*claimName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe10.FindAllStringSubmatch(content, -1) {
 		add("persistentvolumeclaim", match[1], "kubernetes_pvc_claim", 0.78)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*storageClassName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe11.FindAllStringSubmatch(content, -1) {
 		add("storageclass", match[1], "kubernetes_storage_class", 0.78)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*volumeName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe12.FindAllStringSubmatch(content, -1) {
 		add("persistentvolume", match[1], "kubernetes_persistent_volume", 0.78)
 	}
 	if kubernetesManifestHasAnyKind(content, "PersistentVolumeClaim") {
@@ -9451,7 +9476,7 @@ func kubernetesResourceReferences(content string) []resourceReference {
 		}
 	}
 	if kubernetesManifestHasAnyKind(content, "VolumeSnapshot") {
-		for _, match := range regexp.MustCompile(`(?im)^\s*persistentVolumeClaimName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		for _, match := range kubernetesResourceReferencesRe13.FindAllStringSubmatch(content, -1) {
 			add("persistentvolumeclaim", match[1], "kubernetes_volume_snapshot_pvc_ref", 0.82)
 		}
 	}
@@ -9460,13 +9485,13 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*ingressClassName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe14.FindAllStringSubmatch(content, -1) {
 		add("ingressclass", match[1], "kubernetes_ingress_class", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*runtimeClassName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe15.FindAllStringSubmatch(content, -1) {
 		add("runtimeclass", match[1], "kubernetes_runtime_class", 0.78)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*priorityClassName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe16.FindAllStringSubmatch(content, -1) {
 		add("priorityclass", match[1], "kubernetes_priority_class", 0.78)
 	}
 	for _, ref := range kubernetesKindNameBlockReferences(content, "roleRef", "kubernetes_rbac_role_ref", 0.82) {
@@ -9618,13 +9643,13 @@ func kubernetesResourceReferences(content string) []resourceReference {
 	for _, ref := range kubernetesKindNameBlockReferences(content, "ownerReferences", "kubernetes_owner_reference", 0.78) {
 		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bsubjects:\s*\n(?:\s+-\s*)?kind:\s*ServiceAccount\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe17.FindAllStringSubmatch(content, -1) {
 		add("serviceaccount", match[1], "kubernetes_rbac_subject", 0.82)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bservice:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe18.FindAllStringSubmatch(content, -1) {
 		add("service", match[1], "kubernetes_ingress_service", 0.82)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*serviceName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe19.FindAllStringSubmatch(content, -1) {
 		add("service", match[1], "kubernetes_ingress_service_name", 0.8)
 	}
 	for _, ref := range kubernetesGatewayBackendReferences(content) {
@@ -9816,10 +9841,11 @@ func kubernetesSealedSecretTargetReferences(content string) []resourceReference 
 	}}
 }
 
+var kubernetesKnativeTriggerBrokerReferencesRe = regexp.MustCompile(`(?im)^\s*broker:\s*([A-Za-z0-9_.-]+)\s*$`)
+
 func kubernetesKnativeTriggerBrokerReferences(content string) []resourceReference {
 	var refs []resourceReference
-	re := regexp.MustCompile(`(?im)^\s*broker:\s*([A-Za-z0-9_.-]+)\s*$`)
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesKnativeTriggerBrokerReferencesRe.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			refs = append(refs, resourceReference{
 				Kind:         "broker",
@@ -9832,12 +9858,17 @@ func kubernetesKnativeTriggerBrokerReferences(content string) []resourceReferenc
 	return refs
 }
 
+var (
+	kubernetesKnativeServingTrafficReferencesRe  = regexp.MustCompile(`(?im)^\s*(?:-\s*)?revisionName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesKnativeServingTrafficReferencesRe2 = regexp.MustCompile(`(?im)^\s*(?:-\s*)?configurationName:\s*([A-Za-z0-9_.-]+)\s*$`)
+)
+
 func kubernetesKnativeServingTrafficReferences(content string) []resourceReference {
 	if !kubernetesManifestAPIMatches(content, `serving\.knative\.dev/`) || !kubernetesManifestHasAnyKind(content, "Service", "Route") {
 		return nil
 	}
 	var refs []resourceReference
-	for _, match := range regexp.MustCompile(`(?im)^\s*(?:-\s*)?revisionName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesKnativeServingTrafficReferencesRe.FindAllStringSubmatch(content, -1) {
 		refs = append(refs, resourceReference{
 			Kind:         "revision",
 			Name:         match[1],
@@ -9845,7 +9876,7 @@ func kubernetesKnativeServingTrafficReferences(content string) []resourceReferen
 			Confidence:   0.82,
 		})
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*(?:-\s*)?configurationName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesKnativeServingTrafficReferencesRe2.FindAllStringSubmatch(content, -1) {
 		refs = append(refs, resourceReference{
 			Kind:         "configuration",
 			Name:         match[1],
@@ -10015,13 +10046,18 @@ func kubernetesRolloutsAnalysisTemplateReferences(content string) []resourceRefe
 	return refs
 }
 
+var (
+	kubernetesArgoEventsReferencesRe  = regexp.MustCompile(`(?im)^\s*eventSourceName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesArgoEventsReferencesRe2 = regexp.MustCompile(`(?im)^\s*eventBusName:\s*([A-Za-z0-9_.-]+)\s*$`)
+)
+
 func kubernetesArgoEventsReferences(content string) []resourceReference {
 	if !kubernetesManifestAPIMatches(content, `argoproj\.io/`) || !kubernetesManifestHasAnyKind(content, "Sensor", "EventSource") {
 		return nil
 	}
 	var refs []resourceReference
 	if kubernetesManifestHasAnyKind(content, "Sensor") {
-		for _, match := range regexp.MustCompile(`(?im)^\s*eventSourceName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		for _, match := range kubernetesArgoEventsReferencesRe.FindAllStringSubmatch(content, -1) {
 			if len(match) == 2 && match[1] != "" {
 				refs = append(refs, resourceReference{
 					Kind:         "eventsource",
@@ -10032,7 +10068,7 @@ func kubernetesArgoEventsReferences(content string) []resourceReference {
 			}
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*eventBusName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesArgoEventsReferencesRe2.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 && match[1] != "" {
 			refs = append(refs, resourceReference{
 				Kind:         "eventbus",
@@ -10045,12 +10081,14 @@ func kubernetesArgoEventsReferences(content string) []resourceReference {
 	return refs
 }
 
+var kubernetesArgoCDApplicationProjectReferencesRe = regexp.MustCompile(`(?im)^\s*project:\s*([A-Za-z0-9_.-]+)\s*$`)
+
 func kubernetesArgoCDApplicationProjectReferences(content string) []resourceReference {
 	if !kubernetesManifestAPIMatches(content, `argoproj\.io/`) || !kubernetesManifestHasAnyKind(content, "Application", "ApplicationSet") {
 		return nil
 	}
 	var refs []resourceReference
-	for _, match := range regexp.MustCompile(`(?im)^\s*project:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesArgoCDApplicationProjectReferencesRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 2 || match[1] == "" {
 			continue
 		}
@@ -10074,8 +10112,10 @@ func kubernetesManifestHasAnyKind(content string, kinds ...string) bool {
 	return false
 }
 
+var kubernetesScaledObjectScaleTargetReferencesRe = regexp.MustCompile(`(?im)^\s*kind:\s*ScaledObject\s*$`)
+
 func kubernetesScaledObjectScaleTargetReferences(content string) []resourceReference {
-	if !regexp.MustCompile(`(?im)^\s*kind:\s*ScaledObject\s*$`).MatchString(content) {
+	if !kubernetesScaledObjectScaleTargetReferencesRe.MatchString(content) {
 		return nil
 	}
 	lines := strings.Split(content, "\n")
@@ -10233,8 +10273,10 @@ func kubernetesGatewayParentReferences(content string) []resourceReference {
 	return refs
 }
 
+var kubernetesGatewayPolicyTargetReferencesRe = regexp.MustCompile(`(?im)^\s*kind:\s*[A-Za-z0-9_.-]*Policy\s*$`)
+
 func kubernetesGatewayPolicyTargetReferences(content string) []resourceReference {
-	if !kubernetesManifestAPIMatches(content, `gateway\.networking\.k8s\.io/`) || !regexp.MustCompile(`(?im)^\s*kind:\s*[A-Za-z0-9_.-]*Policy\s*$`).MatchString(content) {
+	if !kubernetesManifestAPIMatches(content, `gateway\.networking\.k8s\.io/`) || !kubernetesGatewayPolicyTargetReferencesRe.MatchString(content) {
 		return nil
 	}
 	var refs []resourceReference
@@ -10249,10 +10291,15 @@ func kubernetesGatewayPolicyTargetReferences(content string) []resourceReference
 	return refs
 }
 
+var (
+	kubernetesIstioServiceMeshReferencesRe  = regexp.MustCompile(`(?is)\bdestination:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+host:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesIstioServiceMeshReferencesRe2 = regexp.MustCompile(`(?im)^\s*host:\s*([A-Za-z0-9_.-]+)\s*$`)
+)
+
 func kubernetesIstioServiceMeshReferences(content string) []resourceReference {
 	var refs []resourceReference
 	if kubernetesManifestHasAnyKind(content, "VirtualService", "DestinationRule") {
-		for _, match := range regexp.MustCompile(`(?is)\bdestination:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+host:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+		for _, match := range kubernetesIstioServiceMeshReferencesRe.FindAllStringSubmatch(content, -1) {
 			service := kubernetesServiceNameFromHost(match[1])
 			if service == "" {
 				continue
@@ -10266,7 +10313,7 @@ func kubernetesIstioServiceMeshReferences(content string) []resourceReference {
 		}
 	}
 	if kubernetesManifestHasAnyKind(content, "DestinationRule") {
-		for _, match := range regexp.MustCompile(`(?im)^\s*host:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		for _, match := range kubernetesIstioServiceMeshReferencesRe2.FindAllStringSubmatch(content, -1) {
 			service := kubernetesServiceNameFromHost(match[1])
 			if service == "" {
 				continue
@@ -10857,6 +10904,11 @@ func kustomizeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord
 	return relations
 }
 
+var (
+	kustomizeFileReferencesRe  = regexp.MustCompile(`^(resources|patches|components):\s*$`)
+	kustomizeFileReferencesRe2 = regexp.MustCompile(`^[A-Za-z0-9_-]+:`)
+)
+
 func kustomizeFileReferences(content string) []string {
 	var refs []string
 	inList := false
@@ -10866,10 +10918,10 @@ func kustomizeFileReferences(content string) []string {
 			continue
 		}
 		switch {
-		case regexp.MustCompile(`^(resources|patches|components):\s*$`).MatchString(trimmed):
+		case kustomizeFileReferencesRe.MatchString(trimmed):
 			inList = true
 			continue
-		case regexp.MustCompile(`^[A-Za-z0-9_-]+:`).MatchString(trimmed):
+		case kustomizeFileReferencesRe2.MatchString(trimmed):
 			inList = false
 		}
 		if !inList || !strings.HasPrefix(trimmed, "-") {
@@ -11108,9 +11160,11 @@ func composeServiceConfigTargets(symbol SymbolRecord, content string) []configTa
 	return targets
 }
 
+var composeServiceImagesRe = regexp.MustCompile(`(?im)^\s*image:\s*["']?([^"'\s#]+)`)
+
 func composeServiceImages(block string) []string {
 	var images []string
-	for _, match := range regexp.MustCompile(`(?im)^\s*image:\s*["']?([^"'\s#]+)`).FindAllStringSubmatch(block, -1) {
+	for _, match := range composeServiceImagesRe.FindAllStringSubmatch(block, -1) {
 		if len(match) == 2 {
 			images = append(images, strings.TrimSpace(match[1]))
 		}
@@ -19846,6 +19900,8 @@ func parsePyProjectPackageDirRoots(line string) []string {
 	return []string{value}
 }
 
+var parsePyProjectPackageDirMappingsRe = regexp.MustCompile(`(?m)["']([^"']*)["']\s*=\s*["']([^"']+)["']`)
+
 func parsePyProjectPackageDirMappings(line string) []pythonPackageDirMapping {
 	parts := strings.SplitN(line, "=", 2)
 	if len(parts) != 2 {
@@ -19856,8 +19912,7 @@ func parsePyProjectPackageDirMappings(line string) []pythonPackageDirMapping {
 		return []pythonPackageDirMapping{{Dir: strings.Trim(value, `"'`)}}
 	}
 	var mappings []pythonPackageDirMapping
-	re := regexp.MustCompile(`(?m)["']([^"']*)["']\s*=\s*["']([^"']+)["']`)
-	for _, match := range re.FindAllStringSubmatch(value, -1) {
+	for _, match := range parsePyProjectPackageDirMappingsRe.FindAllStringSubmatch(value, -1) {
 		if len(match) == 3 {
 			mappings = append(mappings, pythonPackageDirMapping{Package: match[1], Dir: match[2]})
 		}
@@ -19865,10 +19920,11 @@ func parsePyProjectPackageDirMappings(line string) []pythonPackageDirMapping {
 	return mappings
 }
 
+var regexpPackageDirRootValuesRe = regexp.MustCompile(`(?m)(?:""|'')\s*=\s*["']([^"']+)["']`)
+
 func regexpPackageDirRootValues(value string) []string {
 	var roots []string
-	re := regexp.MustCompile(`(?m)(?:""|'')\s*=\s*["']([^"']+)["']`)
-	for _, match := range re.FindAllStringSubmatch(value, -1) {
+	for _, match := range regexpPackageDirRootValuesRe.FindAllStringSubmatch(value, -1) {
 		if len(match) == 2 && strings.TrimSpace(match[1]) != "" {
 			roots = append(roots, match[1])
 		}
@@ -20525,6 +20581,8 @@ func pythonPackageDirUnderNamespaceRoot(path string, mapping pythonPackageDirMap
 	return !pyFileSet[dir+"/__init__.py"]
 }
 
+var parsePythonSourceRootValuesRe = regexp.MustCompile(`["']([^"']+)["']`)
+
 func parsePythonSourceRootValues(line string) []string {
 	parts := strings.SplitN(line, "=", 2)
 	if len(parts) != 2 || !strings.EqualFold(strings.TrimSpace(parts[0]), "where") {
@@ -20536,7 +20594,7 @@ func parsePythonSourceRootValues(line string) []string {
 	}
 	var roots []string
 	if strings.HasPrefix(value, "[") {
-		matches := regexp.MustCompile(`["']([^"']+)["']`).FindAllStringSubmatch(value, -1)
+		matches := parsePythonSourceRootValuesRe.FindAllStringSubmatch(value, -1)
 		for _, match := range matches {
 			roots = append(roots, match[1])
 		}
@@ -20762,14 +20820,21 @@ func normalizeJVMPackagePrefixes(prefixes []string) []string {
 	return out
 }
 
+var (
+	normalizeJVMPackagePrefixRe  = regexp.MustCompile(`[^A-Za-z0-9.]+`)
+	normalizeJVMPackagePrefixRe2 = regexp.MustCompile(`\.+`)
+)
+
 func normalizeJVMPackagePrefix(prefix string) string {
 	prefix = strings.TrimSpace(prefix)
 	prefix = strings.ReplaceAll(prefix, "-", ".")
 	prefix = strings.ReplaceAll(prefix, "_", ".")
-	prefix = regexp.MustCompile(`[^A-Za-z0-9.]+`).ReplaceAllString(prefix, ".")
-	prefix = regexp.MustCompile(`\.+`).ReplaceAllString(prefix, ".")
+	prefix = normalizeJVMPackagePrefixRe.ReplaceAllString(prefix, ".")
+	prefix = normalizeJVMPackagePrefixRe2.ReplaceAllString(prefix, ".")
 	return strings.Trim(prefix, ".")
 }
+
+var jvmQualifiedTypeNameRe = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?`)
 
 func jvmQualifiedTypeName(path, content string) string {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
@@ -20777,8 +20842,7 @@ func jvmQualifiedTypeName(path, content string) string {
 		return ""
 	}
 	pkg := ""
-	re := regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?`)
-	if match := re.FindStringSubmatch(content); len(match) == 2 {
+	if match := jvmQualifiedTypeNameRe.FindStringSubmatch(content); len(match) == 2 {
 		pkg = strings.TrimSpace(match[1])
 	}
 	if pkg == "" {
@@ -20787,9 +20851,10 @@ func jvmQualifiedTypeName(path, content string) string {
 	return pkg + "." + base
 }
 
+var csharpNamespaceNameRe = regexp.MustCompile(`(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:[;{]|$)`)
+
 func csharpNamespaceName(content string) string {
-	re := regexp.MustCompile(`(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:[;{]|$)`)
-	if match := re.FindStringSubmatch(content); len(match) == 2 {
+	if match := csharpNamespaceNameRe.FindStringSubmatch(content); len(match) == 2 {
 		return normalizeCSharpNamespace(match[1])
 	}
 	return ""
@@ -20810,11 +20875,13 @@ func normalizeCSharpNamespaces(names []string) []string {
 	return out
 }
 
+var normalizeCSharpNamespaceRe = regexp.MustCompile(`[^A-Za-z0-9_.]+`)
+
 func normalizeCSharpNamespace(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.ReplaceAll(name, "-", ".")
-	name = regexp.MustCompile(`[^A-Za-z0-9_.]+`).ReplaceAllString(name, ".")
-	name = regexp.MustCompile(`\.+`).ReplaceAllString(name, ".")
+	name = normalizeCSharpNamespaceRe.ReplaceAllString(name, ".")
+	name = normalizeJVMPackagePrefixRe2.ReplaceAllString(name, ".")
 	return strings.Trim(name, ".")
 }
 
@@ -20935,12 +21002,13 @@ func composerPSR4Dirs(raw any) []string {
 	return out
 }
 
+var phpQualifiedTypeNamesRe = regexp.MustCompile(`(?im)^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
+
 func phpQualifiedTypeNames(content string) []string {
 	namespace := phpNamespaceName(content)
-	re := regexp.MustCompile(`(?im)^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
 	var names []string
 	seen := map[string]bool{}
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range phpQualifiedTypeNamesRe.FindAllStringSubmatch(content, -1) {
 		name := match[1]
 		if namespace != "" {
 			name = namespace + `\` + name
@@ -20955,9 +21023,10 @@ func phpQualifiedTypeNames(content string) []string {
 	return names
 }
 
+var phpNamespaceNameRe = regexp.MustCompile(`(?im)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\\]*)\s*(?:[;{]|$)`)
+
 func phpNamespaceName(content string) string {
-	re := regexp.MustCompile(`(?im)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\\]*)\s*(?:[;{]|$)`)
-	if match := re.FindStringSubmatch(content); len(match) == 2 {
+	if match := phpNamespaceNameRe.FindStringSubmatch(content); len(match) == 2 {
 		return normalizePHPClassName(match[1])
 	}
 	return ""
@@ -20988,6 +21057,12 @@ func normalizePHPClassPrefix(name string) string {
 	return strings.TrimSuffix(name, `\`) + `\`
 }
 
+var (
+	normalizePHPClassNameRe  = regexp.MustCompile(`(?i)\s+as\s+`)
+	normalizePHPClassNameRe2 = regexp.MustCompile(`[^A-Za-z0-9_\\]+`)
+	normalizePHPClassNameRe3 = regexp.MustCompile(`\\+`)
+)
+
 func normalizePHPClassName(name string) string {
 	name = strings.TrimSpace(name)
 	lower := strings.ToLower(name)
@@ -20998,13 +21073,13 @@ func normalizePHPClassName(name string) string {
 			break
 		}
 	}
-	if idx := regexp.MustCompile(`(?i)\s+as\s+`).FindStringIndex(name); len(idx) == 2 {
+	if idx := normalizePHPClassNameRe.FindStringIndex(name); len(idx) == 2 {
 		name = strings.TrimSpace(name[:idx[0]])
 	}
 	name = strings.Trim(name, `\`)
 	name = strings.ReplaceAll(name, "/", `\`)
-	name = regexp.MustCompile(`[^A-Za-z0-9_\\]+`).ReplaceAllString(name, `\`)
-	name = regexp.MustCompile(`\\+`).ReplaceAllString(name, `\`)
+	name = normalizePHPClassNameRe2.ReplaceAllString(name, `\`)
+	name = normalizePHPClassNameRe3.ReplaceAllString(name, `\`)
 	return strings.Trim(name, `\`)
 }
 
@@ -21207,10 +21282,11 @@ func (resolver manifestImportResolver) rustAliasesForFile(path, content string) 
 	return aliases
 }
 
+var manifestImportResolverRustPathModuleAliasesRe = regexp.MustCompile(`(?m)#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]\s*(?:pub\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;`)
+
 func (resolver manifestImportResolver) rustPathModuleAliases(path, content, current string) []rustAlias {
-	re := regexp.MustCompile(`(?m)#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]\s*(?:pub\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;`)
 	var aliases []rustAlias
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range manifestImportResolverRustPathModuleAliasesRe.FindAllStringSubmatch(content, -1) {
 		targetPath := filepath.ToSlash(filepath.Join(filepath.Dir(path), match[1]))
 		keys := resolver.rustModuleKeysForPath(targetPath)
 		if len(keys) == 0 {
@@ -21222,10 +21298,11 @@ func (resolver manifestImportResolver) rustPathModuleAliases(path, content, curr
 	return aliases
 }
 
+var rustPubUseAliasesRe = regexp.MustCompile(`(?m)^\s*pub\s+use\s+([^;]+);`)
+
 func rustPubUseAliases(content, current, crate string) []rustAlias {
-	re := regexp.MustCompile(`(?m)^\s*pub\s+use\s+([^;]+);`)
 	var aliases []rustAlias
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range rustPubUseAliasesRe.FindAllStringSubmatch(content, -1) {
 		source, exported, ok := parseRustPubUseAlias(match[1], current, crate)
 		if ok {
 			aliases = append(aliases, rustAlias{From: exported, To: source})
@@ -21388,6 +21465,11 @@ func importsFor(path, content string) []string {
 	return scan(content)
 }
 
+var (
+	scanPythonImportsRe  = regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`)
+	scanPythonImportsRe2 = regexp.MustCompile(`(?m)^\s*import\s+([^\n#]+)`)
+)
+
 func scanPythonImports(content string) []string {
 	seen := map[string]struct{}{}
 	add := func(module string) {
@@ -21396,7 +21478,7 @@ func scanPythonImports(content string) []string {
 			seen[module] = struct{}{}
 		}
 	}
-	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`)) {
+	for _, module := range scanImports(content, scanPythonImportsRe) {
 		if strings.HasPrefix(module, ".") && strings.Trim(module, ".") == "" {
 			continue
 		}
@@ -21409,7 +21491,7 @@ func scanPythonImports(content string) []string {
 		add(statement.module)
 	}
 	runtimeImportCalls := []string{`importlib\s*\.\s*import_module`, `__import__`}
-	for _, match := range regexp.MustCompile(`(?m)^\s*import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range scanPythonImportsRe2.FindAllStringSubmatch(content, -1) {
 		if len(match) != 2 {
 			continue
 		}
@@ -21488,6 +21570,8 @@ func isSimpleIdentifier(value string) bool {
 	return true
 }
 
+var scanJSImportsRe = regexp.MustCompile(`(?m)^\s*import\s+.*?\s+from\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\)|import\s*\(\s*['"]([^'"]+)['"]\s*\)`)
+
 func scanJSImports(content string) []string {
 	seen := map[string]struct{}{}
 	add := func(module string) {
@@ -21496,7 +21580,7 @@ func scanJSImports(content string) []string {
 			seen[module] = struct{}{}
 		}
 	}
-	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+.*?\s+from\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\)|import\s*\(\s*['"]([^'"]+)['"]\s*\)`)) {
+	for _, module := range scanImports(content, scanJSImportsRe) {
 		add(module)
 	}
 	constants := staticJSStringConstants(content)
@@ -21508,10 +21592,11 @@ func scanJSImports(content string) []string {
 	return sortedKeys(seen)
 }
 
+var scanJSDynamicImportExpressionsCallRe = regexp.MustCompile(`\b(?:require|import)\s*\(`)
+
 func scanJSDynamicImportExpressions(content string) []string {
-	callRe := regexp.MustCompile(`\b(?:require|import)\s*\(`)
 	var expressions []string
-	for _, loc := range callRe.FindAllStringIndex(content, -1) {
+	for _, loc := range scanJSDynamicImportExpressionsCallRe.FindAllStringIndex(content, -1) {
 		if len(loc) != 2 {
 			continue
 		}
@@ -21565,10 +21650,13 @@ func staticJSStringConstants(content string) map[string]string {
 	return constants
 }
 
+var (
+	scanGoImportsSingleImport = regexp.MustCompile(`^\s*import\s+(?:\w+\s+)?["]([^"]+)["]`)
+	scanGoImportsBlockImport  = regexp.MustCompile(`^\s*(?:\w+\s+)?["]([^"]+)["]`)
+)
+
 func scanGoImports(content string) []string {
 	seen := map[string]struct{}{}
-	singleImport := regexp.MustCompile(`^\s*import\s+(?:\w+\s+)?["]([^"]+)["]`)
-	blockImport := regexp.MustCompile(`^\s*(?:\w+\s+)?["]([^"]+)["]`)
 	inBlock := false
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
@@ -21578,7 +21666,7 @@ func scanGoImports(content string) []string {
 				inBlock = true
 				continue
 			}
-			if matches := singleImport.FindStringSubmatch(line); len(matches) > 1 {
+			if matches := scanGoImportsSingleImport.FindStringSubmatch(line); len(matches) > 1 {
 				seen[matches[1]] = struct{}{}
 			}
 			continue
@@ -21587,7 +21675,7 @@ func scanGoImports(content string) []string {
 			inBlock = false
 			continue
 		}
-		if matches := blockImport.FindStringSubmatch(line); len(matches) > 1 {
+		if matches := scanGoImportsBlockImport.FindStringSubmatch(line); len(matches) > 1 {
 			seen[matches[1]] = struct{}{}
 		}
 	}
@@ -21632,6 +21720,11 @@ func importedNamesFor(path, content string) map[string][]string {
 	}
 }
 
+var (
+	importedGoNamesSingleImport = regexp.MustCompile(`^\s*import\s+(?:(\w+)\s+)?["]([^"]+)["]`)
+	importedGoNamesBlockImport  = regexp.MustCompile(`^\s*(?:(\w+)\s+)?["]([^"]+)["]`)
+)
+
 func importedGoNames(content string) map[string][]string {
 	imports := map[string][]string{}
 	add := func(alias, module string) {
@@ -21645,8 +21738,6 @@ func importedGoNames(content string) map[string][]string {
 			imports[alias] = append(imports[alias], module)
 		}
 	}
-	singleImport := regexp.MustCompile(`^\s*import\s+(?:(\w+)\s+)?["]([^"]+)["]`)
-	blockImport := regexp.MustCompile(`^\s*(?:(\w+)\s+)?["]([^"]+)["]`)
 	inBlock := false
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
@@ -21656,7 +21747,7 @@ func importedGoNames(content string) map[string][]string {
 				inBlock = true
 				continue
 			}
-			if matches := singleImport.FindStringSubmatch(line); len(matches) == 3 {
+			if matches := importedGoNamesSingleImport.FindStringSubmatch(line); len(matches) == 3 {
 				add(matches[1], matches[2])
 			}
 			continue
@@ -21665,7 +21756,7 @@ func importedGoNames(content string) map[string][]string {
 			inBlock = false
 			continue
 		}
-		if matches := blockImport.FindStringSubmatch(line); len(matches) == 3 {
+		if matches := importedGoNamesBlockImport.FindStringSubmatch(line); len(matches) == 3 {
 			add(matches[1], matches[2])
 		}
 	}
@@ -21682,15 +21773,18 @@ func goImportDefaultName(module string) string {
 	return strings.ReplaceAll(base, "-", "_")
 }
 
+var (
+	importedJavaScriptNamesNamedImport        = regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
+	importedJavaScriptNamesDefaultImport      = regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
+	importedJavaScriptNamesNamespaceImport    = regexp.MustCompile(`(?m)^\s*import\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
+	importedJavaScriptNamesRequireNamed       = regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)`)
+	importedJavaScriptNamesRequireDefault     = regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)`)
+	importedJavaScriptNamesRequireNamedExpr   = regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*([^\n)]+)\s*\)`)
+	importedJavaScriptNamesRequireDefaultExpr = regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*([^\n)]+)\s*\)`)
+)
+
 func importedJavaScriptNames(content string) map[string][]string {
 	imports := map[string][]string{}
-	namedImport := regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
-	defaultImport := regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
-	namespaceImport := regexp.MustCompile(`(?m)^\s*import\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
-	requireNamed := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)`)
-	requireDefault := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)`)
-	requireNamedExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*([^\n)]+)\s*\)`)
-	requireDefaultExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*([^\n)]+)\s*\)`)
 	constants := staticJSStringConstants(content)
 	add := func(local, module string) {
 		local = strings.TrimSpace(local)
@@ -21699,26 +21793,26 @@ func importedJavaScriptNames(content string) map[string][]string {
 			imports[local] = append(imports[local], module)
 		}
 	}
-	for _, match := range namedImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesNamedImport.FindAllStringSubmatch(content, -1) {
 		for _, item := range strings.Split(match[1], ",") {
 			add(javascriptImportedLocalName(item), match[2])
 		}
 	}
-	for _, match := range defaultImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesDefaultImport.FindAllStringSubmatch(content, -1) {
 		add(match[1], match[2])
 	}
-	for _, match := range namespaceImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesNamespaceImport.FindAllStringSubmatch(content, -1) {
 		add(match[1], match[2])
 	}
-	for _, match := range requireNamed.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireNamed.FindAllStringSubmatch(content, -1) {
 		for _, item := range strings.Split(match[1], ",") {
 			add(javascriptImportedLocalName(item), match[2])
 		}
 	}
-	for _, match := range requireDefault.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireDefault.FindAllStringSubmatch(content, -1) {
 		add(match[1], match[2])
 	}
-	for _, match := range requireNamedExpr.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireNamedExpr.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -21730,7 +21824,7 @@ func importedJavaScriptNames(content string) map[string][]string {
 			add(javascriptImportedLocalName(item), module)
 		}
 	}
-	for _, match := range requireDefaultExpr.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireDefaultExpr.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -21741,10 +21835,11 @@ func importedJavaScriptNames(content string) map[string][]string {
 	return imports
 }
 
+var importedKotlinNamesImportRe = regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*(?:\.\*)?)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?`)
+
 func importedKotlinNames(content string) map[string][]string {
 	imports := map[string][]string{}
-	importRe := regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*(?:\.\*)?)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?`)
-	for _, match := range importRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedKotlinNamesImportRe.FindAllStringSubmatch(content, -1) {
 		module := strings.TrimSpace(match[1])
 		if module == "" || strings.HasSuffix(module, ".*") {
 			continue
@@ -21969,36 +22064,29 @@ func importedJavaScriptBindings(content string) map[string][]jsImportBinding {
 		}
 		bindings[local] = append(bindings[local], binding)
 	}
-	namedImport := regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
-	defaultImport := regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
-	namespaceImport := regexp.MustCompile(`(?m)^\s*import\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
-	requireNamed := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)`)
-	requireDefault := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)`)
-	requireNamedExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*([^\n)]+)\s*\)`)
-	requireDefaultExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*([^\n)]+)\s*\)`)
 	constants := staticJSStringConstants(content)
-	for _, match := range namedImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesNamedImport.FindAllStringSubmatch(content, -1) {
 		for _, item := range strings.Split(match[1], ",") {
 			imported, local := javascriptImportNames(item)
 			add(local, jsImportBinding{Module: match[2], Imported: imported})
 		}
 	}
-	for _, match := range defaultImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesDefaultImport.FindAllStringSubmatch(content, -1) {
 		add(match[1], jsImportBinding{Module: match[2], Imported: "default"})
 	}
-	for _, match := range namespaceImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesNamespaceImport.FindAllStringSubmatch(content, -1) {
 		add(match[1], jsImportBinding{Module: match[2], Namespace: true})
 	}
-	for _, match := range requireNamed.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireNamed.FindAllStringSubmatch(content, -1) {
 		for _, item := range strings.Split(match[1], ",") {
 			imported, local := javascriptImportNames(item)
 			add(local, jsImportBinding{Module: match[2], Imported: imported})
 		}
 	}
-	for _, match := range requireDefault.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireDefault.FindAllStringSubmatch(content, -1) {
 		add(match[1], jsImportBinding{Module: match[2]})
 	}
-	for _, match := range requireNamedExpr.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireNamedExpr.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -22011,7 +22099,7 @@ func importedJavaScriptBindings(content string) map[string][]jsImportBinding {
 			add(local, jsImportBinding{Module: module, Imported: imported})
 		}
 	}
-	for _, match := range requireDefaultExpr.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireDefaultExpr.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -22273,6 +22361,8 @@ func pythonFromImportItems(items string) []string {
 	return out
 }
 
+var importedPythonNamesAndFormsImportRe = regexp.MustCompile(`^\s*import\s+(.+)$`)
+
 // importedPythonNamesAndForms is the single parser shared by importedPythonNames
 // and importedPythonImportForms, so the module strings and their recorded forms
 // can never drift apart.
@@ -22289,7 +22379,6 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 	for _, statement := range pythonFromImportStatements(content) {
 		fromByLine[statement.line] = statement
 	}
-	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
 	for lineNumber, text := range strings.Split(content, "\n") {
 		if statement, ok := fromByLine[lineNumber]; ok {
 			for _, item := range statement.items {
@@ -22311,7 +22400,7 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
+		if matches := importedPythonNamesAndFormsImportRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {
@@ -22550,6 +22639,8 @@ func matchDelimiter(b []byte, openIdx int) int {
 	return -1
 }
 
+var callLikeIdentifiersCall = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>\n;{}()]*>)?\(`)
+
 func callLikeIdentifiers(content, language string) map[string]struct{} {
 	stripped := stripCodeLiteralsAndComments(content)
 	if language == "Python" {
@@ -22562,8 +22653,7 @@ func callLikeIdentifiers(content, language string) map[string]struct{} {
 		stripped = stripPythonLiteralsAndComments(content)
 	}
 	identifiers := map[string]struct{}{}
-	call := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>\n;{}()]*>)?\(`)
-	for _, match := range call.FindAllStringSubmatchIndex(stripped, -1) {
+	for _, match := range callLikeIdentifiersCall.FindAllStringSubmatchIndex(stripped, -1) {
 		if len(match) < 4 {
 			continue
 		}
@@ -23191,10 +23281,11 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 	return relations
 }
 
+var goHTTPRouteRegistrationsGroupRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)`)
+
 func goHTTPRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {
 	groupPrefixes := map[string]string{}
-	groupRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)`)
-	groupMatches := groupRe.FindAllStringSubmatch(content, -1)
+	groupMatches := goHTTPRouteRegistrationsGroupRe.FindAllStringSubmatch(content, -1)
 	changed := true
 	for changed {
 		changed = false
@@ -23523,11 +23614,14 @@ func pythonModuleFiles(files []FileRecord) map[string]string {
 	return out
 }
 
+var (
+	djangoIncludeMountsStringRe = regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([rRuUbB]*["'][^"']*["'])`)
+	djangoIncludeMountsTargetRe = regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.urlpatterns)?)\s*[\),]`)
+)
+
 func djangoIncludeMounts(content string) []djangoIncludeMount {
-	stringRe := regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([rRuUbB]*["'][^"']*["'])`)
-	targetRe := regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.urlpatterns)?)\s*[\),]`)
 	var mounts []djangoIncludeMount
-	for _, match := range stringRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range djangoIncludeMountsStringRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -23538,7 +23632,7 @@ func djangoIncludeMounts(content string) []djangoIncludeMount {
 		}
 		mounts = append(mounts, djangoIncludeMount{Prefix: prefix, Module: module})
 	}
-	for _, match := range targetRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range djangoIncludeMountsTargetRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -23691,11 +23785,12 @@ type pythonTornadoRouteRegistration struct {
 	Detail  string
 }
 
+var pythonTornadoRouteRegistrationsRouteTupleRe = regexp.MustCompile(`\(\s*((?:[rRuUbB]*)?["'][^"']+["'])\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\b`)
+
 func pythonTornadoRouteRegistrations(content string) []pythonTornadoRouteRegistration {
-	routeTupleRe := regexp.MustCompile(`\(\s*((?:[rRuUbB]*)?["'][^"']+["'])\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\b`)
 	var registrations []pythonTornadoRouteRegistration
 	seen := map[string]bool{}
-	for _, match := range routeTupleRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range pythonTornadoRouteRegistrationsRouteTupleRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -23723,15 +23818,18 @@ func pythonTornadoRouteRegistrations(content string) []pythonTornadoRouteRegistr
 	return registrations
 }
 
+var (
+	pythonTornadoRoutePatternValueNamedCaptureRe   = regexp.MustCompile(`\(\?P<([A-Za-z_][A-Za-z0-9_]*)>[^)]*\)`)
+	pythonTornadoRoutePatternValueUnnamedCaptureRe = regexp.MustCompile(`\([^)]*\)`)
+)
+
 func pythonTornadoRoutePatternValue(pattern string) string {
 	route := djangoRoutePatternValue(pattern, true)
 	if route == "" {
 		return ""
 	}
-	namedCaptureRe := regexp.MustCompile(`\(\?P<([A-Za-z_][A-Za-z0-9_]*)>[^)]*\)`)
-	route = namedCaptureRe.ReplaceAllString(route, `{$1}`)
-	unnamedCaptureRe := regexp.MustCompile(`\([^)]*\)`)
-	route = unnamedCaptureRe.ReplaceAllString(route, `{param}`)
+	route = pythonTornadoRoutePatternValueNamedCaptureRe.ReplaceAllString(route, `{$1}`)
+	route = pythonTornadoRoutePatternValueUnnamedCaptureRe.ReplaceAllString(route, `{param}`)
 	route = strings.ReplaceAll(route, `\/`, `/`)
 	route = strings.ReplaceAll(route, `\d+`, `{param}`)
 	return normalizeRouteParamSyntax(route)
@@ -23822,6 +23920,11 @@ func laravelRouteRelations(files []FileRecord, recordsByFile map[string][]Symbol
 	return relations
 }
 
+var (
+	laravelRouteRegistrationsArrayRe  = regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*\[\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*,\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]`)
+	laravelRouteRegistrationsStringRe = regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*["']([A-Za-z_\\][A-Za-z0-9_\\]*)@([A-Za-z_][A-Za-z0-9_]*)["']`)
+)
+
 func laravelRouteRegistrations(content string) []laravelRouteRegistration {
 	var registrations []laravelRouteRegistration
 	add := func(route, controller, method, evidence string) {
@@ -23838,15 +23941,13 @@ func laravelRouteRegistrations(content string) []laravelRouteRegistration {
 			Detail:       route + " -> " + controller + "." + method,
 		})
 	}
-	arrayRe := regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*\[\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*,\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]`)
-	stringRe := regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*["']([A-Za-z_\\][A-Za-z0-9_\\]*)@([A-Za-z_][A-Za-z0-9_]*)["']`)
 	scan := func(body, prefix, evidenceSuffix string) {
-		for _, match := range arrayRe.FindAllStringSubmatch(body, -1) {
+		for _, match := range laravelRouteRegistrationsArrayRe.FindAllStringSubmatch(body, -1) {
 			if len(match) == 4 {
 				add(joinRoutePaths(prefix, match[1]), match[2], match[3], "laravel_route_controller_array"+evidenceSuffix)
 			}
 		}
-		for _, match := range stringRe.FindAllStringSubmatch(body, -1) {
+		for _, match := range laravelRouteRegistrationsStringRe.FindAllStringSubmatch(body, -1) {
 			if len(match) == 4 {
 				add(joinRoutePaths(prefix, match[1]), match[2], match[3], "laravel_route_controller_string"+evidenceSuffix)
 			}
@@ -23878,11 +23979,12 @@ type laravelControllerGroup struct {
 	Body       string
 }
 
+var laravelPrefixGroupsRe = regexp.MustCompile(`(?is)Route::prefix\s*\(\s*["']([^"']+)["']\s*\)\s*->\s*group\s*\(\s*function\s*\(\)\s*\{(.*?)\}\s*\);`)
+
 func laravelPrefixGroups(content string) (string, []laravelPrefixGroup) {
-	re := regexp.MustCompile(`(?is)Route::prefix\s*\(\s*["']([^"']+)["']\s*\)\s*->\s*group\s*\(\s*function\s*\(\)\s*\{(.*?)\}\s*\);`)
 	var groups []laravelPrefixGroup
-	top := re.ReplaceAllStringFunc(content, func(block string) string {
-		match := re.FindStringSubmatch(block)
+	top := laravelPrefixGroupsRe.ReplaceAllStringFunc(content, func(block string) string {
+		match := laravelPrefixGroupsRe.FindStringSubmatch(block)
 		if len(match) == 3 {
 			groups = append(groups, laravelPrefixGroup{Prefix: normalizeSlashRoute(match[1]), Body: match[2]})
 		}
@@ -23891,22 +23993,25 @@ func laravelPrefixGroups(content string) (string, []laravelPrefixGroup) {
 	return top, groups
 }
 
+var (
+	laravelControllerGroupsRe           = regexp.MustCompile(`(?is)\bRoute::((?:(?:prefix|controller)\s*\([^)]*\)\s*->\s*)+)group\s*\(\s*function\s*\(\)\s*\{(.*?)\}\s*\);`)
+	laravelControllerGroupsPrefixRe     = regexp.MustCompile(`(?is)\bprefix\s*\(\s*["']([^"']+)["']\s*\)`)
+	laravelControllerGroupsControllerRe = regexp.MustCompile(`(?is)\bcontroller\s*\(\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*\)`)
+)
+
 func laravelControllerGroups(content string) []laravelControllerGroup {
-	re := regexp.MustCompile(`(?is)\bRoute::((?:(?:prefix|controller)\s*\([^)]*\)\s*->\s*)+)group\s*\(\s*function\s*\(\)\s*\{(.*?)\}\s*\);`)
-	prefixRe := regexp.MustCompile(`(?is)\bprefix\s*\(\s*["']([^"']+)["']\s*\)`)
-	controllerRe := regexp.MustCompile(`(?is)\bcontroller\s*\(\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*\)`)
 	var groups []laravelControllerGroup
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range laravelControllerGroupsRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
 		chain, body := match[1], match[2]
-		controllerMatch := controllerRe.FindStringSubmatch(chain)
+		controllerMatch := laravelControllerGroupsControllerRe.FindStringSubmatch(chain)
 		if len(controllerMatch) != 2 {
 			continue
 		}
 		prefix := "/"
-		if prefixMatch := prefixRe.FindStringSubmatch(chain); len(prefixMatch) == 2 {
+		if prefixMatch := laravelControllerGroupsPrefixRe.FindStringSubmatch(chain); len(prefixMatch) == 2 {
 			prefix = normalizeSlashRoute(prefixMatch[1])
 		}
 		groups = append(groups, laravelControllerGroup{
@@ -23918,8 +24023,10 @@ func laravelControllerGroups(content string) []laravelControllerGroup {
 	return groups
 }
 
+var laravelControllerGroupMethodRouteReRe = regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*["']([A-Za-z_][A-Za-z0-9_]*)["']`)
+
 func laravelControllerGroupMethodRouteRe() *regexp.Regexp {
-	return regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*["']([A-Za-z_][A-Za-z0-9_]*)["']`)
+	return laravelControllerGroupMethodRouteReRe
 }
 
 func railsRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {
@@ -24007,6 +24114,11 @@ func railsRoutesFile(path, content string) bool {
 	return strings.HasSuffix(slashPath, "config/routes.rb") || strings.Contains(content, ".routes.draw")
 }
 
+var (
+	railsRouteRegistrationsToRe         = regexp.MustCompile(`(?is)\b(?:get|post|put|patch|delete|match)\s+["']([^"']+)["']\s*,\s*to:\s*["']([A-Za-z0-9_/]+)#([A-Za-z_][A-Za-z0-9_]*)["']`)
+	railsRouteRegistrationsHashRocketRe = regexp.MustCompile(`(?is)\b(?:get|post|put|patch|delete|match)\s+["']([^"']+)["']\s*=>\s*["']([A-Za-z0-9_/]+)#([A-Za-z_][A-Za-z0-9_]*)["']`)
+)
+
 func railsRouteRegistrations(content string) []railsRouteRegistration {
 	var registrations []railsRouteRegistration
 	add := func(route, controller, action, evidence string) {
@@ -24024,15 +24136,13 @@ func railsRouteRegistrations(content string) []railsRouteRegistration {
 			Detail:       route + " -> " + controller + "#" + action,
 		})
 	}
-	toRe := regexp.MustCompile(`(?is)\b(?:get|post|put|patch|delete|match)\s+["']([^"']+)["']\s*,\s*to:\s*["']([A-Za-z0-9_/]+)#([A-Za-z_][A-Za-z0-9_]*)["']`)
-	hashRocketRe := regexp.MustCompile(`(?is)\b(?:get|post|put|patch|delete|match)\s+["']([^"']+)["']\s*=>\s*["']([A-Za-z0-9_/]+)#([A-Za-z_][A-Za-z0-9_]*)["']`)
 	scan := func(body, routePrefix, controllerPrefix, evidenceSuffix string) {
-		for _, match := range toRe.FindAllStringSubmatch(body, -1) {
+		for _, match := range railsRouteRegistrationsToRe.FindAllStringSubmatch(body, -1) {
 			if len(match) == 4 {
 				add(joinRoutePaths(routePrefix, match[1]), railsJoinControllerPrefix(controllerPrefix, match[2]), match[3], "rails_route_to"+evidenceSuffix)
 			}
 		}
-		for _, match := range hashRocketRe.FindAllStringSubmatch(body, -1) {
+		for _, match := range railsRouteRegistrationsHashRocketRe.FindAllStringSubmatch(body, -1) {
 			if len(match) == 4 {
 				add(joinRoutePaths(routePrefix, match[1]), railsJoinControllerPrefix(controllerPrefix, match[2]), match[3], "rails_route_hash_rocket"+evidenceSuffix)
 			}
@@ -24081,11 +24191,12 @@ type railsNestedResourceBlock struct {
 	Body          string
 }
 
+var railsNestedResourceBlocksRe = regexp.MustCompile(`(?ims)^\s*resources\s+:([A-Za-z_][A-Za-z0-9_]*)([^\n]*)\s+do\s*(.*?)^\s*end\b`)
+
 func railsNestedResourceBlocks(content string) (string, []railsNestedResourceBlock) {
-	re := regexp.MustCompile(`(?ims)^\s*resources\s+:([A-Za-z_][A-Za-z0-9_]*)([^\n]*)\s+do\s*(.*?)^\s*end\b`)
 	var blocks []railsNestedResourceBlock
-	top := re.ReplaceAllStringFunc(content, func(block string) string {
-		match := re.FindStringSubmatch(block)
+	top := railsNestedResourceBlocksRe.ReplaceAllStringFunc(content, func(block string) string {
+		match := railsNestedResourceBlocksRe.FindStringSubmatch(block)
 		if len(match) != 4 {
 			return block
 		}
@@ -24099,11 +24210,12 @@ func railsNestedResourceBlocks(content string) (string, []railsNestedResourceBlo
 	return top, blocks
 }
 
+var railsScopedRouteBlocksRe = regexp.MustCompile(`(?ims)^\s*(scope\s+["']([^"']+)["']|namespace\s+:([A-Za-z_][A-Za-z0-9_]*))\s+do\s*(.*?)^\s*end\b`)
+
 func railsScopedRouteBlocks(content string) (string, []railsScopedRouteBlock) {
-	re := regexp.MustCompile(`(?ims)^\s*(scope\s+["']([^"']+)["']|namespace\s+:([A-Za-z_][A-Za-z0-9_]*))\s+do\s*(.*?)^\s*end\b`)
 	var blocks []railsScopedRouteBlock
-	top := re.ReplaceAllStringFunc(content, func(block string) string {
-		match := re.FindStringSubmatch(block)
+	top := railsScopedRouteBlocksRe.ReplaceAllStringFunc(content, func(block string) string {
+		match := railsScopedRouteBlocksRe.FindStringSubmatch(block)
 		if len(match) != 5 {
 			return block
 		}
@@ -24188,10 +24300,11 @@ func railsResourceRoutes(resource string, actions []string) []railsResourceRoute
 	return routes
 }
 
+var railsResourceDeclarationsRe = regexp.MustCompile(`(?m)^\s*resources\s+:([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*(.*))?$`)
+
 func railsResourceDeclarations(content string) []railsResourceDeclaration {
-	re := regexp.MustCompile(`(?m)^\s*resources\s+:([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*(.*))?$`)
 	var declarations []railsResourceDeclaration
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range railsResourceDeclarationsRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -24214,6 +24327,8 @@ func railsDefaultResourceActions() []string {
 	return []string{"index", "create", "new", "show", "edit", "update", "destroy"}
 }
 
+var railsResourceActionsRe = regexp.MustCompile(`[:'",\[\]]`)
+
 func railsResourceActions(value string) []string {
 	seen := map[string]bool{}
 	var actions []string
@@ -24221,7 +24336,7 @@ func railsResourceActions(value string) []string {
 	for _, action := range railsDefaultResourceActions() {
 		known[action] = true
 	}
-	normalized := regexp.MustCompile(`[:'",\[\]]`).ReplaceAllString(value, " ")
+	normalized := railsResourceActionsRe.ReplaceAllString(value, " ")
 	for _, action := range strings.Fields(normalized) {
 		if !known[action] {
 			continue
@@ -24483,10 +24598,15 @@ func jsRouterComposedRouteLiterals(block string, constants map[string]string) []
 	return sortedKeys(seen)
 }
 
+var (
+	jsRouterMountsRe         = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.(?:use|route)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)`)
+	jsRouterMountsKoaMountRe = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*mount\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\.routes\s*\(\s*\)\s*\)\s*\)`)
+	jsRouterMountsKoaUseRe   = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\.routes\s*\(\s*\)\s*\)`)
+)
+
 func jsRouterMounts(block string, constants map[string]string) []jsRouterMount {
-	re := regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.(?:use|route)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)`)
 	var mounts []jsRouterMount
-	for _, match := range re.FindAllStringSubmatch(block, -1) {
+	for _, match := range jsRouterMountsRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 4 {
 			continue
 		}
@@ -24495,8 +24615,7 @@ func jsRouterMounts(block string, constants map[string]string) []jsRouterMount {
 			mounts = append(mounts, jsRouterMount{Receiver: match[1], Prefix: prefix, Target: match[3]})
 		}
 	}
-	koaMountRe := regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*mount\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\.routes\s*\(\s*\)\s*\)\s*\)`)
-	for _, match := range koaMountRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range jsRouterMountsKoaMountRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 4 {
 			continue
 		}
@@ -24505,8 +24624,7 @@ func jsRouterMounts(block string, constants map[string]string) []jsRouterMount {
 			mounts = append(mounts, jsRouterMount{Receiver: match[1], Prefix: prefix, Target: match[3]})
 		}
 	}
-	koaUseRe := regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\.routes\s*\(\s*\)\s*\)`)
-	for _, match := range koaUseRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range jsRouterMountsKoaUseRe.FindAllStringSubmatch(block, -1) {
 		if len(match) == 3 {
 			mounts = append(mounts, jsRouterMount{Receiver: match[1], Prefix: "/", Target: match[2]})
 		}
@@ -24514,15 +24632,19 @@ func jsRouterMounts(block string, constants map[string]string) []jsRouterMount {
 	return mounts
 }
 
+var (
+	jsFastifyPluginMountsRe  = regexp.MustCompile(`(?is)\b[A-Za-z_$][\w$]*\.register\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*,\s*\{([^}]*)\}`)
+	jsFastifyPluginMountsRe2 = regexp.MustCompile(`(?is)\bprefix\s*:\s*([^,\n}]+)`)
+)
+
 func jsFastifyPluginMounts(block string, constants map[string]string) []jsFastifyPluginMount {
-	re := regexp.MustCompile(`(?is)\b[A-Za-z_$][\w$]*\.register\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*,\s*\{([^}]*)\}`)
 	var mounts []jsFastifyPluginMount
-	for _, match := range re.FindAllStringSubmatch(block, -1) {
+	for _, match := range jsFastifyPluginMountsRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
 		options := match[2]
-		prefixMatch := regexp.MustCompile(`(?is)\bprefix\s*:\s*([^,\n}]+)`).FindStringSubmatch(options)
+		prefixMatch := jsFastifyPluginMountsRe2.FindStringSubmatch(options)
 		if len(prefixMatch) != 2 {
 			continue
 		}
@@ -24571,14 +24693,18 @@ func jsRouterRoutes(block string, constants map[string]string) []jsRouterRoute {
 	return routes
 }
 
+var (
+	jsRouterConstructorPrefixesRe  = regexp.MustCompile(`(?is)\b(?:const|let|var)?\s*([A-Za-z_$][\w$]*)\s*=\s*new\s+(?:[A-Za-z_$][\w$]*\.)?(?:Router|KoaRouter)\s*\(\s*\{([^}]*)\}\s*\)`)
+	jsRouterConstructorPrefixesRe2 = regexp.MustCompile(`(?:^|,)\s*prefix\s*(?:,|$)`)
+)
+
 func jsRouterConstructorPrefixes(block string, constants map[string]string) map[string]string {
-	re := regexp.MustCompile(`(?is)\b(?:const|let|var)?\s*([A-Za-z_$][\w$]*)\s*=\s*new\s+(?:[A-Za-z_$][\w$]*\.)?(?:Router|KoaRouter)\s*\(\s*\{([^}]*)\}\s*\)`)
 	prefixes := map[string]string{}
-	for _, match := range re.FindAllStringSubmatch(block, -1) {
+	for _, match := range jsRouterConstructorPrefixesRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
-		prefixMatch := regexp.MustCompile(`(?is)\bprefix\s*:\s*([^,\n}]+)`).FindStringSubmatch(match[2])
+		prefixMatch := jsFastifyPluginMountsRe2.FindStringSubmatch(match[2])
 		if len(prefixMatch) == 2 {
 			prefix, ok := staticRouteExpressionValue(prefixMatch[1], constants)
 			if !ok {
@@ -24587,7 +24713,7 @@ func jsRouterConstructorPrefixes(block string, constants map[string]string) map[
 			prefixes[match[1]] = prefix
 			continue
 		}
-		if regexp.MustCompile(`(?:^|,)\s*prefix\s*(?:,|$)`).MatchString(strings.TrimSpace(match[2])) {
+		if jsRouterConstructorPrefixesRe2.MatchString(strings.TrimSpace(match[2])) {
 			if prefix, ok := staticRouteExpressionValue("prefix", constants); ok {
 				prefixes[match[1]] = prefix
 			}
@@ -25370,13 +25496,20 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 	return relations
 }
 
+var (
+	javascriptDefaultExportNameRe  = regexp.MustCompile(`(?m)^\s*export\s+default\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`)
+	javascriptDefaultExportNameRe2 = regexp.MustCompile(`(?m)^\s*export\s*\{([^}]+)\}`)
+	javascriptDefaultExportNameRe3 = regexp.MustCompile(`(?m)^\s*module\.exports\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`)
+	javascriptDefaultExportNameRe4 = regexp.MustCompile(`(?m)^\s*exports\.default\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`)
+)
+
 func javascriptDefaultExportName(content string) string {
-	for _, match := range regexp.MustCompile(`(?m)^\s*export\s+default\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range javascriptDefaultExportNameRe.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			return match[1]
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*export\s*\{([^}]+)\}`).FindAllStringSubmatch(content, -1) {
+	for _, match := range javascriptDefaultExportNameRe2.FindAllStringSubmatch(content, -1) {
 		if len(match) != 2 {
 			continue
 		}
@@ -25387,12 +25520,12 @@ func javascriptDefaultExportName(content string) string {
 			}
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*module\.exports\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range javascriptDefaultExportNameRe3.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			return match[1]
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*exports\.default\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range javascriptDefaultExportNameRe4.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			return match[1]
 		}
@@ -25602,8 +25735,10 @@ func pythonDirectRouteRegistrations(content string) []goHTTPRouteRegistration {
 	return registrations
 }
 
+var pythonAsViewClassNameRe = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\.as_view\s*\(`)
+
 func pythonAsViewClassName(handler string) (string, bool) {
-	match := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\.as_view\s*\(`).FindStringSubmatch(handler)
+	match := pythonAsViewClassNameRe.FindStringSubmatch(handler)
 	if len(match) != 2 {
 		return "", false
 	}
@@ -25645,7 +25780,6 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 	for _, statement := range pythonFromImportStatements(content) {
 		fromByLine[statement.line] = statement
 	}
-	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
 	for lineNumber, text := range strings.Split(content, "\n") {
 		if statement, ok := fromByLine[lineNumber]; ok {
 			for _, item := range statement.items {
@@ -25665,7 +25799,7 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
+		if matches := importedPythonNamesAndFormsImportRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {
@@ -25683,24 +25817,27 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 	return imports
 }
 
+var (
+	pythonRouterMountsIncludeRouterRe = regexp.MustCompile(`\.include_router\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	pythonRouterMountsBlueprintRe     = regexp.MustCompile(`\.register_blueprint\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	pythonRouterMountsPrefixRe        = regexp.MustCompile(`\bprefix\s*=\s*["']([^"']+)["']`)
+	pythonRouterMountsUrlPrefixRe     = regexp.MustCompile(`\burl_prefix\s*=\s*["']([^"']+)["']`)
+)
+
 func pythonRouterMounts(content string) []pythonRouterMount {
-	includeRouterRe := regexp.MustCompile(`\.include_router\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)`)
-	blueprintRe := regexp.MustCompile(`\.register_blueprint\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)`)
-	prefixRe := regexp.MustCompile(`\bprefix\s*=\s*["']([^"']+)["']`)
-	urlPrefixRe := regexp.MustCompile(`\burl_prefix\s*=\s*["']([^"']+)["']`)
 	var mounts []pythonRouterMount
 	for _, line := range strings.Split(content, "\n") {
-		targetMatch := includeRouterRe.FindStringSubmatch(line)
+		targetMatch := pythonRouterMountsIncludeRouterRe.FindStringSubmatch(line)
 		if len(targetMatch) == 2 {
-			prefixMatch := prefixRe.FindStringSubmatch(line)
+			prefixMatch := pythonRouterMountsPrefixRe.FindStringSubmatch(line)
 			if len(prefixMatch) == 2 && strings.HasPrefix(prefixMatch[1], "/") {
 				mounts = append(mounts, pythonRouterMount{Prefix: prefixMatch[1], Target: targetMatch[1]})
 			}
 		}
-		targetMatch = blueprintRe.FindStringSubmatch(line)
+		targetMatch = pythonRouterMountsBlueprintRe.FindStringSubmatch(line)
 		if len(targetMatch) == 2 {
 			prefix := "/"
-			if prefixMatch := urlPrefixRe.FindStringSubmatch(line); len(prefixMatch) == 2 && strings.HasPrefix(prefixMatch[1], "/") {
+			if prefixMatch := pythonRouterMountsUrlPrefixRe.FindStringSubmatch(line); len(prefixMatch) == 2 && strings.HasPrefix(prefixMatch[1], "/") {
 				prefix = prefixMatch[1]
 			}
 			mounts = append(mounts, pythonRouterMount{Prefix: prefix, Target: targetMatch[1]})
@@ -25737,6 +25874,8 @@ type pythonRouteDecorator struct {
 	Route    string
 }
 
+var pythonRouteDecoratorsNearSymbolRouteDecoratorRe = regexp.MustCompile(`^@([A-Za-z_][A-Za-z0-9_]*)\.(?:get|post|put|patch|delete|head|options|route)\s*\(\s*["']([^"']+)["']`)
+
 func pythonRouteDecoratorsNearSymbol(content string, symbol SymbolRecord) []pythonRouteDecorator {
 	if symbol.StartLine <= 0 {
 		return nil
@@ -25746,7 +25885,6 @@ func pythonRouteDecoratorsNearSymbol(content string, symbol SymbolRecord) []pyth
 	if index >= len(lines) {
 		index = len(lines) - 1
 	}
-	routeDecoratorRe := regexp.MustCompile(`^@([A-Za-z_][A-Za-z0-9_]*)\.(?:get|post|put|patch|delete|head|options|route)\s*\(\s*["']([^"']+)["']`)
 	seen := map[string]bool{}
 	var routes []pythonRouteDecorator
 	for i := index; i >= 0 && index-i <= 8; i-- {
@@ -25760,7 +25898,7 @@ func pythonRouteDecoratorsNearSymbol(content string, symbol SymbolRecord) []pyth
 		if !strings.HasPrefix(line, "@") {
 			break
 		}
-		match := routeDecoratorRe.FindStringSubmatch(line)
+		match := pythonRouteDecoratorsNearSymbolRouteDecoratorRe.FindStringSubmatch(line)
 		if len(match) != 3 || !strings.HasPrefix(match[2], "/") {
 			continue
 		}
@@ -25918,11 +26056,14 @@ type csharpMinimalAPIRouteRegistration struct {
 	Detail  string
 }
 
+var (
+	csharpMinimalAPIRouteRegistrationsMapRouteRe          = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Map(?i:Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\b`)
+	csharpMinimalAPIRouteRegistrationsChainedGroupRouteRe = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*MapGroup\s*\(\s*([^,\n)]+)\s*\)\s*\.\s*Map(?i:Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\b`)
+)
+
 func csharpMinimalAPIRouteRegistrations(content string) []csharpMinimalAPIRouteRegistration {
 	constants := staticStringConstants(content)
 	groupPrefixes := csharpMinimalAPIGroupPrefixes(content, constants)
-	mapRouteRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Map(?i:Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\b`)
-	chainedGroupRouteRe := regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*MapGroup\s*\(\s*([^,\n)]+)\s*\)\s*\.\s*Map(?i:Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\b`)
 	var registrations []csharpMinimalAPIRouteRegistration
 	seen := map[string]bool{}
 	add := func(route, handler string) {
@@ -25938,7 +26079,7 @@ func csharpMinimalAPIRouteRegistrations(content string) []csharpMinimalAPIRouteR
 			Detail:  route + " -> " + handler,
 		})
 	}
-	for _, match := range mapRouteRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range csharpMinimalAPIRouteRegistrationsMapRouteRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 4 {
 			continue
 		}
@@ -25951,7 +26092,7 @@ func csharpMinimalAPIRouteRegistrations(content string) []csharpMinimalAPIRouteR
 		}
 		add(route, match[3])
 	}
-	for _, match := range chainedGroupRouteRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range csharpMinimalAPIRouteRegistrationsChainedGroupRouteRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 4 {
 			continue
 		}
@@ -25974,12 +26115,13 @@ func csharpMinimalAPIRouteRegistrations(content string) []csharpMinimalAPIRouteR
 	return registrations
 }
 
+var csharpMinimalAPIGroupPrefixesGroupRe = regexp.MustCompile(`\b(?:var|[A-Za-z_][A-Za-z0-9_<>,.?]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*MapGroup\s*\(\s*([^,\n)]+)\s*\)`)
+
 func csharpMinimalAPIGroupPrefixes(content string, constants map[string]string) map[string]string {
-	groupRe := regexp.MustCompile(`\b(?:var|[A-Za-z_][A-Za-z0-9_<>,.?]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*MapGroup\s*\(\s*([^,\n)]+)\s*\)`)
 	groups := map[string]string{}
 	for i := 0; i < 5; i++ {
 		changed := false
-		for _, match := range groupRe.FindAllStringSubmatch(content, -1) {
+		for _, match := range csharpMinimalAPIGroupPrefixesGroupRe.FindAllStringSubmatch(content, -1) {
 			if len(match) != 4 {
 				continue
 			}
@@ -26100,12 +26242,13 @@ func nestJSRouteDecoratorLiteralsAroundSymbol(content string, symbol SymbolRecor
 	return sortedKeys(seen)
 }
 
+var nestJSRouteDecoratorLiteralsDecoratorRe = regexp.MustCompile("(?i)@(?:[A-Za-z_$][A-Za-z0-9_$]*\\.)?(Controller|Get|Post|Put|Patch|Delete|Head|Options|All)\\s*(?:\\((.*)\\))?")
+
 func nestJSRouteDecoratorLiterals(line string, controllerOnly bool) []string {
-	decoratorRe := regexp.MustCompile("(?i)@(?:[A-Za-z_$][A-Za-z0-9_$]*\\.)?(Controller|Get|Post|Put|Patch|Delete|Head|Options|All)\\s*(?:\\((.*)\\))?")
 	stringRe := regexp.MustCompile(`^\s*(?:"([^"]*)"|'([^']*)'|` + "`" + `([^` + "`" + `]*)` + "`" + `)`)
 	pathPropertyRe := regexp.MustCompile(`(?i)\bpath\s*:\s*(?:"([^"]*)"|'([^']*)'|` + "`" + `([^` + "`" + `]*)` + "`" + `)`)
 	var routes []string
-	for _, match := range decoratorRe.FindAllStringSubmatch(line, -1) {
+	for _, match := range nestJSRouteDecoratorLiteralsDecoratorRe.FindAllStringSubmatch(line, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -26394,10 +26537,11 @@ func csharpRouteAnnotationLiteralsAroundSymbol(content string, symbol SymbolReco
 	return sortedKeys(seen)
 }
 
+var csharpRouteAnnotationLiteralsAttributeRe = regexp.MustCompile(`\[(?i:(Route|HttpGet|HttpPost|HttpPut|HttpPatch|HttpDelete|HttpHead|HttpOptions))\s*(?:\(\s*(?:"([^"]*)"|'([^']*)'))?`)
+
 func csharpRouteAnnotationLiterals(line string, tokens map[string]string) []string {
-	attributeRe := regexp.MustCompile(`\[(?i:(Route|HttpGet|HttpPost|HttpPut|HttpPatch|HttpDelete|HttpHead|HttpOptions))\s*(?:\(\s*(?:"([^"]*)"|'([^']*)'))?`)
 	var routes []string
-	for _, match := range attributeRe.FindAllStringSubmatch(line, -1) {
+	for _, match := range csharpRouteAnnotationLiteralsAttributeRe.FindAllStringSubmatch(line, -1) {
 		if len(match) < 4 {
 			continue
 		}
@@ -26481,10 +26625,11 @@ func phpRouteAttributeLiteralsAroundSymbol(content string, symbol SymbolRecord) 
 	return sortedKeys(seen)
 }
 
+var phpRouteAttributeLiteralsAttributeRe = regexp.MustCompile(`(?i)#\[\s*(?:[A-Za-z_\\][A-Za-z0-9_\\]*\\)?Route\s*\(\s*(?:"([^"]*)"|'([^']*)')`)
+
 func phpRouteAttributeLiterals(line string) []string {
-	attributeRe := regexp.MustCompile(`(?i)#\[\s*(?:[A-Za-z_\\][A-Za-z0-9_\\]*\\)?Route\s*\(\s*(?:"([^"]*)"|'([^']*)')`)
 	var routes []string
-	for _, match := range attributeRe.FindAllStringSubmatch(line, -1) {
+	for _, match := range phpRouteAttributeLiteralsAttributeRe.FindAllStringSubmatch(line, -1) {
 		if len(match) < 3 {
 			continue
 		}
@@ -27025,15 +27170,22 @@ func githubRemoteURLs(ctx context.Context, repo string) []string {
 	return urls
 }
 
+var (
+	githubRepoKeyRe  = regexp.MustCompile(`^git@github\.com:([^/]+)/(.+)$`)
+	githubRepoKeyRe2 = regexp.MustCompile(`^https://github\.com/([^/]+)/(.+)$`)
+	githubRepoKeyRe3 = regexp.MustCompile(`^http://github\.com/([^/]+)/(.+)$`)
+	githubRepoKeyRe4 = regexp.MustCompile(`^ssh://git@github\.com/([^/]+)/(.+)$`)
+)
+
 func githubRepoKey(remoteURL string) (string, bool) {
 	remoteURL = strings.TrimSpace(remoteURL)
 	remoteURL = strings.TrimRight(remoteURL, "/")
 	remoteURL = strings.TrimSuffix(remoteURL, ".git")
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`^git@github\.com:([^/]+)/(.+)$`),
-		regexp.MustCompile(`^https://github\.com/([^/]+)/(.+)$`),
-		regexp.MustCompile(`^http://github\.com/([^/]+)/(.+)$`),
-		regexp.MustCompile(`^ssh://git@github\.com/([^/]+)/(.+)$`),
+		githubRepoKeyRe,
+		githubRepoKeyRe2,
+		githubRepoKeyRe3,
+		githubRepoKeyRe4,
 	}
 	for _, pattern := range patterns {
 		matches := pattern.FindStringSubmatch(remoteURL)
