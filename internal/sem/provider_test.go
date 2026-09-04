@@ -12062,6 +12062,37 @@ func writeFile(t *testing.T, repo, path, content string) {
 // handler body. This verifies the command name is indexed as a searchable alias
 // of the handler symbol end to end: the emitted SymbolRecord carries the alias,
 // and a search whose term is the verb scores the handler with an "alias" signal.
+// TestRegistrationAliasDeclinesOnAmbiguousHandlerName is the other half of
+// TestRegistrationTableAliasIndexing. The verb was keyed by the handler's bare
+// name and then assigned to every symbol carrying that name, so one
+// commands/*.json aliased an unrelated method, a Python function and a
+// TypeScript function as if each were the registered command — and the alias
+// scores like an exact symbol-name hit, so all of them outranked real matches.
+// A command with no symbol is better than symbols claiming a command they do
+// not implement, so an ambiguous handler name now carries no verb at all.
+func TestRegistrationAliasDeclinesOnAmbiguousHandlerName(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/commands/getrange.json", `{"function":"getrangeCommand"}`)
+	writeFile(t, repo, "src/t_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+	writeFile(t, repo, "unrelated/other.go", "package unrelated\n\ntype Box struct{}\n\nfunc (b Box) getrangeCommand() {}\n")
+	writeFile(t, repo, "tools/helper.py", "def getrangeCommand():\n    return 1\n")
+	writeFile(t, repo, "web/app.ts", "export function getrangeCommand() { return 1; }\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var aliased []string
+	for _, symbol := range snapshot.Symbols {
+		if slices.Contains(symbol.Aliases, "getrange") {
+			aliased = append(aliased, symbol.Language+" "+symbol.Kind+" "+symbol.QualifiedName+" in "+symbol.FilePath)
+		}
+	}
+	if len(aliased) != 0 {
+		t.Fatalf("ambiguous handler name aliased %d symbols, want none: %v", len(aliased), aliased)
+	}
+}
+
 func TestRegistrationTableAliasIndexing(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/commands/substr.json", `{"function":"getrangeCommand"}`)

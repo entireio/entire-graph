@@ -511,6 +511,105 @@ export class Repo {
 	}
 }
 
+// TestGraphQLOperationSurvivesObjectValuedVariableDefault covers a valid
+// operation the selection-set gate rejected: its parameter pattern forbade
+// braces, so a variable default holding an object value (`$f: Filter = {enabled:
+// true}`) never matched and BOTH the operation-name edge and the root-field
+// edges disappeared — the whole operation, not just the default.
+//
+// The interpolation half is the same test because widening the parameter
+// pattern is what admits it: `${fragments.join("\n  ")}` inside an argument list
+// reads as root fields named `$` and `n` — symbols naming nothing — unless the
+// root-field scan refuses a GraphQL Name that starts with `$` or follows an
+// escape.
+func TestGraphQLOperationSurvivesObjectValuedVariableDefault(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "client.ts", `export function search(): unknown {
+  return gql`+"`"+`query SearchUsers($f: Filter = {enabled: true}) { users { id } }`+"`"+`;
+}
+
+export function control(): unknown {
+  return gql`+"`"+`query PlainUsers($f: String) { users { id } }`+"`"+`;
+}
+
+export function interpolated(fragments: string[], shaArgs: string): unknown {
+  return gql`+"`"+`query EmailResolution($c: String, ${shaArgs}) {
+  ${fragments.join("\n  ")}
+}`+"`"+`;
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "HANDLES_GRAPHQL" {
+			continue
+		}
+		from := relation.FromID[strings.LastIndex(relation.FromID, ":")+1:]
+		to := relation.ToID
+		found[from+" => "+to[strings.Index(to, "graphql:")+len("graphql:"):]] = true
+	}
+	for _, want := range []string{
+		"search => query SearchUsers",
+		"search => query users",
+		"control => query PlainUsers",
+		"control => query users",
+		"interpolated => query EmailResolution",
+	} {
+		if !found[want] {
+			t.Errorf("missing GraphQL boundary %q; got %v", want, sortedKeysOf(found))
+		}
+	}
+	// An interpolation is not a selection: a field named `$` or `n` names
+	// nothing, and a symbol naming nothing is worse than a missing one.
+	for key := range found {
+		for _, forbidden := range []string{"query $", "query n", "query fragments", "query join"} {
+			if strings.Contains(key, forbidden) {
+				t.Errorf("template interpolation produced the boundary %q; got %v", key, sortedKeysOf(found))
+			}
+		}
+	}
+}
+
+// TestGraphQLTagIsFoundAcrossWhitespace covers the tagged-template tag scan,
+// which only recognised a tag written flush against the backtick. `gql `{ viewer { id
+// } }`+bt+“ with a space, or with the template on the next line, produced an EMPTY
+// tag — and shorthand operations have no `query` keyword to fall back on, so they
+// lost their boundaries entirely.
+func TestGraphQLTagIsFoundAcrossWhitespace(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{"adjacent", "gql`{ viewer { id } }`", "gql"},
+		{"space", "gql `{ viewer { id } }`", "gql"},
+		{"tab", "gql\t`{ viewer { id } }`", "gql"},
+		{"newline", "gql\n`{ viewer { id } }`", "gql"},
+		{"untagged", "`{ viewer { id } }`", ""},
+		{"operator, not a tag", "+ `{ viewer { id } }`", ""},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			runes := []rune(testCase.source)
+			backtick := -1
+			for i, r := range runes {
+				if r == '`' {
+					backtick = i
+					break
+				}
+			}
+			if backtick < 0 {
+				t.Fatalf("fixture has no backtick: %q", testCase.source)
+			}
+			if got := templateLiteralTag(runes, backtick); got != testCase.want {
+				t.Fatalf("templateLiteralTag(%q) = %q, want %q", testCase.source, got, testCase.want)
+			}
+		})
+	}
+}
+
 // TestHostLanguageLiteralsSpansQuotingStyles covers the literal scanner the
 // precision fix depends on.
 func TestHostLanguageLiteralsSpansQuotingStyles(t *testing.T) {

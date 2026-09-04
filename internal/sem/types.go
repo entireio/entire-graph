@@ -364,7 +364,7 @@ type serviceBoundary struct {
 
 var (
 	graphqlOperationRe          = regexp.MustCompile(`(?is)\b(query|mutation|subscription)\s+([A-Za-z_][A-Za-z0-9_]*)`)
-	graphqlOperationSelectionRe = regexp.MustCompile(`(?is)\b(query|mutation|subscription)\b\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*(?:\([^{}]*\))?\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^{}]*\))?\s*)*\{`)
+	graphqlOperationSelectionRe = regexp.MustCompile(`(?is)\b(query|mutation|subscription)\b\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*(?:\((?:[^{}]|\{[^{}]*\})*\))?\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^{}]*\))?\s*)*\{`)
 	graphqlFragmentRe           = regexp.MustCompile(`(?is)\bfragment\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^{}]*\))?\s*)*\{`)
 	trpcProcedureRe             = regexp.MustCompile(`(?m)([A-Za-z_$][\w$]*)\s*:\s*(?:publicProcedure|protectedProcedure|procedure)\s*\.\s*(query|mutation|subscription)\s*\(`)
 )
@@ -459,13 +459,19 @@ func templateLiteralTag(runes []rune, backtick int) string {
 	if backtick <= 0 || runes[backtick] != '`' {
 		return ""
 	}
-	end := backtick
+	// A tag may be separated from its template by whitespace or a newline;
+	// both are still tagged templates.
+	stop := backtick
+	for stop > 0 && (runes[stop-1] == ' ' || runes[stop-1] == '\t' || runes[stop-1] == '\n' || runes[stop-1] == '\r') {
+		stop--
+	}
+	end := stop
 	// The ASCII check comes first: isJSIdentifierPart takes a byte, so a
 	// non-ASCII rune would be truncated before it is rejected.
 	for end > 0 && runes[end-1] < 128 && isJSIdentifierPart(byte(runes[end-1])) {
 		end--
 	}
-	return string(runes[end:backtick])
+	return string(runes[end:stop])
 }
 
 func indexRunes(runes []rune, from int, want string) int {
@@ -855,6 +861,16 @@ func graphqlRootSelectionFields(body string) []string {
 			continue
 		}
 		if depth != 0 || !isJSIdentifierStart(ch) {
+			continue
+		}
+		// A GraphQL Name is /[_A-Za-z][_0-9A-Za-z]*/ — it never starts with
+		// `$`, and it is never introduced by a host-language escape. Both
+		// shapes reach here only from template interpolation:
+		// `${fragments.join("\n  ")}` reads as fields named `$` and `n`.
+		if ch == '$' || (i > 0 && body[i-1] == '\\') {
+			for i+1 < len(body) && isJSIdentifierPart(body[i+1]) {
+				i++
+			}
 			continue
 		}
 		nameStart := i

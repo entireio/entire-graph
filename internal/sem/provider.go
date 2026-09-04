@@ -1164,6 +1164,17 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// (commands/<name>.json) never appear in the handler body; index them once as
 	// searchable aliases so they can be attached to the handler symbol below.
 	aliasesByHandler := collectRegistrationAliases(sc.paths, sc.read)
+	// A command verb names ONE callable. The verb was attached to every symbol
+	// that happened to share the handler's unqualified name, so a repository
+	// with a same-named function in another package — or a method, or a
+	// declaration in a different language entirely — answered the command query
+	// with symbols that are not the handler, ranked as an exact alias hit.
+	// Uniqueness is only knowable once the corpus is parsed, so candidates are
+	// held back here and emitted after the file loop; nothing else uses Aliases
+	// (relations are built from recordsByFile, which never reads them), so
+	// holding only these few records changes no other output.
+	var aliasCandidates []SymbolRecord
+	aliasCandidateCount := map[string]int{}
 
 	// Phase 1: workers independently read, classify, and parse files. Only this
 	// reducer mutates graph indexes or calls emit, and it consumes the original
@@ -1191,13 +1202,13 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 
 			if result.parsed {
 				parsedFileCount++
-				for i := range result.symbols {
-					if aliases := aliasesByHandler[result.symbols[i].Name]; len(aliases) > 0 {
-						result.symbols[i].Aliases = aliases
-					}
-				}
 				applyCppSpecializationAliases(result.symbols)
 				for _, symbol := range result.symbols {
+					if len(aliasesByHandler[symbol.Name]) > 0 {
+						aliasCandidateCount[symbol.Name]++
+						aliasCandidates = append(aliasCandidates, symbol)
+						continue
+					}
 					if err := emit(symbol); err != nil {
 						return err
 					}
@@ -1219,6 +1230,18 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	)
 	if err != nil {
 		return err
+	}
+	// Registration aliases resolved against the whole corpus: a handler name
+	// declared exactly once is the registered callable and carries the verb; an
+	// ambiguous name carries none, because a symbol that claims to be a command
+	// it does not implement is worse than a command with no symbol.
+	for _, symbol := range aliasCandidates {
+		if aliasCandidateCount[symbol.Name] == 1 {
+			symbol.Aliases = appendUnique(symbol.Aliases, aliasesByHandler[symbol.Name]...)
+		}
+		if err := emit(symbol); err != nil {
+			return err
+		}
 	}
 	emitProgress(BuildPhaseParse, len(sc.paths), symbolCount, relationCount)
 
@@ -4917,17 +4940,23 @@ func collectPackageVarTypes(content string) map[string]pkgQualType {
 }
 
 // resolveQualifiedType picks the type-like symbol for a package-qualified
-// reference by the Go convention that a package's import alias equals its
-// directory basename (json.Encoder -> the Encoder in .../json/). Requires a
-// unique match so an ambiguous alias resolves to nothing rather than wrongly.
-func resolveQualifiedType(qt pkgQualType, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
+// reference. The written qualifier is only a spelling: `import foo "m/realpkg"`
+// binds foo to realpkg, and a different in-module package whose directory is
+// literally foo/ is an unrelated package. So when the file's imports resolve the
+// qualifier, the candidate's directory must match that import PATH; the Go
+// convention that a qualifier equals a directory basename (json.Encoder -> the
+// Encoder in .../json/) only stands in when the qualifier is unresolved.
+// Requires a unique match so an ambiguous qualifier resolves to nothing rather
+// than wrongly.
+func resolveQualifiedType(qt pkgQualType, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
+	importPaths := importsByName[qt.alias]
 	var match SymbolRecord
 	found := 0
 	for _, cand := range symbolsByShortName[qt.typeName] {
 		if !typeLikeKind(cand.Kind) {
 			continue
 		}
-		if filepath.Base(filepath.Dir(filepath.ToSlash(cand.FilePath))) == qt.alias {
+		if qualifiedTypeDirMatches(cand.FilePath, qt.alias, importPaths) {
 			match = cand
 			found++
 		}
@@ -4936,6 +4965,29 @@ func resolveQualifiedType(qt pkgQualType, symbolsByShortName map[string][]Symbol
 		return match, true
 	}
 	return SymbolRecord{}, false
+}
+
+// qualifiedTypeDirMatches reports whether a declaration's directory is the
+// package a qualifier names. With resolved import paths the repo-relative
+// directory must be a path suffix of one of them (realpkg/x.go for
+// "example.com/m/realpkg"), which is exactly the layout Go requires of an
+// in-module package; with no resolved path the alias-equals-basename convention
+// is all the evidence there is.
+func qualifiedTypeDirMatches(filePath, alias string, importPaths []string) bool {
+	dir := strings.Trim(filepath.ToSlash(filepath.Dir(filepath.ToSlash(filePath))), "/")
+	if dir == "." {
+		dir = ""
+	}
+	if len(importPaths) == 0 {
+		return dir != "" && path.Base(dir) == alias
+	}
+	for _, importPath := range importPaths {
+		importPath = strings.Trim(filepath.ToSlash(importPath), "/")
+		if dir != "" && (importPath == dir || strings.HasSuffix(importPath, "/"+dir)) {
+			return true
+		}
+	}
+	return false
 }
 
 func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, implementersByContainer map[string][]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes, typeScriptPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord, swiftTypes swiftFileTypes) []RelationRecord {
@@ -5481,7 +5533,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// convention resolveQualifiedType already encodes) so the method
 				// lookup below runs against the right declaration. For an interface
 				// that declaration's members are its method requirements.
-				sym, ok := resolveQualifiedType(qt, symbolsByShortName)
+				sym, ok := resolveQualifiedType(qt, importsByName, symbolsByShortName)
 				if !ok {
 					continue
 				}
@@ -5493,7 +5545,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// Package-level var of a package-qualified type (alias.Type). Resolve
 				// the specific imported type so an ambiguous bare name (Encoder in
 				// both json and cbor) maps to the right one.
-				sym, ok := resolveQualifiedType(qt, symbolsByShortName)
+				sym, ok := resolveQualifiedType(qt, importsByName, symbolsByShortName)
 				if !ok {
 					continue
 				}
@@ -6856,7 +6908,8 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 		implMembers := methodsByContainer[candidate.ContainerID]
 		satisfied := true
 		for _, requirement := range requirements {
-			if _, ok := implMembers[requirement]; !ok {
+			implMember, ok := implMembers[requirement]
+			if !ok || !goMethodSignaturesMatch(members[requirement].Signature, implMember.Signature) {
 				satisfied = false
 				break
 			}
@@ -6881,6 +6934,175 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 		return out[i].StartLine < out[j].StartLine
 	})
 	return out
+}
+
+// goMethodSignaturesMatch reports whether a concrete method declaration can
+// satisfy an interface requirement. A shared method NAME is not satisfaction:
+// `Run(name string) error` does not implement `Run() error`, and binding a call
+// to it invents an edge Go itself would reject. Parameter and result names are
+// not part of a Go signature, so they are dropped before comparing. Any shape
+// the normaliser cannot render faithfully compares as no match — a missing
+// implementation hop is cheaper than a wrong one.
+func goMethodSignaturesMatch(requirement, implementation string) bool {
+	want, ok := goNormalizedMethodSignature(requirement)
+	if !ok {
+		return false
+	}
+	got, ok := goNormalizedMethodSignature(implementation)
+	if !ok {
+		return false
+	}
+	return want == got
+}
+
+// goNormalizedMethodSignature renders a Go method signature — an interface
+// requirement (`Upload(path string, r io.Reader) error`) or a concrete
+// declaration (`func (c *Communicator) Upload(path string, r io.Reader) error`)
+// — as `(paramTypes)(resultTypes)`. The receiver, the method name and every
+// parameter/result name are dropped. It declines (false) on a generic
+// type-parameter list and on any list it cannot split into types.
+func goNormalizedMethodSignature(signature string) (string, bool) {
+	rest := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(signature), "{"))
+	if after, ok := strings.CutPrefix(rest, "func"); ok {
+		rest = strings.TrimSpace(after)
+		if strings.HasPrefix(rest, "(") { // method receiver
+			closing := matchingParen(rest, 0)
+			if closing < 0 {
+				return "", false
+			}
+			rest = strings.TrimSpace(rest[closing+1:])
+		}
+	}
+	name := 0
+	for name < len(rest) && identifierByte(rest[name]) && rest[name] != '.' {
+		name++
+	}
+	if name == 0 {
+		return "", false
+	}
+	rest = strings.TrimSpace(rest[name:])
+	if strings.HasPrefix(rest, "[") { // generic method: decline rather than guess
+		return "", false
+	}
+	if !strings.HasPrefix(rest, "(") {
+		return "", false
+	}
+	closing := matchingParen(rest, 0)
+	if closing < 0 {
+		return "", false
+	}
+	params, ok := goSignatureTypeList(rest[1:closing])
+	if !ok {
+		return "", false
+	}
+	results := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rest[closing+1:]), "{"))
+	if strings.HasPrefix(results, "(") {
+		end := matchingParen(results, 0)
+		if end < 0 || strings.TrimSpace(results[end+1:]) != "" {
+			return "", false
+		}
+		results = results[1:end]
+	}
+	resultTypes, ok := goSignatureTypeList(results)
+	if !ok {
+		return "", false
+	}
+	return "(" + strings.Join(params, ",") + ")(" + strings.Join(resultTypes, ",") + ")", true
+}
+
+// goSignatureTypeList reduces a Go parameter or result list to its types. Go
+// requires a list to be entirely named or entirely unnamed, so one part of the
+// form `ident <type>` marks the whole list named; in a named list a bare
+// identifier is a grouped name that borrows the type declared to its right
+// (`a, b string`).
+func goSignatureTypeList(list string) ([]string, bool) {
+	list = strings.TrimSpace(list)
+	if list == "" {
+		return nil, true
+	}
+	parts := splitTopLevelParameters(list)
+	named := false
+	for _, part := range parts {
+		if _, _, ok := goNamedParamSplit(part); ok {
+			named = true
+			break
+		}
+	}
+	types := make([]string, len(parts))
+	if !named {
+		for i, part := range parts {
+			typeText := goCanonicalTypeText(part)
+			if typeText == "" {
+				return nil, false
+			}
+			types[i] = typeText
+		}
+		return types, true
+	}
+	pending := ""
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := strings.TrimSpace(parts[i])
+		if _, typeText, ok := goNamedParamSplit(part); ok {
+			pending = goCanonicalTypeText(typeText)
+		} else if !isTypeName(part) {
+			// In a named list every remaining part must be a grouped name.
+			return nil, false
+		}
+		if pending == "" {
+			return nil, false
+		}
+		types[i] = pending
+	}
+	return types, true
+}
+
+// goTypeLeadKeywords are the words that open a type expression, so a part
+// beginning with one (`chan int`, `func(int) error`) is an unnamed type and not
+// a `name type` pair.
+var goTypeLeadKeywords = map[string]bool{"chan": true, "func": true, "map": true, "struct": true, "interface": true}
+
+// goNamedParamSplit splits `name type` when the part is unambiguously that.
+func goNamedParamSplit(part string) (string, string, bool) {
+	part = strings.TrimSpace(part)
+	i := 0
+	for i < len(part) && identifierByte(part[i]) && part[i] != '.' {
+		i++
+	}
+	if i == 0 || i >= len(part) || (part[i] != ' ' && part[i] != '\t') {
+		return "", "", false
+	}
+	name := part[:i]
+	if goTypeLeadKeywords[name] {
+		return "", "", false
+	}
+	typeText := strings.TrimSpace(part[i:])
+	if typeText == "" {
+		return "", "", false
+	}
+	return name, typeText, true
+}
+
+// goCanonicalTypeText drops whitespace that is not separating two identifier
+// characters, so `map[string] int` and `map[string]int` compare equal while
+// `chan int` keeps its word break.
+func goCanonicalTypeText(text string) string {
+	var out strings.Builder
+	prevIdent, pendingSpace := false, false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			pendingSpace = out.Len() > 0
+			continue
+		}
+		cur := identifierByte(c)
+		if pendingSpace && prevIdent && cur {
+			out.WriteByte(' ')
+		}
+		pendingSpace = false
+		out.WriteByte(c)
+		prevIdent = cur
+	}
+	return out.String()
 }
 
 // uniqueGoConcreteMethodByShortName is uniqueMethodByShortName restricted to Go
@@ -11017,6 +11239,12 @@ func isInstalledDependencyDirName(rel, name string) bool {
 // .gitignore files can answer it.
 type vendorIgnoreRules interface {
 	ReincludesDescendant(rel string) bool
+	// ReincludesPath is the same question asked about one path rather than
+	// about a whole subtree. Directory pruning needs the subtree answer (a
+	// re-included package can only be reached by descending); a per-file
+	// verdict needs this one, or a single negation anywhere under a vendored
+	// tree re-admits all of it.
+	ReincludesPath(rel string) bool
 }
 
 // hasGitDirComponent reports whether a repo-relative path IS a git directory, or
@@ -11468,6 +11696,12 @@ type gitDirExcluder struct {
 	// be inspected. hiddenEvidence already drives the fail-closed exclusion;
 	// this list makes that wider omission visible to callers and cache identity.
 	unreadablePointers []string
+	// unreadableIgnorePolicyDirs samples the readable directories whose OWN
+	// .gitignore could not be read within its per-file bounds, capped like
+	// unreadableWalkDirs. The directory itself is readable, so
+	// unreadableWalkWarning's wording would be untrue; these get their own
+	// disclosure.
+	unreadableIgnorePolicyDirs []string
 }
 
 // maxUnreadableWalkDirSample bounds unreadableWalkDirs and sweepUnreadableDirs.
@@ -11491,6 +11725,33 @@ var errGitDirSweepHalted = errors.New("git directory sweep halted")
 // to say so itself.
 func (g *gitDirExcluder) noteUnreadableWalkDir(rel string) {
 	retainSmallestPathSample(&g.unreadableWalkDirs, rel)
+}
+
+// noteUnreadableIgnorePolicyDir records one readable directory whose own
+// .gitignore could not be read within its per-file bounds, for
+// unreadableIgnorePolicyWarning. The subtree is excluded rather than admitted,
+// so the omission is a completeness fact the caller has to be told about.
+func (g *gitDirExcluder) noteUnreadableIgnorePolicyDir(rel string) {
+	retainSmallestPathSample(&g.unreadableIgnorePolicyDirs, rel)
+}
+
+// unreadableIgnorePolicyWarning discloses the subtrees excluded because their
+// own .gitignore was unreadable. Reporting nothing would leave the corpus
+// quietly smaller than the caller believes; failing the whole listing, which is
+// what this replaced, made one such file an outage for the entire repository.
+func (g *gitDirExcluder) unreadableIgnorePolicyWarning() []ProviderWarning {
+	if len(g.unreadableIgnorePolicyDirs) == 0 {
+		return nil
+	}
+	return []ProviderWarning{{
+		Code:     "W_WALK_UNREADABLE_IGNORE_POLICY",
+		Severity: "warning",
+		EffectOnCompleteness: "one or more directories have a .gitignore that could not be read within its " +
+			"size and rule-length bounds, so their rules are unknown and everything under them is excluded " +
+			"from this listing rather than indexed against unknown policy",
+		Detail: fmt.Sprintf("unreadable ignore policy: %s",
+			termsafe.Line(strings.Join(g.unreadableIgnorePolicyDirs, ", "))),
+	}}
 }
 
 // unreadableWalkWarning reports the shortfall noteUnreadableWalkDir recorded:
@@ -14049,9 +14310,15 @@ func skipVendoredDir(rel, name string, ignores vendorIgnoreRules, dirTracked fun
 	if hasGitDirComponent(rel) {
 		return true
 	}
+	return vendoredScanDirName(rel, name, dirTracked) && !ignores.ReincludesDescendant(rel)
+}
+
+// vendoredScanDirName is skipVendoredDir's name-and-tracked-ness half, without
+// the re-inclusion question. Splitting it lets directory pruning keep asking
+// about the subtree while a per-path verdict asks about the path.
+func vendoredScanDirName(rel, name string, dirTracked func(string) bool) bool {
 	untrackedOnly := isAmbiguousVendoredDirName(name) || isInstalledDependencyDirName(rel, name)
-	vendored := isVendoredScanDir(rel, name) || (untrackedOnly && !dirTracked(rel))
-	return vendored && !ignores.ReincludesDescendant(rel)
+	return isVendoredScanDir(rel, name) || (untrackedOnly && !dirTracked(rel))
 }
 
 // trackedDirSet returns every repo-relative directory (slash-separated) that
@@ -16372,6 +16639,25 @@ func visitWalkWorktreeFilesWithRawLimit(
 					frames = frames[:len(frames)-1]
 					continue
 				}
+				// One directory's own .gitignore that cannot be read within its
+				// per-file bounds (over 1 MiB, a rule line over 64 KiB, mode
+				// 000, replaced mid-read) used to fail the WHOLE listing, so a
+				// single such file made a non-Git repository — or a Git
+				// checkout whose `git ls-files` failed — completely
+				// unindexable. Its rules are unknown for this subtree only, so
+				// exclude that subtree and disclose it: nothing the unknown
+				// policy might have excluded can be admitted, which is the
+				// property the hard error was protecting, and the rest of the
+				// repository stays searchable. The operation-wide rule
+				// allowance and the nested-file count are NOT this, and both
+				// still abort.
+				if errors.Is(err, errNestedIgnorePolicyUnreadable) {
+					gitDirs.hiddenEvidence++
+					gitDirs.noteUnreadableIgnorePolicyDir(rel)
+					gitDirs.observePrunedSubtree(rel)
+					frames = frames[:len(frames)-1]
+					continue
+				}
 				walkErr = err
 				break
 			}
@@ -16526,6 +16812,7 @@ func visitWalkWorktreeFilesWithRawLimit(
 	}
 	sort.Strings(paths)
 	warnings := append(gitDirs.sweepWarnings(), gitDirs.unreadableWalkWarning()...)
+	warnings = append(warnings, gitDirs.unreadableIgnorePolicyWarning()...)
 	warnings = append(warnings, gitDirs.sweepUnreadableDirWarning()...)
 	for _, rel := range paths {
 		if !visit(rel) {
@@ -16748,16 +17035,33 @@ func vendoredScanPath(rel string, ignores vendorIgnoreRules, dirTracked func(str
 	if len(parts) == 0 {
 		return false
 	}
+	// This repository's own git directory is decided BEFORE any negation, for
+	// the reason skipVendoredDir states: `!.git/config` in a repo-committed
+	// .gitignore must not cancel the skip.
+	if hasGitDirComponent(rel) {
+		return true
+	}
 	if isVendoredScanFile(rel, parts[len(parts)-1]) {
 		return true
 	}
+	vendored := false
 	for i, part := range parts[:len(parts)-1] {
-		dirRel := strings.Join(parts[:i+1], "/")
-		if skipVendoredDir(dirRel, part, ignores, dirTracked) {
-			return true
+		if vendoredScanDirName(strings.Join(parts[:i+1], "/"), part, dirTracked) {
+			vendored = true
+			break
 		}
 	}
-	return false
+	if !vendored {
+		return false
+	}
+	// A negation inside a vendored tree spares the paths it names, not the
+	// tree. Asking ReincludesDescendant about the ANCESTOR here made one
+	// `!mypkg/` in `vendor/.gitignore` re-admit every tracked file under
+	// `vendor/` — and in HEAD mode nothing downstream filters them, because
+	// filterIgnoredPaths applies only explicit CLI ignore files, so a
+	// force-tracked dependency tree beside the re-included package was parsed
+	// in full and could spend the file ceiling on third-party code.
+	return !ignores.ReincludesPath(rel)
 }
 
 func firstError(errs ...error) error {
@@ -24370,10 +24674,22 @@ func completenessLevel(failures, files, parsedFiles, symbols int) string {
 		// Files were parsed but zero symbols came out — the graph is empty and
 		// unusable even though no hard parse failure occurred.
 		return "degraded"
-	case failures == 0:
-		return "ok"
 	case failures*4 > files:
 		return "unsafe"
+	case parsedFiles*4 < files*3:
+		// More than a quarter of the RECORDED files were never parsed. Only an
+		// intentional skip can land here — every other unparsed file leaves no
+		// file record at all — so this is the backstop intentionalSkipFailureCodes
+		// promises above. Its exclusion is deliberate and must stay (one vendored
+		// bundle among five hundred sources is not a degraded graph), but the
+		// ratio guard it names only fires past a strict MAJORITY, so a repository
+		// whose whole dist/ tree was skipped — 200 of 500 files never opened —
+		// reported "ok" with no stderr banner while every trust gate keyed on this
+		// level stayed quiet about 40% of the code. It sits AFTER the failure
+		// ratio so it can never soften an "unsafe".
+		return "degraded"
+	case failures == 0:
+		return "ok"
 	default:
 		return "degraded"
 	}

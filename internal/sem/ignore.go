@@ -83,6 +83,22 @@ type ignoreRuleBudget struct {
 	remaining int
 }
 
+// errIgnoreRuleAllowance marks the operation-wide parsed-rule allowance. It is
+// a property of the whole operation rather than of any single ignore file, so
+// a caller cannot recover from it by skipping one directory: every remaining
+// nested file would fail the same way.
+var errIgnoreRuleAllowance = errors.New("ignore rule allowance exhausted")
+
+// errNestedIgnorePolicyUnreadable marks ONE directory's own .gitignore as
+// unreadable within its per-file bounds — over maxIgnoreFileBytes, a rule line
+// over maxIgnoreRuleBytes, permission denied, a non-regular file, or a
+// concurrent replacement. The rules there are then unknown, which is a fact
+// about that subtree alone. The filesystem fallback used to return it and fail
+// the whole listing, so one oversized metadata file made an entire repository
+// unindexable; it now excludes that subtree (nothing the unknown policy might
+// have excluded can be admitted) and discloses the omission instead.
+var errNestedIgnorePolicyUnreadable = errors.New("nested ignore policy unreadable")
+
 func newIgnoreRuleBudget(base ignoreMatcher) *ignoreRuleBudget {
 	remaining := maxIgnoreParsedRules - base.parsedRuleCount
 	if remaining < 0 {
@@ -94,8 +110,9 @@ func newIgnoreRuleBudget(base ignoreMatcher) *ignoreRuleBudget {
 func (b *ignoreRuleBudget) retain(count int) error {
 	if count > b.remaining {
 		return fmt.Errorf(
-			"ignore inputs exceed %d parsed rules across one operation",
+			"ignore inputs exceed %d parsed rules across one operation: %w",
 			maxIgnoreParsedRules,
+			errIgnoreRuleAllowance,
 		)
 	}
 	b.remaining -= count
@@ -613,7 +630,8 @@ func (m *ignoreMatcher) loadReaderWithBudget(
 			rule, ok := parseIgnoreRule(string(line), includeMode)
 			if ok {
 				if m.parsedRuleCount >= maxIgnoreParsedRules {
-					return fmt.Errorf("ignore inputs exceed %d parsed rules", maxIgnoreParsedRules)
+					return fmt.Errorf("ignore inputs exceed %d parsed rules: %w",
+						maxIgnoreParsedRules, errIgnoreRuleAllowance)
 				}
 				if budget != nil {
 					if err := budget.retain(1); err != nil {
@@ -997,7 +1015,7 @@ func (s *nestedIgnoreStack) enter(dir string) error {
 	candidate := path.Join(dir, ".gitignore")
 	content, present, err := readWorktreeNestedIgnore(s.root, s.repo, candidate)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errNestedIgnorePolicyUnreadable, err)
 	}
 	if !present {
 		return nil
@@ -1008,7 +1026,13 @@ func (s *nestedIgnoreStack) enter(dir string) error {
 	}
 	matcher, err := loadNestedIgnoreMatcher(content, s.budget)
 	if err != nil {
-		return fmt.Errorf("read nested ignore file %q: %w", candidate, err)
+		// The operation-wide rule allowance is not this directory's fault and
+		// cannot be recovered by skipping it, so it stays a hard failure.
+		if errors.Is(err, errIgnoreRuleAllowance) {
+			return fmt.Errorf("read nested ignore file %q: %w", candidate, err)
+		}
+		return fmt.Errorf("%w: read nested ignore file %q: %w",
+			errNestedIgnorePolicyUnreadable, candidate, err)
 	}
 	s.levels = append(s.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
 	return nil
@@ -1055,6 +1079,20 @@ func (s *nestedIgnoreStack) ReincludesDescendant(rel string) bool {
 	}
 	for _, level := range s.levels {
 		if level.matcher.reincludesDescendantUnder(level.dir, rel) {
+			return true
+		}
+	}
+	return false
+}
+
+// ReincludesPath answers the same question about THIS path rather than about
+// anything below it. See ignoreMatcher.ReincludesPath.
+func (s *nestedIgnoreStack) ReincludesPath(rel string) bool {
+	if s.base.ReincludesPath(rel) {
+		return true
+	}
+	for _, level := range s.levels {
+		if level.matcher.reincludesPathUnder(level.dir, rel) {
 			return true
 		}
 	}
@@ -1159,6 +1197,28 @@ func (r *nestedIgnoreRules) ReincludesDescendant(rel string) bool {
 	return false
 }
 
+// ReincludesPath answers the same question about THIS path rather than about
+// anything below it, and fails open on exactly the same unknowable rules.
+func (r *nestedIgnoreRules) ReincludesPath(rel string) bool {
+	if r.baseUnreadable || r.incomplete {
+		return true
+	}
+	if r.base.ReincludesPath(rel) {
+		return true
+	}
+	for _, dir := range r.unreadableDirs {
+		if subtreesOverlap(dir, rel) {
+			return true
+		}
+	}
+	for _, level := range r.levels {
+		if level.matcher.reincludesPathUnder(level.dir, rel) {
+			return true
+		}
+	}
+	return false
+}
+
 // pathUnder returns rel expressed relative to dir when dir contains it.
 func pathUnder(dir, rel string) (string, bool) {
 	if dir == "" {
@@ -1228,6 +1288,44 @@ func (m ignoreMatcher) reincludesDescendantUnder(dir, rel string) bool {
 			prefix = dir + "/" + prefix
 		}
 		if prefix == rel || strings.HasPrefix(prefix, rel+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// ReincludesPath reports whether the ignore rules negate (re-include) THIS path
+// or an ancestor directory of it, rather than merely something somewhere below
+// it. ReincludesDescendant answers the traversal question — "is there anything
+// under here worth walking into" — and must not be reused as a per-path
+// verdict: one `!mypkg/` inside `vendor/.gitignore` makes
+// ReincludesDescendant("vendor") true, and treating that as the answer for
+// `vendor/other/dep.go` re-admitted the entire vendored tree.
+func (m ignoreMatcher) ReincludesPath(rel string) bool {
+	return m.reincludesPathUnder("", rel)
+}
+
+// reincludesPathUnder is ReincludesPath for an ignore file that lives in dir
+// rather than at the repository root, mirroring reincludesDescendantUnder's
+// prefix resolution and its skip of basename-only negations.
+func (m ignoreMatcher) reincludesPathUnder(dir, rel string) bool {
+	rel = cleanIgnorePath(rel)
+	if rel == "" {
+		return false
+	}
+	dir = cleanIgnorePath(dir)
+	for _, rule := range m.rules {
+		if rule.ignore || rule.includeFile || rule.basenameOnly {
+			continue
+		}
+		prefix := literalPatternPrefix(rule.pattern)
+		if prefix == "" {
+			continue
+		}
+		if dir != "" {
+			prefix = dir + "/" + prefix
+		}
+		if prefix == rel || strings.HasPrefix(rel, prefix+"/") {
 			return true
 		}
 	}

@@ -37,13 +37,13 @@ func TestResolveQualifiedType(t *testing.T) {
 	idx := map[string][]SymbolRecord{"Encoder": {jsonEnc, cborEnc}}
 
 	// json.Encoder must resolve to the Encoder in the json/ directory, not cbor's.
-	got, ok := resolveQualifiedType(pkgQualType{alias: "json", typeName: "Encoder"}, idx)
+	got, ok := resolveQualifiedType(pkgQualType{alias: "json", typeName: "Encoder"}, nil, idx)
 	if !ok || got.ID != jsonEnc.ID {
 		t.Fatalf("expected json Encoder, got %+v ok=%v", got, ok)
 	}
 
 	// An alias matching no package directory resolves to nothing (not a wrong guess).
-	if _, ok := resolveQualifiedType(pkgQualType{alias: "msgpack", typeName: "Encoder"}, idx); ok {
+	if _, ok := resolveQualifiedType(pkgQualType{alias: "msgpack", typeName: "Encoder"}, nil, idx); ok {
 		t.Fatalf("unknown alias must not resolve")
 	}
 }
