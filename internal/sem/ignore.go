@@ -281,6 +281,14 @@ type repoIgnoreLedger struct {
 	seen      map[string]struct{}
 	sample    []RepoExclusion
 	truncated bool
+	// sampleClosed stops the ledger NAMING any further exclusion. It is set when
+	// a directory read stopped at a filesystem-ordered prefix (readDirBounded),
+	// because from that point on WHICH paths the walk goes on to see is a
+	// property of the filesystem rather than of the repository, and a sample the
+	// same repository view renders differently on two machines is not a sample a
+	// reader can act on. Counting continues: Files is already a stated lower
+	// bound there, and a lower bound is honest in a way a guessed name is not.
+	sampleClosed bool
 	// unreadable records the paths an enumeration of an excluded tree could not
 	// read. Those subtrees are excluded like every other descendant and cannot be
 	// counted, so files stops being exact — and a disclosure that quietly
@@ -446,11 +454,30 @@ func (l *repoIgnoreLedger) note(exclusion RepoExclusion) {
 		l.order = append(l.order, exclusion.Source)
 	}
 	l.sources[exclusion.Source]++
-	if len(l.sample) < maxRepoExclusionSample {
+	// Named only while naming is deterministic. Past a truncated read the ledger
+	// still counts, and SampleTruncated below says names were withheld — the same
+	// signal a sample that simply overflowed its cap raises, and for the reader
+	// the same instruction: the full report is on the --format json channel.
+	if !l.sampleClosed && len(l.sample) < maxRepoExclusionSample {
 		l.sample = append(l.sample, exclusion)
 		return
 	}
 	l.truncated = true
+}
+
+// closeSample stops the ledger naming further exclusions. See sampleClosed.
+//
+// It closes the sample for the whole listing rather than for the subtree that
+// truncated, because the walk is one budget: what it visits after a truncation,
+// anywhere, is what the filesystem-ordered prefix left it room for. In practice
+// this costs nothing — a read truncates only once maxRepoExclusionWalkEntries
+// entries have been visited, by which point the sample filled its
+// maxRepoExclusionSample names long ago.
+func (l *repoIgnoreLedger) closeSample() {
+	if l == nil {
+		return
+	}
+	l.sampleClosed = true
 }
 
 // spendExclusionWalk takes one entry from the listing's accounting budget and
@@ -2197,7 +2224,7 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 // agree with the position the same path would hold in the listing the file
 // cap truncates. Only a directory larger than the remaining budget takes
 // filesystem order for its prefix, and that report already says the count is
-// incomplete.
+// incomplete AND stops naming paths from there on (readDirBounded).
 func walkPrunedBounded(ledger *repoIgnoreLedger, root string, fn fs.WalkDirFunc) {
 	info, err := os.Lstat(root)
 	var entry fs.DirEntry
@@ -2255,18 +2282,25 @@ func walkPrunedBoundedNode(ledger *repoIgnoreLedger, current string, entry fs.Di
 //
 // The order that prefix is taken IN is the filesystem's, not the repository's: a
 // directory larger than the remaining budget hands back whichever entries
-// getdents offers first, and only those are then sorted. So for such a directory
-// both the count and the sampled paths are a property of the filesystem as well
-// as of the tree, and the SAME repository view can disclose different paths on
-// two machines.
-//
-// That is the price of the read bound and it is not paid down by sorting more:
-// a deterministic prefix means reading the whole directory, which is exactly the
-// unbounded, repository-sized crawl the bound exists to stop
+// getdents offers first, and only those are then sorted. Sorting FIRST and
+// truncating after is what determinism would need, and it is not available at
+// this size: a deterministic prefix means reading the whole directory, which is
+// exactly the unbounded, repository-sized crawl the bound exists to stop
 // (TestPrunedExclusionAccountingBoundsWhatItReads fails the moment the read is
-// made whole). What the report must not do is present the sample as canonical
-// when it is not, so the shortfall this raises SAYS the enumerated paths are a
-// filesystem-order sample — see withRepoIgnorePartialFailures.
+// made whole).
+//
+// So the truncation CLOSES THE SAMPLE instead. Past it the walk keeps counting —
+// noteCountIncomplete has already declared Files a lower bound — but it names
+// nothing more, because which paths it would name is a property of the
+// filesystem: the same repository view discloses different examples on another
+// machine, or on the same one after the directory is recreated. Observed
+// directly on a ten-entry directory read three deep: the disclosure named f0.go
+// and f4.go, neither the first entries nor the smallest. A count that says it is
+// short is honest; a path list that silently varies is not.
+//
+// Nothing is hidden by that: SampleTruncated marks the withheld names, and the
+// shortfall raised for the incomplete count points at --format json, where
+// repo_ignored carries the full report — see withRepoIgnorePartialFailures.
 func readDirBounded(ledger *repoIgnoreLedger, dir string) ([]fs.DirEntry, error) {
 	remaining := ledger.remainingExclusionWalk()
 	handle, err := os.Open(dir)
@@ -2283,6 +2317,7 @@ func readDirBounded(ledger *repoIgnoreLedger, dir string) ([]fs.DirEntry, error)
 	ledger.noteDirentsRead(len(entries))
 	if len(entries) > remaining {
 		ledger.noteCountIncomplete()
+		ledger.closeSample()
 		entries = entries[:remaining]
 	}
 	// Sort by the same key listingOrderWalk/capSourceFiles use, not by bare

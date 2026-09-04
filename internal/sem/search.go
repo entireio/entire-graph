@@ -813,6 +813,21 @@ func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
 // corpus. TestRepoIgnoreDisclosureFloorIsBoundedAndRepositoryFree pins it.
 const maxRepoIgnoreFloorBytes = 160
 
+// repoIgnoreDisclosureReserveBytes is what a listing with something to disclose
+// takes out of the ranking's budget so the floor can be printed from INSIDE the
+// caller's ceiling instead of on top of it.
+//
+// The whole allowance is reserved rather than the rendered length, because the
+// rendered length depends on the final count and the reservation is made before
+// the ranking that count is disclosed beside. A listing with nothing to disclose
+// reserves nothing and its payload is byte-identical.
+func repoIgnoreDisclosureReserveBytes(report *RepoIgnoreReport) int {
+	if len(RenderRepoIgnoreDisclosureFloor(report)) == 0 {
+		return 0
+	}
+	return maxRepoIgnoreFloorBytes
+}
+
 // RenderRepoIgnoreDisclosureFloor renders the IRREDUCIBLE form of the disclosure:
 // the fact that the repository's own rules removed content, and where the details
 // are. It is what a text payload prints when the full block (above) cannot be
@@ -1116,6 +1131,37 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		preindexCacheHit = false
 	}
 	preselectLatency := time.Since(preselectStarted)
+	// THE DISCLOSURE IS FUNDED FROM INSIDE THE CEILING, and it has to be funded
+	// here, before a single byte of ranking is fitted.
+	//
+	// A `--format text` payload leads with what the repository's own ignore rules
+	// removed, and degrades that block to an irreducible floor rather than
+	// dropping it — text renders no warnings of its own, so the floor is the only
+	// thing that stops a narrowed corpus reading as a whole one. But the fitter
+	// spends the ceiling to the last few bytes (measured: 1996 funded of 2000),
+	// so by render time there was nothing left to print the floor from and it was
+	// admitted ON TOP: a payload that had something to disclose overran
+	// --max-context-bytes by the floor's full length, and that number is what a
+	// caller sized a context window against.
+	//
+	// Taking the reservation out of the RANKING rather than out of the answer
+	// keeps both halves: the ranking loses at most maxRepoIgnoreFloorBytes, a
+	// fixed cost this file picks, and the disclosure lands inside the caller's
+	// number. Only a listing that actually has something to disclose pays it.
+	//
+	// A ceiling too small to fund the allowance at all keeps the behaviour it had:
+	// the caller asked for less room than the shortest honest disclosure needs, and
+	// the renderer's own last-resort floor is what answers that.
+	//
+	// options is a value, so narrowing it here narrows every fitter downstream.
+	// callerContextBytes is what the response REPORTS, because the ceiling the
+	// caller named is the one the renderer measures its headroom against — and
+	// because a stat that quietly shrank would make the reservation unauditable.
+	callerContextBytes := options.MaxContextBytes
+	if reserve := repoIgnoreDisclosureReserveBytes(selection.repoIgnored); reserve > 0 &&
+		options.MaxContextBytes > reserve {
+		options.MaxContextBytes -= reserve
+	}
 	selectedFiles := selection.files
 	var replayProvenancePaths []string
 	if options.Worktree || selection.commit == "" {
@@ -1174,7 +1220,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 				FilesIndexed:              0,
 				SymbolsConsidered:         symbolsConsidered,
 				ResultBytes:               serializedSearchResultBytes([]SearchResult{}),
-				ContextBudgetBytes:        options.MaxContextBytes,
+				ContextBudgetBytes:        callerContextBytes,
 				IndexCacheHit:             cacheHit,
 				IndexLatencyMS:            preindexLoadLatency.Milliseconds(),
 				PreselectLatencyMS:        preselectLatency.Milliseconds(),
@@ -1799,7 +1845,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// One number for everything outside `results`, so the payload's true size never has to be
 	// re-derived from three separate counters. See search_blocks.go.
 	stats.ContextBlockBytes = searchContextBlockBytes(stats)
-	stats.ContextBudgetBytes = options.MaxContextBytes
+	stats.ContextBudgetBytes = callerContextBytes
 	stats.ResultsDropped = dropped
 	stats.SnippetsTruncated = truncated
 	// Query and usage counters are disjoint physical reads. Identifier lookups
