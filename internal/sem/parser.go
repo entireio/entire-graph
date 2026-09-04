@@ -8303,8 +8303,8 @@ func validNode(node *sitter.Node) bool {
 	return node != nil && !node.IsNull()
 }
 
-// declaredWithCLinkage reports whether a declaration sits inside an
-// `extern "C" { ... }` linkage specification.
+// declaredWithCLinkage reports whether a C-compatible declaration sits inside
+// an `extern "C" { ... }` linkage specification.
 //
 // That block is the ONE construct a C++ header uses to say which of its
 // declarations a C translation unit may name, and it is why the dual-use header
@@ -8322,15 +8322,193 @@ func declaredWithCLinkage(language string, node *sitter.Node, src []byte) bool {
 	default:
 		return false
 	}
-	for parent := node; validNode(parent); parent = parent.Parent() {
-		if parent.Type() != "linkage_specification" {
-			continue
+	linkage := innermostLinkageSpecification(node)
+	if !validNode(linkage) || linkageSpecificationName(linkage, src) != "C" {
+		return false
+	}
+	if !cLinkageCompatibleDeclaration(node, src) {
+		return false
+	}
+	for parent := node.Parent(); validNode(parent) && parent != linkage; parent = parent.Parent() {
+		// A C-linkage spelling does not make declarations nested in a C++ class
+		// or namespace visible to a C translation unit.
+		if cxxLinkageForbiddenAncestor(parent, src) {
+			return false
 		}
-		value := parent.ChildByFieldName("value")
-		if !validNode(value) {
-			continue
+	}
+	return true
+}
+
+// innermostLinkageSpecification deliberately stops at the first enclosing
+// linkage specification. In particular, an `extern "C++"` nested inside an
+// outer `extern "C"` restores C++ linkage for its declarations.
+func innermostLinkageSpecification(node *sitter.Node) *sitter.Node {
+	for parent := node.Parent(); validNode(parent); parent = parent.Parent() {
+		if parent.Type() == "linkage_specification" {
+			return parent
 		}
-		if strings.Trim(value.Content(src), `"`) == "C" {
+	}
+	return nil
+}
+
+func linkageSpecificationName(node *sitter.Node, src []byte) string {
+	value := node.ChildByFieldName("value")
+	if !validNode(value) {
+		return ""
+	}
+	return strings.Trim(value.Content(src), `"`)
+}
+
+func cxxLinkageForbiddenAncestor(node *sitter.Node, src []byte) bool {
+	switch node.Type() {
+	case "namespace_definition", "class_specifier", "class_declaration":
+		return true
+	case "struct_specifier", "union_specifier":
+		return cxxAggregateMembers(node, src)
+	default:
+		return false
+	}
+}
+
+// cLinkageCompatibleDeclaration filters the C++ declarations that tree-sitter
+// still places syntactically inside a linkage_specification but that a C source
+// cannot declare or name. Plain C aggregates, unscoped enums, typedefs and
+// ordinary functions intentionally remain eligible.
+func cLinkageCompatibleDeclaration(node *sitter.Node, src []byte) bool {
+	switch node.Type() {
+	case "class_specifier", "class_declaration", "alias_declaration", "using_declaration":
+		return false
+	case "enum_specifier", "enum_declaration":
+		return !cxxScopedEnum(node, src)
+	case "struct_specifier", "union_specifier":
+		return !cxxAggregateMembers(node, src)
+	}
+	return true
+}
+
+func cxxScopedEnum(node *sitter.Node, src []byte) bool {
+	fields := strings.Fields(stripCodeLiteralsAndComments(node.Content(src)))
+	return len(fields) >= 2 && fields[0] == "enum" && (fields[1] == "class" || fields[1] == "struct")
+}
+
+func cxxAggregateMembers(node *sitter.Node, src []byte) bool {
+	// Tree-sitter C is a compact, more complete compatibility oracle for an
+	// aggregate than maintaining a growing list of C++-only member forms. This
+	// is reached only after finding `extern "C"` ancestry, so its parser cost is
+	// bounded to the exceptional declarations whose linkage we refine.
+	parser := sitter.NewParser()
+	defer parser.Close()
+	parser.SetLanguage(c.GetLanguage())
+	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	defer cancel()
+	tree, err := parser.ParseCtx(ctx, nil, append([]byte(node.Content(src)), ';', '\n'))
+	if tree == nil {
+		return true
+	}
+	defer tree.Close()
+	if err != nil || ctx.Err() != nil || tree.RootNode().HasError() {
+		return true
+	}
+	return cxxAggregateHasExplicitMembers(node)
+}
+
+func cxxAggregateHasExplicitMembers(node *sitter.Node) bool {
+	var visit func(*sitter.Node) bool
+	visit = func(current *sitter.Node) bool {
+		if !validNode(current) {
+			return false
+		}
+		switch current.Type() {
+		case "access_specifier", "template_declaration", "alias_declaration", "using_declaration", "function_definition":
+			return true
+		case "field_declaration":
+			if cxxIncompatibleAggregateField(current) {
+				return true
+			}
+		}
+		for i := 0; i < int(current.NamedChildCount()); i++ {
+			if visit(current.NamedChild(i)) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(node)
+}
+
+func cxxIncompatibleAggregateField(node *sitter.Node) bool {
+	return cxxAggregateFieldHasStorageClass(node) ||
+		cxxNestedAggregateWithoutField(node) ||
+		cxxMemberFunctionDeclaration(node)
+}
+
+// C's grammar accepts a few C++ member shapes that are not C declarations.
+// Keep these checks structural and local to the aggregate: the surrounding C
+// parse remains the broad compatibility screen, while this catches static
+// members and nested tag declarations without a member declarator.
+func cxxAggregateFieldHasStorageClass(node *sitter.Node) bool {
+	var visit func(*sitter.Node) bool
+	visit = func(current *sitter.Node) bool {
+		if !validNode(current) {
+			return false
+		}
+		if current.Type() == "storage_class_specifier" {
+			return true
+		}
+		for i := 0; i < int(current.NamedChildCount()); i++ {
+			if visit(current.NamedChild(i)) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(node)
+}
+
+func cxxNestedAggregateWithoutField(node *sitter.Node) bool {
+	hasTaggedNestedAggregate := false
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "struct_specifier", "union_specifier", "class_specifier":
+			// C11 anonymous struct/union members intentionally have neither a
+			// tag nor a declarator. Only a tagged nested declaration without a
+			// field declarator is C++-only.
+			hasTaggedNestedAggregate = hasTaggedNestedAggregate || validNode(child.ChildByFieldName("name"))
+		}
+	}
+	return hasTaggedNestedAggregate && !validNode(node.ChildByFieldName("declarator"))
+}
+
+func cxxMemberFunctionDeclaration(node *sitter.Node) bool {
+	var visit func(*sitter.Node) bool
+	visit = func(current *sitter.Node) bool {
+		if !validNode(current) {
+			return false
+		}
+		if current.Type() == "function_declarator" {
+			return !cDeclaratorContainsPointer(current)
+		}
+		for i := 0; i < int(current.NamedChildCount()); i++ {
+			if visit(current.NamedChild(i)) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(node)
+}
+
+func cDeclaratorContainsPointer(node *sitter.Node) bool {
+	if !validNode(node) {
+		return false
+	}
+	switch node.Type() {
+	case "pointer_declarator", "abstract_pointer_declarator":
+		return true
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if cDeclaratorContainsPointer(node.NamedChild(i)) {
 			return true
 		}
 	}

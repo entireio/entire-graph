@@ -803,7 +803,36 @@ extern "C" {
 
 struct Widget { int w; };
 
+union Packet { int code; float weight; };
+enum Color { RED, BLUE };
+typedef unsigned long Count;
+
+struct CallbackHolder { int (*callback)(int); };
+struct Outer { struct Inner { int x; }; };
+struct StaticMember { static int x; };
+struct NestedFieldOuter { struct NestedFieldInner { int x; } inner; };
+struct AnonymousStructOuter { struct { int value; }; };
+struct AnonymousUnionOuter { union { int code; float weight; }; };
+struct DefaultMember { int x = 1; };
+struct MutableMember { mutable int x; };
+
 static inline int widgetWidth(struct Widget w) { return w.w; }
+
+extern "C++" {
+struct NestedCpp { int call() { return 0; } };
+int nestedCppCall(void) { return 0; }
+}
+
+class Hidden { public: int run() { return 0; } };
+struct MethodBearing { int call() { return 0; } };
+struct Constructed { Constructed(); int value; };
+struct Generic { template <class T> T id(T value) { return value; } };
+enum class Scoped { One, Two };
+enum
+class NewlineScoped { One, Two };
+enum /* a scoped enum may contain comments */ struct CommentScoped { One, Two };
+using Alias = int;
+namespace nested { int namespaced(void) { return 0; } }
 
 #ifdef __cplusplus
 }
@@ -838,9 +867,35 @@ static inline int gadgetSize(struct Gadget g) { return g.g; }
 
 void renderWidget(struct Widget w) { }
 int callWidth(void) { struct Widget w; return widgetWidth(w); }
+void renderPacket(union Packet p) { }
+void renderColor(enum Color c) { }
+void renderCount(Count c) { }
+void renderCallbackHolder(struct CallbackHolder h) { }
+void renderOuter(struct Outer o) { }
+void renderInner(struct Inner i) { }
+void renderStaticMember(struct StaticMember s) { }
+void renderNestedFieldOuter(struct NestedFieldOuter o) { }
+void renderNestedFieldInner(struct NestedFieldInner i) { }
+void renderAnonymousStructOuter(struct AnonymousStructOuter o) { }
+void renderAnonymousUnionOuter(struct AnonymousUnionOuter o) { }
+void renderDefaultMember(struct DefaultMember d) { }
+void renderMutableMember(struct MutableMember m) { }
+void renderNestedCpp(NestedCpp n) { }
 void renderEngine(Engine e) { }
+void renderHidden(Hidden h) { }
+void renderMethod(MethodBearing m) { }
+void renderConstructed(Constructed c) { }
+void renderGeneric(Generic g) { }
+void renderScoped(Scoped s) { }
+void renderNewlineScoped(NewlineScoped s) { }
+void renderCommentScoped(CommentScoped s) { }
+void renderAlias(Alias a) { }
 int callHelper(void) { return helperCount(); }
 int callOverloaded(void) { return overloaded(1); }
+int callRun(void) { return run(); }
+int callMethod(void) { return call(); }
+int callNestedCpp(void) { return nestedCppCall(); }
+int callNamespaced(void) { return namespaced(); }
 void renderGadget(struct Gadget g) { }
 int callGadget(void) { struct Gadget g; return gadgetSize(g); }
 `)
@@ -861,9 +916,27 @@ int callGadget(void) { struct Gadget g; return gadgetSize(g); }
 			declared[symbol.Name] = symbol
 		}
 	}
-	for _, name := range []string{"Widget", "widgetWidth", "helperCount", "overloaded", "Engine"} {
+	for _, name := range []string{"Widget", "Color", "Count", "CallbackHolder", "Outer", "Inner", "StaticMember", "NestedFieldOuter", "NestedFieldInner", "AnonymousStructOuter", "AnonymousUnionOuter", "DefaultMember", "MutableMember", "widgetWidth", "NestedCpp", "nestedCppCall", "NewlineScoped", "CommentScoped", "run", "call", "helperCount", "overloaded", "Engine"} {
 		if _, ok := declared[name]; !ok {
 			t.Fatalf("engine.h declares %q and the parser produced no symbol for it; declared: %v", name, sortedSymbolNames(declared))
+		}
+	}
+	for _, name := range []string{"Widget", "Color", "Count", "CallbackHolder", "NestedFieldOuter", "NestedFieldInner", "AnonymousStructOuter", "AnonymousUnionOuter", "widgetWidth"} {
+		if !declared[name].cLinkage {
+			t.Fatalf("plain C-compatible extern declaration %q lost C linkage", name)
+		}
+	}
+	for _, name := range []string{"Outer", "Inner", "StaticMember", "DefaultMember", "MutableMember", "NestedCpp", "nestedCppCall", "Hidden", "MethodBearing", "Constructed", "Generic", "Scoped", "NewlineScoped", "CommentScoped", "Alias", "namespaced", "run", "call"} {
+		if declared[name].cLinkage {
+			t.Fatalf("C++-only extern declaration %q was marked C compatible", name)
+		}
+	}
+	// Both C++ methods named call are descendants of aggregates. Neither may
+	// independently regain the outer C linkage just because the method node
+	// itself has an otherwise ordinary function shape.
+	for _, symbol := range snapshot.Symbols {
+		if symbol.FilePath == "engine.h" && symbol.Name == "call" && symbol.cLinkage {
+			t.Fatalf("C++ method %q independently regained C linkage", symbol.QualifiedName)
 		}
 	}
 
@@ -884,6 +957,16 @@ int callGadget(void) { struct Gadget g; return gadgetSize(g); }
 	for _, want := range []string{
 		"USES_TYPE C/renderWidget->C++/Widget",
 		"PARAM_TYPE C/renderWidget->C++/Widget",
+		"USES_TYPE C/renderCallbackHolder->C++/CallbackHolder",
+		"PARAM_TYPE C/renderCallbackHolder->C++/CallbackHolder",
+		"USES_TYPE C/renderNestedFieldOuter->C++/NestedFieldOuter",
+		"PARAM_TYPE C/renderNestedFieldOuter->C++/NestedFieldOuter",
+		"USES_TYPE C/renderNestedFieldInner->C++/NestedFieldInner",
+		"PARAM_TYPE C/renderNestedFieldInner->C++/NestedFieldInner",
+		"USES_TYPE C/renderAnonymousStructOuter->C++/AnonymousStructOuter",
+		"PARAM_TYPE C/renderAnonymousStructOuter->C++/AnonymousStructOuter",
+		"USES_TYPE C/renderAnonymousUnionOuter->C++/AnonymousUnionOuter",
+		"PARAM_TYPE C/renderAnonymousUnionOuter->C++/AnonymousUnionOuter",
 		"CALLS C/callWidth->C++/widgetWidth",
 	} {
 		if _, ok := edges[want]; !ok {
@@ -896,8 +979,28 @@ int callGadget(void) { struct Gadget g; return gadgetSize(g); }
 	for _, impossible := range []string{
 		"USES_TYPE C/renderEngine->C++/Engine",
 		"PARAM_TYPE C/renderEngine->C++/Engine",
+		"USES_TYPE C/renderNestedCpp->C++/NestedCpp",
+		"PARAM_TYPE C/renderNestedCpp->C++/NestedCpp",
+		"USES_TYPE C/renderOuter->C++/Outer",
+		"PARAM_TYPE C/renderOuter->C++/Outer",
+		"USES_TYPE C/renderInner->C++/Inner",
+		"PARAM_TYPE C/renderInner->C++/Inner",
+		"USES_TYPE C/renderStaticMember->C++/StaticMember",
+		"PARAM_TYPE C/renderStaticMember->C++/StaticMember",
+		"USES_TYPE C/renderDefaultMember->C++/DefaultMember",
+		"PARAM_TYPE C/renderDefaultMember->C++/DefaultMember",
+		"USES_TYPE C/renderMutableMember->C++/MutableMember",
+		"PARAM_TYPE C/renderMutableMember->C++/MutableMember",
+		"USES_TYPE C/renderNewlineScoped->C++/NewlineScoped",
+		"PARAM_TYPE C/renderNewlineScoped->C++/NewlineScoped",
+		"USES_TYPE C/renderCommentScoped->C++/CommentScoped",
+		"PARAM_TYPE C/renderCommentScoped->C++/CommentScoped",
 		"CALLS C/callHelper->C++/helperCount",
 		"CALLS C/callOverloaded->C++/overloaded",
+		"CALLS C/callRun->C++/run",
+		"CALLS C/callMethod->C++/call",
+		"CALLS C/callNestedCpp->C++/nestedCppCall",
+		"CALLS C/callNamespaced->C++/namespaced",
 		"DATA_FLOWS C++/helperCount->C/callHelper",
 		"DATA_FLOWS C++/overloaded->C/callOverloaded",
 	} {
