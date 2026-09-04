@@ -2048,7 +2048,13 @@ func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
 // qualifier is then classified by the project's module declarations alone, so
 // `Json.serialize` under `module Json = global.Newtonsoft.Json` was pinned to
 // an unrelated project module named `Json`.
-var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]+([A-Za-z_][A-Za-z0-9_']*)[ \t]*=[ \t]*([A-Za-z_][A-Za-z0-9_']*)`)
+//
+// The WHOLE dotted right-hand side is captured, not just the word that heads
+// it, because the path is what the abbreviation binds the name TO. Keeping only
+// the first segment was enough to tell an abbreviation from a `begin` block but
+// left `module Json = Deep.Serde` indistinguishable from `module Json = Deep`,
+// so the alias could not be followed to the module it actually names.
+var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]+([A-Za-z_][A-Za-z0-9_']*)[ \t]*=[ \t]*([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)`)
 
 // fsharpValueBindingPattern matches a `let`/`use` VALUE binding
 // (`let Json = Newtonsoft.Json.JsonConvert`, `let Json : JsonConvert = ...`),
@@ -2071,6 +2077,11 @@ var fsharpValueBindingPattern = regexp.MustCompile(`(?m)^[ \t]*(?:let|use)!?[ \t
 // dedent that closes the block it was written in.
 type fsharpShadowBinding struct {
 	name string
+	// target is the module path a module ABBREVIATION binds the name to
+	// (`Newtonsoft.Json` for `module Json = Newtonsoft.Json`). Every other
+	// binder -- a value binding, a function parameter -- binds a value rather
+	// than a module and leaves this empty.
+	target string
 	// line is where the binding is written, 1-based in file coordinates.
 	line int
 	// throughLine is the last line the binding still shadows the name on.
@@ -2106,9 +2117,10 @@ func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
 	lines := strings.Split(maskFSharpBlockComments(content), "\n")
 	var bindings []fsharpShadowBinding
 	for index, line := range lines {
-		if name := fsharpShadowBindingName(line); name != "" {
+		if name, target := fsharpShadowBindingAt(line); name != "" {
 			bindings = append(bindings, fsharpShadowBinding{
 				name:        name,
+				target:      target,
 				line:        index + 1,
 				throughLine: fsharpBindingScopeEnd(lines, index),
 			})
@@ -2131,23 +2143,25 @@ func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
 	return bindings
 }
 
-// fsharpShadowBindingName returns the name this line binds lexically, or "" if
-// it binds nothing.
-func fsharpShadowBindingName(line string) string {
+// fsharpShadowBindingAt returns the name this line binds lexically and, when
+// the binder is a module abbreviation, the module path it binds that name TO.
+// A name bound to no module path -- a value, a parameter -- comes back with an
+// empty target. Both are empty if the line binds nothing.
+func fsharpShadowBindingAt(line string) (string, string) {
 	if match := fsharpModuleAbbreviationPattern.FindStringSubmatch(line); match != nil {
 		// `module M = begin ... end` is the verbose spelling of a nested module
 		// BLOCK, not an abbreviation: it binds no alias, it opens a scope. It is
 		// the one right-hand side that has to be excluded, which is why the
 		// pattern captures the word rather than guessing from its case.
 		if match[2] == "begin" {
-			return ""
+			return "", ""
 		}
-		return match[1]
+		return match[1], match[2]
 	}
 	if match := fsharpValueBindingPattern.FindStringSubmatch(line); match != nil {
-		return match[1]
+		return match[1], ""
 	}
-	return ""
+	return "", ""
 }
 
 // fsharpFunctionHeaderPattern matches the head of a `let`/`use` FUNCTION
@@ -2340,27 +2354,32 @@ func fsharpIndentWidth(line string) int {
 // Blank lines need no special case any more: a call site is never on one. The
 // lookup is memoised per line because a block commonly holds many call sites on
 // few distinct lines.
-func fsharpShadowsAt(bindings []fsharpShadowBinding, block string, startLine int) func(offset int) map[string]bool {
+//
+// Each name maps to the module path it was bound to, empty for a binder that
+// binds no module. Bindings are visited in source order, so where two of them
+// reach the same line the LATER one is left standing -- the inner or nearer
+// binding, which is the one F# resolves the name to.
+func fsharpShadowsAt(bindings []fsharpShadowBinding, block string, startLine int) func(offset int) map[string]string {
 	if len(bindings) == 0 {
-		return func(int) map[string]bool { return nil }
+		return func(int) map[string]string { return nil }
 	}
 	if startLine < 1 {
 		startLine = 1
 	}
 	newlines := newlineOffsets(block)
-	byLine := map[int]map[string]bool{}
-	return func(offset int) map[string]bool {
+	byLine := map[int]map[string]string{}
+	return func(offset int) map[string]string {
 		at := startLine + lineAtOffset(newlines, offset) - 1
 		if shadows, known := byLine[at]; known {
 			return shadows
 		}
-		var shadows map[string]bool
+		var shadows map[string]string
 		for _, binding := range bindings {
 			if binding.line <= at && at <= binding.throughLine {
 				if shadows == nil {
-					shadows = map[string]bool{}
+					shadows = map[string]string{}
 				}
-				shadows[binding.name] = true
+				shadows[binding.name] = binding.target
 			}
 		}
 		byLine[at] = shadows
@@ -2390,20 +2409,29 @@ func lineAtOffset(newlines []int, offset int) int {
 	return sort.SearchInts(newlines, offset) + 1
 }
 
-// fsharpQualifierShadowed reports whether the shadows in scope at the call site
-// rebind the name the qualifier leads with. Only the FIRST segment can be
-// shadowed: a local
-// `module Json = ...` rebinds `Json` and therefore `Json.Linq`, but says
-// nothing about `Newtonsoft.Json`.
-func fsharpQualifierShadowed(shadows map[string]bool, qualifier string) bool {
+// fsharpShadowedQualifierAlias reports whether the shadows in scope at the call
+// site rebind the name the qualifier leads with, and if that binding was a
+// module abbreviation, returns the qualifier REWRITTEN through it. Only the
+// FIRST segment can be shadowed: a local `module Json = ...` rebinds `Json` and
+// therefore `Json.Linq`, but says nothing about `Newtonsoft.Json`.
+//
+// The rewrite is the point of keeping the abbreviation's target. `module Json =
+// Serde` does not make `Json.serialize` unqualified -- it makes it
+// `Serde.serialize`. Only the head is substituted, so `Json.Linq.parse` under
+// that binding reads `Serde.Linq.parse`, which is what the abbreviation means.
+func fsharpShadowedQualifierAlias(shadows map[string]string, qualifier string) (string, bool) {
 	if len(shadows) == 0 {
-		return false
+		return "", false
 	}
-	head := qualifier
+	head, rest := qualifier, ""
 	if cut := strings.Index(qualifier, "."); cut >= 0 {
-		head = qualifier[:cut]
+		head, rest = qualifier[:cut], qualifier[cut:]
 	}
-	return shadows[head]
+	target, shadowed := shadows[head]
+	if !shadowed || target == "" {
+		return "", shadowed
+	}
+	return target + rest, true
 }
 
 // recordFSharpCallQualifier remembers which module a qualified call named, so
@@ -2416,11 +2444,32 @@ func fsharpQualifierShadowed(shadows map[string]bool, qualifier string) bool {
 // the empty string: that spelling names no module, so it means "the definition
 // in scope" and is resolved unrestricted -- alongside, not instead of, the
 // qualified sightings.
-func recordFSharpCallQualifier(qualifiers map[string]map[string]struct{}, declared map[string]bool, shadows map[string]bool, name, target string) {
+func recordFSharpCallQualifier(qualifiers map[string]map[string]struct{}, declared map[string]bool, shadows map[string]string, name, target string) {
 	qualifier := ""
 	if cut := strings.LastIndex(target, "."); cut > 0 {
-		if candidate := target[:cut]; !fsharpQualifierShadowed(shadows, candidate) && fsharpModulePathDeclared(declared, candidate) {
-			qualifier = candidate
+		candidate := target[:cut]
+		alias, shadowed := fsharpShadowedQualifierAlias(shadows, candidate)
+		switch {
+		case !shadowed:
+			if fsharpModulePathDeclared(declared, candidate) {
+				qualifier = candidate
+			}
+		case alias != "" && fsharpModulePathDeclared(declared, alias):
+			// A module ABBREVIATION is the one shadow that still names a
+			// module. Treating it like any other rebinding recorded bare, and a
+			// bare spelling resolves unrestricted -- so `Json.serialize` under
+			// `module Json = Serde` bound whatever `serialize` sat nearest
+			// instead of Serde's, which is the wrong-definition direction of
+			// this same bug rather than a lost restriction. Follow the alias
+			// instead: the call names the module the abbreviation points at.
+			//
+			// Only when that target is a module the PROJECT declares. An
+			// abbreviation of an external path (`module Json =
+			// Newtonsoft.Json`) names nothing this index can hold the call to,
+			// so it stays bare exactly as before -- the same test
+			// `fsharpModulePathDeclared` already applies to an unshadowed
+			// qualifier, asked of the aliased spelling.
+			qualifier = alias
 		}
 	}
 	if qualifiers[name] == nil {

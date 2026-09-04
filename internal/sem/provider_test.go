@@ -17595,3 +17595,142 @@ let below (v: int) =
 		t.Errorf("missing CALLS below->other: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 	}
 }
+
+func TestFSharpModuleAbbreviationRedirectsTheQualifierToItsTarget(t *testing.T) {
+	// A module abbreviation was handled as a plain shadow: `module Json = Serde`
+	// made `Json.serialize` record BARE, and a bare spelling resolves
+	// unrestricted. That is the wrong-definition direction, not a lost
+	// restriction -- the call bound whatever `serialize` sat nearest (the
+	// caller's own) instead of Serde's, which is what the abbreviation names.
+	//
+	// An abbreviation is the one shadow that still names a module. It rebinds
+	// the name, so the project module `Json` is correctly ruled out, but it
+	// rebinds it TO a module path, so the qualifier is rewritten through it
+	// rather than dropped. The opposite-direction cases below hold the redirect
+	// to abbreviations whose target this project actually declares.
+	callees := func(t *testing.T, useSource string) []string {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+		writeFile(t, repo, "src/Serde.fs", `module Serde
+
+let serialize (x: int) = x + 3
+`)
+		writeFile(t, repo, "src/Deep.fs", `namespace Deep
+
+module Serde =
+    let serialize (x: int) = x + 5
+`)
+		writeFile(t, repo, "src/Use.fs", useSource)
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		symbolsByID := map[string]SymbolRecord{}
+		for _, symbol := range snapshot.Symbols {
+			symbolsByID[symbol.ID] = symbol
+		}
+		var reached []string
+		for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+			to, isSymbol := symbolsByID[relation.ToID]
+			if !isSymbol || to.Name != "serialize" {
+				continue
+			}
+			if from, fromIsSymbol := symbolsByID[relation.FromID]; !fromIsSymbol || from.Name != "run" {
+				continue
+			}
+			reached = append(reached, filepath.Base(to.FilePath))
+		}
+		sort.Strings(reached)
+		return slices.Compact(reached)
+	}
+
+	t.Run("abbreviation of a top-level module", func(t *testing.T) {
+		got := callees(t, `module Use
+
+module Json = Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Serde.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = Serde` reached %v, want %v: the abbreviation names Serde, so the call is Serde's -- not the nearest `serialize` a bare spelling would find", got, want)
+		}
+	})
+
+	t.Run("abbreviation of a dotted module path", func(t *testing.T) {
+		// The right-hand side is a PATH, not a word. Capturing only the segment
+		// that heads it left `Deep.Serde` indistinguishable from `Deep`, so the
+		// alias could not be followed to the module it names.
+		got := callees(t, `module Use
+
+module Json = Deep.Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Deep.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = Deep.Serde` reached %v, want %v", got, want)
+		}
+	})
+
+	t.Run("abbreviation of a module this project does not declare", func(t *testing.T) {
+		// The first opposite direction. `Newtonsoft.Json` is an external
+		// assembly: this index holds no such module, so there is nothing to
+		// redirect the call to. The abbreviation still shadows -- the project
+		// module `Json` is not what the source means -- so the call records bare
+		// and resolves in scope, exactly as before the redirect existed.
+		got := callees(t, `module Use
+
+module Json = Newtonsoft.Json
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = Newtonsoft.Json` reached %v, want %v: an abbreviation of an undeclared path names no module to redirect to", got, want)
+		}
+	})
+
+	t.Run("value binding spelling a module name is not an abbreviation", func(t *testing.T) {
+		// The second opposite direction. `let Json = Serde` binds a VALUE whose
+		// initialiser happens to spell a module name; it is not an alias, and
+		// redirecting through it would pin the call to a module the source never
+		// qualified with. Only `module X = path` may redirect.
+		got := callees(t, `module Use
+
+let Json = Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `let Json = Serde` reached %v, want %v: a value binding aliases no module", got, want)
+		}
+	})
+
+	t.Run("redirect applies only where the abbreviation is in scope", func(t *testing.T) {
+		// The redirect inherits the per-call-site scoping the shadow already
+		// has: written above the abbreviation, `Json.serialize` still names the
+		// project module `Json`, and only the sighting below it names Serde.
+		got := callees(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let above = Json.serialize(x)
+    let inner = 0
+    above + inner
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` with no binding in scope reached %v, want %v", got, want)
+		}
+	})
+}
