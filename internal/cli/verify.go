@@ -358,6 +358,27 @@ func verifyRecordedRepo(repo string) string {
 // resolveRepo returns the caller's argument verbatim, which is what makes this necessary; the
 // recorded side arrives already canonicalized (verifyRecordedRepo), so the resolution below applies
 // to the current invocation's own spelling.
+//
+// IDENTITY, NOT SPELLING. Cleaned absolute paths agree only when the two invocations reached the
+// repository by the same ROUTE, and a directory has more than one: a symlinked checkout, a bind
+// mount, `/tmp` against its real `/private/tmp` on macOS, a case-variant spelling on a
+// case-insensitive filesystem. Every one of those is the same repository and compares unequal as a
+// string, and each one was refused as "a delta between two repositories". So the paths are stat'd
+// and compared with os.SameFile, which is the filesystem's own answer (device plus inode; file index
+// on Windows) rather than a guess about how paths spell out.
+//
+// WHAT THE FALLBACK GUARANTEES. When either side cannot be stat'd — the recorded checkout has since
+// been moved or deleted, or the process cannot traverse to it — there is no identity to compare and
+// the cleaned-string comparison above stands alone. That is exactly the previous behavior, and its
+// two directions are not symmetric: it can still REFUSE a repository that is genuinely the same one
+// under a different spelling (a false refusal, which costs a re-record and is loud), and it cannot
+// ACCEPT two different repositories, because the recorded side was canonicalized at record time and
+// two distinct checkouts do not clean to one path. Neither branch re-opens the false accept the
+// canonicalization closed.
+//
+// What identity does NOT claim: it is a fact about the directories AS THEY ARE NOW, not about their
+// contents. The same checkout with different code in it is still the same repository here — that is
+// the question this predicate is asked, and the baseline's other fields cover the rest.
 func verifySameRepo(recorded, current string) bool {
 	if recorded == current {
 		return true
@@ -367,7 +388,16 @@ func verifySameRepo(recorded, current string) bool {
 	if recordedErr != nil || currentErr != nil {
 		return false
 	}
-	return filepath.Clean(recordedAbs) == filepath.Clean(currentAbs)
+	recordedAbs, currentAbs = filepath.Clean(recordedAbs), filepath.Clean(currentAbs)
+	if recordedAbs == currentAbs {
+		return true
+	}
+	recordedInfo, recordedStatErr := os.Stat(recordedAbs)
+	currentInfo, currentStatErr := os.Stat(currentAbs)
+	if recordedStatErr != nil || currentStatErr != nil {
+		return false
+	}
+	return os.SameFile(recordedInfo, currentInfo)
 }
 
 func verifyCountByStatus(results verifyResults) (passed, failed int) {

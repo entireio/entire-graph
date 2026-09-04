@@ -182,6 +182,94 @@ func TestVerifyBaselineRepoSurvivesADifferentWorkingDirectory(t *testing.T) {
 			t.Fatalf("the refusal does not name the mismatched repository: %v", err)
 		}
 	})
+
+	// Canonicalizing at record time fixed the SPELLING, and a directory has more than one route:
+	// this is the same checkout, named through a symlink to it.
+	t.Run("the same repository reached through a symlink", func(t *testing.T) {
+		repo := newRepo(t)
+		link := filepath.Join(t.TempDir(), "checkout-link")
+		if err := os.Symlink(repo, link); err != nil {
+			t.Skipf("this filesystem does not support symlinks: %v", err)
+		}
+		baselinePath := filepath.Join(t.TempDir(), "baseline.json")
+		record(t, repo, ".", baselinePath)
+
+		verdict, adjudicateErr := adjudicate(t, t.TempDir(), link, baselinePath)
+		if adjudicateErr != nil {
+			t.Fatalf("a baseline recorded in this repository was refused when the same "+
+				"repository was named through a symlink to it: %v", adjudicateErr)
+		}
+		if !strings.Contains(verdict, "VERDICT:") {
+			t.Fatalf("no verdict was rendered:\n%s", verdict)
+		}
+	})
+
+	// The other direction, and the one comparing IDENTITY must not cost: two genuinely different
+	// checkouts are two repositories however precisely each is spelled.
+	t.Run("another repository named by its own absolute path", func(t *testing.T) {
+		recorded := newRepo(t)
+		baselinePath := filepath.Join(t.TempDir(), "baseline.json")
+		record(t, recorded, ".", baselinePath)
+
+		elsewhere := newRepo(t)
+		_, err := adjudicate(t, t.TempDir(), elsewhere, baselinePath)
+		if err == nil {
+			t.Fatal("a baseline recorded in another checkout was accepted: two distinct " +
+				"repositories are not one repository under two names")
+		}
+		if !strings.Contains(err.Error(), "repository") {
+			t.Fatalf("the refusal does not name the mismatched repository: %v", err)
+		}
+	})
+}
+
+// TestVerifySameRepoComparesIdentityNotSpelling pins the predicate itself, including the branch the
+// end-to-end subtests cannot reach: what happens when a path cannot be stat'd at all.
+//
+// os.SameFile is the filesystem's own answer about two directories — device plus inode, file index
+// on Windows — so a symlink, a bind mount, `/tmp` against `/private/tmp` and a case-variant spelling
+// all resolve to one repository, while two checkouts stay two. When either side cannot be stat'd
+// there is no identity to compare and the cleaned-string comparison stands alone: that can refuse a
+// repository that is really the same one under another spelling, which is loud and costs a
+// re-record, but it cannot ACCEPT two different ones, and the accept direction is the one that
+// renders a confident verdict about a repository the baseline never described.
+func TestVerifySameRepoComparesIdentityNotSpelling(t *testing.T) {
+	t.Parallel()
+	t.Run("a symlinked route is the same repository", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(repo, link); err != nil {
+			t.Skipf("this filesystem does not support symlinks: %v", err)
+		}
+		if !verifySameRepo(repo, link) {
+			t.Fatalf("the same repository was refused: recorded %q, current %q", repo, link)
+		}
+	})
+	t.Run("two checkouts are two repositories", func(t *testing.T) {
+		t.Parallel()
+		recorded, current := t.TempDir(), t.TempDir()
+		if verifySameRepo(recorded, current) {
+			t.Fatalf("two different checkouts compared equal: %q and %q", recorded, current)
+		}
+	})
+	t.Run("an unstattable recorded path falls back without accepting", func(t *testing.T) {
+		t.Parallel()
+		// The recorded checkout has been removed since the baseline was written. There is no
+		// identity left to compare, and the fallback must not answer "same".
+		gone := filepath.Join(t.TempDir(), "moved-away")
+		if verifySameRepo(gone, t.TempDir()) {
+			t.Fatalf("a baseline recorded in %q was accepted for a different, existing "+
+				"repository", gone)
+		}
+	})
+	t.Run("an unstattable path is still the same repository as its own spelling", func(t *testing.T) {
+		t.Parallel()
+		gone := filepath.Join(t.TempDir(), "moved-away")
+		if !verifySameRepo(gone, gone) {
+			t.Fatalf("a repository was refused against its own recorded path: %q", gone)
+		}
+	})
 }
 
 // verifyPHPUnitErroredRunOutput is a real PHPUnit --testdox report, captured verbatim from PHPUnit
