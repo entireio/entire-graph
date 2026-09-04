@@ -9087,7 +9087,7 @@ func cPlusPlusOutOfLineDefinition(declaration SymbolRecord, candidates []SymbolR
 		}
 		ownerMatches := false
 		for _, owner := range owners {
-			if signatureNamesQualifiedMethod(candidate.Signature, owner, declaration.Name) {
+			if signatureNamesQualifiedMethodPattern(candidate.Signature, owner, declaration.Name) {
 				ownerMatches = true
 				break
 			}
@@ -9102,6 +9102,93 @@ func cPlusPlusOutOfLineDefinition(declaration SymbolRecord, candidates []SymbolR
 		definition = candidate
 	}
 	return definition, found == 1
+}
+
+// signatureNamesQualifiedMethodPattern matches the private owner pattern built
+// by cPlusPlusDeclarationOwners. A NUL-prefixed segment is an inline namespace
+// and may be present or omitted. Matching uses memoized (segment, remainder)
+// states, so deeply nested inline namespaces stay linear in the signature size
+// rather than expanding into 2^N owner aliases.
+func signatureNamesQualifiedMethodPattern(signature, pattern, name string) bool {
+	if !strings.Contains(pattern, "\x00") {
+		return signatureNamesQualifiedMethod(signature, pattern, name)
+	}
+	parts := strings.Split(pattern, "::")
+	type state struct{ part, remaining int }
+	memo := map[state]bool{}
+	seen := map[state]bool{}
+	var matchTail func(string, int) bool
+	matchTail = func(rest string, index int) bool {
+		key := state{part: index, remaining: len(rest)}
+		if seen[key] {
+			return memo[key]
+		}
+		seen[key] = true
+		if index == len(parts) {
+			rest = strings.TrimLeft(rest, " \t\r\n")
+			memo[key] = strings.HasPrefix(rest, name) &&
+				(len(rest) == len(name) || !isIdentifierByte(rest[len(name)]))
+			return memo[key]
+		}
+		part := parts[index]
+		inlineable := strings.HasPrefix(part, "\x00")
+		part = strings.TrimPrefix(part, "\x00")
+		if inlineable && matchTail(rest, index+1) {
+			memo[key] = true
+			return true
+		}
+		after, ok := consumeCPlusPlusOwnerSegment(rest, part)
+		memo[key] = ok && matchTail(after, index+1)
+		return memo[key]
+	}
+	for first := 0; first < len(parts); first++ {
+		part := strings.TrimPrefix(parts[first], "\x00")
+		for offset := 0; ; {
+			at := strings.Index(signature[offset:], part)
+			if at < 0 {
+				break
+			}
+			start := offset + at
+			offset = start + len(part)
+			if start > 0 && isIdentifierByte(signature[start-1]) {
+				continue
+			}
+			if strings.HasSuffix(strings.TrimRight(signature[:start], " \t\r\n"), "::") {
+				continue
+			}
+			after, ok := consumeCPlusPlusOwnerSegment(signature[start:], part)
+			if ok && matchTail(after, first+1) {
+				return true
+			}
+		}
+		if !strings.HasPrefix(parts[first], "\x00") {
+			break
+		}
+	}
+	return false
+}
+
+func consumeCPlusPlusOwnerSegment(text, part string) (string, bool) {
+	text = strings.TrimLeft(text, " \t\r\n")
+	if !strings.HasPrefix(text, part) {
+		return text, false
+	}
+	rest := text[len(part):]
+	if len(rest) > 0 && isIdentifierByte(rest[0]) {
+		return text, false
+	}
+	rest = strings.TrimLeft(rest, " \t\r\n")
+	if strings.HasPrefix(rest, "<") {
+		after, closed := skipBalancedAngles(rest)
+		if !closed {
+			return text, false
+		}
+		rest = strings.TrimLeft(after, " \t\r\n")
+	}
+	if !strings.HasPrefix(rest, "::") {
+		return text, false
+	}
+	return rest[2:], true
 }
 
 func uniqueMethodByShortName(candidates []SymbolRecord) (SymbolRecord, bool) {

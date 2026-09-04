@@ -18967,6 +18967,24 @@ func TestSignatureNamesQualifiedMethodUsesTokenBoundaries(t *testing.T) {
 	}
 }
 
+func TestSignatureNamesQualifiedMethodPatternOmitsAnyInlineNamespaceSubset(t *testing.T) {
+	t.Parallel()
+	pattern := "api::\x00v1::\x00v2::\x00v3::\x00v4::\x00v5::Client"
+	for _, signature := range []string{
+		"int api::v1::v2::v3::v4::v5::Client::Fetch()",
+		"int api::v1::v3::v4::v5::Client::Fetch()",
+		"int api::v2::v4::Client::Fetch()",
+		"int api::Client::Fetch()",
+	} {
+		if !signatureNamesQualifiedMethodPattern(signature, pattern, "Fetch") {
+			t.Errorf("did not match legal inline-namespace subset in %q", signature)
+		}
+	}
+	if signatureNamesQualifiedMethodPattern("int other::api::Client::Fetch()", pattern, "Fetch") {
+		t.Error("matched an owner suffix under an unrelated outer namespace")
+	}
+}
+
 func TestFSharpCustomOperatorContainingADollarIsNotACall(t *testing.T) {
 	// `$` is an op-char in F#'s own lexer (`let op_char = '!'|'$'|'%'|...`), so
 	// `$|>` is ONE operator token exactly as `+|>` is. Omitting `$` from the

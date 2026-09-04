@@ -5103,37 +5103,17 @@ func cPlusPlusDeclarationOwners(node *sitter.Node, src []byte, scope string) []s
 		}
 		parts = append([]segment{{name: text, inlineable: inlineable}}, parts...)
 	}
-	inlineCount := 0
+	encoded := make([]string, 0, len(parts))
 	for _, part := range parts {
+		name := part.name
 		if part.inlineable {
-			inlineCount++
+			// Private marker consumed by signatureNamesQualifiedMethodPattern;
+			// C++ identifiers cannot contain NUL, so it cannot collide with source.
+			name = "\x00" + name
 		}
+		encoded = append(encoded, name)
 	}
-	masks := 1 << minInt(inlineCount, 4)
-	if inlineCount > 4 {
-		masks = 2
-	}
-	owners := make([]string, 0, masks)
-	for mask := 0; mask < masks; mask++ {
-		var names []string
-		inlineIndex := 0
-		for _, part := range parts {
-			omit := false
-			if part.inlineable {
-				if inlineCount <= 4 {
-					omit = mask&(1<<inlineIndex) != 0
-				} else {
-					omit = mask == 1
-				}
-				inlineIndex++
-			}
-			if !omit {
-				names = append(names, part.name)
-			}
-		}
-		owners = append(owners, strings.Join(names, "::"))
-	}
-	return owners
+	return []string{strings.Join(encoded, "::")}
 }
 
 // cPlusPlusDeclarationSpan returns the node that spans a whole in-class
