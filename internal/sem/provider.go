@@ -140,8 +140,9 @@ var ooRelationSupport = map[string][]string{
 	// produces none), so every USES_TYPE edge observed from R had resolved to a
 	// foreign type.
 	"C": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	// C++ shares C's extraction path, so it reaches the same passes.
-	"C++":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	// C++ shares C's extraction path and can resolve reads through typed
+	// receivers now that class data members are extracted.
+	"C++":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "DATA_FLOWS"},
 	"Clojure": {"USES_TYPE"},
 	// ClojureScript reads .cljs with the Clojure grammar and so reaches the same
 	// `^Point` type hint, but it was not a key of this map at all -- the
