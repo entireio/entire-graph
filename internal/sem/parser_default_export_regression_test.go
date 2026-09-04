@@ -77,11 +77,17 @@ func TestJavaScriptDefaultExportExpressionArrowKeepsItsOwnRange(t *testing.T) {
 	}
 
 	// TypeScript puts a return annotation between the parameter list and the
-	// body, so the body is not simply the next non-space byte.
+	// body, so the body is not simply the next non-space byte — and the
+	// annotation can carry braces of its own.
 	for _, annotated := range []string{
 		"export default function (): Result {\n  return build()\n}\n",
 		"export default function (a: string): Promise<Result> {\n  return build(a)\n}\n",
 		"export default async function (): Promise<void> {\n  await run()\n}\n",
+		"export default function (): { ok: boolean } {\n  return { ok: true }\n}\n",
+		"export default function (): Promise<{ ok: boolean }> {\n  return build()\n}\n",
+		"export default function (): Result | { ok: boolean } {\n  return build()\n}\n",
+		"export default function (): readonly { ok: boolean }[] {\n  return build()\n}\n",
+		"export default function (): () => { ok: boolean } {\n  return build()\n}\n",
 	} {
 		entities = javascriptDefaultExportEntities("helper.ts", annotated)
 		if len(entities) != 1 {
@@ -175,6 +181,28 @@ func TestGraphQLRootSelectionFieldsSkipsWholeFragmentSpread(t *testing.T) {
 		got := strings.Join(graphqlRootSelectionFields(testCase.body), ",")
 		if got != testCase.want {
 			t.Fatalf("graphqlRootSelectionFields(%q) = %q, want %q", testCase.body, got, testCase.want)
+		}
+	}
+}
+
+// The body brace of an annotated callable is the one after the COMPLETE return
+// type, however many braces that type carries.
+func TestTypeScriptAnnotatedBodyBrace(t *testing.T) {
+	for _, testCase := range []struct {
+		source string
+		want   int
+	}{
+		{": Result { body }", 9},
+		{": { ok: boolean } { body }", 18},
+		{": Promise<{ ok: boolean }> { body }", 27},
+		{": Result | { ok: boolean } { body }", 27},
+		{": readonly { ok: boolean }[] { body }", 29},
+		{": () => { ok: boolean } { body }", 24},
+		{": Result", -1},
+		{": { ok: boolean }", -1},
+	} {
+		if got := typeScriptAnnotatedBodyBrace(testCase.source, 1); got != testCase.want {
+			t.Fatalf("typeScriptAnnotatedBodyBrace(%q) = %d, want %d", testCase.source, got, testCase.want)
 		}
 	}
 }

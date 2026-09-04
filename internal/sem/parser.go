@@ -7237,21 +7237,78 @@ func javascriptDefaultExportBodyBrace(content string, loc []int) int {
 	cursor = skipSpace(content, cursor)
 	if cursor < len(content) && content[cursor] == ':' {
 		// A TypeScript return annotation sits between the parameter list and the
-		// body: `export default function (): Result { … }`. The annotation's own
-		// syntax can contain braces (an inline object type), which nothing short
-		// of a type parser can delimit here, so take the first `{` after it —
-		// the behaviour this function replaced, kept for exactly the case where
-		// it was right.
-		if at := strings.IndexByte(content[cursor:], '{'); at >= 0 {
-			return cursor + at
-		}
-		return -1
+		// body: `export default function (): Result { … }`.
+		return typeScriptAnnotatedBodyBrace(content, cursor+1)
 	}
 	// Arrow alternatives end at `=>`; a braced body is the next non-space byte.
 	if cursor < len(content) && content[cursor] == '{' {
 		return cursor
 	}
 	return -1
+}
+
+// typeScriptTypePositionKeywords are the words that, immediately before a `{`,
+// mean the brace opens an object TYPE rather than a function body.
+var typeScriptTypePositionKeywords = map[string]bool{
+	"readonly": true, "keyof": true, "extends": true, "infer": true,
+	"typeof": true, "is": true, "asserts": true, "in": true, "out": true,
+}
+
+// typeScriptAnnotatedBodyBrace returns the offset of the `{` that opens the body
+// of a callable whose return type is annotated, scanning from just past the
+// annotation's `:`. It returns -1 when no body brace follows.
+//
+// A return annotation can itself contain braces — `(): { ok: boolean } { … }`,
+// `(): Promise<{ ok: boolean }> { … }` — so taking the first `{` after the `:`
+// ended the entity at the TYPE's closing brace: every later edit to the real
+// body fell outside its range and its body hash. A brace opens a type when what
+// precedes it continues a type expression (`:`, `|`, `&`, `<`, `,`, `(`, `=>`,
+// or a type-position keyword); otherwise it opens the body.
+func typeScriptAnnotatedBodyBrace(content string, cursor int) int {
+	for cursor < len(content) {
+		at := strings.IndexByte(content[cursor:], '{')
+		if at < 0 {
+			return -1
+		}
+		brace := cursor + at
+		if !typeScriptTypeContinues(content, brace) {
+			return brace
+		}
+		closing := matchingDelimiterOffset(content, brace, '{', '}')
+		if closing < 0 {
+			return -1
+		}
+		cursor = closing + 1
+	}
+	return -1
+}
+
+// typeScriptTypeContinues reports whether the text before brace leaves a type
+// expression unfinished, which is what makes the brace an object type.
+func typeScriptTypeContinues(content string, brace int) bool {
+	index := brace - 1
+	for index >= 0 && (content[index] == ' ' || content[index] == '\t' || content[index] == '\n' || content[index] == '\r') {
+		index--
+	}
+	if index < 0 {
+		return false
+	}
+	switch content[index] {
+	case ':', '|', '&', '<', ',', '(':
+		return true
+	case '>':
+		// `=>` continues a function type; a lone `>` closes a generic argument
+		// list and completes the type.
+		return index > 0 && content[index-1] == '='
+	}
+	if !isJSIdentifierPart(content[index]) {
+		return false
+	}
+	end := index + 1
+	for index >= 0 && isJSIdentifierPart(content[index]) {
+		index--
+	}
+	return typeScriptTypePositionKeywords[content[index+1:end]]
 }
 
 func javascriptVariableDeclaratorEnd(content string, valueStart int) int {
