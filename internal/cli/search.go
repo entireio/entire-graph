@@ -1706,19 +1706,48 @@ func agentSearchLineIsLocator(line []byte) bool {
 // that carries repository source, so it is the block whose printed size differs
 // most from its raw size, and measuring the raw form was how a snippet of ESC
 // bytes overran the cap.
+//
+// When the escaped form overruns, the SIZE of the render is what has to come
+// down, not only the NUMBER of results. Dropping results alone leaves nothing
+// to drop for a single hit, so one snippet of control bytes took the whole
+// ranked block to nil, every prefix variant in writeAgentSearchPayload failed
+// with it, and the payload fell through to the telemetry tail: a larger budget
+// bought a strictly worse answer, and the agent got no location at all. The
+// locator itself always fits — searchResultOnOneLine escapes the path and name
+// before they are ever measured, so the header cannot expand — which is exactly
+// why re-rendering smaller reaches an answer where dropping results cannot.
 func fitAgentSearchResults(results []sem.SearchResult, budget int) []byte {
 	if budget <= 0 {
 		return termsafe.Bytes(renderAgentSearchResults(results, nil))
 	}
 	for count := len(results); count > 0; count-- {
-		available := budget - (count - 1)
-		if available <= 0 {
-			continue
-		}
-		resultBudgets := rankedAgentSearchBudgets(count, available)
-		formatted := termsafe.Bytes(renderAgentSearchResults(results[:count], resultBudgets))
-		if len(formatted) <= budget {
-			return formatted
+		// The separators between blocks are the caller's bytes too, so
+		// `available` is what the RESULTS themselves may spend.
+		separators := count - 1
+		for available := budget - separators; available > 0; {
+			rendered := renderAgentSearchResults(results[:count], rankedAgentSearchBudgets(count, available))
+			if len(rendered) == 0 {
+				break // nothing renderable this narrow; drop a result instead
+			}
+			formatted := termsafe.Bytes(rendered)
+			if len(formatted) <= budget {
+				return formatted
+			}
+			// Retry at the width the OBSERVED expansion implies, scaled from
+			// what this attempt actually PRODUCED rather than from what it was
+			// allowed to: a block that came in under its budget would otherwise
+			// be re-rendered unchanged forever. len(formatted) exceeds budget
+			// here, so the scaled width is strictly smaller than the produced
+			// one and the loop always terminates — while staying proportional
+			// keeps it from collapsing past the widths that would have fitted,
+			// since no byte escapes to more than six (termsafe.appendEscapedAt).
+			// int64 because the product of two caller-supplied byte counts
+			// overflows a 32-bit int.
+			next := int(int64(len(rendered))*int64(budget)/int64(len(formatted))) - separators
+			if next >= available {
+				next = available - 1 // belt and braces: never fail to make progress
+			}
+			available = next
 		}
 	}
 	return nil
