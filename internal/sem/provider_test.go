@@ -15512,6 +15512,656 @@ type Dependencies() =
 	}
 }
 
+func TestFSharpPipelineCallExtraction(t *testing.T) {
+	// The forward pipe is the dominant F# call idiom, and the token right after
+	// `|>` is definitionally the function being applied. Only module-qualified
+	// (`Mod.fn ...`) and parenthesised (`fn(...)`) forms had a scanner, so a
+	// bare piped function produced no CALLS edge at all while
+	// `capabilities --json` advertises CALLS for F#.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Pipeline.fs", `module Pipeline
+
+let normalize (value: string) = value.Trim()
+
+let validate (value: string) = value.Length > 0
+
+let describe (label: string) (value: string) = label + value
+
+let run (input: string) =
+    input
+    |> normalize
+    |> describe "value: "
+
+let check (input: string) =
+    input |> normalize |> validate
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range [][2]string{
+		{"run", "normalize"},
+		{"run", "describe"},
+		{"check", "normalize"},
+		{"check", "validate"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Fatalf("missing F# pipeline CALLS %s->%s: %#v", want[0], want[1], relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+func TestFSharpPipelineScannerSkipsLambdasAndLiterals(t *testing.T) {
+	// The scanner must not turn the keyword introducing an inline lambda, or a
+	// pipe that only appears inside a string or comment, into a call.
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{"lambda keyword", "let f xs = xs |> fun x -> x", nil},
+		{"function keyword", "let f xs = xs |> function _ -> 1", nil},
+		{"string literal", "let f () = \"a |> helper b\"", nil},
+		{"line comment", "let f () = 1 // xs |> helper", nil},
+		// F# block comments are not masked by stripCodeLiteralsAndComments, so
+		// a pipe inside `(* ... *)` still reads as a call. That is pre-existing
+		// and shared with fsharpDottedCallIdentifiers (which already reports
+		// `List.map` from inside a block comment); the pipeline scanner matches
+		// its sibling rather than diverging from it here.
+		{"block comment matches the dotted scanner", "let f () = 1 (* xs |> helper *)", []string{"helper"}},
+		{"qualified pipe", "let f xs = xs |> List.map g", []string{"map"}},
+		{"escaped identifier", "let f x = x |> ``normalize input``", []string{"``normalize input``"}},
+		{"qualified escaped identifiers", "let f x = x |> ``Input codec``.``normalize input``", []string{"``normalize input``"}},
+		{"bare pipe", "let f xs = xs |> helper", []string{"helper"}},
+		{"double pipe", "let f a b = (a, b) ||> helper", []string{"helper"}},
+		{"triple pipe", "let f a b c = (a, b, c) |||> helper", []string{"helper"}},
+		// `<|>` is FParsec's and FSharpPlus's alternative combinator. It
+		// contains a literal `|>` but applies nothing — the right operand is an
+		// alternative, not a function being handed the left one — so reading it
+		// as a forward pipe invents a call.
+		{"alternative combinator is not a pipe", "let p = digit <|> helper", nil},
+		{"alternative combinator without spaces", "let p = digit<|>helper", nil},
+		{"backward pipe", "let f x = helper <| x", nil},
+		{"pipes chained without spaces", "let f xs = xs|>helper|>g", []string{"helper", "g"}},
+		// F# lexes a run of operator characters as one token and lets users
+		// define their own, so many legal operators merely contain `|>`. Their
+		// right operand is the custom operator's argument, not a function being
+		// applied, so matching the bare substring fabricates a call.
+		{"custom operator containing a pipe", "let f x = x +|> helper", nil},
+		{"custom operator with a caret", "let f x = x ^|> helper", nil},
+		{"custom operator with a dot", "let f x = x .|> helper", nil},
+		{"custom operator with a bang", "let f x = x !|> helper", nil},
+		{"custom operator without spaces", "let f x = x+|>helper", nil},
+		{"FParsec map operator", "let p = a |>> helper", nil},
+		// The genuine tuple pipes stay pipes: they feed the token on their
+		// right more arguments, but it is still the function being applied.
+		{"double pipe without spaces", "let f a b = (a, b)||>helper", []string{"helper"}},
+		{"triple pipe without spaces", "let f a b c = (a, b, c)|||>helper", []string{"helper"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fsharpPipelineCallIdentifiers(tc.content)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for _, name := range tc.want {
+				if _, ok := got[name]; !ok {
+					t.Fatalf("missing %q in %v", name, got)
+				}
+			}
+		})
+	}
+}
+
+func TestFSharpPipelineCallsEscapedIdentifiers(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Escaped.fs", "module Escaped\n\n"+
+		"let ``normalize input`` (value: int) = value + 1\n\n"+
+		"let runBare value = value |> ``normalize input``\n\n"+
+		"let runQualified value = value |> Escaped.``normalize input``\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caller := range []string{"runBare", "runQualified"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "``normalize input``") {
+			t.Fatalf("missing escaped F# pipeline CALLS %s->``normalize input``: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+func TestFSharpCustomOperatorContainingAPipeIsNotACall(t *testing.T) {
+	// A user-defined symbolic operator whose name contains `|>` (`+|>`) is one
+	// operator token, not a forward pipe: its right operand is that operator's
+	// argument, so reading the substring as a pipe attributes an argument to a
+	// function that was never applied. The genuine tuple pipe `||>` in the same
+	// file must still resolve.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Operators.fs", `module Operators
+
+let helper (value: int) = value + 1
+
+let combine (a: int) (b: int) = a + b
+
+let (+|>) (left: int) (right: int) = left + right
+
+let custom (value: int) = value +|> helper
+
+let piped (a: int) (b: int) = (a, b) ||> combine
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "custom", "helper") {
+		t.Fatalf("fabricated CALLS custom->helper from the custom operator `+|>`: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "piped", "combine") {
+		t.Fatalf("missing CALLS piped->combine for the tuple pipe `||>`: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestFSharpTopLevelPipelineCallsResolve(t *testing.T) {
+	// A pipeline written as a statement rather than inside a binding — the
+	// normal shape of an .fsx script — belongs to no symbol, so it is scanned by
+	// the file-level pass, not the per-symbol one. Wiring the pipeline scanner
+	// into only the per-symbol pass left those calls invisible.
+	repo := t.TempDir()
+	writeFile(t, repo, "script.fsx", `let normalize (x: string) = x.Trim()
+
+let shout (s: string) = s.ToUpper()
+
+"  hi  " |> normalize |> shout |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"normalize", "shout"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "script.fsx", want) {
+			t.Fatalf("missing top-level F# pipeline CALLS script.fsx->%s: %#v", want, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+func TestFSharpQualifiedCallsStayInTheNamedModule(t *testing.T) {
+	// One F# file routinely declares several modules. Reducing `A.convert` to
+	// `convert` before matching threw away the only thing that says which
+	// definition was meant, and the call bound to whichever same-named
+	// definition was declared nearest — B's, here, for all three call forms.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Q.fs", `module A =
+    let convert (x: int) = x + 1
+
+module B =
+    let convert (x: int) = x * 2
+
+module Caller =
+    let parens (x: int) = A.convert(x)
+    let apply (x: int) = A.convert x
+    let piped (x: int) = x |> A.convert
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// A.convert is on line 2, B.convert on line 5; every caller sits below both.
+	wantLine := map[string]int{"parens": 8, "apply": 9, "piped": 10}
+	seen := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if _, tracked := wantLine[from.Name]; !tracked || to.Name != "convert" {
+			continue
+		}
+		seen[from.Name] = true
+		if to.StartLine != 2 {
+			t.Fatalf("%s (line %d) resolved A.convert to the definition on line %d, want line 2", from.Name, from.StartLine, to.StartLine)
+		}
+	}
+	for name := range wantLine {
+		if !seen[name] {
+			t.Fatalf("missing F# CALLS %s->convert: %#v", name, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+func TestFSharpUnqualifiedCallKeepsItsOwnDefinition(t *testing.T) {
+	// `A.convert(x)` restricts the name `convert` to module A for the whole
+	// block it appears in. An unqualified `convert(x)` in that same block has no
+	// dot and no pipe, so only the generic `name(` scanner saw it and it
+	// recorded no qualifier of its own -- it inherited A's and bound to
+	// A.convert instead of the definition in scope. A bare PIPE
+	// (`x |> convert`) already cleared the restriction, so the two spellings of
+	// the same call disagreed. Both scan paths carried it: the per-symbol one
+	// and the file-level one.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Mixed.fs", `module A =
+    let convert (x: int) = x + 1
+
+module B =
+    let convert (x: int) = x * 2
+
+    let mix (x: int) = convert(x) + A.convert(x)
+`)
+	writeFile(t, repo, "script.fsx", `let convert (x: int) = x + 1
+
+module A =
+    let convert (x: int) = x * 2
+
+convert(1) |> ignore
+A.convert(2) |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// B.mix means B's own convert (line 5), not A's (line 2). The qualified
+	// `A.convert(x)` beside it is a SEPARATE call site and keeps its own edge to
+	// line 2 -- that half is pinned by
+	// TestFSharpBareAndQualifiedCallsBothKeepTheirEdge -- so this asserts only
+	// that the bare spelling still reaches the definition in scope.
+	mixLines := map[int]bool{}
+	// The file-level statement means the file-level convert (line 1), not the
+	// one module A declares (line 4).
+	topLevelLines := map[int]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "convert" {
+			continue
+		}
+		from, isSymbol := symbolsByID[relation.FromID]
+		switch {
+		case isSymbol && from.Name == "mix":
+			mixLines[to.StartLine] = true
+		case !isSymbol && strings.Contains(relation.FromID, "script.fsx"):
+			topLevelLines[to.StartLine] = true
+		}
+	}
+	if !mixLines[5] {
+		t.Fatalf("bare convert(x) in module B did not reach its own definition on line 5; reached %v", sortedIntKeys(mixLines))
+	}
+	if !topLevelLines[1] {
+		t.Fatalf("top-level convert(1) did not reach the file-level definition on line 1; reached %v", sortedIntKeys(topLevelLines))
+	}
+}
+
+// TestFSharpBareAndQualifiedCallsBothKeepTheirEdge pins that the two spellings
+// of a call are two call sites, both of which reach the graph.
+//
+// `convert x` and `A.convert x` in one caller MEAN different things: the bare
+// one names no module and F# resolves it by scope, to B's own `convert`; the
+// qualified one names module A and can only be A's. Qualifier state recorded
+// both, but a bare sighting was treated as a veto -- it reported no qualifiers
+// at all, so BOTH sites went through unrestricted resolution, which emits only
+// the same-name definition nearest the call site. The `A.convert` edge was
+// dropped outright, and a reader asking who calls `A.convert` was told nobody.
+// Both scan paths carried it: the per-symbol one and the file-level one.
+func TestFSharpBareAndQualifiedCallsBothKeepTheirEdge(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Mixed.fs", `module A =
+    let convert (x: int) = x + 1
+
+module B =
+    let convert (x: int) = x * 2
+
+    let mix (x: int) = A.convert x; convert x
+`)
+	writeFile(t, repo, "script.fsx", `let convert (x: int) = x + 1
+
+module A =
+    let convert (x: int) = x * 2
+
+convert(1) |> ignore
+A.convert(2) |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	mixLines := map[int]bool{}
+	topLevelLines := map[int]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "convert" {
+			continue
+		}
+		from, isSymbol := symbolsByID[relation.FromID]
+		switch {
+		case isSymbol && from.Name == "mix":
+			mixLines[to.StartLine] = true
+		case !isSymbol && strings.Contains(relation.FromID, "script.fsx"):
+			topLevelLines[to.StartLine] = true
+		}
+	}
+	// A.convert is on line 2 and B's own on line 5, so qualified and bare
+	// juxtaposition calls in the same block reach exactly both.
+	if want := map[int]bool{2: true, 5: true}; !reflect.DeepEqual(mixLines, want) {
+		t.Fatalf("mix wrote bare and qualified juxtaposition calls but reached definitions on lines %v, want %v", sortedIntKeys(mixLines), sortedIntKeys(want))
+	}
+	// The script's own convert is on line 1 and module A's on line 4.
+	if want := map[int]bool{1: true, 4: true}; !reflect.DeepEqual(topLevelLines, want) {
+		t.Fatalf("top-level convert(1) and A.convert(2) reached definitions on lines %v, want %v", sortedIntKeys(topLevelLines), sortedIntKeys(want))
+	}
+}
+
+func TestFSharpEachQualifierResolvesToItsOwnModule(t *testing.T) {
+	// `x |> A.convert |> B.convert` is TWO calls, to two different modules'
+	// functions. Qualifier state was collapsed to one entry per short name, so
+	// the second qualifier conflicted with the first and cleared the restriction
+	// altogether; `resolveCallTargets` then fell back to the same-file definition
+	// nearest the call site and emitted a single edge -- one real call lost, and
+	// the survivor picked by line distance rather than by what was written (here
+	// it landed on `D.convert`, which only ever appears inside a comment).
+	// Both scan paths carried it: the per-symbol one and the file-level one.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Two.fs", `module A =
+    let convert (x: int) = x + 1
+
+module B =
+    let convert (x: int) = x * 2
+
+module D =
+    let convert (x: int) = x - 1
+
+module C =
+    let run (x: int) =
+        (* dead: x |> D.convert (* nested *) |> ignore *)
+        x |> A.convert |> B.convert
+`)
+	writeFile(t, repo, "script.fsx", `module A =
+    let convert (x: int) = x + 1
+
+module B =
+    let convert (x: int) = x * 2
+
+module D =
+    let convert (x: int) = x - 1
+
+(* dead: 1 |> D.convert (* nested *) |> ignore *)
+1 |> A.convert |> B.convert |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// A.convert is declared on line 2, B.convert on line 5, and the only mention
+	// of D.convert (line 8) is commented out, so each caller must reach exactly
+	// lines 2 and 5.
+	runLines := map[int]bool{}
+	topLevelLines := map[int]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "convert" {
+			continue
+		}
+		from, isSymbol := symbolsByID[relation.FromID]
+		switch {
+		case isSymbol && from.Name == "run":
+			runLines[to.StartLine] = true
+		case !isSymbol && strings.Contains(relation.FromID, "script.fsx"):
+			topLevelLines[to.StartLine] = true
+		}
+	}
+	want := map[int]bool{2: true, 5: true}
+	if !reflect.DeepEqual(runLines, want) {
+		t.Fatalf("run |> A.convert |> B.convert reached definitions on lines %v, want %v", sortedIntKeys(runLines), sortedIntKeys(want))
+	}
+	if !reflect.DeepEqual(topLevelLines, want) {
+		t.Fatalf("top-level 1 |> A.convert |> B.convert reached definitions on lines %v, want %v", sortedIntKeys(topLevelLines), sortedIntKeys(want))
+	}
+}
+
+func TestFSharpQualifierNamingAModuleInAnotherFile(t *testing.T) {
+	// F# modules are project-scoped and the usual layout is one module per
+	// file, so a qualifier almost always names a module the CALLER file does
+	// not declare. Deciding retention from the caller file's own declarations
+	// therefore discarded the qualifier on the common case: `x |> A.convert`
+	// written in C.fs was recorded as bare `convert`, and with `convert`
+	// declared in both A and B the globally-unique fallback then emitted NO
+	// edge at all -- the explicit qualifier cost the call its edge instead of
+	// pinning it. Both scan paths carried it: the per-symbol one and the
+	// file-level one.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module A =
+    let convert (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/B.fs", `module B =
+    let convert (x: int) = x * 2
+`)
+	writeFile(t, repo, "src/C.fs", `module C =
+    let run (x: int) = x |> A.convert
+`)
+	writeFile(t, repo, "script.fsx", `1 |> B.convert |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// A.convert and B.convert are both on line 2 of their own file, so the
+	// definition is identified by file, not by line.
+	runFiles := map[string]bool{}
+	topLevelFiles := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "convert" {
+			continue
+		}
+		from, isSymbol := symbolsByID[relation.FromID]
+		switch {
+		case isSymbol && from.Name == "run":
+			runFiles[filepath.Base(to.FilePath)] = true
+		case !isSymbol && strings.Contains(relation.FromID, "script.fsx"):
+			topLevelFiles[filepath.Base(to.FilePath)] = true
+		}
+	}
+	if want := map[string]bool{"A.fs": true}; !reflect.DeepEqual(runFiles, want) {
+		t.Errorf("`x |> A.convert` from C.fs reached %v, want %v", sortedKeysOf(runFiles), sortedKeysOf(want))
+	}
+	if want := map[string]bool{"B.fs": true}; !reflect.DeepEqual(topLevelFiles, want) {
+		t.Errorf("top-level `1 |> B.convert` reached %v, want %v", sortedKeysOf(topLevelFiles), sortedKeysOf(want))
+	}
+}
+
+func TestFSharpQualifierNamingNoDeclaredModuleKeepsItsEdge(t *testing.T) {
+	// The other half of the same gate, and the reason it cannot simply be
+	// dropped: most dotted call prefixes in F# are NOT project modules. A .NET
+	// namespace (`System.Text.encode`) and a value receiver (`svc.encode`) name
+	// no module this project declares, so they restrict nothing and the call
+	// resolves by name as an unqualified one does. Holding them to the module
+	// path they spell would restrict resolution to an empty scope and drop the
+	// edge outright -- trading the cross-file bug above for a worse one.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Codec.fs", `module Codec =
+    let encode (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/Use.fs", `module Use =
+    let viaNamespace (x: int) = System.Text.encode x
+
+    let viaValue (svc: Svc) (x: int) = svc.encode x
+`)
+	writeFile(t, repo, "script.fsx", `System.Text.encode 1 |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	callers := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "encode" || filepath.Base(to.FilePath) != "Codec.fs" {
+			continue
+		}
+		if from, isSymbol := symbolsByID[relation.FromID]; isSymbol {
+			callers[from.Name] = true
+		} else if strings.Contains(relation.FromID, "script.fsx") {
+			callers["script.fsx"] = true
+		}
+	}
+	want := map[string]bool{"viaNamespace": true, "viaValue": true, "script.fsx": true}
+	if !reflect.DeepEqual(callers, want) {
+		t.Errorf("a dotted prefix naming no declared module lost its edge: reached from %v, want %v", sortedKeysOf(callers), sortedKeysOf(want))
+	}
+}
+
+func TestFSharpModuleInitCallsSurvive(t *testing.T) {
+	// A module-level `do` binding is initialisation code: it runs when the
+	// module loads, it belongs to no nested binding, and the file-level pass
+	// cannot see it because that pass masks the module's whole line range.
+	// Withdrawing EVERY call attributed to an F# module -- the blunt cure for a
+	// module being credited with the calls its members make -- therefore took
+	// these real edges with it. Scanning the module's own source with its
+	// members blanked out keeps both halves honest, so this pins the three
+	// facts together: the init call is emitted, the member's call is NOT
+	// re-attributed to the module, and the member still emits it itself.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Init.fs", `module Registry =
+    let register (n: int) = n
+
+    let touch (n: int) = n
+
+    let dead (n: int) = n
+
+module Startup =
+    let boot (n: int) = Registry.touch n
+
+    (* disabled: 9 |> Registry.dead (* nested *) |> ignore *)
+    do Registry.register 1 |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	edges := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		edges[from.Name+"->"+to.Name] = true
+	}
+	// The `do` binding is the module's own call.
+	if !edges["Startup->register"] {
+		t.Errorf("module-init `do Registry.register 1` lost its CALLS edge: %v", sortedKeysOf(edges))
+	}
+	// `Registry.touch` is written inside `boot`, so it stays boot's alone: the
+	// module's block spans boot, and crediting the module too invents a caller.
+	if edges["Startup->touch"] {
+		t.Errorf("module Startup credited with boot's call to touch: %v", sortedKeysOf(edges))
+	}
+	if !edges["boot->touch"] {
+		t.Errorf("the real edge boot -> touch was withdrawn: %v", sortedKeysOf(edges))
+	}
+	// A module must not be credited with calling the definitions it declares:
+	// `let boot (n: int) = ...` is a definition head, not a call site.
+	for _, fabricated := range []string{"Startup->boot", "Registry->register", "Registry->touch", "Registry->dead"} {
+		if edges[fabricated] {
+			t.Errorf("a definition head was scanned as a call: %s in %v", fabricated, sortedKeysOf(edges))
+		}
+	}
+	// Nested `(* ... *)` masking has to hold on the module-init block too.
+	if edges["Startup->dead"] {
+		t.Errorf("a commented-out call was scanned as a module-init call: %v", sortedKeysOf(edges))
+	}
+}
+
+func TestFSharpQualifierNamingTheCallersOwnModule(t *testing.T) {
+	// A qualifier is resolved relative to the caller by concatenation
+	// (`callerPath + "." + qualifier`). When the caller is ALREADY inside the
+	// module the qualifier names, that repeats the last segment
+	// (`LoadingScripts.ScriptGeneration` + `ScriptGeneration`), the exact match
+	// finds nothing, and the plain-suffix fallback admits BOTH the nested
+	// `LoadingScripts.ScriptGeneration` and an unrelated top-level
+	// `ScriptGeneration`. `resolveCallTargets` then picks by line distance, so
+	// the edge lands on whichever definition happens to sit nearer the call --
+	// here the top-level one, which the caller cannot mean.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Nested.fs", `module LoadingScripts =
+    module ScriptGeneration =
+        let build (x: int) = x * 2
+        let pad1 (x: int) = x
+        let pad2 (x: int) = x
+        let pad3 (x: int) = x
+        let pad4 (x: int) = x
+        let pad5 (x: int) = x
+        let pad6 (x: int) = x
+        let run (x: int) = ScriptGeneration.build x
+
+module ScriptGeneration =
+    let build (x: int) = x + 1
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// From inside `LoadingScripts.ScriptGeneration`, `ScriptGeneration.build`
+	// names that module's own build (line 3), never the top-level one (line 13),
+	// which is merely the nearer of the two to the call site on line 10.
+	seen := false
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if from.Name != "run" || to.Name != "build" {
+			continue
+		}
+		seen = true
+		if to.StartLine != 3 {
+			t.Fatalf("ScriptGeneration.build from inside LoadingScripts.ScriptGeneration resolved to the definition on line %d, want line 3", to.StartLine)
+		}
+	}
+	if !seen {
+		t.Fatalf("missing F# CALLS run->build: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func sortedIntKeys(m map[int]bool) []int {
+	out := make([]int, 0, len(m))
+	for key := range m {
+		out = append(out, key)
+	}
+	sort.Ints(out)
+	return out
+}
+
 func TestSwiftProtocolDeclarationsEmitted(t *testing.T) {
 	// tree-sitter-swift emits protocol_declaration; an Objective-C-only gate
 	// on that node type silently dropped every Swift protocol (regression
@@ -18305,6 +18955,2325 @@ func TestSignatureNamesQualifiedMethodUsesTokenBoundaries(t *testing.T) {
 			if got := signatureNamesQualifiedMethod(testCase.signature, testCase.container, testCase.method); got != testCase.want {
 				t.Fatalf("signatureNamesQualifiedMethod(%q, %q, %q) = %v, want %v",
 					testCase.signature, testCase.container, testCase.method, got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestFSharpCustomOperatorContainingADollarIsNotACall(t *testing.T) {
+	// `$` is an op-char in F#'s own lexer (`let op_char = '!'|'$'|'%'|...`), so
+	// `$|>` is ONE operator token exactly as `+|>` is. Omitting `$` from the
+	// scanner's op-char set stopped the walk that finds the token's real extent:
+	// `value $|> helper` was read as a plain forward pipe and fabricated a call
+	// to helper, which is the custom operator's right operand.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Dollars.fs", `module Dollars
+
+let helper (value: int) = value + 1
+
+let combine (a: int) (b: int) = a + b
+
+let ($|>) (left: int) (right: int) = left + right
+
+let custom (value: int) = value $|> helper
+
+let piped (a: int) (b: int) = (a, b) ||> combine
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "custom", "helper") {
+		t.Fatalf("fabricated CALLS custom->helper from the custom operator `$|>`: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "piped", "combine") {
+		t.Fatalf("missing CALLS piped->combine for the tuple pipe `||>`: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestFSharpRelativeQualifierResolvesFromAnEnclosingScope(t *testing.T) {
+	// A relative qualifier is read from the caller OUTWARDS, one enclosing module
+	// at a time. Only the innermost reading (`callerPath + "." + qualifier`) and
+	// the caller's own path were tried, so a qualifier naming a SIBLING module --
+	// `A.build` from inside `Outer.Caller`, meaning `Outer.A` -- matched neither
+	// and dropped to the plain suffix, which admits `Outer.A` AND an unrelated
+	// top-level `A`. `resolveCallTargets` then picked by line distance, landing
+	// on the top-level definition the caller cannot mean.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Sibling.fs", `module Outer =
+    module A =
+        let build (x: int) = x * 2
+
+    module Caller =
+        let pad1 (x: int) = x
+        let pad2 (x: int) = x
+        let pad3 (x: int) = x
+        let pad4 (x: int) = x
+        let pad5 (x: int) = x
+        let run (x: int) = A.build x
+
+module A =
+    let build (x: int) = x + 1
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// From inside `Outer.Caller`, `A.build` names the sibling `Outer.A` (line 3),
+	// never the top-level `A` (line 14) that merely sits nearer the call.
+	seen := false
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if from.Name != "run" || to.Name != "build" {
+			continue
+		}
+		seen = true
+		if to.StartLine != 3 {
+			t.Fatalf("A.build from inside Outer.Caller resolved to the definition on line %d, want line 3", to.StartLine)
+		}
+	}
+	if !seen {
+		t.Fatalf("missing F# CALLS run->build: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestFSharpRelativeQualifierNamingASiblingModuleInAnotherFile(t *testing.T) {
+	// The same relative reading, across files -- which is the NORMAL case,
+	// because F# modules are project-scoped and the usual layout is one module
+	// per file. `Outer.A` lives in Sibling.fs and its sibling `Outer.Caller` in
+	// Caller.fs, so `A.build` written inside `Outer.Caller` means `Outer.A`.
+	// Deciding which reading applies from the candidates that sat in the
+	// CALLER's file made that reading unmatchable and dropped every caller to
+	// the plain suffix, which admits `Outer.A` AND an unrelated top-level `A` --
+	// and it went wrong in both directions at once:
+	//
+	//   run  (Caller.fs) also declares the top-level `A` in its own file, so the
+	//        OUTERMOST reading matched there and won: the farther scope shadowed
+	//        the nearer one the caller actually meant.
+	//   run2 (Other.fs)  declares neither, so no reading matched at all and the
+	//        two suffix candidates left the call ambiguous -- no edge emitted.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Sibling.fs", `module Outer =
+    module A =
+        let build (x: int) = x * 2
+`)
+	writeFile(t, repo, "src/Caller.fs", `module Outer =
+    module Caller =
+        let run (x: int) = A.build x
+
+module A =
+    let build (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/Other.fs", `module Outer =
+    module Caller2 =
+        let run2 (x: int) = A.build x
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// Both callers must land on `Outer.A.build`, Sibling.fs line 3 -- never on
+	// the top-level `A.build` that merely sits in Caller.fs.
+	reached := map[string]string{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if to.Name != "build" || (from.Name != "run" && from.Name != "run2") {
+			continue
+		}
+		reached[from.Name] = fmt.Sprintf("%s:%d", filepath.Base(to.FilePath), to.StartLine)
+	}
+	want := map[string]string{"run": "Sibling.fs:3", "run2": "Sibling.fs:3"}
+	if !reflect.DeepEqual(reached, want) {
+		t.Fatalf("`A.build` inside `Outer.Caller`/`Outer.Caller2` reached %v, want %v", reached, want)
+	}
+}
+
+func TestFSharpQualifierNamingAModuleInANamespace(t *testing.T) {
+	// `namespace X` nests everything below it under X, and F# emits no symbol
+	// for it -- a namespace holds no bindings of its own, so there is nothing
+	// to emit. The module path built from the container chain therefore started
+	// at the module and recorded `A` where the source says `X.A`, and the call
+	// naming that member in full, `X.A.convert`, matched no declared module at
+	// all: it recorded as an unqualified `convert`, resolved unrestricted, and
+	// with `Y.A` declaring the same name the ambiguity dropped the edge
+	// outright -- the one call form that named its target exactly was the one
+	// that lost it.
+	//
+	// The relative spelling lost the same way: from inside `X.Caller2`,
+	// `A.convert` read as the bare `A`, which BOTH namespaces' modules matched.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `namespace X
+
+module A =
+    let convert (x: int) = x * 2
+`)
+	writeFile(t, repo, "src/B.fs", `namespace Y
+
+module A =
+    let convert (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/Caller.fs", `module Caller
+
+let run (x: int) = X.A.convert x
+`)
+	writeFile(t, repo, "src/Sibling.fs", `namespace X
+
+module Caller2 =
+    let run2 (x: int) = A.convert x
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// Both callers name module `X.A`, whose `convert` is src/A.fs line 4 --
+	// never `Y.A`'s on src/B.fs line 4.
+	reached := map[string]string{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if to.Name != "convert" || (from.Name != "run" && from.Name != "run2") {
+			continue
+		}
+		reached[from.Name] = fmt.Sprintf("%s:%d", filepath.Base(to.FilePath), to.StartLine)
+	}
+	want := map[string]string{"run": "A.fs:4", "run2": "A.fs:4"}
+	if !reflect.DeepEqual(reached, want) {
+		t.Fatalf("`X.A.convert` / `A.convert` inside namespace X reached %v, want %v", reached, want)
+	}
+}
+
+func TestFSharpFileLevelQualifierNamesTheTopLevelModule(t *testing.T) {
+	// A statement at file level -- the normal shape of an .fsx script -- sits in
+	// no module, so it passes the empty caller path, and that reading skipped
+	// the exact-path walk entirely and went straight to the suffix. The suffix
+	// admits a NESTED `Outer.A` for the qualifier `A`, and here the nested one
+	// is declared in the script's own file, so the same-file branch of
+	// resolveCallTargets bound `A.build` to `Outer.A.build` -- a module the
+	// script never named -- instead of the top-level `A.build` it did.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Top.fs", `module A =
+    let build (x: int) = x + 1
+`)
+	writeFile(t, repo, "script.fsx", `module Outer =
+    module A =
+        let build (x: int) = x * 2
+
+A.build 3 |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	// The caller is the FILE (a file-level statement belongs to no symbol), so
+	// only the target is named here.
+	var reached []string
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if from.ID != "" || to.Name != "build" {
+			continue
+		}
+		reached = append(reached, fmt.Sprintf("%s:%d", filepath.Base(to.FilePath), to.StartLine))
+	}
+	want := []string{"Top.fs:2"}
+	if !reflect.DeepEqual(reached, want) {
+		t.Fatalf("file-level `A.build` reached %v, want %v", reached, want)
+	}
+}
+
+func TestFSharpFileLevelQualifierStillFallsBackToTheSuffix(t *testing.T) {
+	// The case the suffix fallback exists for, held from a file-level caller: a
+	// qualifier naming a module only ever declared INSIDE another one, reached
+	// through an `open` this does not model. Nothing declares a top-level `A`,
+	// so `A.build` has no exact reading, and narrowing the file-level path to
+	// the exact reading must not cost this edge -- the suffix still finds
+	// `Outer.A.build`.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Sibling.fs", `module Outer =
+    module A =
+        let build (x: int) = x * 2
+`)
+	writeFile(t, repo, "script.fsx", `open Outer
+
+A.build 3 |> ignore
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	var reached []string
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if from.ID != "" || to.Name != "build" {
+			continue
+		}
+		reached = append(reached, fmt.Sprintf("%s:%d", filepath.Base(to.FilePath), to.StartLine))
+	}
+	want := []string{"Sibling.fs:3"}
+	if !reflect.DeepEqual(reached, want) {
+		t.Fatalf("file-level `A.build` naming a module declared only inside `Outer` reached %v, want %v", reached, want)
+	}
+}
+
+func TestFSharpQualifierIsNotBlockedByAnotherLanguagesSameName(t *testing.T) {
+	// A repository is rarely one language. `A.convert` names module A's
+	// `convert` and nothing else, but the candidate set is global and holds
+	// every same-named symbol in the project -- including a Python `convert`
+	// that carries no F# module path at all. Exempting pathless symbols from
+	// the qualifier (right for the modules it cannot speak about) left the
+	// Python one standing beside the F# one, and `resolveCallTargets` saw two
+	// candidates for a name the qualifier had already made unique: no edge.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module A =
+    let convert (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/C.fs", `module C =
+    let run (x: int) = x |> A.convert
+`)
+	writeFile(t, repo, "script.fsx", `1 |> A.convert |> ignore
+`)
+	writeFile(t, repo, "tools/util.py", `def convert(x):
+    return x + 1
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	runFiles := map[string]bool{}
+	topLevelFiles := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "convert" {
+			continue
+		}
+		from, isSymbol := symbolsByID[relation.FromID]
+		switch {
+		case isSymbol && from.Name == "run":
+			runFiles[filepath.Base(to.FilePath)] = true
+		case !isSymbol && strings.Contains(relation.FromID, "script.fsx"):
+			topLevelFiles[filepath.Base(to.FilePath)] = true
+		}
+	}
+	if want := map[string]bool{"A.fs": true}; !reflect.DeepEqual(runFiles, want) {
+		t.Errorf("`x |> A.convert` from C.fs reached %v, want %v", sortedKeysOf(runFiles), sortedKeysOf(want))
+	}
+	if want := map[string]bool{"A.fs": true}; !reflect.DeepEqual(topLevelFiles, want) {
+		t.Errorf("top-level `1 |> A.convert` reached %v, want %v", sortedKeysOf(topLevelFiles), sortedKeysOf(want))
+	}
+}
+
+func TestFSharpQualifierDoesNotFallBackToAForeignHomonym(t *testing.T) {
+	// `Codec.encode` explicitly names the declared F# module Codec. When that
+	// module lacks encode, the call is unresolved; an unrelated Python encode
+	// with the same terminal name is not a valid fallback.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Codec.fs", `module Codec =
+    let decode (x: int) = x - 1
+`)
+	writeFile(t, repo, "src/Use.fs", `module Use =
+    let run (x: int) = x |> Codec.encode
+`)
+	writeFile(t, repo, "tools/codec.py", `def encode(x):
+    return x + 1
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	reached := map[string]bool{}
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to := symbolsByID[relation.ToID]
+		if to.Name != "encode" {
+			continue
+		}
+		if from, isSymbol := symbolsByID[relation.FromID]; isSymbol && from.Name == "run" {
+			reached[filepath.Base(to.FilePath)] = true
+		}
+	}
+	if len(reached) != 0 {
+		t.Errorf("`Codec.encode` from Use.fs fabricated cross-language targets: %v", sortedKeysOf(reached))
+	}
+}
+
+func TestFSharpInterpolatedStringsKeepTheirEnclosingDefinition(t *testing.T) {
+	// The vendored ionide/tree-sitter-fsharp grammar knows only `$"..."` and
+	// `$"""..."""`. Three ordinary interpolation spellings misparse, and the
+	// damage lands on the ENCLOSING declaration, not the literal:
+	//
+	//   - `$@"..."` (interpolated verbatim) has no rule, so the `$` reads as an
+	//     infix operator and `let verbatimHost x = ...` degrades to a
+	//     value_declaration_left -- the function is extracted as kind
+	//     `variable`;
+	//   - `$$"""..."""` (F# 8 doubled sigil) leaves one `$` over as that same
+	//     infix operator, demoting the binding the same way;
+	//   - `$"...{{x}}..."` (doubled-brace escape) fails to a root ERROR node,
+	//     which costs the FILE every symbol in it, `module Interp` included.
+	//
+	// A demoted or absent definition cannot be a call target, so the assertion
+	// that matters is the edge: every CALLS into these three vanished with
+	// them, and the module's truncated end line mis-scoped the rest of the file.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Interp.fs", `module Interp
+
+let verbatimHost x =
+    let s = $@"hi {x} there"
+    s
+
+let doubledRawHost x =
+    let s = $$"""hi {{x}} there"""
+    s
+
+let escapedHost x =
+    let s = $"hi {{x}} there"
+    s
+
+let tail x = x + 1
+`)
+	writeFile(t, repo, "src/Caller.fs", `module Caller
+
+let run x =
+    Interp.verbatimHost(x)
+    Interp.doubledRawHost(x)
+    Interp.escapedHost(x)
+    Interp.tail(x)
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	moduleEnd := 0
+	for _, symbol := range snapshot.Symbols {
+		if symbol.Language != "F#" || symbol.FilePath != "src/Interp.fs" {
+			continue
+		}
+		kinds[symbol.Name] = symbol.Kind
+		if symbol.Name == "Interp" {
+			moduleEnd = symbol.EndLine
+		}
+	}
+	for _, name := range []string{"verbatimHost", "doubledRawHost", "escapedHost", "tail"} {
+		if kinds[name] != "function" {
+			t.Errorf("F# `%s` extracted as %q, want \"function\": %#v", name, kinds[name], kinds)
+		}
+	}
+	// `let tail` is the last line of the file; a module that stops short of it
+	// mis-scopes every declaration below the interpolated string.
+	if moduleEnd != 15 {
+		t.Errorf("module Interp ends at line %d, want 15: %#v", moduleEnd, kinds)
+	}
+	for _, callee := range []string{"verbatimHost", "doubledRawHost", "escapedHost", "tail"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "run", callee) {
+			t.Errorf("missing CALLS run->%s: %#v", callee, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+func TestFSharpEmptyStringDoesNotSwallowTheNextLiteral(t *testing.T) {
+	// The entity-side masker read the RUN of quotes standing at an opener as
+	// the width of that opener's delimiter. An empty string is a two-quote run,
+	// so `""` was taken for a two-quote opener and fsharpStringEnd went looking
+	// for a closing quote that had already been consumed -- on across newlines,
+	// because an ordinary string body is not stopped by one. A verbatim literal
+	// that opens on an escaped quote (`@"""a"" b"`) went wrong the same way: its
+	// three-quote run was read as the raw form, whose closing run is not there,
+	// so it ran to EOF.
+	//
+	// Either way the outer scan resumed deep inside -- or past -- the rest of
+	// the file and never saw the `$@"..."` after it. That form has no rule in
+	// the vendored grammar, so the binding holding it degrades to an
+	// infix_expression: the definition is extracted as `variable` instead of
+	// `function`, and a demoted definition cannot be a call target, so every
+	// CALLS edge into it disappears with it.
+	//
+	// Each hazard gets its own file: a later literal can resync the scan by
+	// luck, which would let one of them ride along on another's fix.
+	for name, hazard := range map[string]string{
+		"empty string":           `""`,
+		"empty verbatim string":  `@""`,
+		"verbatim escaped quote": `@"""a"" b"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, repo, "src/Interp.fs", `module Interp
+
+let hazard = `+hazard+`
+
+let host x =
+    let s = $@"hi {x} there"
+    s
+
+let tail x = x + 1
+`)
+			writeFile(t, repo, "src/Caller.fs", `module Caller
+
+let run x =
+    Interp.host(x)
+    Interp.tail(x)
+`)
+			snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			kinds := map[string]string{}
+			moduleEnd := 0
+			for _, symbol := range snapshot.Symbols {
+				if symbol.Language != "F#" || symbol.FilePath != "src/Interp.fs" {
+					continue
+				}
+				kinds[symbol.Name] = symbol.Kind
+				if symbol.Name == "Interp" {
+					moduleEnd = symbol.EndLine
+				}
+			}
+			for _, want := range []string{"host", "tail"} {
+				if kinds[want] != "function" {
+					t.Errorf("F# `%s` extracted as %q, want \"function\": %#v", want, kinds[want], kinds)
+				}
+			}
+			// `let tail` is the last line of the file; a module that stops short
+			// of it mis-scopes every declaration below the swallowed literal.
+			if moduleEnd != 9 {
+				t.Errorf("module Interp ends at line %d, want 9: %#v", moduleEnd, kinds)
+			}
+			for _, callee := range []string{"host", "tail"} {
+				if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "run", callee) {
+					t.Errorf("missing CALLS run->%s: %#v", callee, relationsOfType(snapshot.Relations, "CALLS"))
+				}
+			}
+		})
+	}
+}
+
+func TestFSharpInterpolationSigilInsideALiteralIsNotAnOpener(t *testing.T) {
+	// The OTHER direction. Reading `""` as an empty string means the scan walks
+	// on through the file instead of skipping ahead, so it now passes over
+	// every literal in between -- and it must still recognise their bodies as
+	// literal text. A `$@"` spelled inside a triple-quoted doc string or inside
+	// a verbatim string is text, not an opener: blanking its sigils there would
+	// rewrite the body of a literal the grammar already parses, and dropping a
+	// literal early would let the quotes inside it open phantom literals that
+	// desynchronise every mask after them.
+	source := "let empty = \"\"\n" +
+		"let doc = \"\"\"\nexample: $@\"not code\"\n\"\"\"\n" +
+		"let verb = @\"a \"\" $@\"\"not code\"\" b\"\n" +
+		"let real x = $@\"hi {x}\"\n"
+	masked := maskFSharpUnsupportedSyntax(source)
+	if len(masked) != len(source) {
+		t.Fatalf("mask changed byte length: %d != %d", len(masked), len(source))
+	}
+	if strings.Count(masked, "\n") != strings.Count(source, "\n") {
+		t.Fatalf("mask changed line count: %d != %d", strings.Count(masked, "\n"), strings.Count(source, "\n"))
+	}
+	for _, keep := range []string{
+		"example: $@\"not code\"",     // inside a triple-quoted literal
+		"a \"\" $@\"\"not code\"\" b", // inside a verbatim literal
+		"let empty = \"\"",
+	} {
+		if !strings.Contains(masked, keep) {
+			t.Errorf("mask rewrote %q, which is literal text:\n%s", keep, masked)
+		}
+	}
+	// ...and the one that really is an opener is still masked.
+	if want := "let real x =  @\"hi {x}\""; !strings.Contains(masked, want) {
+		t.Errorf("mask did not produce %q:\n%s", want, masked)
+	}
+}
+
+func TestMaskFSharpUnsupportedSyntaxPreservesOffsets(t *testing.T) {
+	// Entity names and signatures are sliced out of the UNMASKED source at the
+	// offsets the masked parse reports, so the mask has to be byte-length- and
+	// line-preserving. It also has to leave alone the two forms the grammar
+	// does parse, and the `$` that is an op-char rather than a sigil.
+	source := `module M
+
+let ($|>) a b = a + b
+// a comment with $@"not a string
+(* a (* nested *) comment with $"{{x}} *)
+let fine x = $"hi {x}"
+let alsoFine x = $"""hi {x}"""
+let verbatim x = $@"hi {x}
+spanning"
+let raw x = $$"""hi {{x}}
+spanning"""
+let escaped x = $"hi {{x}}"
+let charLiteral = '"'
+`
+	masked := maskFSharpUnsupportedSyntax(source)
+	if len(masked) != len(source) {
+		t.Fatalf("mask changed byte length: %d != %d", len(masked), len(source))
+	}
+	if strings.Count(masked, "\n") != strings.Count(source, "\n") {
+		t.Fatalf("mask changed line count: %d != %d", strings.Count(masked, "\n"), strings.Count(source, "\n"))
+	}
+	for _, keep := range []string{
+		"let ($|>) a b = a + b",          // `$` as an op-char, not a sigil
+		`let fine x = $"hi {x}"`,         // format_string: parsed natively
+		`let alsoFine x = $"""hi {x}"""`, // format_triple_quoted_string: parsed natively
+		`// a comment with $@"not a string`,
+		`(* a (* nested *) comment with $"{{x}} *)`,
+	} {
+		if !strings.Contains(masked, keep) {
+			t.Errorf("mask rewrote %q, which the grammar already parses:\n%s", keep, masked)
+		}
+	}
+	for _, want := range []string{
+		"let verbatim x =  @\"hi {x}\nspanning\"",      // `$@"` -> ` @"`, body untouched
+		"let raw x =   \"\"\"hi {{x}}\nspanning\"\"\"", // `$$"""` -> `   """`
+		"let escaped x =  \"hi {{x}}\"",                // `$"` -> ` "`
+	} {
+		if !strings.Contains(masked, want) {
+			t.Errorf("mask did not produce %q:\n%s", want, masked)
+		}
+	}
+}
+
+func TestFSharpQualifierShadowedByALocalBindingIsNotAModuleQualifier(t *testing.T) {
+	// A dotted prefix was classified by the PROJECT's module declarations alone.
+	// That is the wrong question when the file rebinds the name: an F# module
+	// abbreviation (`module Json = Newtonsoft.Json`) and an ordinary value
+	// binding (`let Json = ...`) both shadow the module of that name, so
+	// `Json.serialize` names the alias, not the project's `Json` module -- and
+	// holding it to that module pinned the call to a definition the source never
+	// named, over the `serialize` actually in scope.
+	//
+	// The shadowed spelling joins the class the gate already documents -- a .NET
+	// namespace (`System.Text.encode`), a value receiver (`svc.encode`) -- and
+	// records bare, resolving unrestricted instead of inside a module it does
+	// not mean. The unshadowed control proves the gate itself is untouched.
+	callee := func(t *testing.T, useSource string) string {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+		writeFile(t, repo, "src/Use.fs", useSource)
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		symbolsByID := map[string]SymbolRecord{}
+		for _, symbol := range snapshot.Symbols {
+			symbolsByID[symbol.ID] = symbol
+		}
+		reached := ""
+		for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+			to, isSymbol := symbolsByID[relation.ToID]
+			if !isSymbol || to.Name != "serialize" {
+				continue
+			}
+			if from, fromIsSymbol := symbolsByID[relation.FromID]; !fromIsSymbol || from.Name != "run" {
+				continue
+			}
+			reached = filepath.Base(to.FilePath)
+		}
+		return reached
+	}
+
+	for _, shadow := range []struct{ name, binding string }{
+		{"module abbreviation", "module Json = Newtonsoft.Json"},
+		{"value binding", "let Json = Newtonsoft.Json.JsonConvert"},
+	} {
+		t.Run(shadow.name, func(t *testing.T) {
+			got := callee(t, `module Use
+
+`+shadow.binding+`
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+			if got != "Use.fs" {
+				t.Errorf("`Json.serialize` under a local `%s` resolved into %q, want the `serialize` in scope (Use.fs)", shadow.binding, got)
+			}
+		})
+	}
+
+	t.Run("unshadowed control", func(t *testing.T) {
+		// Nothing rebinds `Json` here, so the qualifier really does name the
+		// project module and must still be held to it -- otherwise this fix
+		// would have deleted the restriction rather than narrowed it.
+		got := callee(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if got != "Json.fs" {
+			t.Errorf("`Json.serialize` with no local binding resolved into %q, want the named module (Json.fs)", got)
+		}
+	})
+}
+
+func TestFSharpQualifierShadowAppliesOnlyWhereTheBindingIsInScope(t *testing.T) {
+	// The shadow set was collected file-wide, so it ignored where the shadowing
+	// binding actually sits and when it comes into scope. A `let Json = ...`
+	// inside ONE function, or written AFTER the call, still un-qualified every
+	// `Json.serialize` in the file -- and because a bare qualifier resolves
+	// unrestricted, the call did not merely lose a restriction, it bound the
+	// same-file `serialize` instead of the project module the source named.
+	//
+	// F#'s scoping is lexical and ordered: a binding indented inside a function
+	// body is gone at the dedent that ends it, and a module-level binding is
+	// invisible to everything written above it. The last case is the control
+	// for the opposite error -- narrowing the shadow must not lose it where the
+	// binding genuinely does apply.
+	callee := func(t *testing.T, useSource string) string {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+		writeFile(t, repo, "src/Use.fs", useSource)
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		symbolsByID := map[string]SymbolRecord{}
+		for _, symbol := range snapshot.Symbols {
+			symbolsByID[symbol.ID] = symbol
+		}
+		reached := ""
+		for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+			to, isSymbol := symbolsByID[relation.ToID]
+			if !isSymbol || to.Name != "serialize" {
+				continue
+			}
+			if from, fromIsSymbol := symbolsByID[relation.FromID]; !fromIsSymbol || from.Name != "run" {
+				continue
+			}
+			reached = filepath.Base(to.FilePath)
+		}
+		return reached
+	}
+
+	t.Run("binding local to a sibling function", func(t *testing.T) {
+		got := callee(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+
+let render (x: int) =
+    let Json = Newtonsoft.Json.JsonConvert
+    Json.ToString x
+`)
+		if got != "Json.fs" {
+			t.Errorf("`Json.serialize` in `run` resolved into %q, want the named module (Json.fs): the `let Json` binding is scoped to `render`", got)
+		}
+	})
+
+	t.Run("binding declared after the call", func(t *testing.T) {
+		got := callee(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+
+let Json = Newtonsoft.Json.JsonConvert
+`)
+		if got != "Json.fs" {
+			t.Errorf("`Json.serialize` above the binding resolved into %q, want the named module (Json.fs): the `let Json` binding is not in scope yet", got)
+		}
+	})
+
+	t.Run("binding in scope at the call still shadows", func(t *testing.T) {
+		got := callee(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Newtonsoft.Json.JsonConvert
+    Json.serialize(x)
+`)
+		if got != "Use.fs" {
+			t.Errorf("`Json.serialize` under its own function-local `let Json` resolved into %q, want the `serialize` in scope (Use.fs)", got)
+		}
+	})
+}
+
+// fsharpSerializeCalleesOfRun builds a two-file F# project whose `src/Json.fs`
+// declares a project module `Json` with a `serialize`, and reports which files'
+// `serialize` the `run` function in `src/Use.fs` reaches. A qualifier held to
+// the project module reaches Json.fs; one that records bare resolves
+// unrestricted and reaches the same-file Use.fs definition, so the pair of file
+// names IS the classification under test.
+func fsharpSerializeCalleesOfRun(t *testing.T, useSource string) []string {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/Use.fs", useSource)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	var reached []string
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to, isSymbol := symbolsByID[relation.ToID]
+		if !isSymbol || to.Name != "serialize" {
+			continue
+		}
+		if from, fromIsSymbol := symbolsByID[relation.FromID]; !fromIsSymbol || from.Name != "run" {
+			continue
+		}
+		reached = append(reached, filepath.Base(to.FilePath))
+	}
+	sort.Strings(reached)
+	return slices.Compact(reached)
+}
+
+func TestFSharpModuleAbbreviationIsNotRecognisedByTheCaseOfItsPath(t *testing.T) {
+	// A module abbreviation was recognised only when its right-hand side began
+	// with an UPPERCASE letter. That is not what makes a line an abbreviation --
+	// it is only how the paths in the common case happen to be spelled. F#
+	// writes the global namespace with the lowercase keyword `global`, and lets
+	// a module or namespace be named in lowercase or with a leading underscore,
+	// so those abbreviations were missed entirely.
+	//
+	// A missed abbreviation is not a neutral omission. The qualifier is then
+	// classified by the project's module declarations alone, so `Json.serialize`
+	// written under `module Json = <path>` was answered by an unrelated project
+	// module that happens to be called `Json` -- an edge into a definition the
+	// source never named, in place of the `serialize` the alias leaves in scope.
+	for _, abbreviation := range []struct{ name, path string }{
+		{"global namespace keyword", "global.Newtonsoft.Json"},
+		{"lowercase module path", "newtonsoft.Json"},
+		{"underscore-led module path", "_internal.Json"},
+		{"uppercase control", "Newtonsoft.Json"},
+	} {
+		t.Run(abbreviation.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+module Json = `+abbreviation.path+`
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `module Json = %s` reached %v, want %v: the abbreviation shadows the project module `Json`", abbreviation.path, got, want)
+			}
+		})
+	}
+
+	t.Run("verbose nested module block is not an abbreviation", func(t *testing.T) {
+		// The opposite direction. `module M = begin ... end` is the verbose
+		// spelling of a nested module BLOCK: it opens a scope and binds no
+		// alias, so widening the pattern past the case of the right-hand side
+		// must not start reading it as one -- otherwise every such module would
+		// silently un-qualify calls that name it.
+		bindings := fsharpFileShadowBindings(`module Use
+
+module Json = begin
+    let helper (x: int) = x
+  end
+`)
+		for _, binding := range bindings {
+			if binding.name == "Json" {
+				t.Fatalf("`module Json = begin ... end` was read as a binding of %q shadowing from line %d; it opens a nested module block and binds no alias", binding.name, binding.fromLine)
+			}
+		}
+	})
+}
+
+func TestFSharpQualifierShadowBeginsAtTheBindingInsideOneBlock(t *testing.T) {
+	// The shadow set was collected once for a whole symbol block, so a binding
+	// written partway down a function was applied to the calls ABOVE it as well.
+	// F# scoping is ordered: `Json.serialize` written before `let Json = ...`
+	// still names the project module, and only the sighting below the binding
+	// names the alias.
+	//
+	// Because a shadowed qualifier records bare and resolves unrestricted, the
+	// earlier sighting did not merely lose a restriction -- both sightings
+	// collapsed onto the bare one, the module-qualified edge disappeared, and
+	// the call bound the same-file `serialize` instead of the module the source
+	// wrote.
+	t.Run("called before and after the binding", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let above = Json.serialize(x)
+    let Json = Newtonsoft.Json.JsonConvert
+    let below = Json.serialize(x)
+    above + below
+`)
+		if want := []string{"Json.fs", "Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` written above AND below `let Json` reached %v, want %v: the call above the binding still names the project module", got, want)
+		}
+	})
+
+	t.Run("called only below the binding", func(t *testing.T) {
+		// The opposite direction: narrowing the shadow to the lines the binding
+		// reaches must not lose it where the binding genuinely applies, and must
+		// not invent a qualified sighting that was never written.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Newtonsoft.Json.JsonConvert
+    let below = Json.serialize(x)
+    below
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` written only below `let Json` reached %v, want %v: the binding is in scope there", got, want)
+		}
+	})
+}
+
+func TestFSharpNonRecursiveBindingDoesNotShadowItsOwnInitializer(t *testing.T) {
+	// `let f = ...` is NOT recursive in F#: the name is invisible inside the
+	// initializer that defines it, and only comes into scope for what follows.
+	// The shadow was switched on at the binding LINE, so `let Json =
+	// Json.serialize x` read its own right-hand side under the new binding --
+	// and a shadowed qualifier records bare and resolves unrestricted, so the
+	// call bound the caller's own `serialize` instead of the project module
+	// `Json` the initializer names. That is the wrong-definition direction: not
+	// a lost restriction, an edge into a definition the source never wrote.
+	t.Run("single-line initializer", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Json.serialize(x)
+    Json
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` inside `let Json = ...`'s own initializer reached %v, want %v: a non-recursive binding is not in scope in its own right-hand side, so the qualifier still names the project module", got, want)
+		}
+	})
+
+	t.Run("multi-line initializer", func(t *testing.T) {
+		// The initializer is the offside block the binding opens, not just the
+		// text after the `=`, so the exclusion has to last as long as the
+		// right-hand side does.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json =
+        Json.serialize(x)
+    Json
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` on the continuation line of `let Json =`'s initializer reached %v, want %v: the binding is not in scope until its right-hand side ends", got, want)
+		}
+	})
+
+	// The opposite directions, which matter as much: narrowing the shadow off
+	// the initializer must not narrow it off anything else.
+	t.Run("the same binding still shadows below its initializer", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Json.serialize(x)
+    Json.serialize(x)
+`)
+		if want := []string{"Json.fs", "Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("the two `Json.serialize` sightings reached %v, want %v: the initializer's names the project module, the one BELOW the binding names the value it bound", got, want)
+		}
+	})
+
+	t.Run("a recursive binding does shadow its own body", func(t *testing.T) {
+		// `rec` is exactly the request for the opposite rule: the name IS in
+		// scope inside its own body, so the qualifier there names the binding
+		// and resolves unrestricted.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let rec Json = Json.serialize(x)
+    Json
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` inside `let rec Json = ...` reached %v, want %v: `rec` puts the binding in scope within its own body", got, want)
+		}
+	})
+
+	t.Run("a parameter still shadows on the header line", func(t *testing.T) {
+		// A parameter is not a `let` initializer: it is bound by the header and
+		// is in scope over the whole body the header opens, starting with the
+		// header line itself when the body is written there.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json: Newtonsoft.Json.JsonConvert) (x: int) = Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under a parameter named `Json` reached %v, want %v: a parameter shadows from the header line, unlike a `let` initializer", got, want)
+		}
+	})
+}
+
+func TestFSharpQualifierShadowedByAFunctionParameter(t *testing.T) {
+	// Shadow detection read only VALUE bindings, so the most common binder F#
+	// has -- a function's own parameters -- was invisible. `let run (Json:
+	// JsonConvert) x = Json.serialize x` names the PARAMETER, but the qualifier
+	// was still classified by the project's module declarations alone, so the
+	// call was pinned to an unrelated project module `Json` and fabricated an
+	// edge into a definition the source never wrote.
+	for _, shadow := range []struct{ name, source string }{
+		{"annotated parameter", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json: Newtonsoft.Json.JsonConvert) (x: int) = Json.serialize x
+`},
+		{"bare parameter", `module Use
+
+let serialize (x: int) = x * 2
+
+let run Json (x: int) = Json.serialize x
+`},
+		{"parameter over an indented body", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json: Newtonsoft.Json.JsonConvert) (x: int) =
+    Json.serialize(x)
+`},
+		{"tuple parameter", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json: Newtonsoft.Json.JsonConvert, x: int) = Json.serialize x
+`},
+	} {
+		t.Run(shadow.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, shadow.source)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under a %s named `Json` reached %v, want %v: the parameter shadows the project module `Json`", shadow.name, got, want)
+			}
+		})
+	}
+
+	// The opposite direction, which matters as much: a shadowed qualifier
+	// records bare and resolves UNRESTRICTED, so reading a binder where none is
+	// written does not merely lose a restriction -- it binds whatever same-name
+	// definition sits nearest instead of the module the source named.
+	for _, guard := range []struct{ name, why, source string }{
+		{"type annotation is not a binder", "`Json` here is the parameter's TYPE; the parameter is `x`", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: Json) = Json.serialize x
+`},
+		{"parameter does not outlive its own function", "a parameter lives in the body its header opens, and `helper` ends at the next binding at its own indent", `module Use
+
+let serialize (x: int) = x * 2
+
+let helper (Json: Newtonsoft.Json.JsonConvert) (x: int) = x
+
+let run (x: int) = Json.serialize x
+`},
+		{"union-case pattern is not a binder", "`Json payload` matches a union CASE and binds `payload`, not `Json`", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json payload) (x: int) = Json.serialize x
+`},
+	} {
+		t.Run(guard.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, guard.source)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` reached %v, want %v: %s, so nothing shadows the project module `Json`", got, want, guard.why)
+			}
+		})
+	}
+}
+
+func TestFSharpQualifierShadowedByAMultiLineFunctionHeader(t *testing.T) {
+	// Parameter extraction read ONE physical line and gave up on a header that
+	// carried no `=`, so every signature F# writes across several lines bound
+	// nothing at all. The qualifier was then classified by the project's module
+	// declarations alone and `Json.serialize` was pinned to an unrelated
+	// project module `Json` -- the fabricated-edge direction, an edge into a
+	// definition the source never named, in place of the `serialize` the
+	// parameter leaves in scope.
+	//
+	// Measured over these fixtures before the fix, against the single-line
+	// control that always worked:
+	//
+	//	let run (Json: JsonConvert) (x: int) = Json.serialize x   -> Use.fs
+	//	let run
+	//	    (Json: JsonConvert)
+	//	    (x: int) =
+	//	    Json.serialize x                                      -> Json.fs   FABRICATED
+	//
+	// The header is a LOGICAL line, and the offside rule says where it ends: a
+	// continuation is indented past the `let` that opens it, so the sibling
+	// binding back at that indent stops the join, and the first `=` outside
+	// brackets stops it before any body can be reached.
+	for _, shadow := range []struct{ name, source string }{
+		{"header split before its parameters", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    (Json: Newtonsoft.Json.JsonConvert)
+    (x: int) =
+    Json.serialize x
+`},
+		{"header split after its first parameter", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json: Newtonsoft.Json.JsonConvert)
+        (x: int) =
+    Json.serialize x
+`},
+		{"bare parameter on its own line", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    Json
+    (x: int) =
+    Json.serialize x
+`},
+		// The parenthesis opens on one line and closes on another, so no single
+		// line of the header ends it. Completeness is judged on the JOINED
+		// text, which is what carries the join past the open bracket.
+		{"parameter whose parentheses span lines", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (
+    Json: Newtonsoft.Json.JsonConvert
+    ) (x: int) =
+    Json.serialize x
+`},
+		{"tuple split across lines", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    (Json: Newtonsoft.Json.JsonConvert,
+     x: int) =
+    Json.serialize x
+`},
+		// The modifiers keep their meaning across the join: the header pattern
+		// still reads them, in the one order F# permits.
+		{"accessibility-modified multiline header", `module Use
+
+let serialize (x: int) = x * 2
+
+let private run
+    (Json: Newtonsoft.Json.JsonConvert)
+    (x: int) =
+    Json.serialize x
+`},
+		{"recursive multiline header", `module Use
+
+let serialize (x: int) = x * 2
+
+let rec run
+    (Json: Newtonsoft.Json.JsonConvert)
+    (x: int) =
+    Json.serialize x
+`},
+	} {
+		t.Run(shadow.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, shadow.source)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under a %s reached %v, want %v: the parameter shadows the project module `Json`", shadow.name, got, want)
+			}
+		})
+	}
+
+	// The opposite direction, which matters as much: a shadowed qualifier
+	// records bare and resolves UNRESTRICTED, so joining lines that are not
+	// part of a header does not merely add a restriction -- it binds whatever
+	// same-name definition sits nearest instead of the module the source named.
+	// Every guard the single-line header already holds must survive the join.
+	for _, guard := range []struct{ name, why, source string }{
+		{"a multiline header binds only what it writes", "the header names `x`, and nothing rebinds `Json`", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    (x: int) =
+    Json.serialize x
+`},
+		{"a body line is not a header continuation", "the `=` ends the header, so the join can never reach the body below it", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    Json.serialize x
+`},
+		{"a multiline parameter does not outlive its own function", "a parameter lives in the body its header opens, and `helper` ends at the next binding at its own indent", `module Use
+
+let serialize (x: int) = x * 2
+
+let helper
+    (Json: Newtonsoft.Json.JsonConvert)
+    (x: int) =
+    x
+
+let run (x: int) = Json.serialize x
+`},
+		{"a type annotation on a continuation line is not a binder", "`Json` here is the parameter's TYPE; the parameter is `x`", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    (x: Json) =
+    Json.serialize x
+`},
+		{"a union-case pattern on a continuation line is not a binder", "`Json payload` matches a union CASE and binds `payload`, not `Json`", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    (Json payload)
+    (x: int) =
+    Json.serialize x
+`},
+		{"a nested multiline header stays inside its own function", "`inner`'s parameter is closed by the dedent that ends `inner`, so the call in the sibling function still names the project module", `module Use
+
+let serialize (x: int) = x * 2
+
+let outer (x: int) =
+    let inner
+        (Json: Newtonsoft.Json.JsonConvert) =
+        Json.serialize x
+    inner
+
+let run (x: int) = Json.serialize x
+`},
+	} {
+		t.Run(guard.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, guard.source)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` reached %v, want %v: %s, so nothing shadows the project module `Json`", got, want, guard.why)
+			}
+		})
+	}
+
+	// And the join itself, directly: what it follows, and the four things that
+	// stop it. Every one of these returns the head line alone, which the caller
+	// reads as no parameter region and therefore no binding -- the narrow
+	// answer, which leaves the previous classification standing.
+	t.Run("the join stops where the header does", func(t *testing.T) {
+		for _, tc := range []struct{ name, source, want string }{
+			{"follows an incomplete header to its `=`", "let run\n    (Json: T) =\n    Json.serialize x\n", "let run     (Json: T) ="},
+			{"stops at the `=`, never entering the body", "let run\n    (Json: T) =\n    Other.thing y\n", "let run     (Json: T) ="},
+			{"leaves a complete header alone", "let run (Json: T) =\n    (Other: T) =\n", "let run (Json: T) ="},
+			{"declines a line that opens no binding", "letters run\n    (Json: T) =\n", "letters run"},
+			{"stops at a line back at its own indent", "let run\nlet other (Json: T) = 1\n", "let run"},
+			{"stops at a dedent", "    let run\n(Json: T) =\n", "    let run"},
+			{"stops at a blank line", "let run\n\n    (Json: T) =\n", "let run"},
+		} {
+			if got := fsharpJoinedFunctionHeader(strings.Split(tc.source, "\n"), 0); got != tc.want {
+				t.Errorf("%s: fsharpJoinedFunctionHeader = %q, want %q", tc.name, got, tc.want)
+			}
+		}
+		// A header with no `=` at all must not swallow the block below it. The
+		// bound is what stops it; past the bound the join simply ends, and the
+		// text it collected has no parameter region, so it binds nothing.
+		var runaway strings.Builder
+		runaway.WriteString("let run\n")
+		for range fsharpFunctionHeaderContinuationLines + 8 {
+			runaway.WriteString("    a\n")
+		}
+		runaway.WriteString("    (Json: T) =\n")
+		joined := fsharpJoinedFunctionHeader(strings.Split(runaway.String(), "\n"), 0)
+		if strings.Contains(joined, "Json") {
+			t.Errorf("the join ran past its bound and reached line %d: %q", fsharpFunctionHeaderContinuationLines+10, joined)
+		}
+		if names := fsharpFunctionParameterNames(joined); names != nil {
+			t.Errorf("a header the join never completed bound %v, want nothing", names)
+		}
+	})
+}
+
+func TestFSharpQualifierShadowedByAComputationExpressionBinding(t *testing.T) {
+	// `let!` and `use!` are the same value binding written inside a computation
+	// expression, with the same ordered, offside-delimited scope -- but the
+	// pattern demanded the bare keyword, so every one of them was missed and a
+	// qualifier the CE had rebound was still held to the project module of that
+	// name.
+	for _, shadow := range []struct{ name, binding string }{
+		{"let bang", "let! Json = fetch x"},
+		{"use bang", "use! Json = acquire x"},
+	} {
+		t.Run(shadow.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    async {
+        `+shadow.binding+`
+        return Json.serialize(x)
+    }
+`)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `%s` reached %v, want %v: the computation-expression binding shadows the project module `Json`", shadow.binding, got, want)
+			}
+		})
+	}
+
+	t.Run("binding does not escape its computation expression", func(t *testing.T) {
+		// The opposite direction: the `let!` is closed by the dedent that ends
+		// the block it was written in, so the call in the SIBLING function still
+		// names the project module.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let render (x: int) =
+    async {
+        let! Json = fetch x
+        return x
+    }
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` in a sibling function reached %v, want %v: the `let! Json` is scoped to `render`'s computation expression", got, want)
+		}
+	})
+}
+
+// TestFSharpJuxtaposedCallAfterABindingReachesTheCallGraph is the swallowed
+// application at the graph level: the CALLS edge is missing entirely.
+//
+// `Json.serialize x` written on the line after `let Json = ...` produced no
+// edge at all, because the application scanner had consumed the `J` at its head
+// as the argument of the binding's own expression. The parenthesised control
+// resolved normally the whole time, so nothing about the shadow or the
+// resolution was wrong -- the call site was simply never seen.
+func TestFSharpJuxtaposedCallAfterABindingReachesTheCallGraph(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module A
+
+let serialize (value: int) = value + 1
+
+let other (value: int) = value * 2
+
+let juxtaposed (x: int) =
+    let Json = Newtonsoft.Json.JsonConvert
+    Json.serialize x
+
+let parenthesised (x: int) =
+    let Json = Newtonsoft.Json.JsonConvert
+    Json.serialize(x)
+
+let argument (x: int) = A.other A.serialize x
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "juxtaposed", "serialize") {
+		t.Errorf("missing CALLS juxtaposed->serialize; the binding above it swallowed the call's head: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	// The control the shadow tests use: it always worked, and must keep working.
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "parenthesised", "serialize") {
+		t.Errorf("missing CALLS parenthesised->serialize: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	// The same swallow without a newline: `A.other A.serialize x` lost the
+	// second name because the first match consumed its `A`.
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "argument", "serialize") {
+		t.Errorf("missing CALLS argument->serialize; a dotted argument was swallowed by the application before it: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "argument", "other") {
+		t.Errorf("missing CALLS argument->other: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+// TestFSharpNestedSeparatorInAHoleKeepsTheRestOfTheFile is the interpolation
+// half at the graph level.
+//
+// A `,` or `:` nested inside a bracket in an interpolation hole switched the
+// masker into format mode. Format mode blanks brackets without counting them,
+// so the closing `)` never returned the depth to zero, the hole never closed,
+// and everything after it was blanked as literal text -- the call in the hole
+// AND every call written after it in the same block.
+func TestFSharpNestedSeparatorInAHoleKeepsTheRestOfTheFile(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module A
+
+let normalize (value: int) = value + 1
+
+let other (value: int) = value * 2
+
+let pair (a: int) (b: int) = a + b
+
+let comma (v: int) =
+    let s = $"{pair(v, v) |> normalize}"
+    v |> other
+
+let annotation (v: int) =
+    let s = $"{(v: int) |> normalize}"
+    v |> other
+
+let blockComment (v: int) =
+    let s = $"{ (* } *) v |> normalize }"
+    v |> other
+
+let below (v: int) =
+    v |> other
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caller := range []string{"comma", "annotation", "blockComment"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "normalize") {
+			t.Errorf("missing CALLS %s->normalize; a nested separator was read as a format specifier: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "other") {
+			t.Errorf("missing CALLS %s->other; the hole never closed: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+	// The blast radius stops at the enclosing block, because the F# scanners
+	// are run per symbol body rather than over the whole file. This control
+	// pins that: a function written below the interpolated string is unaffected
+	// and must stay so.
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "below", "other") {
+		t.Errorf("missing CALLS below->other: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestFSharpSameLineNestedModuleIsNotAnAbbreviation(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module Json = let serialize (x: int) = x + 1
+
+module Other =
+    let serialize (x: int) = x * 2
+
+module Caller =
+    let run (x: int) = Json.serialize x
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	var reached []int
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, fromOK := symbolsByID[relation.FromID]
+		to, toOK := symbolsByID[relation.ToID]
+		if fromOK && toOK && from.Name == "run" && to.Name == "serialize" {
+			reached = append(reached, to.StartLine)
+		}
+	}
+	if slices.Contains(reached, 4) {
+		t.Fatalf("Json.serialize reached the unrelated Other.serialize on line 4: a same-line nested module is not an abbreviation targeting `let`; calls=%#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestFSharpModuleAbbreviationRedirectsTheQualifierToItsTarget(t *testing.T) {
+	// A module abbreviation was handled as a plain shadow: `module Json = Serde`
+	// made `Json.serialize` record BARE, and a bare spelling resolves
+	// unrestricted. That is the wrong-definition direction, not a lost
+	// restriction -- the call bound whatever `serialize` sat nearest (the
+	// caller's own) instead of Serde's, which is what the abbreviation names.
+	//
+	// An abbreviation is the one shadow that still names a module. It rebinds
+	// the name, so the project module `Json` is correctly ruled out, but it
+	// rebinds it TO a module path, so the qualifier is rewritten through it
+	// rather than dropped. The opposite-direction cases below hold the redirect
+	// to abbreviations whose target this project actually declares.
+	callees := func(t *testing.T, useSource string) []string {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+		writeFile(t, repo, "src/Serde.fs", `module Serde
+
+let serialize (x: int) = x + 3
+`)
+		writeFile(t, repo, "src/Deep.fs", `namespace Deep
+
+module Serde =
+    let serialize (x: int) = x + 5
+`)
+		writeFile(t, repo, "src/Use.fs", useSource)
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		symbolsByID := map[string]SymbolRecord{}
+		for _, symbol := range snapshot.Symbols {
+			symbolsByID[symbol.ID] = symbol
+		}
+		var reached []string
+		for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+			to, isSymbol := symbolsByID[relation.ToID]
+			if !isSymbol || to.Name != "serialize" {
+				continue
+			}
+			if from, fromIsSymbol := symbolsByID[relation.FromID]; !fromIsSymbol || from.Name != "run" {
+				continue
+			}
+			reached = append(reached, filepath.Base(to.FilePath))
+		}
+		sort.Strings(reached)
+		return slices.Compact(reached)
+	}
+
+	t.Run("abbreviation of a top-level module", func(t *testing.T) {
+		got := callees(t, `module Use
+
+module Json = Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Serde.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = Serde` reached %v, want %v: the abbreviation names Serde, so the call is Serde's -- not the nearest `serialize` a bare spelling would find", got, want)
+		}
+	})
+
+	t.Run("abbreviation of a dotted module path", func(t *testing.T) {
+		// The right-hand side is a PATH, not a word. Capturing only the segment
+		// that heads it left `Deep.Serde` indistinguishable from `Deep`, so the
+		// alias could not be followed to the module it names.
+		got := callees(t, `module Use
+
+module Json = Deep.Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Deep.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = Deep.Serde` reached %v, want %v", got, want)
+		}
+	})
+
+	t.Run("abbreviation of a module this project does not declare", func(t *testing.T) {
+		// The first opposite direction. `Newtonsoft.Json` is an external
+		// assembly: this index holds no such module, so there is nothing to
+		// redirect the call to. The abbreviation still shadows -- the project
+		// module `Json` is not what the source means -- so the call records bare
+		// and resolves in scope, exactly as before the redirect existed.
+		got := callees(t, `module Use
+
+module Json = Newtonsoft.Json
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = Newtonsoft.Json` reached %v, want %v: an abbreviation of an undeclared path names no module to redirect to", got, want)
+		}
+	})
+
+	t.Run("value binding spelling a module name is not an abbreviation", func(t *testing.T) {
+		// The second opposite direction. `let Json = Serde` binds a VALUE whose
+		// initialiser happens to spell a module name; it is not an alias, and
+		// redirecting through it would pin the call to a module the source never
+		// qualified with. Only `module X = path` may redirect.
+		got := callees(t, `module Use
+
+let Json = Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `let Json = Serde` reached %v, want %v: a value binding aliases no module", got, want)
+		}
+	})
+
+	t.Run("redirect applies only where the abbreviation is in scope", func(t *testing.T) {
+		// The redirect inherits the per-call-site scoping the shadow already
+		// has: written above the abbreviation, `Json.serialize` still names the
+		// project module `Json`, and only the sighting below it names Serde.
+		got := callees(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let above = Json.serialize(x)
+    let inner = 0
+    above + inner
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` with no binding in scope reached %v, want %v", got, want)
+		}
+	})
+}
+
+func TestFSharpQualifierShadowedByAnAccessibilityModifiedBinding(t *testing.T) {
+	// An F# `let` may carry an accessibility modifier, and the grammar puts it
+	// immediately before the name, LAST of the modifier run:
+	// `let [rec] [inline] [mutable] [private|internal|public] name = ...`
+	// (`pars.fsy`: `defnBindings := LET opt_rec localBindings`,
+	// `localBinding := opt_inline opt_mutable bindingPattern`, and the
+	// accessibility is the `access pathOp` alternative of the pattern itself).
+	//
+	// Only `rec` and `mutable` were accepted, so `let private Json = ...` bound
+	// NOTHING. A qualifier nothing rebinds is classified by the project's module
+	// declarations alone, so `Json.serialize` was held to an unrelated project
+	// module named `Json` instead of the `serialize` the binding leaves in
+	// scope -- an edge into a definition the source never named.
+	//
+	// The two halves of one `let` line disagreed about what a modifier is: the
+	// function-header pattern has always read `private`, so an accessibility-
+	// modified FUNCTION's parameters shadowed while an accessibility-modified
+	// VALUE did not.
+	for _, modifiers := range []string{"private", "internal", "public", "mutable private", "rec internal"} {
+		t.Run("let "+modifiers, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let `+modifiers+` Json = Newtonsoft.Json.JsonConvert
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `let %s Json = ...` reached %v, want %v: the binding shadows the project module `Json`", modifiers, got, want)
+			}
+		})
+	}
+
+	t.Run("unshadowed control", func(t *testing.T) {
+		// Nothing rebinds `Json`, so the qualifier really does name the project
+		// module and must still be held to it. Accepting more modifiers must
+		// narrow the gate, not delete it.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let private helper (x: int) = x
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` with no local binding reached %v, want %v: the named module still answers it", got, want)
+		}
+	})
+
+	t.Run("an accessibility-modified function binding still binds its parameters", func(t *testing.T) {
+		// The opposite direction. A `let` line is read as a value binding OR a
+		// function header, never both, and the value pattern stays on its side
+		// of that line by requiring the `=` straight after the name. Were the
+		// widened pattern to swallow `let private run (Json: ...) x = ...`, the
+		// parameter pass would be skipped and the qualifier the parameter really
+		// does rebind would go unshadowed -- back to the project module `Json`.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let private run (Json: Newtonsoft.Json.JsonConvert) (x: int) = Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under the parameter of `let private run` reached %v, want %v: the header binds a parameter, not a value", got, want)
+		}
+	})
+
+	// `rec` decides whether a binding shadows inside its own initializer, and it
+	// has to keep deciding that with an accessibility modifier standing between
+	// it and the name -- reading the modifier run as opaque would lose `rec` and
+	// put every accessibility-modified binding in scope on the wrong lines.
+	fromLineOf := func(t *testing.T, source, name string) int {
+		t.Helper()
+		for _, binding := range fsharpFileShadowBindings(source) {
+			if binding.name == name {
+				return binding.fromLine
+			}
+		}
+		return 0
+	}
+
+	t.Run("a non-recursive accessibility-modified binding starts after its initializer", func(t *testing.T) {
+		got := fromLineOf(t, `module Use
+
+let private Json = Json.serialize 1
+
+let after = 0
+`, "Json")
+		if want := 5; got != want {
+			t.Errorf("`let private Json = ...` on line 3 shadows from line %d, want %d: a non-recursive binding is not in scope in its own right-hand side", got, want)
+		}
+	})
+
+	t.Run("a recursive accessibility-modified binding starts on its own line", func(t *testing.T) {
+		got := fromLineOf(t, `module Use
+
+let rec private Json = Json.serialize 1
+
+let after = 0
+`, "Json")
+		if want := 3; got != want {
+			t.Errorf("`let rec private Json = ...` on line 3 shadows from line %d, want %d: `rec` puts the binding in scope within its own body", got, want)
+		}
+	})
+}
+
+func TestFSharpShadowBindingsIgnoreLiteralsAndLineComments(t *testing.T) {
+	// Shadow bindings were collected from lines that only BLOCK comments had
+	// been masked out of, so a binding form standing inside a string literal or
+	// after a `//` was read as a real binder. A literal that spans newlines --
+	// triple-quoted, verbatim, interpolated -- is what puts arbitrary text at
+	// the head of a line, which is where the binding patterns anchor.
+	//
+	// A phantom shadow is not a lost restriction, it is the wrong definition: a
+	// shadowed qualifier records bare and resolves UNRESTRICTED, so
+	// `Json.serialize` stopped naming the project module `Json` and bound the
+	// same-file `serialize` instead. The verbatim case is worse still, because a
+	// `module Json = ...` inside a string is read as an ABBREVIATION and
+	// redirects the qualifier's head as well.
+	for _, phantom := range []struct{ name, source string }{
+		{"triple-quoted string holding a let", `module Use
+
+let serialize (x: int) = x * 2
+
+let template = """
+let Json = Newtonsoft.Json.JsonConvert
+"""
+
+let run (x: int) = Json.serialize x
+`},
+		{"verbatim string holding a module abbreviation", `module Use
+
+let serialize (x: int) = x * 2
+
+let template = @"
+module Json = Newtonsoft.Json
+"
+
+let run (x: int) = Json.serialize x
+`},
+		{"interpolated triple-quoted string holding a let", `module Use
+
+let serialize (x: int) = x * 2
+
+let template (v: int) = $"""
+let Json = {v}
+"""
+
+let run (x: int) = Json.serialize x
+`},
+		// A `//` reaches the PARAMETER pass rather than the value pattern: the
+		// region between a function header's name and the `=` that opens its
+		// body swallows a trailing comment whenever the `=` continues on the
+		// next line, so the words inside the comment were read as parameters.
+		{"line comment inside a function header", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) // Json = the alias
+    = Json.serialize x
+`},
+	} {
+		t.Run(phantom.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, phantom.source)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under a %s reached %v, want %v: text inside a literal or a comment binds nothing, so the project module `Json` still answers the qualifier", phantom.name, got, want)
+			}
+		})
+	}
+
+	// The opposite direction, which is what stops the masking from being a
+	// blanket exclusion of any line that carries a quote or a `//`: a REAL
+	// binding still shadows, including one written below a closed multi-line
+	// literal and one whose right-hand side merely CONTAINS a string and a
+	// trailing comment.
+	t.Run("a real binding around a literal and a comment still shadows", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let doc = """
+not a binding
+"""
+
+let run (x: int) =
+    let Json = Serde.parse "text"  // note
+    Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under a real `let Json = Serde.parse \"text\"  // note` reached %v, want %v: the binding is written in code and still shadows the project module", got, want)
+		}
+	})
+}
+
+func TestFSharpRootAnchoredGlobalQualifierNamesTheRootModule(t *testing.T) {
+	// F#'s `global.` prefix is the explicit ROOT-NAMESPACE anchor -- a keyword,
+	// admitted by the grammar only at the head of a long identifier, so
+	// `global.Serde` names the top-level `Serde` and a nested `A.global.B` does
+	// not parse at all. It was never normalised where a qualifier or an
+	// abbreviation TARGET is tested against the project's declared module
+	// paths, so `global.Serde` matched no declared path: `module Json =
+	// global.Serde` had its alias rejected and `Json.serialize` recorded bare,
+	// and a bare spelling resolves unrestricted -- the call bound whatever
+	// `serialize` sat nearest instead of Serde's, which is the
+	// wrong-definition direction rather than a lost restriction. A directly
+	// spelled `global.Serde.serialize` lost its qualifier the same way.
+	//
+	// Normalising is not the same as DROPPING. The anchored path is absolute,
+	// so it is matched exactly; the relative readings and the suffix fallback
+	// are how an unanchored qualifier is resolved, and letting them run on the
+	// stripped path would collapse the root `Serde` onto a nested `Deep.Serde`
+	// or the caller's own `Use.Serde` -- the very ambiguity `global.` is
+	// written to remove. The last two subtests hold that direction.
+	callees := func(t *testing.T, declareRootSerde bool, useSource string) []string {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+		if declareRootSerde {
+			writeFile(t, repo, "src/Serde.fs", `module Serde
+
+let serialize (x: int) = x + 3
+`)
+		}
+		writeFile(t, repo, "src/Deep.fs", `namespace Deep
+
+module Serde =
+    let serialize (x: int) = x + 5
+`)
+		writeFile(t, repo, "src/Use.fs", useSource)
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		symbolsByID := map[string]SymbolRecord{}
+		for _, symbol := range snapshot.Symbols {
+			symbolsByID[symbol.ID] = symbol
+		}
+		var reached []string
+		for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+			to, isSymbol := symbolsByID[relation.ToID]
+			if !isSymbol || to.Name != "serialize" {
+				continue
+			}
+			if from, fromIsSymbol := symbolsByID[relation.FromID]; !fromIsSymbol || from.Name != "run" {
+				continue
+			}
+			reached = append(reached, filepath.Base(to.FilePath))
+		}
+		sort.Strings(reached)
+		return slices.Compact(reached)
+	}
+
+	t.Run("abbreviation of a root-anchored module", func(t *testing.T) {
+		got := callees(t, true, `module Use
+
+module Json = global.Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Serde.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = global.Serde` reached %v, want %v: `global.Serde` IS `Serde`, so the abbreviation redirects exactly as an unprefixed one does", got, want)
+		}
+	})
+
+	t.Run("abbreviation of a root-anchored dotted path", func(t *testing.T) {
+		got := callees(t, true, `module Use
+
+module Json = global.Deep.Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Deep.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = global.Deep.Serde` reached %v, want %v", got, want)
+		}
+	})
+
+	t.Run("root-anchored qualifier written at the call", func(t *testing.T) {
+		// The abbreviation is not the only place the prefix is tested: an
+		// UNSHADOWED qualifier is classified by the same declared-paths
+		// question, so `global.Serde.serialize` was not recognised as a module
+		// qualifier either and recorded bare.
+		got := callees(t, true, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = global.Serde.serialize x
+`)
+		if want := []string{"Serde.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`global.Serde.serialize` reached %v, want %v", got, want)
+		}
+	})
+
+	t.Run("anchor is not satisfied by a nested module of that name", func(t *testing.T) {
+		// The first opposite direction. With no top-level `Serde` declared,
+		// `global.Serde` names nothing this project holds -- the nested
+		// `Deep.Serde` is `Deep.Serde`, not `Serde`. Dropping the prefix and
+		// letting the ordinary suffix rule answer would pin the call to a
+		// module the source explicitly anchored AWAY from. It stays bare and
+		// resolves in scope, as any qualifier naming no declared module does.
+		got := callees(t, false, `module Use
+
+module Json = global.Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = global.Serde` with only `Deep.Serde` declared reached %v, want %v: a root anchor is not matched by a nested module of the same name", got, want)
+		}
+	})
+
+	t.Run("anchor outranks a nested module in the caller's own scope", func(t *testing.T) {
+		// The second opposite direction, and the one a bare strip fails. An
+		// unanchored `Serde.serialize` inside `Use` is relative and means
+		// `Use.Serde`'s; `global.Serde.serialize` is absolute and means the
+		// top-level `Serde`'s. The two spellings must not collapse onto one
+		// module.
+		got := callees(t, true, `module Use
+
+module Serde =
+    let serialize (x: int) = x * 7
+
+let run (x: int) = global.Serde.serialize x
+`)
+		if want := []string{"Serde.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`global.Serde.serialize` with a nested `Use.Serde` in scope reached %v, want %v: the anchor names the ROOT module, so the nearer nested one does not answer it", got, want)
+		}
+	})
+}
+
+func TestFSharpQualifierShadowedByATupleBinding(t *testing.T) {
+	// Shadow detection recognised only a `let` binding whose pattern was a
+	// single NAME, so a binding that destructured a tuple bound nothing at all.
+	// `let (Json, code) = parse s` puts `Json` in scope exactly as
+	// `let Json = ...` does, but the qualifier below it was still classified by
+	// the project's module declarations alone and `Json.serialize` was pinned to
+	// an unrelated project module named `Json` -- an edge into a definition the
+	// source never wrote, in place of the value the binding leaves in scope.
+	for _, binding := range []struct{ name, pattern string }{
+		{"parenthesised tuple", "(Json, code)"},
+		{"tuple written without parentheses", "Json, code"},
+		{"annotated components", "(Json: JsonConvert, code: int)"},
+		{"single parenthesised name", "(Json)"},
+		{"wildcard beside the binder", "(_, Json)"},
+	} {
+		t.Run(binding.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let `+binding.pattern+` = parse x
+    Json.serialize(x)
+`)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `let %s = ...` reached %v, want %v: a tuple pattern binds each of its names, so the qualifier names the binding and not the project module", binding.pattern, got, want)
+			}
+		})
+	}
+
+	// The opposite direction, which matters more: a name that only LOOKS like a
+	// binder must not shadow. A shadowed qualifier records bare and resolves
+	// unrestricted, so inventing one does not lose a restriction -- it binds
+	// whatever same-name definition sits nearest instead of the module the
+	// source named.
+	for _, declined := range []struct{ name, line string }{
+		// The sub-pattern after a record field's `=` is a pattern position in
+		// the fullest sense: `{ Result = Error }` matches the nullary union
+		// case and binds nothing, and nothing on the line tells it from a
+		// binder.
+		{"record pattern", "let { Result = Json } = parse x"},
+		// A list or array pattern is refutable by construction, so it is never
+		// a plain destructuring of a known shape.
+		{"list pattern", "let [a; Json] = parse x"},
+		{"array pattern", "let [| a; Json |] = parse x"},
+		// `as` binds unambiguously but is not a tuple; it is left for a change
+		// that can state its own evidence.
+		{"as pattern", "let (a, b) as Json = parse x"},
+		// A type annotation is a MENTION, not a binder -- the same rule the
+		// parameter reader states.
+		{"an annotation naming the module", "let (x: Json, y: int) = parse x"},
+		// An operator definition and an active pattern both open with `(` and
+		// bind neither the text inside it nor anything named here.
+		{"operator definition", "let (+.) Json y = Json"},
+	} {
+		t.Run("declined: "+declined.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    `+declined.line+`
+    Json.serialize(x)
+`)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `%s` reached %v, want %v: nothing there is unambiguously a binder, so the qualifier keeps naming the project module", declined.line, got, want)
+			}
+		})
+	}
+
+	t.Run("a tuple binding does not shadow its own initializer", func(t *testing.T) {
+		// A destructured `let` is no more recursive than a single-name one, so
+		// the names it binds are invisible inside the right-hand side that
+		// defines them.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let (Json, code) = (Json.serialize(x), 1)
+    Json
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` inside `let (Json, code) = ...`'s own initializer reached %v, want %v: a destructured binding is not in scope in its own right-hand side", got, want)
+		}
+	})
+
+	t.Run("a tuple binding below the call does not reach it", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let first = Json.serialize(x)
+    let (Json, code) = parse x
+    first
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` written ABOVE a tuple binding of `Json` reached %v, want %v: F# scoping is ordered, so a binding below the call is not in scope at it", got, want)
+		}
+	})
+
+	t.Run("a tuple PARAMETER still binds through the header", func(t *testing.T) {
+		// The new pattern reader must not swallow a function header whose
+		// parameter happens to be a tuple: `let run (Json, x) = ...` names a
+		// function and binds its parameters, and that pass still owns it.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json, x) = Json.serialize(x)
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under the tuple PARAMETER `(Json, x)` reached %v, want %v: a function header still binds its parameters", got, want)
+		}
+	})
+}
+
+func TestFSharpExplicitLetInBodyIsInsideTheBinding(t *testing.T) {
+	// A non-recursive binding's shadow starts once its initializer has ended,
+	// and that start was rounded up to a whole LINE. `let Json = value in
+	// Json.serialize x` writes the initializer and the body the binding governs
+	// on the same line, so rounding up put the body one line outside its own
+	// binding: the call was classified by the project's module declarations and
+	// pinned to an unrelated project module named `Json`.
+	t.Run("the body after `in` is shadowed", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = box x in Json.serialize(x)
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` in the body of `let Json = ... in ...` reached %v, want %v: the body is inside the binding it is written beside", got, want)
+		}
+	})
+
+	t.Run("a body indented under a trailing `in`", func(t *testing.T) {
+		// The body of an explicit `in` is written past the binding's own
+		// indent, so the offside walk that finds the end of an initializer runs
+		// straight through it and put the shadow after the whole function.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = box x in
+        Json.serialize(x)
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` on the body line under a trailing `in` reached %v, want %v: `in` ends the initializer, so everything after it is the binding's body", got, want)
+		}
+	})
+
+	// The opposite direction, pinned by refinement 6 and unchanged: the
+	// initializer BEFORE the `in` is still outside the binding.
+	t.Run("the initializer before `in` is still outside", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Json.serialize(x) in Json
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` in the initializer of `let Json = ... in ...` reached %v, want %v: a non-recursive binding is not in scope in its own right-hand side, `in` or no `in`", got, want)
+		}
+	})
+
+	t.Run("both ends of one line get their own answer", func(t *testing.T) {
+		// This is why the start is a COLUMN and not a line: one physical line
+		// holds a sighting outside the binding and a sighting inside it, and
+		// neither whole-line answer is right for both.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Json.serialize(x) in Json.serialize(x)
+`)
+		if want := []string{"Json.fs", "Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("the two `Json.serialize` sightings on the `let ... in ...` line reached %v, want %v: the one before `in` names the project module, the one after names the binding", got, want)
+		}
+	})
+
+	// `in` is not always the keyword that opens a binding body, and reading one
+	// that is not moves the shadow's start EARLIER than the binding -- the
+	// wrong-definition direction.
+	for _, declined := range []struct{ name, line string }{
+		// A sequence iterator: the loop body is still the initializer, so the
+		// binding is not in scope inside it.
+		{"a `for ... in` iterator", "let Json = for x in [x] do ignore (Json.serialize(x))"},
+		// An `in` inside brackets belongs to a comprehension or a nested
+		// group, not to this binding.
+		{"an `in` inside a comprehension", "let Json = [for x in [x] -> Json.serialize(x)]"},
+		// `in` has to be a whole word: `min` is not it.
+		{"a name merely ending in `in`", "let Json = min (Json.serialize(x)) x"},
+		// The maskers run first, so an `in` written inside a literal is blank
+		// by the time this line is read.
+		{"an `in` inside a string literal", `let Json = " in " + string (Json.serialize(x))`},
+	} {
+		t.Run("declined: "+declined.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    `+declined.line+`
+    Json
+`)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` in `%s` reached %v, want %v: no binding body opens there, so the call is still in the initializer and the qualifier names the project module", declined.line, got, want)
+			}
+		})
+	}
+}
+
+// fsharpSerializeCalleeFiles is fsharpSerializeCalleesOfRun without its
+// requirement that the CALLER be `run`. A line that writes two bindings makes
+// the innermost one the enclosing definition, so a fixture that has to nest a
+// `let ... in` inside an initializer cannot name its caller in advance; the
+// classification under test is which file's `serialize` the call reaches, and
+// that is the same answer either way.
+func fsharpSerializeCalleeFiles(t *testing.T, useSource string) []string {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/Use.fs", useSource)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	var reached []string
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		if to, isSymbol := symbolsByID[relation.ToID]; isSymbol && to.Name == "serialize" {
+			reached = append(reached, filepath.Base(to.FilePath))
+		}
+	}
+	sort.Strings(reached)
+	return slices.Compact(reached)
+}
+
+func TestFSharpNestedLetInDoesNotOpenTheBodyOfTheBindingAroundIt(t *testing.T) {
+	// The `in` that opens a binding's body was found by taking the FIRST one
+	// outside brackets, and an initializer may open bindings of its own, each
+	// of which spends an `in` before this binding's arrives. In
+	// `let Json = let x = 1 in Json.serialize x` the only `in` closes the inner
+	// `let x`, so the whole line is still the outer initializer and `Json` is
+	// unavailable across all of it -- but the shadow was started past that `in`
+	// and the call was pinned to the local value instead of the project module
+	// `Json`. That is the fabricated-edge direction: EARLIER than the binding,
+	// which the first-match rule was supposed to make impossible.
+	t.Run("a nested `let ... in` opens no body for the binding around it", func(t *testing.T) {
+		got := fsharpSerializeCalleeFiles(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = let y = x in Json.serialize(x)
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` after a nested `let ... in` reached %v, want %v: the nested `in` closes the INNER binding, so the call is still inside the outer initializer and the qualifier names the project module", got, want)
+		}
+	})
+
+	for _, keyword := range []struct {
+		name, line, body string
+		opens            bool
+	}{
+		// The finding's line: one `in`, and it is the inner binding's.
+		{name: "a nested `let` spends the only `in`", line: "    let Json = let x = 1 in Json.serialize x"},
+		// `use ... in` binds and closes exactly as `let ... in` does.
+		{name: "a nested `use` spends the only `in`", line: "    let Json = use r = acquire x in Json.serialize x"},
+		// Two `in` on the line: the first is the inner binding's, the second
+		// is this one's, and the body starts past the SECOND.
+		{name: "the outer `in` after a nested one is still taken", line: "    let a = let x = 1 in x in a + 1", body: " a + 1", opens: true},
+		// The controls that already worked and must not move: no nested
+		// binding at all, and one written inside brackets, which never
+		// counted because its `in` is not top-level either.
+		{name: "no nested binding", line: "    let Json = box x in Json.serialize x", body: " Json.serialize x", opens: true},
+		{name: "a nested binding inside brackets", line: "    let Json = (let x = 1 in x) in Json.serialize x", body: " Json.serialize x", opens: true},
+	} {
+		t.Run(keyword.name, func(t *testing.T) {
+			column, opens := fsharpLetInBodyColumn(keyword.line)
+			if opens != keyword.opens {
+				t.Fatalf("`%s` opened a body: %v, want %v", keyword.line, opens, keyword.opens)
+			}
+			if !opens {
+				return
+			}
+			if body := keyword.line[column:]; body != keyword.body {
+				t.Errorf("`%s` opened its body at %q, want %q: each nested binding spends one `in` before this binding's own", keyword.line, body, keyword.body)
+			}
+		})
+	}
+}
+
+func TestFSharpQualifierShadowedByARicherParameterPattern(t *testing.T) {
+	// A parameter was read as a binder only when it was a plain name, a tuple
+	// of them, or an annotated one. Every other pattern F# admits in the
+	// header bound nothing, so `let run (Some Json) = Json.serialize x` left
+	// `Json` unbound and the qualifier resolution pinned the call to an
+	// unrelated project module named `Json` -- an edge into a definition the
+	// source never wrote, in place of the value the pattern leaves in scope.
+	for _, shadow := range []struct{ name, header string }{
+		// Peeling a union case in the header. For a single-case union --
+		// `type Payload = Payload of int` -- this is how F# code uses one: it
+		// is irrefutable and draws no warning, which is what separates it from
+		// the list and cons patterns below.
+		{"union-case application", "let run (Some Json) (x: int) = Json.serialize x"},
+		// A case whose payload is a tuple: the argument is a pattern in its
+		// own right and is read as one.
+		{"union case over a tuple", "let run (Response (code, Json)) (x: int) = Json.serialize x"},
+		// F# grammar admits only an identifier after `as`, and it always binds.
+		{"`as` pattern", "let run (pair as Json) (x: int) = Json.serialize x"},
+		// The pattern LEFT of `as` is read too, so a tuple inside one keeps
+		// its own binders.
+		{"a tuple bound through `as`", "let run ((a, Json) as pair) (x: int) = Json.serialize x"},
+		// A tuple inside a tuple is still a tuple; only the outer one was read.
+		{"tuple nested inside a tuple", "let run (a, (b, Json)) (x: int) = Json.serialize x"},
+		// The name after `as` may carry the group's type annotation, and the
+		// annotation is a MENTION: only the name in front of it binds.
+		{"an annotated `as` binder", "let run (pair as Json: JsonConvert) (x: int) = Json.serialize x"},
+	} {
+		t.Run(shadow.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+`+shadow.header+`
+`)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `%s` reached %v, want %v: the pattern binds `Json`, so the qualifier names the parameter and not the project module", shadow.header, got, want)
+			}
+		})
+	}
+
+	// The opposite direction, which matters as much: a shadowed qualifier
+	// records bare and resolves UNRESTRICTED, so reading a binder where none is
+	// written binds whatever same-name definition sits nearest instead of the
+	// module the source named. These are the shapes where a name standing in
+	// the pattern need not be a binder at all.
+	for _, declined := range []struct{ name, why, header string }{
+		{"the head of an application is the case", "`Json payload` matches the union case `Json` and binds `payload`", "let run (Json payload) (x: int) = Json.serialize x"},
+		{"a type test names a type", "`:? Json` tests the TYPE `Json`; the pattern binds `payload`", "let run (:? Json as payload) (x: int) = Json.serialize x"},
+		{"a cons pattern", "refutable by construction, and its parts are a nested pattern position", "let run (head :: Json) (x: int) = Json.serialize x"},
+		{"an or pattern", "an alternative is as readily a nullary case as a binder", "let run (Some Json | Other Json) (x: int) = Json.serialize x"},
+		{"a record pattern", "the name stands after a field's own `=`, where `{ Result = Error }` binds nothing", "let run { Result = Json } (x: int) = Json.serialize x"},
+		{"a list pattern", "refutable by construction, so never a plain peeling of a known shape", "let run [a; Json] (x: int) = Json.serialize x"},
+		{"a list pattern inside parentheses", "the group holds a list body, whose `;`-separated parts are a nested pattern position and not a tuple", "let run ([a; Json; b]) (x: int) = Json.serialize x"},
+		{"an annotated wildcard", "`_` binds nothing and `Json` is the annotation, a MENTION", "let run (_: Json) (x: int) = Json.serialize x"},
+	} {
+		t.Run("declined: "+declined.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+`+declined.header+`
+`)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `%s` reached %v, want %v: %s, so nothing shadows the project module `Json`", declined.header, got, want, declined.why)
 			}
 		})
 	}
