@@ -38,19 +38,19 @@ func TestResolveQualifiedType(t *testing.T) {
 	idx := map[string][]SymbolRecord{"Encoder": {jsonEnc, cborEnc}}
 
 	// json.Encoder must resolve to the Encoder in the json/ directory, not cbor's.
-	got, ok := resolveQualifiedType(from, pkgQualType{alias: "json", typeName: "Encoder"}, nil, idx, "example.com/m")
+	got, ok := resolveQualifiedType(from, pkgQualType{alias: "json", typeName: "Encoder"}, nil, idx, newGoModuleIndex([]goModuleRoot{{Path: "example.com/m"}}))
 	if !ok || got.ID != jsonEnc.ID {
 		t.Fatalf("expected json Encoder, got %+v ok=%v", got, ok)
 	}
 
 	// An alias matching no package directory resolves to nothing (not a wrong guess).
-	if _, ok := resolveQualifiedType(from, pkgQualType{alias: "msgpack", typeName: "Encoder"}, nil, idx, "example.com/m"); ok {
+	if _, ok := resolveQualifiedType(from, pkgQualType{alias: "msgpack", typeName: "Encoder"}, nil, idx, newGoModuleIndex([]goModuleRoot{{Path: "example.com/m"}})); ok {
 		t.Fatalf("unknown alias must not resolve")
 	}
 
 	// A directory match from an incompatible language is not a Go package type.
 	pythonEnc := SymbolRecord{ID: "m:Python:internal/json/enc.py:class:Encoder", Language: "Python", Name: "Encoder", Kind: "class", FilePath: "internal/json/enc.py"}
-	if _, ok := resolveQualifiedType(from, pkgQualType{alias: "json", typeName: "Encoder"}, nil, map[string][]SymbolRecord{"Encoder": {pythonEnc}}, "example.com/m"); ok {
+	if _, ok := resolveQualifiedType(from, pkgQualType{alias: "json", typeName: "Encoder"}, nil, map[string][]SymbolRecord{"Encoder": {pythonEnc}}, newGoModuleIndex([]goModuleRoot{{Path: "example.com/m"}})); ok {
 		t.Fatalf("Go qualified type resolved to a foreign declaration")
 	}
 }
@@ -69,7 +69,7 @@ func TestQualifiedTypeDirMatchesRequiresInModuleImportPath(t *testing.T) {
 		name       string
 		filePath   string
 		alias      string
-		goModule   string
+		modules    []goModuleRoot
 		importPath []string
 		want       bool
 	}{
@@ -77,7 +77,7 @@ func TestQualifiedTypeDirMatchesRequiresInModuleImportPath(t *testing.T) {
 			name:       "in-module import binds its own directory",
 			filePath:   "realpkg/thing.go",
 			alias:      "realpkg",
-			goModule:   goModule,
+			modules:    []goModuleRoot{{Path: goModule}},
 			importPath: []string{"example.com/m/realpkg"},
 			want:       true,
 		},
@@ -85,7 +85,7 @@ func TestQualifiedTypeDirMatchesRequiresInModuleImportPath(t *testing.T) {
 			name:       "aliased in-module import still binds the imported directory",
 			filePath:   "realpkg/thing.go",
 			alias:      "foo",
-			goModule:   goModule,
+			modules:    []goModuleRoot{{Path: goModule}},
 			importPath: []string{"example.com/m/realpkg"},
 			want:       true,
 		},
@@ -93,7 +93,7 @@ func TestQualifiedTypeDirMatchesRequiresInModuleImportPath(t *testing.T) {
 			name:       "external import whose last segment matches must not bind",
 			filePath:   "realpkg/thing.go",
 			alias:      "realpkg",
-			goModule:   goModule,
+			modules:    []goModuleRoot{{Path: goModule}},
 			importPath: []string{"external.example/realpkg"},
 			want:       false,
 		},
@@ -101,7 +101,7 @@ func TestQualifiedTypeDirMatchesRequiresInModuleImportPath(t *testing.T) {
 			name:       "another module ending in the same directory must not bind",
 			filePath:   "realpkg/thing.go",
 			alias:      "realpkg",
-			goModule:   goModule,
+			modules:    []goModuleRoot{{Path: goModule}},
 			importPath: []string{"github.com/other/realpkg"},
 			want:       false,
 		},
@@ -109,7 +109,7 @@ func TestQualifiedTypeDirMatchesRequiresInModuleImportPath(t *testing.T) {
 			name:       "in-module import of a different package must not bind",
 			filePath:   "realpkg/thing.go",
 			alias:      "realpkg",
-			goModule:   goModule,
+			modules:    []goModuleRoot{{Path: goModule}},
 			importPath: []string{"example.com/m/decoy"},
 			want:       false,
 		},
@@ -117,7 +117,38 @@ func TestQualifiedTypeDirMatchesRequiresInModuleImportPath(t *testing.T) {
 			name:       "a nested directory is not the imported package",
 			filePath:   "outer/realpkg/thing.go",
 			alias:      "realpkg",
-			goModule:   goModule,
+			modules:    []goModuleRoot{{Path: goModule}},
+			importPath: []string{"example.com/m/realpkg"},
+			want:       false,
+		},
+		{
+			name:       "a nested module re-roots the directories beneath it",
+			filePath:   "tools/lib/lib.go",
+			alias:      "lib",
+			modules:    []goModuleRoot{{Path: goModule}, {Dir: "tools", Path: "example.com/tool"}},
+			importPath: []string{"example.com/tool/lib"},
+			want:       true,
+		},
+		{
+			name:       "the root module no longer claims a nested module's directory",
+			filePath:   "tools/lib/lib.go",
+			alias:      "lib",
+			modules:    []goModuleRoot{{Path: goModule}, {Dir: "tools", Path: "example.com/tool"}},
+			importPath: []string{"example.com/m/tools/lib"},
+			want:       false,
+		},
+		{
+			name:       "a nested module's own root directory is its module path",
+			filePath:   "tools/main.go",
+			alias:      "tool",
+			modules:    []goModuleRoot{{Path: goModule}, {Dir: "tools", Path: "example.com/tool"}},
+			importPath: []string{"example.com/tool"},
+			want:       true,
+		},
+		{
+			name:       "with no module declared at all a resolved import binds nothing",
+			filePath:   "realpkg/thing.go",
+			alias:      "realpkg",
 			importPath: []string{"example.com/m/realpkg"},
 			want:       false,
 		},
@@ -125,15 +156,15 @@ func TestQualifiedTypeDirMatchesRequiresInModuleImportPath(t *testing.T) {
 			name:     "with no resolved import the alias-equals-basename convention still stands",
 			filePath: "internal/json/enc.go",
 			alias:    "json",
-			goModule: goModule,
+			modules:  []goModuleRoot{{Path: goModule}},
 			want:     true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := qualifiedTypeDirMatches(tc.filePath, tc.alias, tc.goModule, tc.importPath); got != tc.want {
-				t.Fatalf("qualifiedTypeDirMatches(%q, %q, %q, %v) = %v, want %v",
-					tc.filePath, tc.alias, tc.goModule, tc.importPath, got, tc.want)
+			if got := qualifiedTypeDirMatches(tc.filePath, tc.alias, newGoModuleIndex(tc.modules), tc.importPath); got != tc.want {
+				t.Fatalf("qualifiedTypeDirMatches(%q, %q, %v, %v) = %v, want %v",
+					tc.filePath, tc.alias, tc.modules, tc.importPath, got, tc.want)
 			}
 		})
 	}

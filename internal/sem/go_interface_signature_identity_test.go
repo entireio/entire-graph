@@ -16,8 +16,10 @@ func TestGoMethodSignatureIdentityDecidesBothDirections(t *testing.T) {
 	cases := []struct {
 		why        string
 		req, impl  string
+		reqImports map[string]string // the requirement file's alias -> import path
+		implImport map[string]string // the implementation file's alias -> import path
 		match      bool
-		permissive bool // folded because a signature string cannot decide it
+		permissive bool // folded because neither file's imports decide it
 	}{
 		// --- same type, different spelling: must match ---
 		{why: "identical", req: "Run() error", impl: "func (w *W) Run() error", match: true},
@@ -113,23 +115,87 @@ func TestGoMethodSignatureIdentityDecidesBothDirections(t *testing.T) {
 			req: "Gen[T any](v T) error", impl: "func (w *W) Gen[T any](v T) error",
 		},
 
-		// --- undecidable from a signature string: folded on purpose ---
+		// --- qualifiers decided by the declaring files' import blocks ---
 		{
-			why: "two packages that happen to export the same type name",
+			why: "two packages exporting the same type name are different types",
+			req: "Do(x http.Client) error", impl: "func (w *W) Do(x redis.Client) error",
+			reqImports: map[string]string{"http": "net/http"},
+			implImport: map[string]string{"redis": "github.com/redis/go-redis/v9"},
+		},
+		{
+			why: "an alias of the same package is the same type", match: true,
+			req: "Do(ctx context.Context) error", impl: "func (w *W) Do(c gocontext.Context) error",
+			reqImports: map[string]string{"context": "context"},
+			implImport: map[string]string{"gocontext": "context"},
+		},
+		{
+			why: "the same import written the same way in both files", match: true,
+			req: "Do(x http.Client) error", impl: "func (w *W) Do(x http.Client) error",
+			reqImports: map[string]string{"http": "net/http"},
+			implImport: map[string]string{"http": "net/http"},
+		},
+		{
+			why: "a qualifier inside a composite type is decided too",
+			req: "Map(m map[string]http.Client) error", impl: "func (w *W) Map(m map[string]redis.Client) error",
+			reqImports: map[string]string{"http": "net/http"},
+			implImport: map[string]string{"redis": "github.com/redis/go-redis/v9"},
+		},
+		{
+			why: "a qualifier nested inside a func type is decided too",
+			req: "F(fn func(c http.Client) error) error", impl: "func (w *W) F(fn func(c redis.Client) error) error",
+			reqImports: map[string]string{"http": "net/http"},
+			implImport: map[string]string{"redis": "github.com/redis/go-redis/v9"},
+		},
+		{
+			why: "a qualifier in a nested func RESULT is decided too",
+			req: "F(fn func() http.Client) error", impl: "func (w *W) F(fn func() redis.Client) error",
+			reqImports: map[string]string{"http": "net/http"},
+			implImport: map[string]string{"redis": "github.com/redis/go-redis/v9"},
+		},
+		{
+			why: "the method result is decided too",
+			req: "Get() http.Client", impl: "func (w *W) Get() redis.Client",
+			reqImports: map[string]string{"http": "net/http"},
+			implImport: map[string]string{"redis": "github.com/redis/go-redis/v9"},
+		},
+
+		// --- undecidable even with the import blocks: folded on purpose ---
+		{
+			why: "with no import evidence at all the comparison stays name-only",
 			req: "Do(x http.Client) error", impl: "func (w *W) Do(x redis.Client) error",
 			match: true, permissive: true,
+		},
+		{
+			why: "only one side resolving is not proof the packages differ", match: true,
+			req: "Do(x http.Client) error", impl: "func (w *W) Do(x redis.Client) error",
+			reqImports: map[string]string{"http": "net/http"},
+			permissive: true,
+		},
+		{
+			why: "a dot-imported or same-package bare name resolves to nothing", match: true,
+			req: "Do(r io.Reader) error", impl: "func (w *W) Do(r Reader) error",
+			reqImports: map[string]string{"io": "io"},
+			implImport: map[string]string{"bytes": "bytes"},
+			permissive: true,
+		},
+		{
+			why: "an alias the import scanner never recorded stays folded", match: true,
+			req: "Do(x http.Client) error", impl: "func (w *W) Do(x redis.Client) error",
+			reqImports: map[string]string{"http": "net/http"},
+			implImport: map[string]string{"other": "example.com/other"},
+			permissive: true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.why, func(t *testing.T) {
 			t.Parallel()
-			if got := goMethodSignaturesMatch(tc.req, tc.impl); got != tc.match {
+			if got := goMethodSignaturesMatch(tc.req, tc.impl, tc.reqImports, tc.implImport); got != tc.match {
 				verdict := "must not match"
 				if tc.match {
 					verdict = "must match"
 				}
 				if tc.permissive {
-					verdict += " (folded because a signature string cannot decide it)"
+					verdict += " (folded because the import blocks do not decide it)"
 				}
 				t.Fatalf("%s: %q vs %q matched=%v, %s\n  req key:  %s\n  impl key: %s",
 					tc.why, tc.req, tc.impl, got, verdict,

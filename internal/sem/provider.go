@@ -3483,6 +3483,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 	manifestImports := buildManifestImportResolver(files, readContent)
+	// Import blocks of files OTHER than the one being scanned, which the Go
+	// interface-implementation hop needs to decide package qualifiers across the
+	// declaring files. Lazy and memoised: only files that actually reach a
+	// signature comparison are read.
+	goFileImportIndex := newGoFileImports(readContent)
 
 	// pythonModuleExists reports whether the repo contains a Python file that the
 	// strict dotted-module matcher resolves `module` to (the module's own source
@@ -4391,7 +4396,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// symbol still reached it and matched a `x.y(...)` shape anywhere
 			// in the file against another language's methods.
 			if spec.callResolution == "full" && callExtractionLanguage(file.Language) {
-				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, implementersByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, typeScriptPropTypes, fieldsByContainer, swiftTypes) {
+				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, implementersByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModules, goFileImportIndex, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, typeScriptPropTypes, fieldsByContainer, swiftTypes) {
 					emit(r)
 				}
 				for _, r := range importedReceiverCallRelations(from, block, importsByName, symbolsByShortName) {
@@ -5333,7 +5338,7 @@ func collectPackageVarTypes(content string) map[string]pkgQualType {
 // Encoder in .../json/) only stands in when the qualifier is unresolved.
 // Requires a unique match so an ambiguous qualifier resolves to nothing rather
 // than wrongly.
-func resolveQualifiedType(from SymbolRecord, qt pkgQualType, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord, goModule string) (SymbolRecord, bool) {
+func resolveQualifiedType(from SymbolRecord, qt pkgQualType, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord, goModules goModuleIndex) (SymbolRecord, bool) {
 	importPaths := importsByName[qt.alias]
 	var match SymbolRecord
 	found := 0
@@ -5341,7 +5346,7 @@ func resolveQualifiedType(from SymbolRecord, qt pkgQualType, importsByName map[s
 		if !typeLikeKind(cand.Kind) {
 			continue
 		}
-		if qualifiedTypeDirMatches(cand.FilePath, qt.alias, goModule, importPaths) {
+		if qualifiedTypeDirMatches(cand.FilePath, qt.alias, goModules, importPaths) {
 			match = cand
 			found++
 		}
@@ -5355,32 +5360,33 @@ func resolveQualifiedType(from SymbolRecord, qt pkgQualType, importsByName map[s
 // qualifiedTypeDirMatches reports whether a declaration's directory is the
 // package a qualifier names.
 //
-// With resolved import paths the import must be one this MODULE owns, and the
-// declaration's repo-relative directory must be exactly the part of it below
-// the module path — the layout Go requires of an in-module package, and the
-// same mapping buildManifestImportResolver uses to index goPackages. A path
-// SUFFIX is not that test: `foo "external.example/realpkg"` ends in `/realpkg`,
-// so a suffix rule let a third-party import bind the repository's own
-// `realpkg/` directory and emit a CALLS edge into a package the file never
-// imported. An import outside the module resolves to nothing, because no
-// repository symbol can be its declaration.
+// With resolved import paths the import must be one a MODULE OF THIS REPOSITORY
+// owns, and the declaration's repo-relative directory must be exactly the part
+// of that path below its module — the layout Go requires of an in-module
+// package. A path SUFFIX is not that test: `foo "external.example/realpkg"` ends
+// in `/realpkg`, so a suffix rule let a third-party import bind the repository's
+// own `realpkg/` directory and emit a CALLS edge into a package the file never
+// imported. An import outside every module in the repository resolves to
+// nothing, because no repository symbol can be its declaration.
+//
+// The owning module is resolved per directory rather than assumed to be the root
+// one. A repository may hold several go.mod files (a tools/ module, a local
+// `replace` target, a test module), and each re-roots the import paths beneath
+// it: with tools/go.mod declaring example.com/tool, tools/lib is
+// example.com/tool/lib. Keying that directory off the ROOT module produced
+// <root-module>/tools/lib, matched no import, and deleted every qualified
+// receiver edge into a nested module.
 //
 // With no resolved path for the qualifier the alias-equals-basename convention
 // (json.Encoder -> the Encoder in .../json/) is all the evidence there is.
-func qualifiedTypeDirMatches(filePath, alias, goModule string, importPaths []string) bool {
-	dir := strings.Trim(filepath.ToSlash(filepath.Dir(filepath.ToSlash(filePath))), "/")
-	if dir == "." {
-		dir = ""
-	}
+func qualifiedTypeDirMatches(filePath, alias string, goModules goModuleIndex, importPaths []string) bool {
+	dir := normalizeRepoDir(filepath.Dir(filepath.ToSlash(filePath)))
 	if len(importPaths) == 0 {
 		return dir != "" && path.Base(dir) == alias
 	}
-	if goModule == "" {
+	want, ok := goModules.importPathFor(dir)
+	if !ok {
 		return false
-	}
-	want := goModule
-	if dir != "" {
-		want += "/" + dir
 	}
 	for _, importPath := range importPaths {
 		if strings.Trim(filepath.ToSlash(importPath), "/") == want {
@@ -5390,7 +5396,7 @@ func qualifiedTypeDirMatches(filePath, alias, goModule string, importPaths []str
 	return false
 }
 
-func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, implementersByContainer map[string][]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes, typeScriptPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord, swiftTypes swiftFileTypes) []RelationRecord {
+func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, implementersByContainer map[string][]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModules goModuleIndex, goImports *goFileImports, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes, typeScriptPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord, swiftTypes swiftFileTypes) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
@@ -5780,14 +5786,14 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
-	importedReceiverVars := importedReceiverVarTypes(from.Signature, block, importsByName, goModule)
+	importedReceiverVars := importedReceiverVarTypes(from.Signature, block, importsByName, goModules)
 	// Receivers declared with an in-module package-qualified type
 	// (`comm communicator.Communicator`). parameterVarTypes cannot see these, so
 	// without this tier an interface-typed parameter — the ordinary way Go passes
 	// a collaborator — carries no receiver type at all.
 	goQualifiedReceiverVars := map[string]pkgQualType{}
 	if from.Language == "Go" {
-		goQualifiedReceiverVars = goInModuleQualifiedReceiverTypes(from.Signature, block, importsByName, goModule)
+		goQualifiedReceiverVars = goInModuleQualifiedReceiverTypes(from.Signature, block, importsByName, goModules)
 	}
 	deepReturnedCallSuffixes := receiverDeepChainSuffixes(deepChainedReturnCalls, returnedDeepChainCalls)
 	paramTypes := parameterVarTypes(from.Signature)
@@ -5933,7 +5939,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// convention resolveQualifiedType already encodes) so the method
 				// lookup below runs against the right declaration. For an interface
 				// that declaration's members are its method requirements.
-				sym, ok := resolveQualifiedType(from, qt, importsByName, symbolsByShortName, goModule)
+				sym, ok := resolveQualifiedType(from, qt, importsByName, symbolsByShortName, goModules)
 				if !ok {
 					continue
 				}
@@ -5945,7 +5951,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// Package-level var of a package-qualified type (alias.Type). Resolve
 				// the specific imported type so an ambiguous bare name (Encoder in
 				// both json and cbor) maps to the right one.
-				sym, ok := resolveQualifiedType(from, qt, importsByName, symbolsByShortName, goModule)
+				sym, ok := resolveQualifiedType(from, qt, importsByName, symbolsByShortName, goModules)
 				if !ok {
 					continue
 				}
@@ -7192,7 +7198,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			break
 		}
 	}
-	return appendGoInterfaceImplementationCalls(relations, from, symbolsByShortName, methodsByContainer)
+	return appendGoInterfaceImplementationCalls(relations, from, symbolsByShortName, methodsByContainer, goImports)
 }
 
 func receiverQualifiedMethodTarget(from SymbolRecord, call receiverCall, candidates []SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) (SymbolRecord, float64, string, string, string, bool) {
@@ -7269,7 +7275,7 @@ func goInterfaceRequirementMethod(symbol SymbolRecord) bool {
 //
 // The interface-method edge itself is always emitted by the caller; this is only
 // the extra implementation hop.
-func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortName map[string][]SymbolRecord, methodsByContainer map[string]map[string]SymbolRecord) []SymbolRecord {
+func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortName map[string][]SymbolRecord, methodsByContainer map[string]map[string]SymbolRecord, goImports *goFileImports) []SymbolRecord {
 	if !goInterfaceRequirementMethod(ifaceMethod) || ifaceMethod.ContainerID == "" {
 		return nil
 	}
@@ -7309,7 +7315,10 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 		satisfied := true
 		for _, requirement := range requirements {
 			implMember, ok := implMembers[requirement]
-			if !ok || !goMethodSignaturesMatch(members[requirement].Signature, implMember.Signature) {
+			if !ok || !goMethodSignaturesMatch(
+				members[requirement].Signature, implMember.Signature,
+				goImports.forFile(members[requirement].FilePath), goImports.forFile(implMember.FilePath),
+			) {
 				satisfied = false
 				break
 			}
@@ -7336,6 +7345,50 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 	return out
 }
 
+// goFileImports resolves, per Go file and memoised, the single import path each
+// qualifier alias names in that file. It is the evidence a signature string does
+// not carry: the interface and its implementations live in different files with
+// different import blocks, so whether two qualifiers denote one package can only
+// be answered by reading each file's imports.
+//
+// Aliases bound more than once in one file (a build-tag-split import) resolve to
+// nothing, as do dot-imports and blank imports — importedGoNames drops both — so
+// a bare name is never mistaken for a resolved one and its comparison stays
+// permissive.
+type goFileImports struct {
+	readContent contentReader
+	byFile      map[string]map[string]string
+}
+
+func newGoFileImports(readContent contentReader) *goFileImports {
+	return &goFileImports{readContent: readContent, byFile: map[string]map[string]string{}}
+}
+
+// forFile returns alias -> import path for a Go file, reading it at most once.
+// A nil index, a non-Go path or an unreadable file all yield no evidence, which
+// folds every comparison exactly as the name-only key did.
+func (imports *goFileImports) forFile(filePath string) map[string]string {
+	if imports == nil || imports.readContent == nil || filePath == "" {
+		return nil
+	}
+	if !strings.EqualFold(filepath.Ext(filePath), ".go") {
+		return nil
+	}
+	if resolved, ok := imports.byFile[filePath]; ok {
+		return resolved
+	}
+	resolved := map[string]string{}
+	if content, ok := imports.readContent(filePath); ok {
+		for alias, modules := range importedGoNames(content) {
+			if len(modules) == 1 && alias != "" {
+				resolved[alias] = modules[0]
+			}
+		}
+	}
+	imports.byFile[filePath] = resolved
+	return resolved
+}
+
 // goMethodSignaturesMatch reports whether a concrete method declaration can
 // satisfy an interface requirement. A shared method NAME is not satisfaction:
 // `Run(name string) error` does not implement `Run() error`, and binding a call
@@ -7350,9 +7403,19 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 // different import aliases, so `context.Context` against `gocontext.Context`,
 // or `[]byte` against `[]uint8`, dropped implementations that Go accepts. The
 // comparison therefore runs over goTypeIdentityKey, which folds the spelling
-// differences that denote one type — and, where the difference cannot be
-// decided from a signature string at all, folds them anyway rather than reject.
-func goMethodSignaturesMatch(requirement, implementation string) bool {
+// differences that denote one type.
+//
+// The two import maps are the alias -> import path bindings of the FILE each
+// signature was declared in, and they decide the qualifiers the key alone
+// cannot: `http.Client` and `redis.Client` key identically as `Client`, but
+// their files resolve `http` and `redis` to different packages, so they are
+// different types and the implementation hop must not be carried. A qualifier
+// neither file resolves — a bare name, a dot-import, an alias the import
+// scanner did not record — stays folded, because there the signature really is
+// all the evidence there is and a missing hop is worse than an imprecise one.
+// Passing nil for either map is the no-evidence case and reproduces the
+// name-only comparison exactly.
+func goMethodSignaturesMatch(requirement, implementation string, requirementImports, implementationImports map[string]string) bool {
 	want, ok := goNormalizedMethodSignature(requirement)
 	if !ok {
 		return false
@@ -7361,7 +7424,40 @@ func goMethodSignaturesMatch(requirement, implementation string) bool {
 	if !ok {
 		return false
 	}
-	return goTypeIdentityKey(want) == goTypeIdentityKey(got)
+	wantKey, wantQualifiers := goTypeIdentityKeyWithQualifiers(want)
+	gotKey, gotQualifiers := goTypeIdentityKeyWithQualifiers(got)
+	if wantKey != gotKey {
+		return false
+	}
+	return goQualifiersCompatible(wantQualifiers, gotQualifiers, requirementImports, implementationImports)
+}
+
+// goQualifiersCompatible reports whether two aligned qualifier lists can denote
+// the same types. Equal identity keys already fixed the structure and every type
+// NAME, so the lists are positionally aligned, one entry per name in the key;
+// only the packages those names were qualified by remain to be checked.
+//
+// A pair is rejected only when BOTH sides resolve to an import path and the
+// paths differ — the one case where the file's import block proves Go would
+// reject the implementation. Anything else folds: an unresolved qualifier, an
+// unqualified name (recorded as ""), or a missing import map. Lists of unequal
+// length would mean the keys agreed while the emitted names did not, which the
+// renderer cannot produce; it folds rather than invent a decline.
+func goQualifiersCompatible(want, got []string, wantImports, gotImports map[string]string) bool {
+	if len(want) != len(got) {
+		return true
+	}
+	for i := range want {
+		wantPath, wantResolved := wantImports[want[i]]
+		gotPath, gotResolved := gotImports[got[i]]
+		if !wantResolved || !gotResolved {
+			continue
+		}
+		if wantPath != gotPath {
+			return false
+		}
+	}
+	return true
 }
 
 // goPredeclaredTypeAliases are the spellings the Go spec makes ALIASES: two
@@ -7378,17 +7474,18 @@ var goPredeclaredTypeAliases = map[string]string{
 // goTypeIdentityKey rewrites a canonicalised type expression into a key that is
 // equal for every spelling denoting the same Go type. Three rewrites:
 //
-//   - PACKAGE QUALIFIERS ARE DROPPED, so `context.Context`, an aliased
+//   - PACKAGE QUALIFIERS LEAVE THE KEY, so `context.Context`, an aliased
 //     `gocontext.Context` and a dot-imported bare `Context` all key as
-//     `Context`. Whether two qualifiers name the same package is NOT decidable
-//     from a signature string — the import block, the alias and the dot-import
-//     all live elsewhere — so this is permissive on purpose and `http.Client`
-//     collapses onto `redis.Client` too. That error adds an imprecise
-//     implementation hop; the opposite error silently deletes a real
-//     implementation's edge, which is the defect being repaired. Nothing
-//     structural is folded: arity, pointers, slices, arrays, maps, channels and
-//     variadics all still separate, so the `Run(name string) error` against
-//     `Run() error` case that motivated signature matching stays rejected.
+//     `Context`. A signature string alone cannot say whether two qualifiers name
+//     one package — the import block, the alias and the dot-import all live
+//     elsewhere in the file — so the key deliberately does not try. It is
+//     returned ALONGSIDE the qualifier each name carried
+//     (goTypeIdentityKeyWithQualifiers), and goMethodSignaturesMatch resolves
+//     those against the declaring files' import blocks, which is where the
+//     evidence actually is. Nothing structural is folded: arity, pointers,
+//     slices, arrays, maps, channels and variadics all still separate, so the
+//     `Run(name string) error` against `Run() error` case that motivated
+//     signature matching stays rejected.
 //   - PREDECLARED ALIASES ARE FOLDED (goPredeclaredTypeAliases). Sound: the
 //     spec defines each pair as one type.
 //   - PARAMETER AND RESULT NAMES INSIDE A NESTED func TYPE ARE DROPPED, as
@@ -7401,7 +7498,18 @@ var goPredeclaredTypeAliases = map[string]string{
 // one side only still fails to match. Rewriting that needs a real type parser,
 // and the residue errs towards a missing hop rather than a wrong one.
 func goTypeIdentityKey(text string) string {
+	key, _ := goTypeIdentityKeyWithQualifiers(text)
+	return key
+}
+
+// goTypeIdentityKeyWithQualifiers returns the identity key and, positionally
+// aligned with the type names the key emits, the package qualifier each was
+// written with ("" for an unqualified name). Two equal keys therefore come with
+// two equally long qualifier lists that can be compared name by name.
+func goTypeIdentityKeyWithQualifiers(text string) (string, []string) {
 	var out strings.Builder
+	var qualifiers []string
+	pending := ""
 	for i := 0; i < len(text); {
 		if !goIdentifierByte(text[i]) {
 			out.WriteByte(text[i])
@@ -7412,16 +7520,20 @@ func goTypeIdentityKey(text string) string {
 		for end < len(text) && goIdentifierByte(text[end]) {
 			end++
 		}
-		// `pkg.Name` keys as `Name`: skip the qualifier and its dot, then resume
-		// from the next segment so a chain reduces to its last one.
+		// `pkg.Name` keys as `Name`: hold the qualifier aside, skip it and its
+		// dot, then resume from the next segment so a chain reduces to its last
+		// one and carries the qualifier written immediately before it.
 		if end+1 < len(text) && text[end] == '.' && goIdentifierByte(text[end+1]) {
+			pending = text[i:end]
 			i = end + 1
 			continue
 		}
 		name := text[i:end]
 		if name == "func" && end < len(text) && text[end] == '(' {
-			if rendered, next, ok := goFuncTypeIdentityKey(text, end); ok {
+			if rendered, funcQualifiers, next, ok := goFuncTypeIdentityKey(text, end); ok {
 				out.WriteString(rendered)
+				qualifiers = append(qualifiers, funcQualifiers...)
+				pending = ""
 				i = next
 				continue
 			}
@@ -7430,9 +7542,11 @@ func goTypeIdentityKey(text string) string {
 			name = alias
 		}
 		out.WriteString(name)
+		qualifiers = append(qualifiers, pending)
+		pending = ""
 		i = end
 	}
-	return out.String()
+	return out.String(), qualifiers
 }
 
 // goIdentifierByte is identifierByte without the dot, so a qualified name splits
@@ -7444,27 +7558,28 @@ func goIdentifierByte(b byte) bool { return identifierByte(b) && b != '.' }
 // names are dropped through goSignatureTypeList, the same reduction the top
 // level of a method signature already gets. It declines when either list cannot
 // be reduced, leaving the caller to copy the text through unchanged.
-func goFuncTypeIdentityKey(text string, open int) (string, int, bool) {
+func goFuncTypeIdentityKey(text string, open int) (string, []string, int, bool) {
 	closing := matchingParen(text, open)
 	if closing < 0 {
-		return "", 0, false
+		return "", nil, 0, false
 	}
 	params, ok := goSignatureTypeList(text[open+1 : closing])
 	if !ok {
-		return "", 0, false
+		return "", nil, 0, false
 	}
-	rendered := "func(" + strings.Join(goTypeIdentityKeys(params), ",") + ")"
+	paramKeys, qualifiers := goTypeIdentityKeys(params)
+	rendered := "func(" + strings.Join(paramKeys, ",") + ")"
 	next := closing + 1
 	if next < len(text) && text[next] == '(' {
 		end := matchingParen(text, next)
 		if end < 0 {
-			return "", 0, false
+			return "", nil, 0, false
 		}
-		results, ok := goSignatureTypeList(text[next+1 : end])
+		resultTypes, ok := goSignatureTypeList(text[next+1 : end])
 		if !ok {
-			return "", 0, false
+			return "", nil, 0, false
 		}
-		results = goTypeIdentityKeys(results)
+		results, resultQualifiers := goTypeIdentityKeys(resultTypes)
 		// A one-result list is written both ways; key it the unwrapped way so
 		// `func() (error)` and `func() error` agree.
 		switch len(results) {
@@ -7474,17 +7589,23 @@ func goFuncTypeIdentityKey(text string, open int) (string, int, bool) {
 		default:
 			rendered += "(" + strings.Join(results, ",") + ")"
 		}
+		qualifiers = append(qualifiers, resultQualifiers...)
 		next = end + 1
 	}
-	return rendered, next, true
+	return rendered, qualifiers, next, true
 }
 
-func goTypeIdentityKeys(types []string) []string {
+// goTypeIdentityKeys keys each type in a list and concatenates their qualifier
+// lists in the same order the keys are joined, so the alignment survives nesting.
+func goTypeIdentityKeys(types []string) ([]string, []string) {
 	out := make([]string, len(types))
+	var qualifiers []string
 	for i, text := range types {
-		out[i] = goTypeIdentityKey(text)
+		key, typeQualifiers := goTypeIdentityKeyWithQualifiers(text)
+		out[i] = key
+		qualifiers = append(qualifiers, typeQualifiers...)
 	}
-	return out
+	return out, qualifiers
 }
 
 // goNormalizedMethodSignature renders a Go method signature — an interface
@@ -7683,7 +7804,7 @@ func goMethodSymbolByID(id string, symbolsByShortName map[string][]SymbolRecord)
 // never rewritten — this is purely additive, and the interface node keeps the
 // incoming edge that used to be impossible (a Go interface had no method symbols
 // at all, so terraform's communicator.Communicator was a dead end).
-func appendGoInterfaceImplementationCalls(relations []RelationRecord, from SymbolRecord, symbolsByShortName map[string][]SymbolRecord, methodsByContainer map[string]map[string]SymbolRecord) []RelationRecord {
+func appendGoInterfaceImplementationCalls(relations []RelationRecord, from SymbolRecord, symbolsByShortName map[string][]SymbolRecord, methodsByContainer map[string]map[string]SymbolRecord, goImports *goFileImports) []RelationRecord {
 	if from.Language != "Go" || len(relations) == 0 {
 		return relations
 	}
@@ -7706,7 +7827,7 @@ func appendGoInterfaceImplementationCalls(relations []RelationRecord, from Symbo
 		if !ok {
 			continue
 		}
-		for _, impl := range goInterfaceImplementationMethods(ifaceMethod, symbolsByShortName, methodsByContainer) {
+		for _, impl := range goInterfaceImplementationMethods(ifaceMethod, symbolsByShortName, methodsByContainer, goImports) {
 			if impl.ID == from.ID || existing[impl.ID] {
 				continue
 			}
@@ -17821,8 +17942,102 @@ func resolveCFamilyLocalInclude(importingPath, spec string, knownFiles map[strin
 	return "", false
 }
 
+// goModuleRoot is one go.mod in the repository: the repo-relative directory it
+// sits in ("" for the root module) and the module path it declares.
+type goModuleRoot struct {
+	Dir  string
+	Path string
+}
+
+// goModuleIndex answers which Go module OWNS a repo-relative directory, and
+// whether an import path names a package this repository builds.
+//
+// A repository is not one module. A nested go.mod (tools/go.mod declaring
+// example.com/tool, a local `replace` target, a test module) re-roots every
+// directory beneath it: tools/lib is example.com/tool/lib, NOT
+// <root-module>/tools/lib. Deciding ownership against the root module alone
+// therefore declares those packages external, and every qualified receiver
+// pointing into them loses its edge. Roots are held longest-directory-first so
+// the innermost enclosing module wins.
+type goModuleIndex struct {
+	roots []goModuleRoot
+}
+
+// newGoModuleIndex sorts the roots innermost-first and drops incomplete entries.
+func newGoModuleIndex(roots []goModuleRoot) goModuleIndex {
+	kept := make([]goModuleRoot, 0, len(roots))
+	for _, root := range roots {
+		if root.Path == "" {
+			continue
+		}
+		kept = append(kept, goModuleRoot{Dir: normalizeRepoDir(root.Dir), Path: root.Path})
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		if len(kept[i].Dir) != len(kept[j].Dir) {
+			return len(kept[i].Dir) > len(kept[j].Dir)
+		}
+		return kept[i].Dir < kept[j].Dir
+	})
+	return goModuleIndex{roots: kept}
+}
+
+// normalizeRepoDir renders a repo-relative directory as a slash path with no
+// leading or trailing separator; the repository root is "".
+func normalizeRepoDir(dir string) string {
+	dir = strings.Trim(filepath.ToSlash(dir), "/")
+	if dir == "." {
+		return ""
+	}
+	return dir
+}
+
+// empty reports whether the repository declares no Go module at all.
+func (index goModuleIndex) empty() bool { return len(index.roots) == 0 }
+
+// owner returns the innermost module whose directory contains dir.
+func (index goModuleIndex) owner(dir string) (goModuleRoot, bool) {
+	dir = normalizeRepoDir(dir)
+	for _, root := range index.roots {
+		if root.Dir == "" || dir == root.Dir || strings.HasPrefix(dir, root.Dir+"/") {
+			return root, true
+		}
+	}
+	return goModuleRoot{}, false
+}
+
+// importPathFor renders the import path of the package declared in dir, using
+// the module that owns it.
+func (index goModuleIndex) importPathFor(dir string) (string, bool) {
+	root, ok := index.owner(dir)
+	if !ok {
+		return "", false
+	}
+	dir = normalizeRepoDir(dir)
+	rest := strings.TrimPrefix(strings.TrimPrefix(dir, root.Dir), "/")
+	if rest == "" {
+		return root.Path, true
+	}
+	return root.Path + "/" + rest, true
+}
+
+// ownsImport reports whether an import path names a package built by ANY module
+// in this repository.
+func (index goModuleIndex) ownsImport(importPath string) bool {
+	importPath = strings.Trim(filepath.ToSlash(strings.TrimSpace(importPath)), "/")
+	if importPath == "" {
+		return false
+	}
+	for _, root := range index.roots {
+		if importPath == root.Path || strings.HasPrefix(importPath, root.Path+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 type manifestImportResolver struct {
 	goModule            string
+	goModules           goModuleIndex
 	goPackages          map[string]string
 	jsPackageName       string
 	jsPackageExports    map[string]string
@@ -18051,6 +18266,30 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 			cargoPaths = append(cargoPaths, filepath.ToSlash(file.Path))
 		}
 	}
+	// Every go.mod in the tree, not just the root one: a nested module re-roots
+	// the import paths of everything beneath it, and code inside it importing its
+	// own sibling packages is importing REPOSITORY source, not a dependency.
+	// go.mod carries no supported extension, so it is not among `files`; the
+	// manifests are found by walking each Go file's ancestor directories, the
+	// same way Rust crates are located from .rs paths.
+	moduleRoots := []goModuleRoot{}
+	if resolver.goModule != "" {
+		moduleRoots = append(moduleRoots, goModuleRoot{Dir: "", Path: resolver.goModule})
+	}
+	for _, modPath := range inferGoModulesFromGoPaths(goPaths, readContent) {
+		dir := normalizeRepoDir(filepath.Dir(modPath))
+		if dir == "" {
+			continue // the root module is already recorded from readContent("go.mod")
+		}
+		content, ok := readContent(modPath)
+		if !ok {
+			continue
+		}
+		if modulePath := parseGoModulePath(content); modulePath != "" {
+			moduleRoots = append(moduleRoots, goModuleRoot{Dir: dir, Path: modulePath})
+		}
+	}
+	resolver.goModules = newGoModuleIndex(moduleRoots)
 	cargoPaths = append(cargoPaths, inferCargoManifestsFromRustPaths(rustPaths, readContent)...)
 	cargoPaths = uniqueStrings(cargoPaths)
 	sort.Slice(goPaths, func(i, j int) bool {
@@ -18924,6 +19163,40 @@ func cargoRustSourceRootDir(cargoPath, content string) string {
 		return "src"
 	}
 	return dir + "/src"
+}
+
+// inferGoModulesFromGoPaths returns every go.mod that governs at least one Go
+// file, found by walking each file's ancestor directories to the repository
+// root. Mirrors inferCargoManifestsFromRustPaths: a manifest with no supported
+// extension never reaches the file list, so it has to be looked up by path.
+func inferGoModulesFromGoPaths(goPaths []string, readContent contentReader) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, path := range goPaths {
+		dir := filepath.ToSlash(filepath.Dir(path))
+		for {
+			candidate := "go.mod"
+			if dir != "." && dir != "" {
+				candidate = dir + "/go.mod"
+			}
+			if !seen[candidate] {
+				seen[candidate] = true
+				if _, ok := readContent(candidate); ok {
+					out = append(out, candidate)
+				}
+			}
+			if dir == "." || dir == "" {
+				break
+			}
+			parent := filepath.ToSlash(filepath.Dir(dir))
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func inferCargoManifestsFromRustPaths(rustPaths []string, readContent contentReader) []string {
