@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -368,5 +369,118 @@ func TestRenderVerifyVerdictStillRefusesPHPUnitCodesItDoesNotGradeWith(t *testin
 					"cannot explain it:\n%s", exitCode, got)
 			}
 		})
+	}
+}
+
+// TestVerifyRefusesALegacyBaselineRecordedWithARelativeRepo is the regression for the half of the
+// repository check that record-time canonicalization could not reach.
+//
+// Canonicalizing at record time fixed every baseline THIS build writes. A baseline written by an
+// older build still carries the caller's spelling verbatim, and `verifySameRepo` accepted it on
+// string equality before any of the identity work below ran: two different checkouts that both said
+// `--repo .` compared equal, exactly as they did before the fix, and a verdict was rendered about a
+// repository the baseline never described.
+//
+// Resolving both sides — the remedy that suggests itself — does not close it. Both "."s resolve
+// against the CURRENT invocation's working directory, so they still agree; the recording directory
+// was never written down. The choice made here is to REFUSE such a baseline and say so, because the
+// only alternative readings are "unknown" and "guess".
+func TestVerifyRefusesALegacyBaselineRecordedWithARelativeRepo(t *testing.T) {
+	newRepo := func(t *testing.T) string {
+		t.Helper()
+		repo := t.TempDir()
+		if err := os.WriteFile(filepath.Join(repo, "run.sh"),
+			[]byte("#!/bin/sh\necho \"tests/test_a.py::test_x PASSED\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return repo
+	}
+
+	// The predicate itself. This is the pair the early string equality accepted.
+	if verifySameRepo(".", ".") {
+		t.Fatal("a baseline that recorded its repository as \".\" was accepted for a run that also " +
+			"spelled it \".\": the two \".\"s are different checkouts and the delta is about neither")
+	}
+	if verifySameRepo("../sibling", "../sibling") {
+		t.Fatal("any relative recorded spelling is unanchored, not just \".\"")
+	}
+
+	// End to end: a baseline this build wrote, downgraded to the shape an older build wrote by
+	// putting the caller's spelling back, and then adjudicated in a DIFFERENT checkout.
+	recorded := newRepo(t)
+	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
+	t.Chdir(recorded)
+	var recordOut bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "0.1.0", Stdout: &recordOut},
+		[]string{"verify", "--repo", ".", "--test", "sh run.sh",
+			"--record-baseline", baselinePath}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	raw, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored["repo"] == "." {
+		t.Fatal("this build already stores the raw spelling, so the downgrade below proves nothing")
+	}
+	stored["repo"] = "."
+	downgraded, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(baselinePath, downgraded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	elsewhere := newRepo(t)
+	t.Chdir(elsewhere)
+	var out bytes.Buffer
+	err = Run(t.Context(), Options{Version: "0.1.0", Stdout: &out},
+		[]string{"verify", "--repo", ".", "--test", "sh run.sh", "--pre-edit-baseline", baselinePath})
+	if err == nil {
+		t.Fatalf("a legacy baseline recorded in another checkout as \".\" was adjudicated here:\n%s",
+			out.String())
+	}
+	if !strings.Contains(err.Error(), "repository") || !strings.Contains(err.Error(), "Re-record it") {
+		t.Fatalf("the refusal does not name the repository or say what to do about it: %v", err)
+	}
+}
+
+// TestRenderVerifyVerdictAcceptsRSpecsConfiguredFailureExitCode is the regression for pinning a code
+// to a runner that does not own it.
+//
+// RSpec's failure exit code is a PROJECT setting, not an RSpec constant: `--failure-exit-code 2` on
+// the command line and `config.failure_exit_code = 2` in spec_helper.rb both change it, and CI
+// suites set it precisely to separate "a test failed" from "the run died". Neither source is visible
+// to this verb — the second is Ruby it never reads, and the first can arrive through `.rspec` or
+// `SPEC_OPTS` rather than the recorded command — so {1} adjudicated every such suite INCOMPLETE
+// however complete it was. RSpec is unlisted for that reason, which restores the permissive rule an
+// unknown runner already gets.
+func TestRenderVerifyVerdictAcceptsRSpecsConfiguredFailureExitCode(t *testing.T) {
+	t.Parallel()
+	baseline := verifyBaseline{Parser: "rspec", Results: verifyResults{
+		"rspec ./spec/a_spec.rb:1": verifyStatusFail,
+		"rspec ./spec/b_spec.rb:2": verifyStatusFail,
+	}}
+	current := verifyResults{
+		"rspec ./spec/a_spec.rb:1": verifyStatusPass,
+		"rspec ./spec/b_spec.rb:2": verifyStatusFail,
+	}
+	for _, exitCode := range []int{1, 2, 3} {
+		got := string(renderVerifyVerdict(verifyVerdictInput{
+			baseline: baseline, current: current, parser: "rspec", parsed: true,
+			exitCode: exitCode, maxBytes: verifyDefaultMaxBytes,
+		}))
+		if strings.Contains(got, "VERDICT: INCOMPLETE") {
+			t.Fatalf("an RSpec run configured with --failure-exit-code %d was called incomplete "+
+				"although its own reported failure explains the exit:\n%s", exitCode, got)
+		}
+		if !strings.Contains(got, "VERDICT: PASS") {
+			t.Fatalf("rspec exit %d: want PASS, got:\n%s", exitCode, got)
+		}
 	}
 }
