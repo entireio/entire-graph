@@ -13,7 +13,7 @@ import (
 const maxNetBSDMountTableRows = 100_000
 
 func newPathMountGuard(root, trustedBase string) (pathMountGuard, error) {
-	mountPoints, err := readNetBSDMountPoints()
+	mountPoints, err := cachedMountPoints(readNetBSDMountPoints)
 	if err != nil {
 		return pathMountGuard{}, err
 	}

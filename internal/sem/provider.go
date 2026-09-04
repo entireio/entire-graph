@@ -1102,6 +1102,11 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 // public provider always uses defaultProviderWorkerCount.
 func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, workers int, emit func(record any) error) error {
 	started := time.Now()
+	// Before prepareSource, which is the first thing here to resolve a
+	// repository-controlled path: the mount-table snapshot every path resolver
+	// in this build shares has to be taken while nothing of the sort has been
+	// resolved yet.
+	beginMountTableScope()
 	sc, err := prepareSource(ctx, repo, options)
 	if err != nil {
 		return err

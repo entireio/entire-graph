@@ -93,7 +93,7 @@ const (
 )
 
 func newPathMountGuard(root, trustedBase string) (pathMountGuard, error) {
-	mountPoints, err := readSolarisMountPoints()
+	mountPoints, err := cachedMountPoints(readSolarisMountPoints)
 	if err != nil {
 		return pathMountGuard{}, err
 	}

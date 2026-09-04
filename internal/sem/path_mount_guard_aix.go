@@ -92,7 +92,7 @@ const (
 )
 
 func newPathMountGuard(root, trustedBase string) (pathMountGuard, error) {
-	mountPoints, err := readAIXMountPoints()
+	mountPoints, err := cachedMountPoints(readAIXMountPoints)
 	if err != nil {
 		return pathMountGuard{}, err
 	}
