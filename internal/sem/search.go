@@ -2176,11 +2176,13 @@ func preselectSearchFiles(
 
 const (
 	// searchRegistrationBridgeMaxHandlers bounds how many distinct handlers one
-	// preselection will chase, searchRegistrationBridgeMaxFiles how many files it
-	// may add, and searchRegistrationBridgeScanLimit how much of the corpus it
-	// may read looking for them.
-	searchRegistrationBridgeMaxHandlers = 16
-	searchRegistrationBridgeMaxFiles    = 4
+	// preselection will chase — and, since each one contributes at most its
+	// defining file, how many files the bridge may add.
+	// searchRegistrationBridgeMaxParses bounds how many candidate files it may
+	// parse to tell a definition from a call site, and
+	// searchRegistrationBridgeScanLimit how much of the corpus it may read.
+	searchRegistrationBridgeMaxHandlers = 8
+	searchRegistrationBridgeMaxParses   = 64
 	searchRegistrationBridgeScanLimit   = 50_000
 )
 
@@ -2202,9 +2204,15 @@ const (
 // it. Widening the selection keeps both sides derived from one list.
 //
 // It is deliberately cheap and rare. Nothing runs unless a selected file is a
-// commands/*.json carrying a "function" field, and the walk stops at the first
-// searchRegistrationBridgeMaxFiles hits, so the MaxIndexedFiles guard on cold
-// selective indexing is exceeded by at most that many files.
+// commands/*.json carrying a "function" field, it adds at most one file per
+// handler and at most searchRegistrationBridgeMaxHandlers in all — so the
+// MaxIndexedFiles guard on cold selective indexing is exceeded by at most that
+// many files — and it stops as soon as every handler has been placed.
+//
+// A file is added only when it DEFINES the handler, which is checked by parsing
+// it. Accepting any file that merely applies the name would let call sites
+// consume the budget while the definition sits further down the path order, and
+// the handler symbol — the whole point of the bridge — would still be missing.
 func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, selected []string) []string {
 	if len(selected) == 0 || len(selected) >= len(source.paths) {
 		return selected
@@ -2225,10 +2233,11 @@ func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, s
 	for _, filePath := range selected {
 		chosen[filePath] = true
 	}
+	placed := make(map[string]bool, len(handlers))
 	var added []string
-	examined := 0
+	examined, parsed := 0, 0
 	for _, filePath := range source.paths {
-		if len(added) >= searchRegistrationBridgeMaxFiles || examined >= searchRegistrationBridgeScanLimit {
+		if len(placed) == len(handlers) || examined >= searchRegistrationBridgeScanLimit || parsed >= searchRegistrationBridgeMaxParses {
 			break
 		}
 		if ctx.Err() != nil {
@@ -2242,19 +2251,46 @@ func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, s
 			continue
 		}
 		examined++
+		// The cheap textual screen runs first so the parse budget is spent only
+		// on files that could plausibly hold the definition.
+		candidate := false
 		for _, handler := range handlers {
-			if !containsAppliedIdentifier(content, handler) {
+			if !placed[handler] && containsAppliedIdentifier(content, handler) {
+				candidate = true
+				break
+			}
+		}
+		if !candidate {
+			continue
+		}
+		parsed++
+		defined := parsedSymbolNames(filePath, content)
+		for _, handler := range handlers {
+			if placed[handler] || !defined[handler] {
 				continue
 			}
-			chosen[filePath] = true
-			added = append(added, filePath)
-			break
+			placed[handler] = true
+			if !chosen[filePath] {
+				chosen[filePath] = true
+				added = append(added, filePath)
+			}
 		}
 	}
 	if len(added) == 0 {
 		return selected
 	}
 	return append(append(make([]string, 0, len(selected)+len(added)), selected...), added...)
+}
+
+// parsedSymbolNames returns the symbol names a file declares, so the bridge can
+// tell the file that DEFINES a handler from the files that merely call it.
+func parsedSymbolNames(path, content string) map[string]bool {
+	entities, _ := (TreeSitterParser{}).Parse(path, content)
+	names := make(map[string]bool, len(entities))
+	for _, entity := range entities {
+		names[entity.Name] = true
+	}
+	return names
 }
 
 // containsAppliedIdentifier reports whether name occurs in content as a whole

@@ -1067,7 +1067,7 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	tolerateSchemaAdditions := false
 	lineNumber := 0
 	for {
-		line, readErr := readCompactSnapshotLine(reader)
+		line, readErr := readCompactSnapshotLine(reader, maxCompactSnapshotLineBytes)
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				break
@@ -1197,20 +1197,34 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	return warnings, nil
 }
 
-// readCompactSnapshotLine returns the next line of a compact snapshot with its
-// line ending removed, and io.EOF once the reader is exhausted.
+// maxCompactSnapshotLineBytes bounds a single compact record line.
 //
-// This replaces a bufio.Scanner whose token cap was 16 MiB. The encoder writes
-// the entire SnapshotSummary as ONE line, and that summary carries a record per
-// partial failure over a source limit of defaultMaxSourceFiles files, so a
-// repository with enough parse/size failures produced a valid snapshot that the
-// same build could not read back ("bufio.Scanner: token too long"). A decoder
-// must accept every artifact its own encoder can emit, so the line length is
-// bounded by the artifact rather than by a constant chosen ahead of it.
-func readCompactSnapshotLine(reader *bufio.Reader) ([]byte, error) {
+// The decoder used to cap a line at 16 MiB, which it could not do and still read
+// its own encoder's output: the encoder writes the entire SnapshotSummary as ONE
+// line, and that summary carries a record per partial failure over a corpus of
+// up to defaultMaxSourceFiles files — so 16 MiB left it about 80 bytes per
+// entry, below the encoder's own floor, and a repository with enough parse or
+// size failures produced a valid snapshot that failed to read back with
+// "bufio.Scanner: token too long".
+//
+// The bound is therefore sized FROM the encoder rather than chosen ahead of it:
+// one entry per admitted file, at a generous 2 KiB per entry, which is far above
+// any real repository-relative path plus the fixed code/severity/effect text.
+// Keeping a bound at all matters because the reader accumulates until a newline,
+// so an arbitrarily long line in a hostile artifact would otherwise be an
+// unbounded allocation before any JSON validation runs.
+const maxCompactSnapshotLineBytes = 2048 * defaultMaxSourceFiles
+
+// readCompactSnapshotLine returns the next line of a compact snapshot with its
+// line ending removed, and io.EOF once the reader is exhausted. A line longer
+// than limit is refused rather than accumulated.
+func readCompactSnapshotLine(reader *bufio.Reader, limit int) ([]byte, error) {
 	var line []byte
 	for {
 		chunk, err := reader.ReadSlice('\n')
+		if len(line)+len(chunk) > limit {
+			return nil, fmt.Errorf("compact snapshot line exceeds %d bytes", limit)
+		}
 		line = append(line, chunk...)
 		switch {
 		case err == nil:

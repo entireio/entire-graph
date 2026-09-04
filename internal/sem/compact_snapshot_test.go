@@ -609,7 +609,7 @@ func TestCompactSnapshotLineReaderFraming(t *testing.T) {
 	reader := bufio.NewReaderSize(strings.NewReader(input), 64)
 	var lines []string
 	for {
-		line, err := readCompactSnapshotLine(reader)
+		line, err := readCompactSnapshotLine(reader, maxCompactSnapshotLineBytes)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -629,5 +629,28 @@ func TestCompactSnapshotLineReaderFraming(t *testing.T) {
 	}
 	if lines[2] != "omega" {
 		t.Fatalf("line 3 = %q, want %q", lines[2], "omega")
+	}
+}
+
+// The bound must sit above everything the encoder can write and still refuse an
+// arbitrarily long line before it is accumulated.
+func TestCompactSnapshotLineReaderRefusesLineOverBound(t *testing.T) {
+	if maxCompactSnapshotLineBytes <= 16*1024*1024 {
+		t.Fatalf("bound = %d, want more than the 16 MiB the decoder used to cap at", maxCompactSnapshotLineBytes)
+	}
+	reader := bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 4096)), 64)
+	if _, err := readCompactSnapshotLine(reader, 1024); err == nil {
+		t.Fatal("expected an over-bound line to be refused")
+	} else if !strings.Contains(err.Error(), "exceeds 1024 bytes") {
+		t.Fatalf("err = %v", err)
+	}
+	// A line exactly at the bound is a record, not an overflow.
+	reader = bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 1024)), 64)
+	line, err := readCompactSnapshotLine(reader, 1024)
+	if err != nil {
+		t.Fatalf("line at the bound: %v", err)
+	}
+	if len(line) != 1024 {
+		t.Fatalf("line length = %d, want 1024", len(line))
 	}
 }

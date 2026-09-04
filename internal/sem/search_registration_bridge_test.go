@@ -2,6 +2,7 @@ package sem
 
 import (
 	"fmt"
+	"sort"
 	"testing"
 )
 
@@ -100,5 +101,50 @@ func TestContainsAppliedIdentifier(t *testing.T) {
 		if got := containsAppliedIdentifier(testCase.content, testCase.name); got != testCase.want {
 			t.Fatalf("containsAppliedIdentifier(%q, %q) = %v, want %v", testCase.content, testCase.name, got, testCase.want)
 		}
+	}
+}
+
+// Call sites must not consume the bridge's budget: only the file that DEFINES
+// the handler is added, however many lexically earlier files call it.
+func TestBridgeRegistrationHandlerFilesPrefersTheDefinition(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/substr.json": `{"function":"getrangeCommand"}`,
+		"src/t_string.go":          "package src\n\nfunc getrangeCommand() {}\n",
+	}
+	paths := []string{"src/commands/substr.json"}
+	for index := 0; index < 12; index++ {
+		path := fmt.Sprintf("src/aaa_caller%02d.go", index)
+		contents[path] = fmt.Sprintf("package src\n\nfunc Caller%02d() { getrangeCommand() }\n", index)
+		paths = append(paths, path)
+	}
+	paths = append(paths, "src/t_string.go")
+	sort.Strings(paths)
+	source := sourceContext{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		},
+	}
+
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"})
+	want := []string{"src/commands/substr.json", "src/t_string.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged = %v, want %v", got, want)
+	}
+}
+
+// parsedSymbolNames is what separates a definition from a call site.
+func TestParsedSymbolNames(t *testing.T) {
+	defining := parsedSymbolNames("src/t_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+	if !defining["getrangeCommand"] {
+		t.Fatalf("definition not reported: %v", defining)
+	}
+	calling := parsedSymbolNames("src/caller.go", "package src\n\nfunc Caller() { getrangeCommand() }\n")
+	if calling["getrangeCommand"] {
+		t.Fatalf("call site reported as a definition: %v", calling)
+	}
+	if !calling["Caller"] {
+		t.Fatalf("caller's own definition missing: %v", calling)
 	}
 }
