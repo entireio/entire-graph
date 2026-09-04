@@ -1,5 +1,10 @@
 # RESULTS — memory-systems field comparison (as of 2026-08-14 04:40 UTC)
 
+> **Historical snapshot — do not quote these numbers as current.** The letta and supermemory rows
+> below were later found suspect and re-run: letta 80.58 → **84.68**, supermemory 77.60 → **82.08**
+> (two real defects fixed, a top-100 search cap disclosed). Current numbers and their
+> qualifications live in `LOCOMO-COMPARISON.md`; run provenance in `RUN-INDEX.md`.
+
 Harness: mem0's own benchmark suite. Spine identical across arms: answerer **and** judge
 `gpt-5.6-sol`, provider `azure_ai`, `top_k=200`, same prompts/datasets. Ingest native per system;
 LLM-extraction arms use `azure_ai/gpt-5.6-terra`; **eg is 0-LLM at ingest**.
