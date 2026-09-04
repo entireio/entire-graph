@@ -86,28 +86,72 @@ func TestBridgeRegistrationHandlerFilesIsInert(t *testing.T) {
 	}
 }
 
-// The handler must be matched as a whole identifier applied to a parameter
-// list, so neither prose nor a longer identifier that merely contains the name
-// drags a file into a selective index.
-func TestContainsAppliedIdentifier(t *testing.T) {
+// The screen in front of the parse must admit declarations and reject calls: a
+// widely-called handler has far more call sites than definitions, and letting
+// them through would spend the parse budget before the definition is reached.
+func TestDeclaresAppliedIdentifier(t *testing.T) {
 	for _, testCase := range []struct {
 		content string
 		name    string
 		want    bool
 	}{
-		{"void getrangeCommand(client *c) {}", "getrangeCommand", true},
+		{"void getrangeCommand(client *c) {", "getrangeCommand", true},
 		{"func getrangeCommand() {}", "getrangeCommand", true},
-		{"  getrangeCommand (c);", "getrangeCommand", true},
+		{"static int getrangeCommand(client *c) {", "getrangeCommand", true},
+		{"export default function getrangeCommand(a) {", "getrangeCommand", true},
+		{"Result Namespace::getrangeCommand(int a) {", "getrangeCommand", true},
+		{"void\ngetrangeCommand(client *c) {", "getrangeCommand", true},
+		{"getrangeCommand(client *c)", "getrangeCommand", false},
+		{"func Caller() {\n\tgetrangeCommand()\n}", "getrangeCommand", false},
+
+		{"func Caller() { getrangeCommand() }", "getrangeCommand", false},
+		{"  return getrangeCommand(c)", "getrangeCommand", false},
+		{"  x = getrangeCommand(c)", "getrangeCommand", false},
+		{"  getrangeCommand(c);", "getrangeCommand", false},
+		{"int getrangeCommand(client *c);", "getrangeCommand", false},
+		{"  await getrangeCommand(c)", "getrangeCommand", false},
+		{"  foo.getrangeCommand(c)", "getrangeCommand", false},
+
 		{`{"function":"getrangeCommand"}`, "getrangeCommand", false},
 		{"getrangeCommand implements substr", "getrangeCommand", false},
-		{"void xgetrangeCommand(c) {}", "getrangeCommand", false},
-		{"void getrangeCommandExtra(c) {}", "getrangeCommand", false},
+		{"void xgetrangeCommand(c) {", "getrangeCommand", false},
+		{"void getrangeCommandExtra(c) {", "getrangeCommand", false},
 		{"", "getrangeCommand", false},
 		{"getrangeCommand(", "", false},
 	} {
-		if got := containsAppliedIdentifier(testCase.content, testCase.name); got != testCase.want {
-			t.Fatalf("containsAppliedIdentifier(%q, %q) = %v, want %v", testCase.content, testCase.name, got, testCase.want)
+		if got := declaresAppliedIdentifier(testCase.content, testCase.name); got != testCase.want {
+			t.Fatalf("declaresAppliedIdentifier(%q, %q) = %v, want %v", testCase.content, testCase.name, got, testCase.want)
 		}
+	}
+}
+
+// Call sites must not consume the parse budget: a definition beyond
+// searchRegistrationBridgeMaxParses lexically earlier callers is still found.
+func TestBridgeRegistrationHandlerFilesOutlastsManyCallers(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/substr.json": `{"function":"getrangeCommand"}`,
+		"src/t_string.go":          "package src\n\nfunc getrangeCommand() {}\n",
+	}
+	paths := []string{"src/commands/substr.json"}
+	for index := 0; index < searchRegistrationBridgeMaxParses*2; index++ {
+		path := fmt.Sprintf("src/aaa_caller%04d.go", index)
+		contents[path] = fmt.Sprintf("package src\n\nfunc Caller%04d() {\n\tgetrangeCommand()\n}\n", index)
+		paths = append(paths, path)
+	}
+	paths = append(paths, "src/t_string.go")
+	sort.Strings(paths)
+	source := sourceContext{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		},
+	}
+
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"}, 4)
+	want := []string{"src/commands/substr.json", "src/t_string.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged = %v, want %v", got, want)
 	}
 }
 

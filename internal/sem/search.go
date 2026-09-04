@@ -2268,7 +2268,7 @@ func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, s
 		// on files that could plausibly hold the definition.
 		candidate := false
 		for _, handler := range handlers {
-			if !placed[handler] && containsAppliedIdentifier(content, handler) {
+			if !placed[handler] && declaresAppliedIdentifier(content, handler) {
 				candidate = true
 				break
 			}
@@ -2317,12 +2317,25 @@ func topLevelFunctionNames(path, content string) map[string]bool {
 	return names
 }
 
-// containsAppliedIdentifier reports whether name occurs in content as a whole
-// identifier immediately applied to a parameter list. That is the one shape a
-// handler's definition and its call sites share across the C, Go and JavaScript
-// families that use registration tables, and it excludes the registration table
-// itself, where the handler name is a quoted JSON string.
-func containsAppliedIdentifier(content, name string) bool {
+// declaresAppliedIdentifier reports whether name occurs in content as a whole
+// identifier applied to a parameter list, in a position that looks like a
+// DECLARATION rather than a call. It is the cheap screen in front of the parse:
+// what it admits is decided by topLevelFunctionNames, and what it rejects is
+// never parsed at all.
+//
+// Rejecting calls matters for recall, not just cost. The parse budget is finite,
+// and a widely-called handler has far more call sites than definitions; if call
+// sites could pass the screen, enough of them lexically ahead of the definition
+// would spend the whole budget and the bridge would fail on exactly the large
+// repositories it exists for.
+//
+// The rule is deliberately permissive toward declarations and strict about
+// calls: everything on the line before the name must read as a declaration's
+// leading tokens — a return type, a qualifier, `func`/`function`/`static` — so
+// any operator, paren, dot or bracket rules the occurrence out, as does a
+// statement keyword or a line that ends in a semicolon (a call, or a C
+// prototype, which is not the definition either).
+func declaresAppliedIdentifier(content, name string) bool {
 	if name == "" {
 		return false
 	}
@@ -2337,11 +2350,84 @@ func containsAppliedIdentifier(content, name string) bool {
 		if start > 0 && isJSIdentifierPart(content[start-1]) {
 			continue
 		}
-		if cursor := skipSpace(content, end); cursor < len(content) && content[cursor] == '(' {
+		if cursor := skipSpace(content, end); cursor >= len(content) || content[cursor] != '(' {
+			continue
+		}
+		if declarationLeadsIdentifier(content, start) {
 			return true
 		}
 	}
 	return false
+}
+
+// declarationStatementKeywords are the words that make an applied identifier a
+// call however type-shaped the rest of the line looks.
+var declarationStatementKeywords = map[string]bool{
+	"return": true, "await": true, "yield": true, "new": true, "throw": true,
+	"if": true, "while": true, "for": true, "switch": true, "case": true,
+	"else": true, "typeof": true, "delete": true, "defer": true, "go": true,
+}
+
+// declarationLeadsIdentifier reports whether the text before an occurrence reads
+// as the head of a declaration.
+func declarationLeadsIdentifier(content string, start int) bool {
+	lineStart := strings.LastIndexByte(content[:start], '\n') + 1
+	lineEnd := len(content)
+	if at := strings.IndexByte(content[start:], '\n'); at >= 0 {
+		lineEnd = start + at
+	}
+	// A line that terminates is a call or a prototype; a definition's line
+	// carries on into its body.
+	if strings.HasSuffix(strings.TrimSpace(content[lineStart:lineEnd]), ";") {
+		return false
+	}
+	prefix := strings.TrimSpace(content[lineStart:start])
+	if prefix == "" {
+		// A declaration may put its return type on the line above
+		// (`void\ngetrangeCommand(client *c)`), which is ordinary C style. A
+		// call at the start of its own line looks identical on this line alone,
+		// so the line above decides: a declaration head there, or nothing.
+		return declarationHeadText(previousNonEmptyLine(content, lineStart))
+	}
+	return declarationHeadText(prefix)
+}
+
+// previousNonEmptyLine returns the trimmed line above the one starting at
+// lineStart, skipping blank lines.
+func previousNonEmptyLine(content string, lineStart int) string {
+	for lineStart > 0 {
+		end := lineStart - 1
+		begin := strings.LastIndexByte(content[:end], '\n') + 1
+		if text := strings.TrimSpace(content[begin:end]); text != "" {
+			return text
+		}
+		lineStart = begin
+	}
+	return ""
+}
+
+// declarationHeadText reports whether text reads as a declaration's leading
+// tokens: a return type, a qualifier, `func`/`function`/`static`. Any operator,
+// paren, dot or bracket rules it out, as does a statement keyword.
+func declarationHeadText(text string) bool {
+	if text == "" {
+		return false
+	}
+	for index := 0; index < len(text); index++ {
+		switch character := text[index]; character {
+		case ' ', '\t', '*', '&', ':', '<', '>', ',', '~':
+		default:
+			if !isJSIdentifierPart(character) {
+				return false
+			}
+		}
+	}
+	for _, word := range strings.FieldsFunc(text, func(r rune) bool { return r == ' ' || r == '\t' }) {
+		if declarationStatementKeywords[word] {
+			return false
+		}
+	}
+	return true
 }
 
 func searchSnapshotMatchesSelection(snapshot ProviderSnapshot, selection searchFileSelection) bool {
