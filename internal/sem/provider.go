@@ -350,6 +350,9 @@ type SymbolRecord struct {
 	// ambiguous same-name definitions. Private, so the frozen schema and the
 	// compound-v1 IDs are unchanged.
 	bodyless bool
+	// cPlusPlusOwner carries the full lexical namespace/class owner used only to
+	// match a bodyless declaration to its out-of-line C++ definition.
+	cPlusPlusOwner string
 	// cLinkage: this symbol is declared inside an `extern "C" { ... }` block
 	// (see Entity.cLinkage). candidateSharesDeclarations reads it to tell the
 	// C-linkage half of a dual-use header from the C++ half. Private, so the
@@ -1885,6 +1888,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			sourceStartByte: entity.sourceStartByte,
 			sourceEndByte:   entity.sourceEndByte,
 			bodyless:        entity.bodyless,
+			cPlusPlusOwner:  entity.cPlusPlusOwner,
 			cLinkage:        entity.cLinkage,
 		}
 		// Carried for every language: the parser marks parameterNamesKnown only
@@ -4493,6 +4497,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	symbolsByFile := map[string][]SymbolRecord{}
 	childNamesByContainer := map[string]map[string]bool{}
 	methodsByContainer := map[string]map[string]SymbolRecord{}
+	ambiguousCPlusPlusMethods := map[string]map[string]bool{}
 	fieldsByContainer := map[string]map[string]SymbolRecord{}
 	returnTypesBySymbolNameAndFile := map[string]map[string][]string{}
 	returnTypesBySymbolNameAndDir := map[string]map[string][]string{}
@@ -4649,6 +4654,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if methodsByContainer[symbol.ContainerID] == nil {
 						methodsByContainer[symbol.ContainerID] = map[string]SymbolRecord{}
 					}
+					if ambiguousCPlusPlusMethods[symbol.ContainerID][symbol.Name] {
+						continue
+					}
 					// This index is keyed by NAME, so C++ overloads collide in
 					// it. Last-write-wins made the winner depend on source
 					// order: with `void f(int) { ... }` followed by
@@ -4662,6 +4670,18 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// which is what lets a real definition replace a declaration
 					// indexed before it.
 					existing, collides := methodsByContainer[symbol.ContainerID][symbol.Name]
+					if collides && symbol.Language == "C++" && existing.Language == "C++" &&
+						normalize(existing.Signature) != normalize(symbol.Signature) {
+						// A name-keyed index cannot select between overloads. Keeping
+						// either entry would turn source order into a confidently wrong
+						// CALLS edge, so make the name unavailable to this coarse tier.
+						delete(methodsByContainer[symbol.ContainerID], symbol.Name)
+						if ambiguousCPlusPlusMethods[symbol.ContainerID] == nil {
+							ambiguousCPlusPlusMethods[symbol.ContainerID] = map[string]bool{}
+						}
+						ambiguousCPlusPlusMethods[symbol.ContainerID][symbol.Name] = true
+						continue
+					}
 					if !collides || (existing.bodyless && !symbol.bodyless) {
 						methodsByContainer[symbol.ContainerID][symbol.Name] = symbol
 					}
@@ -8908,44 +8928,55 @@ func appendGoInterfaceImplementationCalls(relations []RelationRecord, from Symbo
 // declaration. Both are the same mistake: treating a qualified name as text
 // rather than as tokens.
 func signatureNamesQualifiedMethod(signature, container, name string) bool {
+	ownerParts := strings.Split(container, "::")
+	if len(ownerParts) == 0 || ownerParts[0] == "" {
+		return false
+	}
 	for offset := 0; ; {
-		index := strings.Index(signature[offset:], container)
+		index := strings.Index(signature[offset:], ownerParts[0])
 		if index < 0 {
 			return false
 		}
 		start := offset + index
-		offset = start + len(container)
+		offset = start + len(ownerParts[0])
 		// The container must start a token: `BA::foo` must not match `A::foo`.
 		if start > 0 && isIdentifierByte(signature[start-1]) {
 			continue
 		}
-		rest := strings.TrimLeft(signature[offset:], " \t\r\n")
-		// A template definition qualifies through its argument list
-		// (`A<T>::foo`), which is part of the same name. The list closes at the
-		// MATCHING `>`, not the first one seen: `A<std::vector<T>>::foo` and
-		// `A<std::vector<T> >::foo` both close the outer list at the second, so
-		// cutting at the first left `>::foo` behind and rejected the definition
-		// -- every nested-template class's out-of-line body stayed disconnected
-		// from its callers. An argument list that never closes is not a
-		// qualification at all, so that occurrence is skipped rather than
-		// accepted on a truncated remainder.
-		if strings.HasPrefix(rest, "<") {
-			after, closed := skipBalancedAngles(rest)
-			if !closed {
-				continue
+		rest := signature[offset:]
+		matched := true
+		for index, part := range append(ownerParts[1:], name) {
+			rest = strings.TrimLeft(rest, " \t\r\n")
+			// Every owner segment may carry template arguments in the
+			// definition (`Outer<T>::Inner<U>::foo`).
+			if strings.HasPrefix(rest, "<") {
+				after, closed := skipBalancedAngles(rest)
+				if !closed {
+					matched = false
+					break
+				}
+				rest = strings.TrimLeft(after, " \t\r\n")
 			}
-			rest = strings.TrimLeft(after, " \t\r\n")
+			if !strings.HasPrefix(rest, "::") {
+				matched = false
+				break
+			}
+			rest = strings.TrimLeft(rest[2:], " \t\r\n")
+			if !strings.HasPrefix(rest, part) {
+				matched = false
+				break
+			}
+			rest = rest[len(part):]
+			if index < len(ownerParts)-1 && len(rest) > 0 && isIdentifierByte(rest[0]) {
+				matched = false
+				break
+			}
 		}
-		if !strings.HasPrefix(rest, "::") {
-			continue
-		}
-		rest = strings.TrimLeft(rest[2:], " \t\r\n")
-		if !strings.HasPrefix(rest, name) {
+		if !matched {
 			continue
 		}
 		// The name must end a token, so `A::foobar` does not match `A::foo`.
-		after := rest[len(name):]
-		if after == "" || !isIdentifierByte(after[0]) {
+		if rest == "" || !isIdentifierByte(rest[0]) {
 			return true
 		}
 	}
@@ -8991,7 +9022,10 @@ func cPlusPlusOutOfLineDefinition(declaration SymbolRecord, candidates []SymbolR
 	if !declaration.bodyless || declaration.Language != "C++" || declaration.Name == "" {
 		return SymbolRecord{}, false
 	}
-	container := containerName(declaration.QualifiedName)
+	container := declaration.cPlusPlusOwner
+	if container == "" {
+		container = containerName(declaration.QualifiedName)
+	}
 	if container == "" {
 		return SymbolRecord{}, false
 	}

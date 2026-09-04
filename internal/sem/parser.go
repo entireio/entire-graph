@@ -5028,17 +5028,48 @@ func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language,
 			signature = strings.Join(strings.Fields(templateHead+typeText+" "+member.declarator.Content(src)), " ")
 		}
 		out = append(out, Entity{
-			Kind:        "method",
-			Name:        qualify(scope, member.name),
-			Signature:   signature,
-			StartLine:   int(span.StartPoint().Row) + 1,
-			EndLine:     int(span.EndPoint().Row) + 1,
-			BodyHash:    hash(normalize(span.Content(src))),
-			Fingerprint: hash(normalize(signature)),
-			bodyless:    true,
+			Kind:           "method",
+			Name:           qualify(scope, member.name),
+			Signature:      signature,
+			StartLine:      int(span.StartPoint().Row) + 1,
+			EndLine:        int(span.EndPoint().Row) + 1,
+			BodyHash:       hash(normalize(span.Content(src))),
+			Fingerprint:    hash(normalize(signature)),
+			bodyless:       true,
+			cPlusPlusOwner: cPlusPlusDeclarationOwner(node, src, scope),
 		})
 	}
 	return out
+}
+
+// cPlusPlusDeclarationOwner returns the full lexical namespace/class owner of
+// an in-class declaration without changing its graph-qualified name or stable
+// ID. The latter intentionally uses the immediate container; this spelling is
+// private matching evidence for `acct::Outer::Ledger::Add` definitions.
+func cPlusPlusDeclarationOwner(node *sitter.Node, src []byte, scope string) string {
+	parts := []string{scope}
+	skippedImmediate := false
+	for current := node.Parent(); validNode(current); current = current.Parent() {
+		switch current.Type() {
+		case "namespace_definition", "class_specifier", "struct_specifier":
+		default:
+			continue
+		}
+		name := current.ChildByFieldName("name")
+		if !validNode(name) {
+			continue
+		}
+		text := strings.TrimSpace(name.Content(src))
+		if text == "" {
+			continue
+		}
+		if !skippedImmediate && text == scope {
+			skippedImmediate = true
+			continue
+		}
+		parts = append([]string{text}, parts...)
+	}
+	return strings.Join(parts, "::")
 }
 
 // cPlusPlusDeclarationSpan returns the node that spans a whole in-class

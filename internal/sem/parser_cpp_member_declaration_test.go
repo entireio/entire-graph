@@ -427,6 +427,58 @@ int run() {
 	}
 }
 
+func TestCPlusPlusOutOfLineDefinitionDoesNotCrossNamespaces(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "a.hpp", `namespace a { class Ledger { public: int Add(int amount); }; }`)
+	writeFile(t, repo, "b.cpp", `namespace b { class Ledger {}; }
+int b::Ledger::Add(int amount) { return amount; }
+`)
+	writeFile(t, repo, "main.cpp", `#include "a.hpp"
+int run() { a::Ledger ledger; return ledger.Add(3); }
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		byID[symbol.ID] = symbol
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" && byID[relation.FromID].Name == "run" && byID[relation.ToID].FilePath == "b.cpp" {
+			t.Fatalf("a::Ledger call crossed namespaces to %#v", byID[relation.ToID])
+		}
+	}
+}
+
+func TestCPlusPlusOverloadsDoNotUseArbitraryBodyfulMethod(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "ledger.hpp", `class Ledger {
+public:
+    int Add(int amount) { return amount; }
+    double Add(double amount);
+};
+`)
+	writeFile(t, repo, "main.cpp", `#include "ledger.hpp"
+double run() { Ledger ledger; return ledger.Add(3.5); }
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		byID[symbol.ID] = symbol
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" && byID[relation.FromID].Name == "run" {
+			t.Fatalf("ambiguous overload call resolved arbitrarily to %#v", byID[relation.ToID])
+		}
+	}
+}
+
 func mapKeys(in map[string]Entity) []string {
 	out := make([]string, 0, len(in))
 	for key := range in {
