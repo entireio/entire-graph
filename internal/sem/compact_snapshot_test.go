@@ -17,7 +17,7 @@ import (
 
 func compactFixtureRecords() []any {
 	header := SnapshotHeader{
-		SchemaVersion: "snapshot-test", Provider: "provider", ProviderVersion: "v1",
+		SchemaVersion: SchemaVersion, Provider: "provider", ProviderVersion: "v1",
 		RepoRoot: "/tmp/repo", RepoKey: "local/repo", Commit: "commit", Tree: "tree",
 		Languages: []string{"Go"}, LanguageTiers: map[string]string{"Go": "semantic"},
 		Capabilities: []string{"ndjson"}, SchemaFeatures: []string{"feature"},
@@ -35,7 +35,7 @@ func compactFixtureRecords() []any {
 		ExternalRecord{RecordType: "external", ID: "ext-id", Kind: "module", Value: "example", FilePath: "main.go", StartLine: 2, EndLine: 3, Signature: "sig", Language: "Go", External: true, SourceSymbol: "source", SourceDetails: "details"},
 		SymbolRecord{RecordType: "symbol", ID: "symbol-id", StableIDVersion: "v1", Kind: "function", Name: "same", QualifiedName: "pkg.same", FilePath: "main.go", StartLine: 5, EndLine: 9, Signature: "func same()", BodyHash: "hash", Language: "Go", ContainerID: "container", Aliases: []string{"alias"}},
 		SymbolRecord{RecordType: "symbol", ID: "symbol-id-2", StableIDVersion: "v1", Kind: "method", Name: "same", QualifiedName: "other.same", FilePath: "other.go", StartLine: 1, EndLine: 2, Signature: "func same()", BodyHash: "hash2", Language: "Go", ContainerID: "other", Aliases: []string{}},
-		RelationRecord{RecordType: "relation", FromID: "symbol-id", ToID: "symbol-id-2", Type: "CALLS", Confidence: 0.75, Reason: "reason", RelationScope: "scope", Resolution: "resolved", TargetKind: "method", Evidence: []Evidence{{Kind: "call", FilePath: "main.go", StartLine: 6, EndLine: 6, Detail: "detail"}}, WarningCodes: []string{"W1"}},
+		RelationRecord{RecordType: "relation", FromID: "symbol-id", ToID: "symbol-id-2", Type: "CALLS", Confidence: 0.75, Reason: "reason", RelationScope: "scope", Resolution: "resolved", TargetKind: "method", Evidence: []Evidence{{Kind: "call", FilePath: "main.go", StartLine: 6, EndLine: 6, Detail: "detail"}}, WarningCodes: []string{"EVIDENCE_TRUNCATED"}, EvidenceDropped: 2},
 		RelationRecord{RecordType: "relation", FromID: "symbol-id", ToID: "external-target", Type: "IMPORTS", Confidence: 1, Reason: "import", WarningCodes: []string{}},
 		SnapshotSummary{RecordType: "summary", Languages: []string{"Go"}, LanguageTiers: map[string]string{"Go": "semantic"}, Warnings: []ProviderWarning{}, PartialFailures: []PartialFailure{}, Stats: ProviderStats{Files: 1, ParsedFiles: 1, Symbols: 2, Relations: 2, CompletenessLevel: "ok"}, Completeness: CompletenessReport{Languages: map[string]LanguageCompleteness{"Go": {Files: 1, Symbols: 2}}, Relations: map[string]int{"CALLS": 1, "IMPORTS": 1}}},
 	}
@@ -99,7 +99,7 @@ func publicRecordJSON(t *testing.T, records []any) []json.RawMessage {
 func decodedCompactRecords(t *testing.T, data []byte) []any {
 	t.Helper()
 	var records []any
-	if err := DecodeCompactSnapshot(bytes.NewReader(data), func(record any) error { records = append(records, record); return nil }); err != nil {
+	if _, err := DecodeCompactSnapshot(bytes.NewReader(data), func(record any) error { records = append(records, record); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	return records
@@ -458,15 +458,18 @@ func TestCompactSnapshotDecoderRejectsUnknownVersion(t *testing.T) {
 	requireCompactDecodeError(t, "[\"h\",2,{}]\n", "unsupported compact snapshot version 2")
 }
 func TestCompactSnapshotDecoderRejectsWrongArity(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",1]\n", "dictionary has invalid placement or arity")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"d\",1]\n", "dictionary has invalid placement or arity")
+}
+func TestCompactSnapshotDecoderRejectsNegativeEvidenceDropped(t *testing.T) {
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"r\",0,0,0,0,0,0,0,0,[],[],-1]\n", "evidence_dropped -1 must be non-negative")
 }
 func TestCompactSnapshotDecoderRequiresHeaderDictionaryThenSummary(t *testing.T) {
 	requireCompactDecodeError(t, "[\"d\",1,[\"x\"]]\n", "dictionary has invalid placement")
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",1,[\"x\"]]\n", "missing summary")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"d\",1,[\"x\"]]\n", "missing summary")
 }
 
 func TestCompactSnapshotDecoderAllowsIndexZeroOnlyDataWithoutDictionaryLine(t *testing.T) {
-	records := []any{SnapshotHeader{}, FileRecord{RecordType: "file", Bytes: 7}, SnapshotSummary{RecordType: "summary"}}
+	records := []any{SnapshotHeader{SchemaVersion: SchemaVersion}, FileRecord{RecordType: "file", Bytes: 7}, SnapshotSummary{RecordType: "summary"}}
 	data, _ := encodeCompactFixture(t, records)
 	if bytes.Contains(data, []byte(`["d",`)) {
 		t.Fatalf("index-zero-only record unexpectedly emitted dictionary: %s", data)
@@ -478,33 +481,41 @@ func TestCompactSnapshotDecoderAllowsIndexZeroOnlyDataWithoutDictionaryLine(t *t
 }
 
 func TestCompactSnapshotDecoderRejectsUnknownTag(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"z\"]\n", `unknown compact snapshot tag "z"`)
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"z\"]\n", `unknown compact snapshot tag "z"`)
 }
 func TestCompactSnapshotDecoderRejectsOutOfBoundsDictionaryIndex(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"f\",1,0,0,0,0]\n", "dictionary index 1 is out of range")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"f\",1,0,0,0,0]\n", "dictionary index 1 is out of range")
 }
 func TestCompactSnapshotDecoderRejectsDuplicateDictionaryString(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",1,[\"dup\"]]\n[\"d\",2,[\"dup\"]]\n", `dictionary duplicates "dup"`)
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"d\",1,[\"dup\"]]\n[\"d\",2,[\"dup\"]]\n", `dictionary duplicates "dup"`)
 }
 func TestCompactSnapshotDecoderRejectsNoncontiguousDictionaryBase(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",2,[\"value\"]]\n", "dictionary base 2 does not equal 1")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"d\",2,[\"value\"]]\n", "dictionary base 2 does not equal 1")
 }
 func TestCompactSnapshotDecoderRejectsDuplicateHeader(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"h\",1,{}]\n", "header must be first")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"h\",1,{}]\n", "header must be first")
 }
 func TestCompactSnapshotDecoderRejectsRecordAfterSummary(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"m\",{}]\n[\"f\",0,0,0,0,0]\n", "record after summary")
+	requireCompactDecodeError(t, compactHeaderLine()+"[\"m\",{}]\n[\"f\",0,0,0,0,0]\n", "record after summary")
 }
 func TestCompactSnapshotDecoderRejectsMissingSummary(t *testing.T) {
-	requireCompactDecodeError(t, "[\"h\",1,{}]\n", "missing summary")
+	requireCompactDecodeError(t, compactHeaderLine(), "missing summary")
 }
 func TestCompactSnapshotDecoderRejectsLineOverLimit(t *testing.T) {
 	requireCompactDecodeError(t, strings.Repeat("x", 16*1024*1024+1), "compact snapshot scan:")
 }
 
+// compactHeaderLine is the minimal valid header line: envelope version plus a
+// schema version this build can place against ADR 0001's compatibility
+// boundary. Cases below vary the lines AFTER it, so the header must not be the
+// thing that fails.
+func compactHeaderLine() string {
+	return "[\"h\",1,{\"schema_version\":\"" + SchemaVersion + "\"}]\n"
+}
+
 func requireCompactDecodeError(t *testing.T, input, want string) {
 	t.Helper()
-	err := DecodeCompactSnapshot(strings.NewReader(input), func(any) error { return nil })
+	_, err := DecodeCompactSnapshot(strings.NewReader(input), func(any) error { return nil })
 	if err == nil {
 		t.Fatalf("expected %q error", want)
 	}

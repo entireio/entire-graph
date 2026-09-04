@@ -41,6 +41,56 @@ The contract, stable for the entire `1.x` major:
 `entire-brain` ingestion MUST follow the tolerant-reader rules above: accept any
 `1.x`, ignore unknown fields, warn on a newer minor.
 
+## Amendment (2026-08-29) — `schema_version` answers two questions, not one
+
+The rules above govern **interchange**: bytes one build produces and a
+*different* build reads. Three separate changes then applied `SchemaVersion` to
+three different jobs, and two of them read the same field by different rules,
+which looked like a contradiction until it was written down. It is not one.
+
+**Interchange compatibility is per-major.** A consumer reading a snapshot
+another build wrote accepts any `1.x`, ignores unknown fields, and warns on a
+newer minor (clauses 1-3 above; implemented by `CheckReadableSchemaVersion`).
+There is a compatibility promise here, so there has to be a tolerance band.
+
+**Cache identity is exact.** An on-disk cache entry is bytes *this* build wrote
+for its own later reuse. There is no second party, no compatibility promise to
+keep, and no migration path — and the always-correct answer to "was this written
+under a different schema" is simply to rebuild, which costs one index and is
+never wrong. So cache-entry validity requires `SchemaVersion` to match
+**exactly**, and an absent or unparseable version fails closed into a rebuild.
+
+These are not in tension: a tolerance band exists to avoid discarding data you
+cannot regenerate, and a cache is by definition data you can regenerate. Reading
+the per-major rule as governing cache validity would serve entries written by a
+build whose record shape has since changed; reading the exact rule as governing
+interchange would refuse snapshots the contract above promises to accept.
+
+**The persisted `Result` payload is interchange**, so its shape is governed by
+the major and may only grow within it. That shape is frozen and its digest is
+pinned beside the exact version string, so the shape cannot move without the
+version question being asked in the same edit. The reflection guard covers every
+reachable user-defined named type: struct fields include anonymous-promotion and
+`encoding/json`-valid explicit-name taggedness in an unambiguous quoted record,
+while named scalars, slices, maps, arrays, and pointers record a canonical
+underlying-type descriptor. Type references recurse through composite wrappers
+and qualify named types by full import path. Reachable interfaces, named or
+unnamed, are rejected because their runtime concrete values cannot be statically
+frozen. The guard also rejects custom `json.Marshaler` and
+`encoding.TextMarshaler`
+implementations, including pointer receivers; either can replace ordinary value
+bytes, and text marshaling also controls supported map keys. Finally, an exact
+`omitzero` field may not use a value- or pointer-receiver `IsZero() bool` hook,
+because that can change field omission without changing its reflected shape.
+Any of these customizations requires an explicit serialized contract plus the
+same schema-version decision.
+
+| question | rule | enforced by |
+|---|---|---|
+| may I *read* bytes another build wrote? | same major; warn on newer minor | `CheckReadableSchemaVersion` |
+| may I *reuse* a cache entry I wrote? | exact match; absent fails closed | cache-entry validity checks |
+| may this payload's shape change? | additive within a major; break needs `2.0` | frozen closed reachable shapes + pinned digest; interfaces and JSON/text/`IsZero` hooks rejected |
+
 ## Consequences
 
 - Consumers may pin `>=1.0 <2.0` and rely on additive-only evolution.
