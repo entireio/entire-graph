@@ -20312,6 +20312,10 @@ let annotation (v: int) =
     let s = $"{(v: int) |> normalize}"
     v |> other
 
+let blockComment (v: int) =
+    let s = $"{ (* } *) v |> normalize }"
+    v |> other
+
 let below (v: int) =
     v |> other
 `)
@@ -20320,7 +20324,7 @@ let below (v: int) =
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, caller := range []string{"comma", "annotation"} {
+	for _, caller := range []string{"comma", "annotation", "blockComment"} {
 		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "normalize") {
 			t.Errorf("missing CALLS %s->normalize; a nested separator was read as a format specifier: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
 		}
@@ -20334,6 +20338,39 @@ let below (v: int) =
 	// and must stay so.
 	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "below", "other") {
 		t.Errorf("missing CALLS below->other: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestFSharpSameLineNestedModuleIsNotAnAbbreviation(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module Json = let serialize (x: int) = x + 1
+
+module Other =
+    let serialize (x: int) = x * 2
+
+module Caller =
+    let run (x: int) = Json.serialize x
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	var reached []int
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		from, fromOK := symbolsByID[relation.FromID]
+		to, toOK := symbolsByID[relation.ToID]
+		if fromOK && toOK && from.Name == "run" && to.Name == "serialize" {
+			reached = append(reached, to.StartLine)
+		}
+	}
+	if slices.Contains(reached, 4) {
+		t.Fatalf("Json.serialize reached the unrelated Other.serialize on line 4: a same-line nested module is not an abbreviation targeting `let`; calls=%#v", relationsOfType(snapshot.Relations, "CALLS"))
 	}
 }
 

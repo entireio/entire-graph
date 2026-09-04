@@ -2300,6 +2300,15 @@ func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
 // this pattern for the reason every block does: it has no path after the `=`.
 var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]+([A-Za-z_][A-Za-z0-9_']*)[ \t]*=[ \t]*([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)`)
 
+func fsharpModuleAbbreviationTargetIgnored(target string) bool {
+	switch target {
+	case "begin", "do", "exception", "external", "let", "module", "namespace", "open", "type", "val":
+		return true
+	default:
+		return false
+	}
+}
+
 // fsharpValueBindingPattern matches a `let`/`use` VALUE binding
 // (`let Json = Newtonsoft.Json.JsonConvert`, `let Json : JsonConvert = ...`),
 // which also binds the name lexically. A function binding carries parameters
@@ -2496,11 +2505,11 @@ func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
 // non-recursive `let` does.
 func fsharpShadowBindingAt(line string) (string, string, bool) {
 	if match := fsharpModuleAbbreviationPattern.FindStringSubmatch(line); match != nil {
-		// `module M = begin ... end` is the verbose spelling of a nested module
-		// BLOCK, not an abbreviation: it binds no alias, it opens a scope. It is
-		// the one right-hand side that has to be excluded, which is why the
-		// pattern captures the word rather than guessing from its case.
-		if match[2] == "begin" {
+		// A module element on the same physical line still starts a nested module
+		// BLOCK: `module M = let value = 1`. Its leading keyword is not a path
+		// being aliased. Treating `let` as the target made M shadow the real nested
+		// module and left `M.value` free to bind an unrelated same-named symbol.
+		if fsharpModuleAbbreviationTargetIgnored(match[2]) {
 			return "", "", false
 		}
 		return match[1], match[2], false
@@ -22735,7 +22744,7 @@ func maskFSharpSource(text string, blankComments, blankLiterals bool) string {
 			blank(start, i+1)
 			continue
 		}
-		if n := len(holes); n > 0 {
+		if n := len(holes); n > 0 && depth == 0 {
 			hole := &holes[n-1]
 			if out[i] == '}' && hole.nested == 0 && fsharpBraceRun(out, i, '}') >= hole.lit.dollars {
 				// The hole CLOSES: its delimiter is literal syntax, and the
