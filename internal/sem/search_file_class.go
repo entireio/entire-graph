@@ -393,24 +393,19 @@ func searchDocumentationClassPath(lower, base string, dirs []string) bool {
 			return true
 		}
 	}
-	for _, prefix := range searchDocBasePrefixes {
-		if !strings.HasPrefix(base, prefix) {
-			continue
-		}
+	if searchDocumentationBasePrefix(base) {
 		// A PREFIX, NOT A SUBSTRING OF A FILETYPE. `license_check.go`, `history_store.py` and
 		// `readme_parser.ts` all begin with a prose prefix and are ordinary executable sources.
 		// The raw prefix match halved their score AND — because NonProgramTextPath consumes this
 		// same classification — declared them incapable of holding a relation, so a real fix site
 		// was pushed out of the ranking and out of call-chain reasoning at once.
 		//
-		// Nothing prose is lost by the narrowing: every prose FILETYPE is caught by
-		// searchDocExtensions (and the roff/manpage rules) below, so this rule only has to cover
-		// the extensionless repository files it was written for -- README, LICENSE,
-		// LICENSE-APACHE, COPYING, AUTHORS, NEWS, CHANGES.
-		if _, known := languageForPath(base); known {
-			continue
+		// Recognized serialized artifacts keep their data class below. Their documentation-style
+		// basename still matters to intent, so searchFileClassPrior lets either vocabulary restore
+		// full strength for files such as README.json and CHANGELOG.xml.
+		if _, known := languageForPath(base); !known {
+			return true
 		}
-		return true
 	}
 	for _, ext := range searchDocExtensions {
 		if strings.HasSuffix(lower, ext) {
@@ -423,6 +418,15 @@ func searchDocumentationClassPath(lower, base string, dirs []string) bool {
 	}
 	if n := len(base); n >= 2 && base[n-2] == '.' && base[n-1] >= '1' && base[n-1] <= '9' {
 		return true
+	}
+	return false
+}
+
+func searchDocumentationBasePrefix(base string) bool {
+	for _, prefix := range searchDocBasePrefixes {
+		if strings.HasPrefix(base, prefix) {
+			return true
+		}
 	}
 	return false
 }
@@ -460,7 +464,9 @@ func searchFileClassPrior(q searchQuery, filePath string) float64 {
 		}
 		return searchNonSourceClassPrior
 	case searchFileClassData:
-		if searchQuerySupplied(q, searchDataIntentTerms...) {
+		base := filepath.Base(strings.ToLower(filepath.ToSlash(filePath)))
+		if searchQuerySupplied(q, searchDataIntentTerms...) ||
+			(searchDocumentationBasePrefix(base) && searchQuerySupplied(q, searchDocIntentTerms...)) {
 			return 1
 		}
 		return searchNonSourceClassPrior

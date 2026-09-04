@@ -80,6 +80,46 @@ func TestSearchDocClassLeavesSourceNamedLikeProseAlone(t *testing.T) {
 	}
 }
 
+// A serialized artifact can also carry a canonical documentation name. Keep its data taxonomy,
+// while allowing either explicit intent to retain full ranking strength and a primary-list slot.
+func TestSearchDataClassHonorsDocumentationNamedArtifacts(t *testing.T) {
+	t.Parallel()
+	generic := buildSearchQuery("renderer returns the wrong status")
+	for _, test := range []struct {
+		path      string
+		docQuery  string
+		dataQuery string
+	}{
+		{"README.json", "update the README", "update the JSON metadata"},
+		{"CHANGELOG.xml", "add a changelog entry", "update the XML data"},
+		{"README.yaml", "refresh the README", "update the YAML metadata"},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			if class := classifySearchFile(test.path); class != searchFileClassData {
+				t.Fatalf("class = %q, want data", class)
+			}
+			if !NonProgramTextPath(test.path) {
+				t.Fatal("serialized artifact was treated as program text")
+			}
+			for _, query := range []string{test.docQuery, test.dataQuery} {
+				q := buildSearchQuery(query)
+				if prior := searchFileClassPrior(q, test.path); prior != 1 {
+					t.Errorf("prior on %q = %v, want 1", query, prior)
+				}
+				if searchDocsSectionPath(q, test.path) {
+					t.Errorf("%q moved the requested artifact out of the primary list", query)
+				}
+			}
+			if prior := searchFileClassPrior(generic, test.path); prior != searchNonSourceClassPrior {
+				t.Errorf("generic-query prior = %v, want %v", prior, searchNonSourceClassPrior)
+			}
+			if !searchDocsSectionPath(generic, test.path) {
+				t.Fatal("generic query left the serialized artifact in the primary list")
+			}
+		})
+	}
+}
+
 // A callable that opens no block is a declaration only when it has no body at all. Kotlin and C#
 // write executable bodies as expressions, and demoting those by the reference-declaration prior
 // pushes the real fix site down the ranking.
