@@ -292,7 +292,9 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
   executed (`ENTIRE_GRAPH_BIN`, `CMM_BIN`, `GRAPHIFY_PYTHON`, and the git state of
   `GRAPHIFY_SOURCE`), with `source` naming where the name came from (the env override, or the
   arm client's own default read from the module the run imported) and `resolved_via` whether it
-  was already a path or was looked up on PATH — a bare `ENTIRE_GRAPH_BIN=entire-graph` is
+  was already a path or was looked up on PATH. Digests are cached by file identity (device,
+  inode, size, mtime) rather than by path, so a binary rebuilt between the four capture sites
+  is re-hashed instead of being reported as the build the run started with — a bare `ENTIRE_GRAPH_BIN=entire-graph` is
   executed through PATH by the adapter, so it is resolved the same way here.
   `code_md5` binds the harness; this binds the thing the harness drives, so a run cannot
   execute a modified `entire-graph` and still be stamped fair
@@ -360,7 +362,7 @@ c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 bb763cabd9e586cf9aa2699c67f96358  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
-2bf66472352c4fb1fca85bdb09e669fe  benchmarks/common/runmeta.py
+b577e3c25e8e439500a51f92ae93f512  benchmarks/common/runmeta.py
 7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
 4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
 8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py

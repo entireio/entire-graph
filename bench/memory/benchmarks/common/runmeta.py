@@ -530,18 +530,40 @@ _ARM_SOURCE_DIRS = {
 _DIGEST_CACHE: dict = {}
 
 
+def _file_identity(path: str):
+    """Cheap identity for a file: device, inode, size, mtime."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
 def _file_digest(path: str) -> str:
-    """sha256 of a file, cached: capture() runs at four metadata sites."""
-    if path not in _DIGEST_CACHE:
+    """sha256 of a file, cached by identity rather than by path alone.
+
+    capture() runs at four metadata sites, hours apart on a full run, and an arm
+    binary can be rebuilt or replaced between them while the adapters keep
+    invoking it. Caching on the path alone made the final artifact claim the
+    build the run *started* with. Re-stat instead: one stat per capture rather
+    than rehashing ~80MB, and any change of size, mtime or inode recomputes.
+
+    Residual: a replacement that preserves device, inode, size and nanosecond
+    mtime would still be missed. Recomputing unconditionally would close that,
+    at four full rehashes per arm per run.
+    """
+    identity = _file_identity(path)
+    key = (path, identity)
+    if key not in _DIGEST_CACHE:
         digest = hashlib.sha256()
         try:
             with open(path, "rb") as fh:
                 for chunk in iter(lambda: fh.read(1 << 20), b""):
                     digest.update(chunk)
-            _DIGEST_CACHE[path] = "sha256:" + digest.hexdigest()
+            _DIGEST_CACHE[key] = "sha256:" + digest.hexdigest()
         except OSError as exc:
-            _DIGEST_CACHE[path] = f"unreadable: {type(exc).__name__}"
-    return _DIGEST_CACHE[path]
+            _DIGEST_CACHE[key] = f"unreadable: {type(exc).__name__}"
+    return _DIGEST_CACHE[key]
 
 
 def _client_default(module: str | None, attribute: str | None) -> str | None:

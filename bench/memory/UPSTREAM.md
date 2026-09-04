@@ -143,8 +143,8 @@ Written by us; no upstream code involved.
 | `benchmarks/common/graphify_client.py` | 364 |
 | `benchmarks/common/cmm_client.py` | 418 |
 | `benchmarks/common/graphify_mem_bridge.py` | 184 |
-| `benchmarks/common/runmeta.py` | 662 |
-| `benchmarks/common/test_runmeta.py` | 795 |
+| `benchmarks/common/runmeta.py` | 684 |
+| `benchmarks/common/test_runmeta.py` | 825 |
 | `benchmarks/common/bm25_client.py` | 369 |
 | `benchmarks/common/test_bm25_client.py` | 40 |
 | `benchmarks/common/entra_auth.py` | 94 |

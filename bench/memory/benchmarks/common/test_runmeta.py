@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -460,6 +461,35 @@ class ImplementationProvenanceTest(unittest.TestCase):
         self.assertEqual(recorded["path"], runmeta._fingerprint("/repos/graphify"))
         self.assertEqual(recorded["source"], "default")
         self.assertIn("commit", recorded)
+
+    def test_a_rebuilt_binary_is_not_reported_as_the_original(self) -> None:
+        """capture() runs at four metadata sites, hours apart; a binary can be
+        rebuilt between them while the adapters keep invoking it."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            binary = Path(tempdir) / "entire-graph"
+            binary.write_bytes(b"build one\n")
+            with patch.dict("os.environ", {"ENTIRE_GRAPH_BIN": str(binary)}, clear=True):
+                first = runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]["digest"]
+                time.sleep(0.01)
+                binary.write_bytes(b"build two, rebuilt mid-run\n")
+                second = runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]["digest"]
+
+        self.assertNotEqual(first, second, "the artifact claimed the original build")
+        self.assertEqual(
+            second,
+            "sha256:" + hashlib.sha256(b"build two, rebuilt mid-run\n").hexdigest(),
+        )
+
+    def test_an_unchanged_binary_is_hashed_once(self) -> None:
+        """The cache still has to earn its keep: ~80MB, four capture sites."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            binary = Path(tempdir) / "entire-graph"
+            binary.write_bytes(b"stable build\n")
+            with patch.dict("os.environ", {"ENTIRE_GRAPH_BIN": str(binary)}, clear=True):
+                runmeta.implementation_provenance()
+                entries = len(runmeta._DIGEST_CACHE)
+                runmeta.implementation_provenance()
+                self.assertEqual(len(runmeta._DIGEST_CACHE), entries)
 
     def test_a_resolved_path_is_not_disclosed(self) -> None:
         """A path can carry a username; env_snapshot fingerprints these same
