@@ -4950,7 +4950,12 @@ func cPlusPlusMemberDeclaratorName(declarator *sitter.Node, src []byte) string {
 		if !cFamilyNameEndsAtTokenBoundary(name, src) {
 			return ""
 		}
-		return strings.TrimSpace(name.Content(src))
+		text := strings.TrimSpace(name.Content(src))
+		if strings.HasPrefix(text, "operator") &&
+			(len(text) == len("operator") || !isIdentifierByte(text[len("operator")])) {
+			return normalizeCPlusPlusOperatorName(text)
+		}
+		return text
 	case "operator_name":
 		// An operator spelled with PUNCTUATION never arrives here.
 		// maskCPlusPlusOperatorCall rewrites `operator=(` to a same-width `op(`
@@ -4968,7 +4973,7 @@ func cPlusPlusMemberDeclaratorName(declarator *sitter.Node, src []byte) string {
 		if !cFamilyNameEndsAtTokenBoundary(name, src) {
 			return ""
 		}
-		text := normalize(name.Content(src))
+		text := normalizeCPlusPlusOperatorName(name.Content(src))
 		// A rewritten range would no longer read as an operator name. Report
 		// nothing rather than a stand-in: a wrong name is worse than a missing
 		// one, because it collides with every other symbol that shares it.
@@ -4979,6 +4984,22 @@ func cPlusPlusMemberDeclaratorName(declarator *sitter.Node, src []byte) string {
 		return text
 	}
 	return ""
+}
+
+func normalizeCPlusPlusOperatorName(text string) string {
+	text = normalize(text)
+	suffix := strings.TrimSpace(strings.TrimPrefix(text, "operator"))
+	if suffix == "" {
+		return "operator"
+	}
+	if isIdentifierByte(suffix[0]) {
+		if strings.HasPrefix(suffix, "new") || strings.HasPrefix(suffix, "delete") {
+			suffix = strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(suffix)
+		}
+		return "operator " + suffix
+	}
+	suffix = strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(suffix)
+	return "operator" + suffix
 }
 
 // cPlusPlusMemberDeclarationEntities returns the method symbols an in-class C++

@@ -80,8 +80,8 @@ func TestCPlusPlusOperatorDeclarationsExtractRealNames(t *testing.T) {
 	got := memberIndex(t, "ledger.hpp", `class Ledger {
 public:
     Ledger& operator=(const Ledger& other);
-    bool operator==(const Ledger& other) const;
-    bool operator!=(const Ledger& other) const;
+    bool operator ==(const Ledger& other) const;
+    bool operator != (const Ledger& other) const;
     int Add(int amount) const;
 };
 `)
