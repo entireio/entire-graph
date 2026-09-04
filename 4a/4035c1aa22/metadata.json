@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.4-nightly.202609010627.a218ec13a.0.20260902021605-e5e7f6a938ff",
+  "checkpoint_id": "4a4035c1aa22",
+  "strategy": "manual-commit",
+  "branch": "paulo-perf",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "mise.toml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/4a/4035c1aa22/0/metadata.json",
+      "transcript": "/4a/4035c1aa22/0/full.jsonl",
+      "compact_transcript": "/4a/4035c1aa22/0/transcript.jsonl",
+      "content_hash": "/4a/4035c1aa22/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 24,
+    "cache_creation_tokens": 11238,
+    "cache_read_tokens": 7925943,
+    "output_tokens": 7595,
+    "api_call_count": 12
+  }
+}
