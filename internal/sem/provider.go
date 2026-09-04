@@ -2160,6 +2160,13 @@ type fsharpShadowBinding struct {
 	// a non-recursive `let` is not in scope inside its own initializer, so its
 	// shadow starts only once the right-hand side has ended.
 	fromLine int
+	// fromColumn is the 0-based byte column ON fromLine from which the shadow
+	// applies; earlier columns of that line are outside it. It is 0 for every
+	// binding whose scope starts at a whole line, which is all of them but one:
+	// `let Json = value in Json.serialize x` writes the initializer and the body
+	// the binding governs on the SAME line, so the line cannot answer both ends
+	// of it and the start has to be a point rather than a line.
+	fromColumn int
 	// throughLine is the last line the binding still shadows the name on.
 	throughLine int
 }
@@ -2219,14 +2226,12 @@ func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
 			// the wrong-definition direction, an edge into whatever `serialize`
 			// sat nearest rather than the module the source wrote. `rec` asks
 			// for exactly the opposite rule and keeps the binding line.
-			from := index + 1
-			if !recursive {
-				from = fsharpInitializerEnd(lines, index) + 1
-			}
+			fromLine, fromColumn := fsharpBindingScopeStart(lines, index, recursive)
 			bindings = append(bindings, fsharpShadowBinding{
 				name:        name,
 				target:      target,
-				fromLine:    from,
+				fromLine:    fromLine,
+				fromColumn:  fromColumn,
 				throughLine: fsharpBindingScopeEnd(lines, index),
 			})
 			continue
@@ -2284,6 +2289,100 @@ func fsharpShadowBindingAt(line string) (string, string, bool) {
 		return match[2], "", slices.Contains(strings.Fields(match[1]), "rec")
 	}
 	return "", "", false
+}
+
+// fsharpBindingScopeStart returns the first POINT -- line and 0-based byte
+// column on it -- from which the binding written on lines[index] shadows its
+// name.
+//
+// Three of the four answers are whole lines and were already settled: `rec`
+// asks for the binding's own line, because the name is in scope inside its own
+// body; without it the shadow starts on the line after the initializer ends,
+// because the name is invisible in the right-hand side that defines it; and a
+// PARAMETER, which does not pass through here, shadows from its header line.
+//
+// The fourth is `let name = initializer in body`, and it is why a column is
+// needed at all. F# scope starts at a point in the token stream, not at a line
+// boundary; the line was only ever a workable approximation of it, and the
+// explicit `in` is the shape that breaks the approximation by writing the
+// initializer and the body it governs on ONE line. Rounding the start up to
+// the next line put the body outside the shadow, so `let Json = value in
+// Json.serialize x` -- a call the binding plainly reaches -- was classified by
+// the project's module declarations and pinned to an unrelated module `Json`.
+// Rounding it down to the whole line instead would break the other direction
+// that is already pinned: `let Json = Json.serialize x in Json` must keep its
+// right-hand side OUT of the shadow. Only a column answers both, so the start
+// is the column just past the `in`.
+func fsharpBindingScopeStart(lines []string, index int, recursive bool) (int, int) {
+	if recursive {
+		return index + 1, 0
+	}
+	if column, explicit := fsharpLetInBodyColumn(lines[index]); explicit {
+		return index + 1, column
+	}
+	return fsharpInitializerEnd(lines, index) + 1, 0
+}
+
+// fsharpLetInBodyColumn returns the column at which the body of an explicit
+// `let ... = ... in <body>` begins on this line, and whether the line writes
+// one. The FIRST `in` outside brackets after the first `=` outside brackets is
+// the one taken: everything before it belongs to an initializer -- this
+// binding's, or a nested `let ... in ...` inside it -- and everything after it
+// is governed by a binding, so a shadow that starts there can only be too late,
+// never too early.
+//
+// A top-level `for` before the `in` means the `in` is a SEQUENCE iterator
+// (`let total = for x in xs do count x`), not the keyword that opens a binding
+// body, so the line is declined: the loop body is still the initializer, and
+// the binding is not in scope there. `in` inside brackets is left alone for the
+// same reason -- a `for` or a nested `let` written inside a comprehension,
+// sequence expression or parenthesised group is not this binding's body.
+//
+// The line reaching here has already been through both maskers, so an `in`
+// written inside a string or a comment is blanked and cannot be seen.
+func fsharpLetInBodyColumn(line string) (int, bool) {
+	depth, afterEquals := 0, false
+	for index := 0; index < len(line); {
+		if fsharpWordByte(line[index]) {
+			end := index
+			for end < len(line) && fsharpWordByte(line[end]) {
+				end++
+			}
+			if depth == 0 {
+				switch line[index:end] {
+				case "for":
+					return 0, false
+				case "in":
+					if afterEquals {
+						return end, true
+					}
+				}
+			}
+			index = end
+			continue
+		}
+		switch line[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case '=':
+			if depth == 0 {
+				afterEquals = true
+			}
+		}
+		index++
+	}
+	return 0, false
+}
+
+// fsharpWordByte reports whether the byte can stand inside an F# identifier.
+// The apostrophe is one of them (`xs'`), which is what keeps a name ending in
+// `in` or `for` from being read as the keyword.
+func fsharpWordByte(character byte) bool {
+	return character == '\'' || isIdentifierByte(character)
 }
 
 // fsharpFunctionHeaderPattern matches the head of a `let`/`use` FUNCTION
@@ -2566,24 +2665,55 @@ func fsharpShadowsAt(bindings []fsharpShadowBinding, block string, startLine int
 		startLine = 1
 	}
 	newlines := newlineOffsets(block)
-	byLine := map[int]map[string]string{}
+	byLine := map[int][]fsharpShadowBinding{}
 	return func(offset int) map[string]string {
-		at := startLine + lineAtOffset(newlines, offset) - 1
-		if shadows, known := byLine[at]; known {
-			return shadows
-		}
-		var shadows map[string]string
-		for _, binding := range bindings {
-			if binding.fromLine <= at && at <= binding.throughLine {
-				if shadows == nil {
-					shadows = map[string]string{}
+		lineInBlock := lineAtOffset(newlines, offset)
+		at := startLine + lineInBlock - 1
+		reaching, known := byLine[at]
+		if !known {
+			for _, binding := range bindings {
+				if binding.fromLine <= at && at <= binding.throughLine {
+					reaching = append(reaching, binding)
 				}
-				shadows[binding.name] = binding.target
 			}
+			byLine[at] = reaching
 		}
-		byLine[at] = shadows
+		if len(reaching) == 0 {
+			return nil
+		}
+		// Only the line is memoised, because the column matters for at most
+		// the one binding whose scope STARTS on this line -- an explicit
+		// `let ... in ...`, whose initializer and body share it. Every other
+		// binding carries column 0 and is admitted by the same comparison.
+		//
+		// The column is the call site's offset within its line, and it is a
+		// FILE column because every F# block handed to this lookup begins at
+		// the start of startLine and holds whole lines from there.
+		column := offset - fsharpLineStartOffset(newlines, lineInBlock)
+		var shadows map[string]string
+		for _, binding := range reaching {
+			if at == binding.fromLine && column < binding.fromColumn {
+				continue
+			}
+			if shadows == nil {
+				shadows = map[string]string{}
+			}
+			shadows[binding.name] = binding.target
+		}
 		return shadows
 	}
+}
+
+// fsharpLineStartOffset returns the byte offset the 1-based line begins at,
+// given the newline offsets of the same text.
+func fsharpLineStartOffset(newlines []int, line int) int {
+	if line <= 1 {
+		return 0
+	}
+	if line-2 >= len(newlines) {
+		return 0
+	}
+	return newlines[line-2] + 1
 }
 
 // newlineOffsets lists the byte offset of every newline in text, so a byte

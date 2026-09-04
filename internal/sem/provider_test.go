@@ -18481,3 +18481,103 @@ let run (x: int) = global.Serde.serialize x
 		}
 	})
 }
+
+func TestFSharpExplicitLetInBodyIsInsideTheBinding(t *testing.T) {
+	// A non-recursive binding's shadow starts once its initializer has ended,
+	// and that start was rounded up to a whole LINE. `let Json = value in
+	// Json.serialize x` writes the initializer and the body the binding governs
+	// on the same line, so rounding up put the body one line outside its own
+	// binding: the call was classified by the project's module declarations and
+	// pinned to an unrelated project module named `Json`.
+	t.Run("the body after `in` is shadowed", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = box x in Json.serialize(x)
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` in the body of `let Json = ... in ...` reached %v, want %v: the body is inside the binding it is written beside", got, want)
+		}
+	})
+
+	t.Run("a body indented under a trailing `in`", func(t *testing.T) {
+		// The body of an explicit `in` is written past the binding's own
+		// indent, so the offside walk that finds the end of an initializer runs
+		// straight through it and put the shadow after the whole function.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = box x in
+        Json.serialize(x)
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` on the body line under a trailing `in` reached %v, want %v: `in` ends the initializer, so everything after it is the binding's body", got, want)
+		}
+	})
+
+	// The opposite direction, pinned by refinement 6 and unchanged: the
+	// initializer BEFORE the `in` is still outside the binding.
+	t.Run("the initializer before `in` is still outside", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Json.serialize(x) in Json
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` in the initializer of `let Json = ... in ...` reached %v, want %v: a non-recursive binding is not in scope in its own right-hand side, `in` or no `in`", got, want)
+		}
+	})
+
+	t.Run("both ends of one line get their own answer", func(t *testing.T) {
+		// This is why the start is a COLUMN and not a line: one physical line
+		// holds a sighting outside the binding and a sighting inside it, and
+		// neither whole-line answer is right for both.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Json.serialize(x) in Json.serialize(x)
+`)
+		if want := []string{"Json.fs", "Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("the two `Json.serialize` sightings on the `let ... in ...` line reached %v, want %v: the one before `in` names the project module, the one after names the binding", got, want)
+		}
+	})
+
+	// `in` is not always the keyword that opens a binding body, and reading one
+	// that is not moves the shadow's start EARLIER than the binding -- the
+	// wrong-definition direction.
+	for _, declined := range []struct{ name, line string }{
+		// A sequence iterator: the loop body is still the initializer, so the
+		// binding is not in scope inside it.
+		{"a `for ... in` iterator", "let Json = for x in [x] do ignore (Json.serialize(x))"},
+		// An `in` inside brackets belongs to a comprehension or a nested
+		// group, not to this binding.
+		{"an `in` inside a comprehension", "let Json = [for x in [x] -> Json.serialize(x)]"},
+		// `in` has to be a whole word: `min` is not it.
+		{"a name merely ending in `in`", "let Json = min (Json.serialize(x)) x"},
+		// The maskers run first, so an `in` written inside a literal is blank
+		// by the time this line is read.
+		{"an `in` inside a string literal", `let Json = " in " + string (Json.serialize(x))`},
+	} {
+		t.Run("declined: "+declined.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    `+declined.line+`
+    Json
+`)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` in `%s` reached %v, want %v: no binding body opens there, so the call is still in the initializer and the qualifier names the project module", declined.line, got, want)
+			}
+		})
+	}
+}
