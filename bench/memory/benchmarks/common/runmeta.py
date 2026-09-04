@@ -45,13 +45,15 @@ ARM_PREFIXES = (
 # Capture is by namespace rather than by name on purpose: an arm's own binary
 # reads knobs the kit never mentions, so a name allowlist would record only what
 # the harness happens to call `os.getenv` on. Values are still fingerprinted by
-# `_SECRET_RE` exactly as in every other captured namespace.
+# `_env_value` exactly as in every other captured namespace.
 _CAPTURE_PREFIXES = ARM_PREFIXES + (
     "QDRANT_", "SM_", "NEO4J_", "REDIS_", "EMBED_", "OPENAI_", "AZURE_",
     "ANTHROPIC_", "LLM_", "FAIR_", "BENCH_", "HARNESS_", "COLLECTION_",
 )
-# Never emit these values in cleartext; emit a stable fingerprint instead.
-_SECRET_RE = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API)", re.I)
+# Names that mark a value as a credential. Used to choose class (c) below, never
+# on its own to decide what is safe: as a filter it was inverted in practice.
+_SECRET_RE = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API|AUTH)", re.I)
+
 
 # Settings that make one arm's pipeline different from another's. Any of these
 # being set is a fairness violation unless every arm sets it identically.
@@ -284,6 +286,100 @@ _ARGV_SAFE_OPTS = (
 _NEGATIVE_NUMBER_RE = re.compile(r"-\d+$|-\d*\.\d+$")
 
 
+# --- env value classes ----------------------------------------------------
+# The same partition argv uses, for the same reason. Deciding by name alone
+# asked what a value *looks like* rather than what its variable can hold, and it
+# did not merely leak at the edges -- it was inverted: `NEO4J_AUTH`,
+# `NEO4J_URI`, `REDIS_URL`, `LETTA_PG_URI`, `MEM0_HOST` and `AZURE_AI_ENDPOINT`
+# were all recorded verbatim, every one a documented credential carrier, while
+# the single value it did act on was `AZURE_AI_API_VERSION=2024-05-01-preview`,
+# which is not a secret and is real provenance.
+#
+#   (a) verbatim    the value validates against the closed domain declared for
+#                   its variable, so nothing outside that domain is ever written
+#   (b) sha256:     paths, hosts, and any value with no declared domain --
+#                   comparable across runs, not readable
+#   (c) <redacted>  credential-named variables
+#
+# (b) and (c) MUST stay distinct. A fingerprint is comparability, not redaction:
+# a low-entropy secret such as `neo4j/password` is recoverable from a 12-hex
+# digest by hashing a guessed candidate list, so credentials never get one.
+_ENV_INT_RE = re.compile(r"-?\d+$")
+_ENV_NUM_RE = re.compile(r"-?\d*\.?\d+$")
+_ENV_API_VERSION_RE = re.compile(r"\d{4}-\d{2}-\d{2}(-preview)?$")
+_ENV_BOOL = frozenset({"0", "1", "true", "false", "True", "False"})
+_ENV_EFFORT = frozenset({"minimal", "low", "medium", "high"})
+_ENV_GRANULARITY = frozenset({"session", "turn", "turn+session"})
+
+# (a) Every knob whose value is a closed domain. `test_runmeta.py` fails when a
+# knob the kit reads appears in neither this table nor ENV_DERIVED_VALUES, so a
+# new knob cannot fall through to a fingerprint unnoticed -- the artifact going
+# quiet exactly when the configuration is unusual.
+ENV_VALUE_DOMAINS = {
+    "EG_SESSION_EXPAND": _ENV_INT_RE,
+    "EG_SESSION_EXPAND_CAP": _ENV_INT_RE,
+    "EG_ANSWER_ENUM": _ENV_INT_RE,
+    "EG_ANSWER_ENUM_R": _ENV_INT_RE,
+    "EG_PROFILE_FACT_CAP": _ENV_INT_RE,
+    "EG_PROFILE_TIMELINE_CAP": _ENV_INT_RE,
+    "EG_USER_PROFILE": _ENV_BOOL,
+    "EG_PROFILE": _ENV_BOOL,
+    "EG_CONSOLIDATE": _ENV_BOOL,
+    "EG_DEEP": _ENV_BOOL,
+    "EG_CHRONO_ORDER": _ENV_BOOL,
+    "EG_INGEST_GRANULARITY": _ENV_GRANULARITY,
+    "ENTIRE_MAX_CONTEXT_BYTES": _ENV_INT_RE,
+    "MEM0_BACKEND": BACKEND_CHOICES,
+    "MEM0_DATE_INJECT": _ENV_BOOL,
+    "BM25_B": _ENV_NUM_RE,
+    "BM25_K1": _ENV_NUM_RE,
+    "BM25_STEM": _ENV_BOOL,
+    "CMM_MEM_BUDGET_MB": _ENV_INT_RE,
+    "CMM_TIMEOUT": _ENV_INT_RE,
+    "GRAPHIFY_TIMEOUT": _ENV_INT_RE,
+    "FAIR_MODE": _ENV_BOOL,
+    "HARNESS_SEARCH_RETRIES": _ENV_INT_RE,
+    # ci/summarize_run.py compares the captured LLM_* map to an exact value.
+    "LLM_TIMEOUT": _ENV_INT_RE,
+    "LLM_MAX_CONNECTIONS": _ENV_INT_RE,
+    "LLM_MAX_COMPLETION_FLOOR": _ENV_INT_RE,
+    "LLM_KEEPALIVE_EXPIRY": _ENV_INT_RE,
+    "LLM_REASONING_EFFORT": _ENV_EFFORT,
+    "LLM_ANSWERER_EFFORT": _ENV_EFFORT,
+    # Declared so its domain is checked rather than its name: `API` in the name
+    # otherwise makes a version string look like a credential.
+    "AZURE_AI_API_VERSION": _ENV_API_VERSION_RE,
+}
+
+# (b) Deliberately recorded as fingerprints: a path, a host or free text has no
+# closed domain, so it is comparable across runs rather than readable.
+ENV_DERIVED_VALUES = frozenset({
+    "ENTIRE_CORPUS_ROOT", "ENTIRE_GRAPH_BIN",
+    "MEM0_HOST",
+    "BM25_STATE_ROOT", "BM25_STOPWORDS",
+    "CMM_BIN", "CMM_STATE_ROOT",
+    "GRAPHIFY_BRIDGE", "GRAPHIFY_PYTHON", "GRAPHIFY_SOURCE", "GRAPHIFY_STATE_ROOT",
+})
+
+
+def _env_value(name: str, value: str) -> str:
+    """The one place an env value is turned into something recordable.
+
+    Shared by `env_snapshot()` and `asymmetry_report()` on purpose: the second
+    feeds the FAIR_MODE exception text, which lands in CI logs that more people
+    can read than the artifact. Two call sites drifting apart is how this file
+    accumulated its findings.
+    """
+    domain = ENV_VALUE_DOMAINS.get(name)
+    if domain is not None:
+        valid = value in domain if isinstance(domain, frozenset) else bool(domain.fullmatch(value))
+        if valid:
+            return value                       # (a)
+    if _SECRET_RE.search(name):
+        return _ARGV_REDACTED                  # (c) never a fingerprint
+    return _fingerprint(value)                 # (b)
+
+
 def redact_argv(argv=None) -> list[str]:
     """The command line with every value reduced to its option's closed domain.
 
@@ -332,7 +428,7 @@ def env_snapshot() -> dict:
     for k, v in sorted(os.environ.items()):
         if not k.startswith(_CAPTURE_PREFIXES):
             continue
-        out[k] = _fingerprint(v) if _SECRET_RE.search(k) else v
+        out[k] = _env_value(k, v)
     return out
 
 
@@ -378,16 +474,6 @@ def git_state(root: Path | str | None = None) -> dict:
             return ""
     return {"commit": _run("git", "rev-parse", "HEAD"),
             "dirty": bool(_run("git", "status", "--porcelain"))}
-
-
-def _reported_value(name: str, value: str) -> str:
-    """Fingerprint a secret-named value, exactly as env_snapshot does.
-
-    This report is persisted in the artifact *and* interpolated into the
-    FAIR_MODE exception text, so a credential-bearing knob caught by the `EG_*`
-    catch-all (`EG_API_KEY`, say) would otherwise reach CI logs in cleartext.
-    """
-    return _fingerprint(value) if _SECRET_RE.search(name) else value
 
 
 # The executables and source checkouts an arm actually runs. code_hashes()
@@ -490,7 +576,7 @@ def implementation_provenance() -> dict:
 def asymmetry_report() -> dict:
     """Which arm-asymmetric knobs are active right now."""
     active = {
-        k: _reported_value(k, os.environ[k])
+        k: _env_value(k, os.environ[k])
         for k in ASYMMETRY_FLAGS
         if os.environ.get(k)
     }
@@ -498,7 +584,7 @@ def asymmetry_report() -> dict:
         if not v or k in active or k in SYMMETRIC_ARM_SETTINGS:
             continue
         if k.startswith(ASYMMETRIC_PREFIXES):
-            active[k] = _reported_value(k, v)
+            active[k] = _env_value(k, v)
     return dict(sorted(active.items()))
 
 

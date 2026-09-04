@@ -227,9 +227,35 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
 - `env` — every variable under an **arm namespace** (`runmeta.ARM_PREFIXES`: `EG_* ENTIRE_*
   MEM0_* BM25_* CMM_* GRAPHIFY_* COGNEE_* LETTA_* GRAPHITI_* SUPERMEMORY_*`) or a shared
   infrastructure namespace (`QDRANT_* SM_* NEO4J_* REDIS_* EMBED_* OPENAI_* AZURE_* ANTHROPIC_*
-  LLM_* FAIR_* BENCH_* HARNESS_* COLLECTION_*`), with any name matching
-  `KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API` replaced by a `sha256:` fingerprint so configs are
-  comparable without leaking credentials. `BM25_*`, `CMM_*` and `GRAPHIFY_*` were previously
+  LLM_* FAIR_* BENCH_* HARNESS_* COLLECTION_*`), with **values recorded by class, not by what
+  the name looks like** — the same partition argv uses:
+
+  - **verbatim** when the value validates against the closed domain declared for that variable in
+    `runmeta.ENV_VALUE_DOMAINS` (integers, booleans, `MEM0_BACKEND`, `EG_INGEST_GRANULARITY`,
+    the reasoning-effort enums, `LLM_TIMEOUT`, `AZURE_AI_API_VERSION`);
+  - **`sha256:` fingerprint** for a path, host or free-text value, listed in
+    `runmeta.ENV_DERIVED_VALUES`, and for any value that fails its domain or has none declared;
+  - **`<redacted>`** for a credential-named variable — never a fingerprint, because a 12-hex
+    digest of a low-entropy secret such as `neo4j/password` is recoverable by hashing a guessed
+    candidate list.
+
+  The old rule filtered on the *name* alone, and on real input it was inverted rather than merely
+  incomplete: `NEO4J_AUTH`, `NEO4J_URI`, `REDIS_URL`, `LETTA_PG_URI`, `COGNEE_DB_CONNECTION`,
+  `MEM0_HOST` and `AZURE_AI_ENDPOINT` were all recorded verbatim — every one a documented
+  credential carrier — while the single value it did redact was
+  `AZURE_AI_API_VERSION=2024-05-01-preview`, which is not a secret and is real provenance. That
+  version string is readable again.
+
+  **What this costs.** On a real fair run about eight captured values — `MEM0_HOST`,
+  `AZURE_AI_ENDPOINT`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and the `*_STATE_ROOT` /
+  `ENTIRE_CORPUS_ROOT` paths — become comparable but no longer readable. **Unlike the argv
+  identity options, these are *not* recoverable from `metadata`**, which records no paths or
+  endpoints: if you need to know where a run wrote or which endpoint it called, the artifact can
+  only tell you whether two runs agree. Nothing that determines a *measurement* is lost —
+  `code_md5` binds the harness and `implementations` binds the build each arm actually executed.
+  `env_snapshot()` and `asymmetry_report()` share one `_env_value()` so the artifact and the
+  `FAIR_MODE` exception text (which lands in CI logs) cannot drift apart. `BM25_*`, `CMM_*` and
+  `GRAPHIFY_*` were previously
   absent while every other arm namespace was captured, so two runs differing in `CMM_STATE_ROOT`,
   `GRAPHIFY_BRIDGE` or `BM25_STATE_ROOT` serialized byte-identical environment metadata — those
   knobs are classified infrastructure, so `asymmetric_settings_active` excludes them by design
@@ -334,7 +360,7 @@ c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 041f93a130c1a91d1b81f67622555b8c  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
-77e5d2c8fc30440a95e4c343045127a3  benchmarks/common/runmeta.py
+ab1fd8271e3833bcfa403a518cbb4a45  benchmarks/common/runmeta.py
 7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
 4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
 8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py

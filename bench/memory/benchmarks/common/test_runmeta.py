@@ -51,10 +51,22 @@ class CodeHashesTest(unittest.TestCase):
     )
 
     def test_every_arm_namespace_reaches_the_env_block(self) -> None:
-        """BM25_, CMM_ and GRAPHIFY_ were the arm namespaces left uncaptured."""
+        """BM25_, CMM_ and GRAPHIFY_ were the arm namespaces left uncaptured.
+
+        Capture is asserted by key, not by value: the state roots and the bridge
+        are paths, so the value partition records them as fingerprints. The
+        property that matters here is that every namespace reaches the block at
+        all, which the companion test then leans on to separate two runs.
+        """
         with patch.dict("os.environ", self._RUN_A, clear=True):
             snapshot = runmeta.env_snapshot()
-        self.assertEqual(snapshot, self._RUN_A)
+        self.assertEqual(set(snapshot), set(self._RUN_A))
+        for name, recorded in snapshot.items():
+            with self.subTest(name=name):
+                self.assertTrue(
+                    recorded == self._RUN_A[name] or recorded.startswith("sha256:"),
+                    f"{name} is neither its declared-domain value nor a fingerprint",
+                )
 
     def test_configurations_that_differ_serialize_differently(self) -> None:
         with patch.dict("os.environ", self._RUN_A, clear=True):
@@ -68,12 +80,17 @@ class CodeHashesTest(unittest.TestCase):
             "env block, so the artifact cannot say which configuration ran",
         )
 
-    def test_a_secret_named_arm_knob_is_still_fingerprinted(self) -> None:
-        """Widening capture must not widen what is emitted in cleartext."""
+    def test_a_secret_named_arm_knob_is_never_emitted(self) -> None:
+        """Widening capture must not widen what is emitted in cleartext.
+
+        Stronger than the fingerprint this originally asserted: a credential is
+        redacted outright, because a 12-hex digest of a low-entropy secret is
+        recoverable by hashing a guessed candidate list.
+        """
         with patch.dict("os.environ", {"CMM_API_KEY": FAKE_KEY}, clear=True):
             snapshot = runmeta.env_snapshot()
         self.assertNotIn(FAKE_KEY, str(snapshot))
-        self.assertTrue(snapshot["CMM_API_KEY"].startswith("sha256:"))
+        self.assertEqual(snapshot["CMM_API_KEY"], "<redacted>")
 
     def test_hashes_entra_helper_and_dependency_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -454,6 +471,88 @@ class ImplementationProvenanceTest(unittest.TestCase):
             self.assertIn("implementations", runmeta.capture())
 
 
+class EnvValueTest(unittest.TestCase):
+    """Env values are recorded by class, not by what the name looks like.
+
+    The name-only rule was inverted in practice: it passed `NEO4J_AUTH`,
+    `NEO4J_URI`, `REDIS_URL`, `LETTA_PG_URI`, `MEM0_HOST` and
+    `AZURE_AI_ENDPOINT` verbatim while fingerprinting a version string.
+    """
+
+    CREDENTIAL_CARRIERS = {
+        "NEO4J_AUTH": f"neo4j/{FAKE_PASSWORD}",
+        "NEO4J_URI": f"bolt://neo4j:{FAKE_PASSWORD}@graph.local:7687",
+        "REDIS_URL": f"redis://:{FAKE_PASSWORD}@cache.local:6379/0",
+        "LETTA_PG_URI": f"postgresql://letta:{FAKE_PASSWORD}@db.local/letta",
+        "COGNEE_DB_CONNECTION": f"postgres://c:{FAKE_PASSWORD}@db/c",
+        "MEM0_HOST": f"https://admin:{FAKE_PASSWORD}@mem0.local/",
+        "AZURE_AI_ENDPOINT": f"https://{FAKE_KEY}.services.ai.azure.com/",
+        "OPENAI_BASE_URL": f"https://{FAKE_KEY}.internal/v1",
+        "ANTHROPIC_BASE_URL": f"https://gw.local/?auth={FAKE_KEY}",
+        "SUPERMEMORY_URL": f"https://sm.local/{FAKE_KEY}",
+        "QDRANT_URL": f"https://{FAKE_KEY}.qdrant.cloud:6333",
+        "ENTIRE_CORPUS_ROOT": f"/home/{FAKE_KEY}/memarms/state",
+        "EG_UNRECOGNISED_KNOB": FAKE_KEY,
+    }
+
+    def test_no_captured_value_carries_secret_material(self) -> None:
+        with patch.dict("os.environ", self.CREDENTIAL_CARRIERS, clear=True):
+            captured = runmeta.env_snapshot()
+
+        self.assertEqual(len(captured), len(self.CREDENTIAL_CARRIERS))
+        rendered = " ".join(f"{k}={v}" for k, v in captured.items())
+        self.assertNotIn(FAKE_KEY, rendered)
+        self.assertNotIn(FAKE_PASSWORD, rendered)
+
+    def test_a_credential_named_variable_is_redacted_not_fingerprinted(self) -> None:
+        """A 12-hex digest of `neo4j/password` is brute-forceable; (b) and (c)
+        must not collapse into one class."""
+        for name in ("NEO4J_AUTH", "MEM0_API_KEY", "SUPERMEMORY_TOKEN"):
+            with self.subTest(name=name):
+                with patch.dict("os.environ", {name: FAKE_PASSWORD}, clear=True):
+                    self.assertEqual(runmeta.env_snapshot()[name], "<redacted>")
+
+    def test_a_value_with_no_declared_domain_is_a_comparable_fingerprint(self) -> None:
+        with patch.dict("os.environ", {"MEM0_HOST": "http://localhost:18888"}, clear=True):
+            first = runmeta.env_snapshot()["MEM0_HOST"]
+        with patch.dict("os.environ", {"MEM0_HOST": "http://localhost:18888"}, clear=True):
+            again = runmeta.env_snapshot()["MEM0_HOST"]
+        with patch.dict("os.environ", {"MEM0_HOST": "http://elsewhere:18888"}, clear=True):
+            other = runmeta.env_snapshot()["MEM0_HOST"]
+        self.assertRegex(first, r"^sha256:[0-9a-f]{12}$")
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
+
+    def test_a_closed_domain_value_stays_readable(self) -> None:
+        env = {"LLM_TIMEOUT": "600", "FAIR_MODE": "1", "MEM0_BACKEND": "entire",
+               "EG_INGEST_GRANULARITY": "turn+session", "BM25_K1": "1.5"}
+        with patch.dict("os.environ", env, clear=True):
+            self.assertEqual(runmeta.env_snapshot(), env)
+
+    def test_the_api_version_stays_readable(self) -> None:
+        """A genuine gain: the name contains `API`, the value is provenance."""
+        with patch.dict("os.environ", {"AZURE_AI_API_VERSION": "2024-05-01-preview"}, clear=True):
+            self.assertEqual(
+                runmeta.env_snapshot()["AZURE_AI_API_VERSION"], "2024-05-01-preview"
+            )
+
+    def test_a_value_outside_its_declared_domain_is_not_recorded(self) -> None:
+        with patch.dict("os.environ", {"LLM_TIMEOUT": FAKE_KEY}, clear=True):
+            self.assertNotIn(FAKE_KEY, runmeta.env_snapshot()["LLM_TIMEOUT"])
+
+    def test_the_fair_mode_exception_text_carries_no_value(self) -> None:
+        """The second door: this text lands in CI logs, read by more people
+        than the artifact. Both doors go through `_env_value`."""
+        env = {"FAIR_MODE": "1", "EG_ENDPOINT": f"https://{FAKE_KEY}.host/?t={FAKE_KEY}"}
+        with patch.dict("os.environ", env, clear=True):
+            report = runmeta.asymmetry_report()
+            with self.assertRaises(SystemExit) as raised:
+                runmeta.assert_fair_mode(None)
+        self.assertNotIn(FAKE_KEY, str(raised.exception))
+        self.assertNotIn(FAKE_KEY, str(report))
+        self.assertIn("EG_ENDPOINT", str(raised.exception))
+
+
 class FairModeGuardTest(unittest.TestCase):
     """FAIR_MODE=1 is the published-numbers guarantee.
 
@@ -498,7 +597,7 @@ class FairModeGuardTest(unittest.TestCase):
                 runmeta.asymmetry_report(), {"EG_DEEP": "1", "MEM0_DATE_INJECT": "1"}
             )
 
-    def test_a_secret_named_knob_is_fingerprinted_not_printed(self) -> None:
+    def test_a_secret_named_knob_is_redacted_not_printed(self) -> None:
         """The report is persisted AND interpolated into the exception text."""
         env = {"FAIR_MODE": "1", "EG_API_KEY": FAKE_KEY}
         with patch.dict("os.environ", env, clear=True):
@@ -508,7 +607,7 @@ class FairModeGuardTest(unittest.TestCase):
         self.assertNotIn(FAKE_KEY, str(report))
         self.assertNotIn(FAKE_KEY, str(raised.exception))
         self.assertIn("EG_API_KEY", str(raised.exception))
-        self.assertTrue(report["EG_API_KEY"].startswith("sha256:"))
+        self.assertEqual(report["EG_API_KEY"], "<redacted>")
 
     def test_rejects_a_backend_override_that_disagrees_with_the_flag(self) -> None:
         """`backend = os.getenv("MEM0_BACKEND", args.backend)` outranks the flag,
@@ -590,6 +689,34 @@ class AsymmetryCoverageTest(unittest.TestCase):
             "says where a backend lives",
         )
         self.assertIn("EG_SESSION_EXPAND", classified)
+
+    def test_every_arm_scoped_knob_declares_a_value_class(self) -> None:
+        """The env analogue of the argv enum-sync guard.
+
+        A knob with no declared domain falls through to a fingerprint, so the
+        artifact goes quiet exactly when the configuration is unusual. Declaring
+        it either way is cheap; discovering the silence later is not.
+        """
+        kit = Path(runmeta.__file__).resolve().parents[2]
+        if not (kit / "patches").is_dir():
+            self.skipTest("not the kit checkout (reconstructed harness has no patches/)")
+        sources = sorted(kit.rglob("*.py")) + sorted((kit / "patches").glob("*.patch"))
+        found: dict[str, str] = {}
+        for path in sources:
+            for name in self.ENV_READ.findall(path.read_text(encoding="utf-8")):
+                if name.startswith(self.ARM_PREFIXES):
+                    found.setdefault(name, str(path.relative_to(kit)))
+
+        declared = set(runmeta.ENV_VALUE_DOMAINS) | runmeta.ENV_DERIVED_VALUES
+        undeclared = {k: v for k, v in sorted(found.items()) if k not in declared}
+        self.assertEqual(
+            undeclared,
+            {},
+            "arm-scoped env knobs are read but declare no value class. Add each "
+            "to runmeta.ENV_VALUE_DOMAINS with its closed domain, or to "
+            "runmeta.ENV_DERIVED_VALUES if it is a path, host or free text that "
+            "can only be recorded as a fingerprint",
+        )
 
     def test_every_classified_knob_reaches_the_env_block(self) -> None:
         """Classifying a knob is not enough -- it has to be recorded.

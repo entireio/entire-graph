@@ -44,8 +44,8 @@ identical spine. The only thing allowed to differ between arms is *which memorie
   — and raises `SystemExit` before the run measures anything.
   Variables that only say *where* a backend lives are listed in `runmeta.SYMMETRIC_ARM_SETTINGS`
   and stay legal. `runmeta.capture()` additionally stamps every run artifact with env snapshot,
-  redacted argv, git state, and md5 of every file that can change a measured number — secret-named
-  env vars are recorded as `sha256:<12 hex>` fingerprints, and the command line is filtered
+  redacted argv, git state, and md5 of every file that can change a measured number — credential-named
+  env vars are recorded as `<redacted>` and other env values by declared class, and the command line is filtered
   through an allowlist of both option names **and values**: a value is recorded verbatim only
   when it validates against the closed domain of its own option (integers, integer lists, the
   `--backend`/`--mode` enums), otherwise it is a `sha256:` fingerprint, a URL's location, or
