@@ -97,57 +97,62 @@ SYMMETRIC_ARM_SETTINGS = frozenset({
 # a stray positional can be anything. argv is therefore redacted before it is
 # persisted, never after.
 #
-# The filter is an allowlist, not a denylist: only option names known to this
-# harness survive, and only the value-taking subset keeps its value. A denylist
-# of secret-looking tokens is defeated by the first credential shape nobody
-# thought of; an allowlist fails closed on it.
+# Both the option NAME and its VALUE are allowlisted. Names are matched against
+# the set the runners accept; values are matched against the closed domain of
+# their own option -- never trusted because the name is known. Trusting a value
+# by association is how four consecutive reviews each found a new way to smuggle
+# a secret through an "allowlisted" option (URL userinfo, then query, fragment,
+# path segment, then an authority-less `file:` URI). The partition below removes
+# the category instead of patching its members:
+#
+#   (a) recorded verbatim -- integers, integer lists, closed enums; the value is
+#       validated at write time, so nothing outside the domain is ever written
+#   (b) recorded only in derived form -- a URL's location, or a fingerprint
+#   (c) never recorded -- credentials, and the identity options that `metadata`
+#       already carries as typed fields, so dropping them costs no provenance
 _ARGV_REDACTED = "<redacted>"
 
-# Value-taking options of benchmarks/{locomo,longmemeval}/run.py whose value is
-# configuration rather than a credential. `--backend` is load-bearing:
-# ci/summarize_run.py reads the running arm back out of the captured argv.
-_ARGV_SAFE_VALUE_OPTS = frozenset({
-    "--answerer-model", "--backend", "--categories", "--conversations",
-    "--dataset-path", "--judge-model", "--judge-provider", "--max-questions",
-    "--max-workers", "--mem0-host", "--mode", "--output-dir", "--per-type",
-    "--project-name", "--provider", "--question-types", "--question-workers",
-    "--rpm", "--run-id", "--seed", "--top-k", "--top-k-cutoffs",
+_INT_RE = re.compile(r"-?\d+$")
+_INT_LIST_RE = re.compile(r"\d+(,\d+)*$")
+
+# Enum domains. These MUST equal the runners' argparse `choices=`:
+# test_runmeta.py re-derives the backend list from patch 0003 and fails on
+# drift, because a backend added to run.py but not here would silently record
+# as `<redacted>` -- the artifact going quiet exactly when the config is unusual.
+BACKEND_CHOICES = frozenset({
+    "oss", "cloud", "entire", "cognee", "supermemory", "graphiti", "letta",
+    "graphify", "cmm", "bm25",
 })
-# Flags that take no value at all.
-_ARGV_SAFE_TOGGLES = frozenset({
-    "--all-questions", "--debug", "--evaluate-only", "--predict-only",
-    "--rejudge", "--resume", "--score-debug", "--user-profile",
-    "--with-evidence",
-})
-# Known options whose value is a credential: the name is useful provenance
-# ("a key was passed on the CLI"), the value never is.
-_ARGV_SECRET_OPTS = frozenset({"--mem0-api-key"})
-_ARGV_SAFE_OPTS = _ARGV_SAFE_VALUE_OPTS | _ARGV_SAFE_TOGGLES | _ARGV_SECRET_OPTS
-
-# argparse's own `_negative_number_matcher`: a token like `-1` is the *value* of
-# the preceding option, not a new option, so `--seed -1` must survive intact.
-# Deliberately narrow -- consuming any `-`-leading token as a pending value would
-# let `--top-k --mem0-api-key=SECRET` record the credential verbatim, and
-# argparse rejects that command line anyway.
-_NEGATIVE_NUMBER_RE = re.compile(r"-\d+$|-\d*\.\d+$")
+MODE_CHOICES = frozenset({"retrieval", "answerer"})
 
 
+def _enum_rule(choices):
+    def rule(value: str) -> str:
+        return value if value in choices else _ARGV_REDACTED
+    return rule
 
-def _scrub_value(value: str) -> str:
-    """Keep a URL value's location; drop every component that can carry a secret.
 
-    Credentials ride in every part of a URL but its location: userinfo
+def _pattern_rule(regex):
+    def rule(value: str) -> str:
+        return value if regex.fullmatch(value) else _ARGV_REDACTED
+    return rule
+
+
+def _fingerprint_rule(value: str) -> str:
+    """Class (b): comparable across runs, not readable."""
+    return _fingerprint(value)
+
+
+def _url_location_rule(value: str) -> str:
+    """Class (b): keep only where a service lives, drop everything else.
+
+    Credentials ride in every part of a URL but its location -- userinfo
     (`https://user:pass@host`), a path segment (`/hooks/<token>`), a query
-    parameter (`?token=...`), and a fragment. Only scheme, host and port are
-    provenance, so everything else is dropped wholesale rather than
-    pattern-matched -- for the same reason the option filter is an allowlist.
-
-    A URI with a scheme but no network location (`file:///hooks/<token>`,
-    `mailto:`, any opaque scheme) has no location worth keeping, so only its
-    scheme survives. The one exception is a single-letter scheme, which is a
-    Windows drive rather than a URI scheme -- RFC 3986 schemes seen here are
-    always longer -- so `C:\results` stays a path. Values with no scheme at all
-    (filesystem paths, model names) are returned unchanged.
+    parameter (`?token=...`), a fragment -- and in an authority-less URI
+    (`file:///hooks/<token>`) there is no location at all. Only the scheme, host
+    and port survive; every other component is dropped wholesale rather than
+    inspected. A value that is not a URL is dropped entirely: for a host option
+    it is not provenance, and it is the one shape that could still be free text.
     """
     try:
         parts = urlsplit(value)
@@ -156,21 +161,16 @@ def _scrub_value(value: str) -> str:
     except ValueError:
         return _ARGV_REDACTED
     if not scheme:
-        return value
+        return _ARGV_REDACTED
     if not netloc:
-        if len(scheme) == 1:
-            return value  # a Windows drive letter, not a URI scheme
         return scheme + ":" + _ARGV_REDACTED
     if "@" in netloc:
         # Split on the LAST "@": userinfo may not contain an unescaped one, so
-        # a value that does is malformed and stripping more of it is the safe
-        # direction.
+        # a value that does is malformed and stripping more is the safe way to
+        # be wrong.
         netloc = _ARGV_REDACTED + "@" + netloc.rpartition("@")[2]
     scrubbed = urlunsplit((scheme, netloc, "", "", ""))
-    if path not in ("", "/"):
-        scrubbed += "/" + _ARGV_REDACTED
-    else:
-        scrubbed += path
+    scrubbed += "/" + _ARGV_REDACTED if path not in ("", "/") else path
     if query:
         scrubbed += "?" + _ARGV_REDACTED
     if fragment:
@@ -178,40 +178,100 @@ def _scrub_value(value: str) -> str:
     return scrubbed
 
 
+# How each value-taking option of benchmarks/{locomo,longmemeval}/run.py is
+# recorded. `--backend` is load-bearing: ci/summarize_run.py reads the running
+# arm back out of the captured argv, and it is the one value with no `metadata`
+# twin.
+_ARGV_VALUE_RULES = {
+    # (a) integers
+    "--top-k": _pattern_rule(_INT_RE),
+    "--max-workers": _pattern_rule(_INT_RE),
+    "--question-workers": _pattern_rule(_INT_RE),
+    "--max-questions": _pattern_rule(_INT_RE),
+    "--rpm": _pattern_rule(_INT_RE),
+    "--seed": _pattern_rule(_INT_RE),
+    "--per-type": _pattern_rule(_INT_RE),
+    # (a) comma-separated integer lists
+    "--conversations": _pattern_rule(_INT_LIST_RE),
+    "--categories": _pattern_rule(_INT_LIST_RE),
+    "--top-k-cutoffs": _pattern_rule(_INT_LIST_RE),
+    # (a) closed enums
+    "--backend": _enum_rule(BACKEND_CHOICES),
+    "--mode": _enum_rule(MODE_CHOICES),
+    # (b) derived, non-reversible
+    "--mem0-host": _url_location_rule,
+    "--dataset-path": _fingerprint_rule,
+    "--output-dir": _fingerprint_rule,
+    # (b) argv is the only carrier of the judge provider -- `metadata` records
+    # `provider` but never `judge_provider` -- so keep it comparable across runs
+    # rather than dropping the fact that the judge ran somewhere else.
+    "--judge-provider": _fingerprint_rule,
+}
+
+# (c) the name is provenance, the value never is. Every identity option here is
+# recorded by `metadata` as a typed field -- project_name, run_id,
+# answerer_model, judge_model, provider, question_types -- so an auditor reads
+# it there; see FAIR-CONFIG.md B7.
+_ARGV_DROP_VALUE_OPTS = frozenset({
+    "--mem0-api-key",
+    "--project-name", "--run-id", "--answerer-model", "--judge-model",
+    "--provider", "--question-types",
+})
+
+# Flags that take no value at all.
+_ARGV_SAFE_TOGGLES = frozenset({
+    "--all-questions", "--debug", "--evaluate-only", "--predict-only",
+    "--rejudge", "--resume", "--score-debug", "--user-profile",
+    "--with-evidence",
+})
+_ARGV_SAFE_OPTS = (
+    frozenset(_ARGV_VALUE_RULES) | _ARGV_SAFE_TOGGLES | _ARGV_DROP_VALUE_OPTS
+)
+
+# argparse's own `_negative_number_matcher`: a token like `-1` is the *value* of
+# the preceding option, not a new option, so `--seed -1` must reach that
+# option's domain check instead of being read as an unknown flag. Deliberately
+# narrow -- consuming any `-`-leading token as a pending value would let
+# `--top-k --mem0-api-key=SECRET` record the credential, and argparse rejects
+# that command line anyway.
+_NEGATIVE_NUMBER_RE = re.compile(r"-\d+$|-\d*\.\d+$")
+
+
 def redact_argv(argv=None) -> list[str]:
-    """The command line with every token that is not known-safe removed.
+    """The command line with every value reduced to its option's closed domain.
 
     argv[0] keeps only its basename. After it, a token survives verbatim only if
-    it is an allowlisted option name, or the value of an allowlisted
-    value-taking option. Everything else -- unknown flags and their values,
-    `NAME=value` environment prefixes, bare positionals -- becomes
-    ``<redacted>``.
+    it is an allowlisted option name, or a value that validates against the
+    domain of the allowlisted option it follows. Everything else -- unknown
+    flags and their values, `NAME=value` environment prefixes, bare positionals,
+    credentials, and any value outside its option's domain -- becomes
+    ``<redacted>`` or a ``sha256:`` fingerprint.
     """
     argv = list(sys.argv if argv is None else argv)
     if not argv:
         return []
     out = [os.path.basename(argv[0])]
-    pending_safe_value = False
+    pending_rule = None
     for token in argv[1:]:
-        if pending_safe_value and _NEGATIVE_NUMBER_RE.fullmatch(token):
-            out.append(token)
-            pending_safe_value = False
+        if pending_rule is not None and _NEGATIVE_NUMBER_RE.fullmatch(token):
+            out.append(pending_rule(token))
+            pending_rule = None
             continue
         if token.startswith("-") and token not in ("-", "--"):
             name, sep, value = token.partition("=")
             if name not in _ARGV_SAFE_OPTS:
                 out.append(_ARGV_REDACTED)
-                pending_safe_value = False
             elif sep:
-                keep = name in _ARGV_SAFE_VALUE_OPTS
-                out.append(f"{name}={_scrub_value(value) if keep else _ARGV_REDACTED}")
-                pending_safe_value = False
+                rule = _ARGV_VALUE_RULES.get(name)
+                out.append(f"{name}={rule(value) if rule else _ARGV_REDACTED}")
             else:
                 out.append(name)
-                pending_safe_value = name in _ARGV_SAFE_VALUE_OPTS
+                pending_rule = _ARGV_VALUE_RULES.get(name)
+                continue
+            pending_rule = None
             continue
-        out.append(_scrub_value(token) if pending_safe_value else _ARGV_REDACTED)
-        pending_safe_value = False
+        out.append(pending_rule(token) if pending_rule else _ARGV_REDACTED)
+        pending_rule = None
     return out
 
 

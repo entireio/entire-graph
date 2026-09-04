@@ -57,79 +57,112 @@ FAKE_KEY_2 = "sk-FAKETESTKEY-1111111111111111"
 FAKE_PASSWORD = "FAKETESTPASSWORD-2222"
 
 
+
+# Shapes that each cost a review round before the value partition existed. They
+# stay as named regression witnesses so the old bugs cannot come back quietly.
+HISTORICAL_URL_SHAPES = {
+    "userinfo": (f"https://admin:{FAKE_PASSWORD}@mem0.local/v1",
+                 "https://<redacted>@mem0.local/<redacted>"),
+    "query": (f"https://mem0.local/v1?token={FAKE_KEY}",
+              "https://mem0.local/<redacted>?<redacted>"),
+    "fragment": (f"https://mem0.local/v1#{FAKE_KEY}",
+                 "https://mem0.local/<redacted>#<redacted>"),
+    "path_segment": (f"https://mem0.local/hooks/{FAKE_KEY}",
+                     "https://mem0.local/<redacted>"),
+    "at_sign_in_password": (f"https://admin:pa@ss{FAKE_PASSWORD}@mem0.local/",
+                            "https://<redacted>@mem0.local/"),
+    "file_uri": (f"file:///hooks/{FAKE_KEY}", "file:<redacted>"),
+    "mailto_uri": (f"mailto:admin:{FAKE_PASSWORD}@mem0.local", "mailto:<redacted>"),
+}
+
+# Every value-taking option, with a hostile value, in every argv shape.
+HOSTILE_VALUES = {
+    "--top-k": FAKE_KEY, "--max-workers": FAKE_KEY, "--question-workers": FAKE_KEY,
+    "--max-questions": FAKE_KEY, "--rpm": FAKE_KEY, "--seed": FAKE_KEY,
+    "--per-type": FAKE_KEY, "--conversations": FAKE_KEY, "--categories": FAKE_KEY,
+    "--top-k-cutoffs": FAKE_KEY, "--backend": FAKE_KEY, "--mode": FAKE_KEY,
+    "--mem0-host": f"https://admin:{FAKE_PASSWORD}@mem0.local/hooks/{FAKE_KEY}?t={FAKE_KEY_2}",
+    "--dataset-path": f"/secrets/{FAKE_KEY}/locomo10.json",
+    "--output-dir": f"/out/{FAKE_KEY}",
+    "--judge-provider": FAKE_KEY,
+    "--mem0-api-key": FAKE_KEY, "--project-name": FAKE_KEY, "--run-id": FAKE_KEY,
+    "--answerer-model": FAKE_KEY, "--judge-model": FAKE_KEY, "--provider": FAKE_KEY,
+    "--question-types": FAKE_KEY,
+}
+
+_FINGERPRINT_RE = re.compile(r"sha256:[0-9a-f]{12}$")
+# The one free-form fragment the partition deliberately keeps: a host. Class (b)
+# is defined as "a derived non-reversible form (a fingerprint, a boolean, a
+# scheme, a host)", so a location-only URL is an accepted recorded form.
+_URL_LOCATION_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9+.-]*:"
+    r"(<redacted>|//(<redacted>@)?[A-Za-z0-9._:\[\]-]*"
+    r"(/<redacted>|/)?(\?<redacted>)?(#<redacted>)?)$"
+)
+
+
 class RedactArgvTest(unittest.TestCase):
     """The provenance block is published; argv must not carry a credential.
 
-    Without redaction `runmeta.capture()["argv"]` is `list(sys.argv)`, so the
-    documented `--mem0-api-key` option writes the key verbatim into every result
-    artifact.
+    Values are recorded only within the closed domain of their own option, so
+    the guarantee is total rather than a list of shapes someone anticipated.
     """
 
-    def test_known_secret_option_keeps_its_name_and_loses_its_value(self) -> None:
-        self.assertEqual(
-            runmeta.redact_argv(["/h/.venv/bin/python", "--mem0-api-key", FAKE_KEY]),
-            ["python", "--mem0-api-key", "<redacted>"],
-        )
+    def assert_closed(self, token: str) -> None:
+        """Every recorded token comes from a set fixed before the run."""
+        if token in runmeta._ARGV_SAFE_OPTS or token == "<redacted>":
+            return
+        if _FINGERPRINT_RE.fullmatch(token) or _URL_LOCATION_RE.fullmatch(token):
+            return
+        if runmeta._INT_RE.fullmatch(token) or runmeta._INT_LIST_RE.fullmatch(token):
+            return
+        if token in runmeta.BACKEND_CHOICES or token in runmeta.MODE_CHOICES:
+            return
+        name, sep, value = token.partition("=")
+        if sep and name in runmeta._ARGV_SAFE_OPTS:
+            return self.assert_closed(value)
+        self.fail(f"free-form token reached the artifact: {token!r}")
 
-    def test_known_secret_option_in_equals_form_loses_its_value(self) -> None:
-        self.assertEqual(
-            runmeta.redact_argv(["run.py", f"--mem0-api-key={FAKE_KEY}"]),
-            ["run.py", "--mem0-api-key=<redacted>"],
-        )
+    def test_no_value_outside_its_option_domain_is_ever_recorded(self) -> None:
+        """Totality: every option, hostile value, every argv shape."""
+        argv = ["/home/runner/.venv/bin/python"]
+        for option, value in HOSTILE_VALUES.items():
+            argv += [option, value, f"{option}={value}"]
+        for shape, _ in HISTORICAL_URL_SHAPES.values():
+            argv += ["--mem0-host", shape]
+        argv += ["--API-KEY", FAKE_KEY, f"AZURE_AI_API_KEY={FAKE_KEY}", FAKE_KEY,
+                 "-k", FAKE_KEY, "--debug", "-1", "--", "-"]
 
-    def test_unknown_option_and_its_value_are_both_removed(self) -> None:
-        self.assertEqual(
-            runmeta.redact_argv(["run.py", "--api-key", FAKE_KEY, "--token", FAKE_KEY_2]),
-            ["run.py", "<redacted>", "<redacted>", "<redacted>", "<redacted>"],
-        )
+        redacted = runmeta.redact_argv(argv)
 
-    def test_environment_prefix_and_bare_positional_are_removed(self) -> None:
-        self.assertEqual(
-            runmeta.redact_argv(["run.py", f"AZURE_AI_API_KEY={FAKE_KEY}", FAKE_KEY_2]),
-            ["run.py", "<redacted>", "<redacted>"],
-        )
+        rendered = " ".join(redacted)
+        self.assertNotIn(FAKE_KEY, rendered)
+        self.assertNotIn(FAKE_KEY_2, rendered)
+        self.assertNotIn(FAKE_PASSWORD, rendered)
+        for token in redacted[1:]:
+            with self.subTest(token=token):
+                self.assert_closed(token)
 
-    def test_url_userinfo_is_stripped_from_an_allowlisted_value(self) -> None:
-        self.assertEqual(
-            runmeta.redact_argv(
-                ["run.py", "--mem0-host", f"https://admin:{FAKE_PASSWORD}@mem0.local/v1"]
-            ),
-            ["run.py", "--mem0-host", "https://<redacted>@mem0.local/<redacted>"],
-        )
+    def test_historical_url_shapes_stay_fixed(self) -> None:
+        """One named witness per review round that found a bypass."""
+        for name, (shape, expected) in HISTORICAL_URL_SHAPES.items():
+            with self.subTest(shape=name):
+                self.assertEqual(
+                    runmeta.redact_argv(["run.py", "--mem0-host", shape]),
+                    ["run.py", "--mem0-host", expected],
+                )
 
-    def test_url_query_string_is_dropped(self) -> None:
-        """A credential rides in a query parameter as readily as in userinfo."""
-        self.assertEqual(
-            runmeta.redact_argv(
-                ["run.py", "--mem0-host", f"https://mem0.local/v1?token={FAKE_KEY}"]
-            ),
-            ["run.py", "--mem0-host", "https://mem0.local/<redacted>?<redacted>"],
-        )
+    def test_a_windows_drive_path_never_reaches_the_artifact(self) -> None:
+        """Was a `_scrub_value` special case; paths are now fingerprinted."""
+        recorded = runmeta.redact_argv(["run.py", "--output-dir", "C:\\results\\locomo"])[2]
+        self.assertRegex(recorded, _FINGERPRINT_RE)
 
-    def test_url_fragment_is_dropped(self) -> None:
-        self.assertEqual(
-            runmeta.redact_argv(
-                ["run.py", "--mem0-host", f"https://mem0.local/v1#{FAKE_KEY}"]
-            ),
-            ["run.py", "--mem0-host", "https://mem0.local/<redacted>#<redacted>"],
-        )
-
-    def test_url_password_containing_an_at_sign_leaks_no_suffix(self) -> None:
-        """Splitting on the first @ would leave the tail of the password behind."""
-        self.assertEqual(
-            runmeta.redact_argv(
-                ["run.py", "--mem0-host", f"https://admin:pa@ss{FAKE_PASSWORD}@mem0.local/"]
-            ),
-            ["run.py", "--mem0-host", "https://<redacted>@mem0.local/"],
-        )
-
-    def test_negative_numbers_survive_as_option_values(self) -> None:
-        """argparse reads `-1` as a value; the artifact must record it as one."""
-        argv = ["run.py", "--seed", "-1", "--max-questions", "-1", "--rpm", "-2.5"]
+    def test_negative_numbers_reach_their_domain_check(self) -> None:
+        """argparse reads `-1` as a value, not as a new option."""
+        argv = ["run.py", "--seed", "-1", "--max-questions", "-1"]
         self.assertEqual(runmeta.redact_argv(argv), argv)
 
     def test_a_negative_number_is_not_a_licence_to_consume_any_token(self) -> None:
-        """Consuming any `-`-leading token as a value would leak this key."""
         self.assertEqual(
             runmeta.redact_argv(["run.py", "--top-k", f"--mem0-api-key={FAKE_KEY}"]),
             ["run.py", "--top-k", "--mem0-api-key=<redacted>"],
@@ -139,14 +172,50 @@ class RedactArgvTest(unittest.TestCase):
             ["run.py", "--debug", "<redacted>"],
         )
 
-    def test_url_path_segments_are_dropped(self) -> None:
-        """A path segment carries a webhook token as readily as a query does."""
+    def test_the_published_launcher_keeps_every_closed_domain_value(self) -> None:
+        """run_locomo.sh: nothing in a closed domain is lost."""
         self.assertEqual(
-            runmeta.redact_argv(
-                ["run.py", "--mem0-host", f"https://mem0.local/hooks/{FAKE_KEY}"]
-            ),
-            ["run.py", "--mem0-host", "https://mem0.local/<redacted>"],
+            runmeta.redact_argv([
+                "/h/.venv/bin/python", "--project-name", "full_entire",
+                "--backend", "entire", "--top-k", "200", "--top-k-cutoffs", "200",
+                "--max-workers", "3", "--question-workers", "10", "--rpm", "60",
+                "--resume", "--run-id", "full_entire",
+            ]),
+            ["python", "--project-name", "<redacted>", "--backend", "entire",
+             "--top-k", "200", "--top-k-cutoffs", "200", "--max-workers", "3",
+             "--question-workers", "10", "--rpm", "60", "--resume",
+             "--run-id", "<redacted>"],
         )
+
+    def test_backend_survives_for_the_only_downstream_reader(self) -> None:
+        """ci/summarize_run.py reads the arm back out, in both argv forms."""
+        for argv in (["run.py", "--backend", "entire"], ["run.py", "--backend=oss"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(runmeta.redact_argv(argv), argv)
+
+    def test_a_value_outside_a_closed_enum_is_dropped(self) -> None:
+        self.assertEqual(
+            runmeta.redact_argv(["run.py", "--backend", "not-an-arm"]),
+            ["run.py", "--backend", "<redacted>"],
+        )
+
+    def test_identity_options_keep_their_name_and_lose_their_value(self) -> None:
+        """Recoverable from `metadata`; see FAIR-CONFIG.md B7."""
+        for option in ("--project-name", "--run-id", "--answerer-model",
+                       "--judge-model", "--provider", "--mem0-api-key"):
+            with self.subTest(option=option):
+                self.assertEqual(
+                    runmeta.redact_argv(["run.py", option, FAKE_KEY]),
+                    ["run.py", option, "<redacted>"],
+                )
+
+    def test_paths_are_recorded_as_comparable_fingerprints(self) -> None:
+        first = runmeta.redact_argv(["run.py", "--dataset-path", "/data/locomo10.json"])[2]
+        again = runmeta.redact_argv(["run.py", "--dataset-path", "/data/locomo10.json"])[2]
+        other = runmeta.redact_argv(["run.py", "--dataset-path", "/data/other.json"])[2]
+        self.assertRegex(first, _FINGERPRINT_RE)
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
 
     def test_a_bare_host_keeps_its_location(self) -> None:
         for url in ("http://localhost:18888", "https://mem0.local/"):
@@ -156,80 +225,43 @@ class RedactArgvTest(unittest.TestCase):
                     ["run.py", "--mem0-host", url],
                 )
 
-    def test_authority_less_uris_keep_only_their_scheme(self) -> None:
-        """`file:///hooks/<token>` has no location worth preserving."""
-        for uri, expected in (
-            (f"file:///hooks/{FAKE_KEY}", "file:<redacted>"),
-            (f"mailto:admin:{FAKE_PASSWORD}@mem0.local", "mailto:<redacted>"),
-        ):
-            with self.subTest(uri=uri):
-                self.assertEqual(
-                    runmeta.redact_argv(["run.py", "--mem0-host", uri]),
-                    ["run.py", "--mem0-host", expected],
-                )
-
-    def test_a_windows_drive_is_a_path_not_a_uri_scheme(self) -> None:
-        for path in ("C:\\results\\locomo", "c:/results/locomo"):
-            with self.subTest(path=path):
-                self.assertEqual(
-                    runmeta.redact_argv(["run.py", "--output-dir", path]),
-                    ["run.py", "--output-dir", path],
-                )
-
-    def test_non_url_values_are_left_alone(self) -> None:
-        argv = ["run.py", "--output-dir", "/results/locomo",
-                "--answerer-model", "gpt-5.6-sol",
-                "--mem0-host", "http://localhost:18888"]
-        self.assertEqual(runmeta.redact_argv(argv), argv)
-
-    def test_no_synthetic_credential_survives_any_argv_shape(self) -> None:
-        """The property that matters: nothing secret reaches the artifact."""
-        argv = [
-            "/home/runner/.venv/bin/python",
-            "--mem0-api-key", FAKE_KEY,
-            f"--mem0-api-key={FAKE_KEY}",
-            "--api-key", FAKE_KEY,
-            f"--api-key={FAKE_KEY}",
-            "--API-KEY", FAKE_KEY,
-            f"AZURE_AI_API_KEY={FAKE_KEY}",
-            f"BEARER={FAKE_KEY}",
-            FAKE_KEY,
-            "-k", FAKE_KEY,
-            "--mem0-host", f"https://admin:{FAKE_PASSWORD}@mem0.local/",
-            "--mem0-host", f"https://mem0.local/?token={FAKE_KEY}",
-            "--mem0-host", f"https://mem0.local/#{FAKE_KEY}",
-            "--mem0-host", f"https://admin:pa@ss{FAKE_PASSWORD}@mem0.local/",
-            "--mem0-host", f"https://mem0.local/hooks/{FAKE_KEY}",
-            "--mem0-host", f"file:///hooks/{FAKE_KEY}",
-            "--mem0-host", f"mailto:admin:{FAKE_PASSWORD}@mem0.local",
-        ]
-        rendered = " ".join(runmeta.redact_argv(argv))
-        self.assertNotIn(FAKE_KEY, rendered)
-        self.assertNotIn(FAKE_PASSWORD, rendered)
-
-    def test_configuration_survives_redaction(self) -> None:
-        """ci/summarize_run.py reads the arm back out of the captured argv."""
-        argv = [
-            "/h/.venv/bin/python", "--project-name", "full_entire",
-            "--backend", "entire", "--provider", "azure_ai",
-            "--answerer-model", "gpt-5.6-sol", "--top-k=200",
-            "--max-workers", "3", "--question-workers", "10", "--rpm", "60",
-            "--resume", "--run-id", "full_entire",
-        ]
-        self.assertEqual(
-            runmeta.redact_argv(argv),
-            ["python", "--project-name", "full_entire", "--backend", "entire",
-             "--provider", "azure_ai", "--answerer-model", "gpt-5.6-sol",
-             "--top-k=200", "--max-workers", "3", "--question-workers", "10",
-             "--rpm", "60", "--resume", "--run-id", "full_entire"],
-        )
-
     def test_capture_persists_the_redacted_command_line(self) -> None:
         argv = ["/h/.venv/bin/python", "--backend", "oss", "--mem0-api-key", FAKE_KEY]
         with patch.object(runmeta.sys, "argv", argv):
             captured = runmeta.capture()["argv"]
         self.assertNotIn(FAKE_KEY, " ".join(captured))
         self.assertEqual(captured, ["python", "--backend", "oss", "--mem0-api-key", "<redacted>"])
+
+
+class EnumSyncTest(unittest.TestCase):
+    """A domain that drifts from the runner blanks the artifact silently.
+
+    An unrecognised value records as `<redacted>`, so a backend added to
+    `run.py` without being added here would make the provenance go quiet exactly
+    when the configuration is unusual -- the same provenance-loss class that
+    produced the negative-number and drive-letter defects.
+    """
+
+    def test_backend_choices_match_patch_0003(self) -> None:
+        patch_path = (
+            Path(runmeta.__file__).resolve().parents[2]
+            / "patches"
+            / "0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch"
+        )
+        if not patch_path.is_file():
+            self.skipTest("not the kit checkout (reconstructed harness has no patches/)")
+        text = patch_path.read_text(encoding="utf-8")
+        match = re.search(r'\+\s*parser\.add_argument\("--backend".*?choices=\[([^\]]*)\]',
+                          text, re.S)
+        self.assertIsNotNone(match, "patch 0003 no longer declares --backend choices")
+        declared = set(re.findall(r'"([^"]+)"', match.group(1)))
+
+        self.assertEqual(
+            declared,
+            set(runmeta.BACKEND_CHOICES),
+            "runmeta.BACKEND_CHOICES has drifted from the --backend choices in "
+            "patch 0003; a value outside the set records as <redacted>",
+        )
 
 
 class FairModeGuardTest(unittest.TestCase):

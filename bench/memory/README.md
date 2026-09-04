@@ -45,9 +45,12 @@ identical spine. The only thing allowed to differ between arms is *which memorie
   and stay legal. `runmeta.capture()` additionally stamps every run artifact with env snapshot,
   redacted argv, git state, and md5 of every file that can change a measured number — secret-named
   env vars are recorded as `sha256:<12 hex>` fingerprints, and the command line is filtered
-  through an allowlist of known options so a credential passed on it (`--mem0-api-key`, a
-  `NAME=value` prefix, a bare token, or a URL's userinfo, path, query or fragment) never
-  reaches a published artifact.
+  through an allowlist of both option names **and values**: a value is recorded verbatim only
+  when it validates against the closed domain of its own option (integers, integer lists, the
+  `--backend`/`--mode` enums), otherwise it is a `sha256:` fingerprint, a URL's location, or
+  `<redacted>`. No free-form string reaches a published artifact, so a credential cannot arrive
+  in a shape nobody anticipated. See FAIR-CONFIG.md B7 for what that costs and where the
+  dropped identity fields are recorded instead.
 - **Scoring reads ONLY the aggregate `metrics_by_cutoff.top_200`** from the run's results JSON.
   Never a per-conversation re-derivation, never a hand-summed subset.
 - **Gate: a run is void if drops exceed 1%, or if zero-context questions cluster by conversation.**

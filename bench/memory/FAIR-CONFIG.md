@@ -228,14 +228,26 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
   NEO4J_* REDIS_* EMBED_* OPENAI_* AZURE_* ANTHROPIC_* LLM_* FAIR_* BENCH_* HARNESS_* COLLECTION_*`
   variable, with any name matching `KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API` replaced by a
   `sha256:` fingerprint so configs are comparable without leaking credentials
-- `argv` — the command line, which is what records `--user-profile`, filtered through an
-  allowlist of known options: any other token (an unrecognised flag and its value, a
-  `NAME=value` prefix, a bare positional) and the value of `--mem0-api-key` are replaced by
-  `<redacted>`, so a credential passed on the command line never reaches the artifact. A URL
-  value keeps only scheme, host and port — userinfo, path, query string and fragment are all
-  dropped, since a credential rides in `/hooks/<token>` or `?token=` as readily as in
-  `https://user:pass@host`; a URI with no network location (`file:///hooks/<token>`) keeps only
-  its scheme, while a Windows drive letter stays a path
+- `argv` — the command line, which is what records `--user-profile`. Both the option name and
+  its value are allowlisted: names against the set the runners accept, values against the
+  **closed domain of their own option**, never trusted because the name is known. A value is
+  recorded verbatim only when it validates (integers, comma-separated integer lists, and the
+  `--backend` / `--mode` enums); everything else is recorded in derived form or not at all.
+  Anything unrecognised — an unknown flag and its value, a `NAME=value` prefix, a bare
+  positional, or a value outside its option's domain — becomes `<redacted>`.
+
+  **What this costs, and where to find it instead.** `--dataset-path` and `--output-dir` are
+  recorded as `sha256:` fingerprints: two runs can be compared for having used the same path,
+  but the path is no longer readable from the artifact. `--judge-provider` is likewise a
+  fingerprint, because `metadata` records `provider` but never `judge_provider`. The identity
+  options `--project-name`, `--run-id`, `--answerer-model`, `--judge-model`, `--provider` and
+  `--question-types` keep their names and drop their values — **nothing is lost: every one is
+  recorded by `metadata` as a typed field** (`project_name`, `run_id`, `answerer_model`,
+  `judge_model`, `provider`, `question_types`), which is where an auditor should read them.
+  `--mem0-host` keeps only scheme, host and port; userinfo, path, query and fragment are
+  dropped, and a URI with no network location (`file:///hooks/<token>`) keeps only its scheme.
+  `--backend` is recorded verbatim because `ci/summarize_run.py` reads the running arm back out
+  of the captured argv and it is the one value with no `metadata` twin.
 - `asymmetric_settings_active` and `fair_mode` — secret-named knobs are fingerprinted here too,
   because this map is both persisted and interpolated into the `FAIR_MODE` exception text
 - `code_md5` — the 16-entry reconstructed-harness map in B9, including the Entra helper and
@@ -298,7 +310,7 @@ c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 041f93a130c1a91d1b81f67622555b8c  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
-258b9fc379512642a6e638acb625c982  benchmarks/common/runmeta.py
+f12e0b21cd877cc14b277fcf7b56f425  benchmarks/common/runmeta.py
 7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
 4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
 8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py
