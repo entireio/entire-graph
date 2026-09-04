@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "389b713ca188",
+  "strategy": "manual-commit",
+  "branch": "audit/lang-c-data-members",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "internal/sem/provider.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/38/9b713ca188/0/metadata.json",
+      "transcript": "/38/9b713ca188/0/full.jsonl",
+      "compact_transcript": "/38/9b713ca188/0/transcript.jsonl",
+      "content_hash": "/38/9b713ca188/0/content_hash.txt",
+      "prompt": "/38/9b713ca188/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 97608,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4453888,
+    "output_tokens": 7791,
+    "api_call_count": 64
+  }
+}
