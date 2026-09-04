@@ -1020,11 +1020,22 @@ func TestSearchVerifySuiteFallback(t *testing.T) {
 			name: "gradle nested module uses the root wrapper and names its own project",
 			files: map[string]string{
 				"gradlew":                  "",
+				"settings.gradle":          "include ':lib'\n",
 				"lib/build.gradle":         "",
 				"lib/src/main/kotlin/A.kt": "",
 			},
 			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
-			wantCommand: "./gradlew -p lib test",
+			wantCommand: "./gradlew :lib:test",
+		},
+		{
+			name: "gradle nested module no settings script declares stays silent",
+			files: map[string]string{
+				"gradlew":                  "",
+				"lib/build.gradle":         "",
+				"lib/src/main/kotlin/A.kt": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
+			wantCommand: "",
 		},
 		{
 			name: "gradle nested wrapper runs from module directory",

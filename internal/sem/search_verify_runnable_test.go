@@ -96,20 +96,102 @@ func TestSearchVerifyMavenPicksTheReactorOnlyWhenThereIsOne(t *testing.T) {
 // TestSearchVerifySuiteGradleNamesTheProjectUnderAnAncestorWrapper pins the nested-build case: the
 // wrapper may sit above the build the manifest named, and `./gradlew test` from the wrapper's own
 // directory then tests whatever build is THERE — Gradle does not walk down to find a descendant.
+//
+// WHICH command replaces it is decided by the settings script, not by the directory layout. Gradle
+// locates the settings file by walking UP from its start directory and then KEEPS what it found only
+// if that file declares a project AT the start directory; when it does not, Gradle discards the
+// settings and runs the start directory as its own empty-settings build, where a sibling
+// `project(":core")` dependency is no longer there to resolve. So `-p lib test` is not "the root
+// build with a different default project" — for an ordinary multi-project layout it is either the
+// root build (when the root settings declares `lib`) or a different build entirely (when it does
+// not), and nothing in a `lib/build.gradle` says which. The documented spelling of a subproject task
+// is the project path run from the root, so an included project gets that, `-p` is kept for a
+// directory that is its OWN build root, and a directory nothing declares gets silence.
 func TestSearchVerifySuiteGradleNamesTheProjectUnderAnAncestorWrapper(t *testing.T) {
 	t.Parallel()
-	evidence := searchVerifyTestEvidence(map[string]string{
-		"gradlew":                           "",
-		"modules/core/build.gradle":         "",
-		"modules/core/src/main/java/A.java": "",
-	})
-	got := deriveSearchVerifySuiteCommand(
-		searchVerifySubject{sourcePath: "modules/core/src/main/java/A.java"}, &evidence)
-	if got == nil {
-		t.Fatal("expected a Gradle suite command, got silence")
-	}
-	if got.Command != "./gradlew -p modules/core test" {
-		t.Fatalf("command = %q, want %q", got.Command, "./gradlew -p modules/core test")
+	for _, testCase := range []struct {
+		name        string
+		files       map[string]string
+		wantCommand string
+	}{
+		{
+			name: "an included subproject is addressed by its project path",
+			files: map[string]string{
+				"gradlew":                           "",
+				"settings.gradle":                   "rootProject.name = 'app'\ninclude ':modules:core'\n",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "./gradlew :modules:core:test",
+		},
+		{
+			name: "the Kotlin DSL's parenthesised include declares it just as well",
+			files: map[string]string{
+				"gradlew":                           "",
+				"settings.gradle.kts":               "include(\n    \":modules:core\",\n)\n",
+				"modules/core/build.gradle.kts":     "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "./gradlew :modules:core:test",
+		},
+		{
+			name: "a directory carrying its own settings script is its own build, entered with -p",
+			files: map[string]string{
+				"gradlew":                           "",
+				"modules/core/settings.gradle":      "rootProject.name = 'core'\n",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "./gradlew -p modules/core test",
+		},
+		{
+			name: "a build.gradle no settings script declares gets silence",
+			files: map[string]string{
+				"gradlew":                           "",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "",
+		},
+		{
+			name: "a commented-out include does not declare the project",
+			files: map[string]string{
+				"gradlew":                           "",
+				"settings.gradle":                   "// include ':modules:core'\n",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "",
+		},
+		{
+			name: "a quoted path that is not an include argument does not declare the project",
+			files: map[string]string{
+				"gradlew":                           "",
+				"settings.gradle":                   "def includes = [':modules:core']\n",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			evidence := searchVerifyTestEvidence(testCase.files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "modules/core/src/main/java/A.java"}, &evidence)
+			if testCase.wantCommand == "" {
+				if got != nil {
+					t.Fatalf("command = %q, want silence", got.Command)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected a Gradle suite command, got silence")
+			}
+			if got.Command != testCase.wantCommand {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.wantCommand)
+			}
+		})
 	}
 }
 
@@ -117,11 +199,18 @@ func TestSearchVerifySuiteGradleNamesTheProjectUnderAnAncestorWrapper(t *testing
 // test` is not a portable spelling of "run this package's test script": a Yarn Plug'n'Play project
 // has no node_modules/.bin for npm's lifecycle to find, so the hard gate fails in exactly the tree
 // that said which manager to use.
+//
+// Proximity is the FIRST question and manager preference only the tie-break within one directory.
+// A lockfile is a fact about the directory that holds it, so the nearest one is the one that governs
+// the package being run; ordering the preference list ahead of the walk let a leaf's own lockfile
+// lose to a differently-preferred lockfile several directories above it, which advertises a manager
+// the leaf never declared.
 func TestSearchVerifySuiteNodeHonorsTheDeclaredPackageManager(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		name        string
 		files       map[string]string
+		source      string
 		wantCommand string
 	}{
 		{
@@ -131,6 +220,7 @@ func TestSearchVerifySuiteNodeHonorsTheDeclaredPackageManager(t *testing.T) {
 				"yarn.lock":    "",
 				"src/a.js":     "",
 			},
+			source:      "src/a.js",
 			wantCommand: "yarn test",
 		},
 		{
@@ -141,7 +231,31 @@ func TestSearchVerifySuiteNodeHonorsTheDeclaredPackageManager(t *testing.T) {
 				"packages/ui/package.json":  `{"scripts":{"test":"vitest"}}`,
 				"packages/ui/src/Button.js": "",
 			},
+			source:      "packages/ui/src/Button.js",
 			wantCommand: "cd packages/ui && pnpm test",
+		},
+		{
+			name: "a nearer npm lockfile beats a more-preferred pnpm lockfile further up",
+			files: map[string]string{
+				"pnpm-lock.yaml":                "",
+				"package.json":                  `{"scripts":{"test":"jest"}}`,
+				"packages/ui/package.json":      `{"scripts":{"test":"vitest"}}`,
+				"packages/ui/package-lock.json": "",
+				"packages/ui/src/Button.js":     "",
+			},
+			source:      "packages/ui/src/Button.js",
+			wantCommand: "cd packages/ui && npm test",
+		},
+		{
+			name: "two lockfiles in ONE directory still resolve by manager preference",
+			files: map[string]string{
+				"package.json":      `{"scripts":{"test":"jest"}}`,
+				"package-lock.json": "",
+				"pnpm-lock.yaml":    "",
+				"src/a.js":          "",
+			},
+			source:      "src/a.js",
+			wantCommand: "pnpm test",
 		},
 		{
 			name: "corepack packageManager field wins over an npm lockfile",
@@ -150,6 +264,7 @@ func TestSearchVerifySuiteNodeHonorsTheDeclaredPackageManager(t *testing.T) {
 				"package-lock.json": "",
 				"src/a.js":          "",
 			},
+			source:      "src/a.js",
 			wantCommand: "yarn test",
 		},
 		{
@@ -158,17 +273,15 @@ func TestSearchVerifySuiteNodeHonorsTheDeclaredPackageManager(t *testing.T) {
 				"package.json": `{"scripts":{"test":"jest"}}`,
 				"src/a.js":     "",
 			},
+			source:      "src/a.js",
 			wantCommand: "npm test",
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			evidence := searchVerifyTestEvidence(testCase.files)
-			source := "src/a.js"
-			if _, ok := testCase.files["packages/ui/src/Button.js"]; ok {
-				source = "packages/ui/src/Button.js"
-			}
-			got := deriveSearchVerifySuiteCommand(searchVerifySubject{sourcePath: source}, &evidence)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: testCase.source}, &evidence)
 			if got == nil {
 				t.Fatal("expected a Node suite command, got silence")
 			}
