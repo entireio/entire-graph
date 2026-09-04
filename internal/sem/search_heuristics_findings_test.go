@@ -373,3 +373,177 @@ func TestSearchRepositorySectionLabelsFitTheByteBudget(t *testing.T) {
 		}
 	}
 }
+
+// The `=` scan starts after the callable's PARAMETER list, and the first parenthesised group in a
+// snippet is not always it: an annotation or attribute writes its own argument list first, so
+// `@JvmName("f") fun f(x: Int = 3);` left the DEFAULT ARGUMENT in the scanned tail and the
+// declaration was read as an expression body, losing the reference-declaration demotion the rule
+// exists to apply.
+func TestSearchReferenceDeclarationSkipsAnnotationArgumentLists(t *testing.T) {
+	t.Parallel()
+	callable := func(snippet string) SearchResult {
+		return SearchResult{
+			Kind: "function", Snippet: snippet,
+			SymbolStartLine: 10, SymbolEndLine: 10,
+			SnippetStartLine: 10, SnippetEndLine: 10,
+		}
+	}
+	// Declarations whose default argument sits behind an annotation's own parentheses.
+	for _, snippet := range []string{
+		"    @JvmName(\"f\") fun f(x: Int = 3);",
+		"    [Obsolete(\"use Area2\")] public int Area(int scale = 2);",
+		"    @Deprecated(since = \"2.0\") void flush(bool force = true);",
+		// A generic type parameter's DEFAULT precedes the parameter list entirely.
+		"template <class T = int> void reset();",
+	} {
+		if !searchReferenceDeclaration(callable(snippet)) {
+			t.Fatalf("declaration lost its prior: %q", snippet)
+		}
+	}
+	// An expression body behind the same annotation is still an implementation.
+	for _, snippet := range []string{
+		"    @JvmName(\"fmt\") fun formatAmount(value: Int) = value.toString()",
+		"    [Pure] public int Area() => Width * Height;",
+		"    @JvmName(\"r\") fun retries(limit: Int = 3) = limit * 2",
+	} {
+		if searchReferenceDeclaration(callable(snippet)) {
+			t.Fatalf("expression body demoted as a reference declaration: %q", snippet)
+		}
+	}
+}
+
+// `expected` was dropped from the fixture intent terms because "expected X, got Y" is the most
+// common sentence in a bug report. The converse still has to hold: a caller who asks to UPDATE an
+// expected-output artifact is naming the edit target, and demoting snapshots out of the primary
+// list hides it.
+func TestSearchFixturePriorAnswersAnExpectedArtifactRequest(t *testing.T) {
+	t.Parallel()
+	path := "tests/__snapshots__/render.ambr"
+	for _, query := range []string{
+		"update the expected output for the parser",
+		"regenerate the expected results for the renderer",
+		"rewrite the expected files after the format change",
+	} {
+		if prior := searchFileClassPrior(buildSearchQuery(query), path); prior != 1 {
+			t.Fatalf("fixture prior on %q = %v, want 1", query, prior)
+		}
+		if searchDocsSectionPath(buildSearchQuery(query), path) {
+			t.Fatalf("%q had its requested artifact labelled out of the primary list", query)
+		}
+	}
+	// A defect report keeps the prior on, including one that happens to say "expected output".
+	for _, query := range []string{
+		"expected a 200 response but the handler returns 500",
+		"expected output 42 but the parser returns 43",
+		"the expected output is wrong for nested nodes",
+	} {
+		if prior := searchFileClassPrior(buildSearchQuery(query), path); prior != searchSecondaryClassPrior {
+			t.Fatalf("fixture prior on the bug query %q = %v, want %v",
+				query, prior, searchSecondaryClassPrior)
+		}
+	}
+}
+
+// The plural frame after `are` was read through a fixed three-token window, so a plural head
+// carried by several modifiers — "what are the currently known open blockers" — fell outside it and
+// the query lost its multi-parent retrieval. The frame is bounded by what ENDS a noun phrase, not
+// by a token count.
+func TestProseParentHeadCountReadsAWiderPluralFrame(t *testing.T) {
+	t.Parallel()
+	for _, query := range []string{
+		"what are the currently known open blockers",
+		"what are the most recently reported flaky tests",
+		"where are the remaining unmigrated legacy fixtures",
+	} {
+		if got, want := proseParentHeadCount(buildSearchQuery(query), 12), 4; got != want {
+			t.Fatalf("head count on the plural frame %q = %d, want %d", query, got, want)
+		}
+	}
+	// Singular questions still decline: a pronoun ends the frame, and so does a preposition or a
+	// verb that carries the sentence past the noun phrase.
+	for _, query := range []string{
+		"what are we doing about deployments",
+		"what are the difference between the two approaches",
+		"what are the impact of failing builds",
+	} {
+		if got, want := proseParentHeadCount(buildSearchQuery(query), 12), 6; got != want {
+			t.Fatalf("head count on the singular question %q = %d, want %d", query, got, want)
+		}
+	}
+}
+
+// Both intent fixes make MORE results reachable in the primary list — a fixture that keeps full
+// strength on an artifact request, and prose parents behind a wider plural frame — and the docs
+// label, the declaration card and the signature block are all funded from ONE ceiling that
+// SearchResponse.Validate checks the sum of. So the widened intents are priced end to end: the
+// response must still fit the budget the caller asked for, and the requested artifact must
+// actually be in the primary list, which is what makes the byte measurement non-vacuous.
+func TestSearchRepositoryFitsTheBudgetOnTheWidenedIntents(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	for document := 0; document < 5; document++ {
+		var body strings.Builder
+		fmt.Fprintf(&body, "# Ledger renderer notes %d\n\n", document)
+		for section := 0; section < 5; section++ {
+			fmt.Fprintf(&body, "## amber section %d\n\n", section)
+			fmt.Fprintf(&body, "the currently known open blockers for the ledger renderer "+
+				"output in note %d turn %d.\n\n", document, section)
+			for filler := 0; filler < 20; filler++ {
+				fmt.Fprintf(&body, "filler %d-%d unrelated.\n", section, filler)
+			}
+			body.WriteString("\n")
+		}
+		write(t, repo, fmt.Sprintf("notes/note-%02d.md", document), body.String())
+	}
+	for snapshot := 0; snapshot < 4; snapshot++ {
+		write(t, repo, fmt.Sprintf("tests/__snapshots__/ledger-%02d.ambr", snapshot),
+			fmt.Sprintf("# name: test_ledger_renderer_output[%d]\n  'the ledger renderer "+
+				"output for the currently known open blockers'\n---\n", snapshot))
+	}
+	write(t, repo, "pkg/ledger.go", "package pkg\n\n"+
+		"// LedgerRenderer renders the ledger renderer output.\n"+
+		"type LedgerRenderer struct{ Output string }\n\n"+
+		"// RenderLedgerOutput renders the expected ledger renderer output.\n"+
+		"func RenderLedgerOutput(r LedgerRenderer) string {\n\treturn r.Output\n}\n")
+
+	const ceiling = 6000
+	for _, query := range []string{
+		"update the expected output for the ledger renderer",
+		"what are the currently known open blockers for the ledger renderer",
+	} {
+		response, err := SearchRepository(t.Context(), repo, "test", query, SearchOptions{
+			Worktree: true, Profile: ProfileFast, TopK: 20, MaxIndexedFiles: 64,
+			MaxContextBytes: ceiling,
+		})
+		if err != nil {
+			t.Fatalf("%q: %v", query, err)
+		}
+		if err := response.Validate(); err != nil {
+			t.Fatalf("%q: the widened intent overshot its own validator: %v", query, err)
+		}
+		if response.Stats.ResultBytes > ceiling {
+			t.Fatalf("%q: result_bytes %d over the %d ceiling",
+				query, response.Stats.ResultBytes, ceiling)
+		}
+	}
+
+	// The artifact request must actually reach the primary list, or the budget above was
+	// measured on a payload the change never touched.
+	response, err := SearchRepository(t.Context(), repo, "test",
+		"update the expected output for the ledger renderer", SearchOptions{
+			Worktree: true, Profile: ProfileFast, TopK: 20, MaxIndexedFiles: 64,
+			MaxContextBytes: ceiling,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := 0
+	for _, result := range response.Results {
+		if strings.HasSuffix(result.FilePath, ".ambr") && result.Section != SearchSectionDocs {
+			primary++
+		}
+	}
+	if primary == 0 {
+		t.Fatal("the requested expected-output artifact was demoted out of the primary list")
+	}
+}

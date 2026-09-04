@@ -437,19 +437,22 @@ func proseQueryRequestsMultipleParents(q searchQuery) bool {
 	return false
 }
 
-// proseArePluralFrame validates a bounded PLURAL NOUN FRAME immediately after `are`, rather than
-// asking whether the query's final word happens to end in a plural.
+// proseArePluralFrame validates a PLURAL NOUN FRAME after `are`, rather than asking whether the
+// query's final word happens to end in a plural.
 //
 // The final-word test read `what are we doing about deployments` — a singular question about one
 // activity — as a request for a list, because its last word is a plural noun in a prepositional
 // phrase that is not the grammatical head at all. Sacrificing baseline head slots on that reading
 // is a silent ranking change the caller never asked for.
 //
-// The frame allows a determiner and a modifier or two before the head (`what are the open
-// questions`, `what are the remaining blockers`) and stops at a personal pronoun, which is the
-// marker that the sentence continued into a verb phrase rather than naming a set.
+// The frame is bounded by what ENDS a noun phrase, not by a token count. A fixed three-token
+// window was the same over-correction in the other direction: `what are the currently known open
+// blockers` is unambiguously a list, and its head sits at offset four behind a stack of ordinary
+// modifiers. So the scan walks the modifiers and stops at a personal pronoun, a preposition, a
+// conjunction, or a verb — each of which marks the sentence leaving the noun phrase, which is what
+// separates a named SET from a question that merely continued into a verb phrase.
 func proseArePluralFrame(written []string, areIndex int) bool {
-	const frameWidth = 3
+	const frameWidth = 6
 	for offset := 1; offset <= frameWidth; offset++ {
 		index := areIndex + offset
 		if index >= len(written) {
@@ -459,11 +462,30 @@ func proseArePluralFrame(written []string, areIndex int) bool {
 		if safeASCIIWrittenPlural(word) {
 			return true
 		}
-		if prosePronoun(word) {
+		if prosePronoun(word) || proseNounPhraseBoundary(word) {
 			return false
 		}
 	}
 	return false
+}
+
+// proseNounPhraseBoundary reports whether a word ends the noun phrase it appears in: a preposition
+// attaches a new phrase, a conjunction or subordinator starts a new clause, and a verb means the
+// head was already read and the sentence moved on. Determiners and modifiers are deliberately
+// absent — they are exactly what the frame has to walk through to reach the head.
+func proseNounPhraseBoundary(word string) bool {
+	switch word {
+	case "of", "in", "on", "for", "about", "with", "without", "from", "to", "at", "by",
+		"into", "onto", "over", "under", "after", "before", "during", "between", "across",
+		"and", "or", "but", "than", "that", "which", "who", "whom", "whose",
+		"when", "where", "why", "how", "if", "because", "while",
+		"is", "was", "were", "be", "been", "being", "do", "does", "did",
+		"has", "have", "had", "will", "would", "can", "could", "shall", "should",
+		"may", "might", "must", "am", "get", "gets", "got", "go", "goes", "went":
+		return true
+	default:
+		return false
+	}
 }
 
 func prosePronoun(word string) bool {

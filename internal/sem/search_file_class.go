@@ -248,7 +248,9 @@ var (
 	// "expected" is the most common word in a bug report ("expected X, got Y"). Including it
 	// handed snapshot and golden files full ranking strength on exactly the ordinary defect
 	// queries the fixture prior exists to correct, so they could again outrank the implementation.
-	// The words that remain all NAME the artifact rather than describe a symptom.
+	// The words that remain all NAME the artifact rather than describe a symptom. The OTHER sense
+	// of the word — a caller asking to update an expected-output artifact — is read as a phrase by
+	// searchFixtureArtifactRequest instead, so neither intent is answered with the other's ranking.
 	searchFixtureIntentTerms = []string{
 		"fixture", "fixtures", "snapshot", "snapshots", "golden", "goldens",
 		"testdata", "baseline", "baselines", "insta", "approvals",
@@ -262,6 +264,61 @@ var (
 		"schema", "schemas", "metadata", "dependency", "dependencies", "lockfile",
 	}
 )
+
+// Nouns that make "expected" NAME an artifact rather than describe a symptom. `expected output`
+// and `expected results` are files on disk; `expected a 200 response` is a sentence about a defect.
+var searchExpectedArtifactNouns = map[string]bool{
+	"output": true, "outputs": true, "result": true, "results": true,
+	"file": true, "files": true, "fixture": true, "fixtures": true,
+	"snapshot": true, "snapshots": true, "golden": true, "goldens": true,
+	"baseline": true, "baselines": true, "data": true, "json": true, "yaml": true,
+	"xml": true, "text": true, "tree": true, "dump": true, "dumps": true,
+	"log": true, "logs": true, "transcript": true, "transcripts": true,
+}
+
+// Verbs that make a query a REQUEST TO EDIT the artifact it names. Deliberately without "fix" or
+// "change": both appear in ordinary defect reports, and it is the request — not the mention — that
+// earns the fixture class its full ranking strength.
+var searchArtifactEditVerbs = map[string]bool{
+	"update": true, "updates": true, "updated": true, "updating": true,
+	"regenerate": true, "regenerates": true, "regenerated": true, "regenerating": true,
+	"refresh": true, "refreshes": true, "refreshed": true, "refreshing": true,
+	"rewrite": true, "rewrites": true, "rewrote": true, "rewriting": true,
+	"record": true, "records": true, "recorded": true, "rerecord": true, "rerecording": true,
+	"bless": true, "blessed": true, "accept": true, "approve": true, "approved": true,
+	"sync": true, "resync": true, "replace": true, "replaced": true, "edit": true, "edited": true,
+}
+
+// searchFixtureArtifactRequest reports whether the query asks to EDIT an expected-output artifact,
+// which is the sense of "expected" the fixture intent terms deliberately cannot carry.
+//
+// It is a PHRASE, not a word: "expected" must directly modify an artifact noun ("update the
+// expected output for the parser"), and the query must also carry a verb that edits artifacts.
+// Both halves are required because either alone still matches the sentence the word was dropped
+// for: "expected output 42 but the parser returns 43" names the artifact and asks for nothing, and
+// "update the parser, it expected a flush" asks for an edit to something else entirely.
+func searchFixtureArtifactRequest(q searchQuery) bool {
+	written := q.wordSequence
+	if len(written) == 0 {
+		written = searchQueryWordSequence(q.rawLower)
+	}
+	named := false
+	for index, word := range written {
+		if word == "expected" && index+1 < len(written) && searchExpectedArtifactNouns[written[index+1]] {
+			named = true
+			break
+		}
+	}
+	if !named {
+		return false
+	}
+	for _, word := range written {
+		if searchArtifactEditVerbs[word] {
+			return true
+		}
+	}
+	return false
+}
 
 // searchFixtureClassPath reports whether a path is a snapshot / golden-output artifact,
 // either by extension (.snap, .ambr, ...) or by living in a fixture/snapshot/testdata tree.
@@ -428,7 +485,7 @@ func searchFileClassPrior(q searchQuery, filePath string) float64 {
 		// well touch, so it is demoted below the implementation rather than pushed out of the ranking.
 		return searchSecondaryClassPrior
 	case searchFileClassFixture:
-		if searchQuerySupplied(q, searchFixtureIntentTerms...) {
+		if searchQuerySupplied(q, searchFixtureIntentTerms...) || searchFixtureArtifactRequest(q) {
 			return 1
 		}
 		// Milder than the non-source prior: a fix legitimately updates a fixture
@@ -518,45 +575,55 @@ func searchReferenceDeclaration(result SearchResult) bool {
 // the ranking; treating a declaration as an implementation merely leaves it at full weight, where
 // it competes on its score like anything else.
 func searchExpressionBodiedCallable(body string) bool {
-	// Only what follows the SIGNATURE counts. A DEFAULT ARGUMENT is an `=` inside the parameter
-	// list — `public function previous($fallback = false);` is a PHP interface method and nothing
-	// else — so the scan starts after the parameter list closes, which is the first balanced paren
-	// group. Not the LAST `)`: an expression body routinely ends in a call of its own, and
-	// `fun formatAmount(value: Int) = value.toString()` would then be scanned from an empty tail.
-	// A callable written without parentheses at all (Scala's `def f: Int = 42`) has none to skip,
-	// and is scanned whole.
-	tail := body
-	if open := strings.IndexByte(body, '('); open >= 0 {
-		depth := 0
-		for index := open; index < len(body); index++ {
-			switch body[index] {
-			case '(':
-				depth++
-			case ')':
+	// What the scan looks for is an ASSIGNMENT IN THE CALLABLE'S TAIL: an `=` or `=>` that stands
+	// OUTSIDE every parenthesised group and after the callable's parentheses have closed. Both
+	// halves are load-bearing, and each excludes a different `=` that is not a body.
+	//
+	// DEPTH excludes every bracketed `=`. A DEFAULT ARGUMENT is one — `public function
+	// previous($fallback = false);` is a PHP interface method and nothing else — and so is an
+	// ANNOTATION or ATTRIBUTE argument, which is why the FIRST parenthesised group cannot simply be
+	// skipped as the parameter list: in `@JvmName("f") fun f(x: Int = 3);` the first group belongs
+	// to the annotation, and skipping it left the default argument in the scanned tail and read the
+	// declaration as an expression body. Reading depth instead does not care which group is which.
+	//
+	// POSITION excludes an `=` written before any parentheses at all, which is where a GENERIC TYPE
+	// PARAMETER writes its default: `template <class T = int> void reset();` and TypeScript's
+	// `function f<T = string>(x: T): void;` are declarations. An expression body always follows the
+	// parameter list, so requiring one closed group costs it nothing — `const f = (x: number) => x`
+	// is still caught by the `=>` after that group. A callable written without parentheses at all
+	// (Scala's `def f: Int = 42`) has no group to wait for and is scanned whole.
+	depth := 0
+	closedGroup := !strings.ContainsRune(body, '(')
+	for index := 0; index < len(body); index++ {
+		switch body[index] {
+		case '(':
+			depth++
+			continue
+		case ')':
+			if depth > 0 {
 				depth--
+				closedGroup = closedGroup || depth == 0
 			}
-			if depth == 0 {
-				tail = body[index+1:]
-				break
-			}
+			continue
+		case '=':
+		default:
+			continue
 		}
-	}
-	if strings.Contains(tail, "=>") {
-		return true
-	}
-	for index := 0; index < len(tail); index++ {
-		if tail[index] != '=' {
+		if depth > 0 || !closedGroup {
 			continue
 		}
 		// Skip the comparison operators: `==`, `!=`, `<=`, `>=`.
-		if index+1 < len(tail) && tail[index+1] == '=' {
+		if index > 0 && strings.IndexByte("=!<>", body[index-1]) >= 0 {
+			continue
+		}
+		if index+1 < len(body) && body[index+1] == '>' {
+			return true
+		}
+		if index+1 < len(body) && body[index+1] == '=' {
 			index++
 			continue
 		}
-		if index > 0 && strings.IndexByte("=!<>", tail[index-1]) >= 0 {
-			continue
-		}
-		rest := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(tail[index+1:]), ";"))
+		rest := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(body[index+1:]), ";"))
 		switch rest {
 		case "", "0", "delete", "default":
 			return false
