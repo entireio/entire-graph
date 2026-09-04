@@ -2112,6 +2112,37 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 	return resolveCallTargetsWithRawImport(name, from, candidates, nil, nil, sameFile, importsByName, allowMethodTargets)
 }
 
+type pythonCallImportInputs struct {
+	rawCandidates       []SymbolRecord
+	rawImportModuleSets [][]string
+	imports             map[string][]string
+	genericAllowed      bool
+}
+
+func pythonCallImportBinding(name string, from SymbolRecord, language string, scopes *pythonBareImportScopes, symbolsByShortName map[string][]SymbolRecord, importsByName map[string][]string, importingPath string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) pythonCallImportInputs {
+	inputs := pythonCallImportInputs{rawCandidates: symbolsByShortName[name], imports: importsByName, genericAllowed: true}
+	if modules := importsByName[name]; len(modules) > 0 {
+		inputs.rawImportModuleSets = [][]string{modules}
+	}
+	if language != "Python" {
+		return inputs
+	}
+	if scopes != nil && scopes.complete {
+		inputs.rawImportModuleSets = scopes.genericImportModuleSets(from, name)
+		inputs.imports = importsWithName(importsByName, name, scopes.genericImportModules(from, name), importingPath, manifestImports, knownFiles, readContent)
+		inputs.genericAllowed = scopes.genericCallAllowed(from, name)
+	} else {
+		// An incomplete or unavailable AST cannot license raw cross-language
+		// widening. Keep the ordinary import map for filtered resolution.
+		inputs.rawCandidates = nil
+		inputs.rawImportModuleSets = nil
+	}
+	if len(inputs.rawImportModuleSets) == 0 {
+		inputs.rawCandidates = nil
+	}
+	return inputs
+}
+
 // importsWithName replaces one binding in the normal import map with the
 // modules visible at a particular Python call site. The normal map contains
 // tagged repository-local paths beside authored specifiers; rebuild those tags
@@ -3813,15 +3844,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					rawCandidates := symbolsByShortName[name]
-					var rawImportModuleSets [][]string
-					importsForCall := callImportsByName
+					inputs := pythonCallImportBinding(name, from, file.Language, pythonBareScopes, symbolsByShortName, callImportsByName, file.Path, manifestImports, knownFiles, readContent)
+					rawCandidates := inputs.rawCandidates
+					rawImportModuleSets := inputs.rawImportModuleSets
+					importsForCall := inputs.imports
 					var pythonAliasTargets []resolvedCallTarget
 					var pythonAliasExternal []RelationRecord
-					pythonGenericAllowed := true
-					if modules := callImportsByName[name]; len(modules) > 0 {
-						rawImportModuleSets = [][]string{modules}
-					}
+					pythonGenericAllowed := inputs.genericAllowed
 					if file.Language == "Python" {
 						// The raw FFI exception is valid only for imports visible at an
 						// unshadowed AST call site in this callable. Ordinary filtered
@@ -3829,20 +3858,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// analysis is incomplete; that incomplete view may only disable
 						// the raw cross-language exception, never ordinary imports.
 						if pythonBareScopes.complete {
-							rawImportModuleSets = pythonBareScopes.genericImportModuleSets(from, name)
-							importsForCall = importsWithName(callImportsByName, name, pythonBareScopes.genericImportModules(from, name), file.Path, manifestImports, knownFiles, readContent)
 							pythonAliasTargets, pythonAliasExternal, _ = resolvePythonAliasImportTargets(name, from, pythonBareScopes.importContexts(from, name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
-							pythonGenericAllowed = pythonBareScopes.genericCallAllowed(from, name)
 						} else {
-							rawImportModuleSets = nil
 							rawCandidates = nil
 							if contexts := pythonIncompleteAliases[name]; len(contexts) > 0 {
 								pythonAliasExternal = pythonAliasExternalCallRelations(from, contexts)
 								pythonGenericAllowed = false
 							}
-						}
-						if len(rawImportModuleSets) == 0 {
-							rawCandidates = nil
 						}
 					}
 					// A container's block spans its members' definition lines, which
@@ -3976,7 +3998,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), currentFileSymbols, importsByName, false) {
+					inputs := pythonCallImportBinding(name, from, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					var targets []resolvedCallTarget
+					if file.Language != "Python" || inputs.genericAllowed {
+						targets = resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), inputs.rawCandidates, inputs.rawImportModuleSets, currentFileSymbols, inputs.imports, false)
+					}
+					if file.Language == "Python" && pythonBareScopes != nil && pythonBareScopes.complete {
+						aliasTargets, _, _ := resolvePythonAliasImportTargets(name, from, pythonBareScopes.importContexts(from, name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
+						targets = unionResolvedCallTargets(targets, aliasTargets)
+					}
+					for _, to := range targets {
 						if typeLikeKind(to.Kind) {
 							continue // construction, not an async call
 						}
@@ -4029,7 +4060,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if flow.Name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(flow.Name, from, sharedTypeCandidates(from, symbolsByShortName[flow.Name]), currentFileSymbols, importsByName, true) {
+					inputs := pythonCallImportBinding(flow.Name, from, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					var targets []resolvedCallTarget
+					if file.Language != "Python" || inputs.genericAllowed {
+						targets = resolveCallTargetsWithRawImport(flow.Name, from, sharedTypeCandidates(from, symbolsByShortName[flow.Name]), inputs.rawCandidates, inputs.rawImportModuleSets, currentFileSymbols, inputs.imports, true)
+					}
+					if file.Language == "Python" && pythonBareScopes != nil && pythonBareScopes.complete {
+						aliasTargets, _, _ := resolvePythonAliasImportTargets(flow.Name, from, pythonBareScopes.importContexts(from, flow.Name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
+						targets = unionResolvedCallTargets(targets, aliasTargets)
+					}
+					for _, to := range targets {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}
@@ -4342,31 +4382,22 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				for _, name := range sortedKeysOf(topLevelNames) {
-					rawCandidates := symbolsByShortName[name]
-					var rawImportModuleSets [][]string
-					importsForCall := importsByName
+					inputs := pythonCallImportBinding(name, fileSource, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					rawCandidates := inputs.rawCandidates
+					rawImportModuleSets := inputs.rawImportModuleSets
+					importsForCall := inputs.imports
 					var pythonAliasTargets []resolvedCallTarget
 					var pythonIncompleteAliasExternal []RelationRecord
-					pythonGenericAllowed := true
-					if modules := importsByName[name]; len(modules) > 0 {
-						rawImportModuleSets = [][]string{modules}
-					}
+					pythonGenericAllowed := inputs.genericAllowed
 					if file.Language == "Python" {
 						if pythonBareScopes.complete {
-							rawImportModuleSets = pythonBareScopes.genericImportModuleSets(fileSource, name)
-							importsForCall = importsWithName(importsByName, name, pythonBareScopes.genericImportModules(fileSource, name), file.Path, manifestImports, knownFiles, readContent)
 							pythonAliasTargets, _, _ = resolvePythonAliasImportTargets(name, fileSource, pythonBareScopes.importContexts(fileSource, name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
-							pythonGenericAllowed = pythonBareScopes.genericCallAllowed(fileSource, name)
 						} else {
-							rawImportModuleSets = nil
 							rawCandidates = nil
 							if contexts := pythonIncompleteAliases[name]; len(contexts) > 0 {
 								pythonIncompleteAliasExternal = pythonAliasExternalCallRelations(fileSource, contexts)
 								pythonGenericAllowed = false
 							}
-						}
-						if len(rawImportModuleSets) == 0 {
-							rawCandidates = nil
 						}
 					}
 					var targets []resolvedCallTarget

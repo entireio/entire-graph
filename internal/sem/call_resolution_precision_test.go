@@ -1062,3 +1062,128 @@ func TestPythonScopeDelayedBindingsAndMatchCaptures(t *testing.T) {
 		})
 	}
 }
+
+func pythonRelationsFromApp(t *testing.T, app string, extra map[string]string, relationType, fromSuffix, targetSuffix string) []RelationRecord {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "app.py", app)
+	for path, content := range extra {
+		writeFile(t, repo, path, content)
+	}
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type == relationType && strings.HasSuffix(relation.FromID, fromSuffix) && (targetSuffix == "" || strings.HasSuffix(relation.ToID, targetSuffix)) {
+			out = append(out, relation)
+		}
+	}
+	return out
+}
+
+func TestPythonScopedImportBindingExtendsAsyncAndDataFlow(t *testing.T) {
+	for _, test := range []struct {
+		name, relationType, source string
+		extra                      map[string]string
+		fromSuffix, targetSuffix   string
+		want                       bool
+	}{
+		{
+			name:         "direct async C target",
+			relationType: "ASYNC_CALLS",
+			source:       "from frobnicate import compute\nasync def plain():\n    return await compute(1)\n",
+			fromSuffix:   "app.py:function:plain", targetSuffix: "frobnicate.c:function:compute", want: true,
+		},
+		{
+			name:         "direct data flow C target",
+			relationType: "DATA_FLOWS",
+			source:       "from frobnicate import compute\ndef plain(value):\n    return compute(value)\n",
+			fromSuffix:   "app.py:function:plain", targetSuffix: "frobnicate.c:function:compute", want: true,
+		},
+		{
+			name:         "aliased data flow C target",
+			relationType: "DATA_FLOWS",
+			source:       "from frobnicate import compute as run\ndef plain(value):\n    return run(value)\n",
+			fromSuffix:   "app.py:function:plain", targetSuffix: "frobnicate.c:function:compute", want: true,
+		},
+		{
+			name:         "aliased async import beats conflicting workspace name",
+			relationType: "ASYNC_CALLS",
+			source:       "from frobnicate import compute as run\nasync def plain():\n    return await run(1)\n",
+			extra:        map[string]string{"other.py": "def run(value):\n    return value\n"},
+			fromSuffix:   "app.py:function:plain", targetSuffix: "frobnicate.c:function:compute", want: true,
+		},
+		{
+			name:         "same-language Python import wins over C",
+			relationType: "ASYNC_CALLS",
+			source:       "from helper import compute\nasync def plain():\n    return await compute(1)\n",
+			extra:        map[string]string{"helper.py": "def compute(value):\n    return value\n"},
+			fromSuffix:   "app.py:function:plain", targetSuffix: "helper.py:function:compute", want: true,
+		},
+		{
+			name:         "local rebinding suppresses widening",
+			relationType: "ASYNC_CALLS",
+			source:       "from frobnicate import compute\nasync def plain():\n    compute = 1\n    return await compute(1)\n",
+			fromSuffix:   "app.py:function:plain", targetSuffix: "frobnicate.c:function:compute", want: false,
+		},
+		{
+			name:         "local rebinding suppresses data-flow widening",
+			relationType: "DATA_FLOWS",
+			source:       "from frobnicate import compute\ndef plain(value):\n    compute = 1\n    return compute(value)\n",
+			fromSuffix:   "app.py:function:plain", targetSuffix: "frobnicate.c:function:compute", want: false,
+		},
+		{
+			name:         "a function-local import does not leak into async sibling",
+			relationType: "ASYNC_CALLS",
+			source:       "from frobnicate import compute\nasync def local():\n    from helper import compute\n    return await compute(1)\nasync def plain():\n    return await compute(1)\n",
+			extra:        map[string]string{"helper.py": "def compute(value):\n    return value\n"},
+			fromSuffix:   "app.py:function:plain", targetSuffix: "frobnicate.c:function:compute", want: true,
+		},
+		{
+			name:         "a function-local import does not leak into data-flow sibling",
+			relationType: "DATA_FLOWS",
+			source:       "from frobnicate import compute\ndef local(value):\n    from helper import compute\n    return compute(value)\ndef plain(value):\n    return compute(value)\n",
+			extra:        map[string]string{"helper.py": "def compute(value):\n    return value\n"},
+			fromSuffix:   "app.py:function:plain", targetSuffix: "frobnicate.c:function:compute", want: true,
+		},
+		{
+			name:         "C and Ruby ambiguity does not widen async call",
+			relationType: "ASYNC_CALLS",
+			source:       "from frobnicate import compute\nasync def plain():\n    return await compute(1)\n",
+			extra:        map[string]string{"frobnicate.rb": "def compute(value)\n  value\nend\n"},
+			fromSuffix:   "app.py:function:plain", targetSuffix: "", want: false,
+		},
+		{
+			name:         "C and Ruby ambiguity does not widen data flow",
+			relationType: "DATA_FLOWS",
+			source:       "from frobnicate import compute\ndef plain(value):\n    return compute(value)\n",
+			extra:        map[string]string{"frobnicate.rb": "def compute(value)\n  value\nend\n"},
+			fromSuffix:   "app.py:function:plain", targetSuffix: "", want: false,
+		},
+		{
+			name:         "class shadow suppresses async widening in method",
+			relationType: "ASYNC_CALLS",
+			source:       "from frobnicate import compute\nclass Holder:\n    async def plain(self):\n        class compute:\n            pass\n        return await compute()\n",
+			fromSuffix:   "app.py:method:Holder.plain", targetSuffix: "frobnicate.c:function:compute", want: false,
+		},
+		{
+			name:         "class shadow suppresses data-flow widening in method",
+			relationType: "DATA_FLOWS",
+			source:       "from frobnicate import compute\nclass Holder:\n    def plain(self, value):\n        class compute:\n            pass\n        return compute(value)\n",
+			fromSuffix:   "app.py:method:Holder.plain", targetSuffix: "frobnicate.c:function:compute", want: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			edges := pythonRelationsFromApp(t, test.source, test.extra, test.relationType, test.fromSuffix, test.targetSuffix)
+			if test.want && len(edges) != 1 {
+				t.Fatalf("got %#v, want one %s edge", edges, test.relationType)
+			}
+			if !test.want && len(edges) != 0 {
+				t.Fatalf("got %#v, want no %s edge", edges, test.relationType)
+			}
+		})
+	}
+}
