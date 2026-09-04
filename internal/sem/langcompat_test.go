@@ -1122,30 +1122,100 @@ func TestSwiftDeclarationVisibleToObjectiveC(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		kind      string
+		name      string
 		signature string
 		want      bool
 	}{
-		{"class", "@objc class Bridged: NSObject", true},
-		{"class", "@objcMembers class Members: NSObject", true},
-		{"class", "@objc(RenamedThing) class Renamed: NSObject", true},
-		{"class", "class Engine: NSObject", true},
-		{"class", "class Sub: Engine", true},
-		{"class", "class Engine", false},
-		{"struct", "struct Ledger", false},
-		{"enum", "enum Plain", false},
-		{"enum", "@objc enum Level: Int", true},
-		{"protocol", "protocol Pinger", false},
-		{"protocol", "@objc protocol Pinger", true},
-		{"function", "func freeFunc(x: Int) -> Int", false},
+		{"class", "Bridged", "@objc class Bridged: NSObject", true},
+		{"class", "Members", "@objcMembers class Members: NSObject", true},
+		{"class", "Engine", "class Engine: NSObject", true},
+		{"class", "Sub", "class Sub: Engine", true},
+		{"class", "Engine", "class Engine", false},
+		{"struct", "Ledger", "struct Ledger", false},
+		{"enum", "Plain", "enum Plain", false},
+		{"enum", "Level", "@objc enum Level: Int", true},
+		{"protocol", "Pinger", "protocol Pinger", false},
+		{"protocol", "Pinger", "@objc protocol Pinger", true},
+		{"function", "freeFunc", "func freeFunc(x: Int) -> Int", false},
+		// `@objc(...)` exposes the declaration under the name it names, and
+		// this index is keyed by the SWIFT one. Matching a renamed declaration
+		// by its Swift name is the wrong answer, not a weak one.
+		{"class", "Renamed", "@objc(RenamedThing) class Renamed: NSObject", false},
+		{"enum", "Level", "@objc(LevelObjC) enum Level: Int", false},
+		{"protocol", "Pinger", "@objc(PingerObjC) protocol Pinger", false},
+		{"method", "start", "@objc(startEngine) func start()", false},
+		// A selector is cut at its first colon: the argument labels after it
+		// are not part of the name a bare reference could ever match.
+		{"method", "doThing", "@objc(doThing:with:) func doThing(x: Int, with y: Int)", true},
+		{"method", "doThing", "@objc(doThingWith:) func doThing(x: Int)", false},
+		// Renamed to the name it already had, which changes nothing.
+		{"class", "Same", "@objc(Same) class Same: NSObject", true},
 		// Unproven shapes are kept: a member's exposure follows its container,
 		// which a candidate-level check cannot see, and an unparsed signature
 		// says nothing at all.
-		{"method", "func start()", true},
-		{"class", "", true},
+		{"method", "start", "func start()", true},
+		{"class", "Engine", "", true},
 	} {
-		got := swiftDeclarationVisibleToObjectiveC(SymbolRecord{Kind: tc.kind, Signature: tc.signature, Language: "Swift"})
+		got := swiftDeclarationVisibleToObjectiveC(SymbolRecord{Kind: tc.kind, Name: tc.name, Signature: tc.signature, Language: "Swift"})
 		if got != tc.want {
-			t.Fatalf("swiftDeclarationVisibleToObjectiveC(%s %q) = %v, want %v", tc.kind, tc.signature, got, tc.want)
+			t.Fatalf("swiftDeclarationVisibleToObjectiveC(%s %s %q) = %v, want %v", tc.kind, tc.name, tc.signature, got, tc.want)
+		}
+	}
+}
+
+// `@objc(RenamedThing)` exposes a Swift declaration, but under a DIFFERENT name:
+// the generated header declares `RenamedThing`, and `Renamed` is a spelling no
+// Objective-C translation unit can compile. The short-name index is keyed by the
+// Swift name, so treating the attribute as ordinary exposure handed Objective-C
+// a resolved edge to a name it cannot write.
+//
+// Measured on the fixture below before the refinement:
+//
+//	USES_TYPE Objective-C/useRenamed->Swift/Renamed   WRONG — Objective-C sees `RenamedThing`
+//	USES_TYPE Objective-C/useBridged->Swift/Bridged   correct — no rename, same name in the header
+func TestObjectiveCRefusesRenamedSwiftDeclarationsUnderTheirSwiftName(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "models.swift", `@objc(RenamedThing) class Renamed: NSObject { }
+@objc class Bridged: NSObject { }
+`)
+	writeFile(t, repo, "use.m", `#import <Foundation/Foundation.h>
+#import "Proj-Swift.h"
+
+@implementation Consumer
+- (void)useRenamed:(Renamed *)r { }
+- (void)useRenamedThing:(RenamedThing *)r { }
+- (void)useBridged:(Bridged *)b { }
+@end
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edges := resolvedEdgeSet(t, snapshot)
+	if relation, ok := edges["USES_TYPE Objective-C/useRenamed->Swift/Renamed"]; ok {
+		t.Fatalf("Objective-C bound a renamed Swift declaration by its Swift name (resolution=%s); `@objc(RenamedThing)` puts it in the header as RenamedThing and nowhere as Renamed; all edges: %v",
+			relation.Resolution, edgeKeys(edges))
+	}
+	// The control the refusal must not cost: an un-renamed `@objc` class is in
+	// the header under the same name, and that edge is the whole reason the
+	// Objective-C -> Swift direction exists.
+	if _, ok := edges["USES_TYPE Objective-C/useBridged->Swift/Bridged"]; !ok {
+		t.Fatalf("the un-renamed @objc Swift class edge was dropped; all edges: %v", edgeKeys(edges))
+	}
+	// STILL BLOCKED, and deliberately pinned as such: the source that spells the
+	// name correctly resolves to nothing either, because no index key carries the
+	// EXPORTED name -- only the Swift one. Fixing that is an indexing change, not
+	// a filtering one. This guard removes the wrong answer; it does not supply
+	// the right one, and this assertion fails the day indexing does supply it.
+	for _, blocked := range []string{
+		"USES_TYPE Objective-C/useRenamedThing->Swift/Renamed",
+		"USES_TYPE Objective-C/useRenamedThing->Swift/RenamedThing",
+	} {
+		if _, ok := edges[blocked]; ok {
+			t.Fatalf("%s now resolves; the exported name reached the index, so this guard's note is stale and the case needs revisiting; all edges: %v",
+				blocked, edgeKeys(edges))
 		}
 	}
 }

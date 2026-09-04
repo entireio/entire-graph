@@ -340,6 +340,12 @@ func objectiveCOnlyDeclaration(kind string) bool {
 // signature, including when they sit on their own line above it.
 var swiftObjCExposureAttributeRe = regexp.MustCompile(`@objc(?:Members)?\b`)
 
+// swiftObjCExplicitNameRe captures the name an `@objc(...)` attribute gives a
+// declaration in the generated header. The literal `\(` is what separates it
+// from the two argument-less spellings: `@objcMembers` and a bare `@objc` both
+// leave the declaration under its Swift name and never match here.
+var swiftObjCExplicitNameRe = regexp.MustCompile(`@objc\(([^)]*)\)`)
+
 // swiftDeclarationVisibleToObjectiveC reports whether a Swift declaration could
 // appear in the generated `<Module>-Swift.h` header, which is the ONLY way an
 // Objective-C source names a Swift declaration. The language pair is real --
@@ -357,11 +363,22 @@ var swiftObjCExposureAttributeRe = regexp.MustCompile(`@objc(?:Members)?\b`)
 // a subclass whose chain to NSObject runs through classes a candidate-level
 // check cannot follow -- is kept, because dropping a candidate here deletes the
 // edge rather than merely adding one.
+//
+// `@objc(RenamedThing)` is the one attribute that decides the question in the
+// other direction. It does expose the declaration, but it also EXPORTS IT UNDER
+// A DIFFERENT NAME: the header declares `RenamedThing`, and `Renamed` is a
+// spelling no Objective-C translation unit can compile. This index is keyed by
+// the SWIFT name, so a match on it is not a weak candidate but a wrong one, and
+// the exposure test would otherwise wave it through. See
+// objectiveCExportedNameMatches.
 func swiftDeclarationVisibleToObjectiveC(candidate SymbolRecord) bool {
 	signature := candidate.Signature
 	if signature == "" {
 		// Nothing to judge on: leave the candidate exactly as it was.
 		return true
+	}
+	if renamed := swiftObjCExplicitNameRe.FindStringSubmatch(signature); renamed != nil {
+		return objectiveCExportedNameMatches(renamed[1], candidate.Name)
 	}
 	if swiftObjCExposureAttributeRe.MatchString(signature) {
 		return true
@@ -392,4 +409,40 @@ func swiftClassDeclaresInheritance(signature string) bool {
 		return true
 	}
 	return strings.Contains(signature[keyword+len("class "):], ":")
+}
+
+// objectiveCExportedNameMatches reports whether the name `@objc(...)` exports a
+// Swift declaration under is the same bare name this index matched it by.
+//
+// The attribute takes an Objective-C name for a type and a SELECTOR for a
+// member, and both are the only spelling Objective-C has for the declaration:
+// `@objc(RenamedThing) class Renamed` is `RenamedThing` in the generated header
+// and `Renamed` nowhere at all, and `@objc(startEngine) func start()` answers to
+// `startEngine` and to no other selector. The short-name index is keyed by the
+// SWIFT name, so a hit on it under a rename is an edge no compiler could
+// produce, and refusing it is a NARROWING: nothing new becomes nameable, one
+// impossible candidate stops being offered.
+//
+// The bound is the attribute's own argument, which is why this can refuse at
+// all where the rest of the guard fails open. The name is read off the
+// signature and compared with the declaration's own name -- both already in the
+// record -- so the refused set is exactly "renamed to something else" and
+// nothing wider. A selector is cut at its first colon because the argument
+// labels after it are not part of the name a bare reference could match, and an
+// argument this cannot read (`@objc()` is not valid Swift) judges nothing and
+// keeps the candidate.
+//
+// What this does NOT fix: an Objective-C source that correctly writes
+// `RenamedThing` still resolves to nothing, because no index key carries the
+// exported name. Adding one is an indexing change, not a filtering one; this
+// guard only stops the wrong answer from being given in its place.
+func objectiveCExportedNameMatches(exported, name string) bool {
+	if selector, _, found := strings.Cut(exported, ":"); found {
+		exported = selector
+	}
+	exported = strings.TrimSpace(exported)
+	if exported == "" {
+		return true
+	}
+	return exported == name
 }
