@@ -576,6 +576,28 @@ double run() { Ledger ledger; return ledger.Add(3.5); }
 	}
 }
 
+func TestCPlusPlusDeclarationOverloadIDsSurviveSignatureEdit(t *testing.T) {
+	t.Parallel()
+	ids := func(source string) []string {
+		entities, _ := TreeSitterParser{}.Parse("ledger.hpp", source)
+		var out []string
+		for _, symbol := range entitySymbols("local/test", "ledger.hpp", "C++", entities) {
+			if symbol.Kind == "method" && symbol.Name == "Add" {
+				out = append(out, symbol.ID)
+			}
+		}
+		return out
+	}
+	before := ids(`class Ledger { public: int Add(int); int Add(double); };`)
+	after := ids(`class Ledger { public: int Add(long); int Add(double); };`)
+	if len(before) != 2 || len(after) != 2 {
+		t.Fatalf("overload IDs before=%v after=%v, want two each", before, after)
+	}
+	if before[0] != after[0] || before[1] != after[1] {
+		t.Fatalf("signature edit retired declaration IDs: before=%v after=%v", before, after)
+	}
+}
+
 func mapKeys(in map[string]Entity) []string {
 	out := make([]string, 0, len(in))
 	for key := range in {

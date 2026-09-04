@@ -1819,6 +1819,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 	// see parser.go's swiftExtensionDeclaration note).
 	definitionCounts := map[string]int{}
 	declarationCounts := map[string]int{}
+	declarationOrdinals := map[string]int{}
 	sigOrdinals := map[string]int{}
 	for _, entity := range entities {
 		id := symbolID(repoKey, language, path, entity.Kind, entity.Name)
@@ -1846,17 +1847,27 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			colliding = definitionCounts[id]+declarationCounts[id] > 1
 		}
 		if colliding {
-			// Disambiguate same-name symbols by signature hash plus an ordinal
-			// within the matching-signature group. This is stable across edits
-			// that shift line numbers, unlike the previous line-range scheme;
-			// overloads with distinct signatures get distinct, stable IDs, and
-			// genuine duplicates fall back to a stable definition ordinal.
-			signatureHash := hash(entity.Signature)
-			ordinalKey := id + "\x00" + signatureHash
-			sigOrdinals[ordinalKey]++
-			id = fmt.Sprintf("%s#sig:%s", id, signatureHash)
-			if ordinal := sigOrdinals[ordinalKey]; ordinal > 1 {
-				id = fmt.Sprintf("%s#%d", id, ordinal)
+			if entity.bodyless && language == "C++" {
+				// A C++ declaration's signature is editable API, not identity.
+				// Signature-hashed overload IDs retire on an ordinary int->long
+				// edit, so declarations use their stable source-order slot in the
+				// same-name overload set. Bodyful definitions and existing
+				// languages retain the established compound-v1 scheme below.
+				declarationOrdinals[id]++
+				id = fmt.Sprintf("%s#decl:%d", id, declarationOrdinals[id])
+			} else {
+				// Disambiguate same-name symbols by signature hash plus an ordinal
+				// within the matching-signature group. This is stable across edits
+				// that shift line numbers, unlike the previous line-range scheme;
+				// overloads with distinct signatures get distinct, stable IDs, and
+				// genuine duplicates fall back to a stable definition ordinal.
+				signatureHash := hash(entity.Signature)
+				ordinalKey := id + "\x00" + signatureHash
+				sigOrdinals[ordinalKey]++
+				id = fmt.Sprintf("%s#sig:%s", id, signatureHash)
+				if ordinal := sigOrdinals[ordinalKey]; ordinal > 1 {
+					id = fmt.Sprintf("%s#%d", id, ordinal)
+				}
 			}
 		}
 		containerID := ""
