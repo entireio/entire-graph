@@ -132,17 +132,17 @@ func javaConstructorChainCalls(block string) []javaCtorChainCall {
 // class's file); without a qualifier the plain first-type-like lookup applies.
 func javaResolveConstructedType(chain javaCtorChainCall, from SymbolRecord, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
 	if chain.Qualifier == "" {
-		return firstTypeLikeNamedPreferFile(symbolsByShortName[chain.TypeName], chain.TypeName, from.FilePath)
+		return firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[chain.TypeName]), chain.TypeName, from.FilePath)
 	}
 	qualifierFiles := map[string]bool{}
-	for _, outer := range symbolsByShortName[chain.Qualifier] {
+	for _, outer := range sharedTypeCandidates(from, symbolsByShortName[chain.Qualifier]) {
 		if typeLikeKind(outer.Kind) && outer.Name == chain.Qualifier {
 			qualifierFiles[outer.FilePath] = true
 		}
 	}
 	var match SymbolRecord
 	found := 0
-	for _, cand := range symbolsByShortName[chain.TypeName] {
+	for _, cand := range sharedTypeCandidates(from, symbolsByShortName[chain.TypeName]) {
 		if !typeLikeKind(cand.Kind) || cand.Name != chain.TypeName || !qualifierFiles[cand.FilePath] {
 			continue
 		}
