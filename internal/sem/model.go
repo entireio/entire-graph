@@ -30,6 +30,12 @@ type Entity struct {
 	// being downgraded as ambiguous. Private, like the other parse metadata, so
 	// the frozen schema is unchanged.
 	bodyless bool
+	// cLinkage marks a declaration that sits inside an `extern "C" { ... }`
+	// block (see declaredWithCLinkage). It is the only per-declaration record of
+	// which half of a dual-use C++-labelled header a C translation unit may
+	// name. Private, like the other parse metadata, so the frozen schema and the
+	// compound-v1 IDs are unchanged.
+	cLinkage bool
 	// sourceStartByte/sourceEndByte are the exact tree-sitter declaration range.
 	// They are internal parse metadata: public schema and stable symbol identity
 	// intentionally remain line based. A zero start is valid when end > start.
