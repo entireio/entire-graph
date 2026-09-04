@@ -65,6 +65,65 @@ func newDerivedCacheEntry(cacheDir, family, version, groupKey, key string) (cach
 	}, nil
 }
 
+// newCacheGenerationEntry addresses the generation marker of a cache entry: a
+// token naming the INSTANCE of that entry rather than its key. The key does not
+// change when an entry is rebuilt in place, so it cannot tell a reader that the
+// artifact it derived from has been replaced; the token can, and it is small
+// enough to read on the fast path where decoding the entry itself is exactly
+// what the derived artifact exists to avoid.
+//
+// The marker is a sibling of the entry, not a member of its derived directory,
+// so removeDerivedCacheEntries does not take it with them.
+func newCacheGenerationEntry(cacheDir, family, version, key string) (cacheEntry, error) {
+	entry, err := newDerivedCacheEntry(cacheDir, family, version, "", key)
+	if err != nil {
+		return cacheEntry{}, err
+	}
+	entry.relative = filepath.Join(family, version, key+".generation.json.gz")
+	return entry, nil
+}
+
+type cacheGenerationMarker struct {
+	Generation string `json:"generation"`
+}
+
+// readCacheGeneration returns the current generation of an entry. No marker
+// means no rebuild has ever invalidated this entry's dependents, which is the
+// same generation every artifact derived before the first one recorded.
+func readCacheGeneration(cacheDir, family, version, key string) string {
+	entry, err := newCacheGenerationEntry(cacheDir, family, version, key)
+	if err != nil {
+		return ""
+	}
+	file, err := entry.open()
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	reader, err := gzip.NewReader(file)
+	if err != nil {
+		return ""
+	}
+	defer reader.Close()
+	var marker cacheGenerationMarker
+	if err := json.NewDecoder(reader).Decode(&marker); err != nil {
+		return ""
+	}
+	return marker.Generation
+}
+
+// bumpCacheGeneration mints a new generation for an entry. A token only has to
+// be unique, not unguessable: it is compared for equality against what a derived
+// artifact recorded, so repeating one would resurrect exactly the artifacts a
+// rebuild set out to discard, while predicting one grants nothing.
+func bumpCacheGeneration(cacheDir, family, version, key string) error {
+	entry, err := newCacheGenerationEntry(cacheDir, family, version, key)
+	if err != nil {
+		return err
+	}
+	return entry.write("generation", cacheGenerationMarker{Generation: cacheTempNameSuffix(rand.Uint64)})
+}
+
 // removeDerivedCacheEntries discards every artifact derived from one cache
 // entry. It is the invalidation half of newDerivedCacheEntry: a rebuild that
 // replaces the parent must not leave dependents behind that are served ahead of

@@ -203,3 +203,88 @@ func TestPreindexForceInvalidatesDerivedSelectiveSnapshots(t *testing.T) {
 		t.Fatal("selective search after --force returned a file outside OnlyFiles")
 	}
 }
+
+// Removing the derived directory cannot stop a derivation that is already in
+// flight: it read the OUTGOING complete snapshot before the rebuild published,
+// and persists afterwards. That artifact agrees with the key about tree,
+// options, schema and identity, so nothing the entry already carried separates
+// it from a current one — it would go on defeating --force for as long as HEAD
+// did not move, which is the same silence the invalidation was added to end.
+//
+// The late write is replayed here rather than raced for, so the assertion is
+// deterministic: the bytes are exactly what such a deriver produces, replanted
+// at exactly the path it would write them to, after the rebuild has finished.
+func TestPreindexForceRetiresLateWritesFromPreForceDerivations(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.go", "package a\n\nfunc Alpha() int { return 1 }\n")
+	write(t, repo, "b.go", "package a\n\nfunc Beta() int { return 2 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	complete := func() ProviderSnapshotOptions { return ProviderSnapshotOptions{Profile: ProfileFull} }
+	selective := func() ProviderSnapshotOptions {
+		options := complete()
+		options.OnlyFiles = []string{"a.go"}
+		return options
+	}
+
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "v", complete(), cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadOrBuildSearchSnapshot(t.Context(), repo, "v", selective(), cacheDir, false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	absRepo, err := filepath.Abs(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryKey := repoKey(t.Context(), absRepo)
+	_, tree, err := resolveCommittedHEAD(t.Context(), absRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	derivedPath := selectiveSearchEntryPath(t, cacheDir, repo, repositoryKey, "v", tree, selective())
+
+	// What the in-flight deriver is holding: a view of the outgoing snapshot,
+	// stamped with the generation it read before the rebuild started.
+	inFlight := readCachedSnapshotFile(t, derivedPath)
+	for index := range inFlight.Snapshot.Symbols {
+		inFlight.Snapshot.Symbols[index].Name = "DerivedFromTheOutgoingSnapshot"
+	}
+
+	forced := complete()
+	forced.ForceRebuild = true
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "v", forced, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// The late write lands after the rebuild has invalidated and removed.
+	if err := os.MkdirAll(filepath.Dir(derivedPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCachedSnapshotFile(t, derivedPath, inFlight)
+
+	served, _, err := loadOrBuildSearchSnapshot(t.Context(), repo, "v", selective(), cacheDir, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshotHasSymbolNamed(served, "DerivedFromTheOutgoingSnapshot") {
+		t.Fatal("a derivation that read the pre-force snapshot was served after --force completed")
+	}
+	if !snapshotHasSymbolNamed(served, "Alpha") {
+		t.Fatalf("selective search lost the real symbol; got %d symbols", len(served.Symbols))
+	}
+
+	// Warm caching must still work on the far side of the rebuild: the fresh
+	// derivation persists under the new generation and is reused.
+	if _, hit, err := loadOrBuildSearchSnapshot(t.Context(), repo, "v", selective(), cacheDir, false, nil); err != nil {
+		t.Fatal(err)
+	} else if !hit {
+		t.Fatal("selective query after --force did not re-warm its own entry")
+	}
+}
