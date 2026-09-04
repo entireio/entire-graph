@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,4 +182,103 @@ func TestVerifyBaselineRepoSurvivesADifferentWorkingDirectory(t *testing.T) {
 			t.Fatalf("the refusal does not name the mismatched repository: %v", err)
 		}
 	})
+}
+
+// verifyPHPUnitErroredRunOutput is a real PHPUnit --testdox report, captured verbatim from PHPUnit
+// 13.3.2 on PHP 8.5.9, for a run of two tests where one passes and one raises. That process exited
+// 2, not 1.
+const verifyPHPUnitErroredRunOutput = `PHPUnit 13.3.2 by Sebastian Bergmann and contributors.
+
+Runtime:       PHP 8.5.9
+Configuration: /tmp/probe/phpunit.xml
+
+.E                                                                  2 / 2 (100%)
+
+Time: 00:00.001, Memory: 20.00 MB
+
+Delta
+ ✔ Fixed
+ ✘ Still errors
+   │
+   │ RuntimeException: boom
+   │
+
+ERRORS!
+Tests: 2, Assertions: 1, Errors: 1.
+`
+
+// TestRenderVerifyVerdictAcceptsPHPUnitsErrorExitCode is the regression for the one runner in
+// verifyTestFailureExitCodes that grades its own outcomes with more than one code.
+//
+// PHPUnit splits its nonzero exits by KIND of non-pass, not by whether the run finished: a test that
+// fails an assertion exits 1 (FAILURE_EXIT), a test that raises exits 2 (EXCEPTION_EXIT), and 2 wins
+// whenever a run contains both. An errored test is a per-test verdict — the report names it in the
+// same numbered block as a failure and parseVerifyPHPUnit records it as a non-pass — so it explains
+// the exit exactly as a failure does. With {1} alone, every PHPUnit run that contains a raising test
+// was adjudicated INCOMPLETE however complete it was, which is the false-negative direction: a
+// correct PASS/NO EFFECT turned into "verification is NOT complete".
+//
+// Measured, not inferred: PHPUnit 9.6.36, 10.5.64, 11.5.56, 12.5.34 and 13.3.2 all exit 1 for a bare
+// assertion failure and 2 for a test that raises.
+func TestRenderVerifyVerdictAcceptsPHPUnitsErrorExitCode(t *testing.T) {
+	t.Parallel()
+
+	// The parser's own reading of the real report is what makes exit 2 explicable: the errored test
+	// is recorded, and it is recorded as a non-pass.
+	current, parsed := parseVerifyPHPUnit(verifyPHPUnitErroredRunOutput)
+	if !parsed {
+		t.Fatalf("the real PHPUnit report was not recognised at all:\n%s", verifyPHPUnitErroredRunOutput)
+	}
+	errored, seen := current["Still errors"]
+	if !seen {
+		t.Fatalf("the errored test is absent from the parsed results %v", current)
+	}
+	if errored != verifyStatusFail {
+		t.Fatalf("PHPUnit's errored test is recorded as %v, so exit 2 would have nothing to explain "+
+			"it; the premise of this test is gone", errored)
+	}
+
+	// The baseline knew both tests were broken. The change fixes one; the other still raises. No
+	// regression, no disappeared test, and the run finished — the report accounts for its own exit.
+	baseline := verifyBaseline{Parser: "phpunit", Results: verifyResults{
+		"Fixed":        verifyStatusFail,
+		"Still errors": verifyStatusFail,
+	}}
+	got := string(renderVerifyVerdict(verifyVerdictInput{
+		baseline: baseline, current: current, parser: "phpunit", parsed: true,
+		exitCode: 2, maxBytes: verifyDefaultMaxBytes,
+	}))
+	if strings.Contains(got, "VERDICT: INCOMPLETE") {
+		t.Fatalf("a complete PHPUnit run was called incomplete because 2 — the code PHPUnit uses for "+
+			"a test that raised — was treated as a way for the run to come apart:\n%s", got)
+	}
+	if !strings.Contains(got, "VERDICT: PASS") {
+		t.Fatalf("a fix with no regressions is not reported as a PASS:\n%s", got)
+	}
+}
+
+// TestRenderVerifyVerdictStillRefusesPHPUnitCodesItDoesNotGradeWith pins the other edge of that
+// widening: 1 and 2 are the whole of PHPUnit's non-pass vocabulary, and admitting 2 must not admit
+// the codes that mean the run itself came apart.
+func TestRenderVerifyVerdictStillRefusesPHPUnitCodesItDoesNotGradeWith(t *testing.T) {
+	t.Parallel()
+	baseline := verifyBaseline{Parser: "phpunit", Results: verifyResults{
+		"Fixed":        verifyStatusFail,
+		"Still errors": verifyStatusFail,
+	}}
+	current := verifyResults{"Fixed": verifyStatusPass, "Still errors": verifyStatusFail}
+
+	for _, exitCode := range []int{3, 9, 127, 139, 255} {
+		t.Run(fmt.Sprintf("exit %d", exitCode), func(t *testing.T) {
+			t.Parallel()
+			got := string(renderVerifyVerdict(verifyVerdictInput{
+				baseline: baseline, current: current, parser: "phpunit", parsed: true,
+				exitCode: exitCode, maxBytes: verifyDefaultMaxBytes,
+			}))
+			if !strings.Contains(got, "VERDICT: INCOMPLETE") {
+				t.Fatalf("PHPUnit does not report a test outcome with exit %d, so a reported failure "+
+					"cannot explain it:\n%s", exitCode, got)
+			}
+		})
+	}
 }

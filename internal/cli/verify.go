@@ -503,11 +503,18 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 	return verifyTruncateOutput(buffer.String(), input.maxBytes)
 }
 
-// verifyTestFailureExitCodes is each runner's own code for "a test failed", and nothing else. Every
-// other code these runners emit means the run itself came apart — pytest 2 interrupted, 3 internal
-// error, 4 usage error, 5 nothing collected; go test 2 for a command-line or build error; cargo's
-// harness failing at 101 while cargo itself exits 1 when it could not even build — and none of them
-// is explained by a test the run happened to report failing before it died.
+// verifyTestFailureExitCodes is each runner's own code for "a test the run reported did not pass",
+// and nothing else. Every other code these runners emit means the run itself came apart — pytest 2
+// interrupted, 3 internal error, 4 usage error, 5 nothing collected; go test 2 for a flag-parse
+// error; cargo's harness failing at 101 while cargo itself exits 1 when it could not even build; a
+// PHP fatal at 255 — and none of them is explained by a test the run happened to report failing
+// before it died.
+//
+// A runner that grades its own outcomes needs every code it grades WITH. PHPUnit is the one here
+// that splits them: an assertion failure exits 1 (FAILURE_EXIT) and a test that raised exits 2
+// (EXCEPTION_EXIT, checked last so it wins when a run has both). Both are per-test verdicts the
+// report names in its numbered block and the parser records as non-passes, so both explain the exit.
+// Measured on PHPUnit 9.6.36, 10.5.64, 11.5.56, 12.5.34 and 13.3.2: assertion failure 1, raised 2.
 //
 // An unlisted runner keeps the old rule (any ordinary nonzero is plausible), because refusing a code
 // nobody has documented would be a guess in the loud direction about a runner this build does not
@@ -518,7 +525,7 @@ var verifyTestFailureExitCodes = map[string][]int{
 	"pytest":      {1},
 	"cargo test":  {101},
 	"go test":     {1},
-	"phpunit":     {1},
+	"phpunit":     {1, 2},
 	"jest/vitest": {1},
 	"rspec":       {1},
 	"minitest":    {1},
