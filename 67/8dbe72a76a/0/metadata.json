@@ -1,0 +1,47 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "678dbe72a76a",
+  "session_id": "01a06b54-b5fc-7460-a6ba-5493af10577f",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-04T07:54:13.3301Z",
+  "branch": "security/mark-payload-record-provenance",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/search.go",
+    "internal/cli/search_forgery_bidi_test.go",
+    "internal/termsafe/termsafe.go",
+    "internal/termsafe/termsafe_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "084a86272037",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 116127,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4916608,
+    "output_tokens": 13492,
+    "api_call_count": 61
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-04T07:54:13.266781Z",
+    "agent_lines": 1020,
+    "agent_removed": 37,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1020,
+    "total_lines_changed": 1057,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "678dbe72a76a",
+  "strategy": "manual-commit",
+  "branch": "security/mark-payload-record-provenance",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/search.go",
+    "internal/cli/search_forgery_bidi_test.go",
+    "internal/termsafe/termsafe.go",
+    "internal/termsafe/termsafe_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/67/8dbe72a76a/0/metadata.json",
+      "transcript": "/67/8dbe72a76a/0/full.jsonl",
+      "compact_transcript": "/67/8dbe72a76a/0/transcript.jsonl",
+      "content_hash": "/67/8dbe72a76a/0/content_hash.txt",
+      "prompt": "/67/8dbe72a76a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 116127,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4916608,
+    "output_tokens": 13492,
+    "api_call_count": 61
+  }
+}
