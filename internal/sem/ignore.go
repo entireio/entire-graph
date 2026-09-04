@@ -406,7 +406,11 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	// is a regular file holding "gitdir: <path>", so that join names a path under a
 	// non-directory: os.Stat returns ENOTDIR rather than ErrNotExist, and treating
 	// that as fatal aborted the entire search with zero results in every worktree.
-	if exclude := gitInfoExcludePath(repo); exclude != "" {
+	exclude, err := gitInfoExcludePath(repo)
+	if err != nil {
+		return ignoreMatcher{}, err
+	}
+	if exclude != "" {
 		if err := matcher.loadOptionalSameVolume(repo, exclude, false); err != nil {
 			return ignoreMatcher{}, err
 		}
@@ -459,27 +463,52 @@ func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []st
 // worktree, where it holds "gitdir: <path to .git/worktrees/<name>>". Git shares
 // info/ across worktrees via that gitdir's commondir pointer, so the exclude file
 // lives under the common directory, not under <repo>/.git.
-func gitInfoExcludePath(repo string) string {
+//
+// ABSENCE and UNREADABILITY are different answers. info/exclude is the
+// repository's own private exclude list and carries the same authority as
+// .gitignore, so returning "" for a `.git` this process may not read silently
+// drops the whole list and admits every file it names — the one failure mode a
+// caller cannot see in the output. Only "there is nothing here" degrades to
+// ("", nil): a missing `.git`, and the same-volume guard's deliberate refusals,
+// which are policy decisions about where this process will look rather than
+// failures to read what is there. Everything else — a permission denial, an I/O
+// error, a `.git` this process cannot stat — is returned.
+//
+// A repository root this process cannot read AT ALL is a third case and stays
+// silent here: nothing can be said to have been dropped when the entry naming it
+// was never visible, and the listing preflight owns that repository and refuses
+// the whole operation. nestedIgnoreStack.directoryReadable draws the same line
+// one level down.
+//
+// The limit worth naming: the indirection past this point (gitCommonDir, the
+// gitdir handle) still reports absence and unreadability as the same "".
+func gitInfoExcludePath(repo string) (string, error) {
 	dotGit := filepath.Join(repo, ".git")
 	opened, resolvedDotGit, err := openSameVolumePath(repo, dotGit)
 	if err != nil {
-		return ""
+		if gitDirAbsent(err) || !repoRootReadable(repo) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read git directory %q: %w", dotGit, err)
 	}
 	defer opened.Close()
 	info, err := opened.Stat()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("read git directory %q: %w", dotGit, err)
 	}
 	if info.IsDir() {
 		common, ok := gitCommonDir(resolvedDotGit)
 		if !ok {
-			return ""
+			return "", nil
 		}
-		return filepath.Join(common, "info", "exclude")
+		return filepath.Join(common, "info", "exclude"), nil
 	}
 	regular, err := openedFileIsRegular(opened, info)
-	if err != nil || !regular || info.Size() > maxGitFileBytes {
-		return ""
+	if err != nil {
+		return "", fmt.Errorf("read git directory %q: %w", dotGit, err)
+	}
+	if !regular || info.Size() > maxGitFileBytes {
+		return "", nil
 	}
 	// One reader and one byte rule for both pointer files, in provider.go: git
 	// applies read_gitfile_gently() here too, so a `.git` text file git refuses
@@ -490,11 +519,11 @@ func gitInfoExcludePath(repo string) string {
 	// about which directory a worktree's `.git` names.
 	gitDir, ok := readGitDirPointerFromOpened(opened, info.Size())
 	if !ok {
-		return ""
+		return "", nil
 	}
 	gitDir = filepath.FromSlash(gitDir)
 	if !gitTargetPathValid(gitDir) {
-		return ""
+		return "", nil
 	}
 	if absoluteGitDir, absolute := gitAbsolutePath(repo, gitDir); absolute {
 		gitDir = absoluteGitDir
@@ -502,11 +531,11 @@ func gitInfoExcludePath(repo string) string {
 		gitDir = gitJoinRelative(repo, gitDir)
 	}
 	if !sameVolume(gitDir, repo) {
-		return ""
+		return "", nil
 	}
 	gitDirHandle, resolvedGitDir, err := openSameVolumePath(repo, gitDir)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	_ = gitDirHandle.Close()
 	// commondir points at the shared .git that owns info/; it may be relative to
@@ -525,10 +554,46 @@ func gitInfoExcludePath(repo string) string {
 	// top-level check ever ran.
 	common, ok := gitCommonDir(resolvedGitDir)
 	if !ok {
-		return ""
+		return "", nil
 	}
 	gitDir = filepath.Clean(common)
-	return filepath.Join(gitDir, "info", "exclude")
+	return filepath.Join(gitDir, "info", "exclude"), nil
+}
+
+// gitDirAbsent reports the errors from resolving <repo>/.git that mean "there is
+// no git directory to consult here" rather than "there is one and this process
+// could not read it".
+//
+// Absence is the missing path itself, including the ENOTDIR a join past a
+// non-directory produces. The same-volume guard's refusals are grouped with it
+// deliberately: an off-volume symlink chain, a crossed mount point, an
+// uninspectable redirect, and a platform with no safe mount inventory are all
+// decisions not to look, taken before any read is attempted, and each already
+// has a repository layout that depends on continuing without info/exclude.
+func gitDirAbsent(err error) bool {
+	return isMissingPathError(err) ||
+		errors.Is(err, errSymlinkChainOffVolume) ||
+		errors.Is(err, errPathRedirectUnreadable) ||
+		errors.Is(err, errPathMountGuardUnsupported)
+}
+
+// repoRootReadable reports whether this process can list the repository root at
+// all. It separates "the `.git` entry could not be read" — a dropped exclude
+// policy the caller must hear about — from "the repository root could not be
+// read", where the listing that follows cannot run either and refuses on its own
+// terms. Enumeration is the probe rather than a mode test, because a mode is a
+// request: the effective answer depends on the filesystem, the platform and the
+// user.
+func repoRootReadable(repo string) bool {
+	opened, err := os.Open(repo)
+	if err != nil {
+		return false
+	}
+	defer opened.Close()
+	if _, err := opened.ReadDir(1); err != nil && !errors.Is(err, io.EOF) {
+		return false
+	}
+	return true
 }
 
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
@@ -1259,8 +1324,11 @@ func (m ignoreMatcher) MayIncludeDescendant(rel string) bool {
 // first-party. An erlang.mk/rebar monorepo gitignores fetched dependencies
 // (`/deps/*`) but negates its own applications (`!/deps/rabbit/`), so the
 // vendored-directory-name heuristic must not skip the tree wholesale; the
-// ignore rules themselves keep the fetched dependencies out. Basename-only
-// negations (e.g. `!.keep`) carry no path and are not treated as a signal.
+// ignore rules themselves keep the fetched dependencies out. A basename-only
+// negation (e.g. `!.keep`) carries no path of its own; at the repository root
+// there is nothing to resolve it against, so it is not treated as a signal (see
+// negationPathScope for the nested case, where the ignore file's own directory
+// supplies that path).
 func (m ignoreMatcher) ReincludesDescendant(rel string) bool {
 	return m.reincludesDescendantUnder("", rel)
 }
@@ -1268,8 +1336,6 @@ func (m ignoreMatcher) ReincludesDescendant(rel string) bool {
 // reincludesDescendantUnder is ReincludesDescendant for an ignore file that lives
 // in dir rather than at the repository root: its patterns are relative to dir, so
 // each literal prefix is resolved against dir before being compared to rel.
-// Basename-only negations carry no path in either position and are skipped in
-// both, exactly as before.
 func (m ignoreMatcher) reincludesDescendantUnder(dir, rel string) bool {
 	rel = cleanIgnorePath(rel)
 	if rel == "" {
@@ -1277,15 +1343,12 @@ func (m ignoreMatcher) reincludesDescendantUnder(dir, rel string) bool {
 	}
 	dir = cleanIgnorePath(dir)
 	for _, rule := range m.rules {
-		if rule.ignore || rule.includeFile || rule.basenameOnly {
+		if rule.ignore || rule.includeFile {
 			continue
 		}
-		prefix := literalPatternPrefix(rule.pattern)
-		if prefix == "" {
+		prefix, ok := negationPathScope(rule, dir)
+		if !ok {
 			continue
-		}
-		if dir != "" {
-			prefix = dir + "/" + prefix
 		}
 		if prefix == rel || strings.HasPrefix(prefix, rel+"/") {
 			return true
@@ -1336,6 +1399,38 @@ func (m ignoreMatcher) reincludesPathUnder(dir, rel string) bool {
 		}
 	}
 	return false
+}
+
+// negationPathScope returns the repository-relative path a negation rule speaks
+// about, given the repository-relative directory dir of the ignore file it was
+// read from ("" for the repository root).
+//
+// A negation that carries a literal path prefix (`!/deps/rabbit/`) names that
+// path, resolved against dir. A negation that carries none — a basename-only
+// rule such as `!lib.py`, or a leading-glob rule such as `!**/lib.py` — names no
+// path OF ITS OWN, but a nested ignore file supplies the missing context: it can
+// only re-include something inside its own directory, so dir is the path it
+// speaks for. Skipping those made a `vendor/.gitignore` holding `*` and the
+// ordinary unanchored `!mypkg/` report that nothing under vendor was
+// first-party, and the vendored-directory heuristic then dropped Git-tracked
+// source from the corpus with no warning.
+//
+// At the repository root there is no such context — `!.keep` genuinely names
+// nowhere — so a pathless negation there is still no signal, and the caller's
+// comparison keeps this scoped to dir itself: a negation is evidence about the
+// tree it lives in, never about a sibling.
+func negationPathScope(rule ignoreRule, dir string) (string, bool) {
+	prefix := literalPatternPrefix(rule.pattern)
+	if prefix == "" {
+		return dir, dir != ""
+	}
+	if rule.basenameOnly {
+		return dir, dir != ""
+	}
+	if dir != "" {
+		prefix = dir + "/" + prefix
+	}
+	return prefix, true
 }
 
 func (r ignoreRule) matchKind(rel string, isDir bool) ignoreMatchKind {
