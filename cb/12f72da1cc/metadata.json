@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.10.4-nightly.202609010627.a218ec13a.0.20260902021605-e5e7f6a938ff",
+  "checkpoint_id": "cb12f72da1cc",
+  "strategy": "manual-commit",
+  "branch": "paulo-perf",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/path_mount_guard_aix.go",
+    "internal/sem/path_mount_guard_bsd.go",
+    "internal/sem/path_mount_guard_linux.go",
+    "internal/sem/path_mount_guard_mnttab.go",
+    "internal/sem/path_mount_guard_netbsd.go",
+    "internal/sem/path_mount_table.go",
+    "internal/sem/path_mount_table_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/search.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/cb/12f72da1cc/0/metadata.json",
+      "transcript": "/cb/12f72da1cc/0/full.jsonl",
+      "compact_transcript": "/cb/12f72da1cc/0/transcript.jsonl",
+      "content_hash": "/cb/12f72da1cc/0/content_hash.txt",
+      "prompt": "/cb/12f72da1cc/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 640,
+    "cache_creation_tokens": 810965,
+    "cache_read_tokens": 94981628,
+    "output_tokens": 264076,
+    "api_call_count": 320
+  }
+}

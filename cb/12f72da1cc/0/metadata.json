@@ -1,0 +1,97 @@
+{
+  "cli_version": "0.10.4-nightly.202609010627.a218ec13a.0.20260902021605-e5e7f6a938ff",
+  "checkpoint_id": "cb12f72da1cc",
+  "session_id": "b6331150-ad33-4922-858c-405394d686ba",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-04T08:38:57.448945902Z",
+  "branch": "paulo-perf",
+  "checkpoints_count": 1,
+  "save_step_count": 2,
+  "files_touched": [
+    "internal/sem/path_mount_guard_aix.go",
+    "internal/sem/path_mount_guard_bsd.go",
+    "internal/sem/path_mount_guard_linux.go",
+    "internal/sem/path_mount_guard_mnttab.go",
+    "internal/sem/path_mount_guard_netbsd.go",
+    "internal/sem/path_mount_table.go",
+    "internal/sem/path_mount_table_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/search.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5[1m]",
+  "turn_id": "0e62a1227354",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 640,
+    "cache_creation_tokens": 810965,
+    "cache_read_tokens": 94981628,
+    "output_tokens": 264076,
+    "api_call_count": 320
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01Ldrfeu1FXKx9y2dHxTfPiB",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "artifact-design"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "5f87b7e44816",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 501,
+        "end": 502,
+        "entry_ids": [
+          "dd9e3e4b-5aa7-4d27-9501-8ee05bafd47a"
+        ],
+        "tool_use_id": "toolu_01Ldrfeu1FXKx9y2dHxTfPiB"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Ldrfeu1FXKx9y2dHxTfPiB"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: artifact-design",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-04T08:38:57.33903915Z",
+    "agent_lines": 31,
+    "agent_removed": 44,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 31,
+    "total_lines_changed": 75,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 245,
+      "agent_lines_removed": 5
+    }
+  ]
+}
