@@ -1,9 +1,1 @@
-Fix the finding. Commit/push, then check for new findings. Keep looping until all are fixed.
-
----
-
-Do another review now that we have Astra
-
----
-
 Ok, make these changes, but also check why CI fails
