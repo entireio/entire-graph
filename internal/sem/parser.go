@@ -8841,12 +8841,10 @@ func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
 			// `operator decltype` and `operator void`, collapsing unrelated
 			// conversions onto one name and one symbol ID.
 			//
-			// The operator's parameter list hangs off its declarator child, so
-			// the type is everything before that node starts. A conversion to a
-			// function pointer still loses the type's own trailing `()`
-			// (`operator void(*)`), which no longer collides with plain
-			// `operator void` but does not yet separate two pointer
-			// conversions differing only in their signature.
+			// The operator's parameter list is the LAST parameter list under its
+			// declarator child, so the type is everything before that node starts.
+			// A function-pointer target contributes an earlier parameter list of
+			// its own (`operator void(*)(int)()`), which must remain in the name.
 			text := cur.Content(src)
 			cutAtParams := false
 			for i := 0; i < int(cur.ChildCount()); i++ {
@@ -8854,7 +8852,7 @@ func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
 				if !validNode(child) || !strings.HasSuffix(child.Type(), "declarator") {
 					continue
 				}
-				params := firstDescendantOfType(child, "parameter_list")
+				params := lastDescendantOfType(child, "parameter_list")
 				if validNode(params) && params.StartByte() > cur.StartByte() {
 					text = string(src[cur.StartByte():params.StartByte()])
 					cutAtParams = true
@@ -8986,6 +8984,29 @@ func firstDescendantOfTypeAt(node *sitter.Node, nodeType string, depth int) *sit
 		}
 	}
 	return nil
+}
+
+// lastDescendantOfType returns the last node of nodeType in source order.
+// Conversion operators use it to distinguish parameter lists embedded in a
+// function-pointer target type from the operator's own final parameter list.
+func lastDescendantOfType(node *sitter.Node, nodeType string) *sitter.Node {
+	return lastDescendantOfTypeAt(node, nodeType, 0)
+}
+
+func lastDescendantOfTypeAt(node *sitter.Node, nodeType string, depth int) *sitter.Node {
+	if !validNode(node) || depth >= maxParseWalkDepth {
+		return nil
+	}
+	var found *sitter.Node
+	if node.Type() == nodeType {
+		found = node
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if candidate := lastDescendantOfTypeAt(node.NamedChild(i), nodeType, depth+1); validNode(candidate) {
+			found = candidate
+		}
+	}
+	return found
 }
 
 func goReceiverName(node *sitter.Node, src []byte) string {

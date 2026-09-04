@@ -202,12 +202,16 @@ func TestCPlusPlusConversionOperatorKeepsAParenthesizedTarget(t *testing.T) {
 struct S {
   operator decltype(Value::v)() const { return 0; }
   operator const char*() const { return ""; }
+  operator void(*)(int)() const { return nullptr; }
+  operator void(*)(double)() const { return nullptr; }
 };
 `
 	kinds := parseCPlusPlus(t, src)
 	for _, name := range []string{
 		"S.operator decltype(Value::v)",
 		"S.operator const char*",
+		"S.operator void(*)(int)",
+		"S.operator void(*)(double)",
 	} {
 		if kinds[name] == "" {
 			t.Fatalf("conversion operator %q not extracted; got %#v", name, kinds)
