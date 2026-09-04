@@ -224,7 +224,8 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 		{
 			name: "maven module with a test class",
 			files: map[string]string{
-				"pom.xml":      "<project/>",
+				// The root aggregator has to DECLARE the module for `-pl` to select it.
+				"pom.xml":      "<project><modules><module>gson</module></modules></project>",
 				"gson/pom.xml": "<project/>",
 				"gson/src/main/java/com/google/gson/GsonBuilder.java":     "",
 				"gson/src/test/java/com/google/gson/GsonBuilderTest.java": "",
