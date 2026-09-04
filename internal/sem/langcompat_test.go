@@ -1079,6 +1079,7 @@ func TestObjectiveCNamesOnlySwiftDeclarationsExposedToIt(t *testing.T) {
 	writeFile(t, repo, "models.swift", `struct Ledger { var id: Int }
 class Engine { func start() {} }
 @objc class Bridged: NSObject { }
+@objc(RenamedThing) class Renamed: NSObject { }
 func freeFunc(x: Int) -> Int { return x }
 `)
 	writeFile(t, repo, "use.m", `#import <Foundation/Foundation.h>
@@ -1088,6 +1089,8 @@ func freeFunc(x: Int) -> Int { return x }
 - (void)useLedger:(Ledger *)l { }
 - (void)useEngine:(Engine *)e { }
 - (void)useBridged:(Bridged *)b { }
+- (void)useExportedName:(RenamedThing *)r { }
+- (void)useSwiftName:(Renamed *)r { }
 - (void)go { freeFunc(1); }
 @end
 `)
@@ -1100,6 +1103,8 @@ func freeFunc(x: Int) -> Int { return x }
 	for _, impossible := range []string{
 		"USES_TYPE Objective-C/useLedger->Swift/Ledger",
 		"USES_TYPE Objective-C/useEngine->Swift/Engine",
+		"USES_TYPE Objective-C/useExportedName->Swift/Renamed",
+		"USES_TYPE Objective-C/useSwiftName->Swift/Renamed",
 		"CALLS Objective-C/go->Swift/freeFunc",
 	} {
 		if relation, ok := edges[impossible]; ok {
@@ -1127,7 +1132,7 @@ func TestSwiftDeclarationVisibleToObjectiveC(t *testing.T) {
 	}{
 		{"class", "@objc class Bridged: NSObject", true},
 		{"class", "@objcMembers class Members: NSObject", true},
-		{"class", "@objc(RenamedThing) class Renamed: NSObject", true},
+		{"class", "@objc(RenamedThing) class Renamed: NSObject", false},
 		{"class", "class Engine: NSObject", true},
 		{"class", "class Sub: Engine", true},
 		{"class", "class Engine", false},
@@ -1147,5 +1152,30 @@ func TestSwiftDeclarationVisibleToObjectiveC(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("swiftDeclarationVisibleToObjectiveC(%s %q) = %v, want %v", tc.kind, tc.signature, got, tc.want)
 		}
+	}
+}
+
+func TestObjectiveCPlusPlusSwiftExposureCandidates(t *testing.T) {
+	t.Parallel()
+	from := SymbolRecord{Language: "Objective-C++", FilePath: "consumer.mm"}
+	for _, tc := range []struct {
+		name      string
+		signature string
+		kind      string
+		want      bool
+	}{
+		{name: "bridged class", signature: "@objc class Bridged: NSObject", kind: "class", want: true},
+		{name: "objc members class", signature: "@objcMembers class Members: NSObject", kind: "class", want: true},
+		{name: "struct", signature: "struct Ledger", kind: "struct"},
+		{name: "root class", signature: "class Engine", kind: "class"},
+		{name: "free function", signature: "func freeFunc(x: Int) -> Int", kind: "function"},
+		{name: "custom renamed class", signature: "@objc(RenamedThing) class Renamed: NSObject", kind: "class"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := SymbolRecord{Language: "Swift", Kind: tc.kind, Signature: tc.signature, FilePath: "models.swift"}
+			if got := candidateSharesDeclarations(from, candidate); got != tc.want {
+				t.Fatalf("candidateSharesDeclarations(Objective-C++, %q) = %v, want %v", tc.signature, got, tc.want)
+			}
+		})
 	}
 }

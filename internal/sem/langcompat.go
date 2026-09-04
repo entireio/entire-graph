@@ -102,7 +102,7 @@ var typeSharingLanguageEdges = map[string][]string{
 	"C":             {"Objective-C"},
 	"C++":           {"C", "Objective-C"},
 	"Objective-C":   {"C", "Swift"},
-	"Objective-C++": {"C", "C++", "Objective-C"},
+	"Objective-C++": {"C", "C++", "Objective-C", "Swift"},
 	"Swift":         {"C", "Objective-C", "C++"},
 }
 
@@ -278,7 +278,7 @@ func candidateSharesDeclarations(from, candidate SymbolRecord) bool {
 		// than C++ is.
 		return !objectiveCOnlyDeclaration(candidate.Kind)
 	}
-	if from.Language == "Objective-C" && candidate.Language == "Swift" {
+	if (from.Language == "Objective-C" || from.Language == "Objective-C++") && candidate.Language == "Swift" {
 		return swiftDeclarationVisibleToObjectiveC(candidate)
 	}
 	if isClojureDialect(from.Language) && isClojureDialect(candidate.Language) {
@@ -340,6 +340,8 @@ func objectiveCOnlyDeclaration(kind string) bool {
 // signature, including when they sit on their own line above it.
 var swiftObjCExposureAttributeRe = regexp.MustCompile(`@objc(?:Members)?\b`)
 
+var swiftObjCCustomNameAttributeRe = regexp.MustCompile(`@objc\s*\(`)
+
 // swiftDeclarationVisibleToObjectiveC reports whether a Swift declaration could
 // appear in the generated `<Module>-Swift.h` header, which is the ONLY way an
 // Objective-C source names a Swift declaration. The language pair is real --
@@ -362,6 +364,12 @@ func swiftDeclarationVisibleToObjectiveC(candidate SymbolRecord) bool {
 	if signature == "" {
 		// Nothing to judge on: leave the candidate exactly as it was.
 		return true
+	}
+	if swiftObjCCustomNameAttributeRe.MatchString(signature) {
+		// The extractor indexes the Swift declaration under its Swift spelling,
+		// while Objective-C names this declaration by the custom exported name.
+		// Without alias metadata, accepting either spelling would be unsound.
+		return false
 	}
 	if swiftObjCExposureAttributeRe.MatchString(signature) {
 		return true

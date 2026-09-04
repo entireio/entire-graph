@@ -4967,6 +4967,23 @@ def run():
 		}
 	})
 
+	t.Run("semicolon import alias resolves original member", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "app.py", "from frobnicate import compute as c; c(1)\n")
+
+		calls := callRelationsFrom(t, repo, "app.py")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("semicolon import alias did not resolve original member: %#v", calls)
+		}
+		if calls[0].ToID == externalID("symbol", "frobnicate.c") {
+			t.Fatalf("semicolon import alias invented module member: %#v", calls[0])
+		}
+	})
+
 	t.Run("ambiguous foreign targets stay external", func(t *testing.T) {
 		repo := t.TempDir()
 		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
