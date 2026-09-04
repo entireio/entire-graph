@@ -776,7 +776,16 @@ func searchVerifyGradleIncludeArguments(script string) []string {
 
 // searchVerifyGradleCallArguments collects the string literals of one call's argument list and
 // reports how far it consumed. Groovy allows the parentheses to be dropped, so the list ends either
-// at the matching `)` or at the end of the line, extended while the line is continued.
+// at the matching `)` or at the end of the STATEMENT — which is the end of the line, extended while
+// the line is continued, OR a `;` before it.
+//
+// The semicolon is not a detail. A line is not a statement in Groovy: `include ':app'; project(':app')
+// .projectDir = file('lib')` is the ordinary spelling for an include plus a directory remap, and
+// without the `;` terminator this scanner read `'lib'` — the argument of a DIFFERENT call, on the
+// other side of the separator — as a third included project and named `./gradlew :lib:test` for a
+// project the settings file never declares. The parenthesised form already stopped at its own `)`,
+// so the two spellings of the same include disagreed about everything that followed them on the
+// line; a terminator is what makes them agree.
 func searchVerifyGradleCallArguments(rest string) ([]string, int) {
 	var arguments []string
 	index := 0
@@ -803,6 +812,14 @@ func searchVerifyGradleCallArguments(rest string) ([]string, int) {
 			}
 			arguments = append(arguments, literal)
 			index += width
+		case ';':
+			// A command-expression argument list ends at the statement separator exactly as it ends
+			// at the newline below. Inside parentheses a `;` is somebody else's syntax.
+			if parenthesised || depth > 0 {
+				index++
+				continue
+			}
+			return arguments, index
 		case '\n':
 			if parenthesised || depth > 0 {
 				index++
