@@ -1138,13 +1138,23 @@ func openUnconfinedOutputFile(
 				return nil, readErr
 			}
 			hops++
-			if filepath.IsAbs(link) || filepath.VolumeName(link) != "" ||
-				(len(link) > 0 && os.IsPathSeparator(link[0])) {
-				// Windows resolves a chain of FULLY QUALIFIED reparse targets against a
-				// tighter budget than a relative one, and the flag is sticky here for the
-				// same reason it is in the contained walk: one such target lowers the
-				// limit for the whole resolution, and the drive-relative and drive-rooted
-				// spellings filepath.IsAbs reports false for are fully qualified too.
+			anchor := linkTargetAnchorOf(link)
+			if anchor == linkTargetDriveRelative {
+				// `C:file` is resolved against that drive's OWN working directory, which
+				// is process-global state this pinned walk has no handle on and cannot
+				// reproduce. There is no anchor to restart at, so the write is refused
+				// rather than resolved somewhere the caller did not name.
+				return nil, fmt.Errorf(
+					"refusing to write %s: %s is a symbolic link to the drive-relative target %s",
+					target.given, full, link)
+			}
+			if anchor != linkTargetRelative {
+				// Windows resolves a chain of ROOTED reparse targets against a tighter
+				// budget than a relative one, and the flag is sticky here for the same
+				// reason it is in the contained walk: one such target lowers the limit
+				// for the whole resolution. The drive-rooted spelling filepath.IsAbs
+				// reports false for restarts at a volume root exactly as the qualified
+				// ones do, so it takes the same smaller budget.
 				fullyQualifiedTarget = true
 			}
 			hopLimit := containedLinkHopLimit(fullyQualifiedTarget)
@@ -1153,7 +1163,14 @@ func openUnconfinedOutputFile(
 					"refusing to write %s: the path follows more than %d symbolic links",
 					target.given, hopLimit)
 			}
-			if filepath.IsAbs(link) {
+			if anchor == linkTargetVolumeRooted {
+				// `\dir\file` is anchored at the volume of the path being resolved, not
+				// at the link's parent. Name that volume explicitly — the walk is already
+				// holding it as names[0] — so the restart below opens the right root
+				// instead of leaving the components to be resolved beneath the link.
+				link = filepath.VolumeName(names[0]) + link
+			}
+			if anchor != linkTargetRelative {
 				restarted, restartedNames, openErr := openVolumeRoot(link)
 				if openErr != nil {
 					return nil, openErr
@@ -1191,6 +1208,82 @@ func openUnconfinedOutputFile(
 		}
 	}
 	return nil, fmt.Errorf("refusing to write %s: the path names no file", target.given)
+}
+
+// linkTargetAnchor says where pathname resolution restarts for one symbolic-link
+// target, which is the only thing the walk above needs to know about its spelling.
+type linkTargetAnchor int
+
+const (
+	// linkTargetRelative is resolved against the link's own PARENT directory: any
+	// POSIX target that does not begin with a separator, and any Windows target that
+	// is neither rooted nor drive-qualified.
+	linkTargetRelative linkTargetAnchor = iota
+	// linkTargetQualified carries its own volume, so resolution restarts at that
+	// volume: `/dir/file` everywhere, and `C:\dir\file`, `\\server\share\dir\file`
+	// and `\\?\C:\dir\file` on Windows.
+	linkTargetQualified
+	// linkTargetVolumeRooted is the Windows drive-rooted spelling `\dir\file`. It is
+	// ROOTED but not FULLY QUALIFIED: resolution restarts at a volume root, but at the
+	// volume of the path being resolved rather than at one the target names.
+	linkTargetVolumeRooted
+	// linkTargetDriveRelative is the Windows drive-relative spelling `C:file`, which
+	// is resolved against that DRIVE's own working directory. It is neither rooted nor
+	// link-relative, and a pinned walk has no handle on the anchor it needs.
+	linkTargetDriveRelative
+)
+
+// linkTargetAnchorOf classifies one link target for the host this binary runs on.
+func linkTargetAnchorOf(target string) linkTargetAnchor {
+	return linkTargetAnchorFor(runtime.GOOS, target)
+}
+
+// linkTargetAnchorFor is linkTargetAnchorOf with the host family passed in, so every
+// platform's classification can be asserted from one machine. That matters here more
+// than usual: Windows is where all four of the interesting spellings exist and it
+// cannot execute on this repository's development hosts, so the decision is a pure
+// function of the string and only the syscall path that consumes it is left to the
+// Windows CI leg. The Windows rules are spelled out rather than delegated to filepath,
+// whose IsAbs and VolumeName answer for the GOOS the package was compiled for.
+//
+// The distinction filepath.IsAbs cannot make is the whole reason this exists. On
+// Windows IsAbs reports false for `\dir\file`, which IS rooted, and false for
+// `C:file`, which is not; a single IsAbs test therefore resolved a rooted target's
+// components beneath the link's parent, and an unconfined output routed through such a
+// link overwrote a different file than the caller named.
+func linkTargetAnchorFor(goos, target string) linkTargetAnchor {
+	if target == "" {
+		return linkTargetRelative
+	}
+	if goos != "windows" {
+		if target[0] == '/' {
+			return linkTargetQualified
+		}
+		return linkTargetRelative
+	}
+	// Windows accepts both separators in every position, so neither may be assumed.
+	separator := func(character byte) bool { return character == '\\' || character == '/' }
+	if separator(target[0]) {
+		if len(target) > 1 && separator(target[1]) {
+			// A UNC or device root: `\\server\share\x`, `\\?\C:\x`, `\\.\x`. The
+			// volume is part of the target, so it is fully qualified.
+			return linkTargetQualified
+		}
+		return linkTargetVolumeRooted
+	}
+	if len(target) > 1 && target[1] == ':' && windowsDriveLetter(target[0]) {
+		if len(target) > 2 && separator(target[2]) {
+			return linkTargetQualified
+		}
+		return linkTargetDriveRelative
+	}
+	return linkTargetRelative
+}
+
+// windowsDriveLetter reports whether character can name a drive. Windows accepts only
+// a single ASCII letter, in either case, before the colon.
+func windowsDriveLetter(character byte) bool {
+	return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z')
 }
 
 // openVolumeRoot opens the volume an absolute path is anchored at, which is where a
