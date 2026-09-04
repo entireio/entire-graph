@@ -40,9 +40,11 @@ memories regardless of ``top_k``.  This client therefore returns Graphify's own
 ranked NODES (up to ``top_k``).  Ranking, seeding, traversal and node text are
 Graphify's; nothing here re-ranks or rewrites them.
 
-Env:
-  GRAPHIFY_PYTHON        interpreter with graphify + networkx importable
-  GRAPHIFY_SOURCE        graphify source checkout (added to sys.path)
+Env (GRAPHIFY_PYTHON and GRAPHIFY_SOURCE are REQUIRED -- graphify has no
+discoverable default on a fresh machine, so both are validated at construction
+instead of being defaulted to one contributor's directory layout):
+  GRAPHIFY_PYTHON        interpreter with graphify + networkx importable (required)
+  GRAPHIFY_SOURCE        graphify source checkout, added to sys.path (required)
   GRAPHIFY_BRIDGE        override bridge script path
   GRAPHIFY_STATE_ROOT    per-run state root (default: $HOME/memarms/state/graphify_corpora/<pid>)
   GRAPHIFY_TIMEOUT       per-subprocess timeout seconds (default 900)
@@ -65,8 +67,34 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_PYTHON = "/home/suhaan_entire_io/memarms/venvs/graphify/bin/python"
-_DEFAULT_SOURCE = "/home/suhaan_entire_io/memarms/inputs/repos/graphify"
+_PYTHON_ENV = "GRAPHIFY_PYTHON"
+_SOURCE_ENV = "GRAPHIFY_SOURCE"
+
+
+def _require_configured_path(env: str, kind: str, what: str) -> str:
+    """Read ``env``, and fail loudly if it is missing or does not resolve.
+
+    There is deliberately no default. A default that only resolves on the
+    machine the published runs happened to use makes the arm unreproducible
+    while looking configured, and the failure then surfaces mid-ingest as an
+    opaque subprocess error. Fail here, once, with the variable to set.
+    """
+    value = os.getenv(env, "").strip()
+    if not value:
+        raise RuntimeError(
+            f"{env} is not set. The graphify arm needs {what}, and there is no "
+            f"portable default for it. Export {env}=<path> before running this arm."
+        )
+    path = Path(value).expanduser()
+    if kind == "exe":
+        ok, expected = path.is_file() and os.access(path, os.X_OK), "an executable file"
+    else:
+        ok, expected = path.is_dir(), "a directory"
+    if not ok:
+        raise RuntimeError(
+            f"{env}={value!r} is not {expected}. It must point at {what}."
+        )
+    return str(path)
 
 
 def _default_bridge_path() -> str:
@@ -93,8 +121,14 @@ def _iso(timestamp: int | None) -> str:
 
 class GraphifyClient:
     def __init__(self, rpm: int = 60, **kwargs: Any) -> None:
-        self.python = os.getenv("GRAPHIFY_PYTHON", _DEFAULT_PYTHON)
-        self.source = os.getenv("GRAPHIFY_SOURCE", _DEFAULT_SOURCE)
+        self.python = _require_configured_path(
+            _PYTHON_ENV, "exe",
+            "a Python interpreter with graphify and networkx importable",
+        )
+        self.source = _require_configured_path(
+            _SOURCE_ENV, "dir",
+            "the graphify source checkout that is added to sys.path",
+        )
         self.bridge = os.getenv("GRAPHIFY_BRIDGE", _default_bridge_path())
         self.timeout = int(os.getenv("GRAPHIFY_TIMEOUT", "900"))
 

@@ -80,9 +80,21 @@ python3.12 -m venv .venv
 #    or managed identity). Only the endpoint and API version are configuration.
 export AZURE_AI_ENDPOINT=... AZURE_AI_API_VERSION=2024-05-01-preview
 
-# 6. Run an arm
+# 6. Point the non-entire arms at their engine. There is deliberately no
+#    default that resolves on only one machine, so each adapter validates its
+#    configuration at construction and fails with the variable to set.
+#      cmm      CMM_BIN, or `codebase-memory-mcp` on PATH
+#      graphify GRAPHIFY_PYTHON (interpreter with graphify + networkx importable)
+#               and GRAPHIFY_SOURCE (the graphify checkout added to sys.path)
+export CMM_BIN=...
+
+# 7. Run an arm
 bash <path-to-this-dir>/run_locomo.sh cmm
 ```
+
+`run_locomo.sh <arm> resume` is accepted only for the server-backed Mem0 arms. The `entire`,
+`graphify`, `cmm` and `bm25` adapters buffer ingestion in memory, so a resumed run would skip
+every `add()` and score a partial corpus; the launcher refuses those combinations outright.
 
 [`run_locomo.sh`](run_locomo.sh) preserves the published launch configuration while replacing the
 model-key input with refreshable Microsoft Entra authentication.
@@ -196,6 +208,8 @@ The defects we found on our own side are listed in `RESULTS.md` §6 and were rem
 | `benchmarks/common/cmm_client.py` | our port of `codebase-memory-mcp` as a benchmark arm |
 | `benchmarks/common/bm25_client.py` | lexical BM25 baseline over raw conversation turns |
 | `benchmarks/common/test_bm25_client.py` | regression coverage for BM25 candidate selection |
+| `benchmarks/common/test_kit_reproducibility.py` | adapter configuration must be portable, and a failed retrieval must not score as an empty one |
+| `ci/test_kit_launcher_and_patches.py` | launcher resume refusals and patch-set integrity |
 | `benchmarks/common/runmeta.py` | run-provenance capture + the `FAIR_MODE` guard |
 | `patches/0001`–`0004`, `0006` | our diffs against upstream harness files (see `UPSTREAM.md`) |
 | `patches/0005` | the cmm `Section` one-line patch + its regression test — applied to the separate `codebase-memory-mcp` repo, not this harness |
@@ -207,10 +221,12 @@ The defects we found on our own side are listed in `RESULTS.md` §6 and were rem
 | `AUTO-SCORES.md` | raw scorer output with gate counts, verbatim |
 | `UPSTREAM.md` | upstream commit, licence, and file-level provenance manifest |
 
-The adapters carry machine-specific default paths from the benchmark host (e.g. `_DEFAULT_BIN`
-in `cmm_client.py`). They are all overridable by the env vars documented in each module docstring;
-the files are vendored **verbatim** so that their md5s match the fingerprints recorded in the run
-artifacts by `runmeta.code_hashes()`.
+No adapter default encodes a path from the benchmark host. Engine locations come from the env
+vars documented in each module docstring, and each adapter validates them at construction: `cmm`
+defaults to the bare name `codebase-memory-mcp` resolved on `PATH`, and `graphify` requires
+`GRAPHIFY_PYTHON` and `GRAPHIFY_SOURCE` because it has no discoverable default. The files are
+vendored **verbatim** so that their md5s match the fingerprints recorded in the run artifacts by
+`runmeta.code_hashes()`.
 
 **No credential values appear anywhere in this directory.** Foundry inference uses Microsoft Entra
 ID rather than a model API key. Its non-secret configuration is referenced by env-var name only

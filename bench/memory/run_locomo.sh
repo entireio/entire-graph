@@ -15,6 +15,9 @@
 # timeouts and drops that look like arm weakness.
 #
 # Usage: run_locomo.sh <arm> [resume]
+#
+# `resume` is accepted only for arms whose memory lives outside this process
+# (the Mem0 server arms). See the refusal below for why.
 set -euo pipefail
 
 # Authentication is identity-only; API keys and static bearer tokens are not
@@ -41,6 +44,28 @@ PN="full_${ARM}"
 
 if pgrep -f -- "locomo.run --project-name ${PN} " > /dev/null 2>&1; then
   echo "REFUSING: ${PN} already running"; exit 3
+fi
+
+# Resume is only sound for arms whose memory lives OUTSIDE this process.
+# The entire, graphify, cmm and bm25 adapters buffer ingested turns in memory
+# and materialize their corpus at first search. A resumed run finds completed
+# ingestion checkpoints, skips every add(), and then raises BUFFER_MISSING on
+# the first unfinished question -- so the advertised resume path cannot resume
+# these arms at all, and a run that limped past it would be scoring a partial
+# corpus while reporting a complete one. Refuse loudly instead.
+IN_PROCESS_BUFFERED_ARMS=" entire graphify cmm bm25 "
+if [[ -n "$RESUME" ]]; then
+  if [[ "$RESUME" != "resume" ]]; then
+    echo "REFUSING: the second argument must be exactly 'resume' (got '$RESUME')" >&2
+    exit 2
+  fi
+  if [[ "$IN_PROCESS_BUFFERED_ARMS" == *" $ARM "* ]]; then
+    echo "REFUSING: the '$ARM' arm buffers ingestion in-process and cannot resume." >&2
+    echo "  A resumed run skips every add() and then fails with BUFFER_MISSING," >&2
+    echo "  or would score a partial corpus as a complete run." >&2
+    echo "  Re-run this arm from the start (omit the 'resume' argument)." >&2
+    exit 4
+  fi
 fi
 
 # Keep every filesystem-backed arm under the explicit benchmark state root.

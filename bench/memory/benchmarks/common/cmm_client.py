@@ -39,7 +39,9 @@ Fairness contract (identical to the entire / mem0 / cognee / graphify arms):
   * state roots under ``$HOME`` (``/tmp`` is wiped by systemd on boot).
 
 Env:
-  CMM_BIN              binary (default: the patched build)
+  CMM_BIN              cmm binary: a path, or a bare name resolved on PATH
+                       (default: the bare name ``codebase-memory-mcp``).
+                       Validated at construction -- see ``_resolve_binary``.
   CMM_STATE_ROOT       state root (default: $HOME/memarms/state/cmm_corpora/<pid>)
   CMM_TIMEOUT          per-subprocess timeout seconds (default 900)
 """
@@ -61,9 +63,42 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_BIN = (
-    "/home/suhaan_entire_io/memarms/inputs/bin/cmm-patched/codebase-memory-mcp"
-)
+# Portable default: a bare name, resolved on PATH -- the same contract
+# ENTIRE_GRAPH_BIN uses in entire_client.py. An absolute path under one
+# contributor's home directory made this arm runnable on exactly one machine
+# and failed everywhere else only after ingestion had already started.
+_DEFAULT_BIN = "codebase-memory-mcp"
+
+
+def _resolve_binary(value: str) -> str:
+    """Resolve and validate the cmm binary once, at construction.
+
+    A value containing a path separator must exist and be executable; a bare
+    name is looked up on PATH. Either way the failure is one clear error naming
+    ``CMM_BIN``, not a ``FileNotFoundError`` raised per subprocess once the run
+    is already under way.
+    """
+    value = (value or "").strip()
+    if not value:
+        raise RuntimeError(
+            "CMM_BIN is set but empty. Unset it to use the default "
+            f"{_DEFAULT_BIN!r} from PATH, or point it at the cmm binary."
+        )
+    separators = [os.sep] + ([os.altsep] if os.altsep else [])
+    if any(sep in value for sep in separators):
+        path = Path(value).expanduser()
+        if not (path.is_file() and os.access(path, os.X_OK)):
+            raise RuntimeError(
+                f"CMM_BIN={value!r} is not an executable file."
+            )
+        return str(path)
+    found = shutil.which(value)
+    if not found:
+        raise RuntimeError(
+            f"the cmm binary {value!r} was not found on PATH. Put it on PATH, or "
+            "export CMM_BIN=/path/to/codebase-memory-mcp."
+        )
+    return found
 
 
 def _safe_id(value: str) -> str:
@@ -86,7 +121,7 @@ def _iso(timestamp: int | None) -> str:
 
 class CmmClient:
     def __init__(self, rpm: int = 60, **kwargs: Any) -> None:
-        self.binary = os.getenv("CMM_BIN", _DEFAULT_BIN)
+        self.binary = _resolve_binary(os.getenv("CMM_BIN", _DEFAULT_BIN))
         self.timeout = int(os.getenv("CMM_TIMEOUT", "900"))
         root = os.getenv("CMM_STATE_ROOT") or os.path.join(
             os.path.expanduser("~"), "memarms", "state",
