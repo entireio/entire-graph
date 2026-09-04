@@ -40,7 +40,8 @@ identical spine. The only thing allowed to differ between arms is *which memorie
   every knob that changes what one arm ingests, retrieves or says —
   `runmeta.ASYMMETRY_FLAGS` (entire-graph retrieval, prompt and ingest knobs, `MEM0_DATE_INJECT`,
   the BM25 scoring parameters, per-arm budgets and deadlines), any unrecognised `EG_*` variable,
-  and the `--user-profile` CLI flag — and raises `SystemExit` before the run measures anything.
+  the `--user-profile` CLI flag, and a `MEM0_BACKEND` override that disagrees with `--backend`
+  — and raises `SystemExit` before the run measures anything.
   Variables that only say *where* a backend lives are listed in `runmeta.SYMMETRIC_ARM_SETTINGS`
   and stay legal. `runmeta.capture()` additionally stamps every run artifact with env snapshot,
   redacted argv, git state, and md5 of every file that can change a measured number — secret-named

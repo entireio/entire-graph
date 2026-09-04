@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -60,19 +61,22 @@ FAKE_PASSWORD = "FAKETESTPASSWORD-2222"
 
 # Shapes that each cost a review round before the value partition existed. They
 # stay as named regression witnesses so the old bugs cannot come back quietly.
+_HOST = runmeta._fingerprint("mem0.local")
 HISTORICAL_URL_SHAPES = {
     "userinfo": (f"https://admin:{FAKE_PASSWORD}@mem0.local/v1",
-                 "https://<redacted>@mem0.local/<redacted>"),
+                 f"https://<redacted>@{_HOST}/<redacted>"),
     "query": (f"https://mem0.local/v1?token={FAKE_KEY}",
-              "https://mem0.local/<redacted>?<redacted>"),
+              f"https://{_HOST}/<redacted>?<redacted>"),
     "fragment": (f"https://mem0.local/v1#{FAKE_KEY}",
-                 "https://mem0.local/<redacted>#<redacted>"),
+                 f"https://{_HOST}/<redacted>#<redacted>"),
     "path_segment": (f"https://mem0.local/hooks/{FAKE_KEY}",
-                     "https://mem0.local/<redacted>"),
+                     f"https://{_HOST}/<redacted>"),
     "at_sign_in_password": (f"https://admin:pa@ss{FAKE_PASSWORD}@mem0.local/",
-                            "https://<redacted>@mem0.local/"),
+                            f"https://<redacted>@{_HOST}/"),
     "file_uri": (f"file:///hooks/{FAKE_KEY}", "file:<redacted>"),
     "mailto_uri": (f"mailto:admin:{FAKE_PASSWORD}@mem0.local", "mailto:<redacted>"),
+    "secret_in_hostname": (f"https://{FAKE_KEY}.service.example/",
+                           f"https://{runmeta._fingerprint(FAKE_KEY + '.service.example')}/"),
 }
 
 # Every value-taking option, with a hostile value, in every argv shape.
@@ -91,12 +95,12 @@ HOSTILE_VALUES = {
 }
 
 _FINGERPRINT_RE = re.compile(r"sha256:[0-9a-f]{12}$")
-# The one free-form fragment the partition deliberately keeps: a host. Class (b)
-# is defined as "a derived non-reversible form (a fingerprint, a boolean, a
-# scheme, a host)", so a location-only URL is an accepted recorded form.
+# A URL is recorded as scheme + fingerprinted authority + a marker for each
+# component that was dropped. The authority is fingerprinted because a hostname
+# is free-form: a tenant id or token can live in one.
 _URL_LOCATION_RE = re.compile(
     r"[A-Za-z][A-Za-z0-9+.-]*:"
-    r"(<redacted>|//(<redacted>@)?[A-Za-z0-9._:\[\]-]*"
+    r"(<redacted>|//(<redacted>@)?sha256:[0-9a-f]{12}"
     r"(/<redacted>|/)?(\?<redacted>)?(#<redacted>)?)$"
 )
 
@@ -217,13 +221,15 @@ class RedactArgvTest(unittest.TestCase):
         self.assertEqual(first, again)
         self.assertNotEqual(first, other)
 
-    def test_a_bare_host_keeps_its_location(self) -> None:
-        for url in ("http://localhost:18888", "https://mem0.local/"):
-            with self.subTest(url=url):
-                self.assertEqual(
-                    runmeta.redact_argv(["run.py", "--mem0-host", url]),
-                    ["run.py", "--mem0-host", url],
-                )
+    def test_a_host_is_comparable_but_not_readable(self) -> None:
+        """A hostname is free-form, so it is fingerprinted rather than kept."""
+        same = [runmeta.redact_argv(["run.py", "--mem0-host", url])[2]
+                for url in ("http://localhost:18888", "http://localhost:18888")]
+        other = runmeta.redact_argv(["run.py", "--mem0-host", "http://elsewhere:18888"])[2]
+        self.assertEqual(*same)
+        self.assertNotEqual(same[0], other)
+        self.assertNotIn("localhost", same[0])
+        self.assertRegex(same[0], _URL_LOCATION_RE)
 
     def test_capture_persists_the_redacted_command_line(self) -> None:
         argv = ["/h/.venv/bin/python", "--backend", "oss", "--mem0-api-key", FAKE_KEY]
@@ -282,6 +288,7 @@ class ImplementationProvenanceTest(unittest.TestCase):
 
             self.assertEqual(recorded["path"], str(binary))
             self.assertEqual(recorded["source"], "env")
+            self.assertEqual(recorded["resolved_via"], "literal")
             self.assertEqual(
                 recorded["digest"],
                 "sha256:" + hashlib.sha256(b"#!/bin/sh\nexit 0\n").hexdigest(),
@@ -309,9 +316,43 @@ class ImplementationProvenanceTest(unittest.TestCase):
                                  lambda name: str(binary) if name == "entire-graph" else None):
                 recorded = runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]
 
-        self.assertEqual(recorded["source"], "PATH")
+        self.assertEqual(recorded["source"], "default")
+        self.assertEqual(recorded["resolved_via"], "PATH")
         self.assertEqual(
             recorded["digest"], "sha256:" + hashlib.sha256(b"from PATH\n").hexdigest()
+        )
+
+    def test_a_command_name_override_is_resolved_through_path(self) -> None:
+        """The adapters exec a bare name via PATH; hashing the name records
+        `unreadable` for a build that really ran."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            binary = Path(tempdir) / "entire-graph"
+            binary.write_bytes(b"named on PATH\n")
+            with patch.dict("os.environ", {"ENTIRE_GRAPH_BIN": "entire-graph"}, clear=True), \
+                    patch.object(runmeta.shutil, "which",
+                                 lambda name: str(binary) if name == "entire-graph" else None):
+                recorded = runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]
+
+        self.assertEqual(recorded["path"], str(binary))
+        self.assertEqual(recorded["resolved_via"], "PATH")
+        self.assertEqual(
+            recorded["digest"], "sha256:" + hashlib.sha256(b"named on PATH\n").hexdigest()
+        )
+
+    def test_an_imported_clients_own_default_is_bound(self) -> None:
+        """An arm that never sets its env var still runs a specific build."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            binary = Path(tempdir) / "cmm"
+            binary.write_bytes(b"default build\n")
+            module = types.SimpleNamespace(_DEFAULT_BIN=str(binary))
+            key = f"{runmeta.__package__}.cmm_client"
+            with patch.dict("sys.modules", {key: module}), \
+                    patch.dict("os.environ", {}, clear=True):
+                recorded = runmeta.implementation_provenance()["CMM_BIN"]
+
+        self.assertEqual(recorded["source"], "default")
+        self.assertEqual(
+            recorded["digest"], "sha256:" + hashlib.sha256(b"default build\n").hexdigest()
         )
 
     def test_an_unreadable_binary_is_recorded_as_unreadable(self) -> None:
@@ -380,6 +421,26 @@ class FairModeGuardTest(unittest.TestCase):
         self.assertIn("EG_API_KEY", str(raised.exception))
         self.assertTrue(report["EG_API_KEY"].startswith("sha256:"))
 
+    def test_rejects_a_backend_override_that_disagrees_with_the_flag(self) -> None:
+        """`backend = os.getenv("MEM0_BACKEND", args.backend)` outranks the flag,
+        so the artifact could name one arm in argv while another one ran."""
+        class Args:
+            backend = "entire"
+            user_profile = False
+
+        with patch.dict("os.environ", {"FAIR_MODE": "1", "MEM0_BACKEND": "oss"}, clear=True):
+            with self.assertRaises(SystemExit) as raised:
+                runmeta.assert_fair_mode(Args())
+        self.assertIn("MEM0_BACKEND=oss", str(raised.exception))
+
+    def test_allows_a_backend_override_that_agrees_with_the_flag(self) -> None:
+        class Args:
+            backend = "entire"
+            user_profile = False
+
+        with patch.dict("os.environ", {"FAIR_MODE": "1", "MEM0_BACKEND": "entire"}, clear=True):
+            runmeta.assert_fair_mode(Args())
+
     def test_accepts_the_published_launcher_environment(self) -> None:
         """run_locomo.sh sets these on every fair run; none may trip the guard."""
         env = {
@@ -428,7 +489,8 @@ class AsymmetryCoverageTest(unittest.TestCase):
                 if name.startswith(self.ARM_PREFIXES):
                     found.setdefault(name, str(path.relative_to(kit)))
 
-        classified = set(runmeta.ASYMMETRY_FLAGS) | runmeta.SYMMETRIC_ARM_SETTINGS
+        classified = (set(runmeta.ASYMMETRY_FLAGS) | runmeta.SYMMETRIC_ARM_SETTINGS
+                      | runmeta.ARM_SELECTION_SETTINGS)
         unclassified = {k: v for k, v in sorted(found.items()) if k not in classified}
         self.assertEqual(
             unclassified,

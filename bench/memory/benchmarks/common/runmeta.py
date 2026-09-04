@@ -84,7 +84,6 @@ SYMMETRIC_ARM_SETTINGS = frozenset({
     "ENTIRE_CORPUS_ROOT",
     "ENTIRE_GRAPH_BIN",
     "MEM0_HOST",
-    "MEM0_BACKEND",
     "BM25_STATE_ROOT",
     "CMM_BIN",
     "CMM_STATE_ROOT",
@@ -93,6 +92,14 @@ SYMMETRIC_ARM_SETTINGS = frozenset({
     "GRAPHIFY_SOURCE",
     "GRAPHIFY_STATE_ROOT",
 })
+
+
+# Arm *selection* overrides: neither an asymmetry knob nor infrastructure.
+# `backend = os.getenv("MEM0_BACKEND", args.backend)` (patch 0003) means this
+# silently outranks the CLI flag, so a run can record `--backend entire` in argv
+# -- the value ci/summarize_run.py reads the arm from -- while executing another
+# backend entirely. Under FAIR_MODE it must agree with the flag, or not be set.
+ARM_SELECTION_SETTINGS = frozenset({"MEM0_BACKEND"})
 
 
 # --- argv redaction -------------------------------------------------------
@@ -158,6 +165,13 @@ def _url_location_rule(value: str) -> str:
     and port survive; every other component is dropped wholesale rather than
     inspected. A value that is not a URL is dropped entirely: for a host option
     it is not provenance, and it is the one shape that could still be free text.
+
+    The authority itself is fingerprinted rather than kept: a hostname is
+    free-form, so a tenant id or a token embedded in one
+    (`https://<secret>.service.example`) would otherwise be the last route by
+    which a secret could reach the artifact through argv. Two runs against the
+    same host still fingerprint alike, and the readable host is recorded in the
+    `env` block as `MEM0_HOST`.
     """
     try:
         parts = urlsplit(value)
@@ -169,12 +183,14 @@ def _url_location_rule(value: str) -> str:
         return _ARGV_REDACTED
     if not netloc:
         return scheme + ":" + _ARGV_REDACTED
+    userinfo = ""
     if "@" in netloc:
         # Split on the LAST "@": userinfo may not contain an unescaped one, so
         # a value that does is malformed and stripping more is the safe way to
         # be wrong.
-        netloc = _ARGV_REDACTED + "@" + netloc.rpartition("@")[2]
-    scrubbed = urlunsplit((scheme, netloc, "", "", ""))
+        userinfo = _ARGV_REDACTED + "@"
+        netloc = netloc.rpartition("@")[2]
+    scrubbed = scheme + "://" + userinfo + _fingerprint(netloc)
     scrubbed += "/" + _ARGV_REDACTED if path not in ("", "/") else path
     if query:
         scrubbed += "?" + _ARGV_REDACTED
@@ -354,11 +370,14 @@ def _reported_value(name: str, value: str) -> str:
 # which no env var records at all. Rejecting the overrides would therefore close
 # nothing; binding what was resolved closes both. Without this a run can execute
 # a modified entire-graph build and still be stamped fair.
+# env override -> (sibling client module, its default attribute, PATH fallback).
+# The default is read from the client module only when it is already imported,
+# so the arm actually running binds its own default with no import risk and no
+# duplicated literal to drift.
 _ARM_EXECUTABLES = {
-    # env override -> the name looked up on PATH when the override is unset
-    "ENTIRE_GRAPH_BIN": "entire-graph",
-    "CMM_BIN": "cmm",
-    "GRAPHIFY_PYTHON": None,
+    "ENTIRE_GRAPH_BIN": ("entire_client", None, "entire-graph"),
+    "CMM_BIN": ("cmm_client", "_DEFAULT_BIN", None),
+    "GRAPHIFY_PYTHON": ("graphify_client", "_DEFAULT_PYTHON", None),
 }
 # Source checkouts an arm imports at run time rather than executing.
 _ARM_SOURCE_DIRS = ("GRAPHIFY_SOURCE",)
@@ -387,13 +406,24 @@ def implementation_provenance() -> dict:
     two runs of the "same" arm can be shown to have executed the same build.
     """
     out: dict = {}
-    for var, path_name in _ARM_EXECUTABLES.items():
-        resolved = os.environ.get(var) or (shutil.which(path_name) if path_name else None)
-        if not resolved:
+    for var, (module, attribute, fallback) in _ARM_EXECUTABLES.items():
+        candidate, source = os.environ.get(var), "env"
+        if not candidate:
+            imported = sys.modules.get(f"{__package__}.{module}") if module else None
+            candidate = getattr(imported, attribute, None) if attribute else None
+            candidate, source = candidate or fallback, "default"
+        if not candidate:
             continue
+        # A bare command name is executed through PATH by the adapters
+        # (`entire_client.py`: `os.getenv("ENTIRE_GRAPH_BIN", "entire-graph")`),
+        # so hashing the name itself would record `unreadable` for a build that
+        # really ran.
+        via = "literal" if os.sep in candidate else "PATH"
+        resolved = candidate if via == "literal" else (shutil.which(candidate) or candidate)
         out[var] = {
             "path": resolved,
-            "source": "env" if os.environ.get(var) else "PATH",
+            "source": source,          # where the name came from: env override or the arm default
+            "resolved_via": via,       # how it became a path: as written, or a PATH lookup
             "digest": _file_digest(resolved),
         }
     for var in _ARM_SOURCE_DIRS:
@@ -428,13 +458,17 @@ def assert_fair_mode(args=None) -> None:
     if os.getenv("FAIR_MODE") != "1":
         return
     active = asymmetry_report()
+    # Arm selection must not disagree with the arm the artifact records.
+    selected = os.environ.get("MEM0_BACKEND")
+    if selected and selected != getattr(args, "backend", None):
+        active["MEM0_BACKEND"] = selected
     # --user-profile is a CLI flag, not an env var: it injected a "## User Profile"
     # prompt section that only the entire arm ever received (498/500 vs 0/500).
     if args is not None and getattr(args, "user_profile", False):
         active["--user-profile"] = "True"
     if active:
         raise SystemExit(
-            "FAIR_MODE=1 but arm-asymmetric settings are active: "
+            "FAIR_MODE=1 but arm-asymmetric or arm-selection settings are active: "
             + ", ".join(f"{k}={v}" for k, v in active.items())
             + "\nUnset them, or run without FAIR_MODE=1 for an exploratory run."
         )

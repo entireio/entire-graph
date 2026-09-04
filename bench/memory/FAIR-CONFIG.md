@@ -244,8 +244,11 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
   `--question-types` keep their names and drop their values — **nothing is lost: every one is
   recorded by `metadata` as a typed field** (`project_name`, `run_id`, `answerer_model`,
   `judge_model`, `provider`, `question_types`), which is where an auditor should read them.
-  `--mem0-host` keeps only scheme, host and port; userinfo, path, query and fragment are
-  dropped, and a URI with no network location (`file:///hooks/<token>`) keeps only its scheme.
+  `--mem0-host` keeps its scheme and a `sha256:` fingerprint of its authority; userinfo, path,
+  query and fragment are dropped, and a URI with no network location (`file:///hooks/<token>`)
+  keeps only its scheme. The authority is fingerprinted rather than kept because a hostname is
+  free-form — a tenant id or token can live in one — so runs stay comparable by host while the
+  readable host is read from `env.MEM0_HOST`.
   `--backend` is recorded verbatim because `ci/summarize_run.py` reads the running arm back out
   of the captured argv and it is the one value with no `metadata` twin.
 - `asymmetric_settings_active` and `fair_mode` — secret-named knobs are fingerprinted here too,
@@ -254,7 +257,10 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
   dependency lock
 - `implementations` — the resolved path and sha256 of every backend build the run actually
   executed (`ENTIRE_GRAPH_BIN`, `CMM_BIN`, `GRAPHIFY_PYTHON`, and the git state of
-  `GRAPHIFY_SOURCE`), recorded whether the build came from the env override or from PATH.
+  `GRAPHIFY_SOURCE`), with `source` naming where the name came from (the env override, or the
+  arm client's own default read from the module the run imported) and `resolved_via` whether it
+  was already a path or was looked up on PATH — a bare `ENTIRE_GRAPH_BIN=entire-graph` is
+  executed through PATH by the adapter, so it is resolved the same way here.
   `code_md5` binds the harness; this binds the thing the harness drives, so a run cannot
   execute a modified `entire-graph` and still be stamped fair
 - `host`
@@ -266,7 +272,10 @@ An audit should never again have to reconstruct a config from launcher scripts.
 `runmeta.assert_fair_mode(args)` runs immediately after argument parsing
 (`longmemeval/run.py:1111`, `locomo/run.py:788`). Under `FAIR_MODE=1` it hard-exits if any entry
 of `runmeta.ASYMMETRY_FLAGS` is set, if any unrecognised `EG_*` variable is set, or if
-`--user-profile` is active. The list covers entire-graph's retrieval and prompt knobs
+`--user-profile` is active, and if `MEM0_BACKEND` is set to anything other than the arm named
+by `--backend`. That override wins over the flag (`backend = os.getenv("MEM0_BACKEND",
+args.backend)`), so without the check a run could record one arm in argv — the value
+`ci/summarize_run.py` reads the arm from — while executing another. The list covers entire-graph's retrieval and prompt knobs
 (`EG_SESSION_EXPAND`, `EG_SESSION_EXPAND_CAP`, `EG_ANSWER_ENUM`, `EG_ANSWER_ENUM_R`,
 `EG_USER_PROFILE`, `EG_PROFILE*`), its ingest shape (`EG_INGEST_GRANULARITY`, `EG_CONSOLIDATE`,
 `EG_DEEP`, `EG_CHRONO_ORDER`, `ENTIRE_MAX_CONTEXT_BYTES`), mem0's ingest rewrite
@@ -315,7 +324,7 @@ c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 041f93a130c1a91d1b81f67622555b8c  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
-b30cbb4284aab56d241d7785f46a81ad  benchmarks/common/runmeta.py
+1fe013f845b0db387a2c2cdc1a1d69b8  benchmarks/common/runmeta.py
 7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
 4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
 8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py
