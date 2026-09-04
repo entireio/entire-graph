@@ -36,12 +36,17 @@ identical spine. The only thing allowed to differ between arms is *which memorie
   `azure_ai/gpt-5.6-terra` as their internal extractor. This asymmetry is the architectural
   difference being *measured*, not a fairness violation — it is disclosed, not homogenized away.
 - **`FAIR_MODE=1` hard-exits on arm-asymmetric settings.** Implemented in
-  [`benchmarks/common/runmeta.py`](benchmarks/common/runmeta.py) (`assert_fair_mode`). If any of
-  `EG_SESSION_EXPAND`, `EG_SESSION_EXPAND_CAP`, `EG_ANSWER_ENUM`, `EG_ANSWER_ENUM_R`,
-  `EG_USER_PROFILE`, or the `--user-profile` CLI flag is active, the run raises `SystemExit` before
-  it measures anything. `runmeta.capture()` additionally stamps every run artifact with env
-  snapshot, argv, git state, and md5 of every file that can change a measured number — secret-named
-  env vars are recorded as `sha256:<12 hex>` fingerprints, never in cleartext.
+  [`benchmarks/common/runmeta.py`](benchmarks/common/runmeta.py) (`assert_fair_mode`). It covers
+  every knob that changes what one arm ingests, retrieves or says —
+  `runmeta.ASYMMETRY_FLAGS` (entire-graph retrieval, prompt and ingest knobs, `MEM0_DATE_INJECT`,
+  the BM25 scoring parameters, per-arm budgets and deadlines), any unrecognised `EG_*` variable,
+  and the `--user-profile` CLI flag — and raises `SystemExit` before the run measures anything.
+  Variables that only say *where* a backend lives are listed in `runmeta.SYMMETRIC_ARM_SETTINGS`
+  and stay legal. `runmeta.capture()` additionally stamps every run artifact with env snapshot,
+  redacted argv, git state, and md5 of every file that can change a measured number — secret-named
+  env vars are recorded as `sha256:<12 hex>` fingerprints, and the command line is filtered
+  through an allowlist of known options so a credential passed on it (`--mem0-api-key`, a
+  `NAME=value` prefix, a bare token) never reaches a published artifact.
 - **Scoring reads ONLY the aggregate `metrics_by_cutoff.top_200`** from the run's results JSON.
   Never a per-conversation re-derivation, never a hand-summed subset.
 - **Gate: a run is void if drops exceed 1%, or if zero-context questions cluster by conversation.**

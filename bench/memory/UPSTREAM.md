@@ -47,7 +47,7 @@ upstream's, untouched, and therefore identical for every arm.
 |---|---|---|---|
 | `benchmarks/common/llm_client.py` | `6a5da3c1d05dbf6a78cd364b59fc7a09` | `592bbcc560b15b88aabb2c9d0280380f` | `patches/0001-llm_client-azure-ai-provider-timeouts-reasoning.patch` |
 | `benchmarks/common/mem0_client.py` | `44e367847d94be3a90cdfa1d21aebe96` | `041f93a130c1a91d1b81f67622555b8c` | `patches/0002-mem0_client-optional-date-injection.patch` |
-| `benchmarks/locomo/run.py` | `f791a93df6257fe869ec6687865f8457` | `41158a8eb87cdeeb53d23c3ad845b7bc` | `patches/0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch` |
+| `benchmarks/locomo/run.py` | `f791a93df6257fe869ec6687865f8457` | `964f3e323c0a445b111cd890f2ce2b94` | `patches/0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch` |
 | `docker/mem0/main.py` | `e4e1e6076c9016bc37de6715ea29e67a` | `3fe9a40ba1cc8b494daadee2b977f411` | `patches/0004-docker-mem0-server-topk-fix-and-ingest-usage-metering.patch` |
 | `requirements.txt` | `13815b8f1ba4ecc628a44fc963a67679` | `51c617883adf40e4ca22b79533f4662a` | `patches/0006-requirements-bm25-deps.patch` |
 
@@ -75,7 +75,10 @@ What each patch does:
   `search()` for transient failures only (deterministic 4xx still surface as bugs); **records the
   `search_dropped` flag in the per-question record** — upstream discarded it in the LoCoMo runner
   while already recording it in the LongMemEval runner, so retry-exhausted retrievals were being
-  scored as capability misses; adds ingest-phase timing output; wires `runmeta` provenance capture
+  scored as capability misses. That includes the failure shape that never raises: upstream
+  `Mem0Client._search_oss`/`_search_cloud` catch every attempt, log `SEARCH failed after N
+  attempts`, and return `[]`, so the wrapper retries an empty result from those clients and counts
+  the drop rather than recording an infrastructure failure as a legitimate empty retrieval; adds ingest-phase timing output; wires `runmeta` provenance capture
   and the `FAIR_MODE` guard; splits `--max-workers` (conversations) from a new `--question-workers`.
 - **0004 `docker/mem0/main.py`** — the mem0 `top_k` fix described in `README.md` §3.1 (one line,
   at upstream line 233 / patched-container line 351), plus ingest token-usage metering for the
@@ -135,8 +138,8 @@ Written by us; no upstream code involved.
 | `benchmarks/common/graphify_client.py` | 364 |
 | `benchmarks/common/cmm_client.py` | 418 |
 | `benchmarks/common/graphify_mem_bridge.py` | 184 |
-| `benchmarks/common/runmeta.py` | 136 |
-| `benchmarks/common/test_runmeta.py` | 53 |
+| `benchmarks/common/runmeta.py` | 270 |
+| `benchmarks/common/test_runmeta.py` | 250 |
 | `benchmarks/common/bm25_client.py` | 369 |
 | `benchmarks/common/test_bm25_client.py` | 40 |
 | `benchmarks/common/entra_auth.py` | 94 |

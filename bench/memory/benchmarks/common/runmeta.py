@@ -27,13 +27,141 @@ _SECRET_RE = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API)", re
 
 # Settings that make one arm's pipeline different from another's. Any of these
 # being set is a fairness violation unless every arm sets it identically.
+#
+# Keep this list complete: a knob that changes behaviour but escapes the guard
+# lets a run claim FAIR_MODE while not being fair, which is worse than having no
+# guard at all. `test_runmeta.py` re-derives the arm-scoped knobs the kit
+# actually reads and fails when one is neither listed here nor declared
+# infrastructure in SYMMETRIC_ARM_SETTINGS below.
 ASYMMETRY_FLAGS = (
+    # entire-graph retrieval / prompt augmentation
     "EG_SESSION_EXPAND",
     "EG_SESSION_EXPAND_CAP",
     "EG_ANSWER_ENUM",
     "EG_ANSWER_ENUM_R",
     "EG_USER_PROFILE",
+    "EG_PROFILE",
+    "EG_PROFILE_FACT_CAP",
+    "EG_PROFILE_TIMELINE_CAP",
+    # entire-graph ingest shape
+    "EG_INGEST_GRANULARITY",
+    "EG_CONSOLIDATE",
+    "EG_DEEP",
+    "EG_CHRONO_ORDER",
+    "ENTIRE_MAX_CONTEXT_BYTES",
+    # mem0: rewrites the first ingest message with a date preamble, changing
+    # what mem0's extractor sees (patch 0002; off in the published runs).
+    "MEM0_DATE_INJECT",
+    # bm25 scoring / tokenisation
+    "BM25_B",
+    "BM25_K1",
+    "BM25_STEM",
+    "BM25_STOPWORDS",
+    # per-arm capacity and deadlines: a truncated budget or a short deadline
+    # changes what exactly one arm can retrieve or return.
+    "CMM_MEM_BUDGET_MB",
+    "CMM_TIMEOUT",
+    "GRAPHIFY_TIMEOUT",
 )
+
+# `EG_` is the entire-graph adapter's private namespace -- every variable under
+# it is by construction our own arm's knob, so an unrecognised one is a
+# violation too and the guard does not go stale when a new one is added. The
+# other arm prefixes are shared with unrelated tooling (`ENTIRE_TOKEN`,
+# `MEM0_HOST`, ...) and are enumerated explicitly instead.
+ASYMMETRIC_PREFIXES = ("EG_",)
+
+# Arm-scoped variables that only say WHERE a backend lives or WHICH arm runs.
+# They cannot change what an arm ingests, retrieves, or says, so they are legal
+# under FAIR_MODE -- `run_locomo.sh` sets several of them on every fair run.
+SYMMETRIC_ARM_SETTINGS = frozenset({
+    "ENTIRE_CORPUS_ROOT",
+    "ENTIRE_GRAPH_BIN",
+    "MEM0_HOST",
+    "MEM0_BACKEND",
+    "BM25_STATE_ROOT",
+    "CMM_BIN",
+    "CMM_STATE_ROOT",
+    "GRAPHIFY_BRIDGE",
+    "GRAPHIFY_PYTHON",
+    "GRAPHIFY_SOURCE",
+    "GRAPHIFY_STATE_ROOT",
+})
+
+
+# --- argv redaction -------------------------------------------------------
+# The provenance block below is committed alongside published numbers, and
+# credentials do reach the command line: `--mem0-api-key` is a documented option
+# of the patched runner (patch 0003), launchers pass `NAME=value` prefixes, and
+# a stray positional can be anything. argv is therefore redacted before it is
+# persisted, never after.
+#
+# The filter is an allowlist, not a denylist: only option names known to this
+# harness survive, and only the value-taking subset keeps its value. A denylist
+# of secret-looking tokens is defeated by the first credential shape nobody
+# thought of; an allowlist fails closed on it.
+_ARGV_REDACTED = "<redacted>"
+
+# Value-taking options of benchmarks/{locomo,longmemeval}/run.py whose value is
+# configuration rather than a credential. `--backend` is load-bearing:
+# ci/summarize_run.py reads the running arm back out of the captured argv.
+_ARGV_SAFE_VALUE_OPTS = frozenset({
+    "--answerer-model", "--backend", "--categories", "--conversations",
+    "--dataset-path", "--judge-model", "--judge-provider", "--max-questions",
+    "--max-workers", "--mem0-host", "--mode", "--output-dir", "--per-type",
+    "--project-name", "--provider", "--question-types", "--question-workers",
+    "--rpm", "--run-id", "--seed", "--top-k", "--top-k-cutoffs",
+})
+# Flags that take no value at all.
+_ARGV_SAFE_TOGGLES = frozenset({
+    "--all-questions", "--debug", "--evaluate-only", "--predict-only",
+    "--rejudge", "--resume", "--score-debug", "--user-profile",
+    "--with-evidence",
+})
+# Known options whose value is a credential: the name is useful provenance
+# ("a key was passed on the CLI"), the value never is.
+_ARGV_SECRET_OPTS = frozenset({"--mem0-api-key"})
+_ARGV_SAFE_OPTS = _ARGV_SAFE_VALUE_OPTS | _ARGV_SAFE_TOGGLES | _ARGV_SECRET_OPTS
+
+# Credentials also ride inside an otherwise safe value: https://user:pass@host.
+_URL_USERINFO_RE = re.compile(r"(?<=://)[^/@\s]*@")
+
+
+def _scrub_value(value: str) -> str:
+    return _URL_USERINFO_RE.sub(_ARGV_REDACTED + "@", value)
+
+
+def redact_argv(argv=None) -> list[str]:
+    """The command line with every token that is not known-safe removed.
+
+    argv[0] keeps only its basename. After it, a token survives verbatim only if
+    it is an allowlisted option name, or the value of an allowlisted
+    value-taking option. Everything else -- unknown flags and their values,
+    `NAME=value` environment prefixes, bare positionals -- becomes
+    ``<redacted>``.
+    """
+    argv = list(sys.argv if argv is None else argv)
+    if not argv:
+        return []
+    out = [os.path.basename(argv[0])]
+    pending_safe_value = False
+    for token in argv[1:]:
+        if token.startswith("-") and token not in ("-", "--"):
+            name, sep, value = token.partition("=")
+            if name not in _ARGV_SAFE_OPTS:
+                out.append(_ARGV_REDACTED)
+                pending_safe_value = False
+            elif sep:
+                keep = name in _ARGV_SAFE_VALUE_OPTS
+                out.append(f"{name}={_scrub_value(value) if keep else _ARGV_REDACTED}")
+                pending_safe_value = False
+            else:
+                out.append(name)
+                pending_safe_value = name in _ARGV_SAFE_VALUE_OPTS
+            continue
+        out.append(_scrub_value(token) if pending_safe_value else _ARGV_REDACTED)
+        pending_safe_value = False
+    return out
 
 
 def _fingerprint(value: str) -> str:
@@ -96,7 +224,13 @@ def git_state(root: Path | str | None = None) -> dict:
 
 def asymmetry_report() -> dict:
     """Which arm-asymmetric knobs are active right now."""
-    return {k: os.environ[k] for k in ASYMMETRY_FLAGS if os.environ.get(k)}
+    active = {k: os.environ[k] for k in ASYMMETRY_FLAGS if os.environ.get(k)}
+    for k, v in os.environ.items():
+        if not v or k in active or k in SYMMETRIC_ARM_SETTINGS:
+            continue
+        if k.startswith(ASYMMETRIC_PREFIXES):
+            active[k] = v
+    return dict(sorted(active.items()))
 
 
 def assert_fair_mode(args=None) -> None:
@@ -129,7 +263,7 @@ def capture(extra: dict | None = None) -> dict:
         "code_md5": code_hashes(),
         "git": git_state(),
         "host": os.uname().nodename,
-        "argv": list(sys.argv),
+        "argv": redact_argv(),
     }
     if extra:
         block.update(extra)

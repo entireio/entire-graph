@@ -228,7 +228,10 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
   NEO4J_* REDIS_* EMBED_* OPENAI_* AZURE_* ANTHROPIC_* LLM_* FAIR_* BENCH_* HARNESS_* COLLECTION_*`
   variable, with any name matching `KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API` replaced by a
   `sha256:` fingerprint so configs are comparable without leaking credentials
-- `argv` — the literal command line, which is what records `--user-profile`
+- `argv` — the command line, which is what records `--user-profile`, filtered through an
+  allowlist of known options: any other token (an unrecognised flag and its value, a
+  `NAME=value` prefix, a bare positional) and the value of `--mem0-api-key` are replaced by
+  `<redacted>`, so a credential passed on the command line never reaches the artifact
 - `asymmetric_settings_active` and `fair_mode`
 - `code_md5` — the 16-entry reconstructed-harness map in B9, including the Entra helper and
   dependency lock
@@ -239,9 +242,18 @@ An audit should never again have to reconstruct a config from launcher scripts.
 ## B8. Arm-asymmetric settings are now refused by the harness, not just by policy
 
 `runmeta.assert_fair_mode(args)` runs immediately after argument parsing
-(`longmemeval/run.py:1111`, `locomo/run.py:788`). Under `FAIR_MODE=1` it hard-exits if any of
-`EG_SESSION_EXPAND`, `EG_SESSION_EXPAND_CAP`, `EG_ANSWER_ENUM`, `EG_ANSWER_ENUM_R`,
-`EG_USER_PROFILE`, or `--user-profile` is active. Verified live on both benchmarks:
+(`longmemeval/run.py:1111`, `locomo/run.py:788`). Under `FAIR_MODE=1` it hard-exits if any entry
+of `runmeta.ASYMMETRY_FLAGS` is set, if any unrecognised `EG_*` variable is set, or if
+`--user-profile` is active. The list covers entire-graph's retrieval and prompt knobs
+(`EG_SESSION_EXPAND`, `EG_SESSION_EXPAND_CAP`, `EG_ANSWER_ENUM`, `EG_ANSWER_ENUM_R`,
+`EG_USER_PROFILE`, `EG_PROFILE*`), its ingest shape (`EG_INGEST_GRANULARITY`, `EG_CONSOLIDATE`,
+`EG_DEEP`, `EG_CHRONO_ORDER`, `ENTIRE_MAX_CONTEXT_BYTES`), mem0's ingest rewrite
+(`MEM0_DATE_INJECT`), the BM25 scoring parameters, and the per-arm budgets and deadlines
+(`CMM_MEM_BUDGET_MB`, `CMM_TIMEOUT`, `GRAPHIFY_TIMEOUT`). Location-only variables
+(`ENTIRE_CORPUS_ROOT`, `MEM0_HOST`, the `*_STATE_ROOT` paths) are declared in
+`runmeta.SYMMETRIC_ARM_SETTINGS` and stay legal, and
+`benchmarks/common/test_runmeta.py::AsymmetryCoverageTest` fails if an adapter gains an arm-scoped
+knob that is in neither list. Verified live on both benchmarks:
 
 ```
 FAIR_MODE=1 but arm-asymmetric settings are active: EG_SESSION_EXPAND=2, EG_ANSWER_ENUM=2
@@ -281,11 +293,11 @@ c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 041f93a130c1a91d1b81f67622555b8c  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
-5fcdb16d2711068bc3355d820a45c63f  benchmarks/common/runmeta.py
+570a71cc56eae73437841748a68cbd41  benchmarks/common/runmeta.py
 7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
 4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
 8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py
-41158a8eb87cdeeb53d23c3ad845b7bc  benchmarks/locomo/run.py
+964f3e323c0a445b111cd890f2ce2b94  benchmarks/locomo/run.py
 180750bea9900b826dd5990fc9e16787  benchmarks/longmemeval/prompts.py
 632e01d52537e5b931994d61a246cd9b  benchmarks/longmemeval/run.py
 72544a7a6b0f0a10103d640b1f281e68  requirements-lock-py312.txt

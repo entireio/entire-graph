@@ -16,7 +16,7 @@
  
  load_dotenv(override=True)
  
-@@ -235,6 +237,44 @@
+@@ -235,6 +237,72 @@
  # ===============================================================================
  
  
@@ -41,27 +41,55 @@
 +    return False
 +
 +
++def _swallows_search_failure(mem0) -> bool:
++    """True for clients that return [] instead of raising once their own
++    retries are exhausted.
++
++    Upstream Mem0Client._search_oss/_search_cloud wrap every attempt in
++    `except Exception`, log "SEARCH failed after N attempts", and `return []`
++    on the last one, so an infrastructure failure reaches the caller as a
++    successful empty retrieval. Every other client here raises instead (see
++    README 3.2), which is why this is scoped to the Mem0 arms.
++    """
++    cls = type(mem0)
++    return cls.__name__ == "Mem0Client" or cls.__module__.endswith("mem0_client")
++
++
 +async def _search_with_retry(mem0, question, user_id, top_k, score_debug, logger):
 +    """Returns (results, dropped: bool). Never raises for transient failures."""
 +    last = None
++    swallows = _swallows_search_failure(mem0)
 +    for attempt in range(_RETRY_MAX):
 +        try:
-+            return await mem0.search(question, user_id, top_k=top_k, score_debug=score_debug), False
++            results = await mem0.search(question, user_id, top_k=top_k, score_debug=score_debug)
 +        except Exception as exc:  # noqa: BLE001
 +            last = exc
 +            if not _is_retryable(exc) or attempt == _RETRY_MAX - 1:
 +                break
-+            delay = min(60, 5 * (2 ** attempt))
-+            logger.warning("search transient failure (attempt %d/%d): %s -- retrying in %ds",
-+                           attempt + 1, _RETRY_MAX, str(exc)[:160], delay)
-+            await asyncio.sleep(delay)
++        else:
++            if results or not swallows:
++                return results, False
++            # The non-raising failure shape. A swallowing client returns [] both
++            # for an exhausted search and for a genuinely empty one, and scoring
++            # that as a legitimate empty retrieval is a silently wrong
++            # denominator. Retry, then count the drop: for these arms a
++            # zero-context question is a defect signature (README 1, drop gate),
++            # never a normal result.
++            last = RuntimeError(
++                "empty result from a client that returns [] on exhausted retries")
++            if attempt == _RETRY_MAX - 1:
++                break
++        delay = min(60, 5 * (2 ** attempt))
++        logger.warning("search transient failure (attempt %d/%d): %s -- retrying in %ds",
++                       attempt + 1, _RETRY_MAX, str(last)[:160], delay)
++        await asyncio.sleep(delay)
 +    logger.error("SEARCH_DROP user=%s after %d attempts: %s", user_id, _RETRY_MAX, str(last)[:200])
 +    return [], True
 +
  async def ingest_conversation(
      conv_idx: int,
      entry: dict,
-@@ -295,6 +335,7 @@
+@@ -295,6 +363,7 @@
              debug_file.write(f"User ID: {user_id}\n")
              debug_file.write(f"{'=' * 80}\n\n")
  
@@ -69,7 +97,7 @@
      pbar = tqdm(total=total_chunks, desc=f"Ingest conv {conv_idx}", initial=len(chunks_already_done), leave=True)
      total_processed = len(chunks_already_done)
      total_failed = 0
-@@ -365,6 +406,22 @@
+@@ -365,6 +434,22 @@
              pbar.update(1)
  
      pbar.close()
@@ -92,7 +120,7 @@
      if debug_file:
          debug_file.write(f"\nSUMMARY: {total_processed}/{total_chunks} OK, {total_failed} failed\n")
          debug_file.close()
-@@ -414,7 +471,8 @@
+@@ -414,7 +499,8 @@
  
      # --- Search ---
      start = time.monotonic()
@@ -102,7 +130,7 @@
      search_latency = (time.monotonic() - start) * 1000
  
      formatted, query_debug = format_search_results(search_results)
-@@ -434,6 +492,13 @@
+@@ -434,6 +520,13 @@
              "search_results": formatted,
              "search_latency_ms": round(search_latency, 1),
              "total_results": len(formatted),
@@ -116,7 +144,7 @@
          },
      }
      if query_debug:
-@@ -686,7 +751,9 @@
+@@ -686,7 +779,9 @@
      parser.add_argument("--conversations", default="0,1,2,3,4,5,6,7,8,9", help="Comma-separated conversation indices")
      parser.add_argument("--top-k", type=int, default=200, help="Number of search results to retrieve")
      parser.add_argument("--top-k-cutoffs", default="10,20,50,200", help="Comma-separated cutoffs for evaluation")
@@ -127,7 +155,7 @@
      parser.add_argument("--output-dir", default="results/locomo", help="Output directory")
      parser.add_argument("--predict-only", action="store_true", help="Skip answer+judge, only ingest+search")
      parser.add_argument(
-@@ -709,8 +776,8 @@
+@@ -709,8 +804,8 @@
      parser.add_argument("--user-profile", action="store_true", help="Fetch user profiles")
      parser.add_argument("--max-questions", type=int, default=None, help="Max questions to process (for quick testing)")
      parser.add_argument("--rpm", type=int, default=200, help="Requests per minute for LLM")
@@ -138,7 +166,7 @@
      parser.add_argument("--mem0-host", default=None,
                          help="Mem0 server URL (default: http://localhost:8888 for oss, https://api.mem0.ai for cloud)")
      parser.add_argument("--mem0-api-key", default=None,
-@@ -725,6 +792,7 @@
+@@ -725,6 +820,7 @@
  
  async def async_main() -> None:
      args = parse_args()
@@ -146,7 +174,7 @@
      logger = setup_logging("locomo", debug=args.debug)
  
      cutoffs = parse_cutoffs(args.top_k_cutoffs)
-@@ -754,7 +822,7 @@
+@@ -754,7 +850,7 @@
          evidence_lookup = load_evidence_lookup(dataset_path)
          print(f"  Evidence lookup: {len(evidence_lookup)} entries")
  
@@ -155,7 +183,7 @@
      judge_provider = args.judge_provider or args.provider
      judge_llm = LLMClient(model=args.judge_model, provider=judge_provider, rpm=args.rpm)
  
-@@ -807,6 +875,7 @@
+@@ -807,6 +903,7 @@
          unified_path = os.path.join(args.output_dir, f"locomo_results_{timestamp}.json")
          save_result_json(unified_path, {
              "metadata": {
@@ -163,7 +191,7 @@
                  "benchmark": "locomo",
                  "project_name": args.project_name,
                  "run_id": run_id_meta,
-@@ -829,8 +898,8 @@
+@@ -829,8 +926,8 @@
  
      # Init Mem0 (not used for --evaluate-only)
      backend = os.getenv("MEM0_BACKEND", args.backend)
@@ -174,7 +202,7 @@
          host=args.mem0_host,
          api_key=args.mem0_api_key if backend == "cloud" else None,
          rpm=args.rpm,
-@@ -855,6 +924,9 @@
+@@ -855,6 +952,9 @@
      existing_ids = {e["question_id"] for e in all_evaluations}
      results_lock = asyncio.Lock()
      conv_semaphore = asyncio.Semaphore(args.max_workers)
@@ -184,7 +212,7 @@
  
      async def process_conversation(conv_idx: int):
          """Process a single conversation: ingest → answer questions."""
-@@ -899,43 +971,47 @@
+@@ -899,43 +999,47 @@
              if args.max_questions is not None:
                  conv_questions = conv_questions[:args.max_questions]
  
@@ -258,7 +286,7 @@
      async with mem0:
          with shutdown:
              tasks = [process_conversation(idx) for idx in conv_indices]
-@@ -953,6 +1029,7 @@
+@@ -953,6 +1057,7 @@
              unified_path = os.path.join(args.output_dir, f"locomo_results_{timestamp}.json")
              save_result_json(unified_path, {
                  "metadata": {
