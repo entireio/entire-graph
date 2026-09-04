@@ -950,3 +950,79 @@ class compute:
 		}
 	})
 }
+
+func TestPythonFromImportKeywordBoundaryForms(t *testing.T) {
+	t.Run("relative imports may omit whitespace before keyword", func(t *testing.T) {
+		for _, test := range []struct {
+			source string
+			module string
+			item   string
+		}{
+			{source: "from .import x", module: ".", item: "x"},
+			{source: "from ..import x", module: "..", item: "x"},
+			{source: "from .import*", module: ".", item: "*"},
+			{source: "from.import x", module: ".", item: "x"},
+		} {
+			statements := pythonFromImportStatements(test.source + "\n")
+			if len(statements) != 1 || statements[0].module != test.module || len(statements[0].items) != 1 || statements[0].items[0] != test.item {
+				t.Fatalf("pythonFromImportStatements(%q) = %#v, want module %q and item %q", test.source, statements, test.module, test.item)
+			}
+		}
+	})
+
+	t.Run("invalid keyword-like module forms remain rejected", func(t *testing.T) {
+		for _, source := range []string{
+			"from pkg.import x",
+			"from .import.foo x",
+			"frompkg import x",
+			"from pkg importcompute",
+		} {
+			if statements := pythonFromImportStatements(source + "\n"); len(statements) != 0 {
+				t.Fatalf("pythonFromImportStatements(%q) = %#v, want no statements", source, statements)
+			}
+		}
+	})
+
+	t.Run("tab-separated keyword remains resolved", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, "from frobnicate\timport\tcompute\n\ndef plain():\n    return compute(1)\n"), "app.py:function:plain")
+	})
+
+	t.Run("backslash continuation remains resolved", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, "from frobnicate import\\\n    compute\n\ndef plain():\n    return compute(1)\n"), "app.py:function:plain")
+	})
+
+	t.Run("parenthesized list needs no space after keyword", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, "from frobnicate import(compute)\n\ndef plain():\n    return compute(1)\n"), "app.py:function:plain")
+	})
+
+	t.Run("module name containing keyword is not split", func(t *testing.T) {
+		src := "from importlib import compute\n\ndef plain():\n    return compute(1)\n"
+		fn := pythonScopeCallable(t, src, "app.py:function:plain", "function", "def plain")
+		if got := pythonScopeModules(t, src, []SymbolRecord{fn}, fn, "compute"); len(got) != 1 || got[0] != "importlib" {
+			t.Fatalf("got %#v, want importlib", got)
+		}
+	})
+
+	t.Run("star import binds no name", func(t *testing.T) {
+		src := "from frobnicate import*\n\ndef plain():\n    return compute(1)\n"
+		fn := pythonScopeCallable(t, src, "app.py:function:plain", "function", "def plain")
+		if got := pythonScopeModules(t, src, []SymbolRecord{fn}, fn, "compute"); len(got) != 0 {
+			t.Fatalf("got %#v, want no binding", got)
+		}
+		imports := scanPythonImports("from mod import*\n")
+		if len(imports) != 1 || imports[0] != "mod" {
+			t.Fatalf("scanPythonImports got %#v, want module mod", imports)
+		}
+	})
+
+	t.Run("multiline parenthesized list remains resolved", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, "from frobnicate import (\n    compute,\n)\n\ndef plain():\n    return compute(1)\n"), "app.py:function:plain")
+	})
+
+	t.Run("malformed list does not consume a later valid import", func(t *testing.T) {
+		statements := pythonFromImportStatements("from broken import (compute\n\nfrom frobnicate import compute\n")
+		if len(statements) != 1 || statements[0].module != "frobnicate" {
+			t.Fatalf("got %#v, want the later valid import only", statements)
+		}
+	})
+}

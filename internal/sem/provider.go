@@ -20449,7 +20449,12 @@ type pythonFromImportStatement struct {
 	items  []string
 }
 
-var pythonFromImportRE = regexp.MustCompile(`(?s)^from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import(?:[ \t]+(.*))?$`)
+var pythonFromImportRE = regexp.MustCompile(`(?s)^from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)(.*)$`)
+
+// A relative import may put the import keyword directly after its leading
+// dots (`from .import name`). Keep this ahead of pythonFromImportRE, whose
+// module expression would otherwise greedily consume that keyword.
+var pythonRelativeFromImportRE = regexp.MustCompile(`(?s)^from(?:\s+|\.)(\.*)import(.*)$`)
 
 // pythonImportContinuationLines bounds how far a parenthesized import list is
 // followed. A malformed unclosed list must not make scanning the rest of a
@@ -20521,11 +20526,35 @@ func pythonFromImportStatements(content string) []pythonFromImportStatement {
 }
 
 func pythonFromImportParts(text string) (module, items string, ok bool) {
+	if matches := pythonRelativeFromImportRE.FindStringSubmatch(text); len(matches) == 3 {
+		dots := matches[1]
+		if strings.HasPrefix(text, "from.") {
+			dots = "." + dots
+		}
+		if dots != "" && (len(matches[2]) == 0 || !isPythonImportNameByte(matches[2][0])) {
+			if len(matches[2]) == 0 || strings.ContainsRune(" \t\r\n(*\\", rune(matches[2][0])) {
+				return dots, matches[2], true
+			}
+		}
+	}
 	matches := pythonFromImportRE.FindStringSubmatch(text)
 	if len(matches) != 3 {
 		return "", "", false
 	}
-	return strings.TrimSpace(matches[1]), matches[2], true
+	module = strings.TrimSpace(matches[1])
+	rest := strings.TrimLeft(matches[2], " \t\r\n")
+	if module == "" || !strings.HasPrefix(rest, "import") {
+		return "", "", false
+	}
+	after := len("import")
+	if after < len(rest) && isPythonImportNameByte(rest[after]) {
+		return "", "", false
+	}
+	return module, rest[after:], true
+}
+
+func isPythonImportNameByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b >= 0x80
 }
 
 func pythonImportParenDepth(items string) int {
