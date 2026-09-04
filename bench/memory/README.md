@@ -90,7 +90,11 @@ export AZURE_AI_ENDPOINT=... AZURE_AI_API_VERSION=2024-05-01-preview
 #               aborts unless it is the build CMM_BUILD declares.
 #               CMM_BUILD is `patched` (default) or `stock`.
 #      graphify GRAPHIFY_PYTHON (interpreter with graphify + networkx importable)
-#               and GRAPHIFY_SOURCE (the graphify checkout added to sys.path)
+#               and GRAPHIFY_SOURCE (the graphify checkout added to sys.path).
+#               Both are verified at construction, not merely present: the
+#               checkout must define the entry points this arm imports
+#               (graphify/extractors/markdown.py, graphify/serve.py) and the
+#               interpreter must import them together with networkx.
 export CMM_BIN=/path/to/codebase-memory-mcp   # built with patches/0005
 
 # 7. Run an arm
@@ -246,7 +250,9 @@ No adapter default encodes a path from the benchmark host. Engine locations come
 vars documented in each module docstring, and each adapter validates them at construction: `cmm`
 requires `CMM_BIN` and additionally verifies that the binary it resolves is the build `CMM_BUILD`
 declares, and `graphify` requires `GRAPHIFY_PYTHON` and `GRAPHIFY_SOURCE` because it has no
-discoverable default. The files are
+discoverable default, and holds them to the same bar: the source must define the entry points the
+adapter imports and the interpreter must import them, with `networkx`, before ingestion starts.
+The files are
 vendored **verbatim** so that their md5s match the fingerprints recorded in the run artifacts by
 `runmeta.code_hashes()`.
 

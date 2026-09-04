@@ -45,7 +45,11 @@ discoverable default on a fresh machine, so both are validated at construction
 instead of being defaulted to one contributor's directory layout):
   GRAPHIFY_PYTHON        interpreter with graphify + networkx importable (required;
                          a path, or a bare name resolved on PATH)
-  GRAPHIFY_SOURCE        graphify source checkout, added to sys.path (required)
+  GRAPHIFY_SOURCE        graphify source checkout, added to sys.path (required; must
+                         actually provide the modules this adapter imports --
+                         graphify.extractors.markdown and graphify.serve -- and
+                         they must import under GRAPHIFY_PYTHON together with
+                         networkx, both checked at construction)
   GRAPHIFY_BRIDGE        override bridge script path
   GRAPHIFY_STATE_ROOT    per-run state root (default: $HOME/memarms/state/graphify_corpora/<pid>)
   GRAPHIFY_TIMEOUT       per-subprocess timeout seconds (default 900)
@@ -122,6 +126,99 @@ def _require_configured_path(env: str, kind: str, what: str) -> str:
     return os.path.abspath(path)
 
 
+# What the adapter actually imports out of GRAPHIFY_SOURCE (see graphify_mem_bridge.py):
+# the structural markdown extractor and the four ranking/traversal entry points. A directory
+# that does not provide these is not a graphify checkout, whatever it is named.
+_REQUIRED_ENTRY_POINTS = {
+    "graphify/extractors/markdown.py": ("extract_markdown",),
+    "graphify/serve.py": ("_bfs", "_pick_seeds", "_query_terms", "_score_query"),
+}
+
+# The probe is the bridge's own import sequence, run by the SELECTED interpreter: source first on
+# sys.path, then networkx, then the entry points. Anything the bridge would fail on at ingest --
+# a missing dependency, a Python version the checkout does not support, an interpreter without
+# networkx -- fails here instead, before a single document is ingested.
+_IMPORT_PROBE = """
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import networkx
+from graphify.extractors.markdown import extract_markdown
+from graphify.serve import _bfs, _pick_seeds, _query_terms, _score_query
+"""
+
+_PROBE_TIMEOUT = 120
+
+
+def _defines(text: str, name: str) -> bool:
+    return re.search(rf"^[ \t]*(?:async[ \t]+)?def[ \t]+{re.escape(name)}[ \t]*\(", text, re.M) is not None
+
+
+def _verify_graphify_checkout(source: str) -> None:
+    """Refuse a GRAPHIFY_SOURCE that is not the checkout this adapter imports.
+
+    Being a directory is not evidence. An empty or unrelated directory used to
+    construct cleanly and then fail deep inside ingestion as an opaque bridge
+    subprocess error, which is the shape of failure this kit keeps paying for:
+    a configuration mistake that surfaces as a benchmark result. The files are
+    READ, never imported, so identification costs nothing and cannot execute
+    the tree being identified -- the same bar the cmm arm's binary fingerprint
+    holds itself to.
+    """
+    missing: list[str] = []
+    for relative, symbols in sorted(_REQUIRED_ENTRY_POINTS.items()):
+        path = Path(source, *relative.split("/"))
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            missing.append(f"{relative} (no such file)")
+            continue
+        absent = [name for name in symbols if not _defines(text, name)]
+        if absent:
+            missing.append(f"{relative} (defines no {', '.join(absent)})")
+    if missing:
+        raise RuntimeError(
+            f"GRAPHIFY_SOURCE={source!r} is a directory but not a graphify checkout: "
+            f"this arm imports {', '.join(sorted(_REQUIRED_ENTRY_POINTS))} out of it and "
+            f"the checkout is missing {'; '.join(missing)}. Point GRAPHIFY_SOURCE at the "
+            "root of a graphify source tree (the directory that CONTAINS the `graphify` "
+            "package), not at an arbitrary directory."
+        )
+
+
+def _verify_graphify_imports(python: str, source: str) -> None:
+    """Refuse a checkout the SELECTED interpreter cannot actually import.
+
+    The static check proves the files are there; only the interpreter that will
+    run the bridge can prove they load, and that it has networkx. Both are
+    required for a single query to return anything, so both are settled here.
+    """
+    try:
+        completed = subprocess.run(
+            [python, "-c", _IMPORT_PROBE, source],
+            capture_output=True, text=True, timeout=_PROBE_TIMEOUT, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"GRAPHIFY_PYTHON={python!r} did not finish importing networkx and "
+            f"GRAPHIFY_SOURCE={source!r} within {_PROBE_TIMEOUT}s."
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            f"GRAPHIFY_PYTHON={python!r} could not be executed to verify that it "
+            f"imports networkx and GRAPHIFY_SOURCE={source!r}: {exc}"
+        ) from exc
+    if completed.returncode == 0:
+        return
+    detail = _one_line((completed.stderr or completed.stdout or "").strip()[-1200:])
+    raise RuntimeError(
+        f"GRAPHIFY_PYTHON={python!r} cannot import networkx and the graphify modules "
+        f"from GRAPHIFY_SOURCE={source!r} (exit {completed.returncode}). This arm needs "
+        "both, and a run configured this way dies at ingest with the same error. "
+        f"Interpreter said: {detail}"
+    )
+
+
 def _default_bridge_path() -> str:
     return str(Path(__file__).with_name("graphify_mem_bridge.py"))
 
@@ -154,6 +251,8 @@ class GraphifyClient:
             _SOURCE_ENV, "dir",
             "the graphify source checkout that is added to sys.path",
         )
+        _verify_graphify_checkout(self.source)
+        _verify_graphify_imports(self.python, self.source)
         self.bridge = os.getenv("GRAPHIFY_BRIDGE", _default_bridge_path())
         self.timeout = int(os.getenv("GRAPHIFY_TIMEOUT", "900"))
 

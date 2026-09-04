@@ -82,6 +82,45 @@ class AdapterDefaultsArePortableTest(unittest.TestCase):
         )
 
 
+def _write_graphify_source(
+    directory: str, *, serve: str | None = None, networkx: str | None = None
+) -> str:
+    """Write the smallest tree that IS a graphify checkout for this adapter.
+
+    The adapter puts ``GRAPHIFY_SOURCE`` on ``sys.path`` and imports
+    ``graphify.extractors.markdown.extract_markdown`` and the four
+    ``graphify.serve`` entry points out of it, so those files -- not merely a
+    directory -- are what "configured" means. ``networkx`` is written into the
+    same tree because the bridge imports it AFTER inserting the source, which
+    is what lets these tests exercise the interpreter probe with no
+    third-party package installed.
+    """
+    package = os.path.join(directory, "graphify")
+    extractors = os.path.join(package, "extractors")
+    os.makedirs(extractors, exist_ok=True)
+    for init in (os.path.join(package, "__init__.py"), os.path.join(extractors, "__init__.py")):
+        Path(init).write_text("", encoding="utf-8")
+    Path(extractors, "markdown.py").write_text(
+        "def extract_markdown(*args, **kwargs):\n    return None\n", encoding="utf-8"
+    )
+    Path(package, "serve.py").write_text(
+        serve
+        if serve is not None
+        else (
+            "def _query_terms(*a, **k):\n    return []\n\n"
+            "def _score_query(*a, **k):\n    return []\n\n"
+            "def _pick_seeds(*a, **k):\n    return []\n\n"
+            "def _bfs(*a, **k):\n    return []\n"
+        ),
+        encoding="utf-8",
+    )
+    Path(directory, "networkx.py").write_text(
+        networkx if networkx is not None else "__version__ = '0.0-stub'\n",
+        encoding="utf-8",
+    )
+    return directory
+
+
 class GraphifyRequiredConfigurationTest(unittest.TestCase):
     def test_missing_interpreter_env_fails_with_the_variable_to_set(self) -> None:
         with patch.dict(os.environ, _clean_env(), clear=True):
@@ -109,8 +148,7 @@ class GraphifyRequiredConfigurationTest(unittest.TestCase):
 
     def test_validated_configuration_constructs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            source = os.path.join(tmp, "graphify")
-            os.makedirs(source)
+            source = _write_graphify_source(os.path.join(tmp, "graphify"))
             with patch.dict(
                 os.environ,
                 _clean_env(
@@ -142,8 +180,7 @@ class GraphifyRequiredConfigurationTest(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             interpreter = self._fake_interpreter(tmp)
-            source = os.path.join(tmp, "graphify")
-            os.makedirs(source)
+            source = _write_graphify_source(os.path.join(tmp, "graphify"))
             with patch.dict(
                 os.environ,
                 _clean_env(
@@ -162,8 +199,7 @@ class GraphifyRequiredConfigurationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             empty = os.path.join(tmp, "empty")
             os.makedirs(empty)
-            source = os.path.join(tmp, "graphify")
-            os.makedirs(source)
+            source = _write_graphify_source(os.path.join(tmp, "graphify"))
             with patch.dict(
                 os.environ,
                 _clean_env(
@@ -186,8 +222,9 @@ class GraphifyRequiredConfigurationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             here, elsewhere = os.path.join(tmp, "here"), os.path.join(tmp, "elsewhere")
             source = os.path.join(tmp, "graphify")
-            for directory in (here, elsewhere, source):
+            for directory in (here, elsewhere):
                 os.makedirs(directory)
+            _write_graphify_source(source)
             self._fake_interpreter(elsewhere)
             self._fake_interpreter(here)
             _in_directory(self, here)
@@ -210,6 +247,112 @@ class GraphifyRequiredConfigurationTest(unittest.TestCase):
                 self.assertEqual(
                     os.path.join(os.getcwd(), "fake-python"), client.python
                 )
+
+
+    # -- the directory must BE a graphify checkout ------------------------
+
+    def test_an_unrelated_directory_is_not_a_graphify_checkout(self) -> None:
+        """`is a directory` is not evidence. An empty or unrelated directory
+        used to construct cleanly and fail hundreds of documents into the
+        ingest, as an opaque subprocess error from the bridge."""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "not-graphify")
+            os.makedirs(os.path.join(source, "docs"))
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    GRAPHIFY_PYTHON=sys.executable,
+                    GRAPHIFY_SOURCE=source,
+                    GRAPHIFY_STATE_ROOT=os.path.join(tmp, "state"),
+                ),
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    GraphifyClient()
+        message = str(ctx.exception)
+        self.assertIn("GRAPHIFY_SOURCE", message)
+        self.assertIn("graphify/extractors/markdown.py", message)
+
+    def test_a_checkout_missing_an_entry_point_names_the_symbol(self) -> None:
+        """The adapter imports four names out of `graphify.serve`. A checkout
+        that no longer defines one of them is unusable for this arm, and the
+        error has to say which."""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = _write_graphify_source(
+                os.path.join(tmp, "graphify"),
+                serve=(
+                    "def _query_terms(*a, **k):\n    return []\n\n"
+                    "def _pick_seeds(*a, **k):\n    return []\n\n"
+                    "def _bfs(*a, **k):\n    return []\n"
+                ),
+            )
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    GRAPHIFY_PYTHON=sys.executable,
+                    GRAPHIFY_SOURCE=source,
+                    GRAPHIFY_STATE_ROOT=os.path.join(tmp, "state"),
+                ),
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    GraphifyClient()
+        message = str(ctx.exception)
+        self.assertIn("_score_query", message)
+        self.assertIn("graphify/serve.py", message)
+
+    def test_a_checkout_the_interpreter_cannot_import_is_rejected(self) -> None:
+        """The files can be present and still not import: the checkout's own
+        dependencies are resolved by the SELECTED interpreter, not by this one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = _write_graphify_source(
+                os.path.join(tmp, "graphify"),
+                serve=(
+                    "import graphify_missing_dependency\n\n"
+                    "def _query_terms(*a, **k):\n    return []\n\n"
+                    "def _score_query(*a, **k):\n    return []\n\n"
+                    "def _pick_seeds(*a, **k):\n    return []\n\n"
+                    "def _bfs(*a, **k):\n    return []\n"
+                ),
+            )
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    GRAPHIFY_PYTHON=sys.executable,
+                    GRAPHIFY_SOURCE=source,
+                    GRAPHIFY_STATE_ROOT=os.path.join(tmp, "state"),
+                ),
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    GraphifyClient()
+        message = str(ctx.exception)
+        self.assertIn("GRAPHIFY_PYTHON", message)
+        self.assertIn("graphify_missing_dependency", message)
+
+    def test_networkx_is_required_of_the_selected_interpreter(self) -> None:
+        """The bridge builds and queries the graph with networkx, so an
+        interpreter without it produces a run that dies at ingest. The stub
+        shadows any installed networkx because the probe inserts the source
+        first, exactly as the bridge does."""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = _write_graphify_source(
+                os.path.join(tmp, "graphify"),
+                networkx="raise ImportError('no networkx here')\n",
+            )
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    GRAPHIFY_PYTHON=sys.executable,
+                    GRAPHIFY_SOURCE=source,
+                    GRAPHIFY_STATE_ROOT=os.path.join(tmp, "state"),
+                ),
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    GraphifyClient()
+        message = str(ctx.exception)
+        self.assertIn("networkx", message)
 
 
 class CmmBinaryResolutionTest(unittest.TestCase):
