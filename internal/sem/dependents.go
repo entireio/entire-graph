@@ -186,19 +186,20 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		if err != nil {
 			return "", false, err
 		}
-		if result.Status == gitutil.LimitedFileOversize {
-			readOutcomeMu.Lock()
+		// Every outcome a read records goes under the one lock, in one
+		// acquisition. The statuses are distinct values, so folding the three
+		// separate checks into one switch records exactly what they did.
+		readOutcomeMu.Lock()
+		switch result.Status {
+		case gitutil.LimitedFileOversize:
 			limitedOversize[path] = result.Bytes
 			limitedOversizeUnscanned[path] = true
-			readOutcomeMu.Unlock()
-		}
-		if result.Status == gitutil.LimitedFileUnaddressable {
+		case gitutil.LimitedFileUnaddressable:
 			limitedUnaddressable[path] = true
-		}
-		switch result.Status {
 		case gitutil.LimitedFileMissing, gitutil.LimitedFileNonBlob, gitutil.LimitedFileUnreadable:
 			limitedUnavailable[path] = result.Status
 		}
+		readOutcomeMu.Unlock()
 		return result.Content, result.Status == gitutil.LimitedFileContent, nil
 	}
 	readFile := readLimitedFile
