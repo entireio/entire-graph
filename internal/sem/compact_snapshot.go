@@ -136,8 +136,16 @@ func (encoder *CompactSnapshotEncoder) writeSummaryLine(value any) error {
 	if len(line) > limit {
 		return fmt.Errorf("compact snapshot summary is %d bytes, past the %d-byte limit the decoder reads back", len(line), limit)
 	}
-	_, err = encoder.out.Write(line)
-	return err
+	written, err := encoder.out.Write(line)
+	if err != nil {
+		return err
+	}
+	if written != len(line) {
+		// io.Writer may report a short write with no error; the summary closes
+		// the artifact, so a truncated one is a snapshot no reader can finish.
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func compactJSONLine(value any) ([]byte, error) {

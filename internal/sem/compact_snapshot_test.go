@@ -815,3 +815,30 @@ func TestCompactSnapshotEncoderRefusesSummaryPastTheCeiling(t *testing.T) {
 		t.Fatalf("partial failures = %d, want 10", len(readBack.PartialFailures))
 	}
 }
+
+// An io.Writer may report a short write with no error. The summary closes the
+// artifact, so a truncated one is a snapshot no reader can finish.
+func TestCompactSnapshotEncoderReportsAShortSummaryWrite(t *testing.T) {
+	writer := &shortSummaryWriter{}
+	encoder := NewCompactSnapshotEncoder(writer)
+	if err := encoder.Encode(SnapshotHeader{SchemaVersion: SchemaVersion}); err != nil {
+		t.Fatal(err)
+	}
+	writer.short = true
+	err := encoder.Encode(SnapshotSummary{RecordType: "summary"})
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("err = %v, want io.ErrShortWrite", err)
+	}
+}
+
+type shortSummaryWriter struct {
+	short bool
+	bytes.Buffer
+}
+
+func (writer *shortSummaryWriter) Write(payload []byte) (int, error) {
+	if writer.short && len(payload) > 1 {
+		return writer.Buffer.Write(payload[:1])
+	}
+	return writer.Buffer.Write(payload)
+}
