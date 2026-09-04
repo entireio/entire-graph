@@ -289,6 +289,19 @@ jobs:
       - run: python -B -m pip install --disable-pip-version-check rank-bm25==0.2.2
       - run: python -B -m unittest bench.memory.benchmarks.common.test_bm25_client
 
+  # The LoCoMo nightly's scoreability gate is Python and carries its own suite;
+  # `go test` never runs it, so nothing exercised it until this job.
+  locomo-summary-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -B -m unittest bench.memory.ci.test_summarize_run
+
   # The status line is a POSIX shell script with its own shell suite; `go test` never runs it.
   # No windows-latest: the script targets /bin/sh.
   statusline:
