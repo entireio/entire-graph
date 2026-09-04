@@ -67,6 +67,23 @@ type SearchOptions struct {
 	MaxIndexedFiles   int
 	IndexAllFiles     bool
 	MaxContextBytes   int
+	// OmitsRepoIgnoreDisclosureFloor says this caller's renderer never prints the
+	// repo-ignore disclosure floor, so the ranking must not be charged for it.
+	//
+	// The floor is funded from INSIDE MaxContextBytes (see the reservation in
+	// SearchRepository), and exactly one renderer emits it: `--format text`, which
+	// has no warning channel of its own. The structured formats carry the same
+	// disclosure as data — the W_REPO_IGNORED_SOURCE warning and the whole
+	// repo_ignored report — whether or not the ranking pays for a floor, so an
+	// unconditional reservation only deleted ranked source from them. Measured on a
+	// fixture with one excluded file: at --max-context-bytes 600 the reservation cost
+	// a JSON payload its ONLY result (result_bytes 589 -> 0) and bought that payload
+	// nothing, because JSON never renders the floor those bytes were held for.
+	//
+	// The zero value is the conservative one: a caller that does not say what it
+	// renders is assumed to render the floor, so the disclosure can never end up
+	// unfunded by omission.
+	OmitsRepoIgnoreDisclosureFloor bool
 	// progressivePreselection is internal policy, not a caller override. The
 	// standard cold default may widen adaptively; explicit and TopK-adaptive
 	// MaxIndexedFiles values remain exact compatibility limits.
@@ -817,15 +834,28 @@ const maxRepoIgnoreFloorBytes = 160
 // takes out of the ranking's budget so the floor can be printed from INSIDE the
 // caller's ceiling instead of on top of it.
 //
-// The whole allowance is reserved rather than the rendered length, because the
-// rendered length depends on the final count and the reservation is made before
-// the ranking that count is disclosed beside. A listing with nothing to disclose
-// reserves nothing and its payload is byte-identical.
+// It is the floor THIS report renders, not the most any report could render. The
+// count the floor states is settled before this is called — a listing's
+// RepoIgnoreReport is produced by preselection and travels to SearchResponse
+// unmodified — so the exact length is knowable here, and reserving
+// maxRepoIgnoreFloorBytes instead took bytes off every ranking to fund a sentence
+// that is shorter than the bound for every report that is not adversarially long.
+// The bound still bounds; it is no longer the price.
+//
+// A listing with nothing to disclose reserves nothing and its payload is
+// byte-identical.
 func repoIgnoreDisclosureReserveBytes(report *RepoIgnoreReport) int {
-	if len(RenderRepoIgnoreDisclosureFloor(report)) == 0 {
+	return len(RenderRepoIgnoreDisclosureFloor(report))
+}
+
+// searchRepoIgnoreFloorReserveBytes is the reservation as this CALLER sees it:
+// the floor's own length when the caller's renderer prints one, and nothing when
+// it does not.
+func searchRepoIgnoreFloorReserveBytes(options SearchOptions, report *RepoIgnoreReport) int {
+	if options.OmitsRepoIgnoreDisclosureFloor {
 		return 0
 	}
-	return maxRepoIgnoreFloorBytes
+	return repoIgnoreDisclosureReserveBytes(report)
 }
 
 // RenderRepoIgnoreDisclosureFloor renders the IRREDUCIBLE form of the disclosure:
@@ -1157,8 +1187,16 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// callerContextBytes is what the response REPORTS, because the ceiling the
 	// caller named is the one the renderer measures its headroom against — and
 	// because a stat that quietly shrank would make the reservation unauditable.
+	//
+	// ONLY a renderer that prints the floor pays for it. The reservation buys the
+	// text payload its one channel for saying the corpus is narrowed; the structured
+	// formats already carry that fact as data (warnings + repo_ignored) and emit it
+	// whatever the ranking spends, so charging them too deleted ranked source and
+	// funded nothing — at --max-context-bytes 600 it cost a JSON payload its only
+	// result. A caller declares that with OmitsRepoIgnoreDisclosureFloor; saying
+	// nothing keeps the funded behaviour.
 	callerContextBytes := options.MaxContextBytes
-	if reserve := repoIgnoreDisclosureReserveBytes(selection.repoIgnored); reserve > 0 &&
+	if reserve := searchRepoIgnoreFloorReserveBytes(options, selection.repoIgnored); reserve > 0 &&
 		options.MaxContextBytes > reserve {
 		options.MaxContextBytes -= reserve
 	}
