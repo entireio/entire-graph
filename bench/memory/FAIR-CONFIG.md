@@ -234,7 +234,8 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
   `<redacted>`, so a credential passed on the command line never reaches the artifact. A URL
   value keeps only scheme, host and port — userinfo, path, query string and fragment are all
   dropped, since a credential rides in `/hooks/<token>` or `?token=` as readily as in
-  `https://user:pass@host`
+  `https://user:pass@host`; a URI with no network location (`file:///hooks/<token>`) keeps only
+  its scheme, while a Windows drive letter stays a path
 - `asymmetric_settings_active` and `fair_mode` — secret-named knobs are fingerprinted here too,
   because this map is both persisted and interpolated into the `FAIR_MODE` exception text
 - `code_md5` — the 16-entry reconstructed-harness map in B9, including the Entra helper and
@@ -297,7 +298,7 @@ c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 041f93a130c1a91d1b81f67622555b8c  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
-663788c0fb75931a85f0fdae8b3064d3  benchmarks/common/runmeta.py
+258b9fc379512642a6e638acb625c982  benchmarks/common/runmeta.py
 7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
 4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
 8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py

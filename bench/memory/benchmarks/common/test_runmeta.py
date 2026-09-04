@@ -156,6 +156,26 @@ class RedactArgvTest(unittest.TestCase):
                     ["run.py", "--mem0-host", url],
                 )
 
+    def test_authority_less_uris_keep_only_their_scheme(self) -> None:
+        """`file:///hooks/<token>` has no location worth preserving."""
+        for uri, expected in (
+            (f"file:///hooks/{FAKE_KEY}", "file:<redacted>"),
+            (f"mailto:admin:{FAKE_PASSWORD}@mem0.local", "mailto:<redacted>"),
+        ):
+            with self.subTest(uri=uri):
+                self.assertEqual(
+                    runmeta.redact_argv(["run.py", "--mem0-host", uri]),
+                    ["run.py", "--mem0-host", expected],
+                )
+
+    def test_a_windows_drive_is_a_path_not_a_uri_scheme(self) -> None:
+        for path in ("C:\\results\\locomo", "c:/results/locomo"):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    runmeta.redact_argv(["run.py", "--output-dir", path]),
+                    ["run.py", "--output-dir", path],
+                )
+
     def test_non_url_values_are_left_alone(self) -> None:
         argv = ["run.py", "--output-dir", "/results/locomo",
                 "--answerer-model", "gpt-5.6-sol",
@@ -180,6 +200,8 @@ class RedactArgvTest(unittest.TestCase):
             "--mem0-host", f"https://mem0.local/#{FAKE_KEY}",
             "--mem0-host", f"https://admin:pa@ss{FAKE_PASSWORD}@mem0.local/",
             "--mem0-host", f"https://mem0.local/hooks/{FAKE_KEY}",
+            "--mem0-host", f"file:///hooks/{FAKE_KEY}",
+            "--mem0-host", f"mailto:admin:{FAKE_PASSWORD}@mem0.local",
         ]
         rendered = " ".join(runmeta.redact_argv(argv))
         self.assertNotIn(FAKE_KEY, rendered)

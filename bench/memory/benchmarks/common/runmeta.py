@@ -141,7 +141,13 @@ def _scrub_value(value: str) -> str:
     parameter (`?token=...`), and a fragment. Only scheme, host and port are
     provenance, so everything else is dropped wholesale rather than
     pattern-matched -- for the same reason the option filter is an allowlist.
-    Non-URL values (filesystem paths, model names) are returned unchanged.
+
+    A URI with a scheme but no network location (`file:///hooks/<token>`,
+    `mailto:`, any opaque scheme) has no location worth keeping, so only its
+    scheme survives. The one exception is a single-letter scheme, which is a
+    Windows drive rather than a URI scheme -- RFC 3986 schemes seen here are
+    always longer -- so `C:\results` stays a path. Values with no scheme at all
+    (filesystem paths, model names) are returned unchanged.
     """
     try:
         parts = urlsplit(value)
@@ -149,8 +155,12 @@ def _scrub_value(value: str) -> str:
         query, fragment = parts.query, parts.fragment
     except ValueError:
         return _ARGV_REDACTED
-    if not scheme or not netloc:
+    if not scheme:
         return value
+    if not netloc:
+        if len(scheme) == 1:
+            return value  # a Windows drive letter, not a URI scheme
+        return scheme + ":" + _ARGV_REDACTED
     if "@" in netloc:
         # Split on the LAST "@": userinfo may not contain an unescaped one, so
         # a value that does is malformed and stripping more of it is the safe
