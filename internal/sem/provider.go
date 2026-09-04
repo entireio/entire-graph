@@ -6978,6 +6978,15 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 // not part of a Go signature, so they are dropped before comparing. Any shape
 // the normaliser cannot render faithfully compares as no match — a missing
 // implementation hop is cheaper than a wrong one.
+//
+// Comparing the two renderings BYTE FOR BYTE was too strict in the other
+// direction: Go lets one type be spelled several ways at a call site, and the
+// interface and its implementations are normally in different files with
+// different import aliases, so `context.Context` against `gocontext.Context`,
+// or `[]byte` against `[]uint8`, dropped implementations that Go accepts. The
+// comparison therefore runs over goTypeIdentityKey, which folds the spelling
+// differences that denote one type — and, where the difference cannot be
+// decided from a signature string at all, folds them anyway rather than reject.
 func goMethodSignaturesMatch(requirement, implementation string) bool {
 	want, ok := goNormalizedMethodSignature(requirement)
 	if !ok {
@@ -6987,7 +6996,130 @@ func goMethodSignaturesMatch(requirement, implementation string) bool {
 	if !ok {
 		return false
 	}
-	return want == got
+	return goTypeIdentityKey(want) == goTypeIdentityKey(got)
+}
+
+// goPredeclaredTypeAliases are the spellings the Go spec makes ALIASES: two
+// names for one identical type, not two convertible types. A method written
+// with `[]byte` implements a requirement written with `[]uint8` and vice versa.
+// Convertible-but-distinct pairs (`int`/`int64`, a defined type and its
+// underlying type) are deliberately absent — those are different methods.
+var goPredeclaredTypeAliases = map[string]string{
+	"byte": "uint8",
+	"rune": "int32",
+	"any":  "interface{}",
+}
+
+// goTypeIdentityKey rewrites a canonicalised type expression into a key that is
+// equal for every spelling denoting the same Go type. Three rewrites:
+//
+//   - PACKAGE QUALIFIERS ARE DROPPED, so `context.Context`, an aliased
+//     `gocontext.Context` and a dot-imported bare `Context` all key as
+//     `Context`. Whether two qualifiers name the same package is NOT decidable
+//     from a signature string — the import block, the alias and the dot-import
+//     all live elsewhere — so this is permissive on purpose and `http.Client`
+//     collapses onto `redis.Client` too. That error adds an imprecise
+//     implementation hop; the opposite error silently deletes a real
+//     implementation's edge, which is the defect being repaired. Nothing
+//     structural is folded: arity, pointers, slices, arrays, maps, channels and
+//     variadics all still separate, so the `Run(name string) error` against
+//     `Run() error` case that motivated signature matching stays rejected.
+//   - PREDECLARED ALIASES ARE FOLDED (goPredeclaredTypeAliases). Sound: the
+//     spec defines each pair as one type.
+//   - PARAMETER AND RESULT NAMES INSIDE A NESTED func TYPE ARE DROPPED, as
+//     goNormalizedMethodSignature already drops them at the top level, and a
+//     single parenthesised result is unwrapped (`func() (error)` is `func()
+//     error`). Sound: names are not part of a Go function type.
+//
+// Known remaining strictness: names inside an inline `interface{ ... }` method
+// set are left alone, so an interface literal spelled with named parameters on
+// one side only still fails to match. Rewriting that needs a real type parser,
+// and the residue errs towards a missing hop rather than a wrong one.
+func goTypeIdentityKey(text string) string {
+	var out strings.Builder
+	for i := 0; i < len(text); {
+		if !goIdentifierByte(text[i]) {
+			out.WriteByte(text[i])
+			i++
+			continue
+		}
+		end := i
+		for end < len(text) && goIdentifierByte(text[end]) {
+			end++
+		}
+		// `pkg.Name` keys as `Name`: skip the qualifier and its dot, then resume
+		// from the next segment so a chain reduces to its last one.
+		if end+1 < len(text) && text[end] == '.' && goIdentifierByte(text[end+1]) {
+			i = end + 1
+			continue
+		}
+		name := text[i:end]
+		if name == "func" && end < len(text) && text[end] == '(' {
+			if rendered, next, ok := goFuncTypeIdentityKey(text, end); ok {
+				out.WriteString(rendered)
+				i = next
+				continue
+			}
+		}
+		if alias, ok := goPredeclaredTypeAliases[name]; ok {
+			name = alias
+		}
+		out.WriteString(name)
+		i = end
+	}
+	return out.String()
+}
+
+// goIdentifierByte is identifierByte without the dot, so a qualified name splits
+// into its segments instead of scanning as one word.
+func goIdentifierByte(b byte) bool { return identifierByte(b) && b != '.' }
+
+// goFuncTypeIdentityKey renders the `func` type whose parameter list opens at
+// `open`, returning the key and the index just past it. Parameter and result
+// names are dropped through goSignatureTypeList, the same reduction the top
+// level of a method signature already gets. It declines when either list cannot
+// be reduced, leaving the caller to copy the text through unchanged.
+func goFuncTypeIdentityKey(text string, open int) (string, int, bool) {
+	closing := matchingParen(text, open)
+	if closing < 0 {
+		return "", 0, false
+	}
+	params, ok := goSignatureTypeList(text[open+1 : closing])
+	if !ok {
+		return "", 0, false
+	}
+	rendered := "func(" + strings.Join(goTypeIdentityKeys(params), ",") + ")"
+	next := closing + 1
+	if next < len(text) && text[next] == '(' {
+		end := matchingParen(text, next)
+		if end < 0 {
+			return "", 0, false
+		}
+		results, ok := goSignatureTypeList(text[next+1 : end])
+		if !ok {
+			return "", 0, false
+		}
+		results = goTypeIdentityKeys(results)
+		// A one-result list is written both ways; key it the unwrapped way so
+		// `func() (error)` and `func() error` agree.
+		switch len(results) {
+		case 0:
+		case 1:
+			rendered += results[0]
+		default:
+			rendered += "(" + strings.Join(results, ",") + ")"
+		}
+		next = end + 1
+	}
+	return rendered, next, true
+}
+
+func goTypeIdentityKeys(types []string) []string {
+	out := make([]string, len(types))
+	for i, text := range types {
+		out[i] = goTypeIdentityKey(text)
+	}
+	return out
 }
 
 // goNormalizedMethodSignature renders a Go method signature — an interface
