@@ -1389,3 +1389,93 @@ def plain(value):
 `), "app.py:function:plain")
 	})
 }
+
+// A walrus is an assignment too, so its value is evaluated BEFORE the name is
+// bound and a call in that value still reads the binding the walrus is about to
+// replace. CPython is the oracle --
+//
+//	$ python3 -c 'import sys, types
+//	m = types.ModuleType("native"); m.compute = lambda: "IMPORTED"; sys.modules["native"] = m
+//	from native import compute
+//	if (compute := compute()):
+//	    print(compute)'                              -> IMPORTED
+//
+// Recording the target at its OWN offset made the scope view report that call
+// as shadowed, and a `complete` view that reports no modules for a name makes
+// importsWithName DELETE the file-level import binding, taking the resolved
+// call edge with it. The binding takes effect at the END of the walrus, and is
+// in force from there on -- later in the same expression included --
+//
+//	$ python3 -c '...same preamble...
+//	if (compute := 1):
+//	    pass
+//	print(compute())'                                -> TypeError: 'int' object is not callable
+//
+// -- so a call after the walrus still has to fail closed. Inside a FUNCTION the
+// very same source raises UnboundLocalError, because a name bound anywhere in a
+// function is local throughout it --
+//
+//	$ python3 -c '...same preamble...
+//	def f():
+//	    if (compute := compute()):
+//	        return compute
+//	f()'   -> UnboundLocalError: cannot access local variable 'compute'
+//
+// -- which the position-free function-wide `locals` set already models, exactly
+// as it does for `=`.
+func TestPythonWalrusTargetBindsAfterItsValueExpression(t *testing.T) {
+	t.Run("module-level self walrus", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+if (compute := compute()):
+    pass
+`), "file:app.py")
+	})
+
+	t.Run("module-level walrus in a call argument", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+print(compute := compute())
+`), "file:app.py")
+	})
+
+	t.Run("the same shape in a function still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    if (compute := compute()):
+        return compute
+`), "a name bound anywhere in a function is local throughout it, so CPython raises UnboundLocalError")
+	})
+
+	t.Run("a later module-level call still sees the walrus binding", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+if (compute := 1):
+    pass
+handler = compute()
+`), "the walrus has finished binding before the later call runs")
+	})
+
+	t.Run("a call after the walrus in the same expression still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+handler = ((compute := 1), compute())
+`), "the walrus binding is in force from its own end onwards, same expression included")
+	})
+
+	t.Run("a comprehension walrus still hoists to the enclosing function", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(values):
+    return [compute(1) for value in values if (compute := 2)]
+`), "PEP 572 hoists a comprehension walrus into the enclosing function, making the name a function-wide local")
+	})
+
+	t.Run("a lambda walrus still binds in the lambda", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+handler = (lambda: (compute(1), (compute := 2)))()
+`), "a lambda's walrus binds in the lambda's own scope, so CPython raises UnboundLocalError")
+	})
+}

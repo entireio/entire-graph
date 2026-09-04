@@ -355,7 +355,32 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 		}
 	case "named_expression":
 		if scope != nil {
-			w.addTarget(w.walrusScope(scope), w.targetFieldOrFirst(node, "name"))
+			// A walrus is an assignment too: its value is evaluated BEFORE the
+			// name is bound, so a call in the value still reads the binding the
+			// walrus is about to replace. CPython is the oracle --
+			//
+			//	$ python3 -c 'import sys, types
+			//	m = types.ModuleType("native"); m.compute = lambda: "IMPORTED"
+			//	sys.modules["native"] = m
+			//	from native import compute
+			//	if (compute := compute()):
+			//	    print(compute)'                          -> IMPORTED
+			//
+			// -- so recording the target at its OWN offset made the scope view
+			// call that import shadowed, and a `complete` view that reports no
+			// modules for a name makes importsWithName DELETE the file-level
+			// import binding, taking the resolved call edge with it. The binding
+			// takes effect at the END of the walrus and is visible from there on,
+			// including later in the very same expression:
+			//
+			//	$ python3 -c '...compute returns a callable returning "SECOND"...
+			//	print((compute := compute()), compute())'    -> <lambda> SECOND
+			//
+			// Inside a FUNCTION the same source raises UnboundLocalError instead,
+			// because a name bound anywhere in a function is local throughout it,
+			// and the function-wide `locals` set keeps failing closed there
+			// regardless of offsets.
+			w.addTargetFrom(w.walrusScope(scope), w.targetFieldOrFirst(node, "name"), int(node.EndByte()))
 		}
 	case "delete_statement":
 		if scope != nil {
