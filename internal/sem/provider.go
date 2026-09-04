@@ -4743,6 +4743,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 	handledRoutes := map[string]struct{}{}
+	// Shared by the route pass below and the per-file loop further down, which
+	// both resolve routes spelled as constants out of the same files.
+	constantsByFile := newFileStringConstants()
 	knownFiles := map[string]bool{}
 	for _, file := range files {
 		if shouldStop != nil && shouldStop() {
@@ -4754,7 +4757,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 	if spec.emits("HANDLES_ROUTE") {
-		for _, r := range goHTTPRouteRelations(files, recordsByFile, readContent) {
+		for _, r := range goHTTPRouteRelations(files, recordsByFile, readContent, constantsByFile) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -5011,7 +5014,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		fileNeedsChannelScan := channelScanLanguage(file.Language)
 		var fileStringConstants map[string]string
 		if fileNeedsRouteScan || fileNeedsHTTPScan {
-			fileStringConstants = staticStringConstants(content)
+			fileStringConstants = constantsByFile.forFile(file.Path, content)
 		}
 		var routeSymbolsByID map[string]SymbolRecord
 		if fileNeedsRouteScan {
@@ -5546,8 +5549,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			callableSymbol := !typeLikeKind(from.Kind)
+			// One stripped copy of this symbol, read by every generic scanner
+			// below. Behind the union of their guards, and behind the callable
+			// test all of them apply, so a profile that runs none of them and a
+			// symbol none of them look at both still cost nothing.
+			var body symbolBody
+			if callableSymbol && (needsAsyncCalls || needsDataFlow || needsFields || spec.callResolution == "full") {
+				body = newSymbolBody(block)
+			}
 			if needsAsyncCalls && callableSymbol {
-				for _, name := range asyncCallNames(block) {
+				for _, name := range asyncCallNames(body) {
 					if name == from.Name {
 						continue
 					}
@@ -5609,7 +5620,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				// paid for. Revisit if a corpus shows it is not rare.
 				edgeOrder := []string{}
 				flowsByEdge := map[string]*RelationRecord{}
-				for _, flow := range returnFlowCalls(block, symbolFlowParameterNames(from)) {
+				for _, flow := range returnFlowCalls(body, symbolFlowParameterNames(from)) {
 					if flow.Name == from.Name {
 						continue
 					}
@@ -5824,15 +5835,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// symbol still reached it and matched a `x.y(...)` shape anywhere
 			// in the file against another language's methods.
 			if spec.callResolution == "full" && callExtractionLanguage(file.Language) {
-				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, implementersByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, typeScriptPropTypes, fieldsByContainer, swiftTypes) {
+				for _, r := range receiverCallRelations(from, body, methodsByContainer, superContainerByID, implementersByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, typeScriptPropTypes, fieldsByContainer, swiftTypes) {
 					emit(r)
 				}
-				for _, r := range importedReceiverCallRelations(from, block, importsByName, symbolsByShortName) {
+				for _, r := range importedReceiverCallRelations(from, body, importsByName, symbolsByShortName) {
 					emit(r)
 				}
 			}
 			if needsFields {
-				for _, r := range fieldAccessRelations(from, block, fieldsByContainer, symbolsByShortName) {
+				for _, r := range fieldAccessRelations(from, body, fieldsByContainer, symbolsByShortName) {
 					emit(r)
 				}
 			}
@@ -6820,7 +6831,7 @@ func resolveQualifiedType(from SymbolRecord, qt pkgQualType, symbolsByShortName 
 	return SymbolRecord{}, false
 }
 
-func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, implementersByContainer map[string][]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes, typeScriptPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord, swiftTypes swiftFileTypes) []RelationRecord {
+func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, implementersByContainer map[string][]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes, typeScriptPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord, swiftTypes swiftFileTypes) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
@@ -6828,14 +6839,17 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// Multi-line verbatim (@"...") and raw ("""...""") string bodies pass
 		// through the generic stripper (which contains string masking to one
 		// line), so SQL/text blocks would feed every extractor below.
-		block = maskCSharpTextBlocks(block)
+		body = body.masked(maskCSharpTextBlocks(body.text))
 	}
 	if from.Language == "Swift" {
 		// Multiline string bodies ("""...""") likewise span lines and would
 		// feed every extractor below through the line-scoped generic stripper.
-		block = maskSwiftMultilineStrings(block)
+		body = body.masked(maskSwiftMultilineStrings(body.text))
 	}
-	calls := receiverCalls(block)
+	// The language-specific scanners below take the text and strip it their own
+	// way, behind their own masks. Only the generic ones share body's copy.
+	block := body.text
+	calls := receiverCalls(body)
 	allReceiverCalls := calls
 	if from.Language == "Dart" {
 		// Dart property assignment invokes a setter method when one exists
@@ -6853,12 +6867,12 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// fallback — receiver-agnostic by construction — sees every pair.
 		calls = csharpNonTailReceiverCalls(block)
 	}
-	chainedCalls := chainedConstructorCalls(block)
-	returnedCalls := returnedReceiverCalls(block)
-	chainedReturnCalls := chainedConstructorReturnCalls(block)
-	deepChainedReturnCalls := chainedConstructorDeepReturnCalls(block)
-	returnedChainCalls := returnedReceiverChainCalls(block)
-	returnedDeepChainCalls := returnedReceiverDeepChainCalls(block)
+	chainedCalls := chainedConstructorCalls(body)
+	returnedCalls := returnedReceiverCalls(body)
+	chainedReturnCalls := chainedConstructorReturnCalls(body)
+	deepChainedReturnCalls := chainedConstructorDeepReturnCalls(body)
+	returnedChainCalls := returnedReceiverChainCalls(body)
+	returnedDeepChainCalls := returnedReceiverDeepChainCalls(body)
 	var rubyBareCalls []string
 	if from.Language == "Ruby" {
 		// Ruby call sites often omit parentheses and method names may end in
@@ -6952,7 +6966,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
-	localTypes := localVarTypes(block)
+	localTypes := localVarTypes(body)
 	// perlVarTypes holds Perl-inferred receiver types. They are kept OUT of the
 	// shared localTypes/varTypes maps so a Perl package name can never resolve a
 	// receiver call in another language's context (and vice versa); only the
@@ -7100,13 +7114,13 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
-	factoryTypes := factoryReturnVarTypes(block, from.FilePath, returnTypesBySymbolNameAndFile)
+	factoryTypes := factoryReturnVarTypes(body, from.FilePath, returnTypesBySymbolNameAndFile)
 	if from.Language == "Go" {
 		// Multi-value assignments (`cmd, flags, err := c.Find(args)`) type
 		// their first variable from the callee's declared first result; the
 		// generic factory-assignment scan matches only single-variable,
 		// unqualified factories.
-		for name, typeName := range goMultiAssignReturnVarTypes(block, from, symbolsByShortName) {
+		for name, typeName := range goMultiAssignReturnVarTypes(body, from, symbolsByShortName) {
 			if _, exists := factoryTypes[name]; !exists {
 				factoryTypes[name] = typeName
 			}
@@ -7210,14 +7224,14 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
-	importedReceiverVars := importedReceiverVarTypes(from.Signature, block, importsByName, goModule)
+	importedReceiverVars := importedReceiverVarTypes(from.Signature, body, importsByName, goModule)
 	// Receivers declared with an in-module package-qualified type
 	// (`comm communicator.Communicator`). parameterVarTypes cannot see these, so
 	// without this tier an interface-typed parameter — the ordinary way Go passes
 	// a collaborator — carries no receiver type at all.
 	goQualifiedReceiverVars := map[string]pkgQualType{}
 	if from.Language == "Go" {
-		goQualifiedReceiverVars = goInModuleQualifiedReceiverTypes(from.Signature, block, importsByName, goModule)
+		goQualifiedReceiverVars = goInModuleQualifiedReceiverTypes(from.Signature, body, importsByName, goModule)
 	}
 	deepReturnedCallSuffixes := receiverDeepChainSuffixes(deepChainedReturnCalls, returnedDeepChainCalls)
 	paramTypes := parameterVarTypes(from.Signature)
@@ -9087,13 +9101,13 @@ func importedReceiverCallTargets(from SymbolRecord, modules []string, candidates
 	return targets
 }
 
-func importedReceiverCallRelations(from SymbolRecord, block string, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+func importedReceiverCallRelations(from SymbolRecord, body symbolBody, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
 	var relations []RelationRecord
 	seen := map[string]bool{}
-	for _, call := range receiverCalls(block) {
+	for _, call := range receiverCalls(body) {
 		localTargets := importedReceiverCallTargets(from, importsByName[call.Receiver], symbolsByShortName[call.Method])
 		if len(localTargets) > 0 {
 			for _, target := range localTargets {
@@ -11739,7 +11753,7 @@ func fileChangesWithRelations(ctx context.Context, repo, revision, repoKey strin
 // method receiver variable, or a local constructor assignment; accesses whose
 // receiver type cannot be resolved, or whose field is not a known local field,
 // are skipped (no guessed edges).
-func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+func fieldAccessRelations(from SymbolRecord, body symbolBody, fieldsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
 	if from.Kind != "function" && from.Kind != "method" {
 		return nil
 	}
@@ -11752,7 +11766,7 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 		}
 	}
 	varTypes := parameterVarTypes(from.Signature)
-	localTypes := localVarTypes(block)
+	localTypes := localVarTypes(body)
 	for name, typeName := range localTypes {
 		varTypes[name] = typeName
 	}
@@ -11763,7 +11777,7 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 
 	var relations []RelationRecord
 	emitted := map[string]bool{}
-	for _, access := range fieldAccesses(block) {
+	for _, access := range fieldAccesses(body) {
 		containerID := ""
 		confidence := 0.9
 		if id, ok := selfContainers[access.Receiver]; ok {
@@ -23108,7 +23122,7 @@ func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, sy
 	return sortedKeys(seen)
 }
 
-func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {
+func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, constantsByFile *fileStringConstants) []expressRouteRelation {
 	var relations []expressRouteRelation
 	seen := map[string]bool{}
 	for _, file := range files {
@@ -23133,7 +23147,7 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 				}
 			}
 		}
-		for _, registration := range goHTTPRouteRegistrations(content) {
+		for _, registration := range goHTTPRouteRegistrations(content, constantsByFile.forFile(file.Path, content)) {
 			handler, ok := resolveRouteHandlerSymbol(handlers, registration.Handler)
 			if !ok {
 				continue
@@ -23177,8 +23191,7 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 	return relations
 }
 
-func goHTTPRouteRegistrations(content string) []goHTTPRouteRegistration {
-	constants := staticStringConstants(content)
+func goHTTPRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {
 	groupPrefixes := map[string]string{}
 	groupRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)`)
 	groupMatches := groupRe.FindAllStringSubmatch(content, -1)
