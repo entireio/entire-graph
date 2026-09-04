@@ -560,7 +560,8 @@ It was caught before it reached this table.
   non-default** run that happens to score the same 94.74; do not treat the two as
   interchangeable evidence for the default-granularity claim in §7 until this is resolved.
 - **Answerer and judge:** `gpt-5.6-sol` (Azure AI) for every system, no exceptions.
-- **Retrieval budget:** `top_k = 200` for every system.
+- **Retrieval budget:** `top_k = 200` requested for every system. supermemory's search API
+  hard-caps `limit` at 100, so that row alone answered from an effective top-100 budget (§ ‡).
 - **Questions:** all 1,540. No subsetting, no per-type headline.
 - **Ingest:** native to each system. entire-graph, cmm and graphify use no LLM. Extraction-based
   systems use `azure_ai/gpt-5.6-terra`.

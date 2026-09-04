@@ -49,7 +49,9 @@ memory harness or selectors behind its historical README numbers.
 
 A separate comparison from the one above: eight memory systems (entire-graph, mem0 OSS, cognee,
 BM25, cmm, graphify, letta, supermemory) on all 1,540 questions of LoCoMo, under one shared reader
-model, one shared judge model, and a 200-item retrieval budget for every arm. Where the GraphMark
+model, one shared judge model, and a 200-item retrieval budget requested for every arm —
+supermemory's search API hard-caps that at 100, so it alone answered from half the budget, and its
+server was patched to reach the shared extraction model; both are disclosed in the full write-up. Where the GraphMark
 comparison above is attested against an unpublished bundle, this one's full methodology, every
 retraction, and every quoted number's provenance are committed in this repository.
 

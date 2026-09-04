@@ -18,8 +18,8 @@ example is shown below.
 ## Benchmarks
 
 The Entire Graph retrieval engine ranked first in an eight-system LoCoMo comparison
-(1,540 questions, shared reader and judge, 200-item retrieval budget for every
-arm) while building its index without model calls. Measured 2026-08-14, on the
+(1,540 questions, shared reader and judge, a 200-item retrieval budget requested for
+every arm) while building its index without model calls. Measured 2026-08-14, on the
 retrieval path that first shipped in
 [v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0)
 ([#104](https://github.com/entireio/entire-graph/pull/104))
@@ -30,10 +30,22 @@ retrieval path that first shipped in
 | [mem0](https://github.com/mem0ai/mem0) | 93.83 | 50.85M | commit [`4debc58`](https://github.com/mem0ai/mem0/commit/4debc58a83377b18be81ae1e5969a300736b2fac) |
 | [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M | commit [`38eece5`](https://github.com/topoteretes/cognee/commit/38eece5bbb0cb9f5706fed908abd16dba0f5505e) |
 | [bm25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 | [0.2.2](https://github.com/dorianbrown/rank_bm25/releases/tag/0.2.2) |
-| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) | 91.30 | 0 | [v0.9.0](https://github.com/DeusData/codebase-memory-mcp/releases#release-v0.9.0) |
+| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) † | 91.30 | 0 | [v0.9.0](https://github.com/DeusData/codebase-memory-mcp/releases#release-v0.9.0) |
 | [graphify](https://github.com/Graphify-Labs/graphify) | 87.34 | 0 | [v0.9.43](https://github.com/Graphify-Labs/graphify/releases/tag/v0.9.43) |
 | [letta](https://github.com/letta-ai/letta) | 84.68 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
-| [supermemory](https://github.com/supermemoryai/supermemory) | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
+| [supermemory](https://github.com/supermemoryai/supermemory) ‡ | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
+
+† **cmm is patched, not stock v0.9.0.** It was modified to emit Markdown sections
+([patch](bench/memory/patches/0005-cmm-v0.9.0-markdown-sections.patch)); the linked release alone
+does not reproduce 91.30.
+
+‡ **supermemory is patched, and its retrieval budget is half every other row's.** Reaching the
+shared extraction model required a binary capability-flag patch plus a wire-level parameter adapter,
+and a second fix made its content-dedup tolerate retries. Its search API also hard-caps retrieval at
+**100 items where every other arm gets 200** — a disclosed asymmetry that works against
+supermemory. The linked release alone does not reproduce 82.08. Full disclosure, including what is
+and is not reproducible from this repository:
+[`LOCOMO-COMPARISON.md` § ‡](bench/memory/LOCOMO-COMPARISON.md).
 
 See [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
 retractions, and reproduction steps.
