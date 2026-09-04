@@ -18043,3 +18043,91 @@ let after = 0
 		}
 	})
 }
+
+func TestFSharpShadowBindingsIgnoreLiteralsAndLineComments(t *testing.T) {
+	// Shadow bindings were collected from lines that only BLOCK comments had
+	// been masked out of, so a binding form standing inside a string literal or
+	// after a `//` was read as a real binder. A literal that spans newlines --
+	// triple-quoted, verbatim, interpolated -- is what puts arbitrary text at
+	// the head of a line, which is where the binding patterns anchor.
+	//
+	// A phantom shadow is not a lost restriction, it is the wrong definition: a
+	// shadowed qualifier records bare and resolves UNRESTRICTED, so
+	// `Json.serialize` stopped naming the project module `Json` and bound the
+	// same-file `serialize` instead. The verbatim case is worse still, because a
+	// `module Json = ...` inside a string is read as an ABBREVIATION and
+	// redirects the qualifier's head as well.
+	for _, phantom := range []struct{ name, source string }{
+		{"triple-quoted string holding a let", `module Use
+
+let serialize (x: int) = x * 2
+
+let template = """
+let Json = Newtonsoft.Json.JsonConvert
+"""
+
+let run (x: int) = Json.serialize x
+`},
+		{"verbatim string holding a module abbreviation", `module Use
+
+let serialize (x: int) = x * 2
+
+let template = @"
+module Json = Newtonsoft.Json
+"
+
+let run (x: int) = Json.serialize x
+`},
+		{"interpolated triple-quoted string holding a let", `module Use
+
+let serialize (x: int) = x * 2
+
+let template (v: int) = $"""
+let Json = {v}
+"""
+
+let run (x: int) = Json.serialize x
+`},
+		// A `//` reaches the PARAMETER pass rather than the value pattern: the
+		// region between a function header's name and the `=` that opens its
+		// body swallows a trailing comment whenever the `=` continues on the
+		// next line, so the words inside the comment were read as parameters.
+		{"line comment inside a function header", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) // Json = the alias
+    = Json.serialize x
+`},
+	} {
+		t.Run(phantom.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, phantom.source)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under a %s reached %v, want %v: text inside a literal or a comment binds nothing, so the project module `Json` still answers the qualifier", phantom.name, got, want)
+			}
+		})
+	}
+
+	// The opposite direction, which is what stops the masking from being a
+	// blanket exclusion of any line that carries a quote or a `//`: a REAL
+	// binding still shadows, including one written below a closed multi-line
+	// literal and one whose right-hand side merely CONTAINS a string and a
+	// trailing comment.
+	t.Run("a real binding around a literal and a comment still shadows", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let doc = """
+not a binding
+"""
+
+let run (x: int) =
+    let Json = Serde.parse "text"  // note
+    Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under a real `let Json = Serde.parse \"text\"  // note` reached %v, want %v: the binding is written in code and still shadows the project module", got, want)
+		}
+	})
+}

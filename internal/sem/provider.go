@@ -2145,12 +2145,28 @@ type fsharpShadowBinding struct {
 // not merely lose a restriction, they bound whatever same-name definition sat
 // nearest instead of the module the source named.
 //
-// Block comments are masked first so a `module X = Y` inside `(* ... *)` is not
-// a binding. Bindings are per file because F# `let` and module abbreviations are
-// lexically scoped to the file that writes them, unlike module declarations
-// themselves, which are project-scoped.
+// Every comment and literal form is masked first, because a binding has to be
+// WRITTEN to bind: only block comments were, so a `let Json = ...` line carried
+// inside a triple-quoted or verbatim string -- the shapes that reach a whole
+// line of their own, since a literal spanning newlines puts arbitrary text at
+// the head of a line -- was collected as a real binder, and so was a
+// `module Json = Newtonsoft.Json` there, which additionally REDIRECTED the
+// qualifier. A `//` comment reaches the parameter pass the same way, because
+// the region between a header's name and its `=` swallows a trailing comment
+// when the `=` continues on the next line. A phantom shadow is the
+// wrong-definition direction rather than a lost restriction: a shadowed
+// qualifier records bare and resolves unrestricted, so the call binds whatever
+// same-name definition sits nearest instead of the module the source wrote.
+//
+// The two maskers are length- and newline-preserving, which is what makes them
+// usable here: shadow bindings carry LINE NUMBERS, and the offside-rule scope
+// walk reads indentation, so blanking has to leave every line where it was.
+//
+// Bindings are per file because F# `let` and module abbreviations are lexically
+// scoped to the file that writes them, unlike module declarations themselves,
+// which are project-scoped.
 func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
-	lines := strings.Split(maskFSharpBlockComments(content), "\n")
+	lines := strings.Split(maskFSharpLiteralsAndLineComments(maskFSharpBlockComments(content)), "\n")
 	var bindings []fsharpShadowBinding
 	for index, line := range lines {
 		if name, target, recursive := fsharpShadowBindingAt(line); name != "" {

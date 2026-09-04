@@ -1489,6 +1489,16 @@ func TestLiteralMaskersPreserveLengthAndLineStructure(t *testing.T) {
 		"$$\"\"\"{{",
 		"$",
 		"{}",
+		// Shadow-binding sources: fsharpFileShadowBindings runs on masked lines
+		// and reports LINE NUMBERS from them, and the offside scope walk reads
+		// their indentation, so a byte or a break moved inside one of these would
+		// put a binding's scope on the wrong lines rather than merely mis-mask a
+		// literal.
+		"let template = \"\"\"\nlet Json = Newtonsoft.Json.JsonConvert\n\"\"\"\n\nlet run (x: int) = Json.serialize x\n",
+		"let template = @\"\nmodule Json = Newtonsoft.Json\n\"\n\nlet run (x: int) = Json.serialize x\n",
+		"let template (v: int) = $\"\"\"\nlet Json = {v}\n\"\"\"\n\nlet run (x: int) = Json.serialize x\n",
+		"let run (x: int) // Json = the alias\r\n    = Json.serialize x\r\n",
+		"let run (x: int) =\n    let Json = Serde.parse \"text\"  // note\n    Json.serialize x\n",
 		"x = \"a\" // b\nfunction f() { /* c */ return `t`; }\n\r\n",
 		"'",
 		"\"",
