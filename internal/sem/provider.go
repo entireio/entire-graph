@@ -2033,10 +2033,21 @@ func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
 
 // fsharpModuleAbbreviationPattern matches an F# module abbreviation
 // (`module Json = Newtonsoft.Json`), which binds a LOCAL name to a module or
-// namespace path. The uppercase first letter of the right-hand side separates
-// it from the nested-module block form `module M = begin ... end`; a plain
+// namespace path. The right-hand side is captured so the verbose nested-module
+// BLOCK form can be told apart by the one word that heads it; a plain
 // `module Nested =` heading a block has nothing after the `=` at all.
-var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]+([A-Za-z_][A-Za-z0-9_']*)[ \t]*=[ \t]*[A-Z]`)
+//
+// The right-hand side used to be required to start with an UPPERCASE letter,
+// which is not what distinguishes an abbreviation -- it is only how the paths
+// in the common case happen to be spelled. F# writes the global namespace with
+// the lowercase keyword `global` (`module Json = global.Newtonsoft.Json`), and
+// lets a module or namespace be named in lowercase or with a leading
+// underscore, so every one of those abbreviations was missed and the alias it
+// binds went unrecorded. A missed abbreviation is not a neutral omission: the
+// qualifier is then classified by the project's module declarations alone, so
+// `Json.serialize` under `module Json = global.Newtonsoft.Json` was pinned to
+// an unrelated project module named `Json`.
+var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]+([A-Za-z_][A-Za-z0-9_']*)[ \t]*=[ \t]*([A-Za-z_][A-Za-z0-9_']*)`)
 
 // fsharpValueBindingPattern matches a `let`/`use` VALUE binding
 // (`let Json = Newtonsoft.Json.JsonConvert`, `let Json : JsonConvert = ...`),
@@ -2086,20 +2097,36 @@ func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
 	lines := strings.Split(maskFSharpBlockComments(content), "\n")
 	var bindings []fsharpShadowBinding
 	for index, line := range lines {
-		for _, pattern := range []*regexp.Regexp{fsharpModuleAbbreviationPattern, fsharpValueBindingPattern} {
-			match := pattern.FindStringSubmatch(line)
-			if match == nil {
-				continue
-			}
-			bindings = append(bindings, fsharpShadowBinding{
-				name:        match[1],
-				line:        index + 1,
-				throughLine: fsharpBindingScopeEnd(lines, index),
-			})
-			break
+		name := fsharpShadowBindingName(line)
+		if name == "" {
+			continue
 		}
+		bindings = append(bindings, fsharpShadowBinding{
+			name:        name,
+			line:        index + 1,
+			throughLine: fsharpBindingScopeEnd(lines, index),
+		})
 	}
 	return bindings
+}
+
+// fsharpShadowBindingName returns the name this line binds lexically, or "" if
+// it binds nothing.
+func fsharpShadowBindingName(line string) string {
+	if match := fsharpModuleAbbreviationPattern.FindStringSubmatch(line); match != nil {
+		// `module M = begin ... end` is the verbose spelling of a nested module
+		// BLOCK, not an abbreviation: it binds no alias, it opens a scope. It is
+		// the one right-hand side that has to be excluded, which is why the
+		// pattern captures the word rather than guessing from its case.
+		if match[2] == "begin" {
+			return ""
+		}
+		return match[1]
+	}
+	if match := fsharpValueBindingPattern.FindStringSubmatch(line); match != nil {
+		return match[1]
+	}
+	return ""
 }
 
 // fsharpBindingScopeEnd returns the last line the binding written on
@@ -2127,38 +2154,71 @@ func fsharpIndentWidth(line string) int {
 	return len(line) - len(strings.TrimLeft(line, " \t"))
 }
 
-// fsharpShadowsInScope narrows a file's bindings to the names actually shadowed
-// inside one call block, which starts at startLine in the file and whose blank
-// lines hold no call site (the module-init and file-level blocks blank out the
-// members they span, so their live lines are exactly their own).
+// fsharpShadowsAt returns a lookup from a byte offset inside one call block --
+// which starts at startLine in the file -- to the names shadowed on the LINE
+// that offset falls on.
 //
-// A binding counts when any line the block holds code on lies within the
-// binding's scope. Within a single block that is as fine as this pass can see:
-// the call scanners report names, not offsets, so a binding a block writes and
-// then uses is applied to the whole block rather than to the lines below it.
-func fsharpShadowsInScope(bindings []fsharpShadowBinding, block string, startLine int) map[string]bool {
+// The shadow set used to be computed once for a whole block. F# scoping is
+// ordered, so that answered the question in the wrong place as well as the
+// right one: a `let Json = ...` written partway down a function was applied to
+// the `Json.serialize` calls ABOVE it too, and because a shadowed qualifier
+// records bare and resolves unrestricted, the earlier call did not merely lose
+// its restriction -- it bound whatever same-name definition sat nearest instead
+// of the module the source named. Both sightings then collapsed onto the bare
+// one and the module-qualified edge disappeared. Deciding per call SITE is the
+// same rule applied at the granularity F# actually scopes at.
+//
+// Blank lines need no special case any more: a call site is never on one. The
+// lookup is memoised per line because a block commonly holds many call sites on
+// few distinct lines.
+func fsharpShadowsAt(bindings []fsharpShadowBinding, block string, startLine int) func(offset int) map[string]bool {
 	if len(bindings) == 0 {
-		return nil
+		return func(int) map[string]bool { return nil }
 	}
 	if startLine < 1 {
 		startLine = 1
 	}
-	shadows := map[string]bool{}
-	for offset, line := range strings.Split(block, "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
+	newlines := newlineOffsets(block)
+	byLine := map[int]map[string]bool{}
+	return func(offset int) map[string]bool {
+		at := startLine + lineAtOffset(newlines, offset) - 1
+		if shadows, known := byLine[at]; known {
+			return shadows
 		}
-		at := startLine + offset
+		var shadows map[string]bool
 		for _, binding := range bindings {
-			if shadows[binding.name] {
-				continue
-			}
 			if binding.line <= at && at <= binding.throughLine {
+				if shadows == nil {
+					shadows = map[string]bool{}
+				}
 				shadows[binding.name] = true
 			}
 		}
+		byLine[at] = shadows
+		return shadows
 	}
-	return shadows
+}
+
+// newlineOffsets lists the byte offset of every newline in text, so a byte
+// offset can be turned into a line number by a binary search instead of by
+// re-counting the text once per call site.
+func newlineOffsets(text string) []int {
+	var offsets []int
+	for start := 0; start < len(text); {
+		index := strings.IndexByte(text[start:], '\n')
+		if index < 0 {
+			break
+		}
+		offsets = append(offsets, start+index)
+		start += index + 1
+	}
+	return offsets
+}
+
+// lineAtOffset returns the 1-based line offset falls on, given the newline
+// offsets of the same text.
+func lineAtOffset(newlines []int, offset int) int {
+	return sort.SearchInts(newlines, offset) + 1
 }
 
 // fsharpQualifierShadowed reports whether the shadows in scope at the call site
@@ -3876,11 +3936,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// name, but the qualifier is kept so a call naming a module this
 					// file declares stays inside it.
 					masked := maskFSharpBlockComments(callBlock)
-					// Shadowing is lexical, so only the file's bindings that
-					// reach THIS block's lines may un-qualify a call in it: a
-					// binding local to a sibling function, or written below the
-					// block, is not in scope here and leaves the qualifier alone.
-					fsharpShadowedQualifiers := fsharpShadowsInScope(fsharpShadowBindings, masked, from.StartLine)
+					// Shadowing is lexical AND ordered, so it is answered per
+					// call SITE: only the file's bindings that reach the line a
+					// call is written on may un-qualify it. A binding local to a
+					// sibling function, written below the block, or written
+					// below the call inside this very block, is not in scope
+					// there and leaves the qualifier alone.
+					fsharpShadowedQualifiers := fsharpShadowsAt(fsharpShadowBindings, masked, from.StartLine)
 					// An unqualified call written with parentheses (`convert(x)`)
 					// has no dot and no pipe, so only the generic scanner above
 					// sees it and it reached no qualifier record. A block holding
@@ -3893,15 +3955,22 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// the same reason the targets are: a call inside `(* ... *)`
 					// is not a call site.
 					for name := range callLikeIdentifiers(masked, file.Language) {
-						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers, name, name)
+						// A bare spelling carries no qualifier to shadow, so no
+						// binding can change what it records.
+						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, nil, name, name)
 					}
-					for target := range fsharpCallTargets(masked) {
+					for target, offsets := range fsharpCallTargetSites(masked) {
 						name := lastDottedCallSegment(target)
 						if name == "" {
 							continue
 						}
 						callNames[name] = struct{}{}
-						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers, name, target)
+						// One record per SIGHTING: the same spelling written
+						// above and below a binding of its head is two call
+						// sites with two different answers.
+						for _, offset := range offsets {
+							recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers(offset), name, target)
+						}
 					}
 				}
 				if file.Language == "Lua" {
@@ -4376,23 +4445,25 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// per-symbol scan above never sees them.
 					masked := maskFSharpBlockComments(topLevel)
 					// The top-level block spans the file with every symbol's
-					// lines blanked, so its live lines are exactly the
-					// statement-position ones and a binding buried in a function
-					// body reaches none of them.
-					fsharpShadowedQualifiers := fsharpShadowsInScope(fsharpShadowBindings, masked, 1)
+					// lines blanked, so it is already in file coordinates and a
+					// binding buried in a function body covers only lines that
+					// hold no top-level call site.
+					fsharpShadowedQualifiers := fsharpShadowsAt(fsharpShadowBindings, masked, 1)
 					// Same as the per-symbol path: a parenthesised bare call is
 					// seen only by the generic scanner, so it has to clear the
-					// qualifier here too.
+					// qualifier here too, and it carries no qualifier to shadow.
 					for name := range callLikeIdentifiers(masked, file.Language) {
-						recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers, name, name)
+						recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, nil, name, name)
 					}
-					for target := range fsharpCallTargets(masked) {
+					for target, offsets := range fsharpCallTargetSites(masked) {
 						name := lastDottedCallSegment(target)
 						if name == "" {
 							continue
 						}
 						topLevelNames[name] = struct{}{}
-						recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers, name, target)
+						for _, offset := range offsets {
+							recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers(offset), name, target)
+						}
 					}
 				}
 				if file.Language == "Lua" {

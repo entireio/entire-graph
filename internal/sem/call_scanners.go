@@ -237,13 +237,19 @@ func fsharpDottedCallIdentifiers(content string) map[string]struct{} {
 // reducing `A.convert` to `convert` before matching lets the call bind to any
 // same-named definition in the file.
 func fsharpDottedCallTargets(content string) map[string]struct{} {
+	return fsharpTargetsOfSites(fsharpDottedCallSites(content))
+}
+
+// fsharpDottedCallSites is fsharpDottedCallTargets with the byte offset of
+// every sighting kept beside the target it saw.
+func fsharpDottedCallSites(content string) map[string][]int {
 	stripped := maskFSharpLiteralsAndLineComments(content)
-	out := map[string]struct{}{}
-	for _, match := range fsharpDottedCallRe.FindAllStringSubmatch(stripped, -1) {
-		if len(match) < 2 {
+	out := map[string][]int{}
+	for _, match := range fsharpDottedCallRe.FindAllStringSubmatchIndex(stripped, -1) {
+		if len(match) < 4 || match[2] < 0 {
 			continue
 		}
-		addFSharpCallTarget(out, match[1])
+		addFSharpCallSite(out, stripped[match[2]:match[3]], match[2])
 	}
 	// The scan resumes at the end of the applied NAME, not at the end of the
 	// match. RE2 has no lookahead, so the pattern has to CONSUME the first
@@ -270,7 +276,7 @@ func fsharpDottedCallTargets(content string) map[string]struct{} {
 		}
 		start, end := pos+match[2], pos+match[3]
 		if !fsharpDottedApplyIgnored(stripped, pos+match[0]) {
-			addFSharpCallTarget(out, stripped[start:end])
+			addFSharpCallSite(out, stripped[start:end], start)
 		}
 		// `end` lands on the whitespace the pattern required after the name, so
 		// the next search can never begin inside an identifier and assert a
@@ -283,8 +289,32 @@ func fsharpDottedCallTargets(content string) map[string]struct{} {
 // fsharpCallTargets returns every call target the F# scanners can see, dotted
 // and bare alike, as written.
 func fsharpCallTargets(content string) map[string]struct{} {
-	out := fsharpDottedCallTargets(content)
-	for target := range fsharpPipelineCallTargets(content) {
+	return fsharpTargetsOfSites(fsharpCallTargetSites(content))
+}
+
+// fsharpCallTargetSites is fsharpCallTargets with each target paired with the
+// byte offsets in content at which it is written.
+//
+// A caller that must answer a question DIFFERENTLY on different lines of one
+// block -- which of the file's local bindings is in scope, which is ordered and
+// offside-scoped in F# -- cannot do it from a set of names. Collapsing a block
+// onto one answer applied a binding written partway down to the calls ABOVE it,
+// and since a shadowed qualifier records bare and resolves unrestricted, those
+// earlier calls did not merely lose a restriction: they bound whatever same-name
+// definition sat nearest instead of the module the source named.
+func fsharpCallTargetSites(content string) map[string][]int {
+	out := fsharpDottedCallSites(content)
+	for target, offsets := range fsharpPipelineCallSites(content) {
+		out[target] = append(out[target], offsets...)
+	}
+	return out
+}
+
+// fsharpTargetsOfSites drops the positions, for the callers that only need to
+// know which targets are present.
+func fsharpTargetsOfSites(sites map[string][]int) map[string]struct{} {
+	out := make(map[string]struct{}, len(sites))
+	for target := range sites {
 		out[target] = struct{}{}
 	}
 	return out
@@ -301,12 +331,14 @@ func fsharpCallTargetNames(targets map[string]struct{}) map[string]struct{} {
 	return out
 }
 
-func addFSharpCallTarget(out map[string]struct{}, target string) {
+// addFSharpCallSite records one sighting of target at offset, normalising the
+// whitespace F# allows around a dot out of the spelling.
+func addFSharpCallSite(out map[string][]int, target string, offset int) {
 	target = strings.Join(strings.Fields(target), "")
 	if target == "" || lastDottedCallSegment(target) == "" {
 		return
 	}
-	out[target] = struct{}{}
+	out[target] = append(out[target], offset)
 }
 
 // fsharpPipelineCallIdentifiers returns the functions applied by F# forward
@@ -329,8 +361,14 @@ func fsharpPipelineCallIdentifiers(content string) map[string]struct{} {
 // fsharpPipelineCallTargets returns the piped call targets as written, keeping
 // the module qualifier of `xs |> A.convert` for resolution to hold the call to.
 func fsharpPipelineCallTargets(content string) map[string]struct{} {
+	return fsharpTargetsOfSites(fsharpPipelineCallSites(content))
+}
+
+// fsharpPipelineCallSites is fsharpPipelineCallTargets with the byte offset of
+// every sighting kept beside the target it saw.
+func fsharpPipelineCallSites(content string) map[string][]int {
 	stripped := maskFSharpLiteralsAndLineComments(content)
-	out := map[string]struct{}{}
+	out := map[string][]int{}
 	for _, match := range fsharpPipelineCallRe.FindAllStringSubmatchIndex(stripped, -1) {
 		if len(match) < 4 || match[2] < 0 {
 			continue
@@ -342,7 +380,7 @@ func fsharpPipelineCallTargets(content string) map[string]struct{} {
 		if fsharpPipelineTargetIgnored(target) {
 			continue
 		}
-		addFSharpCallTarget(out, target)
+		addFSharpCallSite(out, target, match[2])
 	}
 	return out
 }

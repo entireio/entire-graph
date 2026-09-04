@@ -17231,6 +17231,144 @@ let run (x: int) =
 	})
 }
 
+// fsharpSerializeCalleesOfRun builds a two-file F# project whose `src/Json.fs`
+// declares a project module `Json` with a `serialize`, and reports which files'
+// `serialize` the `run` function in `src/Use.fs` reaches. A qualifier held to
+// the project module reaches Json.fs; one that records bare resolves
+// unrestricted and reaches the same-file Use.fs definition, so the pair of file
+// names IS the classification under test.
+func fsharpSerializeCalleesOfRun(t *testing.T, useSource string) []string {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/Use.fs", useSource)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	var reached []string
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		to, isSymbol := symbolsByID[relation.ToID]
+		if !isSymbol || to.Name != "serialize" {
+			continue
+		}
+		if from, fromIsSymbol := symbolsByID[relation.FromID]; !fromIsSymbol || from.Name != "run" {
+			continue
+		}
+		reached = append(reached, filepath.Base(to.FilePath))
+	}
+	sort.Strings(reached)
+	return slices.Compact(reached)
+}
+
+func TestFSharpModuleAbbreviationIsNotRecognisedByTheCaseOfItsPath(t *testing.T) {
+	// A module abbreviation was recognised only when its right-hand side began
+	// with an UPPERCASE letter. That is not what makes a line an abbreviation --
+	// it is only how the paths in the common case happen to be spelled. F#
+	// writes the global namespace with the lowercase keyword `global`, and lets
+	// a module or namespace be named in lowercase or with a leading underscore,
+	// so those abbreviations were missed entirely.
+	//
+	// A missed abbreviation is not a neutral omission. The qualifier is then
+	// classified by the project's module declarations alone, so `Json.serialize`
+	// written under `module Json = <path>` was answered by an unrelated project
+	// module that happens to be called `Json` -- an edge into a definition the
+	// source never named, in place of the `serialize` the alias leaves in scope.
+	for _, abbreviation := range []struct{ name, path string }{
+		{"global namespace keyword", "global.Newtonsoft.Json"},
+		{"lowercase module path", "newtonsoft.Json"},
+		{"underscore-led module path", "_internal.Json"},
+		{"uppercase control", "Newtonsoft.Json"},
+	} {
+		t.Run(abbreviation.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+module Json = `+abbreviation.path+`
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `module Json = %s` reached %v, want %v: the abbreviation shadows the project module `Json`", abbreviation.path, got, want)
+			}
+		})
+	}
+
+	t.Run("verbose nested module block is not an abbreviation", func(t *testing.T) {
+		// The opposite direction. `module M = begin ... end` is the verbose
+		// spelling of a nested module BLOCK: it opens a scope and binds no
+		// alias, so widening the pattern past the case of the right-hand side
+		// must not start reading it as one -- otherwise every such module would
+		// silently un-qualify calls that name it.
+		bindings := fsharpFileShadowBindings(`module Use
+
+module Json = begin
+    let helper (x: int) = x
+  end
+`)
+		for _, binding := range bindings {
+			if binding.name == "Json" {
+				t.Fatalf("`module Json = begin ... end` was read as a binding of %q at line %d; it opens a nested module block and binds no alias", binding.name, binding.line)
+			}
+		}
+	})
+}
+
+func TestFSharpQualifierShadowBeginsAtTheBindingInsideOneBlock(t *testing.T) {
+	// The shadow set was collected once for a whole symbol block, so a binding
+	// written partway down a function was applied to the calls ABOVE it as well.
+	// F# scoping is ordered: `Json.serialize` written before `let Json = ...`
+	// still names the project module, and only the sighting below the binding
+	// names the alias.
+	//
+	// Because a shadowed qualifier records bare and resolves unrestricted, the
+	// earlier sighting did not merely lose a restriction -- both sightings
+	// collapsed onto the bare one, the module-qualified edge disappeared, and
+	// the call bound the same-file `serialize` instead of the module the source
+	// wrote.
+	t.Run("called before and after the binding", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let above = Json.serialize(x)
+    let Json = Newtonsoft.Json.JsonConvert
+    let below = Json.serialize(x)
+    above + below
+`)
+		if want := []string{"Json.fs", "Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` written above AND below `let Json` reached %v, want %v: the call above the binding still names the project module", got, want)
+		}
+	})
+
+	t.Run("called only below the binding", func(t *testing.T) {
+		// The opposite direction: narrowing the shadow to the lines the binding
+		// reaches must not lose it where the binding genuinely applies, and must
+		// not invent a qualified sighting that was never written.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Newtonsoft.Json.JsonConvert
+    let below = Json.serialize(x)
+    below
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` written only below `let Json` reached %v, want %v: the binding is in scope there", got, want)
+		}
+	})
+}
+
 // TestFSharpJuxtaposedCallAfterABindingReachesTheCallGraph is the swallowed
 // application at the graph level: the CALLS edge is missing entirely.
 //
