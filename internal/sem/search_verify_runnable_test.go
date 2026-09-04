@@ -701,3 +701,55 @@ func TestSearchVerifyRakeTestTaskGeneratorMustNameTheTestTask(t *testing.T) {
 		})
 	}
 }
+
+// TestSearchVerifyGradleUnparenthesisedIncludeEndsAtTheStatement is the regression for the
+// command-expression form of `include` running past its own statement.
+//
+// A line is not a statement in Groovy. `include ':app'; project(':app').projectDir = file('lib')` is
+// the ordinary spelling for "declare :app, and its directory is lib", and a scanner that ended the
+// argument list at the newline read `'lib'` — the argument of a different call, past the separator —
+// as a third included project. `./gradlew :lib:test` was then advertised for a project the settings
+// file never declares, and the hard gate this derivation exists to satisfy fails at run time.
+//
+// The parenthesised form always stopped at its own `)`, so the two spellings of the SAME include
+// disagreed about everything that followed on the line. Both are asserted here, with the same
+// expectation, because agreeing is the property that was missing.
+func TestSearchVerifyGradleUnparenthesisedIncludeEndsAtTheStatement(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		settings string
+	}{
+		{
+			name:     "the command-expression form",
+			settings: "include ':app'; project(':app').projectDir = file('lib')\n",
+		},
+		{
+			name:     "the parenthesised form it must agree with",
+			settings: "include(':app'); project(':app').projectDir = file('lib')\n",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			files := map[string]string{
+				"gradlew":                  "",
+				"settings.gradle":          testCase.settings,
+				"lib/build.gradle":         "",
+				"lib/src/main/java/A.java": "",
+				"app/build.gradle":         "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "lib/src/main/java/A.java"}, &evidence)
+			if got != nil {
+				t.Fatalf("command = %q, want silence: nothing in the settings script declares :lib, "+
+					"and %q is the argument of the call after the include", got.Command, "lib")
+			}
+			// The include the statement really does declare is still read, so the terminator ends the
+			// argument list rather than discarding it.
+			if !searchVerifyGradleSettingsIncludes(testCase.settings, ":app") {
+				t.Fatalf("the settings script no longer declares :app: %q", testCase.settings)
+			}
+		})
+	}
+}
