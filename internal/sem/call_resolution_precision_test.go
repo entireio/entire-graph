@@ -820,3 +820,186 @@ func TestPythonMultiLineImportScannerKeepsLaterImportsVisible(t *testing.T) {
 		}
 	})
 }
+
+// pythonScopeCallable is one hand-built record for pythonScopeModules. The AST
+// scope walker matches a `def` to the smallest function/method symbol whose
+// byte range contains it and reads nothing else from the record, so a header
+// substring and the rest of the file is the whole fixture.
+func pythonScopeCallable(t *testing.T, src, id, kind, header string) SymbolRecord {
+	t.Helper()
+	start := strings.Index(src, header)
+	if start < 0 {
+		t.Fatalf("header %q is not in the fixture", header)
+	}
+	record := SymbolRecord{ID: id, Kind: kind, Language: "Python", FilePath: "app.py"}
+	record.sourceStartByte = start
+	record.sourceEndByte = len(src)
+	return record
+}
+
+// pythonScopeModules is the modules one bare call name reaches from one owner
+// in the AST scope view, which is where a definition-name binding is actually
+// observable. `resolveCallTargets` DECLINES a name this view reports as bound
+// before any tier runs, so a name wrongly reported bound deletes an edge --
+// but a definition also defines a same-named symbol, and that symbol wins the
+// same-file tier (or a CONSTRUCTS relation) before imports are consulted, so
+// the emitted relations cannot distinguish the two answers. The view can.
+func pythonScopeModules(t *testing.T, src string, symbols []SymbolRecord, owner SymbolRecord, name string) []string {
+	t.Helper()
+	scopes := newPythonBareImportScopes(src, symbols)
+	if !scopes.complete {
+		t.Fatalf("scope analysis did not complete for:\n%s", src)
+	}
+	return scopes.importModules(owner, name)
+}
+
+var pythonScopeModule = SymbolRecord{Kind: "file", ID: "file:app.py", FilePath: "app.py"}
+
+// Python binds a `def`/`class` name only once the whole statement has run: its
+// decorators, bases, default arguments and annotations are evaluated FIRST and
+// still read the enclosing binding. CPython is the oracle --
+//
+//	$ python3 -c 'def compute(): return "OUTER"
+//	def compute(v=compute()): return v
+//	print(compute())'                                  -> OUTER
+//	$ python3 -c 'def compute(v=compute()): return v'   -> NameError: name 'compute' is not defined
+//
+// -- and it says the same for a class: a base expression, a class-body
+// statement and a method's signature all run before the class name exists,
+// while a method BODY runs after it and really does see the class. The walker
+// bound the name at the `def`/`class` line instead, so every eagerly evaluated
+// part of the statement was told the name was already rebound; for an imported
+// name that is the fail-closed direction, which deletes an edge.
+func TestPythonDefinitionNameBindsOnlyAfterItsOwnSignature(t *testing.T) {
+	t.Run("a default argument reaches the shadowed enclosing name", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+def compute(value=compute()):
+    return value
+`
+		fn := pythonScopeCallable(t, src, "app.py:function:compute", "function", "def compute")
+		if got := pythonScopeModules(t, src, []SymbolRecord{fn}, fn, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("the default runs before `def` rebinds `compute`, so it must reach the import; got %#v", got)
+		}
+	})
+
+	t.Run("an annotation reaches the shadowed enclosing name", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+def compute(value: compute()):
+    return value
+`
+		fn := pythonScopeCallable(t, src, "app.py:function:compute", "function", "def compute")
+		if got := pythonScopeModules(t, src, []SymbolRecord{fn}, fn, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("the annotation runs before `def` rebinds `compute`, so it must reach the import; got %#v", got)
+		}
+	})
+
+	t.Run("the body is deferred code and stays shadowed", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+def compute():
+    return compute()
+`
+		fn := pythonScopeCallable(t, src, "app.py:function:compute", "function", "def compute")
+		if got := pythonScopeModules(t, src, []SymbolRecord{fn}, fn, "compute"); len(got) != 0 {
+			t.Fatalf("a recursive call runs after the name is bound, so it must NOT reach the import; got %#v", got)
+		}
+	})
+
+	t.Run("a base expression reaches the shadowed enclosing name", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute(compute()):
+    pass
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("bases run before `class` rebinds `compute`, so they must reach the import; got %#v", got)
+		}
+	})
+
+	t.Run("a class-body statement reaches the shadowed enclosing name", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    value = compute()
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("the class body runs before the class name is bound, so it must reach the import; got %#v", got)
+		}
+	})
+
+	t.Run("a method signature in the class body reaches it too", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    def method(self, value=compute()):
+        return value
+`
+		method := pythonScopeCallable(t, src, "app.py:method:compute.method", "method", "def method")
+		if got := pythonScopeModules(t, src, []SymbolRecord{method}, method, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("a method default is evaluated with the class body, before the class name is bound; got %#v", got)
+		}
+	})
+
+	t.Run("a method body is deferred code and stays shadowed", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    def method(self):
+        return compute()
+`
+		method := pythonScopeCallable(t, src, "app.py:method:compute.method", "method", "def method")
+		if got := pythonScopeModules(t, src, []SymbolRecord{method}, method, "compute"); len(got) != 0 {
+			t.Fatalf("a method body runs after the class exists, so `compute` is the class, not the import; got %#v", got)
+		}
+	})
+
+	t.Run("a class-body call after a same-named method stays shadowed", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class Holder:
+    def compute(self):
+        return 1
+    value = compute()
+`
+		method := pythonScopeCallable(t, src, "app.py:method:Holder.compute", "method", "def compute")
+		if got := pythonScopeModules(t, src, []SymbolRecord{method}, pythonScopeModule, "compute"); len(got) != 0 {
+			t.Fatalf("the class body bound `compute` above this line, so it must NOT reach the import; got %#v", got)
+		}
+	})
+
+	t.Run("code after the statement stays shadowed", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    pass
+
+value = compute()
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 0 {
+			t.Fatalf("the class is bound by this line, so it must NOT reach the import; got %#v", got)
+		}
+	})
+
+	t.Run("an enclosing function local still fails closed", func(t *testing.T) {
+		// CPython raises UnboundLocalError here: the nested `def` makes `compute`
+		// a local of `outer`, unbound while the default is evaluated. It never
+		// reaches the import, so neither may the view.
+		src := `from frobnicate import compute
+
+def outer():
+    def compute(value=compute()):
+        return value
+    return compute
+`
+		outer := pythonScopeCallable(t, src, "app.py:function:outer", "function", "def outer")
+		inner := pythonScopeCallable(t, src, "app.py:function:compute", "function", "def compute")
+		inner.sourceEndByte = strings.Index(src, "    return compute\n")
+		for _, owner := range []SymbolRecord{outer, inner} {
+			if got := pythonScopeModules(t, src, []SymbolRecord{outer, inner}, owner, "compute"); len(got) != 0 {
+				t.Fatalf("`compute` is an unbound local of `outer` there, so %q must not reach the import; got %#v", owner.ID, got)
+			}
+		}
+	})
+}

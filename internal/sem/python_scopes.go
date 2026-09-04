@@ -66,15 +66,24 @@ func (s *pythonBareImportScopes) importModuleSets(from SymbolRecord, name string
 }
 
 type pythonBindingScope struct {
-	owner     string
-	parent    *pythonBindingScope
-	class     bool
-	comp      bool
-	bindings  map[string][]pythonBindingEvent
-	locals    map[string]bool // function-local declarations shadow enclosing bindings everywhere
-	globals   map[string]bool
-	nonlocals map[string]bool
-	calls     []pythonScopedCall
+	owner string
+	// parent is the scope as code running right now sees it; deferred, set only
+	// on a class scope, is the scope as code that runs later -- the bodies of the
+	// methods defined in it -- sees it. They differ by the class's own name.
+	parent   *pythonBindingScope
+	deferred *pythonBindingScope
+	class    bool
+	comp     bool
+	// hiddenName is one binding this view cannot see from hiddenFrom onwards: a
+	// definition's own name, invisible to the parts of its own statement that
+	// Python evaluates before the name is bound.
+	hiddenName string
+	hiddenFrom int
+	bindings   map[string][]pythonBindingEvent
+	locals     map[string]bool // function-local declarations shadow enclosing bindings everywhere
+	globals    map[string]bool
+	nonlocals  map[string]bool
+	calls      []pythonScopedCall
 }
 
 type pythonBindingEvent struct {
@@ -143,8 +152,27 @@ func (s *pythonBindingScope) signatureView(owner string) *pythonBindingScope {
 	return &view
 }
 
+// preDefinitionView is the enclosing scope as the parts of a `class` statement
+// that run before it finishes see it. Only the class's own name is hidden, and
+// the bindings map stays shared, so a walrus in a base really does bind out
+// here just as one in a default argument does.
+func (s *pythonBindingScope) preDefinitionView(name string, byteOffset int) *pythonBindingScope {
+	view := *s
+	view.hiddenName = strings.TrimSpace(name)
+	view.hiddenFrom = byteOffset
+	view.calls = nil
+	return &view
+}
+
+// lexicalContainer is the scope a nested function body resolves against. It
+// runs after its container statements have finished, so it crosses a class
+// scope by its deferred parent -- the one that can see the class name.
 func (s *pythonBindingScope) lexicalContainer() *pythonBindingScope {
 	for s != nil && s.class {
+		if s.deferred != nil {
+			s = s.deferred
+			continue
+		}
 		s = s.parent
 	}
 	return s
@@ -168,7 +196,14 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 	switch node.Type() {
 	case "function_definition":
 		if scope != nil {
-			scope.addName(w.fieldName(node, "name"), int(node.StartByte()), false)
+			// A `def` does not rebind its own name until the whole statement has
+			// run, so the name starts shadowing at the BODY: a default or an
+			// annotation that calls a same-named enclosing symbol really does
+			// reach that symbol (`def compute(v=compute())` calls the outer
+			// `compute`, and raises NameError when there is none). The body is
+			// deferred code that runs once the name is bound, so recursion still
+			// resolves to the function itself.
+			scope.addName(w.fieldName(node, "name"), w.bindingOffset(node, node.ChildByFieldName("body")), false)
 		}
 		child := w.functionScope(node, scope)
 		if child != nil {
@@ -193,21 +228,30 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 		}
 		return
 	case "class_definition":
-		if scope != nil {
-			scope.addName(w.fieldName(node, "name"), int(node.StartByte()), false)
-		}
 		body := w.targetFieldOrLast(node, "body")
-		for i := 0; i < int(node.NamedChildCount()); i++ {
-			child := node.NamedChild(i)
-			if !samePythonNode(child, body) {
-				w.walk(child, scope, depth+1) // decorators and base expressions
-			}
-		}
-		// Class bindings are isolated, but executable class-body calls retain the
-		// enclosing emitted owner rather than leaking class locals outward.
 		if scope != nil {
-			classScope := newPythonBindingScope(scope.owner, scope)
+			// The class name is bound only once the whole `class` statement has
+			// run. Everything the statement evaluates on the way there -- its
+			// bases, the body's own statements, and the signatures of the methods
+			// it defines -- still reads the enclosing binding, which the pre-class
+			// view supplies. Method BODIES are the exception: they run after the
+			// class exists, so they keep the real scope, where the name is bound
+			// from the `class` line on. Offsets cannot separate the two because
+			// they interleave inside the body, hence the explicit views.
+			scope.addName(w.fieldName(node, "name"), int(node.StartByte()), false)
+			pre := scope.preDefinitionView(w.fieldName(node, "name"), int(node.StartByte()))
+			for i := 0; i < int(node.NamedChildCount()); i++ {
+				child := node.NamedChild(i)
+				if !samePythonNode(child, body) {
+					w.walk(child, pre, depth+1) // decorators and base expressions
+				}
+			}
+			w.publish(pre)
+			// Class bindings are isolated, but executable class-body calls retain the
+			// enclosing emitted owner rather than leaking class locals outward.
+			classScope := newPythonBindingScope(scope.owner, pre)
 			classScope.class = true
+			classScope.deferred = scope
 			w.walk(body, classScope, depth+1)
 			w.publish(classScope)
 		}
@@ -364,6 +408,16 @@ func (w *pythonScopeWalker) functionScope(node *sitter.Node, parent *pythonBindi
 	return scope
 }
 
+// bindingOffset is where a definition's own name starts shadowing the enclosing
+// binding: at its body, because Python evaluates decorators, bases, defaults and
+// annotations first and rebinds the name only once the statement has run.
+func (w *pythonScopeWalker) bindingOffset(node, body *sitter.Node) int {
+	if validNode(body) && body.StartByte() > node.StartByte() {
+		return int(body.StartByte())
+	}
+	return int(node.StartByte())
+}
+
 func (w *pythonScopeWalker) publish(scope *pythonBindingScope) {
 	for _, call := range scope.calls {
 		modules := scope.importModules(call.name, call.byteOffset)
@@ -417,8 +471,8 @@ func (w *pythonScopeWalker) walrusScope(scope *pythonBindingScope) *pythonBindin
 
 func (s *pythonBindingScope) bindingAt(name string, byteOffset int) []string {
 	for events := s.bindings[name]; len(events) > 0; events = events[:len(events)-1] {
-		if events[len(events)-1].byteOffset <= byteOffset {
-			return events[len(events)-1].modules
+		if event := events[len(events)-1]; event.byteOffset <= byteOffset && !s.hides(name, event) {
+			return event.modules
 		}
 	}
 	return nil
@@ -426,11 +480,16 @@ func (s *pythonBindingScope) bindingAt(name string, byteOffset int) []string {
 
 func (s *pythonBindingScope) hasBindingAt(name string, byteOffset int) bool {
 	for _, event := range s.bindings[name] {
-		if event.byteOffset <= byteOffset {
+		if event.byteOffset <= byteOffset && !s.hides(name, event) {
 			return true
 		}
 	}
 	return false
+}
+
+// hides reports the one binding a pre-definition view cannot see.
+func (s *pythonBindingScope) hides(name string, event pythonBindingEvent) bool {
+	return s.hiddenName != "" && name == s.hiddenName && event.byteOffset >= s.hiddenFrom
 }
 
 func (s *pythonBindingScope) moduleScope() *pythonBindingScope {
