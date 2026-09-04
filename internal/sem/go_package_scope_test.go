@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"slices"
 	"testing"
 )
 
@@ -164,5 +165,119 @@ func TestNearestToSiteIsStableOnTies(t *testing.T) {
 	}
 	if _, ok := nearestToSite(nil, "pkg/three/c.go"); ok {
 		t.Fatalf("nearestToSite on empty candidates reported a match")
+	}
+}
+
+// TestGoQualifiedReceiverBindsToImportPathNotAliasBasename guards the receiver
+// resolution against the written qualifier. `import foo "m/realpkg"` binds foo
+// to realpkg; a different in-module package whose directory is literally foo/ is
+// an unrelated package. Resolving by the qualifier's basename picked that decoy,
+// so every CALLS edge through the receiver landed on a package the file never
+// imported — a wrong edge, which is worse than none. The no-decoy case is the
+// second half: with the import path consulted, the real package still resolves,
+// so the fix is not just a disabled resolver.
+func TestGoQualifiedReceiverBindsToImportPathNotAliasBasename(t *testing.T) {
+	t.Parallel()
+	for _, withDecoy := range []bool{true, false} {
+		name := "with same-named sibling package"
+		if !withDecoy {
+			name = "without sibling package"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+			writeFile(t, repo, "go.mod", "module example.com/aliasm\n\ngo 1.21\n")
+			writeFile(t, repo, "realpkg/realpkg.go", `package realpkg
+
+type Communicator struct{}
+
+func (c *Communicator) Connect(o string) error { return nil }
+
+func (c *Communicator) Disconnect() error { return nil }
+`)
+			if withDecoy {
+				writeFile(t, repo, "foo/foo.go", `package foo
+
+type Communicator struct{}
+
+func (c *Communicator) Connect(o string) error { return nil }
+
+func (c *Communicator) Disconnect() error { return nil }
+`)
+			}
+			writeFile(t, repo, "consumer/consumer.go", `package consumer
+
+import foo "example.com/aliasm/realpkg"
+
+func runScripts(comm foo.Communicator) error {
+	if err := comm.Connect("out"); err != nil {
+		return err
+	}
+	return comm.Disconnect()
+}
+`)
+			snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, method := range []string{"Connect", "Disconnect"} {
+				files := relationTargetFiles(snapshot, "CALLS", "runScripts", method)
+				if !slices.Contains(files, "realpkg/realpkg.go") {
+					t.Fatalf("call to %s never reached the imported package: %v", method, files)
+				}
+				if slices.Contains(files, "foo/foo.go") {
+					t.Fatalf("call to %s bound to the alias's directory basename rather than the import path: %v",
+						method, files)
+				}
+			}
+		})
+	}
+}
+
+// TestPackageVarQualifiedTypeRequiresAnInModuleImport is the package-var half of
+// the qualifier rule, and pins BOTH directions. The declaration's directory was
+// accepted when it was any path suffix of a resolved import path, so
+// `import "external.example/realpkg"` — a third-party package this repository
+// does not contain — satisfied a lookup that the repository's own `realpkg/`
+// answered, and `Client.Do()` emitted a CALLS edge into a package the file never
+// imported. `Do` is deliberately declared twice here so the globally-unique-name
+// fallback cannot fire: the edge, when it appears, comes from this tier alone.
+//
+// The in-module arm is the other direction: with the module's own import path
+// written, the same call must still reach realpkg/thing.go, so the fix is a
+// narrowed rule and not a disabled resolver.
+func TestPackageVarQualifiedTypeRequiresAnInModuleImport(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		importPath string
+		wantEdge   bool
+	}{
+		{name: "in-module import resolves", importPath: "example.com/m/realpkg", wantEdge: true},
+		{name: "external import with the same last segment does not", importPath: "external.example/realpkg", wantEdge: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+			writeFile(t, repo, "go.mod", "module example.com/m\n\ngo 1.21\n")
+			writeFile(t, repo, "realpkg/thing.go", "package realpkg\n\ntype Thing struct{}\n\nfunc (t Thing) Do() {}\n")
+			// A second Do() keeps the unique-method-name fallback from
+			// resolving this call on its own.
+			writeFile(t, repo, "decoy/decoy.go", "package decoy\n\ntype Other struct{}\n\nfunc (o Other) Do() {}\n")
+			writeFile(t, repo, "app/app.go", "package app\n\nimport \""+tc.importPath+"\"\n\nvar Client = realpkg.Thing{}\n\nfunc Use() {\n\tClient.Do()\n}\n")
+
+			snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := relationTargetFiles(snapshot, "CALLS", "Use", "Do")
+			gotEdge := slices.Contains(files, "realpkg/thing.go")
+			if tc.wantEdge && !gotEdge {
+				t.Fatalf("in-module qualified package var lost its call target: %v", files)
+			}
+			if !tc.wantEdge && gotEdge {
+				t.Fatalf("an external import bound the repository's own realpkg/: %v", files)
+			}
+		})
 	}
 }

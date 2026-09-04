@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -325,6 +326,60 @@ func TestSnapshotHonorsNestedGitignoreReinclusion(t *testing.T) {
 	}
 }
 
+// TestVendoredNegationSparesOnlyTheReincludedPaths is the per-path half of the
+// escape hatch above. The heuristic asked ReincludesDescendant about the
+// vendored ANCESTOR — "does anything under vendor/ get re-included" — and used
+// that as the verdict for every path beneath it, so one `!mypkg/` re-admitted
+// the entire vendored tree.
+//
+// TestSnapshotHonorsNestedGitignoreReinclusion does not catch it because `git
+// add .` never stages what `*` excludes, so the rest of the tree is not tracked
+// and never reaches this decision. Vendored trees are routinely FORCE-tracked
+// (`git add -f`), and in `--head` mode nothing downstream saves them either:
+// filterIgnoredPaths applies only explicit CLI ignore files, not the
+// repository's own .gitignore, so the whole dependency tree was parsed and
+// could spend the file ceiling on third-party code.
+func TestVendoredNegationSparesOnlyTheReincludedPaths(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "app.py", "def app_entrypoint():\n    return True\n")
+	writeFile(t, repo, "vendor/.gitignore", "*\n!/mypkg/\n")
+	writeFile(t, repo, "vendor/mypkg/lib.py", "def vendored_first_party():\n    return True\n")
+	writeFile(t, repo, "vendor/other/dep.py", "def real_dependency():\n    return True\n")
+	writeFile(t, repo, "vendor/second/dep.py", "def second_dependency():\n    return True\n")
+	// -f is the point: every vendored path is tracked, so the ignore rules
+	// cannot keep them out of either listing and only the heuristic can.
+	git(t, repo, "add", "-f", ".")
+	git(t, repo, "commit", "-m", "force-track a vendored tree with one re-included package")
+
+	for _, worktree := range []bool{false, true} {
+		mode := "head"
+		if worktree {
+			mode = "worktree"
+		}
+		t.Run(mode, func(t *testing.T) {
+			snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+				Worktree: worktree,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"app_entrypoint", "vendored_first_party"} {
+				if !snapshotHasSymbol(snapshot, name) {
+					t.Fatalf("%s snapshot dropped %q re-included by a nested .gitignore: %#v",
+						mode, name, snapshot.Files)
+				}
+			}
+			for _, name := range []string{"real_dependency", "second_dependency"} {
+				if snapshotHasSymbol(snapshot, name) {
+					t.Fatalf("%s snapshot let one negation re-admit the whole vendored tree (%q): %#v",
+						mode, name, snapshot.Files)
+				}
+			}
+		})
+	}
+}
+
 // TestWorktreeWalkFallbackHonorsNestedGitignore covers the non-git fallback: a
 // directory Git cannot enumerate is still filtered by the nested ignore files the
 // project wrote.
@@ -513,33 +568,66 @@ func TestSourceListingFileLimitIsReportedNotSilent(t *testing.T) {
 	}
 }
 
-func TestFilesystemWalkPropagatesNestedIgnoreLimitErrors(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, repo, "nested/keep.go", "package sample\n")
-	writeFile(t, repo, "nested/.gitignore", "#"+strings.Repeat("x", maxIgnoreRuleBytes))
-	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false })
-	if err == nil || !strings.Contains(err.Error(), "nested ignore file") ||
-		!strings.Contains(err.Error(), "rule line exceeds") {
-		t.Fatalf("nested ignore limit error = %v, want propagated rule-line failure", err)
+// TestFilesystemWalkExcludesSubtreeWithUnreadableNestedIgnorePolicy is the
+// regression guard for the fallback's blast radius. A nested .gitignore the
+// bounded reader refuses — a rule line over maxIgnoreRuleBytes here — used to
+// abort the whole walk, so ONE such file made a non-Git repository (or a Git
+// checkout whose `git ls-files` failed) completely unindexable: every search
+// against it returned an error rather than a smaller answer.
+//
+// Skipping the file instead is not the alternative, because the rules there are
+// unknown and content the project excludes must not be admitted. The subtree is
+// excluded and the omission is disclosed, which keeps the exclusion property the
+// hard error was protecting while the rest of the repository stays searchable.
+func TestFilesystemWalkExcludesSubtreeWithUnreadableNestedIgnorePolicy(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		setup func(t *testing.T, repo string)
+	}{
+		{
+			name: "rule line over the bound",
+			setup: func(t *testing.T, repo string) {
+				writeFile(t, repo, "nested/.gitignore", "#"+strings.Repeat("x", maxIgnoreRuleBytes))
+			},
+		},
+		{
+			name: "unreadable file in a readable directory",
+			setup: func(t *testing.T, repo string) {
+				writeFile(t, repo, "nested/.gitignore", "*.secret\n")
+				unreadableFileOrSkip(t, filepath.Join(repo, "nested", ".gitignore"))
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, repo, "root.go", "package sample\n")
+			writeFile(t, repo, "nested/keep.go", "package sample\n")
+			testCase.setup(t, repo)
+			ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, warnings, err := walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false })
+			wantIgnorePolicySubtreeExcluded(t, paths, warnings, err, "nested")
+			if !slices.Contains(paths, "root.go") {
+				t.Fatalf("one unreadable nested policy emptied the whole listing: %#v", paths)
+			}
+		})
 	}
 }
 
-func TestFilesystemWalkRejectsUnreadableNestedIgnoreInReadableDirectory(t *testing.T) {
+// TestFilesystemWalkPropagatesIgnoreRuleAllowanceErrors keeps the other half of
+// that split: the operation-wide parsed-rule allowance is not a property of any
+// one directory — every remaining nested file would fail the same way — so it
+// still aborts rather than quietly shrinking the corpus one subtree at a time.
+func TestFilesystemWalkPropagatesIgnoreRuleAllowanceErrors(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, repo, "nested/.gitignore", "*.secret\n")
-	writeFile(t, repo, "nested/keep.go", "package nested\n")
-	unreadableFileOrSkip(t, filepath.Join(repo, "nested", ".gitignore"))
-	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false })
-	if err == nil || !strings.Contains(err.Error(), "nested/.gitignore") {
-		t.Fatalf("unreadable nested policy error = %v, want a hard error naming nested/.gitignore", err)
+	writeFile(t, repo, "nested/keep.go", "package sample\n")
+	writeFile(t, repo, "nested/.gitignore", "first-rule\nsecond-rule\n")
+	base := ignoreMatcher{parsedRuleCount: maxIgnoreParsedRules - 1}
+	_, _, err := walkWorktreeFiles(t.Context(), repo, base, func(string) bool { return false })
+	if err == nil || !strings.Contains(err.Error(), "parsed rules") {
+		t.Fatalf("ignore rule allowance error = %v, want a propagated allowance failure", err)
 	}
 }
 
@@ -599,5 +687,52 @@ func TestTrackedToolCacheFixturesAreKept(t *testing.T) {
 		if worktree && snapshotHasSymbol(snapshot, "untracked_cache") {
 			t.Fatalf("worktree listing kept an untracked tool-cache tree: %#v", snapshot.Files)
 		}
+	}
+}
+
+// TestVendoredNegationGlobSparesOnlyThePathsItNames is the second half of
+// TestVendoredNegationSparesOnlyTheReincludedPaths. The per-path verdict was
+// derived from the negation's LITERAL PREFIX — everything before the first
+// wildcard — so `!/mypkg/*.py` was read as `!/mypkg/`, and every descendant of
+// mypkg/ passed the vendored filter no matter what the rest of the glob says.
+// A negation re-includes what its own pattern matches: a `*` segment does not
+// cross a `/`, and a file the extension does not name was never re-included.
+func TestVendoredNegationGlobSparesOnlyThePathsItNames(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "app.py", "def app_entrypoint():\n    return True\n")
+	writeFile(t, repo, "vendor/.gitignore", "*\n!/mypkg/*.py\n")
+	writeFile(t, repo, "vendor/mypkg/lib.py", "def vendored_first_party():\n    return True\n")
+	writeFile(t, repo, "vendor/mypkg/nested/deep.py", "def vendored_nested_dependency():\n    return True\n")
+	writeFile(t, repo, "vendor/mypkg/helper.go", "package mypkg\n\nfunc vendoredGoHelper() {}\n")
+	writeFile(t, repo, "vendor/other/dep.py", "def real_dependency():\n    return True\n")
+	git(t, repo, "add", "-f", ".")
+	git(t, repo, "commit", "-m", "force-track a vendored tree with one glob negation")
+
+	for _, worktree := range []bool{false, true} {
+		mode := "head"
+		if worktree {
+			mode = "worktree"
+		}
+		t.Run(mode, func(t *testing.T) {
+			snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+				Worktree: worktree,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"app_entrypoint", "vendored_first_party"} {
+				if !snapshotHasSymbol(snapshot, name) {
+					t.Fatalf("%s snapshot dropped %q named by the negation glob: %#v",
+						mode, name, snapshot.Files)
+				}
+			}
+			for _, name := range []string{"vendored_nested_dependency", "vendoredGoHelper", "real_dependency"} {
+				if snapshotHasSymbol(snapshot, name) {
+					t.Fatalf("%s snapshot re-admitted %q, which `!/mypkg/*.py` does not name: %#v",
+						mode, name, snapshot.Files)
+				}
+			}
+		})
 	}
 }

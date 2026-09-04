@@ -241,3 +241,71 @@ func TestGoInterfaceRequirementMethodDiscriminator(t *testing.T) {
 		t.Fatalf("non-Go method classified as a Go interface requirement")
 	}
 }
+
+// TestGoInterfaceCallSkipsSignatureMismatchedMethod guards the satisfaction test
+// itself. It compared method NAMES only, so a type whose `Run(string) error`
+// cannot possibly implement `Run() error` was treated as an implementation
+// wherever the remaining names lined up, and the polymorphic call was carried to
+// a method Go itself would reject. Both directions matter: the real
+// implementation must still receive the hop, or the check is just disabled.
+func TestGoInterfaceCallSkipsSignatureMismatchedMethod(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "go.mod", "module example.com/ifacem\n\ngo 1.21\n")
+	writeFile(t, repo, "iface/iface.go", `package iface
+
+type Runner interface {
+	Run() error
+	Stop() error
+}
+`)
+	writeFile(t, repo, "good/good.go", `package good
+
+type GoodWorker struct{}
+
+func (w *GoodWorker) Run() error { return nil }
+
+func (w *GoodWorker) Stop() error { return nil }
+`)
+	// BadWorker.Run takes a parameter, so BadWorker does not implement Runner.
+	writeFile(t, repo, "bad/bad.go", `package bad
+
+type BadWorker struct{}
+
+func (w *BadWorker) Run(name string) error { return nil }
+
+func (w *BadWorker) Stop() error { return nil }
+`)
+	writeFile(t, repo, "consumer/consumer.go", `package consumer
+
+import "example.com/ifacem/iface"
+
+func drive(r iface.Runner) error {
+	if err := r.Run(); err != nil {
+		return err
+	}
+	return r.Stop()
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SymbolRecord{}
+	for _, s := range snapshot.Symbols {
+		byID[s.ID] = s
+	}
+	implFiles := map[string]bool{}
+	for _, r := range snapshot.Relations {
+		if r.Type != "CALLS" || r.Reason != "interface method call carried to the implementing method" {
+			continue
+		}
+		implFiles[byID[r.ToID].FilePath] = true
+	}
+	if !implFiles["good/good.go"] {
+		t.Fatalf("interface call never reached the real implementation: %v", implFiles)
+	}
+	if implFiles["bad/bad.go"] {
+		t.Fatalf("interface call carried to a method that cannot implement Runner: %v", implFiles)
+	}
+}

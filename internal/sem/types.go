@@ -364,7 +364,7 @@ type serviceBoundary struct {
 
 var (
 	graphqlOperationRe          = regexp.MustCompile(`(?is)\b(query|mutation|subscription)\s+([A-Za-z_][A-Za-z0-9_]*)`)
-	graphqlOperationSelectionRe = regexp.MustCompile(`(?is)\b(query|mutation|subscription)\b\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*(?:\([^{}]*\))?\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^{}]*\))?\s*)*\{`)
+	graphqlOperationSelectionRe = regexp.MustCompile(`(?is)\b(query|mutation|subscription)\b\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*(?:\((?:[^{}]|\{[^{}]*\})*\))?\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^{}]*\))?\s*)*\{`)
 	graphqlFragmentRe           = regexp.MustCompile(`(?is)\bfragment\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^{}]*\))?\s*)*\{`)
 	trpcProcedureRe             = regexp.MustCompile(`(?m)([A-Za-z_$][\w$]*)\s*:\s*(?:publicProcedure|protectedProcedure|procedure)\s*\.\s*(query|mutation|subscription)\s*\(`)
 )
@@ -459,13 +459,19 @@ func templateLiteralTag(runes []rune, backtick int) string {
 	if backtick <= 0 || runes[backtick] != '`' {
 		return ""
 	}
-	end := backtick
+	// A tag may be separated from its template by whitespace or a newline;
+	// both are still tagged templates.
+	stop := backtick
+	for stop > 0 && (runes[stop-1] == ' ' || runes[stop-1] == '\t' || runes[stop-1] == '\n' || runes[stop-1] == '\r') {
+		stop--
+	}
+	end := stop
 	// The ASCII check comes first: isJSIdentifierPart takes a byte, so a
 	// non-ASCII rune would be truncated before it is rejected.
 	for end > 0 && runes[end-1] < 128 && isJSIdentifierPart(byte(runes[end-1])) {
 		end--
 	}
-	return string(runes[end:backtick])
+	return string(runes[end:stop])
 }
 
 func indexRunes(runes []rune, from int, want string) int {
@@ -855,6 +861,16 @@ func graphqlRootSelectionFields(body string) []string {
 			continue
 		}
 		if depth != 0 || !isJSIdentifierStart(ch) {
+			continue
+		}
+		// A GraphQL Name is /[_A-Za-z][_0-9A-Za-z]*/ — it never starts with
+		// `$`, and it is never introduced by a host-language escape. Both
+		// shapes reach here only from template interpolation:
+		// `${fragments.join("\n  ")}` reads as fields named `$` and `n`.
+		if ch == '$' || (i > 0 && body[i-1] == '\\') {
+			for i+1 < len(body) && isJSIdentifierPart(body[i+1]) {
+				i++
+			}
 			continue
 		}
 		nameStart := i
@@ -3251,7 +3267,7 @@ var (
 // imports of the file. Package-qualified types are never captured as local
 // symbols, so this is how receiver-call resolution recognises a value of an
 // external type even when its bare type name was never resolved.
-func importedReceiverVarTypes(signature, block string, importsByName map[string][]string, goModule string) map[string]string {
+func importedReceiverVarTypes(signature, block string, importsByName map[string][]string, goModules goModuleIndex) map[string]string {
 	out := map[string]string{}
 	add := func(matches [][]string) {
 		for _, m := range matches {
@@ -3266,12 +3282,13 @@ func importedReceiverVarTypes(signature, block string, importsByName map[string]
 			if len(paths) == 0 {
 				continue
 			}
-			// A receiver qualified by an in-module package (the repo's own
-			// module path — e.g. a sibling package imported from examples/) is
-			// NOT external: its methods are local symbols, so the unique-method
-			// fallback should still resolve them. Only genuinely external
-			// receivers (stdlib/third-party) are recorded for suppression.
-			if importPathsInModule(paths, goModule) {
+			// A receiver qualified by an in-repository package (any module the
+			// repo declares — a sibling package imported from examples/, or a
+			// package in a nested tools/ module) is NOT external: its methods
+			// are local symbols, so the unique-method fallback should still
+			// resolve them. Only genuinely external receivers (stdlib/third-
+			// party) are recorded for suppression.
+			if importPathsInModule(paths, goModules) {
 				continue
 			}
 			out[name] = pkg
@@ -3298,9 +3315,9 @@ func importedReceiverVarTypes(signature, block string, importsByName map[string]
 // its implementations share the method name. External (stdlib/third-party)
 // qualifiers are excluded — their methods are not local symbols, and
 // importedReceiverVarTypes already records them for suppression.
-func goInModuleQualifiedReceiverTypes(signature, block string, importsByName map[string][]string, goModule string) map[string]pkgQualType {
+func goInModuleQualifiedReceiverTypes(signature, block string, importsByName map[string][]string, goModules goModuleIndex) map[string]pkgQualType {
 	out := map[string]pkgQualType{}
-	if goModule == "" {
+	if goModules.empty() {
 		return out
 	}
 	add := func(text string) {
@@ -3315,7 +3332,7 @@ func goInModuleQualifiedReceiverTypes(signature, block string, importsByName map
 			if _, exists := out[name]; exists {
 				continue
 			}
-			if !importPathsInModule(importsByName[pkg], goModule) {
+			if !importPathsInModule(importsByName[pkg], goModules) {
 				continue
 			}
 			out[name] = pkgQualType{alias: pkg, typeName: typeName}
@@ -3326,15 +3343,16 @@ func goInModuleQualifiedReceiverTypes(signature, block string, importsByName map
 	return out
 }
 
-// importPathsInModule reports whether any resolved import path belongs to the
-// repo's own Go module (equal to the module path or nested under it). Such a
-// qualifier names an in-module package, not an external dependency.
-func importPathsInModule(paths []string, goModule string) bool {
-	if goModule == "" {
-		return false
-	}
+// importPathsInModule reports whether any resolved import path belongs to a Go
+// module THIS REPOSITORY declares — the root module or any nested one. Such a
+// qualifier names in-repository source, not an external dependency.
+//
+// Asking only about the root module misclassified every package of a nested
+// module (tools/go.mod declaring example.com/tool) as third-party, which
+// suppressed its receivers as external and dropped their call edges.
+func importPathsInModule(paths []string, goModules goModuleIndex) bool {
 	for _, p := range paths {
-		if p == goModule || strings.HasPrefix(p, goModule+"/") {
+		if goModules.ownsImport(p) {
 			return true
 		}
 	}

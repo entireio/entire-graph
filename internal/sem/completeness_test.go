@@ -3,6 +3,7 @@ package sem
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -79,5 +80,68 @@ func TestCompletenessLevel(t *testing.T) {
 					tc.failures, tc.files, tc.parsed, tc.symbol, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCompletenessLevelDegradesOnALargeShareOfSkips is the backstop the
+// intentional-skip exclusion always claimed to have. Skips are removed from the
+// failure count on purpose, and the parsed-file ratio was supposed to catch a
+// corpus that is genuinely mostly unread — but that guard only fires past a
+// strict majority, so a repository whose whole dist/ tree was skipped (200 of
+// 500 files never opened) still reported "ok" and every trust gate keyed on that
+// level stayed silent.
+//
+// The other direction is the constraint that makes this safe: a handful of
+// vendored bundles among hundreds of sources must keep reporting "ok", or the
+// exclusion is undone.
+func TestCompletenessLevelDegradesOnALargeShareOfSkips(t *testing.T) {
+	cases := []struct {
+		name                            string
+		failures, files, parsed, symbol int
+		want                            string
+	}{
+		{"one vendored bundle among many", 0, 500, 499, 4000, "ok"},
+		{"a tenth skipped", 0, 500, 450, 4000, "ok"},
+		{"a quarter skipped", 0, 500, 300, 4000, "degraded"},
+		{"half skipped", 0, 2, 1, 20, "degraded"},
+		// A ratio downgrade must never soften a louder verdict.
+		{"majority unparsed stays unsafe", 0, 100, 30, 500, "unsafe"},
+		{"mostly failures stays unsafe", 30, 100, 70, 500, "unsafe"},
+		{"empty scope", 0, 0, 0, 0, "ok"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := completenessLevel(tc.failures, tc.files, tc.parsed, tc.symbol)
+			if got != tc.want {
+				t.Fatalf("completenessLevel(f=%d files=%d parsed=%d sym=%d) = %q, want %q",
+					tc.failures, tc.files, tc.parsed, tc.symbol, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOversizeSkipCannotReportOkOnASmallCorpus is the end-to-end half: half the
+// repository is never opened, so the snapshot must not call itself complete.
+func TestOversizeSkipCannotReportOkOnASmallCorpus(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "huge.py", "def big_one():\n    return 1\n"+strings.Repeat("# padding to exceed the cap\n", 200))
+	writeFile(t, repo, "plain.py", "def helper(value):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(
+		t.Context(), repo, "test", ProviderSnapshotOptions{MaxParseBytes: 1024},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := snapshot.Header.Stats
+	if stats.ParsedFiles >= stats.Files {
+		t.Fatalf("fixture parsed every file (%d of %d); the oversize skip did not happen",
+			stats.ParsedFiles, stats.Files)
+	}
+	if stats.CompletenessLevel == "ok" {
+		t.Fatalf("completeness = ok with %d of %d files parsed", stats.ParsedFiles, stats.Files)
 	}
 }
