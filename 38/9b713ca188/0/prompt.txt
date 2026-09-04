@@ -1,13 +1,1 @@
-Review entire trail 135
-
----
-
-What's the base branch?
-
----
-
-What's the trail for this branch?
-
----
-
 Ok, then fix CI on that one
