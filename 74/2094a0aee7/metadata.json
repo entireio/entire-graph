@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "742094a0aee7",
+  "strategy": "manual-commit",
+  "branch": "fix/cross-language-name-only-edges",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/74/2094a0aee7/0/metadata.json",
+      "transcript": "/74/2094a0aee7/0/full.jsonl",
+      "compact_transcript": "/74/2094a0aee7/0/transcript.jsonl",
+      "content_hash": "/74/2094a0aee7/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1098763,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 119458304,
+    "output_tokens": 187562,
+    "api_call_count": 4047
+  }
+}
