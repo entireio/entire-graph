@@ -202,15 +202,21 @@ func fsharpHeadPosition(s string, start int) bool {
 // follows the operator and so has no argument to its right. The backward pipe
 // is the mirror image — in `fn <| x` the function is on the LEFT — so a
 // preceding `<|` marks an argument and is deliberately not accepted here.
+//
+// A trailing `|>` is not enough: F# lets a user define a symbolic operator whose
+// name merely CONTAINS one (`+|>`, `$|>`), and its right operand is that
+// operator's argument, not an applied function. The whole operator token is
+// measured by fsharpIsForwardPipeOperator so only a genuine `|>`/`||>`/`|||>`
+// counts.
 func fsharpPipelineApplied(s string, start int) bool {
 	i := start - 1
 	for i >= 0 && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
 		i--
 	}
-	if i < 1 || s[i] != '>' {
+	if i < 1 || s[i] != '>' || s[i-1] != '|' {
 		return false
 	}
-	return s[i-1] == '|'
+	return fsharpIsForwardPipeOperator(s, i-1)
 }
 
 // fsharpDotFollows reports whether a `.` comes next, which marks the name as a
