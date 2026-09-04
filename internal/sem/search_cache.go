@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -21,8 +20,10 @@ import (
 // "remove old version dirs" instead of per-entry reachability analysis.
 // v12 retires every entry produced before the final immutable-policy,
 // unconditional-worktree-bypass transaction checks, and shared nested-ignore
-// resource policy were complete.
-const searchSnapshotCacheVersion = "search-snapshot-v13"
+// resource policy were complete; v13 retires entries whose DATA_FLOWS records
+// carry a single evidence entry per edge rather than every flow; v14 retires
+// entries written before truncated records counted what they dropped.
+const searchSnapshotCacheVersion = "search-snapshot-v14"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -394,9 +395,9 @@ func preindexProviderSnapshotWithPersistenceReader(
 
 // validateBuiltSearchSnapshot closes the transaction between cache keying and
 // snapshot construction. Git tree identity alone is enough for source bytes,
-// but repository identity participates in stable symbol IDs, while provider
-// version and profile select the shape of the graph. A concurrent config or
-// option change must therefore fail before the snapshot is returned or stored.
+// but schema, repository identity, provider version, and profile select the
+// shape of the graph. A concurrent serializer, config, or option change must
+// therefore fail before the snapshot is returned or stored.
 // Commit is deliberately excluded: different commits with the same tree have
 // identical graph content and are re-stamped to the commit captured by the
 // caller after this validation succeeds.
@@ -406,15 +407,16 @@ func validateBuiltSearchSnapshot(
 	options ProviderSnapshotOptions,
 ) error {
 	header := snapshot.Header
-	if header.Tree != tree ||
+	if header.SchemaVersion != SchemaVersion ||
+		header.Tree != tree ||
 		header.RepoKey != repositoryKey ||
 		header.Provider != ProviderName ||
 		header.ProviderVersion != providerVersion ||
 		header.Profile != string(options.Profile) {
 		return fmt.Errorf(
-			"got repo %q tree %q provider %q version %q profile %q; want repo %q tree %q provider %q version %q profile %q",
-			header.RepoKey, header.Tree, header.Provider, header.ProviderVersion, header.Profile,
-			repositoryKey, tree, ProviderName, providerVersion, options.Profile,
+			"got schema %q repo %q tree %q provider %q version %q profile %q; want schema %q repo %q tree %q provider %q version %q profile %q",
+			header.SchemaVersion, header.RepoKey, header.Tree, header.Provider, header.ProviderVersion, header.Profile,
+			SchemaVersion, repositoryKey, tree, ProviderName, providerVersion, options.Profile,
 		)
 	}
 	return nil
@@ -703,8 +705,10 @@ func selectiveSearchSnapshotFromFull(
 }
 
 // The relation-phase failures recorded during selective derivation are merged
-// via mergePartialFailures (provider.go), skipping records the (filtered)
-// full-build failures already carry for the same file and code.
+// via mergePartialFailures (provider.go), which folds a record the (filtered)
+// full-build failures already carry for the same file and code into that record
+// instead of adding or dropping one — so the selective path reports the same
+// single record, carrying both phases' effects, that a full build does.
 func filterSearchPartialFailures(failures []PartialFailure, allowedFiles map[string]bool) []PartialFailure {
 	filtered := make([]PartialFailure, 0, len(failures))
 	for _, failure := range failures {
@@ -739,7 +743,22 @@ func LoadOrBuildProviderSnapshot(
 // can serve co-change edges computed against the prior history. That is
 // accepted because those edges are heuristic and confidence-scored, not
 // exact facts about the tree.
+// searchSnapshotKey addresses an entry for the schema THIS build serializes
+// under; searchSnapshotKeyForSchema carries the reasoning.
 func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions) (string, error) {
+	return searchSnapshotKeyForSchema(SchemaVersion, absRepo, repositoryKey, providerVersion, tree, options)
+}
+
+// searchSnapshotKeyForSchema takes the schema version explicitly so a test can
+// address the entry a build at another schema would have written. Production
+// reaches it only through searchSnapshotKey, which supplies SchemaVersion.
+//
+// The schema belongs in the ADDRESS and not only in the read-time check: two
+// builds at different schema versions otherwise share one artifact path, so each
+// one's store overwrites the other's and neither ever gets a warm cache. The
+// validity check catches the wrong answer; it cannot stop the mutual eviction
+// that produced it, because by then the entry has already been replaced.
+func searchSnapshotKeyForSchema(schemaVersion, absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions) (string, error) {
 	if options.Worktree {
 		return "", errors.New("working-tree snapshots cannot have persistent cache keys")
 	}
@@ -749,6 +768,7 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	}
 	hash := sha256.New()
 	writeCacheKeyString(hash, "cache-version", searchSnapshotCacheVersion)
+	writeCacheKeyString(hash, "schema-version", schemaVersion)
 	writeCacheKeyString(hash, "repository-path", absRepo)
 	writeCacheKeyString(hash, "repository-key", repositoryKey)
 	writeCacheKeyString(hash, "provider-version", providerVersion)
@@ -800,6 +820,12 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 // value back to a caller, so they have no re-stamping to do.
 func validCachedSearchSnapshot(cache cachedSearchSnapshot, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions) bool {
 	return cache.CacheVersion == searchSnapshotCacheVersion &&
+		// The stored header records the schema its records were serialized under, and
+		// nothing else here separates two schemas: searchSnapshotCacheVersion tracks
+		// the caching machinery, and providerVersion is the constant "dev" for every
+		// local build and "v0.0.0-ci" for every non-tag CI build. Without this clause
+		// a binary at schema N serves a snapshot built at schema N-1 as its own.
+		cache.Snapshot.Header.SchemaVersion == SchemaVersion &&
 		cache.ProviderVersion == providerVersion &&
 		cache.Tree == tree &&
 		cache.Profile == options.Profile &&
@@ -856,44 +882,5 @@ func readSearchSnapshot(entry cacheEntry) (cachedSearchSnapshot, error) {
 }
 
 func writeSearchSnapshot(entry cacheEntry, cache cachedSearchSnapshot) error {
-	path := entry.writePath()
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(dir, ".snapshot-*.json.gz")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	removeTemporary := true
-	defer func() {
-		if removeTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	writer := gzip.NewWriter(temporary)
-	encoder := json.NewEncoder(writer)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(cache); err != nil {
-		_ = writer.Close()
-		_ = temporary.Close()
-		return err
-	}
-	if err := writer.Close(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return err
-	}
-	removeTemporary = false
-	return nil
+	return entry.write("snapshot", cache)
 }

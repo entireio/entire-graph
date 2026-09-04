@@ -294,15 +294,93 @@ func TestResolveDiffTreesReusesResolutionForSameLabel(t *testing.T) {
 			return "new-tree", nil
 		}
 	}
-	base, head, err := resolveDiffTrees(t.Context(), "repo", "moving", "moving", resolve)
+	base, head, rootRelative, err := resolveDiffTrees(t.Context(), "repo", "moving", "moving", resolve)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(revisions) != 2 || revisions[0] != "moving" || revisions[1] != "moving-object^{tree}" {
-		t.Fatalf("same ref resolutions = %#v, want exact label then one immutable tree peel", revisions)
+	// The moving label is still resolved exactly once; the two follow-ups both
+	// address the immutable object it resolved to, never the label again.
+	if len(revisions) != 3 ||
+		revisions[0] != "moving" ||
+		revisions[1] != "moving-object^{tree}" ||
+		revisions[2] != "moving-object^{commit}" {
+		t.Fatalf("same ref resolutions = %#v, want exact label then immutable tree and commit peels", revisions)
+	}
+	if !rootRelative {
+		t.Fatal("a commit-ish label must report repository-root relative names")
 	}
 	if base != "old-tree" || head != "old-tree" {
 		t.Fatalf("same ref pinned to %q..%q, want old-tree..old-tree", base, head)
+	}
+}
+
+// TestResolveDiffTreesRejectsTreePathLabels pins that resolving to a commit is
+// not on its own evidence that a label named one. A gitlink resolves to the
+// submodule's commit, and a range over its tree is named relative to the
+// SUBMODULE's root, so this repository's exclusion rules do not describe those
+// names. The probe happens to fail today only because a submodule's objects are
+// usually absent from the superproject; an absorbed or fetched submodule puts
+// them there, and this must not depend on that.
+func TestResolveDiffTreesRejectsTreePathLabels(t *testing.T) {
+	// Mimics a superproject that DOES hold the submodule's objects: every peel
+	// resolves cleanly, so only the label's shape can rule it out.
+	resolve := func(_ context.Context, _, revision string) (string, error) {
+		return "gitlink-commit", nil
+	}
+	_, _, rootRelative, err := resolveDiffTrees(t.Context(), "repo", "HEAD:sub", "HEAD:sub", resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootRelative {
+		t.Fatal("a gitlink label must not be treated as repository-root relative")
+	}
+
+	// The commit-message search is the one colon form that names a commit and
+	// reaches into no tree.
+	_, _, rootRelative, err = resolveDiffTrees(t.Context(), "repo", ":/fix the bug", ":/fix the bug", resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rootRelative {
+		t.Fatal(":/text names a commit, so its names are repository-root relative")
+	}
+}
+
+// TestLabelSelectsTreePath pins which colons are the <rev>:<path> separator and
+// which are data. Rejecting a colon that is not that separator does not lose
+// data, but it silently disables every exclusion rule for the range, so a
+// reflog date selector must not be mistaken for a subtree expression.
+func TestLabelSelectsTreePath(t *testing.T) {
+	tests := []struct {
+		label string
+		want  bool
+	}{
+		{"HEAD", false},
+		{"main", false},
+		{"HEAD~1", false},
+		{"refs/tags/v1.0.0", false},
+		{"HEAD@{2}", false},
+		// A reflog date selector: commit-ish, and full of colons.
+		{"HEAD@{2026-08-27 12:34:56 +0000}", false},
+		{"main@{yesterday 09:00:00}", false},
+		// The commit-message searches name a commit; colons in them are text.
+		{":/fix: the bug", false},
+		{"HEAD^{/release: fix}", false},
+		{"main^{/colon: here}~2", false},
+		// The ordinary peels carry no colon but must stay revision-shaped.
+		{"HEAD^{tree}", false},
+		{"HEAD^{commit}", false},
+		// These do reach into a tree.
+		{"HEAD:sub", true},
+		{"HEAD~1:sub/dir", true},
+		{":0:conflicted.go", true},
+		{"HEAD@{2}:sub", true},
+		{"HEAD^{/release fix}:sub", true},
+	}
+	for _, test := range tests {
+		if got := labelSelectsTreePath(test.label); got != test.want {
+			t.Errorf("labelSelectsTreePath(%q) = %v, want %v", test.label, got, test.want)
+		}
 	}
 }
 
@@ -990,15 +1068,97 @@ def run(value, strict=False):
 	}
 }
 
+// TestAnalyzeGitRangeAddedOrDeletedUnsupportedFileReportsNothing covers the
+// shape that an earlier version of the mixed-support rule got wrong.
+//
+// The rule only means something when BOTH sides exist and exactly one parses:
+// then the file crossed the boundary. An added or deleted unsupported file has
+// only one side at all, so a guard written as "both sides unsupported" never
+// fired for it, and the empty comparison fell through to a module addition or
+// removal for a path no snapshot indexes. An absent side is not an unsupported
+// side, and nothing here is in the graph either way.
+func TestAnalyzeGitRangeAddedOrDeletedUnsupportedFileReportsNothing(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "anchor.go", "package anchor\n\nfunc Anchor() int { return 0 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "pic.png", "nothing parses this\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "add an unsupported file")
+	added := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, added, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("adding an unindexed file produced a record: %#v", result.Files)
+	}
+
+	if err := os.Remove(filepath.Join(repo, "pic.png")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "delete it again")
+
+	result, err = AnalyzeGitRange(context.Background(), repo, added, rev(t, repo, "HEAD"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("deleting an unindexed file produced a record: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeRenameBetweenUnindexedPathsReportsNothing is the guard on
+// the other side of the mixed-support rule.
+//
+// When exactly one side has a parser the file entered or left the index and the
+// removals or additions are real. When NEITHER side does, the file is in no
+// snapshot at either end of the range: there is nothing to retire and nothing to
+// learn, and emitting any record would invent one for a path the graph has never
+// held — the phantom class the index policy work exists to prevent.
+func TestAnalyzeGitRangeRenameBetweenUnindexedPathsReportsNothing(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "note.png", "nothing parses this\n")
+	write(t, repo, "anchor.go", "package anchor\n\nfunc Anchor() int { return 0 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "mv", "note.png", "moved.png")
+	git(t, repo, "commit", "-m", "rename between two paths the graph never indexes")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("files = %#v, want nothing: neither path is in any snapshot", result.Files)
+	}
+}
+
 func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		fromPath string
-		toPath   string
-		warnPath string
+		name       string
+		fromPath   string
+		toPath     string
+		warnPath   string
+		wantType   string
+		wantStatus string
+		wantPath   string
 	}{
-		{name: "supported to unsupported", fromPath: "sample.go", toPath: "sample.ps1", warnPath: "sample.ps1"},
-		{name: "unsupported to supported", fromPath: "sample.ps1", toPath: "sample.go", warnPath: "sample.ps1"},
+		{name: "supported to unsupported", fromPath: "sample.go", toPath: "sample.ps1", warnPath: "sample.ps1", wantType: "removed", wantStatus: "D", wantPath: "sample.go"},
+		{name: "unsupported to supported", fromPath: "sample.ps1", toPath: "sample.go", warnPath: "sample.ps1", wantType: "added", wantStatus: "A", wantPath: "sample.go"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := t.TempDir()
@@ -1021,8 +1181,31 @@ func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(result.Files) != 0 {
-				t.Fatalf("mixed-support rename produced a one-sided delta: %#v", result.Files)
+			// A side with no parser holds nothing in the graph, so this rename is
+			// the file leaving or entering the index and the honest delta is the
+			// removals or additions a snapshot of each side would show. This used
+			// to assert no record at all, to avoid a "one-sided phantom": but the
+			// removals are not phantom, because .ps1 is genuinely absent from
+			// every snapshot, and suppressing them left a consumer unable to
+			// retire the old compound-v1 IDs while the marker named only one path.
+			// A failed PARSE is still suppressed, and for the opposite reason:
+			// there the absence is this provider's blind spot, not a fact.
+			if len(result.Files) != 1 {
+				t.Fatalf("mixed-support rename = %#v, want the indexed side reported", result.Files)
+			}
+			reported := result.Files[0]
+			// Restated as what happened to the index, so the path and language
+			// belong to the side the graph holds. Reporting `sample.ps1` as a Go
+			// rename would present an unindexed file as a parsed one.
+			if reported.Path != tc.wantPath || reported.Status != tc.wantStatus || reported.OldPath != "" {
+				t.Fatalf("file = %#v, want %s of %q with no rename provenance", reported, tc.wantStatus, tc.wantPath)
+			}
+			if reported.Language != "Go" {
+				t.Fatalf("language = %q, want the indexed side's language", reported.Language)
+			}
+			changes := reported.Changes
+			if len(changes) != 1 || changes[0].Type != tc.wantType || changes[0].Name != "Run" {
+				t.Fatalf("changes = %#v, want a single %q for Run", changes, tc.wantType)
 			}
 			var marker *ProviderWarning
 			for i, warning := range result.Warnings {
@@ -1031,7 +1214,7 @@ func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
 					break
 				}
 			}
-			if marker == nil || marker.FilePath != tc.warnPath || !strings.Contains(marker.EffectOnCompleteness, "diff suppressed") {
+			if marker == nil || marker.FilePath != tc.warnPath || !strings.Contains(marker.EffectOnCompleteness, "no parser") {
 				t.Fatalf("missing mixed-support marker: %#v", result.Warnings)
 			}
 		})
@@ -1085,7 +1268,7 @@ func TestCompareEntitiesDisambiguatesSameNameOverloads(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1113,7 +1296,7 @@ func TestCompareEntitiesDetectsSecondOverloadEdit(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(object)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1135,7 +1318,7 @@ func TestCompareEntitiesSingleEntityUnchangedBehavior(t *testing.T) {
 		{Kind: "function", Name: "validate", Signature: "validate(token, issuer)", StartLine: 1},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1161,7 +1344,7 @@ func TestCompareEntitiesAddedOverloadReportedAsAdded(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(bool)", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on stable overloads: %#v", changes)
 	}
@@ -1190,7 +1373,7 @@ func TestCompareEntitiesRemovedOverloadReported(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on stable overloads: %#v", changes)
 	}
@@ -1221,7 +1404,7 @@ func TestCompareEntitiesTrueDuplicatesEditOne(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h2", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1248,7 +1431,7 @@ func TestCompareEntitiesDuplicateInsertionPreservesExistingBodies(t *testing.T) 
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h2", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 {
 		t.Fatalf("duplicate insertion caused survivor churn: changes=%#v removed=%#v", changes, removed)
 	}
@@ -1271,7 +1454,7 @@ func TestCompareEntitiesRepeatedDuplicateInsertionPreservesContentClass(t *testi
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h1", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 || len(added) != 1 || added[0].BodyHash != "h0" {
 		t.Fatalf("unexpected duplicate multiset diff: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1290,7 +1473,7 @@ func TestCompareEntitiesDuplicateReorderUsesBodyBeforeFingerprint(t *testing.T) 
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h1", Fingerprint: "shared", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("duplicate reorder must be inert: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1308,7 +1491,7 @@ func TestCompareEntitiesExactSignatureOutranksSharedFingerprint(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", Fingerprint: "shared", StartLine: 1},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(added) != 0 {
 		t.Fatalf("exact-signature survivor caused churn: changes=%#v added=%#v", changes, added)
 	}
@@ -1330,7 +1513,7 @@ func TestCompareEntitiesExactSignaturesOutrankSwappedBodies(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", BodyHash: "int-body", Fingerprint: "int-body", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 || len(changes) != 2 {
 		t.Fatalf("unexpected swapped-body diff: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1354,7 +1537,7 @@ func TestCompareEntitiesRemovalAndSignatureEditMatchByFingerprint(t *testing.T) 
 		{Kind: "method", Name: "C.F", Signature: "F(object)", BodyHash: "new-body", Fingerprint: "survivor", StartLine: 1},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(added) != 0 {
 		t.Fatalf("unexpected added overloads: %#v", added)
 	}
@@ -1385,7 +1568,7 @@ func TestCompareEntitiesReorderedSignatureEditsMatchUniqueFingerprints(t *testin
 		{Kind: "method", Name: "C.F", Signature: "F(long)", BodyHash: "new-a", Fingerprint: "a", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 || len(changes) != 2 {
 		t.Fatalf("unexpected reordered edit diff: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1436,7 +1619,7 @@ func TestCompareEntitiesRemoveFirstOverloadNoCascade(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(bool)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on surviving overloads: %#v", changes)
 	}
@@ -1465,7 +1648,7 @@ func TestCompareEntitiesMidListInsertOnlyAdded(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(bool)", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on stable overloads: %#v", changes)
 	}
@@ -1494,7 +1677,7 @@ func TestCompareEntitiesReorderedOverloadsNoChanges(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(int)", BodyHash: "hi", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("reorder must be inert: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1817,5 +2000,671 @@ func TestAnalyzeGitRangeNoBudgetKeepsFullResult(t *testing.T) {
 		if warning.Code == "W_ANALYSIS_BUDGET_EXCEEDED" {
 			t.Fatalf("no budget warning expected without MaxDuration, got %#v", warning)
 		}
+	}
+}
+
+// TestAnalyzeGitRangeHonorsGraphIgnore pins the documented contract that a
+// repo-root .graphignore is honored by every graph command. The snapshot and
+// search family already applied it; the diff family did not, so a tracked but
+// vendored or generated tree that the graph never indexes still produced entity
+// changes — symbols no snapshot of the repository contains.
+func TestAnalyzeGitRangeHonorsGraphIgnore(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, ".graphignore", "vendored/\n")
+	write(t, repo, "keep/keep.go", "package keep\n\nfunc Keep() int { return 1 }\n")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "keep/keep.go", "package keep\n\nfunc Keep() int { return 2 }\n")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 2 }\n\nfunc Extra() int { return 3 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "touch both trees")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "keep/keep.go" {
+		t.Fatalf("ignored tree reported in the diff: %#v", result.Files)
+	}
+
+	// The same repository's snapshot must agree: whatever the diff reports has
+	// to be something the graph would index.
+	snapshot, err := BuildProviderSnapshot(context.Background(), repo, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, symbol := range snapshot.Symbols {
+		if strings.HasPrefix(symbol.FilePath, "vendored/") {
+			t.Fatalf("snapshot indexed an ignored file, fixture is wrong: %#v", symbol)
+		}
+	}
+}
+
+// TestAnalyzeGitRangeHonorsGraphIgnoreForDeletions covers the base side: a
+// deletion has no head path, so the base path is what decides.
+func TestAnalyzeGitRangeHonorsGraphIgnoreForDeletions(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, ".graphignore", "vendored/\n")
+	write(t, repo, "keep/keep.go", "package keep\n\nfunc Keep() int { return 1 }\n")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	if err := os.Remove(filepath.Join(repo, "vendored/gen.go")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "drop the vendored tree")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("deleting an ignored file produced a delta: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeWithoutGraphIgnoreIsUnchanged guards against the filter
+// swallowing ordinary files when no ignore rule exists.
+func TestAnalyzeGitRangeWithoutGraphIgnoreIsUnchanged(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "vendored/gen.go", "package vendored\n\nfunc Gen() int { return 2 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "edit")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "vendored/gen.go" {
+		t.Fatalf("file was dropped without an ignore rule: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeHonorsBuiltinSecretRules covers the other half of the same
+// matcher. The provider's built-in secret rules already keep committed
+// credential files out of the snapshot; the diff reported them as entity
+// changes, naming paths the rest of the provider refuses to index.
+func TestAnalyzeGitRangeHonorsBuiltinSecretRules(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "app.go", "package app\n\nfunc Run() int { return 1 }\n")
+	write(t, repo, ".env", "API_KEY=first\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "app.go", "package app\n\nfunc Run() int { return 2 }\n")
+	write(t, repo, ".env", "API_KEY=second\n")
+	git(t, repo, "add", "-A", "-f")
+	git(t, repo, "commit", "-m", "rotate")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range result.Files {
+		if file.Path == ".env" {
+			t.Fatalf("committed credential file reported in the diff: %#v", file)
+		}
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "app.go" {
+		t.Fatalf("files = %#v, want only app.go", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangePureRenameIsReported pins the contract that a file Git
+// classified as a rename is never absent from the diff. A 100%-similarity
+// rename has no content change to report, but the file path is a component of
+// every compound-v1 symbol ID, so the rename re-identifies every entity in the
+// file. Dropping the file made a pure rename indistinguishable from an empty
+// diff for any consumer that keys on the output.
+func TestAnalyzeGitRangePureRenameIsReported(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "old/sample.go", "package sample\n\nfunc Run() int { return 1 }\n\ntype W struct{ N int }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	if err := os.MkdirAll(filepath.Join(repo, "new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "mv", "old/sample.go", "new/sample.go")
+	git(t, repo, "commit", "-m", "pure rename")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("pure rename produced %d files, want 1: %#v", len(result.Files), result.Files)
+	}
+	file := result.Files[0]
+	if file.Path != "new/sample.go" || file.OldPath != "old/sample.go" {
+		t.Fatalf("rename metadata = %q -> %q", file.OldPath, file.Path)
+	}
+	if file.Status != "R" {
+		t.Fatalf("status = %q, want R", file.Status)
+	}
+	if file.Language != "Go" {
+		t.Fatalf("language = %q, want Go", file.Language)
+	}
+	if len(file.Changes) != 1 {
+		t.Fatalf("changes = %#v, want exactly one path-scope change", file.Changes)
+	}
+	change := file.Changes[0]
+	if change.Type != "moved" || change.Kind != moduleKind {
+		t.Fatalf("change type/kind = %q/%q, want moved/%s", change.Type, change.Kind, moduleKind)
+	}
+	if change.OldPath != "old/sample.go" || change.NewPath != "new/sample.go" {
+		t.Fatalf("change paths = %q -> %q", change.OldPath, change.NewPath)
+	}
+	if change.Name != "new/sample.go" {
+		t.Fatalf("change name = %q, want the new path", change.Name)
+	}
+	if change.Reconciliation != "MOVED" {
+		t.Fatalf("reconciliation = %q, want MOVED", change.Reconciliation)
+	}
+}
+
+// TestAnalyzeGitRangeUnchangedFileStaysAbsent guards the other side of the same
+// contract: reporting a rename must not start reporting files nothing touched.
+//
+// The range deliberately CONTAINS a pure rename, so the path-scope fallback is
+// actually exercised while sample.go sits still. An earlier version of this test
+// changed only an unrelated file, which never put anything through the new
+// branch at all and passed identically without the fix.
+func TestAnalyzeGitRangeUnchangedFileStaysAbsent(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "sample.go", "package sample\n\nfunc Run() int { return 1 }\n")
+	write(t, repo, "moved.go", "package sample\n\nfunc Moved() int { return 2 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "mv", "moved.go", "renamed.go")
+	git(t, repo, "commit", "-m", "rename one file, touch nothing else")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The rename is reported...
+	if len(result.Files) != 1 || result.Files[0].Path != "renamed.go" {
+		t.Fatalf("files = %#v, want only the renamed file", result.Files)
+	}
+	// ...and the file that did not move is not.
+	for _, file := range result.Files {
+		if file.Path == "sample.go" || file.OldPath == "sample.go" {
+			t.Fatalf("untouched file appeared in the diff: %#v", file)
+		}
+	}
+}
+
+// TestAnalyzeGitRangeModeOnlyChangeStaysAbsent covers a file that reaches the
+// path-scope fallback with identical content and an unchanged path: Git reports
+// a mode-only change as a modification, and it must not be reported as a move.
+//
+// The mode is set through the index rather than the filesystem. os.Chmod does
+// nothing on Windows, where core.fileMode is false, so a filesystem chmod made
+// this test skip on the one platform it could not be checked on — and it is the
+// only guard on this branch, so a skip there was a hole rather than a gap.
+// `git update-index --chmod` writes the index entry directly and behaves the
+// same everywhere.
+func TestAnalyzeGitRangeModeOnlyChangeStaysAbsent(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "sample.go", "package sample\n\nfunc Run() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "update-index", "--chmod=+x", "sample.go")
+	git(t, repo, "commit", "-m", "mode only")
+	head := rev(t, repo, "HEAD")
+
+	// The fixture is only meaningful if Git really reported the file with both
+	// sides pointing at the same blob.
+	if before, after := blobAt(t, repo, base, "sample.go"), blobAt(t, repo, head, "sample.go"); before != after {
+		t.Fatalf("fixture is wrong: content changed (%s -> %s), this is not a mode-only change", before, after)
+	}
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("mode-only change produced a delta: %#v", result.Files)
+	}
+}
+
+// blobAt returns the blob OID a path resolves to at a revision, so a fixture can
+// assert it really did leave the content alone.
+func blobAt(t *testing.T, repo, revision, path string) string {
+	t.Helper()
+	return rev(t, repo, revision+":"+path)
+}
+
+// TestAnalyzeGitRangeCaseOnlyRenameIsReported pins the one rename whose handling
+// genuinely differs by platform. Correcting a file's capitalization changes the
+// path, so it re-identifies every symbol in the file exactly as any other rename
+// does — but Linux sees two distinct names while macOS and Windows fold them onto
+// one, and Go's string comparison in the same-path guard is case-sensitive
+// regardless. Making that guard case-insensitive to "fix" Windows would silently
+// drop a real re-identification, so the behaviour is pinned here.
+//
+// The rename is staged through the index rather than the filesystem, so the
+// fixture cannot depend on whether the host folds case: no file is ever renamed
+// on disk, and the test needs no platform guard to run everywhere.
+func TestAnalyzeGitRangeCaseOnlyRenameIsReported(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "Sample.go", "package sample\n\nfunc Run() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	blob := blobAt(t, repo, base, "Sample.go")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "100644,"+blob+",sample.go")
+	git(t, repo, "update-index", "--force-remove", "Sample.go")
+	git(t, repo, "commit", "-m", "correct the capitalization")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("files = %#v, want one Sample.go -> sample.go rename", result.Files)
+	}
+	file := result.Files[0]
+	if file.Path != "sample.go" || file.OldPath != "Sample.go" {
+		t.Fatalf("files = %#v, want one Sample.go -> sample.go rename", result.Files)
+	}
+	if len(file.Changes) != 1 || file.Changes[0].Type != "moved" || file.Changes[0].Kind != moduleKind {
+		t.Fatalf("changes = %#v, want one module moved", file.Changes)
+	}
+	if file.Changes[0].OldPath != "Sample.go" || file.Changes[0].NewPath != "sample.go" {
+		t.Fatalf("change paths = %q -> %q, want the capitalization preserved on both sides",
+			file.Changes[0].OldPath, file.Changes[0].NewPath)
+	}
+}
+
+// TestAnalyzeGitRangeRenameAcrossLanguagesReportsTheHeadLanguage pins the label
+// on a rename that crosses extensions. The graph indexes the head path with the
+// head parser's language, so reporting the base one contradicts every snapshot
+// of that tree.
+func TestAnalyzeGitRangeRenameAcrossLanguagesReportsTheHeadLanguage(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "mod.js", "export function run() {\n  return 1;\n}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "mv", "mod.js", "mod.ts")
+	git(t, repo, "commit", "-m", "js to ts, byte-identical")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("files = %#v, want one", result.Files)
+	}
+	if got := result.Files[0].Language; got != "TypeScript" {
+		t.Fatalf("language = %q, want TypeScript: the head path is what the graph indexes", got)
+	}
+}
+
+// TestAnalyzeGitRangeSkipsSymlinkTreeEntries pins that a symbolic link is never
+// analyzed as source. Git stores a symlink as a blob whose bytes are its target
+// path, so reading content alone cannot tell `alias.py` (holding "pkg/real.py")
+// apart from a one-line Python file: it used to yield a phantom module entity,
+// while `alias.go` used to report E_PARSE_ERROR against a file that is not
+// source at all.
+func TestAnalyzeGitRangeSkipsSymlinkTreeEntries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checkouts do not preserve symlink tree entries")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	write(t, repo, "pkg/real.go", "package pkg\n\nfunc Real() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	for _, link := range []struct{ name, target string }{
+		{name: "alias.py", target: "pkg/real.py"},
+		{name: "alias.go", target: "pkg/real.go"},
+	} {
+		if err := os.Symlink(link.target, filepath.Join(repo, link.name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "add symlinks")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("symlink tree entries produced entity deltas: %#v", result.Files)
+	}
+	marked := map[string]bool{}
+	for _, warning := range result.Warnings {
+		if warning.Code == "E_PARSE_ERROR" {
+			t.Fatalf("symlink reported as a parse failure: %#v", warning)
+		}
+		if warning.Code == "W_UNSUPPORTED_FILE" && strings.Contains(warning.EffectOnCompleteness, "symbolic link") {
+			marked[warning.FilePath] = true
+		}
+	}
+	for _, path := range []string{"alias.py", "alias.go"} {
+		if !marked[path] {
+			t.Fatalf("no symlink completeness marker for %s: %#v", path, result.Warnings)
+		}
+	}
+}
+
+// TestAnalyzeGitRangeSkipsDeletedSymlink covers the base side of the same
+// classification: removing a symlink must not be reported as removing source.
+func TestAnalyzeGitRangeSkipsDeletedSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checkouts do not preserve symlink tree entries")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	if err := os.Symlink("pkg/real.py", filepath.Join(repo, "alias.py")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	if err := os.Remove(filepath.Join(repo, "alias.py")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "drop symlink")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("deleted symlink produced entity deltas: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeReportsTheFileSideOfASymlinkTypeChange covers the shape
+// where a path changes TYPE. Git reports it as status `T` with one mode 100644
+// and the other 120000, and the symlink guard's two conditions are independent,
+// so a `T` entry satisfied one of them and skipped BOTH sides. The side that is
+// not a link is ordinary source: replacing a file with a link really does remove
+// its symbols, and replacing a link with a file really does add them. Skipping
+// it made a symbol that genuinely left the tree invisible in the diff.
+func TestAnalyzeGitRangeReportsTheFileSideOfASymlinkTypeChange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checkouts do not preserve symlink tree entries")
+	}
+	newRepo := func(t *testing.T) string {
+		t.Helper()
+		repo := t.TempDir()
+		git(t, repo, "init")
+		git(t, repo, "config", "user.name", "Entire Graph Test")
+		git(t, repo, "config", "user.email", "graph@example.com")
+		write(t, repo, "pkg/real.py", "def real(value):\n    return value\n")
+		return repo
+	}
+	changeNames := func(t *testing.T, result Result) (string, []string) {
+		t.Helper()
+		if len(result.Files) != 1 {
+			t.Fatalf("want exactly one changed file, got %#v", result.Files)
+		}
+		var names []string
+		for _, change := range result.Files[0].Changes {
+			names = append(names, change.Type+":"+change.Name)
+		}
+		return result.Files[0].Status, names
+	}
+
+	t.Run("regular file replaced by a symlink removes its symbols", func(t *testing.T) {
+		repo := newRepo(t)
+		write(t, repo, "alias.py", "def will_vanish(value):\n    return value\n")
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "initial")
+		base := rev(t, repo, "HEAD")
+
+		if err := os.Remove(filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("pkg/real.py", filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "replace the file with a link")
+
+		result, err := AnalyzeGitRange(context.Background(), repo, base, rev(t, repo, "HEAD"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, names := changeNames(t, result)
+		if status != "T" {
+			t.Errorf("status %q, want the type change Git reported (T)", status)
+		}
+		if len(names) != 1 || names[0] != "removed:will_vanish" {
+			t.Errorf("changes %v, want [removed:will_vanish]", names)
+		}
+		// The link side is still unanalyzable and must say so.
+		if !hasSymlinkWarning(result, "alias.py") {
+			t.Errorf("no symbolic-link warning for the head side: %#v", result.Warnings)
+		}
+	})
+
+	t.Run("symlink replaced by a regular file adds its symbols", func(t *testing.T) {
+		repo := newRepo(t)
+		if err := os.Symlink("pkg/real.py", filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "initial")
+		base := rev(t, repo, "HEAD")
+
+		if err := os.Remove(filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		write(t, repo, "alias.py", "def now_real(value):\n    return value\n")
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "replace the link with a file")
+
+		result, err := AnalyzeGitRange(context.Background(), repo, base, rev(t, repo, "HEAD"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, names := changeNames(t, result)
+		if status != "T" {
+			t.Errorf("status %q, want the type change Git reported (T)", status)
+		}
+		if len(names) != 1 || names[0] != "added:now_real" {
+			t.Errorf("changes %v, want [added:now_real]", names)
+		}
+		if !hasSymlinkWarning(result, "alias.py") {
+			t.Errorf("no symbolic-link warning for the base side: %#v", result.Warnings)
+		}
+	})
+}
+
+func hasSymlinkWarning(result Result, path string) bool {
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_UNSUPPORTED_FILE" && warning.FilePath == path &&
+			strings.Contains(warning.Detail, "symbolic link") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAnalyzeGitRangeStillAnalyzesRegularFiles guards the classification from
+// over-reaching: an ordinary blob must keep producing its entity delta.
+func TestAnalyzeGitRangeStillAnalyzesRegularFiles(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "pkg/real.py", "def only_once(value, strict=False):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change signature")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "pkg/real.py" {
+		t.Fatalf("regular file was skipped: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeClassifiesSymlinkFromTreeModeAlone pins that the symlink
+// classification is decided by the Git tree entry mode and nothing else.
+//
+// The two tests above build real symlinks and so skip on Windows, which leaves
+// the classification untested on the one platform that cannot create them. They
+// are also blind to `core.symlinks=false`, where Git materializes a tracked
+// symlink as an ordinary file holding its target path — a checkout in which an
+// lstat-based check reports "regular file" on a machine perfectly capable of
+// making symlinks.
+//
+// This builds the symlink straight into the index with `update-index --cacheinfo
+// 120000`, so no filesystem link exists anywhere and the mode is the only
+// available signal. It runs on every platform.
+//
+// Addition and deletion are measured over separate ranges on purpose. Both
+// travel through admitChangedFiles rewrites that rebuild the entry rather than
+// forwarding it, and each rewrite has to carry its own side's mode; a single
+// range holding both would let --find-renames pair them into one "R" that keeps
+// the original entry intact and exercises neither rewrite.
+func TestAnalyzeGitRangeClassifiesSymlinkFromTreeModeAlone(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "core.symlinks", "false")
+
+	// The blob of a symlink is its target path. "pkg/real.py" parses cleanly as
+	// Python, so a content-based reader sees a module here rather than a link.
+	target := gitInput(t, repo, "pkg/real.py", "hash-object", "-w", "--stdin")
+
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	git(t, repo, "add", "pkg/real.py")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+target+",gone.py")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "update-index", "--force-remove", "gone.py")
+	git(t, repo, "commit", "-m", "remove symlink")
+	removed := rev(t, repo, "HEAD")
+
+	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+target+",added.py")
+	git(t, repo, "commit", "-m", "add symlink")
+	added := rev(t, repo, "HEAD")
+
+	for _, testCase := range []struct {
+		name string
+		base string
+		head string
+		path string
+		raw  string
+	}{
+		{name: "deleted", base: base, head: removed, path: "gone.py", raw: ":120000 000000"},
+		{name: "added", base: removed, head: added, path: "added.py", raw: ":000000 120000"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			// Guard the fixture: without a 120000 tree entry of the expected
+			// status this would pass for the wrong reason.
+			raw := gitInput(t, repo, "", "diff", "--raw", "--find-renames", testCase.base, testCase.head)
+			if !strings.Contains(raw, testCase.raw) || !strings.Contains(raw, testCase.path) {
+				t.Fatalf("fixture did not produce a %s symlink tree entry for %s: %s", testCase.name, testCase.path, raw)
+			}
+
+			result, err := AnalyzeGitRange(context.Background(), repo, testCase.base, testCase.head, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range result.Files {
+				if file.Path == testCase.path {
+					t.Fatalf("symlink classified as source from mode alone: %#v", file)
+				}
+			}
+			marked := false
+			for _, warning := range result.Warnings {
+				if warning.Code == "E_PARSE_ERROR" {
+					t.Fatalf("symlink reported as a parse failure: %#v", warning)
+				}
+				if warning.Code == "W_UNSUPPORTED_FILE" &&
+					warning.FilePath == testCase.path &&
+					strings.Contains(warning.EffectOnCompleteness, "symbolic link") {
+					marked = true
+				}
+			}
+			if !marked {
+				t.Fatalf("no symlink completeness marker for %s: %#v", testCase.path, result.Warnings)
+			}
+		})
 	}
 }

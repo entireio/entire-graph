@@ -202,7 +202,7 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 	response.WorktreeSnapshot = !useHead
 	switch flags.Format {
 	case "json":
-		encoder := json.NewEncoder(opts.Stdout)
+		encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(response)
 	case "text", "agent":
