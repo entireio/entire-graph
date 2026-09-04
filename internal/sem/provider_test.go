@@ -2024,16 +2024,131 @@ func TestPythonFromImportParserKeepsLaterImportsVisibleAfterUnclosedList(t *test
 	}
 }
 
-func TestPythonFromImportParserBoundsMalformedListProbe(t *testing.T) {
+func TestPythonFromImportParserRecoversRepeatedMalformedLists(t *testing.T) {
 	var content strings.Builder
-	content.WriteString("from broken import (\n")
-	for i := 0; i < pythonImportContinuationLines+1; i++ {
-		content.WriteString("    thing,\n")
+	for i := 0; i < 256; i++ {
+		fmt.Fprintf(&content, "from broken%d import (\n    thing,\n", i)
 	}
 	content.WriteString("from mod import helper\n")
 	names := importedPythonNames(content.String())
 	if got := names["helper"]; len(got) != 1 || got[0] != "mod" {
-		t.Fatalf("names[\"helper\"] = %#v, want [mod] beyond malformed-list probe bound", got)
+		t.Fatalf("names[\"helper\"] = %#v, want [mod] after repeated malformed lists", got)
+	}
+}
+
+func TestPythonFromImportParserAllowsLongContinuations(t *testing.T) {
+	const itemCount = 260
+	makeContent := func(parenthesized bool) string {
+		var content strings.Builder
+		if parenthesized {
+			content.WriteString("from frobnicate import (\n    compute as c,\n")
+			for i := 0; i < itemCount; i++ {
+				fmt.Fprintf(&content, "    helper%d,\n", i)
+			}
+			content.WriteString(")\n")
+		} else {
+			content.WriteString("from frobnicate import compute as c, \\\n")
+			for i := 0; i < itemCount; i++ {
+				if i == itemCount-1 {
+					fmt.Fprintf(&content, "    helper%d\n", i)
+				} else {
+					fmt.Fprintf(&content, "    helper%d, \\\n", i)
+				}
+			}
+		}
+		content.WriteString("\ndef run():\n    return c(1)\n")
+		return content.String()
+	}
+
+	for _, test := range []struct {
+		name          string
+		parenthesized bool
+	}{
+		{name: "parenthesized", parenthesized: true},
+		{name: "explicit backslash", parenthesized: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content := makeContent(test.parenthesized)
+			names, forms := importedPythonNamesAndForms(content)
+			if got := names["c"]; !slices.Equal(got, []string{"frobnicate"}) {
+				t.Fatalf("names[c] = %#v, want [frobnicate]", got)
+			}
+			if got := forms["c"]["frobnicate"]; got != pythonFromImport {
+				t.Fatalf("forms[c][frobnicate] = %v, want from-import", got)
+			}
+			bindings := importedPythonBindings(content)["c"]
+			if len(bindings) != 1 || bindings[0].Module != "frobnicate" || bindings[0].Imported != "compute" {
+				t.Fatalf("bindings[c] = %#v, want frobnicate.compute", bindings)
+			}
+
+			repo := t.TempDir()
+			writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+			writeFile(t, repo, "app.py", content)
+			calls := callRelationsFrom(t, repo, "app.py:function:run")
+			if len(calls) != 1 || !strings.HasSuffix(calls[0].ToID, "frobnicate.c:function:compute") || calls[0].Resolution != "import_resolved" {
+				t.Fatalf("long %s import calls = %#v, want one import-resolved C edge", test.name, calls)
+			}
+		})
+	}
+}
+
+func TestPythonFromImportParserAllowsBackslashBeforeParenthesizedList(t *testing.T) {
+	content := "from frobnicate import \\\n(\n    compute as c,\n    helper,\n)\n\ndef run():\n    return c(1)\n"
+	names, forms := importedPythonNamesAndForms(content)
+	if got := names["c"]; !slices.Equal(got, []string{"frobnicate"}) {
+		t.Fatalf("names[c] = %#v, want [frobnicate]", got)
+	}
+	if got := forms["c"]["frobnicate"]; got != pythonFromImport {
+		t.Fatalf("forms[c][frobnicate] = %v, want from-import", got)
+	}
+	bindings := importedPythonBindings(content)["c"]
+	if len(bindings) != 1 || bindings[0].Module != "frobnicate" || bindings[0].Imported != "compute" {
+		t.Fatalf("bindings[c] = %#v, want frobnicate.compute", bindings)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "app.py", content)
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 || !strings.HasSuffix(calls[0].ToID, "frobnicate.c:function:compute") || calls[0].Resolution != "import_resolved" {
+		t.Fatalf("mixed import calls = %#v, want one import-resolved C edge", calls)
+	}
+}
+
+func TestPythonFromImportParserRejectsUnclosedMixedListAndRecovers(t *testing.T) {
+	content := `from broken import \
+(
+    thing,
+from frobnicate import compute as c
+
+def brokenRun():
+    return thing(1)
+
+def run():
+    return c(1)
+`
+	names, forms := importedPythonNamesAndForms(content)
+	if len(names["thing"]) != 0 || forms["thing"] != nil {
+		t.Fatalf("partial mixed import created thing binding: names=%#v forms=%#v", names, forms)
+	}
+	if got := names["c"]; !slices.Equal(got, []string{"frobnicate"}) {
+		t.Fatalf("later valid import names[c] = %#v, want [frobnicate]", got)
+	}
+	bindings := importedPythonBindings(content)
+	if len(bindings["thing"]) != 0 || len(bindings["c"]) != 1 || bindings["c"][0].Module != "frobnicate" || bindings["c"][0].Imported != "compute" {
+		t.Fatalf("bindings after mixed import recovery = %#v", bindings)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, repo, "broken.c", "int thing(int value) { return value; }\n")
+	writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "app.py", content)
+	if calls := callRelationsFrom(t, repo, "app.py:function:brokenRun"); len(calls) != 0 {
+		t.Fatalf("partial mixed import created FFI edge: %#v", calls)
+	}
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 || calls[0].ToID != externalID("symbol", "frobnicate.compute") || calls[0].Resolution != "import_external" {
+		t.Fatalf("later valid import calls = %#v, want one fail-closed external edge", calls)
 	}
 }
 

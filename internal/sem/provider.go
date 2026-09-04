@@ -20487,11 +20487,6 @@ var pythonFromImportRE = regexp.MustCompile(`(?s)^from\s+(\.*(?:[A-Za-z_][A-Za-z
 // module expression would otherwise greedily consume that keyword.
 var pythonRelativeFromImportRE = regexp.MustCompile(`(?s)^from(?:\s+|\.)(\.*)import(.*)$`)
 
-// pythonImportContinuationLines bounds how far a parenthesized import list is
-// followed. A malformed unclosed list must not make scanning the rest of a
-// file quadratic (or consume every later import while probing it).
-const pythonImportContinuationLines = 256
-
 // pythonFromImportStatements parses the parenthesized and one-line forms of
 // `from module import item [, item ...]`. The ordinary import scanners share
 // it with the AST scope walker so multiline bindings cannot diverge between
@@ -20509,18 +20504,26 @@ func pythonFromImportStatements(content string) []pythonFromImportStatement {
 		if !ok {
 			continue
 		}
-		continued, validContinuation := pythonImportContinuation(rawItems)
+		continued, validContinuation := pythonImportContinuationLine(rawItems)
 		if !validContinuation {
 			continue
 		}
+		var joinedItems strings.Builder
+		joinedItems.WriteString(rawItems)
 		if strings.HasPrefix(strings.TrimSpace(rawItems), "(") {
-			depth := pythonImportParenDepth(rawItems)
+			depth := pythonImportParenDepthLine(rawItems)
 			cursor := line
-			for (depth > 0 || continued) && cursor+1 < len(lines) && cursor-startLine < pythonImportContinuationLines {
+			for (depth > 0 || continued) && cursor+1 < len(lines) {
+				nextLine := lines[cursor+1]
+				if pythonImportContinuationStartsStatement(nextLine) || pythonImportContinuationHasNestedOpening(nextLine) {
+					validContinuation = false
+					break
+				}
 				cursor++
-				rawItems += "\n" + lines[cursor]
-				depth = pythonImportParenDepth(rawItems)
-				continued, validContinuation = pythonImportContinuation(rawItems)
+				joinedItems.WriteByte('\n')
+				joinedItems.WriteString(nextLine)
+				depth += pythonImportParenDepthLine(nextLine)
+				continued, validContinuation = pythonImportContinuationLine(nextLine)
 				if !validContinuation {
 					break
 				}
@@ -20531,24 +20534,33 @@ func pythonFromImportStatements(content string) []pythonFromImportStatement {
 			line = cursor
 		} else if continued {
 			cursor := line
-			for continued && cursor+1 < len(lines) && cursor-startLine < pythonImportContinuationLines {
-				if pythonImportContinuationTargetEmpty(lines[cursor+1]) {
+			depth := 0
+			grouped := false
+			for (continued || depth > 0) && cursor+1 < len(lines) {
+				nextLine := lines[cursor+1]
+				groupStart := depth == 0 && !grouped && strings.HasPrefix(strings.TrimSpace(nextLine), "(")
+				if ((depth == 0 || continued) && pythonImportContinuationTargetEmpty(nextLine)) || pythonImportContinuationStartsStatement(nextLine) || (!groupStart && pythonImportContinuationHasNestedOpening(nextLine)) {
 					validContinuation = false
 					break
 				}
 				cursor++
-				rawItems += "\n" + lines[cursor]
-				continued, validContinuation = pythonImportContinuation(rawItems)
+				joinedItems.WriteByte('\n')
+				joinedItems.WriteString(nextLine)
+				if groupStart {
+					grouped = true
+				}
+				depth += pythonImportParenDepthLine(nextLine)
+				continued, validContinuation = pythonImportContinuationLine(nextLine)
 				if !validContinuation {
 					break
 				}
 			}
-			if !validContinuation || continued {
+			if !validContinuation || continued || depth != 0 {
 				continue
 			}
 			line = cursor
 		}
-		items := pythonFromImportItems(rawItems)
+		items := pythonFromImportItems(joinedItems.String())
 		if len(items) > 0 {
 			statements = append(statements, pythonFromImportStatement{line: startLine, module: module, items: items})
 		}
@@ -20588,25 +20600,16 @@ func isPythonImportNameByte(b byte) bool {
 	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b >= 0x80
 }
 
-func pythonImportParenDepth(items string) int {
-	depth := 0
-	for _, line := range strings.Split(items, "\n") {
-		line = strings.SplitN(line, "#", 2)[0]
-		depth += strings.Count(line, "(") - strings.Count(line, ")")
-	}
-	return depth
+func pythonImportParenDepthLine(line string) int {
+	line = strings.SplitN(line, "#", 2)[0]
+	return strings.Count(line, "(") - strings.Count(line, ")")
 }
 
-// pythonImportContinuation reports whether the final physical import line
+// pythonImportContinuationLine reports whether a physical import line
 // explicitly continues and whether its backslash placement is syntactically
 // valid. A backslash before a comment does not continue Python source.
-func pythonImportContinuation(items string) (continued, valid bool) {
-	lines := strings.Split(items, "\n")
-	if len(lines) == 0 {
-		return false, true
-	}
-	last := lines[len(lines)-1]
-	code, _, hasComment := strings.Cut(last, "#")
+func pythonImportContinuationLine(line string) (continued, valid bool) {
+	code, _, hasComment := strings.Cut(line, "#")
 	slash := strings.LastIndex(code, "\\")
 	if slash < 0 {
 		return false, true
@@ -20623,6 +20626,21 @@ func pythonImportContinuation(items string) (continued, valid bool) {
 func pythonImportContinuationTargetEmpty(line string) bool {
 	line = strings.TrimSpace(line)
 	return line == "" || strings.HasPrefix(line, "#")
+}
+
+func pythonImportContinuationStartsStatement(line string) bool {
+	line = strings.TrimSpace(line)
+	for _, keyword := range []string{"from", "import"} {
+		if strings.HasPrefix(line, keyword) && (len(line) == len(keyword) || line[len(keyword)] == ' ' || line[len(keyword)] == '\t' || line[len(keyword)] == '.') {
+			return true
+		}
+	}
+	return false
+}
+
+func pythonImportContinuationHasNestedOpening(line string) bool {
+	line = strings.SplitN(line, "#", 2)[0]
+	return strings.Contains(line, "(")
 }
 
 func pythonFromImportItems(items string) []string {
