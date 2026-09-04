@@ -650,9 +650,9 @@ func TestCompactSnapshotLineReaderRefusesLineOverBound(t *testing.T) {
 	}
 }
 
-// The summary is the only line read without a length cap, because its size is a
-// function of how many files the operator let the encoder admit.
-func TestCompactSnapshotSummaryLineIsNotLengthCapped(t *testing.T) {
+// The summary gets a larger allowance than the per-record lines, because its
+// size is a function of how many files the operator let the encoder admit.
+func TestCompactSnapshotSummaryLineGetsTheLargerAllowance(t *testing.T) {
 	summary := `["m",{"record_type":"summary","partial_failures":[`
 	entry := `{"code":"E_FILE_TOO_LARGE","severity":"warning","file_path":"src/x.go","effect_on_semantic_completeness":"skipped"}`
 	entries := make([]string, 0, 200_000)
@@ -673,5 +673,22 @@ func TestCompactSnapshotSummaryLineIsNotLengthCapped(t *testing.T) {
 	}
 	if decoded != 2 {
 		t.Fatalf("decoded %d records, want 2", decoded)
+	}
+}
+
+// The summary allowance is spent at most once, so the leading bytes of a
+// malformed artifact cannot request the large buffer line after line.
+func TestCompactSnapshotSummaryAllowanceIsSpentOnce(t *testing.T) {
+	if compactSnapshotSummaryLineBytes <= compactSnapshotRecordLineBytes {
+		t.Fatalf("summary allowance %d is not larger than the record cap %d", compactSnapshotSummaryLineBytes, compactSnapshotRecordLineBytes)
+	}
+	second := `["m",` + strings.Repeat("x", compactSnapshotRecordLineBytes)
+	input := compactHeaderLine() + `["m",{"record_type":"summary"}]` + "\n" + second + "\n"
+	_, err := DecodeCompactSnapshot(strings.NewReader(input), func(any) error { return nil })
+	if err == nil {
+		t.Fatal("expected the second summary-prefixed line to be refused")
+	}
+	if !strings.Contains(err.Error(), "compact snapshot line exceeds") {
+		t.Fatalf("err = %v, want a length refusal", err)
 	}
 }

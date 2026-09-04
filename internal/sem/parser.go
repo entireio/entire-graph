@@ -7234,8 +7234,20 @@ func javascriptDefaultExportBodyBrace(content string, loc []int) int {
 		}
 		cursor = closeParen + 1
 	}
-	// Arrow alternatives end at `=>`; a braced body is the next non-space byte.
 	cursor = skipSpace(content, cursor)
+	if cursor < len(content) && content[cursor] == ':' {
+		// A TypeScript return annotation sits between the parameter list and the
+		// body: `export default function (): Result { … }`. The annotation's own
+		// syntax can contain braces (an inline object type), which nothing short
+		// of a type parser can delimit here, so take the first `{` after it —
+		// the behaviour this function replaced, kept for exactly the case where
+		// it was right.
+		if at := strings.IndexByte(content[cursor:], '{'); at >= 0 {
+			return cursor + at
+		}
+		return -1
+	}
+	// Arrow alternatives end at `=>`; a braced body is the next non-space byte.
 	if cursor < len(content) && content[cursor] == '{' {
 		return cursor
 	}

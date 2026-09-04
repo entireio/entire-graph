@@ -1066,14 +1066,18 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	seenHeader, seenSummary := false, false
 	tolerateSchemaAdditions := false
 	lineNumber := 0
+	summaryAllowanceSpent := false
 	for {
 		// Only the summary is unbounded, and only the summary needs to be: every
 		// other line is one record, so the fixed cap that protects against an
 		// unterminated line costs nothing there. The tag is the first thing on
 		// the line, so peeking it decides the limit before a byte is consumed.
 		limit := compactSnapshotRecordLineBytes
-		if head, _ := reader.Peek(len(compactSnapshotSummaryLinePrefix)); string(head) == compactSnapshotSummaryLinePrefix {
-			limit = -1
+		if !summaryAllowanceSpent {
+			if head, _ := reader.Peek(len(compactSnapshotSummaryLinePrefix)); string(head) == compactSnapshotSummaryLinePrefix {
+				limit = compactSnapshotSummaryLineBytes
+				summaryAllowanceSpent = true
+			}
 		}
 		line, readErr := readCompactSnapshotLine(reader, limit)
 		if readErr != nil {
@@ -1205,28 +1209,34 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	return warnings, nil
 }
 
-// compactSnapshotRecordLineBytes bounds every compact line except the summary,
-// and compactSnapshotSummaryLinePrefix is how the summary is recognised before
-// its line is read.
+// compactSnapshotRecordLineBytes bounds every compact line, and
+// compactSnapshotSummaryLineBytes is the larger allowance the summary gets;
+// compactSnapshotSummaryLinePrefix is how the summary is recognised before its
+// line is read.
 //
 // The summary is the ONE line whose length is not a property of the format. The
 // encoder writes it as a single JSON value carrying an entry per partial
-// failure, and how many files a snapshot may admit is a policy the operator sets
-// (ProviderSnapshotOptions.MaxFiles, else ENTIRE_GRAPH_MAX_FILES, else
-// defaultMaxSourceFiles) and may raise or disable. Any constant applied there is
-// therefore a decoder that refuses artifacts its own encoder produced — which is
-// exactly the defect this replaced, where a 16 MiB cap left about 80 bytes per
-// entry at the DEFAULT listing cap and snapshot-query failed with
-// "bufio.Scanner: token too long" on snapshots this build had just written. So
-// the summary is read without a length cap; the memory it costs is the memory
-// LoadCompactSnapshot must hold for it anyway.
+// failure, so it grows with the corpus while every other line — a header, a
+// dictionary update, a file, an external, a symbol, a relation — is one record
+// and does not. A 16 MiB cap on the summary left about 80 bytes per entry at the
+// DEFAULT listing cap, below the encoder's own floor, which is why
+// snapshot-query failed with "bufio.Scanner: token too long" on snapshots this
+// build had just written.
 //
-// Every other line is exactly one record — a header, a dictionary update, a
-// file, an external, a symbol, a relation — none of which grows with the corpus.
-// They keep the fixed cap, so an unterminated or garbage line still cannot drive
-// an unbounded allocation before JSON validation runs.
+// Measured: 90,000 partial failures encode to 24.4 MB, so a repository that
+// failed on every one of defaultMaxSourceFiles files writes roughly 54 MB. The
+// allowance is an order of magnitude above that, and it is spent AT MOST ONCE
+// per decode — the prefix comes from the artifact, so without that the leading
+// bytes of a truncated file could ask for the large buffer over and over. Peak
+// accumulation is therefore bounded by the two constants together.
+//
+// The residual limit is deliberate and stated rather than removed: an operator
+// who raises ENTIRE_GRAPH_MAX_FILES an order of magnitude past the default can
+// write a summary this refuses. That is a bounded failure with a clear message,
+// where no bound at all is an unbounded allocation on a malformed artifact.
 const (
 	compactSnapshotRecordLineBytes   = 16 * 1024 * 1024
+	compactSnapshotSummaryLineBytes  = 512 * 1024 * 1024
 	compactSnapshotSummaryLinePrefix = `["m",`
 )
 

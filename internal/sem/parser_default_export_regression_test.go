@@ -75,6 +75,22 @@ func TestJavaScriptDefaultExportExpressionArrowKeepsItsOwnRange(t *testing.T) {
 	if entities[0].EndLine != 3 {
 		t.Fatalf("function end line = %d, want 3", entities[0].EndLine)
 	}
+
+	// TypeScript puts a return annotation between the parameter list and the
+	// body, so the body is not simply the next non-space byte.
+	for _, annotated := range []string{
+		"export default function (): Result {\n  return build()\n}\n",
+		"export default function (a: string): Promise<Result> {\n  return build(a)\n}\n",
+		"export default async function (): Promise<void> {\n  await run()\n}\n",
+	} {
+		entities = javascriptDefaultExportEntities("helper.ts", annotated)
+		if len(entities) != 1 {
+			t.Fatalf("annotated entities = %d, want 1 for %q", len(entities), annotated)
+		}
+		if entities[0].EndLine != 3 {
+			t.Fatalf("annotated end line = %d, want 3 for %q", entities[0].EndLine, annotated)
+		}
+	}
 }
 
 // A module that exports nothing must produce no export symbol, however much
