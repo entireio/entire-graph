@@ -2,6 +2,7 @@ package sem
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"os/exec"
 	"path"
@@ -730,20 +731,40 @@ func searchVerifyGradleSettingsIncludes(settings, project string) bool {
 }
 
 // searchVerifyGradleIncludeArguments returns every string literal passed to an `include` call.
+//
+// It walks the script token by token rather than searching for the word, because `include` is
+// ordinary text as well as a call: `println("include ':modules:core'")` contains it, and reading
+// that as a declaration names a project the settings file never declares — the emitted
+// `./gradlew :modules:core:test` then cannot run. Comments are removed first and STRING LITERALS
+// are stepped over whole, so only an `include` in code position starts a call. (A Groovy/Kotlin
+// triple-quoted block is still read as code between its delimiters; that is the pre-existing limit
+// of this scanner, not something the quoting skip introduces.)
 func searchVerifyGradleIncludeArguments(script string) []string {
 	script = searchVerifyStripScriptComments(script)
 	var arguments []string
 	for index := 0; index < len(script); {
-		offset := strings.Index(script[index:], "include")
-		if offset < 0 {
-			break
-		}
-		start := index + offset
-		index = start + len("include")
-		if start > 0 && searchVerifyScriptIdentifierByte(script[start-1]) {
+		character := script[index]
+		if character == '\'' || character == '"' {
+			_, width := searchVerifyScriptStringLiteral(script[index:])
+			if width == 0 {
+				// An unterminated quote: step past it rather than swallowing the rest of the file.
+				index++
+				continue
+			}
+			index += width
 			continue
 		}
-		if index < len(script) && searchVerifyScriptIdentifierByte(script[index]) {
+		if !searchVerifyScriptIdentifierByte(character) {
+			index++
+			continue
+		}
+		start := index
+		for index < len(script) && searchVerifyScriptIdentifierByte(script[index]) {
+			index++
+		}
+		// Whole-identifier equality subsumes the old neighbour checks: `includeBuild`, `includeFlat`
+		// and `myinclude` are different identifiers and answer a different question.
+		if script[start:index] != "include" {
 			continue
 		}
 		found, width := searchVerifyGradleCallArguments(script[index:])
@@ -1087,10 +1108,19 @@ func searchVerifyRakefileDefinesTest(content string) bool {
 // Leading whitespace is admitted, which leaves the `namespace :foo do` case of issue #205 behaving
 // exactly as it did: a generator nested in a namespace defines `foo:test` and still matches, because
 // separating it needs block tracking rather than a regex.
+//
+// The name may also be written on its own line — `Rake::TestTask.new(\n  :test\n)` is one ordinary
+// way to format the call — so INSIDE the parentheses the separator spans newlines. Only there: the
+// unparenthesised spelling stays on its line, and the whole match still begins at a line's first
+// non-blank byte, so a commented-out generator, prose and an `sh` line inside another task are
+// declined for the same reason as before, whether or not they run across lines. The name itself is
+// still validated, so a multi-line `Rake::TestTask.new(\n  :spec\n)` declines exactly as its
+// single-line spelling does.
 var searchVerifyRakeTestTaskGeneratorPattern = regexp.MustCompile(
 	`(?m)^[ \t]*(?:[A-Za-z_]\w*::)*TestTask\.new` +
-		`(?:[ \t]*(?:\([ \t]*\))?[ \t]*(?:$|#|\{|do\b)` +
-		`|[ \t]*\(?[ \t]*(?::test\b|["']test["']|test[ \t]*:))`)
+		`(?:[ \t]*(?:\([ \t\r\n]*\))?[ \t]*(?:$|#|\{|do\b)` +
+		`|[ \t]*\([ \t\r\n]*(?::test\b|["']test["']|test[ \t]*:)` +
+		`|[ \t]*(?::test\b|["']test["']|test[ \t]*:))`)
 
 // searchVerifyRakeTestTaskPattern matches a `test` task DECLARATION at the start of a line, so a
 // prerequisite list (`task default: %w[test]`), a shell line inside another task (`sh 'rake test'`)
@@ -1386,19 +1416,96 @@ func deriveSearchVerifyMaven(dir string, subject searchVerifySubject, evidence *
 // module: Maven then resolves the module's siblings from the local repository instead of building
 // them, so verification fails unless someone had already installed them.
 //
-// So the root aggregator's existence is what picks between them, and it is a fact about the
-// repository rather than a guess.
+// So REACTOR MEMBERSHIP is what picks between them, and it is a fact about the repository rather
+// than a guess. A root `pom.xml` merely EXISTING is not that fact: in a polyglot tree an unrelated
+// root project can sit above a standalone nested service, and `mvn -pl <dir> -am` then dies with
+// "Could not find the selected project in the reactor" — a hard-gate command that cannot run, which
+// is exactly what this block prefers silence, or a narrower command, to.
 func searchVerifyMavenCommand(dir, goals string, evidence *searchVerifyEvidence) string {
 	if dir == "" {
 		return "mvn -q " + goals
 	}
-	if evidence.exists("pom.xml") {
+	if searchVerifyMavenReactorDeclares(dir, evidence) {
 		// Left as shellQuote deliberately: -pl takes a Maven module selector, not a path operand,
 		// and a ./-prefixed selector is not guaranteed to resolve. A module directory whose name
 		// starts with a dash stays shell-safe but may still be read as an option by mvn itself.
 		return "mvn -q -pl " + shellQuote(dir) + " -am " + goals
 	}
 	return searchVerifyRunIn(dir, "mvn -q "+goals)
+}
+
+// searchVerifyMavenMaxAggregators bounds the reactor walk. The evidence view already caps distinct
+// reads, so this only stops a pathological POM graph from spinning inside that budget.
+const searchVerifyMavenMaxAggregators = 64
+
+// searchVerifyMavenReactorDeclares reports whether the root aggregator POM's reactor CONTAINS the
+// module at `dir` — the Maven half of the question the Gradle settings-inclusion check already
+// answers for `include`.
+//
+// An aggregator names its children explicitly, in `<modules><module>…</module></modules>`, each
+// entry a path relative to the aggregator's own directory; and a child may itself be an aggregator,
+// so membership is the transitive closure of those lists rather than one lookup. A nested POM that
+// no list names is its own build and is not selectable from the root at all.
+//
+// The lists are read STRUCTURALLY rather than by substring, from the project's own `<modules>`
+// element only. Modules declared inside a `<profile>` are conditional on that profile being
+// activated, so counting them would re-open the same false accept one level down; a POM that does
+// not parse declares nothing. Both of those decline, and declining is safe here: the caller then
+// emits `cd <dir> && mvn test`, which runs.
+func searchVerifyMavenReactorDeclares(dir string, evidence *searchVerifyEvidence) bool {
+	if dir == "" {
+		return false
+	}
+	visited := map[string]bool{"": true}
+	queue := []string{""}
+	for len(queue) > 0 && len(visited) <= searchVerifyMavenMaxAggregators {
+		aggregator := queue[0]
+		queue = queue[1:]
+		for _, module := range searchVerifyMavenModules(aggregator, evidence) {
+			if module == dir {
+				return true
+			}
+			if visited[module] {
+				continue
+			}
+			visited[module] = true
+			queue = append(queue, module)
+		}
+	}
+	return false
+}
+
+// searchVerifyMavenModules returns the repository-relative directories the POM in `dir` declares as
+// its modules. A `<module>` names a directory relative to the aggregator, and Maven also accepts the
+// POM file inside it spelled out, so both are normalised to the directory. An entry that escapes the
+// repository root is dropped rather than resolved.
+func searchVerifyMavenModules(dir string, evidence *searchVerifyEvidence) []string {
+	content, ok := evidence.file(searchVerifyJoin(dir, "pom.xml"))
+	if !ok {
+		return nil
+	}
+	var project struct {
+		Modules []string `xml:"modules>module"`
+	}
+	if err := xml.Unmarshal([]byte(content), &project); err != nil {
+		return nil
+	}
+	modules := make([]string, 0, len(project.Modules))
+	for _, module := range project.Modules {
+		module = strings.TrimSpace(module)
+		if module == "" {
+			continue
+		}
+		if strings.HasSuffix(module, ".xml") {
+			module = path.Dir(module)
+		}
+		joined := path.Clean(searchVerifyJoin(dir, module))
+		if joined == "." || joined == ".." || strings.HasPrefix(joined, "../") {
+			continue
+		}
+		modules = append(modules, joined)
+	}
+	return modules
 }
 
 func searchVerifyModuleLabel(dir string) string {

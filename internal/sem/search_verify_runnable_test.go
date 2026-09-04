@@ -7,6 +7,16 @@ import "testing"
 // the repository it was derived from, which costs strictly more than the silence this block
 // otherwise prefers.
 
+// mavenAggregator renders a root POM that declares the named modules, which is what puts them in
+// the reactor `-pl` selects out of.
+func mavenAggregator(modules ...string) string {
+	rendered := "<project><modules>"
+	for _, module := range modules {
+		rendered += "<module>" + module + "</module>"
+	}
+	return rendered + "</modules></project>"
+}
+
 // TestSearchVerifyMavenPicksTheReactorOnlyWhenThereIsOne pins both halves of the Maven invocation.
 //
 // `-pl <module> -am` selects a module of the ROOT REACTOR and is run from the repository root. It is
@@ -14,6 +24,13 @@ import "testing"
 // this directory"); `cd <module> && mvn test` is the mirror image — right for a standalone module,
 // and wrong in a reactor, where the module's siblings are then resolved from the local repository
 // instead of being built.
+//
+// A root POM merely EXISTING does not decide it. `-pl` selects out of a reactor, and the reactor is
+// what the aggregator DECLARES in `<modules>`, transitively through nested aggregators; a polyglot
+// tree can hold an unrelated root project above a standalone service, and selecting that service
+// fails with "Could not find the selected project in the reactor". So membership is what picks, and
+// every way of not proving it — undeclared, declared only under a `<profile>`, or a POM that does
+// not parse — falls back to the `cd` form, which runs.
 func TestSearchVerifyMavenPicksTheReactorOnlyWhenThereIsOne(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -38,9 +55,9 @@ func TestSearchVerifyMavenPicksTheReactorOnlyWhenThereIsOne(t *testing.T) {
 			wantCommand: "cd services/api && mvn -q -Dtest=HandlerTest -DfailIfNoTests=false test",
 		},
 		{
-			name: "narrow: a reactor module is still addressed from the root",
+			name: "narrow: a declared reactor module is still addressed from the root",
 			files: map[string]string{
-				"pom.xml":              "<project/>",
+				"pom.xml":              mavenAggregator("services/api"),
 				"services/api/pom.xml": "<project/>",
 				"services/api/src/main/java/com/example/Handler.java":     "",
 				"services/api/src/test/java/com/example/HandlerTest.java": "",
@@ -54,9 +71,9 @@ func TestSearchVerifyMavenPicksTheReactorOnlyWhenThereIsOne(t *testing.T) {
 		},
 		{
 			suite: true,
-			name:  "suite: a reactor module builds its dependencies instead of assuming them",
+			name:  "suite: a declared reactor module builds its dependencies instead of assuming them",
 			files: map[string]string{
-				"pom.xml":              "<project/>",
+				"pom.xml":              mavenAggregator("services/api"),
 				"services/api/pom.xml": "<project/>",
 				"services/api/src/main/java/com/example/Handler.java": "",
 			},
@@ -72,6 +89,82 @@ func TestSearchVerifyMavenPicksTheReactorOnlyWhenThereIsOne(t *testing.T) {
 			},
 			subject:     searchVerifySubject{sourcePath: "services/api/src/main/java/com/example/Handler.java"},
 			wantCommand: "cd services/api && mvn -q test",
+		},
+		{
+			suite: true,
+			name:  "suite: a root POM that does not declare the module leaves it standalone",
+			files: map[string]string{
+				// The reviewer's polyglot case: an unrelated root project, and a service the
+				// reactor never names. `mvn -pl services/api -am` cannot select it.
+				"pom.xml":              mavenAggregator("tools"),
+				"tools/pom.xml":        "<project/>",
+				"services/api/pom.xml": "<project/>",
+				"services/api/src/main/java/com/example/Handler.java": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "services/api/src/main/java/com/example/Handler.java"},
+			wantCommand: "cd services/api && mvn -q test",
+		},
+		{
+			suite: true,
+			name:  "suite: a module declared through a nested aggregator is in the reactor",
+			files: map[string]string{
+				"pom.xml":              mavenAggregator("services"),
+				"services/pom.xml":     mavenAggregator("api"),
+				"services/api/pom.xml": "<project/>",
+				"services/api/src/main/java/com/example/Handler.java": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "services/api/src/main/java/com/example/Handler.java"},
+			wantCommand: "mvn -q -pl services/api -am test",
+		},
+		{
+			suite: true,
+			name:  "suite: a module spelled as its POM file is the same declaration",
+			files: map[string]string{
+				"pom.xml":              mavenAggregator("services/api/pom.xml"),
+				"services/api/pom.xml": "<project/>",
+				"services/api/src/main/java/com/example/Handler.java": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "services/api/src/main/java/com/example/Handler.java"},
+			wantCommand: "mvn -q -pl services/api -am test",
+		},
+		{
+			suite: true,
+			name:  "suite: a module declared only inside a profile is not selectable by default",
+			files: map[string]string{
+				"pom.xml": "<project><profiles><profile><id>all</id>" +
+					"<modules><module>services/api</module></modules></profile></profiles></project>",
+				"services/api/pom.xml":                                "<project/>",
+				"services/api/src/main/java/com/example/Handler.java": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "services/api/src/main/java/com/example/Handler.java"},
+			wantCommand: "cd services/api && mvn -q test",
+		},
+		{
+			suite: true,
+			name:  "suite: a root POM that does not parse declares nothing",
+			files: map[string]string{
+				"pom.xml":              "<project><modules><module>services/api",
+				"services/api/pom.xml": "<project/>",
+				"services/api/src/main/java/com/example/Handler.java": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "services/api/src/main/java/com/example/Handler.java"},
+			wantCommand: "cd services/api && mvn -q test",
+		},
+		{
+			name: "narrow: an undeclared nested module keeps its own test class command",
+			files: map[string]string{
+				"pom.xml":              mavenAggregator("tools"),
+				"tools/pom.xml":        "<project/>",
+				"services/api/pom.xml": "<project/>",
+				"services/api/src/main/java/com/example/Handler.java":     "",
+				"services/api/src/test/java/com/example/HandlerTest.java": "",
+			},
+			subject: searchVerifySubject{
+				sourcePath:   "services/api/src/main/java/com/example/Handler.java",
+				testPath:     "services/api/src/test/java/com/example/HandlerTest.java",
+				testEvidence: "covering test",
+			},
+			wantCommand: "cd services/api && mvn -q -Dtest=HandlerTest -DfailIfNoTests=false test",
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -172,6 +265,39 @@ func TestSearchVerifySuiteGradleNamesTheProjectUnderAnAncestorWrapper(t *testing
 				"modules/core/src/main/java/A.java": "",
 			},
 			wantCommand: "",
+		},
+		{
+			name: "the word include inside a string literal is text, not a call",
+			files: map[string]string{
+				"gradlew": "",
+				// Groovy. The settings file declares nothing; a scanner that searched for the word
+				// read this as a declaration and emitted `./gradlew :modules:core:test`.
+				"settings.gradle":                   "println(\"include ':modules:core'\")\n",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "",
+		},
+		{
+			name: "the Kotlin DSL's string literals are text too",
+			files: map[string]string{
+				"gradlew":                           "",
+				"settings.gradle.kts":               "logger.lifecycle(\"include(':modules:core')\")\n",
+				"modules/core/build.gradle.kts":     "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "",
+		},
+		{
+			name: "a real include still declares the project next to a literal that mentions another",
+			files: map[string]string{
+				"gradlew": "",
+				"settings.gradle": "println(\"include ':modules:other'\")\n" +
+					"include ':modules:core'\n",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "./gradlew :modules:core:test",
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -499,6 +625,13 @@ func TestSearchVerifyRakefileDeclarationFormsAreRecognised(t *testing.T) {
 // which case Rake's default applies, or written out as `:test` / `"test"` / the `test:` dependency
 // key.
 //
+// Line anchoring is also what made the tightened arm too strict: `Rake::TestTask.new(\n  :test\n)`
+// is an ordinary way to format the call, and declining it loses a `rake test` that would have run.
+// The separator therefore spans newlines INSIDE the parentheses only, so the multi-line spellings
+// are read and the decline cases — a commented-out generator, prose, a generator naming something
+// else — are declined for the same reason as before, however they are wrapped. Both directions of
+// that widening are pinned below.
+//
 // Not fixed here, and deliberately: a generator nested in `namespace :foo do` defines `foo:test` and
 // still matches, because separating it needs block tracking rather than a regex (issue #205). Line
 // anchoring admits leading whitespace precisely so that case behaves exactly as it did before.
@@ -527,6 +660,18 @@ func TestSearchVerifyRakeTestTaskGeneratorMustNameTheTestTask(t *testing.T) {
 		{name: "unqualified after include Rake", content: "include Rake::DSL\nTestTask.new\n", want: true},
 		{name: "indented under a conditional", content: "if ENV['CI']\n  Rake::TestTask.new(:test)\nend\n", want: true},
 
+		// --- the same generators formatted across lines: still declarations ---
+		{name: "multiline symbol name", content: "Rake::TestTask.new(\n  :test\n)\n", want: true},
+		{name: "multiline symbol name with a block", content: "Rake::TestTask.new(\n  :test\n) do |t|\n  t.warning = false\nend\n", want: true},
+		{name: "multiline quoted name", content: "Rake::TestTask.new(\n  \"test\"\n)\n", want: true},
+		{name: "multiline single-quoted name", content: "Rake::TestTask.new(\n  'test'\n)\n", want: true},
+		{name: "multiline hashrocket dependency", content: "Rake::TestTask.new(\n  :test => :compile\n)\n", want: true},
+		{name: "multiline hash-argument dependency", content: "Rake::TestTask.new(\n  test: :compile,\n)\n", want: true},
+		{name: "multiline empty parentheses", content: "Rake::TestTask.new(\n)\n", want: true},
+		{name: "multiline default name with a block", content: "Rake::TestTask.new(\n) do |t|\n  t.libs << 'test'\nend\n", want: true},
+		{name: "multiline under a conditional", content: "if ENV['CI']\n  Rake::TestTask.new(\n    :test\n  )\nend\n", want: true},
+		{name: "multiline Minitest generator", content: "Minitest::TestTask.new(\n  :test\n)\n", want: true},
+
 		// --- generators that define something else, or nothing at all ---
 		{name: "commented-out generator", content: "# Rake::TestTask.new\ntask :lint\n", want: false},
 		{name: "commented-out named generator", content: "  # Rake::TestTask.new(:test)\ntask :lint\n", want: false},
@@ -539,6 +684,14 @@ func TestSearchVerifyRakeTestTaskGeneratorMustNameTheTestTask(t *testing.T) {
 		{name: "generator named from a variable", content: "name = :spec\nRake::TestTask.new(name)\n", want: false},
 		{name: "a different generator entirely", content: "require 'rspec/core/rake_task'\nRSpec::Core::RakeTask.new(:spec)\n", want: false},
 		{name: "a generator inside a shell line", content: "task :lint do\n  sh 'ruby -e \"Rake::TestTask.new\"'\nend\n", want: false},
+
+		// --- and formatting across lines does not license a generator that names something else ---
+		{name: "multiline generator named spec", content: "Rake::TestTask.new(\n  :spec\n)\n", want: false},
+		{name: "multiline generator named spec as a string", content: "Rake::TestTask.new(\n  \"spec\"\n)\n", want: false},
+		{name: "multiline generator named with the test prefix", content: "Rake::TestTask.new(\n  :test_all\n)\n", want: false},
+		{name: "multiline generator named from a variable", content: "name = :spec\nRake::TestTask.new(\n  name\n)\n", want: false},
+		{name: "commented-out multiline generator", content: "# Rake::TestTask.new(\n#   :test\n# )\ntask :lint\n", want: false},
+		{name: "a different multiline generator entirely", content: "RSpec::Core::RakeTask.new(\n  :test\n)\n", want: false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
