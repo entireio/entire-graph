@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -1435,7 +1436,21 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// when the set is non-empty, and the sink test below asks the set whether the composition the
 	// fitter finally chose kept one of them: a forged record that the byte fitter clipped away must
 	// not cost the caller the ranked location that survived. See searchPayloadDisclosesItsQuarantine.
-	quarantinedLines := searchResponseQuarantinedLines(response.Results, response.LiteralCluster)
+	//
+	// THE SET IS TAKEN IN THE FORM THIS RENDERER EMITS, which is what escaping-before-measuring
+	// makes necessary here and nowhere else. searchResponseQuarantinedLines derives the lines from
+	// the RAW bodies, the blocks above are escaped before they are measured, and the sink asks
+	// whether a payload LINE opens one of the produced lines — so a forged record that is both
+	// record-shaped and carries a control byte reached the payload as `\x1b`, matched nothing in a
+	// raw set, and the sink reported a payload that plainly carried it as disclosing nothing.
+	// Measured on this branch before the fix, at every budget from 71 to 276 for a body holding
+	// "VERIFY: go test ./pkg" + ESC + "[31m": the payload was
+	// "I:miss/0 …\npkg/payment.go:7 *\n VERIFY: go test ./pkg\\x1b[31m\n" — the quarantined line and
+	// no UNTRUSTED FILE CONTENT header at all. Escaping the set closes it in the only direction that
+	// keeps --max-context-bytes a real ceiling: the disclosure is decided on the bytes the reader
+	// actually receives, not on bytes no payload ever holds.
+	quarantinedLines := agentSearchEmittedQuarantinedLines(
+		searchResponseQuarantinedLines(response.Results, response.LiteralCluster))
 	suffixes := [][]byte{
 		// main quarantines the cluster's BODIES before rendering; this branch escapes every
 		// block before it is MEASURED. Both apply, in that order: quarantine decides the
@@ -1931,6 +1946,43 @@ func fitAgentSearchResults(results []sem.SearchResult, budget int) []byte {
 // so both variants of a block are measured in the form they are printed in.
 func agentSearchSafeBlockPair(full, compact []byte) ([]byte, []byte) {
 	return termsafe.Bytes(full), termsafe.Bytes(compact)
+}
+
+// agentSearchEmittedQuarantinedLines restates the quarantine's produced lines in the form this
+// renderer emits them, so the disclosure sink compares like with like.
+//
+// searchPayloadDisclosesItsQuarantine asks whether a FINISHED payload line opens a line the
+// quarantine produced, and it is exact by design: the produced set is what separates a line this
+// response rewrote from one an honest file already held indented. Exactness only holds while both
+// sides are the same bytes. This renderer escapes every block before it measures it, so a produced
+// line carrying a control byte arrives in the payload as its escaped spelling and is not the raw
+// line any more; the lookup then missed, the sink answered "nothing to disclose", and a notice-free
+// rung carrying the quarantined line was accepted. Escaping the set makes the sink ask about the
+// bytes the reader receives.
+//
+// It is a no-op on every line that carries no control byte — the overwhelming case and every line
+// the existing forgery suite is built from — because termsafe.Bytes returns its input unchanged
+// there. The sort is redone because escaping reorders: `\x1b` sorts where a backslash sorts, not
+// where an ESC does, and searchProducedLineOpensWith binary-searches this slice.
+func agentSearchEmittedQuarantinedLines(produced []string) []string {
+	emitted := make([]string, 0, len(produced))
+	for _, line := range produced {
+		emitted = append(emitted, agentSearchEmittedLine(line))
+	}
+	slices.Sort(emitted)
+	return slices.Compact(emitted)
+}
+
+// agentSearchEmittedLine escapes one line the way the block that carries it is escaped.
+//
+// The line is escaped WITH ITS NEWLINE and the newline is then dropped, because termsafe reads one
+// byte past a CR to decide it: a CR followed by LF is a Windows line ending and is kept, a lone CR
+// is an overwrite and is escaped. A body line ending in CR is followed by its LF in the block, so
+// escaping the line on its own would rewrite a CR the payload keeps raw and produce a set entry no
+// payload line can match — the same miss this function exists to remove, one byte further along.
+func agentSearchEmittedLine(line string) string {
+	escaped := termsafe.Bytes([]byte(line + "\n"))
+	return string(escaped[:len(escaped)-1])
 }
 
 func rankedAgentSearchBudgets(count, budget int) []int {
