@@ -364,6 +364,30 @@ func TestAdmitChangedFilesRewritesIndexCrossings(t *testing.T) {
 			want: []gitutil.ChangedFile{{Status: "A", Path: "b.go"}},
 		},
 		{
+			// A rewrite restates the status, not what the entry is. The mode
+			// decides whether the surviving side is file content at all, so it
+			// has to survive the rebuild: a symlink that arrives here with an
+			// empty mode is read as an ordinary blob and parsed as source.
+			name: "rename out of the index carries the base mode",
+			base: indexed, head: unindexed,
+			in:   gitutil.ChangedFile{Status: "R", OldPath: "a.go", Path: "b.go", OldMode: gitutil.SymlinkMode, NewMode: "100644"},
+			want: []gitutil.ChangedFile{{Status: "D", Path: "a.go", OldMode: gitutil.SymlinkMode}},
+		},
+		{
+			name: "rename into the index carries the head mode",
+			base: unindexed, head: indexed,
+			in:   gitutil.ChangedFile{Status: "R", OldPath: "a.go", Path: "b.go", OldMode: "100644", NewMode: gitutil.SymlinkMode},
+			want: []gitutil.ChangedFile{{Status: "A", Path: "b.go", NewMode: gitutil.SymlinkMode}},
+		},
+		{
+			// A copy is only ever an addition of its destination, so the mode
+			// that has to travel is the destination's.
+			name: "copy into the index carries the destination mode",
+			base: unindexed, head: indexed,
+			in:   gitutil.ChangedFile{Status: "C", OldPath: "a.go", Path: "b.go", OldMode: "100644", NewMode: gitutil.SymlinkMode},
+			want: []gitutil.ChangedFile{{Status: "A", Path: "b.go", NewMode: gitutil.SymlinkMode}},
+		},
+		{
 			name: "a disabled policy admits everything",
 			base: diffIndexPolicy{}, head: diffIndexPolicy{},
 			in:   gitutil.ChangedFile{Status: "M", Path: "a.go"},
