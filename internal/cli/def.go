@@ -173,14 +173,16 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	// index_latency_ms is the cost of HAVING the snapshot, and the snapshot is
+	// loaded by the call above — so the clock is read here, before anything else
+	// runs. Sampling it after the source reader was opened charged the reader's
+	// `git cat-file` spawn to the index, which is the one field a caller reads to
+	// decide whether the index cache is working. Source enrichment is part of
+	// answering the query and is timed as such.
+	indexLatency := time.Since(totalStarted)
+	queryStarted := time.Now()
 	// Only the source-quoting formats read source. Opening before the format
 	// switch spawned a git cat-file child that `--format json` never touched.
-	//
-	// That is all this gate fixes. The open still happens before indexLatency is
-	// taken below, so text and agent runs continue to report the spawn as index
-	// time — as do impact and neighbors, which open unconditionally. Changing
-	// that is a change to what a published latency field MEANS, so it belongs in
-	// its own commit across all three verbs rather than as a side effect here.
 	var readSource lineReader
 	if flags.Format == "text" || flags.Format == "agent" {
 		var closeSource func() error
@@ -189,8 +191,6 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 			defer closeSource()
 		}
 	}
-	indexLatency := time.Since(totalStarted)
-	queryStarted := time.Now()
 	symbols := flags.Symbols
 	if len(symbols) == 0 {
 		symbols = []string{flags.Symbol}
@@ -597,19 +597,48 @@ func (index *defIndex) groupPartials(matches []sem.SymbolRecord) [][]sem.SymbolR
 }
 
 // sharesMemberOwner reports whether a candidate part belongs to a group already
-// seated: either the candidate owns no members of its own (an empty part), or
-// the group's anchor owns members declared in the candidate's file. Both are
-// true of partial declarations and false of two unrelated same-named types,
-// which each own their own members in their own file.
+// seated: either the candidate's own declaration says `partial` and it owns no
+// members (an empty part of a partial type), or the group's anchor owns members
+// declared in the candidate's file. Both are evidence of one type written in
+// several declarations, and both are false of two unrelated same-named types.
+//
+// Owning no members is NOT evidence on its own. Every memberless same-named type
+// used to be absorbed as another part, so two empty `Config` classes in two Java
+// files — a language with no partial types at all — merged into one declaration
+// carrying a PARTIAL part that names a file the type was never split across, and
+// the ambiguity the caller needed to see disappeared. Reporting both
+// declarations and letting the caller narrow is the answer that is merely
+// incomplete; merging them is the answer that is wrong.
 func (index *defIndex) sharesMemberOwner(group []sem.SymbolRecord, candidate sem.SymbolRecord) bool {
 	if len(index.membersByOwner[candidate.ID]) == 0 {
-		return true
+		return declaresPartialType(candidate)
 	}
 	for _, part := range group {
 		for _, member := range index.membersByOwner[part.ID] {
 			if member.symbol.FilePath == candidate.FilePath {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// declaresPartialType reports whether a type declaration carries the `partial`
+// modifier, read from the signature the parser captured.
+//
+// It mirrors the provider's own partial-type test (see partialTypeCanonicalIDs
+// in internal/sem): C# and F# are the languages in this grammar set that let one
+// type be written as several declarations, and the keyword is what separates a
+// part from a same-named type in another namespace or assembly. The two must
+// stay in step — the provider decides which members a part owns, and this
+// decides which declarations are parts.
+func declaresPartialType(symbol sem.SymbolRecord) bool {
+	if symbol.Language != "C#" && symbol.Language != "F#" {
+		return false
+	}
+	for _, field := range strings.Fields(symbol.Signature) {
+		if field == "partial" {
+			return true
 		}
 	}
 	return false

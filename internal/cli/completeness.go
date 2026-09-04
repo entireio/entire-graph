@@ -19,10 +19,12 @@ import (
 //
 // A failure is only actionable for a query if it could have removed a fact the
 // query would have used. The unit of that relevance the graph actually knows is
-// LANGUAGE: relations do not cross language boundaries here, so a Python parse
-// error cannot hide a Rust caller. Failures outside the query's language are
-// therefore reported as one collapsed line, not itemized, and the headline says
-// whether the query's own language is clean.
+// LANGUAGE: a Python parse error cannot hide a Rust caller. Failures outside the
+// query's language are therefore reported as one collapsed line, not itemized,
+// and the headline says whether the query's own language is clean.
+//
+// The exception is that a few languages resolve into each other, so the label is
+// not always the boundary — see sameCompletenessLanguageFamily.
 
 // maxScopedDiagnostics caps how many in-scope diagnostics are itemized. In-scope
 // failures ARE actionable, so they keep the itemized treatment.
@@ -116,7 +118,41 @@ func diagnosticInScope(queryLanguage, fileLanguage, filePath string) bool {
 		// unknown, so it cannot be ruled out.
 		return true
 	}
-	return strings.EqualFold(fileLanguage, queryLanguage)
+	return sameCompletenessLanguageFamily(fileLanguage, queryLanguage)
+}
+
+// sameCompletenessLanguageFamily reports whether a diagnostic in one language
+// can have removed a relation an answer about another language needed.
+//
+// The language LABEL is not the resolution boundary. A JavaScript import is
+// resolved against `.ts` and `.tsx` candidates (see the JS/TS module candidate
+// list in internal/sem/provider.go), so a JavaScript caller resolves to a
+// TypeScript definition and vice versa; and a `.h` header is labelled C while
+// the `.cpp`/`.m` translation units that include it are labelled C++ and
+// Objective-C. A parse failure on either side of one of those pairs can
+// therefore hide a caller of the focus, and the banner that says "cannot affect
+// this answer" would be asserting something false about a missing edge — the
+// most expensive thing a completeness report can do, because it is what stops
+// the reader from looking further.
+//
+// Anything outside a family stays out of scope: these are the joins the provider
+// actually makes, not a guess that any two languages might be related.
+func sameCompletenessLanguageFamily(left, right string) bool {
+	if strings.EqualFold(left, right) {
+		return true
+	}
+	family := completenessLanguageFamily(left)
+	return family != "" && family == completenessLanguageFamily(right)
+}
+
+func completenessLanguageFamily(language string) string {
+	switch strings.ToLower(language) {
+	case "javascript", "typescript":
+		return "js/ts"
+	case "c", "c++", "objective-c":
+		return "c/c++"
+	}
+	return ""
 }
 
 // rankedLanguageNames renders "Python 271, JSON 2" style breakdowns, most

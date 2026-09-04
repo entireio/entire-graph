@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -96,10 +97,10 @@ func normalizeSymbolRefFile(raw, repoRoot string) string {
 	if root != "" && root != "." && root != "/" {
 		// A filter naming the repo root itself selects everything, which is what no filter
 		// already means.
-		if strings.EqualFold(cleaned, root) {
+		if namesSameDirectory(cleaned, root) {
 			return ""
 		}
-		if len(cleaned) > len(root) && strings.EqualFold(cleaned[:len(root)], root) && cleaned[len(root)] == '/' {
+		if len(cleaned) > len(root) && cleaned[len(root)] == '/' && namesSameDirectory(cleaned[:len(root)], root) {
 			cleaned = cleaned[len(root)+1:]
 		}
 	}
@@ -107,6 +108,39 @@ func normalizeSymbolRefFile(raw, repoRoot string) string {
 		return ""
 	}
 	return cleaned
+}
+
+// namesSameDirectory reports whether typed and root name the same directory.
+//
+// Equal spellings are the same directory on every platform. Spellings that
+// differ only in case are NOT assumed to be: on a case-sensitive filesystem
+// `/work/foo` and `/work/Foo` are two directories, so folding the case would
+// strip the repository root off a path that points OUTSIDE the repository and
+// hand the definition filter an in-repo path the caller never named — a
+// definition selected on the strength of a containment test that was wrong.
+// Selecting the wrong definition is worse than selecting none.
+//
+// The case-folded spelling is accepted only when the filesystem itself says the
+// two names resolve to one directory. That keeps a case-insensitive volume
+// working without inferring case-sensitivity from runtime.GOOS, which is wrong
+// for a case-sensitive APFS volume and for a case-insensitive mount on Linux.
+// A name that does not exist cannot be confirmed, so it is not folded.
+func namesSameDirectory(typed, root string) bool {
+	if typed == root {
+		return true
+	}
+	if !strings.EqualFold(typed, root) {
+		return false
+	}
+	typedInfo, err := os.Stat(filepath.FromSlash(typed))
+	if err != nil {
+		return false
+	}
+	rootInfo, err := os.Stat(filepath.FromSlash(root))
+	if err != nil {
+		return false
+	}
+	return os.SameFile(typedInfo, rootInfo)
 }
 
 // matchSnapshotFilePath resolves a path the caller typed against the snapshot's own paths.
@@ -270,13 +304,56 @@ func disambiguationSelectors(definitions []neighborEndpoint) []string {
 		// The selector is printed at the end of a definition's line, so it is a
 		// one-line value like the rest of that line.
 		selector := fmt.Sprintf("--symbol %s --file %s --line %d",
-			termsafe.Line(endpointDisplayName(definition)), termsafe.Line(definition.FilePath), definition.StartLine)
+			termsafe.Line(shellQuoteArgument(endpointDisplayName(definition))),
+			termsafe.Line(shellQuoteArgument(definition.FilePath)), definition.StartLine)
 		if named[endpointNamedLocationKey(definition)] > 1 && definition.Kind != "" {
-			selector += " --kind " + definition.Kind
+			selector += " --kind " + termsafe.Line(shellQuoteArgument(definition.Kind))
 		}
 		selectors[index] = selector
 	}
 	return selectors
+}
+
+// shellQuoteArgument renders one argument so that a shell hands it to the
+// command as the single word it is meant to be.
+//
+// The selectors above are advertised as a command to COPY, and every value in
+// them is repository-controlled: a symbol name and a tracked file path. Spaces
+// alone already broke the advertised command by splitting one argument into
+// two, and `;`, a backtick or `$(...)` in a tracked filename turned a
+// navigation hint into a command the reader is invited to execute. Quoting
+// happens here, at the point that composes the command line, rather than being
+// left to whoever copies it.
+//
+// Single quotes are the POSIX form that suppresses every expansion; an embedded
+// single quote is closed, escaped and reopened. A value made only of characters
+// no shell treats specially is emitted unquoted, so the ordinary selector reads
+// exactly as it did before.
+func shellQuoteArgument(value string) string {
+	if value == "" {
+		return "''"
+	}
+	safe := true
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '_', c == '-', c == '.', c == '/', c == ':', c == '@', c == '+', c == ',', c == '=':
+		case c >= 0x80:
+			// A non-ASCII byte is part of a UTF-8 sequence, which no shell reads
+			// as syntax. Quoting it would only make ordinary Unicode identifiers
+			// unreadable.
+		default:
+			safe = false
+		}
+		if !safe {
+			break
+		}
+	}
+	if safe {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func endpointLocationKey(endpoint neighborEndpoint) string {

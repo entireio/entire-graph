@@ -110,6 +110,12 @@ func openSnapshotLineReader(
 		return nil, nil, err
 	}
 	batch.SetMaxBytes(callSiteMaxFileBytes)
+	// Source quoting never looks at an oversized blob's digest, so it must not pay
+	// for one. Without this the ceiling bounds only what is HELD: the blob is
+	// still transferred and hashed in full before ReadFile reports it
+	// unavailable, so `def`, `neighbors` or `impact --head` on a tree carrying a
+	// generated multi-gigabyte file spends that whole transfer to print nothing.
+	batch.SetSkipOversizeBodies(true)
 	limited := gitutil.NewLimitedFileReader(ctx, snapshot.Header.RepoRoot, snapshot.Header.Commit, callSiteMaxFileBytes)
 
 	cache := map[string][]string{}
@@ -173,6 +179,9 @@ func openSnapshotLineReaderOrDegrade(
 	worktree bool,
 	warn io.Writer,
 ) (lineReader, func() error) {
+	if sourceReaderOpenHook != nil {
+		sourceReaderOpenHook()
+	}
 	read, closeSource, err := openSnapshotLineReader(ctx, snapshot, worktree)
 	if err != nil {
 		if warn != nil {
@@ -182,6 +191,12 @@ func openSnapshotLineReaderOrDegrade(
 	}
 	return read, closeSource
 }
+
+// sourceReaderOpenHook runs immediately before the source reader is opened. It is
+// deliberately unexported and nil in production: opening the reader spawns a
+// `git cat-file` child, and the only way to assert WHICH latency field that
+// spawn is charged to is to make it take a known amount of time.
+var sourceReaderOpenHook func()
 
 // noSourceLineReader reports no source for every path, so that a degraded reader
 // is indistinguishable from a file that could not be quoted.

@@ -580,6 +580,14 @@ func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem
 		if response.CoverageNote != nil {
 			summary["coverage_note"] = response.CoverageNote
 		}
+		// The signature-types block rides on the summary for the same reason the
+		// declaration card does. It was the one optional block with no serializer
+		// at all, so `--format ndjson --signature-types` charged the caller for
+		// the work, counted its bytes in the statistics, and then emitted a stream
+		// that did not contain it.
+		if len(response.SignatureTypes) > 0 {
+			summary["signature_types"] = response.SignatureTypes
+		}
 		return encoder.Encode(summary)
 	}
 }
@@ -1279,11 +1287,20 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		stats.PreselectLatencyMS,
 		stats.TotalLatencyMS,
 	))
-	fullDiagnostics, compactDiagnostics := agentSearchDiagnostics(response)
-	fullConfidence, compactConfidence := searchLowConfidenceNotices(response)
-	fullMap := sem.RenderSearchContainerMap(response.ContainerMap, false)
-	compactMap := sem.RenderSearchContainerMap(response.ContainerMap, true)
-	closedSet := sem.RenderSearchClosedSet(response.ClosedSet)
+	// EVERY block below is measured against the caller's byte cap, so every block
+	// is escaped BEFORE it is measured. The terminal-safety rewrite turns one ESC
+	// into four printed bytes and one C1 byte into six, so fitting the raw bytes
+	// and escaping them on the way out let a snippet carrying control bytes hand
+	// an agent several times the output it asked for — --max-context-bytes is a
+	// hard ceiling, not an estimate. Escaping is idempotent (its output is
+	// printable ASCII plus the layout bytes it keeps) and distributes over the
+	// concatenations below, so the writer wrap stays as defence in depth and the
+	// arithmetic here is now the arithmetic of what is actually written.
+	fullDiagnostics, compactDiagnostics := agentSearchSafeBlockPair(agentSearchDiagnostics(response))
+	fullConfidence, compactConfidence := agentSearchSafeBlockPair(searchLowConfidenceNotices(response))
+	fullMap := termsafe.Bytes(sem.RenderSearchContainerMap(response.ContainerMap, false))
+	compactMap := termsafe.Bytes(sem.RenderSearchContainerMap(response.ContainerMap, true))
+	closedSet := termsafe.Bytes(sem.RenderSearchClosedSet(response.ClosedSet))
 	// Suffix blocks in priority order. VERIFY comes first because it is the one an agent acts on
 	// immediately; the literal cluster next because it can end the search; the declaration card last
 	// because it is pure reference and is off by default anyway.
@@ -1292,7 +1309,7 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// (sessions without one spent 15.2% fewer tokens than the baseline against 30.6% with one), and it
 	// is two lines. It is prepended to the RANKING instead, where the byte fitter cannot silently drop
 	// it — see fitAgentSearchSuffixes for why the rest stay surplus.
-	verifyBlock := sem.RenderSearchVerifyCommand(response.VerifyCommand)
+	verifyBlock := termsafe.Bytes(sem.RenderSearchVerifyCommand(response.VerifyCommand))
 	// VERIFY is undroppable in every budget that can afford it, and the LAST thing tried before the
 	// caller would get no ranked location at all. Those two rules are both load-bearing and they can
 	// conflict at a tight cap, so the block gets its own variant rung: present, then absent. The
@@ -1303,8 +1320,8 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		verifyVariants = append(verifyVariants, nil)
 	}
 	suffixes := [][]byte{
-		sem.RenderSearchLiteralCluster(response.LiteralCluster),
-		agentSearchTypeCard(response.TypeCard),
+		termsafe.Bytes(sem.RenderSearchLiteralCluster(response.LiteralCluster)),
+		termsafe.Bytes(agentSearchTypeCard(response.TypeCard)),
 	}
 	if budget <= 0 {
 		payload := append([]byte{}, fullHeader...)
@@ -1684,9 +1701,14 @@ func agentSearchLineIsLocator(line []byte) bool {
 	return true
 }
 
+// fitAgentSearchResults returns the widest ranked block that fits the byte
+// budget. The rendered block is escaped before it is measured: it is the block
+// that carries repository source, so it is the block whose printed size differs
+// most from its raw size, and measuring the raw form was how a snippet of ESC
+// bytes overran the cap.
 func fitAgentSearchResults(results []sem.SearchResult, budget int) []byte {
 	if budget <= 0 {
-		return renderAgentSearchResults(results, nil)
+		return termsafe.Bytes(renderAgentSearchResults(results, nil))
 	}
 	for count := len(results); count > 0; count-- {
 		available := budget - (count - 1)
@@ -1694,12 +1716,18 @@ func fitAgentSearchResults(results []sem.SearchResult, budget int) []byte {
 			continue
 		}
 		resultBudgets := rankedAgentSearchBudgets(count, available)
-		formatted := renderAgentSearchResults(results[:count], resultBudgets)
+		formatted := termsafe.Bytes(renderAgentSearchResults(results[:count], resultBudgets))
 		if len(formatted) <= budget {
 			return formatted
 		}
 	}
 	return nil
+}
+
+// agentSearchSafeBlockPair escapes a renderer's full/compact pair in one step,
+// so both variants of a block are measured in the form they are printed in.
+func agentSearchSafeBlockPair(full, compact []byte) ([]byte, []byte) {
+	return termsafe.Bytes(full), termsafe.Bytes(compact)
 }
 
 func rankedAgentSearchBudgets(count, budget int) []int {
@@ -1980,8 +2008,10 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.MaxSnippetLines, i = value, next
+		// --body-head-ranks N: 0 is the DEFINED "built-in depth" value (see
+		// SearchOptions.BodyHeadRanks), so it parses like the flag above.
 		case "--body-head-ranks":
-			value, next, err := searchPositiveIntFlag(args, i)
+			value, next, err := searchNonNegativeIntFlag(args, i)
 			if err != nil {
 				return flags, nil, err
 			}
@@ -1994,8 +2024,12 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.HeadWindowLines, i = value, next
+		// --enclosure-context-lines N: 0 is the DEFINED "no padding" value (see
+		// SearchOptions.EnclosureContextLines), so it is parsed as a non-negative
+		// integer. Rejecting it made a configuration that serializes the default
+		// explicitly fail before searching.
 		case "--enclosure-context-lines":
-			value, next, err := searchPositiveIntFlag(args, i)
+			value, next, err := searchNonNegativeIntFlag(args, i)
 			if err != nil {
 				return flags, nil, err
 			}
