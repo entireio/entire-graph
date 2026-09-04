@@ -1051,6 +1051,87 @@ func TestPythonFromImportKeywordBoundaryForms(t *testing.T) {
 	})
 }
 
+// The import scanners that record WHAT a local name is bound to are line
+// oriented, so a parenthesised list spanning lines showed them only
+// `from mod import (` -- an item list of one bare paren. No member name was
+// recorded behind the alias, and the resolver, which needs the member name
+// because the workspace index is keyed by it, had nothing to resolve. The AST
+// scope walker meanwhile saw the import and reported the call unshadowed, so
+// the edge was dropped rather than merely left to a weaker tier.
+func TestPythonMultiLineFromImportAliasResolvesToItsMember(t *testing.T) {
+	t.Run("multi-line alias matches the single-line oracle", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import (
+    compute as c,
+)
+
+def plain():
+    return c(1)
+`), "app.py:function:plain")
+	})
+
+	t.Run("comments inside the list are not part of a name", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import (  # noqa
+    compute as c,  # keep
+)
+
+def plain():
+    return c(1)
+`), "app.py:function:plain")
+	})
+
+	t.Run("an ambiguous alias still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import (
+    compute as c,
+)
+from other import (
+    helper as c,
+)
+
+def plain():
+    return c(1)
+`), "`c` names two different members, so which one it renames is unknown")
+	})
+
+	t.Run("a parenthesised expression is not an import list", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `values = (
+    1,
+)
+from frobnicate import compute
+
+def plain():
+    return compute(1)
+`), "app.py:function:plain")
+	})
+}
+
+// The import scanner joins a parenthesised from-import list only when it is a
+// real from-import whose list closes, and consumes nothing otherwise -- so a
+// stray paren cannot hide the imports written below it.
+func TestPythonMultiLineImportScannerKeepsLaterImportsVisible(t *testing.T) {
+	t.Run("a closed list records the member behind its alias", func(t *testing.T) {
+		bindings := importedPythonBindings("from mod import (\n    compute as c,\n)\n")
+		got, ok := bindings["c"]
+		if !ok || len(got) != 1 || got[0].Module != "mod" || got[0].Imported != "compute" {
+			t.Fatalf("bindings[\"c\"] = %#v (present %v), want the single member `compute` of `mod`", got, ok)
+		}
+	})
+
+	t.Run("an unclosed list hides nothing below it", func(t *testing.T) {
+		bindings := importedPythonBindings("from broken import (\n    thing,\nfrom mod import helper\n")
+		got, ok := bindings["helper"]
+		if !ok || len(got) != 1 || got[0].Module != "mod" || got[0].Imported != "helper" {
+			t.Fatalf("bindings[\"helper\"] = %#v (present %v), want the import below the unclosed list still recorded", got, ok)
+		}
+	})
+
+	t.Run("a parenthesised expression is not an import list", func(t *testing.T) {
+		names := importedPythonNames("values = (\n    1,\n)\nfrom mod import helper\n")
+		if got := names["helper"]; len(got) != 1 || got[0] != "mod" {
+			t.Fatalf("names[\"helper\"] = %#v, want [mod]", got)
+		}
+	})
+}
+
 func TestPythonScopeDelayedBindingsAndMatchCaptures(t *testing.T) {
 	for _, test := range []struct {
 		name string

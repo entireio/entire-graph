@@ -5009,6 +5009,24 @@ func callRelationsFrom(t *testing.T, repo, from string) []RelationRecord {
 	return calls
 }
 
+func relationsTouching(t *testing.T, repo, symbol, relType string) []RelationRecord {
+	t.Helper()
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type != relType {
+			continue
+		}
+		if strings.Contains(relation.FromID, symbol) || strings.Contains(relation.ToID, symbol) {
+			out = append(out, relation)
+		}
+	}
+	return out
+}
+
 // A receiver call bound by an explicit IMPORT must not be gated on the
 // cross-language type-sharing relation. That relation answers whether source in
 // one language may name a type DECLARED in another; an import whose module path
@@ -5730,6 +5748,556 @@ def run():
 	if calls[0].Resolution != "import_resolved" {
 		t.Fatalf("want import_resolved, got %q: %#v", calls[0].Resolution, calls[0])
 	}
+}
+
+// `from mod import compute as c` binds `c` to mod's `compute`, so `c(...)` is a
+// call to compute and must produce the edge the un-aliased spelling produces.
+// It did not: every tier looks the call name up in the workspace short-name
+// index, and `c` is defined nowhere, so the resolved edge was lost and replaced
+// by an external target named mod.c -- a symbol that does not exist anywhere,
+// which is strictly worse than the missing edge it stood in for. Carrying the
+// original member name alongside the alias is what makes the lookup possible;
+// the un-aliased fixture in TestBareImportedCallResolvesAcrossFFIBoundary is the
+// oracle and every field of the edge must match it.
+func TestAliasedImportedCallResolvesToItsOriginalName(t *testing.T) {
+	const foreign = `int compute(int value) {
+	return value + 1;
+}
+`
+
+	t.Run("alias resolves to the member it renames", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `def run(v):
+    from frobnicate import compute as c
+    return c(v)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("aliased import was not bound to the member it renames: %#v", calls[0])
+		}
+		if calls[0].Resolution != "import_resolved" {
+			t.Fatalf("want import_resolved, got %q: %#v", calls[0].Resolution, calls[0])
+		}
+		if strings.Contains(calls[0].ToID, "frobnicate.c\"") || strings.HasSuffix(calls[0].ToID, ":c") {
+			t.Fatalf("edge names the alias rather than the member: %#v", calls[0])
+		}
+	})
+
+	// The alias must reach exactly the same edge as the spelling it renames:
+	// same target, resolution, scope and confidence. Anything else would mean
+	// the alias took a different path through the resolver.
+	t.Run("identical to the un-aliased edge", func(t *testing.T) {
+		build := func(source string) RelationRecord {
+			t.Helper()
+			repo := t.TempDir()
+			writeFile(t, repo, "frobnicate.c", foreign)
+			writeFile(t, repo, "app.py", source)
+			calls := callRelationsFrom(t, repo, "app.py:function:run")
+			if len(calls) != 1 {
+				t.Fatalf("want one call edge out of run, got %#v", calls)
+			}
+			return calls[0]
+		}
+		aliased := build(`def run(v):
+    from frobnicate import compute as c
+    return c(v)
+`)
+		plain := build(`def run(v):
+    from frobnicate import compute
+    return compute(v)
+`)
+		// Each fixture gets its own temp repo, so the ID's repo-key prefix
+		// differs by construction; everything after it must not.
+		target := func(id string) string { return id[strings.Index(id, ":")+1:] }
+		if target(aliased.ToID) != target(plain.ToID) || aliased.Resolution != plain.Resolution ||
+			aliased.RelationScope != plain.RelationScope || aliased.Confidence != plain.Confidence ||
+			aliased.Reason != plain.Reason {
+			t.Fatalf("aliased edge diverged from its un-aliased oracle:\n alias = %#v\n plain = %#v", aliased, plain)
+		}
+	})
+
+	// The alias reads PAST the language filter exactly as the un-aliased bare
+	// call does, so it carries the same ambiguity rule: two same-named units
+	// behind one import are not a licence to pick one.
+	t.Run("ambiguity behind the alias stays suppressed", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "lib/frobnicate.rb", `def compute(value)
+  value + 1
+end
+`)
+		writeFile(t, repo, "app.py", `def run(v):
+    from frobnicate import compute as c
+    return c(v)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("ambiguous cross-language alias must not resolve to a local symbol: %#v", call)
+			}
+			if !strings.HasSuffix(call.ToID, "frobnicate.compute") {
+				t.Fatalf("unresolved alias must still name its member, got %#v", call)
+			}
+		}
+	})
+
+	// `import mod as m` binds the MODULE, not one of its members. A module
+	// object is not callable, so a bare `m(...)` names nothing: neither a local
+	// symbol nor an external `mod.m`, which would be an invented member.
+	t.Run("module alias names no member", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `def run(v):
+    import frobnicate as m
+    return m(v)
+`)
+
+		if calls := callRelationsFrom(t, repo, "app.py:function:run"); len(calls) != 0 {
+			t.Fatalf("a bare call on a module alias must emit no edge, got %#v", calls)
+		}
+	})
+
+	// Python scopes a function-local import to that function, and the alias is
+	// no exception: the member name it carries must not reach a sibling that
+	// never imported it. Getting this wrong is worse than a missing edge,
+	// because an import outranks the language-compatibility relation and the
+	// leak would land as a confident cross-language edge.
+	t.Run("a function-local alias does not leak to a sibling", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `def run(v):
+    from frobnicate import compute as c
+    return c(v)
+
+
+def unrelated(v):
+    return c(v)
+`)
+
+		if calls := callRelationsFrom(t, repo, "app.py:function:unrelated"); len(calls) != 0 {
+			t.Fatalf("a function-local aliased import leaked to an unrelated function: %#v", calls)
+		}
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("the importing function lost its aliased edge: %#v", calls)
+		}
+	})
+
+	// The sixth subtest of this test -- "an alias bound to two members resolves
+	// to nothing", which fenced two functions each renaming a DIFFERENT member
+	// onto the local name `c` -- is deliberately not restored. It asserted the
+	// file-level fail-closed behaviour of the day: both call sites fell back to
+	// `external:symbol:frobnicate.c` at confidence 0.78, which is the alias
+	// spelling glued onto the module -- the invented member this test's own
+	// header condemns. Python scopes a function-local import to its function, so
+	// the two aliases are not ambiguous at all, and the resolver now says so:
+	// `run` reaches `compute` and `other` reaches `measure`, both
+	// import_resolved at 0.84. TestPythonScopedFromImportAliasesResolveOriginalMember
+	// covers the case under the correct rule.
+}
+
+// The alias fallback is the CALLS sites' SECOND import tier, and it went the
+// same way the first one did: wired into the two CALLS sites and neither
+// sibling scan. `from frobnicate import compute as c` therefore resolved for a
+// plain call and for nothing else. Measured over these fixtures before the fix:
+//
+//	CALLS       Python/run -> C/compute  res=import_resolved conf=0.84  resolved
+//	ASYNC_CALLS (none)                                                  DROPPED
+//	DATA_FLOWS  (none, both directions)                                 DROPPED
+//
+// The oracle is the edge the un-aliased spelling produces, not a literal: an
+// alias must take the same path through the resolver, so target, resolution,
+// scope and confidence all have to match it. The evidence Detail legitimately
+// differs -- it records the spelling at the call site, which is the alias.
+func TestAsyncAndFlowAliasedImportedCallsResolveToTheirOriginalName(t *testing.T) {
+	const foreign = `int compute(int value) {
+	return value + 1;
+}
+`
+	// relationsFor snapshots one fixture and buckets the three relation types
+	// the same call site justifies, so the aliased spelling and the spelling it
+	// renames can be compared edge for edge.
+	relationsFor := func(t *testing.T, source string, extra ...[2]string) map[string][]RelationRecord {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		for _, file := range extra {
+			writeFile(t, repo, file[0], file[1])
+		}
+		writeFile(t, repo, "app.py", source)
+		out := map[string][]RelationRecord{}
+		for _, relType := range []string{"CALLS", "ASYNC_CALLS", "DATA_FLOWS"} {
+			out[relType] = relationsTouching(t, repo, "app.py:function:run", relType)
+		}
+		return out
+	}
+	// Each fixture gets its own temp repo, so the ID's repo-key prefix differs
+	// by construction; everything after it must not.
+	target := func(id string) string { return id[strings.Index(id, ":")+1:] }
+	edge := func(r RelationRecord) string { return target(r.FromID) + " -> " + target(r.ToID) }
+	sameEdge := func(a, b RelationRecord) bool {
+		return edge(a) == edge(b) && a.Type == b.Type && a.Resolution == b.Resolution &&
+			a.RelationScope == b.RelationScope && a.Confidence == b.Confidence && a.Reason == b.Reason
+	}
+	// A rival same-named declaration in a third language: one suffix-matching
+	// import cannot say which of the two it bound.
+	rival := [2]string{"lib/frobnicate.rb", "def compute(value)\n  value + 1\nend\n"}
+
+	t.Run("an awaited alias matches the un-aliased await", func(t *testing.T) {
+		aliased := relationsFor(t, `from frobnicate import compute as c
+
+async def run(v):
+    return await c(v)
+`)
+		plain := relationsFor(t, `from frobnicate import compute
+
+async def run(v):
+    return await compute(v)
+`)
+		if len(plain["ASYNC_CALLS"]) != 1 {
+			t.Fatalf("the oracle lost its async edge, so there is nothing to compare against: %#v", plain["ASYNC_CALLS"])
+		}
+		if len(aliased["ASYNC_CALLS"]) != 1 {
+			t.Fatalf("want one async call edge out of run, got %#v", aliased["ASYNC_CALLS"])
+		}
+		if !sameEdge(aliased["ASYNC_CALLS"][0], plain["ASYNC_CALLS"][0]) {
+			t.Fatalf("the awaited alias diverged from its un-aliased oracle:\n alias = %#v\n plain = %#v",
+				aliased["ASYNC_CALLS"][0], plain["ASYNC_CALLS"][0])
+		}
+		// And from the CALLS edge the SAME aliased call site already produced.
+		// The async cap is 0.85, above the 0.84 an import-resolved call carries,
+		// so confidence survives the await and is comparable here too.
+		if len(aliased["CALLS"]) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", aliased["CALLS"])
+		}
+		call, await := aliased["CALLS"][0], aliased["ASYNC_CALLS"][0]
+		if target(await.ToID) != target(call.ToID) || await.Resolution != call.Resolution || await.Confidence != call.Confidence {
+			t.Fatalf("the await diverged from the plain call at the same site:\n await = %#v\n call  = %#v", await, call)
+		}
+	})
+
+	t.Run("a flow through an alias matches the un-aliased flow", func(t *testing.T) {
+		aliased := relationsFor(t, `from frobnicate import compute as c
+
+def run(v):
+    return c(v)
+`)
+		plain := relationsFor(t, `from frobnicate import compute
+
+def run(v):
+    return compute(v)
+`)
+		if len(plain["DATA_FLOWS"]) != 2 {
+			t.Fatalf("the oracle must produce both flow directions, got %#v", plain["DATA_FLOWS"])
+		}
+		byEdge := map[string]RelationRecord{}
+		for _, flow := range aliased["DATA_FLOWS"] {
+			byEdge[edge(flow)] = flow
+		}
+		if len(byEdge) != len(plain["DATA_FLOWS"]) {
+			t.Fatalf("the aliased flows do not match the un-aliased oracle:\n alias = %#v\n plain = %#v",
+				aliased["DATA_FLOWS"], plain["DATA_FLOWS"])
+		}
+		for _, want := range plain["DATA_FLOWS"] {
+			got, ok := byEdge[edge(want)]
+			if !ok {
+				t.Fatalf("the aliased fixture is missing the oracle's flow %s: %#v", edge(want), aliased["DATA_FLOWS"])
+			}
+			if !sameEdge(got, want) {
+				t.Fatalf("an aliased flow diverged from its un-aliased oracle:\n alias = %#v\n plain = %#v", got, want)
+			}
+		}
+		// Both directions name the member the CALLS edge at this site resolved.
+		// Their confidence caps (0.75 back, 0.7 forward) sit below the call's
+		// 0.84 by design, so the call is the oracle for the target, not for it.
+		if len(aliased["CALLS"]) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", aliased["CALLS"])
+		}
+		call := aliased["CALLS"][0]
+		forward, back := false, false
+		for _, flow := range aliased["DATA_FLOWS"] {
+			if flow.Resolution != call.Resolution {
+				t.Fatalf("a flow resolved differently from the plain call at the same site:\n flow = %#v\n call = %#v", flow, call)
+			}
+			if target(flow.FromID) == target(call.FromID) && target(flow.ToID) == target(call.ToID) {
+				forward = true
+			}
+			if target(flow.FromID) == target(call.ToID) && target(flow.ToID) == target(call.FromID) {
+				back = true
+			}
+		}
+		if !forward || !back {
+			t.Fatalf("want both flow directions between the call's endpoints, got %#v", aliased["DATA_FLOWS"])
+		}
+	})
+
+	// The alias reads past the language filter exactly as the un-aliased bare
+	// call does, so it carries the same ambiguity rule into both new paths:
+	// module paths match by suffix, so one import can name same-named callables
+	// in several languages at once and nothing then says which it bound. Two of
+	// them must produce no edge rather than an arbitrary pick, and neither an
+	// await nor a flow has an external target to fall back to.
+	t.Run("ambiguity behind the alias fails closed", func(t *testing.T) {
+		async := relationsFor(t, `from frobnicate import compute as c
+
+async def run(v):
+    return await c(v)
+`, rival)
+		if len(async["ASYNC_CALLS"]) != 0 {
+			t.Fatalf("an ambiguous cross-language alias must not resolve an async call: %#v", async["ASYNC_CALLS"])
+		}
+		flow := relationsFor(t, `from frobnicate import compute as c
+
+def run(v):
+    return c(v)
+`, rival)
+		if len(flow["DATA_FLOWS"]) != 0 {
+			t.Fatalf("an ambiguous cross-language alias must not resolve a flow: %#v", flow["DATA_FLOWS"])
+		}
+	})
+
+	// `import mod as m` binds the MODULE. A module object is not callable, so a
+	// bare `m(...)` names no member: the two new paths must stay silent rather
+	// than invent one, exactly as the CALLS path does.
+	t.Run("a module alias names no member", func(t *testing.T) {
+		async := relationsFor(t, `import frobnicate as m
+
+async def run(v):
+    return await m(v)
+`)
+		if len(async["ASYNC_CALLS"]) != 0 {
+			t.Fatalf("a bare await on a module alias must emit no edge, got %#v", async["ASYNC_CALLS"])
+		}
+		flow := relationsFor(t, `import frobnicate as m
+
+def run(v):
+    return m(v)
+`)
+		if len(flow["DATA_FLOWS"]) != 0 {
+			t.Fatalf("a bare call on a module alias must emit no flow, got %#v", flow["DATA_FLOWS"])
+		}
+	})
+
+	// Python scopes a function-local import to that function, and widening the
+	// two sibling scans to the alias must not lose that: the member name behind
+	// an alias must not reach a sibling that never imported it.
+	t.Run("a function-local alias does not reach a sibling", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `async def uses_alias(v):
+    from frobnicate import compute as c
+
+    return await c(v)
+
+
+async def unrelated(v):
+    return await c(v)
+`)
+
+		if async := relationsTouching(t, repo, "app.py:function:unrelated", "ASYNC_CALLS"); len(async) != 0 {
+			t.Fatalf("a function-local alias leaked into an unrelated async call: %#v", async)
+		}
+		if flows := relationsTouching(t, repo, "app.py:function:unrelated", "DATA_FLOWS"); len(flows) != 0 {
+			t.Fatalf("a function-local alias leaked into an unrelated flow: %#v", flows)
+		}
+		async := relationsTouching(t, repo, "app.py:function:uses_alias", "ASYNC_CALLS")
+		if len(async) != 1 || !strings.Contains(async[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("the importing function lost its aliased async call: %#v", async)
+		}
+		if flows := relationsTouching(t, repo, "app.py:function:uses_alias", "DATA_FLOWS"); len(flows) == 0 {
+			t.Fatalf("the importing function lost its aliased flows: %#v", flows)
+		}
+	})
+}
+
+// Comment stripping used to happen in ONE place: inside the multi-line join,
+// after a parenthesised `from ... import (` had been recognised. Every import
+// that fit on one line was handed to parsePythonImportItem with its trailing
+// comment still attached, and a comment is made of words: `compute as c # noqa`
+// splits into five fields, `as` is no longer second-to-last, and the item reads
+// as the plain member `compute`. The alias `c` was then bound by the
+// tree-sitter scope view (which never sees the comment) to the MODULE alone,
+// with no member behind it -- so the call did not merely lose its edge, it got
+// a WRONG one. Measured over these fixtures before the fix:
+//
+//	from frobnicate import compute as c  # noqa   +  c(v)
+//	CALLS       run -> symbol:frobnicate.c        res=import_external conf=0.78   INVENTED
+//	ASYNC_CALLS (none)                                                            DROPPED
+//	DATA_FLOWS  (none, both directions)                                           DROPPED
+//
+// `symbol:frobnicate.c` is the alias spelling glued onto the module: a member
+// that does not exist in frobnicate.c, pointed at by a confident-looking edge.
+//
+// A `#` on an import line needs no quote tracking to find, because an import
+// statement cannot contain a string. CPython 3.14.6 settles it:
+//
+//	$ python3 -c 'import ast; ast.parse("from mod import \"compute\"")'
+//	SyntaxError: invalid syntax
+//	$ python3 -c 'import ast; ast.parse("from \"mod\" import compute")'
+//	SyntaxError: invalid syntax
+//	$ python3 -c 'import ast; ast.parse("from mod import compute as \"c\"")'
+//	SyntaxError: cannot use literal as import target
+//	$ python3 -c 'import io,tokenize; [print(tokenize.tok_name[t.type], repr(t.string)) for t in tokenize.generate_tokens(io.StringIO("from mod import compute as c  # noqa\n").readline)]'
+//	NAME 'from' / NAME 'mod' / NAME 'import' / NAME 'compute' / NAME 'as' / NAME 'c' / COMMENT '# noqa'
+//
+// The statement admits names, dots, commas, parens and `as` and nothing else,
+// so the `#` is always a COMMENT token. The oracle here is therefore the
+// comment-free spelling of the same line: a comment is not part of the
+// statement, so it must change nothing about any edge the line produces.
+func TestPythonCommentedImportBindsTheSameAliasAsTheCommentFreeLine(t *testing.T) {
+	const foreign = `int compute(int value) {
+	return value + 1;
+}
+`
+	relationsFor := func(t *testing.T, source string) map[string][]RelationRecord {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", source)
+		out := map[string][]RelationRecord{}
+		for _, relType := range []string{"CALLS", "ASYNC_CALLS", "DATA_FLOWS"} {
+			out[relType] = relationsTouching(t, repo, "app.py:function:run", relType)
+		}
+		return out
+	}
+	// Each fixture gets its own temp repo, so the ID's repo-key prefix differs
+	// by construction; everything after it must not.
+	target := func(id string) string { return id[strings.Index(id, ":")+1:] }
+	edge := func(r RelationRecord) string { return target(r.FromID) + " -> " + target(r.ToID) }
+	// sameEdges compares two whole relation sets edge for edge. Detail is left
+	// out on purpose: it records the spelling at the CALL site, which the
+	// comment does not touch, and comparing it would only re-test the fixture.
+	// Errorf, not Fatalf: a comment defect hits the three relation types
+	// independently, and stopping at CALLS would hide which of the others the
+	// line also lost.
+	sameEdges := func(t *testing.T, relType, label string, got, want []RelationRecord) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Errorf("%s %s: want %d edge(s) like the comment-free line, got %d:\n commented = %#v\n clean     = %#v",
+				label, relType, len(want), len(got), got, want)
+			return
+		}
+		byEdge := map[string]RelationRecord{}
+		for _, r := range got {
+			byEdge[edge(r)] = r
+		}
+		for _, w := range want {
+			g, ok := byEdge[edge(w)]
+			if !ok {
+				t.Errorf("%s %s: the comment-free edge %s is missing: %#v", label, relType, edge(w), got)
+				continue
+			}
+			if g.Type != w.Type || g.Resolution != w.Resolution || g.RelationScope != w.RelationScope ||
+				g.Confidence != w.Confidence || g.Reason != w.Reason {
+				t.Errorf("%s %s: a commented import diverged from its comment-free oracle:\n commented = %#v\n clean     = %#v",
+					label, relType, g, w)
+			}
+		}
+	}
+	// compare runs one commented spelling against the same source with the
+	// comment deleted, over all three relation types the site justifies.
+	compare := func(t *testing.T, label, commented, clean string, wantPerType map[string]int) {
+		t.Helper()
+		got, want := relationsFor(t, commented), relationsFor(t, clean)
+		for _, relType := range []string{"CALLS", "ASYNC_CALLS", "DATA_FLOWS"} {
+			// Guard the oracle first: a comment-free line that resolves nothing
+			// would make every comparison below vacuously true.
+			if n := wantPerType[relType]; len(want[relType]) != n {
+				t.Fatalf("%s %s: the comment-free oracle is broken, want %d edge(s), got %#v", label, relType, n, want[relType])
+			}
+			sameEdges(t, relType, label, got[relType], want[relType])
+		}
+	}
+
+	// The reported line, and the two relation types it silently dropped.
+	t.Run("a trailing comment does not move the alias", func(t *testing.T) {
+		compare(t, "module-level call",
+			"from frobnicate import compute as c  # noqa\n\ndef run(v):\n    return c(v)\n",
+			"from frobnicate import compute as c\n\ndef run(v):\n    return c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 0, "DATA_FLOWS": 2})
+		compare(t, "module-level await",
+			"from frobnicate import compute as c  # noqa\n\nasync def run(v):\n    return await c(v)\n",
+			"from frobnicate import compute as c\n\nasync def run(v):\n    return await c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 1, "DATA_FLOWS": 2})
+	})
+
+	// The line scanner reads function bodies too, and a `# type: ignore` on a
+	// deferred import inside a function is where these comments actually live.
+	t.Run("a comment on a function-local import does not move the alias", func(t *testing.T) {
+		compare(t, "function-local",
+			"def run(v):\n    from frobnicate import compute as c  # type: ignore\n    return c(v)\n",
+			"def run(v):\n    from frobnicate import compute as c\n    return c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 0, "DATA_FLOWS": 2})
+	})
+
+	// `import mod as m` is parsed by the same item parser off the same line, so
+	// it carried the same defect: with the comment attached the alias `m` bound
+	// nothing and `m.compute(v)` produced no edge at all.
+	t.Run("a comment on a plain import does not move the alias", func(t *testing.T) {
+		compare(t, "plain import alias",
+			"import frobnicate as m  # noqa\n\ndef run(v):\n    return m.compute(v)\n",
+			"import frobnicate as m\n\ndef run(v):\n    return m.compute(v)\n",
+			map[string]int{"CALLS": 2, "ASYNC_CALLS": 0, "DATA_FLOWS": 0})
+	})
+
+	// The parenthesised join already stripped comments; it must keep doing so
+	// now that the caller strips first. The head line's comment sits BEFORE the
+	// list opens, where a naive cut of the joined text would lose the members.
+	t.Run("the multi-line join still strips its comments", func(t *testing.T) {
+		compare(t, "comment after the open paren",
+			"from frobnicate import (  # noqa\n    compute as c,\n)\n\ndef run(v):\n    return c(v)\n",
+			"from frobnicate import (\n    compute as c,\n)\n\ndef run(v):\n    return c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 0, "DATA_FLOWS": 2})
+		compare(t, "comment between the items",
+			"from frobnicate import (\n    compute as c,  # keep\n)\n\ndef run(v):\n    return c(v)\n",
+			"from frobnicate import (\n    compute as c,\n)\n\ndef run(v):\n    return c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 0, "DATA_FLOWS": 2})
+	})
+
+	// The fence for the quoting question CPython answered above. A `#` inside a
+	// string is a real thing in Python -- it just cannot occur inside an import
+	// statement, so the cut needs no quote tracking. What it must never do is
+	// let a quoted `#` on some OTHER line turn into an import: the cut only
+	// ever removes a suffix, so a line that was not an import cannot become
+	// one. A false import here would be the worst outcome available -- it would
+	// name a member of frobnicate.c that the file never imported.
+	t.Run("a quoted hash on a non-import line invents nothing", func(t *testing.T) {
+		compare(t, "string holding a fake import",
+			"COMMENT = \"# from frobnicate import measure\"\nfrom frobnicate import compute as c\n\ndef run(v):\n    return c(v)\n",
+			"from frobnicate import compute as c\n\ndef run(v):\n    return c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 0, "DATA_FLOWS": 2})
+	})
+
+	// And the cut itself, directly: it removes the comment and nothing else,
+	// and it cannot manufacture an import prefix out of a line that lacked one.
+	t.Run("the cut removes only the comment", func(t *testing.T) {
+		looksLikeImport := func(text string) bool {
+			text = strings.TrimSpace(text)
+			return strings.HasPrefix(text, "import ") || strings.HasPrefix(text, "from ")
+		}
+		for _, tc := range []struct{ line, want string }{
+			{"from mod import compute as c  # noqa", "from mod import compute as c"},
+			{"    from mod import compute as c\t# type: ignore", "from mod import compute as c"},
+			{"from mod import compute as c", "from mod import compute as c"},
+			{"# from mod import compute as c", ""},
+			{"   # noqa", ""},
+			{"#", ""},
+			{"", ""},
+			{"COMMENT = \"# from mod import measure\"", "COMMENT = \""},
+		} {
+			if got := pythonDirectImportStatement(tc.line); got != tc.want {
+				t.Fatalf("pythonDirectImportStatement(%q) = %q, want %q", tc.line, got, tc.want)
+			}
+			if !looksLikeImport(tc.line) && looksLikeImport(pythonDirectImportStatement(tc.line)) {
+				t.Fatalf("cutting the comment turned a non-import line into an import: %q", tc.line)
+			}
+		}
+	})
 }
 
 // The import-name map that tier reads is built for a whole FILE, but Python
