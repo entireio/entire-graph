@@ -2054,6 +2054,16 @@ func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
 // the first segment was enough to tell an abbreviation from a `begin` block but
 // left `module Json = Deep.Serde` indistinguishable from `module Json = Deep`,
 // so the alias could not be followed to the module it actually names.
+//
+// No accessibility modifier is accepted between `module` and the name, unlike
+// the `let` binding below. F# parses `module private Json = Serde` and then
+// rejects it outright -- FS0536, "The 'private' accessibility attribute is not
+// allowed on module abbreviation. Module abbreviations are always private."
+// (`pars.fsy` raises it from the abbreviation branch of the `moduleIntro EQUALS
+// namedModuleDefnBlock` rule). An abbreviation therefore never carries one, and
+// accepting the spelling would only invent an alias out of a line that does not
+// compile. `module private Json =` heading a nested module BLOCK stays outside
+// this pattern for the reason every block does: it has no path after the `=`.
 var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]+([A-Za-z_][A-Za-z0-9_']*)[ \t]*=[ \t]*([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)`)
 
 // fsharpValueBindingPattern matches a `let`/`use` VALUE binding
@@ -2075,7 +2085,24 @@ var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]
 // initializer, with it the name is in scope there. `rec` was not accepted at
 // all, so `let rec Json = ...` bound nothing and its own body was classified by
 // the project's module declarations alone.
-var fsharpValueBindingPattern = regexp.MustCompile(`(?m)^[ \t]*(?:let|use)!?[ \t]+((?:(?:rec|mutable)[ \t]+)*)([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::[^=\n]*)?=`)
+//
+// They are spelled in F#'s own order rather than as a set of interchangeable
+// words, because F# fixes that order: `let` takes `rec`, then the binding takes
+// `inline`, then `mutable`, and the accessibility modifier is part of the
+// PATTERN, so it stands last of all, immediately before the name --
+// `let rec inline mutable private Json = ...`. Writing it anywhere else
+// (`let private rec Json = ...`) is a syntax error, so a line spelled that way
+// is not F# and no shadow is invented for it.
+//
+// Accessibility was missing entirely, which is the same class of miss as `rec`
+// and not a neutral one: `let private Json = ...` bound nothing, so the
+// qualifier was classified by the project's module declarations alone and
+// `Json.serialize` was pinned to an unrelated project module named `Json` over
+// the `serialize` the binding leaves in scope. The gap also split one `let`
+// line in half -- fsharpFunctionHeaderPattern has always read `private`, so an
+// accessibility-modified FUNCTION bound its parameters while an
+// accessibility-modified VALUE bound nothing at all.
+var fsharpValueBindingPattern = regexp.MustCompile(`(?m)^[ \t]*(?:let|use)!?[ \t]+((?:rec[ \t]+)?(?:inline[ \t]+)?(?:mutable[ \t]+)?(?:(?:private|internal|public)[ \t]+)?)([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::[^=\n]*)?=`)
 
 // fsharpShadowBinding is one name a file binds lexically, together with the
 // lines that binding governs. F# scoping is ordered and offside-based: a

@@ -17935,3 +17935,111 @@ let run (x: int) =
 		}
 	})
 }
+
+func TestFSharpQualifierShadowedByAnAccessibilityModifiedBinding(t *testing.T) {
+	// An F# `let` may carry an accessibility modifier, and the grammar puts it
+	// immediately before the name, LAST of the modifier run:
+	// `let [rec] [inline] [mutable] [private|internal|public] name = ...`
+	// (`pars.fsy`: `defnBindings := LET opt_rec localBindings`,
+	// `localBinding := opt_inline opt_mutable bindingPattern`, and the
+	// accessibility is the `access pathOp` alternative of the pattern itself).
+	//
+	// Only `rec` and `mutable` were accepted, so `let private Json = ...` bound
+	// NOTHING. A qualifier nothing rebinds is classified by the project's module
+	// declarations alone, so `Json.serialize` was held to an unrelated project
+	// module named `Json` instead of the `serialize` the binding leaves in
+	// scope -- an edge into a definition the source never named.
+	//
+	// The two halves of one `let` line disagreed about what a modifier is: the
+	// function-header pattern has always read `private`, so an accessibility-
+	// modified FUNCTION's parameters shadowed while an accessibility-modified
+	// VALUE did not.
+	for _, modifiers := range []string{"private", "internal", "public", "mutable private", "rec internal"} {
+		t.Run("let "+modifiers, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let `+modifiers+` Json = Newtonsoft.Json.JsonConvert
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `let %s Json = ...` reached %v, want %v: the binding shadows the project module `Json`", modifiers, got, want)
+			}
+		})
+	}
+
+	t.Run("unshadowed control", func(t *testing.T) {
+		// Nothing rebinds `Json`, so the qualifier really does name the project
+		// module and must still be held to it. Accepting more modifiers must
+		// narrow the gate, not delete it.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let private helper (x: int) = x
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` with no local binding reached %v, want %v: the named module still answers it", got, want)
+		}
+	})
+
+	t.Run("an accessibility-modified function binding still binds its parameters", func(t *testing.T) {
+		// The opposite direction. A `let` line is read as a value binding OR a
+		// function header, never both, and the value pattern stays on its side
+		// of that line by requiring the `=` straight after the name. Were the
+		// widened pattern to swallow `let private run (Json: ...) x = ...`, the
+		// parameter pass would be skipped and the qualifier the parameter really
+		// does rebind would go unshadowed -- back to the project module `Json`.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let private run (Json: Newtonsoft.Json.JsonConvert) (x: int) = Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under the parameter of `let private run` reached %v, want %v: the header binds a parameter, not a value", got, want)
+		}
+	})
+
+	// `rec` decides whether a binding shadows inside its own initializer, and it
+	// has to keep deciding that with an accessibility modifier standing between
+	// it and the name -- reading the modifier run as opaque would lose `rec` and
+	// put every accessibility-modified binding in scope on the wrong lines.
+	fromLineOf := func(t *testing.T, source, name string) int {
+		t.Helper()
+		for _, binding := range fsharpFileShadowBindings(source) {
+			if binding.name == name {
+				return binding.fromLine
+			}
+		}
+		return 0
+	}
+
+	t.Run("a non-recursive accessibility-modified binding starts after its initializer", func(t *testing.T) {
+		got := fromLineOf(t, `module Use
+
+let private Json = Json.serialize 1
+
+let after = 0
+`, "Json")
+		if want := 5; got != want {
+			t.Errorf("`let private Json = ...` on line 3 shadows from line %d, want %d: a non-recursive binding is not in scope in its own right-hand side", got, want)
+		}
+	})
+
+	t.Run("a recursive accessibility-modified binding starts on its own line", func(t *testing.T) {
+		got := fromLineOf(t, `module Use
+
+let rec private Json = Json.serialize 1
+
+let after = 0
+`, "Json")
+		if want := 3; got != want {
+			t.Errorf("`let rec private Json = ...` on line 3 shadows from line %d, want %d: `rec` puts the binding in scope within its own body", got, want)
+		}
+	})
+}
