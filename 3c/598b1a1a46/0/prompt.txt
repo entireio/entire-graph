@@ -1,0 +1,30 @@
+Fix the rebase conflicts
+
+---
+
+readLimitedFile writes limitedUnaddressable and limitedUnavailable without readOutcomeMu, while other workers lock those same maps. Concurrent map writes can abort the dependents scan.
+
+processChangedFile never sets scan.stopped or calls overBudget, so the reducer cannot end a window at the same index the sequential loop would have. Budget warnings therefore name different files, and up to a full prime window is parsed after the deadline.
+
+### Medium finding
+
+**Location:** `internal/sem/analyze.go:681`
+
+The worker never sets `scan.stopped`, so once a 128-file window starts, every file in it is parsed even after `MaxDuration` expires. This can substantially exceed the requested budget and omits the required skipped-file warnings for work started after the deadline; check `overBudget()` inside `processChangedFile` and return a stopped scan.
+
+### Medium finding
+
+**Location:** `internal/sem/dependents.go:428`
+
+Parallelizing candidate scans exposes unlocked writes to `limitedUnaddressable` and `limitedUnavailable` in `readLimitedFile`. When batch startup fails or multiple batch-unsafe paths use the fallback, workers can concurrently write these maps, causing a data race or `concurrent map writes` panic; guard all fallback outcome writes with `readOutcomeMu`.
+
+
+Instead of the locks, can't we just use a concurrent map (sync.Map)?
+
+---
+
+go ahead with next finding
+
+---
+
+resolve the reducer calls as well
