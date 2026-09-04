@@ -4729,7 +4729,7 @@ def valid():
 		}
 	}
 	for _, name := range []string{
-		"assignment", "annotated", "augmented", "deleted", "destructuring", "loop", "with_as", "except_as", "walrus", "comprehension_walrus", "nested_def", "nested_class", "nonlocal_outer", "nonlocal_inner", "comprehension_bound", "parameter", "lambda_parameter", "lambda_walrus", "except_type",
+		"assignment", "annotated", "augmented", "deleted", "destructuring", "loop", "with_as", "except_as", "walrus", "comprehension_walrus", "nested_def", "nested_class", "nonlocal_outer", "nonlocal_inner", "comprehension_bound", "parameter", "lambda_parameter", "lambda_walrus",
 	} {
 		if modules := scopes.importModules(byName[name], "compute"); len(modules) > 0 {
 			t.Fatalf("%s shadowed the imported name but remained FFI-eligible through %q", name, modules)
@@ -4738,7 +4738,11 @@ def valid():
 	if modules := scopes.importModules(byName["local_import"], "compute"); len(modules) != 1 || modules[0] != "localmod" {
 		t.Fatalf("function-local import did not replace the module binding: %q", modules)
 	}
-	for _, name := range []string{"inner", "global_decl", "comprehension_unbound", "comp_iterable", "class_base", "class_body", "subscript_target", "valid"} {
+	// `except_type` was listed as shadowed, but nothing in it rebinds `compute`:
+	// an `except <expr>:` clause has no `as` target at all. It only looked
+	// shadowed because the walker skipped the whole clause, so the call was
+	// recorded in no scope. It belongs here, with the other unshadowed calls.
+	for _, name := range []string{"inner", "global_decl", "comprehension_unbound", "comp_iterable", "class_base", "class_body", "subscript_target", "except_type", "valid"} {
 		if modules := scopes.importModules(byName[name], "compute"); len(modules) == 0 || modules[0] != "frobnicate" {
 			t.Fatalf("%s has an unshadowed imported call but got modules %q", name, modules)
 		}

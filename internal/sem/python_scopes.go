@@ -251,13 +251,14 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 		}
 	case "with_item":
 		if scope != nil {
-			w.addTarget(scope, w.targetFieldOrLast(node, "alias"))
+			w.addTarget(scope, w.asPatternAlias(node))
 		}
-	case "except_clause":
+	case "except_clause", "except_group_clause":
 		if scope != nil {
-			w.addTarget(scope, w.targetFieldOrLast(node, "name"))
-			w.walk(node.ChildByFieldName("body"), scope, depth+1)
-			return // exception type expressions are not handler-body calls
+			// The exception expression and the handler body are both ordinary
+			// code of this scope, so neither is skipped: the generic child walk
+			// below reaches them exactly like any other statement.
+			w.addTarget(scope, w.asPatternAlias(node))
 		}
 	case "named_expression":
 		if scope != nil {
@@ -298,6 +299,7 @@ func (w *pythonScopeWalker) walkComprehension(node *sitter.Node, parent *pythonB
 	child := newPythonBindingScope(parent.owner, parent)
 	child.comp = true
 	var result []*sitter.Node
+	outermost := true
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		part := node.NamedChild(i)
 		if part.Type() != "for_in_clause" {
@@ -306,8 +308,16 @@ func (w *pythonScopeWalker) walkComprehension(node *sitter.Node, parent *pythonB
 		}
 		// Each iterable is evaluated before its own target is bound. Later
 		// clauses and the result expression see that target in the isolated
-		// comprehension scope.
-		w.walk(part.ChildByFieldName("right"), child, depth+1)
+		// comprehension scope. The OUTERMOST iterable is the exception: Python
+		// evaluates it where the comprehension is written and passes it in, so
+		// it reads the enclosing bindings and a target the comprehension binds
+		// later never shadows it.
+		iterable := child
+		if outermost {
+			iterable = parent
+		}
+		outermost = false
+		w.walk(part.ChildByFieldName("right"), iterable, depth+1)
 		w.addTarget(child, part.ChildByFieldName("left"))
 		for j := 0; j < int(part.NamedChildCount()); j++ {
 			clause := part.NamedChild(j)
@@ -452,7 +462,7 @@ func (w *pythonScopeWalker) addTarget(scope *pythonBindingScope, node *sitter.No
 		return
 	}
 	switch node.Type() {
-	case "tuple", "list", "pattern_list", "list_pattern", "tuple_pattern", "parenthesized_expression", "starred_expression", "list_splat_pattern", "dictionary_splat_pattern":
+	case "tuple", "list", "pattern_list", "list_pattern", "tuple_pattern", "parenthesized_expression", "starred_expression", "list_splat_pattern", "dictionary_splat_pattern", "as_pattern_target":
 		for i := 0; i < int(node.NamedChildCount()); i++ {
 			w.addTarget(scope, node.NamedChild(i))
 		}
@@ -505,9 +515,9 @@ func (w *pythonScopeWalker) collectFunctionBindings(node *sitter.Node, scope *py
 	case "for_statement":
 		w.collectTargetNames(w.targetFieldOrFirst(node, "left"), scope)
 	case "with_item":
-		w.collectTargetNames(w.targetFieldOrLast(node, "alias"), scope)
-	case "except_clause":
-		w.collectTargetNames(w.targetFieldOrLast(node, "name"), scope)
+		w.collectTargetNames(w.asPatternAlias(node), scope)
+	case "except_clause", "except_group_clause":
+		w.collectTargetNames(w.asPatternAlias(node), scope)
 	case "named_expression":
 		w.collectTargetNames(w.targetFieldOrFirst(node, "name"), scope)
 	case "delete_statement":
@@ -558,6 +568,28 @@ func (w *pythonScopeWalker) collectTargetNames(node *sitter.Node, scope *pythonB
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		w.collectTargetNames(node.NamedChild(i), scope)
 	}
+}
+
+// asPatternAlias returns the target an `X as t` clause binds. tree-sitter hangs
+// that alias off a nested `as_pattern`, so neither `with_item` nor
+// `except_clause` carries an alias field of its own; asking them for their last
+// named child instead landed on the handler's own block. In the walk that bound
+// nothing, and in the function-wide local pass -- which recurses into whatever
+// it is handed -- it declared every name written anywhere inside the handler a
+// local of the function, reporting the imports they stood for as shadowed.
+func (w *pythonScopeWalker) asPatternAlias(node *sitter.Node) *sitter.Node {
+	if !validNode(node) {
+		return nil
+	}
+	if node.Type() == "as_pattern" {
+		return node.ChildByFieldName("alias")
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if child := node.NamedChild(i); validNode(child) && child.Type() == "as_pattern" {
+			return child.ChildByFieldName("alias")
+		}
+	}
+	return nil
 }
 
 func (w *pythonScopeWalker) targetFieldOrFirst(node *sitter.Node, field string) *sitter.Node {

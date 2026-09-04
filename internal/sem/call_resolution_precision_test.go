@@ -593,3 +593,230 @@ def plain():
 		assertOneImportResolvedComputeEdge(t, edges, "app.py:function:plain")
 	})
 }
+
+// assertNoComputeEdge is the negative fence beside
+// assertOneImportResolvedComputeEdge: the name really is rebound at the call
+// site, so the imported `compute` must not be reached. Keeping both halves on
+// every construct is what stops a relaxation from turning into blanket
+// permission.
+func assertNoComputeEdge(t *testing.T, edges []RelationRecord, why string) {
+	t.Helper()
+	if len(edges) != 0 {
+		t.Fatalf("%s, so no CALLS edge to the imported C `compute` may exist, got %d: %#v", why, len(edges), edges)
+	}
+}
+
+// tree-sitter gives `except_clause` no fields at all: its exception expression,
+// its `as` target and its handler block are plain named children. The walker
+// asked it for a "body" field, got nothing, and returned -- so nothing inside a
+// try statement's handler was ever recorded as a call of the enclosing scope.
+// The function-wide local pass then asked the same clause for a "name" field,
+// got its last named child (the handler BLOCK) instead, and recursed into it,
+// declaring every name written anywhere in the handler a local of the whole
+// function. Both halves delete edges: the second one deletes them for calls in
+// the `try` body too, which the walker had recorded correctly.
+func TestPythonExceptClauseIsOrdinaryCodeOfItsScope(t *testing.T) {
+	t.Run("exception expression", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    try:
+        pass
+    except compute():
+        pass
+`), "app.py:function:plain")
+	})
+
+	t.Run("handler body", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    try:
+        pass
+    except ValueError:
+        return compute(1)
+`), "app.py:function:plain")
+	})
+
+	t.Run("a handler must not make the try body's call a local", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    try:
+        return compute(1)
+    except ValueError:
+        return compute(2)
+`), "app.py:function:plain")
+	})
+
+	t.Run("an `as` target still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    try:
+        pass
+    except ValueError as compute:
+        return compute(1)
+`), "the handler rebound `compute` to the caught exception")
+	})
+
+	t.Run("except* binds its `as` target too", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    try:
+        pass
+    except* ValueError as compute:
+        return compute(1)
+`), "an exception-group handler rebinds `compute` exactly like a plain one")
+	})
+}
+
+// `with_item` has no alias field either -- the alias hangs off a nested
+// `as_pattern` -- so the walker took the item's last named child, which is that
+// whole `as_pattern`, VALUE expression included. The function-wide local pass
+// recursed into it and declared the names of the context expression locals of
+// the function, so `with compute() as handle:` reported its own import shadowed.
+func TestPythonWithItemBindsOnlyItsAlias(t *testing.T) {
+	t.Run("the context expression is not a binding", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    with compute() as handle:
+        return handle
+`), "app.py:function:plain")
+	})
+
+	t.Run("the alias still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    with ctx() as compute:
+        return compute(1)
+`), "the with statement rebound `compute`")
+	})
+
+	t.Run("a destructured alias still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    with ctx() as (compute, other):
+        return compute(1)
+`), "the with statement rebound `compute` through a tuple target")
+	})
+}
+
+// Python evaluates a comprehension's OUTERMOST iterable where the comprehension
+// is written and passes the result into the comprehension's own frame; every
+// later iterable runs inside that frame. The walker evaluated all of them
+// inside it, so `[x for x in compute() for compute in ys]` -- which real Python
+// runs happily -- reported its import shadowed by a target bound afterwards.
+// The interleaved-filter case is the opposite and must stay suppressed: CPython
+// raises UnboundLocalError on `[x for x in xs if compute() for compute in ys]`,
+// so that `compute` is genuinely the comprehension's own local, not the import.
+func TestPythonComprehensionOutermostIterableReadsTheEnclosingScope(t *testing.T) {
+	t.Run("outermost iterable", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return [x for x in compute() for compute in ys]
+`), "app.py:function:plain")
+	})
+
+	t.Run("a later iterable still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return [y for compute in ys for y in compute()]
+`), "the second iterable runs inside the comprehension frame, where `compute` is a target")
+	})
+
+	t.Run("an interleaved filter still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return [x for x in xs if compute() for compute in ys]
+`), "CPython raises UnboundLocalError here, so `compute` is the comprehension's own local")
+	})
+}
+
+// The import scanners that record WHAT a local name is bound to are line
+// oriented, so a parenthesised list spanning lines showed them only
+// `from mod import (` -- an item list of one bare paren. No member name was
+// recorded behind the alias, and the resolver, which needs the member name
+// because the workspace index is keyed by it, had nothing to resolve. The AST
+// scope walker meanwhile saw the import and reported the call unshadowed, so
+// the edge was dropped rather than merely left to a weaker tier.
+func TestPythonMultiLineFromImportAliasResolvesToItsMember(t *testing.T) {
+	t.Run("multi-line alias matches the single-line oracle", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import (
+    compute as c,
+)
+
+def plain():
+    return c(1)
+`), "app.py:function:plain")
+	})
+
+	t.Run("comments inside the list are not part of a name", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import (  # noqa
+    compute as c,  # keep
+)
+
+def plain():
+    return c(1)
+`), "app.py:function:plain")
+	})
+
+	t.Run("an ambiguous alias still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import (
+    compute as c,
+)
+from other import (
+    helper as c,
+)
+
+def plain():
+    return c(1)
+`), "`c` names two different members, so which one it renames is unknown")
+	})
+
+	t.Run("a parenthesised expression is not an import list", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `values = (
+    1,
+)
+from frobnicate import compute
+
+def plain():
+    return compute(1)
+`), "app.py:function:plain")
+	})
+}
+
+// The import scanner joins a parenthesised from-import list only when it is a
+// real from-import whose list closes, and consumes nothing otherwise -- so a
+// stray paren cannot hide the imports written below it.
+func TestPythonMultiLineImportScannerKeepsLaterImportsVisible(t *testing.T) {
+	t.Run("a closed list records the member behind its alias", func(t *testing.T) {
+		bindings := importedPythonImportBindings("from mod import (\n    compute as c,\n)\n")
+		info, ok := bindings["c"]
+		if !ok || info.bindsModule || len(info.members) != 1 || info.members[0] != "compute" {
+			t.Fatalf("bindings[\"c\"] = %#v (present %v), want the single member `compute`", info, ok)
+		}
+	})
+
+	t.Run("an unclosed list hides nothing below it", func(t *testing.T) {
+		bindings := importedPythonImportBindings("from broken import (\n    thing,\nfrom mod import helper\n")
+		info, ok := bindings["helper"]
+		if !ok || len(info.members) != 1 || info.members[0] != "helper" {
+			t.Fatalf("bindings[\"helper\"] = %#v (present %v), want the import below the unclosed list still recorded", info, ok)
+		}
+	})
+
+	t.Run("a parenthesised expression is not an import list", func(t *testing.T) {
+		names := importedPythonNames("values = (\n    1,\n)\nfrom mod import helper\n")
+		if got := names["helper"]; len(got) != 1 || got[0] != "mod" {
+			t.Fatalf("names[\"helper\"] = %#v, want [mod]", got)
+		}
+	})
+}

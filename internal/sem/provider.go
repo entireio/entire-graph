@@ -20435,11 +20435,21 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 	}
 	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
 	fromRe := regexp.MustCompile(`^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+(.+)$`)
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	lines := strings.Split(content, "\n")
+	for index := 0; index < len(lines); index++ {
+		line := strings.TrimSpace(lines[index])
 		if strings.HasPrefix(line, "#") {
 			continue
+		}
+		// A from-import list may be parenthesised across several lines, which is
+		// how real code writes anything longer than the shortest import. Read
+		// line by line, the statement is just `from mod import (`, whose only
+		// item is a bare paren: the local binding -- and with it the member name
+		// behind any `as` in the list -- was recorded nowhere, so an alias
+		// imported this way had nothing to resolve to. Rejoin the continuation
+		// into one logical line before matching.
+		if joined, last, ok := pythonJoinedFromImportLine(lines, index, fromRe); ok {
+			line, index = joined, last
 		}
 		if matches := importRe.FindStringSubmatch(line); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
@@ -20478,6 +20488,47 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 		}
 	}
 	return imports, forms, bindings
+}
+
+// pythonImportContinuationLines bounds how far a parenthesised import list is
+// followed. An import list that long does not exist; the bound is what stops an
+// unbalanced paren from swallowing the rest of the file.
+const pythonImportContinuationLines = 256
+
+// pythonJoinedFromImportLine joins a parenthesised `from ... import (` list that
+// spans lines into one logical line, returning it with the index of the last
+// line consumed. It reports false -- leaving the caller the single line it
+// already had -- unless the line really is a from-import whose list opens a
+// paren it does not close, and that list closes within the bound. Only comments
+// are stripped, and only from the joined text: an import list cannot hold a
+// string, so a `#` inside one always starts a comment.
+func pythonJoinedFromImportLine(lines []string, start int, fromRe *regexp.Regexp) (string, int, bool) {
+	head := pythonImportLineWithoutComment(lines[start])
+	matches := fromRe.FindStringSubmatch(head)
+	if len(matches) != 3 {
+		return "", start, false
+	}
+	depth := strings.Count(matches[2], "(") - strings.Count(matches[2], ")")
+	if depth <= 0 {
+		return "", start, false
+	}
+	joined := head
+	for index := start + 1; index < len(lines) && index-start <= pythonImportContinuationLines; index++ {
+		next := pythonImportLineWithoutComment(lines[index])
+		joined += " " + next
+		depth += strings.Count(next, "(") - strings.Count(next, ")")
+		if depth <= 0 {
+			return joined, index, true
+		}
+	}
+	return "", start, false
+}
+
+func pythonImportLineWithoutComment(line string) string {
+	if hash := strings.IndexByte(line, '#'); hash >= 0 {
+		line = line[:hash]
+	}
+	return strings.TrimSpace(line)
 }
 
 func parsePythonImportItem(item string) (name, alias string) {
