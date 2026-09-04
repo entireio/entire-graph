@@ -1004,6 +1004,62 @@ def outer():
 	})
 }
 
+// Python separates a from-import's module from its list with the `import`
+// KEYWORD. The whitespace around it is free, and a parenthesised list needs
+// none at all. CPython is the oracle --
+//
+//	$ printf 'from native import\tcompute\nprint(compute())\n' > t.py; python3 t.py
+//	NATIVE
+//	$ printf 'from native import(compute)\nprint(compute())\n' > t.py; python3 t.py
+//	NATIVE
+//
+// -- but the AST scope view split on a literal " import ", so it recorded no
+// binding for either spelling. That is the deleting direction, not a harmless
+// omission: the line scanner's regex writes the separator `\s+import\s+`, so it
+// DID resolve the tab form, and a `complete` view reporting no modules for the
+// name makes importsWithName drop that binding and the CALLS edge with it.
+func TestPythonFromImportKeywordIsWhitespaceIndependent(t *testing.T) {
+	t.Run("a single space is the oracle", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, "from frobnicate import compute\n\ndef plain():\n    return compute(1)\n"), "app.py:function:plain")
+	})
+
+	t.Run("a tab after the keyword binds", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, "from frobnicate import\tcompute\n\ndef plain():\n    return compute(1)\n"), "app.py:function:plain")
+	})
+
+	t.Run("tabs on both sides of the keyword bind", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, "from\tfrobnicate\timport\tcompute\n\ndef plain():\n    return compute(1)\n"), "app.py:function:plain")
+	})
+
+	t.Run("a parenthesised list needs no space at all", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, "from frobnicate import(compute)\n\ndef plain():\n    return compute(1)\n"), "app.py:function:plain")
+	})
+
+	t.Run("a module whose own name contains the keyword is not split", func(t *testing.T) {
+		// Relaxing the separator must not turn `importlib` into a keyword: the
+		// module is the whole name, so the binding still reads `importlib`.
+		src := "from importlib import compute\n\ndef plain():\n    return compute(1)\n"
+		fn := pythonScopeCallable(t, src, "app.py:function:plain", "function", "def plain")
+		if got := pythonScopeModules(t, src, []SymbolRecord{fn}, fn, "compute"); len(got) != 1 || got[0] != "importlib" {
+			t.Fatalf("`compute` is imported from the whole module `importlib`; got %#v", got)
+		}
+	})
+
+	t.Run("a star import still binds no name", func(t *testing.T) {
+		// The negative fence on the relaxation: `from mod import*` names
+		// nothing, so the view must invent no binding for a name it never saw.
+		src := "from frobnicate import*\n\ndef plain():\n    return compute(1)\n"
+		fn := pythonScopeCallable(t, src, "app.py:function:plain", "function", "def plain")
+		if got := pythonScopeModules(t, src, []SymbolRecord{fn}, fn, "compute"); len(got) != 0 {
+			t.Fatalf("a star import binds no `compute`, so the view must report none; got %#v", got)
+		}
+	})
+
+	t.Run("a rebound name still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, "from frobnicate import\tcompute\n\ndef plain():\n    compute = 1\n    return compute(1)\n"), "the function rebound `compute`")
+	})
+}
+
 // Python evaluates a lambda's defaults where the `lambda` EXPRESSION runs -- in
 // the enclosing scope -- not inside the call frame, exactly as it does for a
 // `def`. CPython is the oracle --

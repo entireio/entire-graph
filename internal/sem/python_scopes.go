@@ -704,6 +704,44 @@ type pythonScopedImport struct {
 	modules []string
 }
 
+// pythonFromImportParts splits a `from ... import ...` statement into the module
+// it names and its import list. Python separates the two with the `import`
+// KEYWORD, and any whitespace -- or none at all, before a parenthesised list --
+// may sit around it: `from mod import\tcompute` and `from mod import(compute)`
+// are both accepted by CPython. Matching a literal " import " recorded no
+// binding for those spellings, and a `complete` scope view that reports no
+// modules for a name makes importsWithName DELETE the binding the line-oriented
+// scanner did resolve, taking the resolved call edge with it. The keyword is
+// located by identifier boundaries, so a module whose own name merely contains
+// it -- `from importlib import compute` -- is never split in half.
+func pythonFromImportParts(text string) (module, list string, ok bool) {
+	const keyword = "import"
+	rest := strings.TrimPrefix(strings.TrimSpace(text), "from")
+	for offset := 0; offset+len(keyword) <= len(rest); {
+		index := strings.Index(rest[offset:], keyword)
+		if index < 0 {
+			break
+		}
+		index += offset
+		after := index + len(keyword)
+		if (index == 0 || !isPythonNameByte(rest[index-1])) && (after == len(rest) || !isPythonNameByte(rest[after])) {
+			if module = strings.TrimSpace(rest[:index]); module != "" {
+				return module, rest[after:], true
+			}
+			break
+		}
+		offset = index + 1
+	}
+	return "", "", false
+}
+
+// isPythonNameByte reports whether a byte may appear inside a Python
+// identifier. Every non-ASCII byte counts: identifiers may be Unicode, and a
+// UTF-8 continuation byte must never be read as a keyword boundary.
+func isPythonNameByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b >= 0x80
+}
+
 func (w *pythonScopeWalker) importBindings(node *sitter.Node) []pythonScopedImport {
 	text := node.Content(w.src)
 	if node.Type() == "import_statement" {
@@ -725,13 +763,12 @@ func (w *pythonScopeWalker) importBindings(node *sitter.Node) []pythonScopedImpo
 	if node.Type() != "import_from_statement" {
 		return nil
 	}
-	parts := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(text, "from")), " import ", 2)
-	if len(parts) != 2 {
+	module, list, ok := pythonFromImportParts(text)
+	if !ok {
 		return nil
 	}
-	module := strings.TrimSpace(parts[0])
 	var out []pythonScopedImport
-	for _, item := range strings.Split(parts[1], ",") {
+	for _, item := range strings.Split(list, ",") {
 		name, alias := parsePythonImportItem(item)
 		if name == "" || name == "*" {
 			continue
