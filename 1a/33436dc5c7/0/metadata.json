@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "1a33436dc5c7",
+  "session_id": "01a06b5f-86f0-72d0-8886-e6cd32716f0c",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-04T08:29:23.779755Z",
+  "branch": "fix/search-heuristics-findings",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 70074,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 10604032,
+    "output_tokens": 28108,
+    "api_call_count": 131
+  },
+  "session_metrics": {
+    "turn_count": 1
+  }
+}
