@@ -4224,6 +4224,9 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	if ok {
 		setEntitySourceRange(&entity, node, language, src)
 		entity.cLinkage = declaredWithCLinkage(language, node, src)
+		if language == "C++" && node.Type() == "function_definition" {
+			entity.cPlusPlusDefinitionName = cPlusPlusDefinitionName(node, src)
+		}
 		if entity.Kind == "function" || entity.Kind == "method" {
 			if language == "JavaScript" || language == "TypeScript" {
 				entity.parameterNames = jsEntityParameterNames(node, src)
@@ -5034,13 +5037,15 @@ func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language,
 		templateHead = strings.TrimSpace(string(src[span.StartByte():node.StartByte()])) + " "
 	}
 	declarationSignature := signatureFromNode(span, src)
-	typeText := ""
-	if declaredType := node.ChildByFieldName("type"); validNode(declaredType) {
-		typeText = declaredType.Content(src)
-	}
+	// Everything before the first declarator is shared, including virtual,
+	// static, constexpr, attributes and cv-qualified return types.
+	sharedPrefix := ""
 	declaratorCount := 0
 	for i := 0; i < int(node.ChildCount()); i++ {
 		if node.FieldNameForChild(i) == "declarator" {
+			if declaratorCount == 0 {
+				sharedPrefix = string(src[node.StartByte():node.Child(i).StartByte()])
+			}
 			declaratorCount++
 		}
 	}
@@ -5052,14 +5057,14 @@ func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language,
 			// its own declarator text. That keeps both method-method declarations
 			// distinct and a mixed method-field sibling out of the method's
 			// signature and body hash.
-			signature = strings.Join(strings.Fields(templateHead+typeText+" "+member.declarator.Content(src)), " ")
+			signature = strings.Join(strings.Fields(templateHead+sharedPrefix+member.declarator.Content(src)), " ")
 		}
 		out = append(out, Entity{
-			Kind:            "method",
-			Name:            qualify(scope, member.name),
-			Signature:       signature,
-			StartLine:       int(span.StartPoint().Row) + 1,
-			EndLine:         int(span.EndPoint().Row) + 1,
+			Kind:      "method",
+			Name:      qualify(scope, member.name),
+			Signature: signature,
+			StartLine: int(span.StartPoint().Row) + 1,
+			EndLine:   int(span.EndPoint().Row) + 1,
 			// A bodyless declaration has no implementation body to hash. Use
 			// this member's own signature so a sibling declarator in the same
 			// field_declaration cannot make the unchanged method look edited.
@@ -5072,10 +5077,41 @@ func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language,
 	return out
 }
 
-// cPlusPlusDeclarationOwners returns legal lexical namespace/class owners of
-// an in-class declaration without changing its graph-qualified name or stable
-// ID. C++ lets definitions omit inline namespace segments, so bounded aliases
-// for those omissions are included.
+// cPlusPlusDefinitionName reads only the declared callable's AST name. Types,
+// parameters and expressions mentioning another method are never candidates.
+// Namespace ancestors supply qualification omitted inside namespace blocks.
+func cPlusPlusDefinitionName(node *sitter.Node, src []byte) string {
+	declarator := node.ChildByFieldName("declarator")
+	for validNode(declarator) {
+		if declarator.Type() == "function_declarator" {
+			name := declarator.ChildByFieldName("declarator")
+			if validNode(name) && name.Type() == "qualified_identifier" {
+				text := strings.TrimSpace(name.Content(src))
+				if strings.HasPrefix(text, "::") {
+					return strings.TrimSpace(strings.TrimPrefix(text, "::"))
+				}
+				for ancestor := node.Parent(); validNode(ancestor); ancestor = ancestor.Parent() {
+					if ancestor.Type() != "namespace_definition" {
+						continue
+					}
+					if ns := ancestor.ChildByFieldName("name"); validNode(ns) {
+						text = strings.TrimSpace(ns.Content(src)) + "::" + text
+					}
+				}
+				return text
+			}
+		}
+		next := declarator.ChildByFieldName("declarator")
+		if !descendsStrictly(declarator, next) {
+			return ""
+		}
+		declarator = next
+	}
+	return ""
+}
+
+// cPlusPlusDeclarationOwners returns lexical namespace/class owner patterns
+// without changing graph-qualified names or IDs. Inline segments are optional.
 func cPlusPlusDeclarationOwners(node *sitter.Node, src []byte, scope string) []string {
 	type segment struct {
 		name       string

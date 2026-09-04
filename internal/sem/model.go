@@ -33,7 +33,8 @@ type Entity struct {
 	// cPlusPlusOwners are the declaration's legal lexical C++ owner spellings,
 	// including bounded aliases produced by omitting inline namespaces. Graph
 	// QualifiedName remains based on the immediate container for stable IDs.
-	cPlusPlusOwners []string
+	cPlusPlusOwners         []string
+	cPlusPlusDefinitionName string
 	// cLinkage marks a declaration that sits inside an `extern "C" { ... }`
 	// block (see declaredWithCLinkage). It is the only per-declaration record of
 	// which half of a dual-use C++-labelled header a C translation unit may

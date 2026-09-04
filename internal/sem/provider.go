@@ -352,7 +352,8 @@ type SymbolRecord struct {
 	bodyless bool
 	// cPlusPlusOwners carry legal lexical namespace/class owner spellings used
 	// only to match a bodyless declaration to its out-of-line C++ definition.
-	cPlusPlusOwners []string
+	cPlusPlusOwners         []string
+	cPlusPlusDefinitionName string
 	// cLinkage: this symbol is declared inside an `extern "C" { ... }` block
 	// (see Entity.cLinkage). candidateSharesDeclarations reads it to tell the
 	// C-linkage half of a dual-use header from the C++ half. Private, so the
@@ -1882,25 +1883,26 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			containerID = symbols[parent].ID
 		}
 		symbol := SymbolRecord{
-			RecordType:      "symbol",
-			ID:              id,
-			StableIDVersion: StableSymbolIDVersion,
-			Kind:            entity.Kind,
-			Name:            shortEntityName(entity.Name),
-			QualifiedName:   qualified,
-			FilePath:        path,
-			StartLine:       entity.StartLine,
-			EndLine:         entity.EndLine,
-			Signature:       entity.Signature,
-			BodyHash:        entity.BodyHash,
-			Language:        language,
-			ContainerID:     containerID,
-			Local:           entity.Local,
-			sourceStartByte: entity.sourceStartByte,
-			sourceEndByte:   entity.sourceEndByte,
-			bodyless:        entity.bodyless,
-			cPlusPlusOwners: append([]string(nil), entity.cPlusPlusOwners...),
-			cLinkage:        entity.cLinkage,
+			RecordType:              "symbol",
+			ID:                      id,
+			StableIDVersion:         StableSymbolIDVersion,
+			Kind:                    entity.Kind,
+			Name:                    shortEntityName(entity.Name),
+			QualifiedName:           qualified,
+			FilePath:                path,
+			StartLine:               entity.StartLine,
+			EndLine:                 entity.EndLine,
+			Signature:               entity.Signature,
+			BodyHash:                entity.BodyHash,
+			Language:                language,
+			ContainerID:             containerID,
+			Local:                   entity.Local,
+			sourceStartByte:         entity.sourceStartByte,
+			sourceEndByte:           entity.sourceEndByte,
+			bodyless:                entity.bodyless,
+			cPlusPlusOwners:         append([]string(nil), entity.cPlusPlusOwners...),
+			cPlusPlusDefinitionName: entity.cPlusPlusDefinitionName,
+			cLinkage:                entity.cLinkage,
 		}
 		// Carried for every language: the parser marks parameterNamesKnown only
 		// when it actually read the names off the parse tree, so a grammar with
@@ -9073,7 +9075,7 @@ func skipBalancedAngles(text string) (string, bool) {
 //
 // The definition is identified by naming this container explicitly: the
 // candidate is a non-bodyless C++ callable of the same short name whose
-// signature writes `Container::Name`. Anything less certain is refused — two
+// AST declarator and lexical namespace name `Container::Name`. Anything less certain is refused — two
 // such definitions are overloads the name-keyed method index cannot tell apart,
 // and the declaration is then the honest target.
 func cPlusPlusOutOfLineDefinition(declaration SymbolRecord, candidates []SymbolRecord) (SymbolRecord, bool) {
@@ -9098,7 +9100,7 @@ func cPlusPlusOutOfLineDefinition(declaration SymbolRecord, candidates []SymbolR
 		}
 		ownerMatches := false
 		for _, owner := range owners {
-			if signatureNamesQualifiedMethodPattern(candidate.Signature, owner, declaration.Name) {
+			if signatureNamesQualifiedMethodPattern(candidate.cPlusPlusDefinitionName, owner, declaration.Name) {
 				ownerMatches = true
 				break
 			}
