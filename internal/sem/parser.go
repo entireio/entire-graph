@@ -5073,9 +5073,11 @@ func cPlusPlusDeclarationOwners(node *sitter.Node, src []byte, scope string) []s
 		}
 		inlineable := false
 		if current.Type() == "namespace_definition" {
-			start, end := int(current.StartByte()), int(name.StartByte())
-			if start >= 0 && end > start && end <= len(src) {
-				inlineable = strings.Contains(string(src[start:end]), "inline")
+			for i := 0; i < int(current.ChildCount()); i++ {
+				if current.Child(i).Type() == "inline" {
+					inlineable = true
+					break
+				}
 			}
 		}
 		parts = append([]segment{{name: text, inlineable: inlineable}}, parts...)

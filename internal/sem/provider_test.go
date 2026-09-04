@@ -18950,6 +18950,7 @@ func TestSignatureNamesQualifiedMethodUsesTokenBoundaries(t *testing.T) {
 		{"space after scope operator", "int A<T>:: foo(int x)", "A", "foo", true},
 		{"full namespace owner", "int a::Ledger::foo(int x)", "a::Ledger", "foo", true},
 		{"nested templated owner", "int a::Outer<T>::Inner<U>::foo(int x)", "a::Outer::Inner", "foo", true},
+		{"non-type comparison argument", "int A<(N > 0)>::foo(int x)", "A", "foo", true},
 		{"different namespace owner", "int b::Ledger::foo(int x)", "a::Ledger", "foo", false},
 		{"owner suffix is not the full owner", "int x::a::Ledger::foo(int x)", "a::Ledger", "foo", false},
 		{"a longer class name is not this class", "int BA::foo(int x)", "A", "foo", false},

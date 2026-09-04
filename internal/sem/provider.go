@@ -8996,14 +8996,55 @@ func signatureNamesQualifiedMethod(signature, container, name string) bool {
 // spaced-out `> >` both close at the same depth.
 func skipBalancedAngles(text string) (string, bool) {
 	depth := 0
+	parens, brackets, braces := 0, 0, 0
+	var quote byte
+	escaped := false
 	for i := 0; i < len(text); i++ {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if text[i] == '\\' {
+				escaped = true
+				continue
+			}
+			if text[i] == quote {
+				quote = 0
+			}
+			continue
+		}
 		switch text[i] {
+		case '\'', '"':
+			quote = text[i]
+		case '(':
+			parens++
+		case ')':
+			if parens > 0 {
+				parens--
+			}
+		case '[':
+			brackets++
+		case ']':
+			if brackets > 0 {
+				brackets--
+			}
+		case '{':
+			braces++
+		case '}':
+			if braces > 0 {
+				braces--
+			}
 		case '<':
-			depth++
+			if parens == 0 && brackets == 0 && braces == 0 {
+				depth++
+			}
 		case '>':
-			depth--
-			if depth == 0 {
-				return text[i+1:], true
+			if parens == 0 && brackets == 0 && braces == 0 {
+				depth--
+				if depth == 0 {
+					return text[i+1:], true
+				}
 			}
 		}
 	}

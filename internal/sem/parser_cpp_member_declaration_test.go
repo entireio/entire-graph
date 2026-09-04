@@ -486,6 +486,34 @@ int run() { api::Client client; return client.Fetch(); }
 	}
 }
 
+func TestCPlusPlusNamespaceCommentDoesNotEnableElision(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "api.hpp", `namespace api { /* inline */ namespace v1 {
+class Client { public: int Fetch(); };
+} }
+`)
+	writeFile(t, repo, "wrong.cpp", `namespace api { class Client {}; }
+int api::Client::Fetch() { return 1; }
+`)
+	writeFile(t, repo, "main.cpp", `#include "api.hpp"
+int run() { api::v1::Client client; return client.Fetch(); }
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		byID[symbol.ID] = symbol
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" && byID[relation.FromID].Name == "run" && byID[relation.ToID].FilePath == "wrong.cpp" {
+			t.Fatalf("namespace comment enabled false inline elision to %#v", byID[relation.ToID])
+		}
+	}
+}
+
 func TestCPlusPlusOverloadsDoNotUseArbitraryBodyfulMethod(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
