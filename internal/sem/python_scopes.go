@@ -270,8 +270,29 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 				}
 			}
 			w.addParameters(child, parameters)
-			w.collectFunctionBindings(node.ChildByFieldName("body"), child, 0)
-			w.walk(node.ChildByFieldName("body"), child, depth+1)
+			// A default is evaluated where the `lambda` expression itself runs,
+			// not inside the call frame, so it reads the ENCLOSING bindings and
+			// never the parameters beside it. CPython is the oracle --
+			//
+			//	$ python3 -c 'def compute(): return "OUTER-FN"
+			//	f = lambda compute=compute(): compute
+			//	print(f())'                            -> OUTER-FN
+			//	$ python3 -c 'f = lambda a, b=a: b'     -> NameError: name 'a' is not defined
+			//
+			// -- so walking only the body recorded such a call in no scope at
+			// all, and a `complete` view that reports no modules for the name
+			// makes importsWithName DELETE the file-level import binding,
+			// taking the resolved call edge with it. A lambda owns no symbol of
+			// its own, so the enclosing scope is both what the default reads and
+			// what the call scan already credits with the call.
+			body := node.ChildByFieldName("body")
+			for i := 0; i < int(node.NamedChildCount()); i++ {
+				if part := node.NamedChild(i); !samePythonNode(part, body) {
+					w.walk(part, scope, depth+1)
+				}
+			}
+			w.collectFunctionBindings(body, child, 0)
+			w.walk(body, child, depth+1)
 			w.publish(child)
 		}
 		return

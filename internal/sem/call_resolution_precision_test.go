@@ -1003,3 +1003,82 @@ def outer():
 		}
 	})
 }
+
+// Python evaluates a lambda's defaults where the `lambda` EXPRESSION runs -- in
+// the enclosing scope -- not inside the call frame, exactly as it does for a
+// `def`. CPython is the oracle --
+//
+//	$ python3 -c 'def compute(): return "OUTER-FN"
+//	f = lambda compute=compute(): compute
+//	print(f())'                                 -> OUTER-FN
+//	$ python3 -c 'f = lambda a, b=a: b'         -> NameError: name 'a' is not defined
+//
+// -- so a default neither sees the parameters beside it nor belongs to the
+// lambda's isolated scope. The walker descended only into the lambda body, so
+// such a call was recorded in no scope at all. The call scan still credits it
+// to the callable whose source holds the lambda, and a `complete` view that
+// reports no modules for the name makes importsWithName DELETE the file-level
+// import binding, so the imported call loses its resolution tier outright.
+func TestPythonLambdaDefaultsResolveThroughEnclosingImports(t *testing.T) {
+	t.Run("body call is the oracle", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return (lambda value: compute(value))()
+`), "app.py:function:plain")
+	})
+
+	t.Run("default argument", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return (lambda value=compute(): value)()
+`), "app.py:function:plain")
+	})
+
+	t.Run("a module-level lambda default", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+handler = lambda value=compute(): value
+`), "file:app.py")
+	})
+
+	t.Run("a parameter never shadows its own default", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return (lambda compute=compute(): compute)()
+`), "app.py:function:plain")
+	})
+
+	t.Run("the body still fails closed under its own parameter", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return (lambda compute: compute(1))()
+`), "the lambda's parameter rebinds `compute` for its body")
+	})
+
+	t.Run("an enclosing local still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def outer():
+    compute = 1
+    return (lambda value=compute(): value)()
+`), "the enclosing function rebound `compute` before the lambda is written")
+	})
+
+	t.Run("a comprehension target still fails closed", func(t *testing.T) {
+		// The default reads the scope the lambda is WRITTEN in, which inside a
+		// comprehension is the comprehension's own frame:
+		//
+		//	$ python3 -c 'def compute(): return "OUT"
+		//	ys = [lambda: "INNER"]
+		//	print([(lambda v=compute(): v)() for compute in ys])'   -> ['INNER']
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return [(lambda value=compute(): value)() for compute in ys]
+`), "the comprehension binds `compute`, and its frame is where the lambda is written")
+	})
+}
