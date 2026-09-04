@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -679,8 +681,8 @@ func TestCompactSnapshotSummaryLineGetsTheLargerAllowance(t *testing.T) {
 // The summary allowance is spent at most once, so the leading bytes of a
 // malformed artifact cannot request the large buffer line after line.
 func TestCompactSnapshotSummaryAllowanceIsSpentOnce(t *testing.T) {
-	if compactSnapshotSummaryLineBytes <= compactSnapshotRecordLineBytes {
-		t.Fatalf("summary allowance %d is not larger than the record cap %d", compactSnapshotSummaryLineBytes, compactSnapshotRecordLineBytes)
+	if compactSnapshotSummaryLineLimit() <= compactSnapshotRecordLineBytes {
+		t.Fatalf("summary allowance %d is not larger than the record cap %d", compactSnapshotSummaryLineLimit(), compactSnapshotRecordLineBytes)
 	}
 	second := `["m",` + strings.Repeat("x", compactSnapshotRecordLineBytes)
 	input := compactHeaderLine() + `["m",{"record_type":"summary"}]` + "\n" + second + "\n"
@@ -707,4 +709,33 @@ func TestCompactSnapshotSummaryAllowanceStopsAfterTheSummary(t *testing.T) {
 	spelled := `["m" ,{"record_type":"summary"}]`
 	oversized := `["m",` + strings.Repeat("x", compactSnapshotRecordLineBytes)
 	requireCompactDecodeError(t, compactHeaderLine()+spelled+"\n"+oversized+"\n", "compact snapshot line exceeds")
+}
+
+// The summary allowance is derived from the listing cap the encoder honours, is
+// never smaller than an ordinary record's, and is capped so that peak
+// accumulation stays bounded whatever the configuration says.
+func TestCompactSnapshotSummaryLineLimitIsDerivedAndCapped(t *testing.T) {
+	if got, want := compactSnapshotSummaryLineLimit(), compactSnapshotSummaryBytesPerFile*defaultMaxSourceFiles; got != want {
+		t.Fatalf("default allowance = %d, want %d", got, want)
+	}
+
+	t.Setenv(maxSourceFilesEnv, "1000")
+	if got := compactSnapshotSummaryLineLimit(); got != compactSnapshotRecordLineBytes {
+		t.Fatalf("allowance under a tiny listing cap = %d, want the record cap %d", got, compactSnapshotRecordLineBytes)
+	}
+
+	t.Setenv(maxSourceFilesEnv, "100000000")
+	if got := compactSnapshotSummaryLineLimit(); got != compactSnapshotSummaryLineCeiling {
+		t.Fatalf("allowance under a huge listing cap = %d, want the ceiling %d", got, compactSnapshotSummaryLineCeiling)
+	}
+
+	t.Setenv(maxSourceFilesEnv, "-1")
+	if got := compactSnapshotSummaryLineLimit(); got != compactSnapshotSummaryLineCeiling {
+		t.Fatalf("allowance under a disabled listing cap = %d, want the ceiling %d", got, compactSnapshotSummaryLineCeiling)
+	}
+
+	t.Setenv(maxSourceFilesEnv, strconv.Itoa(math.MaxInt/2))
+	if got := compactSnapshotSummaryLineLimit(); got != compactSnapshotSummaryLineCeiling {
+		t.Fatalf("allowance under an overflowing listing cap = %d, want the ceiling %d", got, compactSnapshotSummaryLineCeiling)
+	}
 }

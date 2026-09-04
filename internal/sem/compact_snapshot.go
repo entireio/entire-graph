@@ -1079,7 +1079,7 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 		// header, before any summary — and only once.
 		if seenHeader && !seenSummary && !summaryAllowanceSpent {
 			if head, _ := reader.Peek(len(compactSnapshotSummaryLinePrefix)); string(head) == compactSnapshotSummaryLinePrefix {
-				limit = compactSnapshotSummaryLineBytes
+				limit = compactSnapshotSummaryLineLimit()
 				summaryAllowanceSpent = true
 			}
 		}
@@ -1213,8 +1213,8 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	return warnings, nil
 }
 
-// compactSnapshotRecordLineBytes bounds every compact line, and
-// compactSnapshotSummaryLineBytes is the larger allowance the summary gets;
+// compactSnapshotRecordLineBytes bounds every compact line;
+// compactSnapshotSummaryLineLimit is the larger allowance the summary gets, and
 // compactSnapshotSummaryLinePrefix is how the summary is recognised before its
 // line is read.
 //
@@ -1226,24 +1226,44 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 // DEFAULT listing cap, below the encoder's own floor, which is why
 // snapshot-query failed with "bufio.Scanner: token too long" on snapshots this
 // build had just written.
-//
-// Measured: 90,000 partial failures encode to 24.4 MB, so a repository that
-// failed on every one of defaultMaxSourceFiles files writes roughly 54 MB. The
-// allowance is an order of magnitude above that. Because the prefix that selects
-// it comes from the artifact, it is granted only where a summary is legal — after
-// a validated header and before any summary — and only once per decode, so the
-// leading bytes of a malformed file cannot ask for the large buffer at all, let
-// alone repeatedly. Peak accumulation is bounded by the two constants together.
-//
-// The residual limit is deliberate and stated rather than removed: an operator
-// who raises ENTIRE_GRAPH_MAX_FILES an order of magnitude past the default can
-// write a summary this refuses. That is a bounded failure with a clear message,
-// where no bound at all is an unbounded allocation on a malformed artifact.
 const (
-	compactSnapshotRecordLineBytes   = 16 * 1024 * 1024
-	compactSnapshotSummaryLineBytes  = 512 * 1024 * 1024
-	compactSnapshotSummaryLinePrefix = `["m",`
+	compactSnapshotRecordLineBytes     = 16 * 1024 * 1024
+	compactSnapshotSummaryBytesPerFile = 2048
+	compactSnapshotSummaryLineCeiling  = 512 * 1024 * 1024
+	compactSnapshotSummaryLinePrefix   = `["m",`
 )
+
+// compactSnapshotSummaryLineLimit returns the allowance for the summary line.
+//
+// It is derived from the listing cap this process resolves — the same
+// resolution the encoder honours, ENTIRE_GRAPH_MAX_FILES included — because that
+// cap is what decides how many entries the summary can carry. Measured: 90,000
+// partial failures encode to 24.4 MB, about 270 bytes an entry, so 2 KiB a file
+// is roughly eight times the observed cost of one.
+//
+// compactSnapshotSummaryLineCeiling then caps the result, and stands in when the
+// listing cap is disabled, so peak accumulation is bounded whatever the
+// configuration says. The floor keeps the summary from being held to less than
+// an ordinary record when the listing cap is small.
+//
+// Two residual limits, stated rather than removed. A repository whose paths
+// average past the per-file allowance, or one indexed with a listing cap an
+// order of magnitude above the default, can write a summary this refuses — a
+// bounded failure with a clear message, where no bound is an unbounded
+// allocation on a malformed artifact. And the allowance is reachable only after
+// a validated header, at a position where a summary is legal, once per decode:
+// the prefix that selects it comes from the artifact, so it cannot be the only
+// thing standing in front of the larger buffer.
+func compactSnapshotSummaryLineLimit() int {
+	files := resolveMaxSourceFiles(0)
+	if files < 0 || files > compactSnapshotSummaryLineCeiling/compactSnapshotSummaryBytesPerFile {
+		return compactSnapshotSummaryLineCeiling
+	}
+	if limit := compactSnapshotSummaryBytesPerFile * files; limit > compactSnapshotRecordLineBytes {
+		return limit
+	}
+	return compactSnapshotRecordLineBytes
+}
 
 // readCompactSnapshotLine returns the next line of a compact snapshot with its
 // line ending removed, and io.EOF once the reader is exhausted. A line longer
