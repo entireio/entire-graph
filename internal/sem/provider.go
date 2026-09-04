@@ -2069,7 +2069,13 @@ var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]
 // every one of them, so a qualifier the CE had rebound was still classified by
 // the project's module declarations and pinned `Json.serialize` to an unrelated
 // project module named `Json`.
-var fsharpValueBindingPattern = regexp.MustCompile(`(?m)^[ \t]*(?:let|use)!?[ \t]+(?:mutable[ \t]+)?([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::[^=\n]*)?=`)
+//
+// The modifiers before the name are captured rather than skipped because `rec`
+// changes the binding's SCOPE: without it the name is invisible inside its own
+// initializer, with it the name is in scope there. `rec` was not accepted at
+// all, so `let rec Json = ...` bound nothing and its own body was classified by
+// the project's module declarations alone.
+var fsharpValueBindingPattern = regexp.MustCompile(`(?m)^[ \t]*(?:let|use)!?[ \t]+((?:(?:rec|mutable)[ \t]+)*)([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::[^=\n]*)?=`)
 
 // fsharpShadowBinding is one name a file binds lexically, together with the
 // lines that binding governs. F# scoping is ordered and offside-based: a
@@ -2082,8 +2088,11 @@ type fsharpShadowBinding struct {
 	// binder -- a value binding, a function parameter -- binds a value rather
 	// than a module and leaves this empty.
 	target string
-	// line is where the binding is written, 1-based in file coordinates.
-	line int
+	// fromLine is the first line the binding shadows the name on, 1-based in
+	// file coordinates. That is NOT always the line the binding is written on:
+	// a non-recursive `let` is not in scope inside its own initializer, so its
+	// shadow starts only once the right-hand side has ended.
+	fromLine int
 	// throughLine is the last line the binding still shadows the name on.
 	throughLine int
 }
@@ -2117,11 +2126,24 @@ func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
 	lines := strings.Split(maskFSharpBlockComments(content), "\n")
 	var bindings []fsharpShadowBinding
 	for index, line := range lines {
-		if name, target := fsharpShadowBindingAt(line); name != "" {
+		if name, target, recursive := fsharpShadowBindingAt(line); name != "" {
+			// F# `let` is not recursive: the name a binding introduces is not
+			// in scope inside the initializer that defines it, so
+			// `let Json = Json.serialize x` still names the project module on
+			// its right-hand side and only rebinds the name below. Starting the
+			// shadow on the binding line read that qualifier as the new value,
+			// and a shadowed qualifier records bare and resolves unrestricted --
+			// the wrong-definition direction, an edge into whatever `serialize`
+			// sat nearest rather than the module the source wrote. `rec` asks
+			// for exactly the opposite rule and keeps the binding line.
+			from := index + 1
+			if !recursive {
+				from = fsharpInitializerEnd(lines, index) + 1
+			}
 			bindings = append(bindings, fsharpShadowBinding{
 				name:        name,
 				target:      target,
-				line:        index + 1,
+				fromLine:    from,
 				throughLine: fsharpBindingScopeEnd(lines, index),
 			})
 			continue
@@ -2132,10 +2154,14 @@ func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
 		// the header opens rather than the block the header sits in, so it is
 		// closed by the next line at the header's OWN indent -- the sibling
 		// binding after the function -- not only by a dedent past it.
+		//
+		// A parameter is bound by the HEADER, not by an initializer, so unlike
+		// a `let` it shadows from the header line itself: the body of
+		// `let run (Json: JsonConvert) x = Json.serialize x` is written there.
 		for _, name := range fsharpFunctionParameterNames(line) {
 			bindings = append(bindings, fsharpShadowBinding{
 				name:        name,
-				line:        index + 1,
+				fromLine:    index + 1,
 				throughLine: fsharpParameterScopeEnd(lines, index),
 			})
 		}
@@ -2143,25 +2169,30 @@ func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
 	return bindings
 }
 
-// fsharpShadowBindingAt returns the name this line binds lexically and, when
-// the binder is a module abbreviation, the module path it binds that name TO.
-// A name bound to no module path -- a value, a parameter -- comes back with an
-// empty target. Both are empty if the line binds nothing.
-func fsharpShadowBindingAt(line string) (string, string) {
+// fsharpShadowBindingAt returns the name this line binds lexically; when the
+// binder is a module abbreviation, the module path it binds that name TO; and
+// whether the binding is RECURSIVE, which decides whether it shadows inside its
+// own initializer. A name bound to no module path -- a value, a parameter --
+// comes back with an empty target. The name is empty if the line binds nothing.
+//
+// A module abbreviation is never recursive: `module Json = Newtonsoft.Json`
+// resolves its right-hand side in the scope OUTSIDE itself, exactly as a
+// non-recursive `let` does.
+func fsharpShadowBindingAt(line string) (string, string, bool) {
 	if match := fsharpModuleAbbreviationPattern.FindStringSubmatch(line); match != nil {
 		// `module M = begin ... end` is the verbose spelling of a nested module
 		// BLOCK, not an abbreviation: it binds no alias, it opens a scope. It is
 		// the one right-hand side that has to be excluded, which is why the
 		// pattern captures the word rather than guessing from its case.
 		if match[2] == "begin" {
-			return "", ""
+			return "", "", false
 		}
-		return match[1], match[2]
+		return match[1], match[2], false
 	}
 	if match := fsharpValueBindingPattern.FindStringSubmatch(line); match != nil {
-		return match[1], ""
+		return match[2], "", slices.Contains(strings.Fields(match[1]), "rec")
 	}
-	return "", ""
+	return "", "", false
 }
 
 // fsharpFunctionHeaderPattern matches the head of a `let`/`use` FUNCTION
@@ -2307,6 +2338,20 @@ func fsharpBindingScopeEnd(lines []string, index int) int {
 	return fsharpScopeEnd(lines, index, false)
 }
 
+// fsharpInitializerEnd returns the last line of the initializer belonging to the
+// binding written on lines[index] -- the whole right-hand side, which the
+// offside rule writes as the block that line opens and the first following line
+// back at the binding's own indent closes. A single-line binding therefore ends
+// on its own line, and a binding whose right-hand side runs on ends with the
+// last continuation line.
+//
+// This is what a non-recursive binding is NOT in scope for. It is the same
+// offside question a parameter's body asks, so it shares the rule, but it is a
+// different question and is asked at the other end of the binding.
+func fsharpInitializerEnd(lines []string, index int) int {
+	return fsharpScopeEnd(lines, index, true)
+}
+
 // fsharpParameterScopeEnd returns the last line the parameters declared by the
 // header on lines[index] are still in scope for. A parameter lives in the body
 // the header OPENS, and that body is written indented past the header, so the
@@ -2375,7 +2420,7 @@ func fsharpShadowsAt(bindings []fsharpShadowBinding, block string, startLine int
 		}
 		var shadows map[string]string
 		for _, binding := range bindings {
-			if binding.line <= at && at <= binding.throughLine {
+			if binding.fromLine <= at && at <= binding.throughLine {
 				if shadows == nil {
 					shadows = map[string]string{}
 				}

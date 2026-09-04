@@ -17316,7 +17316,7 @@ module Json = begin
 `)
 		for _, binding := range bindings {
 			if binding.name == "Json" {
-				t.Fatalf("`module Json = begin ... end` was read as a binding of %q at line %d; it opens a nested module block and binds no alias", binding.name, binding.line)
+				t.Fatalf("`module Json = begin ... end` was read as a binding of %q shadowing from line %d; it opens a nested module block and binds no alias", binding.name, binding.fromLine)
 			}
 		}
 	})
@@ -17365,6 +17365,96 @@ let run (x: int) =
 `)
 		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("`Json.serialize` written only below `let Json` reached %v, want %v: the binding is in scope there", got, want)
+		}
+	})
+}
+
+func TestFSharpNonRecursiveBindingDoesNotShadowItsOwnInitializer(t *testing.T) {
+	// `let f = ...` is NOT recursive in F#: the name is invisible inside the
+	// initializer that defines it, and only comes into scope for what follows.
+	// The shadow was switched on at the binding LINE, so `let Json =
+	// Json.serialize x` read its own right-hand side under the new binding --
+	// and a shadowed qualifier records bare and resolves unrestricted, so the
+	// call bound the caller's own `serialize` instead of the project module
+	// `Json` the initializer names. That is the wrong-definition direction: not
+	// a lost restriction, an edge into a definition the source never wrote.
+	t.Run("single-line initializer", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Json.serialize(x)
+    Json
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` inside `let Json = ...`'s own initializer reached %v, want %v: a non-recursive binding is not in scope in its own right-hand side, so the qualifier still names the project module", got, want)
+		}
+	})
+
+	t.Run("multi-line initializer", func(t *testing.T) {
+		// The initializer is the offside block the binding opens, not just the
+		// text after the `=`, so the exclusion has to last as long as the
+		// right-hand side does.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json =
+        Json.serialize(x)
+    Json
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` on the continuation line of `let Json =`'s initializer reached %v, want %v: the binding is not in scope until its right-hand side ends", got, want)
+		}
+	})
+
+	// The opposite directions, which matter as much: narrowing the shadow off
+	// the initializer must not narrow it off anything else.
+	t.Run("the same binding still shadows below its initializer", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = Json.serialize(x)
+    Json.serialize(x)
+`)
+		if want := []string{"Json.fs", "Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("the two `Json.serialize` sightings reached %v, want %v: the initializer's names the project module, the one BELOW the binding names the value it bound", got, want)
+		}
+	})
+
+	t.Run("a recursive binding does shadow its own body", func(t *testing.T) {
+		// `rec` is exactly the request for the opposite rule: the name IS in
+		// scope inside its own body, so the qualifier there names the binding
+		// and resolves unrestricted.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let rec Json = Json.serialize(x)
+    Json
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` inside `let rec Json = ...` reached %v, want %v: `rec` puts the binding in scope within its own body", got, want)
+		}
+	})
+
+	t.Run("a parameter still shadows on the header line", func(t *testing.T) {
+		// A parameter is not a `let` initializer: it is bound by the header and
+		// is in scope over the whole body the header opens, starting with the
+		// header line itself when the body is written there.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json: Newtonsoft.Json.JsonConvert) (x: int) = Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under a parameter named `Json` reached %v, want %v: a parameter shadows from the header line, unlike a `let` initializer", got, want)
 		}
 	})
 }
