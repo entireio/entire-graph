@@ -346,7 +346,12 @@ type SymbolRecord struct {
 	// Call resolution uses it to tell an overload set apart from genuinely
 	// ambiguous same-name definitions. Private, so the frozen schema and the
 	// compound-v1 IDs are unchanged.
-	bodyless       bool
+	bodyless bool
+	// cLinkage: this symbol is declared inside an `extern "C" { ... }` block
+	// (see Entity.cLinkage). candidateSharesDeclarations reads it to tell the
+	// C-linkage half of a dual-use header from the C++ half. Private, so the
+	// frozen schema and the compound-v1 IDs are unchanged.
+	cLinkage       bool
 	parameterNames []string
 	// parameterNamesKnown distinguishes an AST-confirmed empty parameter list
 	// from missing parser metadata. This stays private to preserve the frozen
@@ -1877,6 +1882,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			sourceStartByte: entity.sourceStartByte,
 			sourceEndByte:   entity.sourceEndByte,
 			bodyless:        entity.bodyless,
+			cLinkage:        entity.cLinkage,
 		}
 		// Carried for every language: the parser marks parameterNamesKnown only
 		// when it actually read the names off the parse tree, so a grammar with
@@ -2103,6 +2109,155 @@ func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, 
 }
 
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
+	return resolveCallTargetsWithRawImport(name, from, candidates, nil, nil, sameFile, importsByName, allowMethodTargets)
+}
+
+type pythonCallImportInputs struct {
+	rawCandidates       []SymbolRecord
+	rawImportModuleSets [][]string
+	imports             map[string][]string
+	genericAllowed      bool
+}
+
+func pythonCallImportBinding(name string, from SymbolRecord, language string, scopes *pythonBareImportScopes, symbolsByShortName map[string][]SymbolRecord, importsByName map[string][]string, importingPath string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) pythonCallImportInputs {
+	inputs := pythonCallImportInputs{rawCandidates: symbolsByShortName[name], imports: importsByName, genericAllowed: true}
+	if modules := importsByName[name]; len(modules) > 0 {
+		inputs.rawImportModuleSets = [][]string{modules}
+	}
+	if language != "Python" {
+		return inputs
+	}
+	if scopes != nil && scopes.complete {
+		inputs.rawImportModuleSets = scopes.genericImportModuleSets(from, name)
+		inputs.imports = importsWithName(importsByName, name, scopes.genericImportModules(from, name), importingPath, manifestImports, knownFiles, readContent)
+		inputs.genericAllowed = scopes.genericCallAllowed(from, name)
+	} else {
+		// An incomplete or unavailable AST cannot license raw cross-language
+		// widening. Keep the ordinary import map for filtered resolution.
+		inputs.rawCandidates = nil
+		inputs.rawImportModuleSets = nil
+	}
+	if len(inputs.rawImportModuleSets) == 0 {
+		inputs.rawCandidates = nil
+	}
+	return inputs
+}
+
+// importsWithName replaces one binding in the normal import map with the
+// modules visible at a particular Python call site. The normal map contains
+// tagged repository-local paths beside authored specifiers; rebuild those tags
+// for the selected scope bindings so ordinary same-language import resolution
+// retains its exact-file match without restoring hidden/rebound imports.
+func importsWithName(imports map[string][]string, name string, modules []string, importingPath string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) map[string][]string {
+	copy := make(map[string][]string, len(imports))
+	for key, value := range imports {
+		copy[key] = value
+	}
+	if len(modules) == 0 {
+		delete(copy, name)
+	} else {
+		resolved := append([]string(nil), modules...)
+		for _, module := range modules {
+			if path, ok := resolveImportSpecPath(importingPath, module, manifestImports, knownFiles, readContent); ok && path != "" {
+				resolved = append(resolved, resolvedImportPathPrefix+path)
+			}
+		}
+		copy[name] = uniqueStrings(resolved)
+	}
+	return copy
+}
+
+// resolvePythonAliasImportTargets keeps an AST-visible `from module import
+// member as local` binding tied to its original member name. Module-only
+// aliases intentionally return handled without a target: a module object is
+// not a bare callable and must not fall through to a same-spelled workspace
+// symbol or an invented `module.local` external edge.
+func resolvePythonAliasImportTargets(local string, from SymbolRecord, contexts []pythonImportContext, symbolsByShortName map[string][]SymbolRecord, importingPath string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) (targets []resolvedCallTarget, external []RelationRecord, handled bool) {
+	seen := map[string]bool{}
+	for _, context := range contexts {
+		if context.member == "" {
+			handled = true
+			continue
+		}
+		if context.member == local {
+			continue
+		}
+		handled = true
+		imports := importsWithName(nil, context.member, context.modules, importingPath, manifestImports, knownFiles, readContent)
+		candidates := sharedTypeCandidates(from, symbolsByShortName[context.member])
+		resolved := resolveImportedCallTargets(context.member, from, candidates, imports, false)
+		if len(resolved) == 0 {
+			resolved, _ = resolveUniqueRawImportedCallTarget(context.member, from, symbolsByShortName[context.member], [][]string{imports[context.member]}, false)
+		}
+		if len(resolved) == 0 {
+			external = append(external, importedExternalCallRelationsForName(from, context.member, context.modules)...)
+			continue
+		}
+		for _, target := range resolved {
+			if !seen[target.ID] {
+				seen[target.ID] = true
+				targets = append(targets, target)
+			}
+		}
+	}
+	return targets, external, handled
+}
+
+// pythonIncompleteAliasContexts is deliberately a fallback for malformed or
+// depth-limited ASTs only. It preserves the original imported member for an
+// external relation, but is never used to recover a local target: incomplete
+// scope analysis must remain fail-closed for local resolution.
+func pythonIncompleteAliasContexts(bindings map[string][]pythonImportBinding) map[string][]pythonImportContext {
+	contexts := map[string][]pythonImportContext{}
+	for local, entries := range bindings {
+		for _, binding := range entries {
+			if binding.Imported == local {
+				continue // ordinary `from module import local` keeps normal fallback
+			}
+			module := binding.Module
+			if binding.Imported != "" {
+				module = pythonFromImportModuleSpec(module, binding.Imported)
+			}
+			contexts[local] = appendPythonImportContext(contexts[local], pythonImportContext{modules: []string{module}, member: binding.Imported})
+		}
+	}
+	return contexts
+}
+
+func pythonAliasExternalCallRelations(from SymbolRecord, contexts []pythonImportContext) []RelationRecord {
+	var relations []RelationRecord
+	for _, context := range contexts {
+		if context.member != "" {
+			relations = append(relations, importedExternalCallRelationsForName(from, context.member, context.modules)...)
+		}
+	}
+	return relations
+}
+
+func unionResolvedCallTargets(groups ...[]resolvedCallTarget) []resolvedCallTarget {
+	seen := map[string]bool{}
+	var targets []resolvedCallTarget
+	for _, group := range groups {
+		for _, target := range group {
+			if !seen[target.ID] {
+				seen[target.ID] = true
+				targets = append(targets, target)
+			}
+		}
+	}
+	return targets
+}
+
+// resolveCallTargetsWithRawImport keeps the normal language-filtered candidate
+// set for every ordinary resolution tier. A bare imported call may additionally
+// retain the raw workspace candidates so an explicit, unique import path can
+// bind a local FFI target that the type-sharing policy deliberately excludes.
+func resolveCallTargetsWithRawImport(name string, from SymbolRecord, candidates, rawCandidates []SymbolRecord, rawImportModuleSets [][]string, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
+	// candidates arrive ALREADY filtered to languages the caller can name: every
+	// call site wraps its symbolsByShortName lookup in sharedTypeCandidates,
+	// because that is where the referring symbol is known. Re-filtering here
+	// would be a second application of an idempotent function and, worse, would
+	// look like the guard when the call sites are the guard.
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
 		// A bare `name()` call resolves to a function, not a class method (methods
@@ -2138,6 +2293,11 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	if imported := resolveImportedCallTargets(name, from, candidates, importsByName, allowMethodTargets); len(imported) > 0 {
 		return imported
+	}
+	if rawCandidates != nil {
+		if imported, bound := resolveUniqueRawImportedCallTarget(name, from, rawCandidates, rawImportModuleSets, allowMethodTargets); bound {
+			return imported
+		}
 	}
 
 	// Same-package resolution: in Go every file in a directory is the same
@@ -2255,6 +2415,44 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 		}
 	}
 	return nil
+}
+
+// resolveUniqueRawImportedCallTarget is the narrow FFI exception to the
+// language-filtered short-name index. The imported binding is authoritative
+// only when its module path names exactly one callable workspace target. A
+// missing or ambiguous raw match blocks same-package/global-name fallback for
+// this imported name, leaving the ordinary external edge in place instead of
+// guessing from an unrelated declaration with the same spelling.
+func resolveUniqueRawImportedCallTarget(name string, from SymbolRecord, candidates []SymbolRecord, moduleSets [][]string, allowMethodTargets bool) ([]resolvedCallTarget, bool) {
+	if len(moduleSets) == 0 {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	var targets []resolvedCallTarget
+	bound := false
+	for _, modules := range moduleSets {
+		var matched []SymbolRecord
+		for _, to := range candidates {
+			if to.ID == from.ID || to.Name != name || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+				continue
+			}
+			if importedNameMatchesFile(modules, from.FilePath, to.FilePath) {
+				matched = append(matched, to)
+			}
+		}
+		bound = true
+		if len(matched) == 1 && !seen[matched[0].ID] {
+			seen[matched[0].ID] = true
+			targets = append(targets, resolvedCallTarget{
+				SymbolRecord: matched[0],
+				Confidence:   0.84,
+				Reason:       "direct call expression resolved through imported module path",
+				Resolution:   "import_resolved",
+				Scope:        "module",
+			})
+		}
+	}
+	return targets, bound
 }
 
 // resolveJSNamespaceCallTargets resolves a namespace-qualified call against
@@ -2383,7 +2581,7 @@ func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []Symb
 	}
 	receiver := name[:strings.LastIndex(name, ".")]
 	var related []resolvedCallTarget
-	for _, to := range symbolsByShortName[terminal] {
+	for _, to := range sharedTypeCandidates(from, symbolsByShortName[terminal]) {
 		if to.ID == from.ID || to.FilePath == from.FilePath || !callableTargetKind(to.Kind) || to.Kind == "method" || !localReachable(from, to) {
 			continue
 		}
@@ -3072,7 +3270,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				for _, edge := range supertypesFromSignature(symbol.Language, symbol.Signature) {
 					sup, ok := firstTypeLikeNamed(symbolsByFile[symbol.FilePath], edge.Super)
 					if !ok || sup.ID == symbol.ID {
-						sup, ok = firstTypeLikeNamed(symbolsByShortName[edge.Super], edge.Super)
+						sup, ok = firstTypeLikeNamed(sharedTypeCandidates(symbol, symbolsByShortName[edge.Super]), edge.Super)
 					}
 					if !ok || sup.ID == symbol.ID {
 						continue
@@ -3333,6 +3531,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		// inventory-only `document` symbols (whose block is the whole file) and
 		// over data/markup languages, inventing cross-language call edges.
 		fileNeedsCallScan := needsCallScan && callExtractionLanguage(file.Language) && !skipFastCFamilyCallScan(spec, file.Language)
+		var pythonBareScopes *pythonBareImportScopes
+		var pythonIncompleteAliases map[string][]pythonImportContext
+		if fileNeedsCallScan && file.Language == "Python" {
+			pythonBareScopes = newPythonBareImportScopes(content, currentFileSymbols)
+			if !pythonBareScopes.complete {
+				pythonIncompleteAliases = pythonIncompleteAliasContexts(importedPythonBindings(content))
+			}
+		}
 		fileNeedsRouteScan := spec.emits("HANDLES_ROUTE") && routeScanLanguage(file.Language)
 		fileNeedsHTTPScan := spec.emits("HTTP_CALLS") && httpScanLanguage(file.Language)
 		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language)
@@ -3638,6 +3844,29 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
+					inputs := pythonCallImportBinding(name, from, file.Language, pythonBareScopes, symbolsByShortName, callImportsByName, file.Path, manifestImports, knownFiles, readContent)
+					rawCandidates := inputs.rawCandidates
+					rawImportModuleSets := inputs.rawImportModuleSets
+					importsForCall := inputs.imports
+					var pythonAliasTargets []resolvedCallTarget
+					var pythonAliasExternal []RelationRecord
+					pythonGenericAllowed := inputs.genericAllowed
+					if file.Language == "Python" {
+						// The raw FFI exception is valid only for imports visible at an
+						// unshadowed AST call site in this callable. Ordinary filtered
+						// resolution keeps its established file-level map when scope
+						// analysis is incomplete; that incomplete view may only disable
+						// the raw cross-language exception, never ordinary imports.
+						if pythonBareScopes.complete {
+							pythonAliasTargets, pythonAliasExternal, _ = resolvePythonAliasImportTargets(name, from, pythonBareScopes.importContexts(from, name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
+						} else {
+							rawCandidates = nil
+							if contexts := pythonIncompleteAliases[name]; len(contexts) > 0 {
+								pythonAliasExternal = pythonAliasExternalCallRelations(from, contexts)
+								pythonGenericAllowed = false
+							}
+						}
+					}
 					// A container's block spans its members' definition lines, which
 					// look like calls (e.g. `def validate(self):`). Skip the names of
 					// direct children so a class is not credited with calling its own
@@ -3647,7 +3876,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 					var targets []resolvedCallTarget
 					suppressExternal := false
-					if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
+					if file.Language == "Python" && !pythonGenericAllowed {
+						suppressExternal = true
+					} else if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
 						// Same-file namespace members first, then members of a
 						// merged same-file value declaration, then the terminal-name
 						// fallback for namespaces reopened in another file. Shadowed
@@ -3659,7 +3890,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
 					} else {
-						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
+						targets = resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
 						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols, juliaLocalBindings)
 						genericSameContainerType := len(targets) == 1 && typeLikeKind(targets[0].Kind) &&
 							targets[0].FilePath == from.FilePath && targets[0].ContainerID == from.ContainerID
@@ -3670,6 +3901,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							targets = juliaTargets
 							suppressExternal = len(juliaTargets) == 0
 						}
+					}
+					normalTargets := targets
+					if file.Language == "Python" {
+						targets = unionResolvedCallTargets(normalTargets, pythonAliasTargets)
 					}
 					for _, to := range targets {
 						// A bare identifier passed as an argument may be a callback, but
@@ -3738,8 +3973,17 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							continue
 						}
 					}
-					if len(targets) == 0 && !suppressExternal {
-						for _, relation := range importedExternalCallRelationsForName(from, name, callImportsByName[name]) {
+					if file.Language == "Python" {
+						for _, relation := range pythonAliasExternal {
+							emit(relation)
+						}
+						if pythonGenericAllowed && len(normalTargets) == 0 && !suppressExternal {
+							for _, relation := range importedExternalCallRelationsForName(from, name, importsForCall[name]) {
+								emit(relation)
+							}
+						}
+					} else if len(targets) == 0 && !suppressExternal {
+						for _, relation := range importedExternalCallRelationsForName(from, name, importsForCall[name]) {
 							emit(relation)
 						}
 					}
@@ -3754,7 +3998,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
+					inputs := pythonCallImportBinding(name, from, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					var targets []resolvedCallTarget
+					if file.Language != "Python" || inputs.genericAllowed {
+						targets = resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), inputs.rawCandidates, inputs.rawImportModuleSets, currentFileSymbols, inputs.imports, false)
+					}
+					if file.Language == "Python" && pythonBareScopes != nil && pythonBareScopes.complete {
+						aliasTargets, _, _ := resolvePythonAliasImportTargets(name, from, pythonBareScopes.importContexts(from, name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
+						targets = unionResolvedCallTargets(targets, aliasTargets)
+					}
+					for _, to := range targets {
 						if typeLikeKind(to.Kind) {
 							continue // construction, not an async call
 						}
@@ -3807,7 +4060,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if flow.Name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName, true) {
+					inputs := pythonCallImportBinding(flow.Name, from, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					var targets []resolvedCallTarget
+					if file.Language != "Python" || inputs.genericAllowed {
+						targets = resolveCallTargetsWithRawImport(flow.Name, from, sharedTypeCandidates(from, symbolsByShortName[flow.Name]), inputs.rawCandidates, inputs.rawImportModuleSets, currentFileSymbols, inputs.imports, true)
+					}
+					if file.Language == "Python" && pythonBareScopes != nil && pythonBareScopes.complete {
+						aliasTargets, _, _ := resolvePythonAliasImportTargets(flow.Name, from, pythonBareScopes.importContexts(from, flow.Name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
+						targets = unionResolvedCallTargets(targets, aliasTargets)
+					}
+					for _, to := range targets {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}
@@ -4120,14 +4382,37 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				for _, name := range sortedKeysOf(topLevelNames) {
+					inputs := pythonCallImportBinding(name, fileSource, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					rawCandidates := inputs.rawCandidates
+					rawImportModuleSets := inputs.rawImportModuleSets
+					importsForCall := inputs.imports
+					var pythonAliasTargets []resolvedCallTarget
+					var pythonIncompleteAliasExternal []RelationRecord
+					pythonGenericAllowed := inputs.genericAllowed
+					if file.Language == "Python" {
+						if pythonBareScopes.complete {
+							pythonAliasTargets, _, _ = resolvePythonAliasImportTargets(name, fileSource, pythonBareScopes.importContexts(fileSource, name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
+						} else {
+							rawCandidates = nil
+							if contexts := pythonIncompleteAliases[name]; len(contexts) > 0 {
+								pythonIncompleteAliasExternal = pythonAliasExternalCallRelations(fileSource, contexts)
+								pythonGenericAllowed = false
+							}
+						}
+					}
 					var targets []resolvedCallTarget
-					if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
+					if file.Language == "Python" && !pythonGenericAllowed {
+						targets = nil
+					} else if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
 						// Same chain as the per-symbol namespace path above; the
 						// file-level pseudo-symbol has no self-call or member names
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else {
-						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false)
+						targets = resolveCallTargetsWithRawImport(name, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
+					}
+					if file.Language == "Python" {
+						targets = unionResolvedCallTargets(targets, pythonAliasTargets)
 					}
 					for _, to := range targets {
 						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
@@ -4154,6 +4439,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							}},
 							WarningCodes: []string{},
 						})
+					}
+					for _, relation := range pythonIncompleteAliasExternal {
+						emit(relation)
 					}
 				}
 			}
@@ -4477,7 +4765,7 @@ func buildMixinRelation(repoKey string, anchor SymbolRecord, edge rawSupertype, 
 		}
 	}
 	if targetKind == "external" {
-		for _, symbol := range symbolsByShortName[edge.Super] {
+		for _, symbol := range sharedTypeCandidates(anchor, symbolsByShortName[edge.Super]) {
 			if accepts(symbol) {
 				toID, targetKind, resolution, scope, confidence = symbol.ID, "symbol", "name_only", "module", minFloat(edge.Confidence, 0.85)
 				break
@@ -4626,7 +4914,7 @@ func buildTypeRelation(repoKey string, anchor SymbolRecord, super, relation stri
 	confidence := minFloat(baseConfidence, 0.8)
 	if sym, ok := firstTypeLikeNamed(sameFileSymbols, super); ok && sym.ID != anchor.ID {
 		toID, targetKind, resolution, scope, confidence = sym.ID, "symbol", "exact", "file", baseConfidence
-	} else if sym, ok := firstTypeLikeNamed(symbolsByShortName[super], super); ok && sym.ID != anchor.ID {
+	} else if sym, ok := firstTypeLikeNamed(sharedTypeCandidates(anchor, symbolsByShortName[super]), super); ok && sym.ID != anchor.ID {
 		toID, targetKind, resolution, scope, confidence = sym.ID, "symbol", "name_only", "module", minFloat(baseConfidence, 0.85)
 	}
 	return RelationRecord{
@@ -4683,7 +4971,7 @@ func typeScriptReceiverTypeResolvesElsewhere(typeName string, from SymbolRecord,
 	if len(importsByName[typeName]) > 0 {
 		return true
 	}
-	for _, candidate := range symbolsByShortName[typeName] {
+	for _, candidate := range sharedTypeCandidates(from, symbolsByShortName[typeName]) {
 		if !typeLikeKind(candidate.Kind) || candidate.FilePath != from.FilePath {
 			continue
 		}
@@ -4920,10 +5208,10 @@ func collectPackageVarTypes(content string) map[string]pkgQualType {
 // reference by the Go convention that a package's import alias equals its
 // directory basename (json.Encoder -> the Encoder in .../json/). Requires a
 // unique match so an ambiguous alias resolves to nothing rather than wrongly.
-func resolveQualifiedType(qt pkgQualType, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
+func resolveQualifiedType(from SymbolRecord, qt pkgQualType, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
 	var match SymbolRecord
 	found := 0
-	for _, cand := range symbolsByShortName[qt.typeName] {
+	for _, cand := range sharedTypeCandidates(from, symbolsByShortName[qt.typeName]) {
 		if !typeLikeKind(cand.Kind) {
 			continue
 		}
@@ -5096,7 +5384,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// the package's own file (perlSymbolFileMatchesType), which is how the
 		// fluent gate distinguishes a same-object chain from getter navigation.
 		hopResolvable := func(hop, pkgType string) bool {
-			for _, candidate := range symbolsByShortName[hop] {
+			for _, candidate := range sharedTypeCandidates(from, symbolsByShortName[hop]) {
 				if candidate.Language != "Perl" {
 					continue
 				}
@@ -5352,7 +5640,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	var relations []RelationRecord
 	methodResolved := map[string]bool{}
 	for _, call := range calls {
-		method, confidence, reason, resolution, scope, ok := receiverQualifiedMethodTarget(from, call, symbolsByShortName[call.Method], returnTypesBySymbolNameAndFile)
+		method, confidence, reason, resolution, scope, ok := receiverQualifiedMethodTarget(from, call, sharedTypeCandidates(from, symbolsByShortName[call.Method]), returnTypesBySymbolNameAndFile)
 		if !ok {
 			continue
 		}
@@ -5400,7 +5688,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if typeName == "" {
 				continue
 			}
-			target, ok := perlCallableForType(typeName, call.Method, symbolsByShortName[call.Method])
+			target, ok := perlCallableForType(typeName, call.Method, sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || target.ID == from.ID {
 				continue
 			}
@@ -5462,13 +5750,13 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 					confidence = 0.75
 					reason = "method call resolved via property-chain-typed local receiver"
 				}
-				sym, ok := typeLikeNamedWithMethod(symbolsByShortName[typeName], typeName, from.FilePath, call.Method, methodsByContainer, superContainerByID)
+				sym, ok := typeLikeNamedWithMethod(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath, call.Method, methodsByContainer, superContainerByID)
 				if !ok {
 					continue
 				}
 				targetID = sym.ID
 				receiverTypeKind = sym.Kind
-			} else if cls, ok := typeLikeNamedWithMethod(symbolsByShortName[call.Receiver], call.Receiver, from.FilePath, call.Method, methodsByContainer, superContainerByID); ok {
+			} else if cls, ok := typeLikeNamedWithMethod(sharedTypeCandidates(from, symbolsByShortName[call.Receiver]), call.Receiver, from.FilePath, call.Method, methodsByContainer, superContainerByID); ok {
 				// ClassName.method(): the receiver is itself a type name, not a
 				// variable, so this is a static (class-qualified) call and the
 				// target is that class's own method.
@@ -5481,7 +5769,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// convention resolveQualifiedType already encodes) so the method
 				// lookup below runs against the right declaration. For an interface
 				// that declaration's members are its method requirements.
-				sym, ok := resolveQualifiedType(qt, symbolsByShortName)
+				sym, ok := resolveQualifiedType(from, qt, symbolsByShortName)
 				if !ok {
 					continue
 				}
@@ -5493,7 +5781,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// Package-level var of a package-qualified type (alias.Type). Resolve
 				// the specific imported type so an ambiguous bare name (Encoder in
 				// both json and cbor) maps to the right one.
-				sym, ok := resolveQualifiedType(qt, symbolsByShortName)
+				sym, ok := resolveQualifiedType(from, qt, symbolsByShortName)
 				if !ok {
 					continue
 				}
@@ -5504,7 +5792,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// C# class-level member receiver: `Dependencies.Method(...)`
 				// where `Dependencies` is a typed property or field of the
 				// enclosing class (or a base class).
-				sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+				sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath)
 				if !ok {
 					continue
 				}
@@ -5532,7 +5820,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			// last-declared accessor (getter or setter), so resolve the setter
 			// explicitly and prefer it — otherwise the edge lands on the getter
 			// about half the time (declaration-order dependent).
-			if setter, setterInherited, found := dartSetterAccessor(targetID, call.Method, symbolsByShortName[call.Method], superContainerByID); found {
+			if setter, setterInherited, found := dartSetterAccessor(targetID, call.Method, sharedTypeCandidates(from, symbolsByShortName[call.Method]), superContainerByID); found {
 				method, inherited = setter, setterInherited
 			}
 		}
@@ -5551,7 +5839,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			// exactly one method in the workspace carries the name, resolve to
 			// that sole implementation — the same unique-name stance as the Go
 			// interface fallback.
-			method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+			method, ok = uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if ok {
 				confidence = minFloat(confidence, 0.7)
 				reason = "protocol-typed receiver call resolved to the unique implementing method"
@@ -5644,7 +5932,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				continue
 			}
 			unique := 0
-			for _, candidate := range symbolsByShortName[call.Method] {
+			for _, candidate := range sharedTypeCandidates(from, symbolsByShortName[call.Method]) {
 				if candidate.Language == from.Language && candidate.Kind == "method" && candidate.FilePath == from.FilePath {
 					unique++
 				}
@@ -5690,7 +5978,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if _, external := importedReceiverVars[call.Receiver]; external {
 			continue
 		}
-		m, ok := uniqueMethodByShortName(symbolsByShortName[call.Method])
+		m, ok := uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 		if !ok || m.ID == from.ID {
 			continue
 		}
@@ -5726,7 +6014,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if methodResolved[call.Receiver+"."+call.Method] {
 			continue
 		}
-		m, ok := uniqueMethodByShortName(symbolsByShortName[call.Method])
+		m, ok := uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 		if !ok || m.ID == from.ID || m.FilePath != from.FilePath {
 			continue
 		}
@@ -5756,7 +6044,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if methodResolved[call.Receiver+"."+call.Method] {
 				continue
 			}
-			target, ok := uniqueCallableByShortName(symbolsByShortName[call.Method], from.Language)
+			target, ok := uniqueCallableByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]), from.Language)
 			if !ok || target.ID == from.ID {
 				continue
 			}
@@ -5862,7 +6150,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 			var target SymbolRecord
 			resolved := false
-			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, from.FilePath); ok {
+			if sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[propType]), propType, from.FilePath); ok {
 				if method, _, ok := lookupMethodUpChain(sym.ID, chain.Method, methodsByContainer, superContainerByID); ok {
 					target, resolved = method, true
 				}
@@ -5935,7 +6223,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 			var target SymbolRecord
 			resolved := false
-			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, from.FilePath); ok {
+			if sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[propType]), propType, from.FilePath); ok {
 				if method, _, ok := lookupMethodUpChain(sym.ID, chain.Method, methodsByContainer, superContainerByID); ok {
 					target, resolved = method, true
 				}
@@ -6032,7 +6320,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if methodResolved[key] || swiftChainTails[key] {
 				continue
 			}
-			target, ok := swiftReceiverMethodByArgumentLabels(call, symbolsByShortName[call.Method])
+			target, ok := swiftReceiverMethodByArgumentLabels(call, sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || target.ID == from.ID {
 				continue
 			}
@@ -6177,7 +6465,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			confidence = 0.85
 			reason = "PHP parent:: call resolved to the superclass"
 		default:
-			cls, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[call.Class], call.Class, from.FilePath)
+			cls, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[call.Class]), call.Class, from.FilePath)
 			if !ok {
 				continue
 			}
@@ -6226,7 +6514,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if !ok {
 			continue
 		}
-		sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+		sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath)
 		if !ok {
 			continue
 		}
@@ -6276,7 +6564,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if typeName == "" {
 			continue
 		}
-		sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+		sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath)
 		if !ok {
 			continue
 		}
@@ -6341,7 +6629,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if !ok {
 				continue
 			}
-			receiverSym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[receiverType], receiverType, from.FilePath)
+			receiverSym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[receiverType]), receiverType, from.FilePath)
 			if !ok {
 				continue
 			}
@@ -6354,7 +6642,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if !ok {
 			continue
 		}
-		propSym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, propFile)
+		propSym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[propType]), propType, propFile)
 		if !ok {
 			continue
 		}
@@ -6408,7 +6696,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if methodResolved[call.Receiver+"."+call.Method] {
 				continue
 			}
-			method, ok := csharpUniqueExtensionMethod(symbolsByShortName[call.Method])
+			method, ok := csharpUniqueExtensionMethod(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || method.ID == from.ID {
 				continue
 			}
@@ -6439,7 +6727,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 	}
 	for _, call := range chainedCalls {
-		sym, ok := firstTypeLikeNamed(symbolsByShortName[call.TypeName], call.TypeName)
+		sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[call.TypeName]), call.TypeName)
 		if !ok {
 			continue
 		}
@@ -6456,7 +6744,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			// method in the workspace carries the name, resolve to that sole
 			// implementation — the same unique-name tier as the receiver-call
 			// fallback.
-			method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+			method, ok = uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			confidence = 0.7
 			reason = "interface method call resolved to the unique implementing method"
 			resolution = "name_only"
@@ -6500,7 +6788,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			returnTypes = returnTypesBySymbolNameAndDir[call.Factory][filepath.ToSlash(filepath.Dir(from.FilePath))]
 		}
 		if len(returnTypes) == 0 && from.Language == "Rust" {
-			method, ok := uniqueMethodByShortName(symbolsByShortName[call.Method])
+			method, ok := uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || method.ID == from.ID || method.Language != "Rust" {
 				continue
 			}
@@ -6530,7 +6818,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			continue
 		}
 		for _, typeName := range returnTypes {
-			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 			if !ok {
 				continue
 			}
@@ -6546,7 +6834,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// one method in the workspace carries the name, resolve to that
 				// sole implementation — the same unique-name tier as the
 				// receiver-call fallback.
-				method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+				method, ok = uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 				confidence = 0.7
 				reason = "interface-typed return resolved to the unique implementing method"
 				resolution = "name_only"
@@ -6581,8 +6869,8 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 	}
 	for _, call := range chainedReturnCalls {
-		for _, typeName := range methodReturnChainTypes(call.TypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+		for _, typeName := range methodReturnChainTypes(from, call.TypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 			if !ok {
 				continue
 			}
@@ -6622,8 +6910,8 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 		intermediateMethods := call.Methods[:len(call.Methods)-1]
 		finalMethod := call.Methods[len(call.Methods)-1]
-		for _, typeName := range methodReturnChainTypes(call.TypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+		for _, typeName := range methodReturnChainTypes(from, call.TypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 			if !ok {
 				continue
 			}
@@ -6659,8 +6947,8 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	}
 	for _, call := range returnedChainCalls {
 		for _, factoryTypeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
-			for _, typeName := range methodReturnChainTypes(factoryTypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-				sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			for _, typeName := range methodReturnChainTypes(from, factoryTypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+				sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 				if !ok {
 					continue
 				}
@@ -6703,8 +6991,8 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		intermediateMethods := call.Methods[:len(call.Methods)-1]
 		finalMethod := call.Methods[len(call.Methods)-1]
 		for _, factoryTypeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
-			for _, typeName := range methodReturnChainTypes(factoryTypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-				sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			for _, typeName := range methodReturnChainTypes(from, factoryTypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+				sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 				if !ok {
 					continue
 				}
@@ -6837,13 +7125,13 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 	}
 	sort.Strings(requirements)
 	if len(requirements) == 1 {
-		if _, unique := uniqueGoConcreteMethodByShortName(symbolsByShortName[ifaceMethod.Name]); !unique {
+		if _, unique := uniqueGoConcreteMethodByShortName(sharedTypeCandidates(ifaceMethod, symbolsByShortName[ifaceMethod.Name])); !unique {
 			return nil
 		}
 	}
 	byContainer := map[string]SymbolRecord{}
 	var order []string
-	for _, candidate := range symbolsByShortName[ifaceMethod.Name] {
+	for _, candidate := range sharedTypeCandidates(ifaceMethod, symbolsByShortName[ifaceMethod.Name]) {
 		if candidate.Language != "Go" || candidate.Kind != "method" || candidate.ContainerID == "" {
 			continue
 		}
@@ -7096,7 +7384,7 @@ func receiverDeepChainSuffixes(chained []typedMethodDeepChainCall, returned []re
 	return suffixes
 }
 
-func methodReturnChainTypes(typeName string, methodNames []string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
+func methodReturnChainTypes(from SymbolRecord, typeName string, methodNames []string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
 	if typeName == "" {
 		return nil
 	}
@@ -7108,7 +7396,7 @@ func methodReturnChainTypes(typeName string, methodNames []string, methodsByCont
 		var next []string
 		seen := map[string]bool{}
 		for _, currentType := range types {
-			for _, returnedType := range methodReturnTypes(currentType, methodName, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			for _, returnedType := range methodReturnTypes(from, currentType, methodName, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
 				if returnedType == "" || seen[returnedType] {
 					continue
 				}
@@ -7121,8 +7409,8 @@ func methodReturnChainTypes(typeName string, methodNames []string, methodsByCont
 	return types
 }
 
-func methodReturnTypes(typeName, methodName string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
-	typeSymbol, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+func methodReturnTypes(from SymbolRecord, typeName, methodName string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
+	typeSymbol, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 	if !ok {
 		return nil
 	}
@@ -7150,6 +7438,61 @@ func importedExternalCallRelationsForName(from SymbolRecord, name string, module
 	return relations
 }
 
+// importedReceiverCallTargets resolves `receiver.method(...)`, where `receiver`
+// is a name the file imports, against the WORKSPACE-WIDE short-name index.
+//
+// That index is keyed by name alone, so every lookup into it is cross-language
+// by construction, and elsewhere it is narrowed by sharedTypeCandidates. Here
+// that filter alone is the wrong guard. The language-compatibility relation
+// answers one question -- may source written in language A name a type DECLARED
+// in language B -- and this binding is not a type reference. It is an explicit
+// import whose module path resolves to the callee's FILE, which is direct
+// evidence that these two files interoperate. A Python module calling into a
+// locally built C extension is exactly the shape the relation refuses: Python/C
+// is deliberately absent from it because the dynamic language never names the C
+// struct, yet `import frobnicate` beside `frobnicate.c` really does call its
+// exported functions. Measured before this change the resolved edge was
+// discarded and replaced by an unresolved `external:symbol:frobnicate.compute`
+// target, even though the module path matched a parsed local file.
+//
+// Import evidence outranks the language-pair heuristic only while it is
+// unambiguous. Module paths are matched by suffix, so one import can match
+// same-named callables in several languages at once; nothing then says which of
+// them the import actually bound, and both emitting the fanout and picking a
+// winner invent an FFI edge. So the type-sharing candidates are still preferred
+// whenever they resolve anything -- leaving every previously resolved call,
+// same-language fanout included, exactly as it was -- and the unfiltered set is
+// consulted only when it names exactly one target.
+func importedReceiverCallTargets(from SymbolRecord, modules []string, candidates []SymbolRecord) []resolvedCallTarget {
+	var matched []SymbolRecord
+	for _, to := range candidates {
+		if to.ID == from.ID || to.Kind == "field" {
+			continue
+		}
+		if importedNameMatchesFile(modules, from.FilePath, to.FilePath) {
+			matched = append(matched, to)
+		}
+	}
+	resolved := sharedTypeCandidates(from, matched)
+	if len(resolved) == 0 {
+		if len(matched) != 1 {
+			return nil
+		}
+		resolved = matched
+	}
+	var targets []resolvedCallTarget
+	for _, to := range resolved {
+		targets = append(targets, resolvedCallTarget{
+			SymbolRecord: to,
+			Confidence:   0.84,
+			Reason:       "receiver call resolved through imported module path",
+			Resolution:   "import_resolved",
+			Scope:        "module",
+		})
+	}
+	return targets
+}
+
 func importedReceiverCallRelations(from SymbolRecord, block string, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
@@ -7157,21 +7500,7 @@ func importedReceiverCallRelations(from SymbolRecord, block string, importsByNam
 	var relations []RelationRecord
 	seen := map[string]bool{}
 	for _, call := range receiverCalls(block) {
-		var localTargets []resolvedCallTarget
-		for _, to := range symbolsByShortName[call.Method] {
-			if to.ID == from.ID || to.Kind == "field" {
-				continue
-			}
-			if importedNameMatchesFile(importsByName[call.Receiver], from.FilePath, to.FilePath) {
-				localTargets = append(localTargets, resolvedCallTarget{
-					SymbolRecord: to,
-					Confidence:   0.84,
-					Reason:       "receiver call resolved through imported module path",
-					Resolution:   "import_resolved",
-					Scope:        "module",
-				})
-			}
-		}
+		localTargets := importedReceiverCallTargets(from, importsByName[call.Receiver], symbolsByShortName[call.Method])
 		if len(localTargets) > 0 {
 			for _, target := range localTargets {
 				key := target.ID
@@ -9376,6 +9705,17 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 			if subject == "" {
 				continue
 			}
+			// The workspace short-name lookup is deliberately NOT filtered
+			// through sharedTypeCandidates. That relation answers whether
+			// source in one language may name a type DECLARED in another, and
+			// a TESTS edge names no type: it records the convention that
+			// `test_frobnicate` covers `frobnicate`. Harnesses cross language
+			// boundaries as a matter of course — pytest over a C extension, a
+			// shell script over a compiled binary, JS specs over a WASM module
+			// — so gating them on type interop dropped those edges wholesale,
+			// and asymmetrically at that, since the C-family relation is
+			// directional and C names nothing at all. Precision comes from
+			// resolveTestSubject's evidence order instead.
 			target, resolution, ok := resolveTestSubject(subject, symbol, symbolsByShortName[subject], resolvedImportsByFile[path])
 			if !ok {
 				continue
@@ -9654,9 +9994,26 @@ func typeNameOccursBare(signature, name string) bool {
 // resolution. An ambiguous name with no import evidence resolves to nothing —
 // picking the lexically-first same-name type poisons the graph with
 // cross-crate/cross-package edges.
+//
+// Candidates are restricted to languages that genuinely share type
+// declarations with the referring symbol (see languagesShareTypes). The
+// workspace short-name index is keyed by name alone, so without that filter a
+// workspace-unique name bound across any language boundary — an Erlang record
+// became the resolved parameter type of an R function that happened to reuse
+// the name. Filtering candidates rather than filtering emitted edges also
+// removes those impossible declarations from the ambiguity count, so a foreign
+// same-name declaration no longer suppresses the real, resolvable edge.
 func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecord, symbolsByShortName map[string][]SymbolRecord, importsByName, qualifiedImportsByName map[string][]string) (SymbolRecord, string, string, float64, bool) {
 	var candidates []SymbolRecord
-	for _, sym := range symbolsByShortName[name] {
+	// The language filter is sharedTypeCandidates' job and only its job. Repeating
+	// languagesShareTypes here re-asked the LANGUAGE-pair question about a list
+	// already filtered by candidateSharesDeclarations, which is the finer of the
+	// two: it answers per DECLARATION where a language pair cannot. The duplicate
+	// silently overrode the finer answer -- a `struct` declared `extern "C"` in a
+	// C++-labelled header passed the candidate filter and was then dropped again
+	// here, so `C/renderWidget -> C++/Widget` was missing while the CALLS edge to
+	// the function beside it resolved.
+	for _, sym := range sharedTypeCandidates(from, symbolsByShortName[name]) {
 		if sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind) {
 			candidates = append(candidates, sym)
 		}
@@ -9821,7 +10178,7 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 			// Nearest-package preference, not first-match: a module that declares
 			// one `SDConfig` per sibling package would otherwise attribute every
 			// field read to whichever package sorted first.
-			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath); ok {
+			if sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath); ok {
 				containerID = sym.ID
 				confidence = 0.85
 				if _, ok := paramTypes[access.Receiver]; ok {
@@ -19431,11 +19788,17 @@ func scanPythonImports(content string) []string {
 			seen[module] = struct{}{}
 		}
 	}
-	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*(?:from\s+(\.*[A-Za-z0-9_\.]+)\s+import|import\s+([A-Za-z0-9_\.]+))`)) {
+	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`)) {
 		if strings.HasPrefix(module, ".") && strings.Trim(module, ".") == "" {
 			continue
 		}
 		add(module)
+	}
+	for _, statement := range pythonFromImportStatements(content) {
+		if strings.HasPrefix(statement.module, ".") && strings.Trim(statement.module, ".") == "" {
+			continue
+		}
+		add(statement.module)
 	}
 	runtimeImportCalls := []string{`importlib\s*\.\s*import_module`, `__import__`}
 	for _, match := range regexp.MustCompile(`(?m)^\s*import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
@@ -19449,12 +19812,12 @@ func scanPythonImports(content string) []string {
 			}
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*from\s+importlib\s+import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
-		if len(match) != 2 {
+	for _, statement := range pythonFromImportStatements(content) {
+		if statement.module != "importlib" {
 			continue
 		}
-		for _, imported := range strings.Split(match[1], ",") {
-			fields := strings.Fields(strings.TrimSpace(imported))
+		for _, imported := range statement.items {
+			fields := strings.Fields(imported)
 			if len(fields) == 1 && fields[0] == "import_module" {
 				runtimeImportCalls = append(runtimeImportCalls, regexp.QuoteMeta(fields[0]))
 			}
@@ -19478,15 +19841,12 @@ func scanPythonImports(content string) []string {
 			add(module)
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		module := strings.TrimSpace(match[1])
+	for _, statement := range pythonFromImportStatements(content) {
+		module := statement.module
 		if module == "" {
 			continue
 		}
-		for _, item := range strings.Split(match[2], ",") {
+		for _, item := range statement.items {
 			name, _ := parsePythonImportItem(item)
 			if name == "" || name == "*" {
 				continue
@@ -20114,6 +20474,197 @@ func importedPythonImportForms(content string) map[string]map[string]pythonImpor
 	return forms
 }
 
+type pythonFromImportStatement struct {
+	line   int
+	module string
+	items  []string
+}
+
+var pythonFromImportRE = regexp.MustCompile(`(?s)^from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)(.*)$`)
+
+// A relative import may put the import keyword directly after its leading
+// dots (`from .import name`). Keep this ahead of pythonFromImportRE, whose
+// module expression would otherwise greedily consume that keyword.
+var pythonRelativeFromImportRE = regexp.MustCompile(`(?s)^from(?:\s+|\.)(\.*)import(.*)$`)
+
+// pythonFromImportStatements parses the parenthesized and one-line forms of
+// `from module import item [, item ...]`. The ordinary import scanners share
+// it with the AST scope walker so multiline bindings cannot diverge between
+// call resolution, import records, and router discovery.
+func pythonFromImportStatements(content string) []pythonFromImportStatement {
+	lines := strings.Split(content, "\n")
+	var statements []pythonFromImportStatement
+	for line := 0; line < len(lines); line++ {
+		startLine := line
+		text := strings.TrimLeft(lines[line], " \t")
+		if strings.HasPrefix(strings.TrimSpace(text), "#") {
+			continue
+		}
+		module, rawItems, ok := pythonFromImportParts(text)
+		if !ok {
+			continue
+		}
+		continued, validContinuation := pythonImportContinuationLine(rawItems)
+		if !validContinuation {
+			continue
+		}
+		var joinedItems strings.Builder
+		joinedItems.WriteString(rawItems)
+		if strings.HasPrefix(strings.TrimSpace(rawItems), "(") {
+			depth := pythonImportParenDepthLine(rawItems)
+			cursor := line
+			for (depth > 0 || continued) && cursor+1 < len(lines) {
+				nextLine := lines[cursor+1]
+				if pythonImportContinuationStartsStatement(nextLine) || pythonImportContinuationHasNestedOpening(nextLine) {
+					validContinuation = false
+					break
+				}
+				cursor++
+				joinedItems.WriteByte('\n')
+				joinedItems.WriteString(nextLine)
+				depth += pythonImportParenDepthLine(nextLine)
+				continued, validContinuation = pythonImportContinuationLine(nextLine)
+				if !validContinuation {
+					break
+				}
+			}
+			if !validContinuation || depth != 0 || continued {
+				continue
+			}
+			line = cursor
+		} else if continued {
+			cursor := line
+			depth := 0
+			grouped := false
+			for (continued || depth > 0) && cursor+1 < len(lines) {
+				nextLine := lines[cursor+1]
+				groupStart := depth == 0 && !grouped && strings.HasPrefix(strings.TrimSpace(nextLine), "(")
+				if ((depth == 0 || continued) && pythonImportContinuationTargetEmpty(nextLine)) || pythonImportContinuationStartsStatement(nextLine) || (!groupStart && pythonImportContinuationHasNestedOpening(nextLine)) {
+					validContinuation = false
+					break
+				}
+				cursor++
+				joinedItems.WriteByte('\n')
+				joinedItems.WriteString(nextLine)
+				if groupStart {
+					grouped = true
+				}
+				depth += pythonImportParenDepthLine(nextLine)
+				continued, validContinuation = pythonImportContinuationLine(nextLine)
+				if !validContinuation {
+					break
+				}
+			}
+			if !validContinuation || continued || depth != 0 {
+				continue
+			}
+			line = cursor
+		}
+		items := pythonFromImportItems(joinedItems.String())
+		if len(items) > 0 {
+			statements = append(statements, pythonFromImportStatement{line: startLine, module: module, items: items})
+		}
+	}
+	return statements
+}
+
+func pythonFromImportParts(text string) (module, items string, ok bool) {
+	if matches := pythonRelativeFromImportRE.FindStringSubmatch(text); len(matches) == 3 {
+		dots := matches[1]
+		if strings.HasPrefix(text, "from.") {
+			dots = "." + dots
+		}
+		if dots != "" && (len(matches[2]) == 0 || !isPythonImportNameByte(matches[2][0])) {
+			if len(matches[2]) == 0 || strings.ContainsRune(" \t\r\n(*\\", rune(matches[2][0])) {
+				return dots, matches[2], true
+			}
+		}
+	}
+	matches := pythonFromImportRE.FindStringSubmatch(text)
+	if len(matches) != 3 {
+		return "", "", false
+	}
+	module = strings.TrimSpace(matches[1])
+	rest := strings.TrimLeft(matches[2], " \t\r\n")
+	if module == "" || !strings.HasPrefix(rest, "import") {
+		return "", "", false
+	}
+	after := len("import")
+	if after < len(rest) && isPythonImportNameByte(rest[after]) {
+		return "", "", false
+	}
+	return module, rest[after:], true
+}
+
+func isPythonImportNameByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b >= 0x80
+}
+
+func pythonImportParenDepthLine(line string) int {
+	line = strings.SplitN(line, "#", 2)[0]
+	return strings.Count(line, "(") - strings.Count(line, ")")
+}
+
+// pythonImportContinuationLine reports whether a physical import line
+// explicitly continues and whether its backslash placement is syntactically
+// valid. A backslash before a comment does not continue Python source.
+func pythonImportContinuationLine(line string) (continued, valid bool) {
+	code, _, hasComment := strings.Cut(line, "#")
+	slash := strings.LastIndex(code, "\\")
+	if slash < 0 {
+		return false, true
+	}
+	if strings.TrimSuffix(code[slash+1:], "\r") != "" {
+		return false, false
+	}
+	if hasComment {
+		return false, false
+	}
+	return true, true
+}
+
+func pythonImportContinuationTargetEmpty(line string) bool {
+	line = strings.TrimSpace(line)
+	return line == "" || strings.HasPrefix(line, "#")
+}
+
+func pythonImportContinuationStartsStatement(line string) bool {
+	line = strings.TrimSpace(line)
+	for _, keyword := range []string{"from", "import"} {
+		if strings.HasPrefix(line, keyword) && (len(line) == len(keyword) || line[len(keyword)] == ' ' || line[len(keyword)] == '\t' || line[len(keyword)] == '.') {
+			return true
+		}
+	}
+	return false
+}
+
+func pythonImportContinuationHasNestedOpening(line string) bool {
+	line = strings.SplitN(line, "#", 2)[0]
+	return strings.Contains(line, "(")
+}
+
+func pythonFromImportItems(items string) []string {
+	var uncommented []string
+	for _, line := range strings.Split(items, "\n") {
+		line = strings.SplitN(line, "#", 2)[0]
+		line = strings.TrimSuffix(strings.TrimSpace(line), "\\")
+		uncommented = append(uncommented, line)
+	}
+	items = strings.TrimSpace(strings.Join(uncommented, "\n"))
+	if strings.HasPrefix(items, "(") {
+		items = strings.TrimSpace(strings.TrimPrefix(items, "("))
+		items = strings.TrimSpace(strings.TrimSuffix(items, ")"))
+	}
+	var out []string
+	for _, item := range strings.Split(items, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 // importedPythonNamesAndForms is the single parser shared by importedPythonNames
 // and importedPythonImportForms, so the module strings and their recorded forms
 // can never drift apart.
@@ -20126,15 +20677,33 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 		}
 		forms[local][module] = form
 	}
+	fromByLine := map[int]pythonFromImportStatement{}
+	for _, statement := range pythonFromImportStatements(content) {
+		fromByLine[statement.line] = statement
+	}
 	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
-	fromRe := regexp.MustCompile(`^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+(.+)$`)
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for lineNumber, text := range strings.Split(content, "\n") {
+		if statement, ok := fromByLine[lineNumber]; ok {
+			for _, item := range statement.items {
+				name, alias := parsePythonImportItem(item)
+				if name == "" || name == "*" {
+					continue
+				}
+				local := alias
+				if local == "" {
+					local = name
+				}
+				importedModule := pythonFromImportModuleSpec(statement.module, name)
+				imports[local] = append(imports[local], importedModule)
+				recordForm(local, importedModule, pythonFromImport)
+			}
+			continue
+		}
+		line := strings.TrimSpace(text)
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(line); len(matches) == 2 {
+		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {
@@ -20151,24 +20720,18 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 			}
 			continue
 		}
-		if matches := fromRe.FindStringSubmatch(line); len(matches) == 3 {
-			module := matches[1]
-			for _, item := range strings.Split(matches[2], ",") {
-				name, alias := parsePythonImportItem(item)
-				if name == "" || name == "*" {
-					continue
-				}
-				local := alias
-				if local == "" {
-					local = name
-				}
-				importedModule := pythonFromImportModuleSpec(module, name)
-				imports[local] = append(imports[local], importedModule)
-				recordForm(local, importedModule, pythonFromImport)
-			}
-		}
 	}
 	return imports, forms
+}
+
+func pythonDirectImportStatement(line string) string {
+	end := len(line)
+	for _, terminator := range []byte{'#', ';'} {
+		if index := strings.IndexByte(line, terminator); index >= 0 && index < end {
+			end = index
+		}
+	}
+	return strings.TrimSpace(line[:end])
 }
 
 func parsePythonImportItem(item string) (name, alias string) {
@@ -20248,6 +20811,9 @@ func importModuleMatchesFile(module, importingPath, targetPath string) bool {
 		}
 	}
 	if strings.HasPrefix(module, ".") {
+		if strings.EqualFold(filepath.Ext(importingPath), ".py") && pythonRelativeModuleMatchesFile(module, importingPath, targetPath) {
+			return true
+		}
 		if dottedRelativeModuleStemMatchesFile(module, targetPath) {
 			return true
 		}
@@ -20272,6 +20838,23 @@ func importModuleMatchesFile(module, importingPath, targetPath string) bool {
 	module = strings.TrimSuffix(filepath.ToSlash(module), filepath.Ext(module))
 	target := strings.TrimSuffix(targetPath, filepath.Ext(targetPath))
 	return strings.HasSuffix(target, module) || strings.HasSuffix(target, "/"+module) || target == module
+}
+
+func pythonRelativeModuleMatchesFile(module, importingPath, targetPath string) bool {
+	level := 0
+	for level < len(module) && module[level] == '.' {
+		level++
+	}
+	if level == 0 || level == len(module) {
+		return false
+	}
+	dir := filepath.Dir(importingPath)
+	for i := 1; i < level; i++ {
+		dir = filepath.Dir(dir)
+	}
+	base := filepath.ToSlash(filepath.Join(dir, strings.ReplaceAll(module[level:], ".", "/")))
+	target := strings.TrimSuffix(filepath.ToSlash(targetPath), filepath.Ext(targetPath))
+	return target == base || strings.HasSuffix(target, "/"+base)
 }
 
 func dottedRelativeModuleStemMatchesFile(module, targetPath string) bool {
@@ -23123,15 +23706,31 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 			Imported: strings.TrimSpace(imported),
 		})
 	}
+	fromByLine := map[int]pythonFromImportStatement{}
+	for _, statement := range pythonFromImportStatements(content) {
+		fromByLine[statement.line] = statement
+	}
 	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
-	fromRe := regexp.MustCompile(`^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+(.+)$`)
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for lineNumber, text := range strings.Split(content, "\n") {
+		if statement, ok := fromByLine[lineNumber]; ok {
+			for _, item := range statement.items {
+				name, alias := parsePythonImportItem(item)
+				if name == "" || name == "*" {
+					continue
+				}
+				local := alias
+				if local == "" {
+					local = name
+				}
+				add(local, statement.module, name)
+			}
+			continue
+		}
+		line := strings.TrimSpace(text)
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(line); len(matches) == 2 {
+		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {
@@ -23144,20 +23743,6 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 				add(local, module, "")
 			}
 			continue
-		}
-		if matches := fromRe.FindStringSubmatch(line); len(matches) == 3 {
-			module := matches[1]
-			for _, item := range strings.Split(matches[2], ",") {
-				name, alias := parsePythonImportItem(item)
-				if name == "" || name == "*" {
-					continue
-				}
-				local := alias
-				if local == "" {
-					local = name
-				}
-				add(local, module, name)
-			}
 		}
 	}
 	return imports
