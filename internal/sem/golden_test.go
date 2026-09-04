@@ -1256,6 +1256,158 @@ let raw (v: int) =
 	}
 }
 
+// TestFSharpJuxtaposedCallIsNotSwallowedByTheApplicationBeforeIt pins the
+// scanner defect that made a juxtaposed F# call disappear.
+//
+// RE2 has no lookahead, so the application pattern has to CONSUME the first
+// character of the argument to know an application is there, and the
+// non-overlapping walk restarted past it. When the argument was itself a dotted
+// call that character was its head, so the call never began at a word boundary
+// and produced no CALLS edge at all:
+//
+//	let Json = Newtonsoft.Json.JsonConvert
+//	Json.serialize x
+//
+// The parenthesised `Json.serialize(x)` resolved normally, which is what made
+// the hole easy to miss -- and juxtaposition is the ordinary way to write an F#
+// application, so this was a silently missing edge on idiomatic source.
+//
+// The guards are the other direction: recovering the swallowed position must
+// not start reading masked text or declaration heads as applications.
+func TestFSharpJuxtaposedCallIsNotSwallowedByTheApplicationBeforeIt(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+		want       []string
+	}{
+		// The reported shape, and the same swallow without a newline.
+		{
+			"a juxtaposed call on the line after a function-local binding",
+			"let run x =\n    let Json = Newtonsoft.Json.JsonConvert\n    Json.serialize x\n",
+			nil, []string{"serialize"},
+		},
+		{
+			"a juxtaposed call after a module-level binding",
+			"module Use\n\nlet Json = Newtonsoft.Json.JsonConvert\n\nlet run x = Json.serialize x\n",
+			nil, []string{"serialize"},
+		},
+		{
+			"a dotted argument to a dotted application on one line",
+			"let run x = A.f B.g x\n",
+			nil, []string{"f", "g"},
+		},
+		// Guards. The recovered scan positions are still ordinary source, so
+		// everything that was not code before must still not be code.
+		{
+			"a swallowed name inside a block comment stays masked",
+			"(* let Json = Newtonsoft.Json.JsonConvert\n   Json.serialize x *)\nlet run v = v |> other\n",
+			[]string{"serialize"}, []string{"other"},
+		},
+		{
+			"a swallowed name inside a string literal stays masked",
+			"let s = \"A.f B.g x\"\nlet run v = v |> other\n",
+			[]string{"f", "g"}, []string{"other"},
+		},
+		{
+			"an open declaration is still not an application",
+			"open System.Text\nJson.serialize x\n",
+			[]string{"Text"}, []string{"serialize"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			// The production composition order: the masker sees raw source, and
+			// the scanners mask literals themselves afterwards.
+			targets := fsharpCallTargetNames(fsharpCallTargets(maskFSharpBlockComments(testCase.source)))
+			for _, invented := range testCase.fabricated {
+				if _, ok := targets[invented]; ok {
+					t.Errorf("%q is not a call site, but the scanner read one: %v", invented, targets)
+				}
+			}
+			for _, real := range testCase.want {
+				if _, ok := targets[real]; !ok {
+					t.Errorf("the real call %q was swallowed by the application before it: %v", real, targets)
+				}
+			}
+		})
+	}
+}
+
+// TestFSharpNestedSeparatorInAnInterpolationHoleIsNotAFormat pins the other
+// half of the same masker's contract.
+//
+// Only a TOP-LEVEL `,`/`:` in a hole begins the alignment/format text, but the
+// branch did not check the bracket depth. A nested one -- the argument comma of
+// `$"{f(a, b) |> normalize}"`, the annotation colon of `$"{(v: int) |> ...}"` --
+// switched the hole into format mode, and because format mode blanks brackets
+// without counting them the `)` never brought the depth back to zero: the hole
+// never closed and every byte after it was blanked as literal text. One nested
+// comma deleted the call in the hole and every call written after it.
+//
+// The guards are the direction the format branch exists for: a top-level
+// separator must still begin literal text, including when the expression in
+// front of it held a nested separator of its own.
+func TestFSharpNestedSeparatorInAnInterpolationHoleIsNotAFormat(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+		want       []string
+	}{
+		{
+			"an argument comma inside a hole",
+			"let run v =\n    let s = $\"{A.f(a, b) |> normalize}\"\n    v |> other\n",
+			nil, []string{"f", "normalize", "other"},
+		},
+		{
+			"a type annotation colon inside a hole",
+			"let run v =\n    let s = $\"{(v: int) |> normalize}\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a lambda tuple comma inside a hole",
+			"let run v =\n    let s = $\"{xs |> List.map (fun (k, x) -> A.pick k x)}\"\n    v |> other\n",
+			nil, []string{"map", "pick", "other"},
+		},
+		{
+			"a nested separator in a wide-delimiter hole",
+			"let run v =\n    let s = $$\"\"\"{{A.f(a, b) |> normalize}}\"\"\"\n    v |> other\n",
+			nil, []string{"f", "normalize", "other"},
+		},
+		// Guards: the top-level separator still ends the expression.
+		{
+			"a format specifier after a nested comma is still literal",
+			"let s = $\"{A.f(a, b):yyyy.MM.dd}\"\nlet run v = v |> other\n",
+			[]string{"dd", "MM"}, []string{"f", "other"},
+		},
+		{
+			"alignment text after a nested comma is still literal",
+			"let s = $\"{A.f(a, b),10:B.g x}\"\nlet run v = v |> other\n",
+			[]string{"g"}, []string{"f", "other"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			targets := fsharpCallTargetNames(fsharpCallTargets(maskFSharpBlockComments(testCase.source)))
+			for _, invented := range testCase.fabricated {
+				if _, ok := targets[invented]; ok {
+					t.Errorf("format text %q was scanned as a real call: %v", invented, targets)
+				}
+			}
+			for _, real := range testCase.want {
+				if _, ok := targets[real]; !ok {
+					t.Errorf("the real call %q was blanked by a nested separator read as a format: %v", real, targets)
+				}
+			}
+		})
+	}
+}
+
 // TestLiteralMaskersPreserveLengthAndLineStructure pins the invariant every
 // caller of these two maskers depends on.
 //
@@ -1308,6 +1460,20 @@ func TestLiteralMaskersPreserveLengthAndLineStructure(t *testing.T) {
 		"let s = $\"{v |> f (g \"a |> h\")}\"\n",
 		"let s = $\"\"\"\r\n{v |> f}\r\n\"\"\"\r\n",
 		"let s = $\"{v |> f\nlet t = 1\n",
+		// A separator NESTED in a hole is code, not the start of format text,
+		// and the branch that decides is a place a byte could go missing.
+		"let s = $\"{A.f(a, b) |> normalize}\"\nlet run v = v |> other\n",
+		"let s = $\"{(v: int) |> normalize}\"\n",
+		"let s = $\"{A.f(a, b):yyyy.MM.dd}\"\n",
+		"let s = $\"{A.f(a, b),10:B.g x}\"\n",
+		"let s = $$\"\"\"{{A.f(a, b) |> normalize}}\"\"\"\n",
+		"let s = $\"{A.f(a, b) |> normalize}\"\r\nlet run v = v |> other\r\n",
+		"let s = $\"{A.f(a, b\nlet t = 1\n",
+		"let s = $\"{x :: xs, y}\"\n",
+		"$\"{f(a,",
+		"$\"{(",
+		"$\"{,",
+		"$\"{:",
 		"$\"{",
 		"$\"",
 		"$$\"\"\"{{",

@@ -17230,3 +17230,104 @@ let run (x: int) =
 		}
 	})
 }
+
+// TestFSharpJuxtaposedCallAfterABindingReachesTheCallGraph is the swallowed
+// application at the graph level: the CALLS edge is missing entirely.
+//
+// `Json.serialize x` written on the line after `let Json = ...` produced no
+// edge at all, because the application scanner had consumed the `J` at its head
+// as the argument of the binding's own expression. The parenthesised control
+// resolved normally the whole time, so nothing about the shadow or the
+// resolution was wrong -- the call site was simply never seen.
+func TestFSharpJuxtaposedCallAfterABindingReachesTheCallGraph(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module A
+
+let serialize (value: int) = value + 1
+
+let other (value: int) = value * 2
+
+let juxtaposed (x: int) =
+    let Json = Newtonsoft.Json.JsonConvert
+    Json.serialize x
+
+let parenthesised (x: int) =
+    let Json = Newtonsoft.Json.JsonConvert
+    Json.serialize(x)
+
+let argument (x: int) = A.other A.serialize x
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "juxtaposed", "serialize") {
+		t.Errorf("missing CALLS juxtaposed->serialize; the binding above it swallowed the call's head: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	// The control the shadow tests use: it always worked, and must keep working.
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "parenthesised", "serialize") {
+		t.Errorf("missing CALLS parenthesised->serialize: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	// The same swallow without a newline: `A.other A.serialize x` lost the
+	// second name because the first match consumed its `A`.
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "argument", "serialize") {
+		t.Errorf("missing CALLS argument->serialize; a dotted argument was swallowed by the application before it: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "argument", "other") {
+		t.Errorf("missing CALLS argument->other: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+// TestFSharpNestedSeparatorInAHoleKeepsTheRestOfTheFile is the interpolation
+// half at the graph level.
+//
+// A `,` or `:` nested inside a bracket in an interpolation hole switched the
+// masker into format mode. Format mode blanks brackets without counting them,
+// so the closing `)` never returned the depth to zero, the hole never closed,
+// and everything after it was blanked as literal text -- the call in the hole
+// AND every call written after it in the same block.
+func TestFSharpNestedSeparatorInAHoleKeepsTheRestOfTheFile(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module A
+
+let normalize (value: int) = value + 1
+
+let other (value: int) = value * 2
+
+let pair (a: int) (b: int) = a + b
+
+let comma (v: int) =
+    let s = $"{pair(v, v) |> normalize}"
+    v |> other
+
+let annotation (v: int) =
+    let s = $"{(v: int) |> normalize}"
+    v |> other
+
+let below (v: int) =
+    v |> other
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caller := range []string{"comma", "annotation"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "normalize") {
+			t.Errorf("missing CALLS %s->normalize; a nested separator was read as a format specifier: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "other") {
+			t.Errorf("missing CALLS %s->other; the hole never closed: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+	// The blast radius stops at the enclosing block, because the F# scanners
+	// are run per symbol body rather than over the whole file. This control
+	// pins that: a function written below the interpolated string is unaffected
+	// and must stay so.
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "below", "other") {
+		t.Errorf("missing CALLS below->other: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}

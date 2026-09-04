@@ -20495,6 +20495,18 @@ func maskFSharpSource(text string, blankComments, blankLiterals bool) string {
 					i++
 					continue
 				}
+				// Only a TOP-LEVEL separator begins the format text. Inside a
+				// bracket the same byte is ordinary code -- the argument comma
+				// of `$"{f(a, b) |> normalize}"`, the type annotation of
+				// `$"{(v: int) |> normalize}"` -- and reading it as a format
+				// did not merely blank that hole: the `)` that followed was
+				// blanked too, so `nested` never came back to zero, the hole
+				// never closed, and every byte after it in the masked text was
+				// blanked as literal. One nested comma deleted the call in the
+				// hole and every call written after it.
+				if hole.nested > 0 {
+					break
+				}
 				hole.format = true
 				blank(i, i+1)
 				continue

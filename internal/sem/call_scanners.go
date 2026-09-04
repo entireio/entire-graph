@@ -245,14 +245,37 @@ func fsharpDottedCallTargets(content string) map[string]struct{} {
 		}
 		addFSharpCallTarget(out, match[1])
 	}
-	for _, match := range fsharpDottedApplyRe.FindAllStringSubmatchIndex(stripped, -1) {
-		if len(match) < 4 {
-			continue
+	// The scan resumes at the end of the applied NAME, not at the end of the
+	// match. RE2 has no lookahead, so the pattern has to CONSUME the first
+	// character of the argument to know an application is there, and
+	// FindAll's non-overlapping walk then restarts past it. When that argument
+	// is itself a dotted call the swallowed character is its head, and the call
+	// vanished from the graph completely:
+	//
+	//	let Json = Newtonsoft.Json.JsonConvert
+	//	Json.serialize x
+	//
+	// matched `Newtonsoft.Json.JsonConvert` plus the `J` of the next line, so
+	// `Json.serialize` never began at a word boundary and produced no CALLS
+	// edge -- while the parenthesised `Json.serialize(x)` resolved normally.
+	// Juxtaposition is the ordinary way to write an F# application, and a
+	// silently missing edge is the expensive direction for a call graph. The
+	// same swallow hit an argument written on the same line (`A.f B.g x` lost
+	// `B.g`), which is why this is fixed at the walk rather than by forbidding
+	// the newline.
+	for pos := 0; pos < len(stripped); {
+		match := fsharpDottedApplyRe.FindStringSubmatchIndex(stripped[pos:])
+		if match == nil || len(match) < 4 {
+			break
 		}
-		if fsharpDottedApplyIgnored(stripped, match[0]) {
-			continue
+		start, end := pos+match[2], pos+match[3]
+		if !fsharpDottedApplyIgnored(stripped, pos+match[0]) {
+			addFSharpCallTarget(out, stripped[start:end])
 		}
-		addFSharpCallTarget(out, stripped[match[2]:match[3]])
+		// `end` lands on the whitespace the pattern required after the name, so
+		// the next search can never begin inside an identifier and assert a
+		// word boundary the full text does not have.
+		pos = end
 	}
 	return out
 }
