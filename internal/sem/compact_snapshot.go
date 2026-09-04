@@ -1066,8 +1066,9 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	seenHeader, seenSummary := false, false
 	tolerateSchemaAdditions := false
 	lineNumber := 0
+	fileRecords := 0
 	for {
-		line, readErr := readCompactSnapshotLine(reader, maxCompactSnapshotLineBytes)
+		line, readErr := readCompactSnapshotLine(reader, compactSnapshotLineLimit(fileRecords))
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				break
@@ -1163,6 +1164,12 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 			if err != nil {
 				return warnings, fmt.Errorf("compact snapshot line %d: %w", lineNumber, err)
 			}
+			if tag == "f" {
+				// The summary that closes this artifact carries roughly one
+				// entry per admitted file, so the file records are the artifact's
+				// own statement of how large it is entitled to be.
+				fileRecords++
+			}
 			if err := emit(record); err != nil {
 				return warnings, err
 			}
@@ -1197,32 +1204,56 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	return warnings, nil
 }
 
-// maxCompactSnapshotLineBytes bounds a single compact record line.
+// compactSnapshotSummaryBytesPerFile is the per-file allowance in the record
+// line bound. A summary entry is a repository-relative path plus fixed
+// code/severity/effect text; 2 KiB is far above any real one.
+const compactSnapshotSummaryBytesPerFile = 2048
+
+// compactSnapshotLineLimit returns the byte bound for one compact record line,
+// for a decode that has so far seen filesSeen file records. A value of -1 means
+// no bound.
 //
-// The decoder used to cap a line at 16 MiB, which it could not do and still read
-// its own encoder's output: the encoder writes the entire SnapshotSummary as ONE
-// line, and that summary carries a record per partial failure over a corpus of
-// up to defaultMaxSourceFiles files — so 16 MiB left it about 80 bytes per
-// entry, below the encoder's own floor, and a repository with enough parse or
-// size failures produced a valid snapshot that failed to read back with
-// "bufio.Scanner: token too long".
+// A bound is needed because the reader accumulates until a newline, so an
+// arbitrarily long line in a hostile artifact would otherwise be an unbounded
+// allocation before any JSON validation runs. But it cannot be a constant: the
+// encoder writes the entire SnapshotSummary as ONE line, that summary carries
+// roughly an entry per admitted file, and how many files are admitted is a
+// policy the operator sets (ProviderSnapshotOptions.MaxFiles, else
+// ENTIRE_GRAPH_MAX_FILES, else defaultMaxSourceFiles) and may raise or disable.
+// The 16 MiB cap this replaced allowed about 80 bytes per entry at the DEFAULT
+// listing cap — below the encoder's own floor — which is why snapshot-query
+// could not read snapshots this build had just written.
 //
-// The bound is therefore sized FROM the encoder rather than chosen ahead of it:
-// one entry per admitted file, at a generous 2 KiB per entry, which is far above
-// any real repository-relative path plus the fixed code/severity/effect text.
-// Keeping a bound at all matters because the reader accumulates until a newline,
-// so an arbitrarily long line in a hostile artifact would otherwise be an
-// unbounded allocation before any JSON validation runs.
-const maxCompactSnapshotLineBytes = 2048 * defaultMaxSourceFiles
+// So it is derived, from configuration and from the artifact:
+//
+//   - the listing cap this process resolves, which honours the same env override
+//     the encoder does; and
+//   - the file records already decoded, which is this artifact's own statement of
+//     a larger corpus when it was written with an explicitly larger MaxFiles.
+//
+// A disabled listing cap means the encoder may write a summary of any size, so
+// the bound is disabled too: refusing it would refuse an artifact this build can
+// produce, which is the defect this replaced.
+func compactSnapshotLineLimit(filesSeen int) int {
+	files := resolveMaxSourceFiles(0)
+	if files < 0 {
+		return -1
+	}
+	if filesSeen > files {
+		files = filesSeen
+	}
+	return compactSnapshotSummaryBytesPerFile * files
+}
 
 // readCompactSnapshotLine returns the next line of a compact snapshot with its
 // line ending removed, and io.EOF once the reader is exhausted. A line longer
-// than limit is refused rather than accumulated.
+// than limit is refused rather than accumulated; a non-positive limit accepts
+// any length.
 func readCompactSnapshotLine(reader *bufio.Reader, limit int) ([]byte, error) {
 	var line []byte
 	for {
 		chunk, err := reader.ReadSlice('\n')
-		if len(line)+len(chunk) > limit {
+		if limit > 0 && len(line)+len(chunk) > limit {
 			return nil, fmt.Errorf("compact snapshot line exceeds %d bytes", limit)
 		}
 		line = append(line, chunk...)

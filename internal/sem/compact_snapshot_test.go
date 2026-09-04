@@ -609,7 +609,7 @@ func TestCompactSnapshotLineReaderFraming(t *testing.T) {
 	reader := bufio.NewReaderSize(strings.NewReader(input), 64)
 	var lines []string
 	for {
-		line, err := readCompactSnapshotLine(reader, maxCompactSnapshotLineBytes)
+		line, err := readCompactSnapshotLine(reader, compactSnapshotLineLimit(0))
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -635,9 +635,6 @@ func TestCompactSnapshotLineReaderFraming(t *testing.T) {
 // The bound must sit above everything the encoder can write and still refuse an
 // arbitrarily long line before it is accumulated.
 func TestCompactSnapshotLineReaderRefusesLineOverBound(t *testing.T) {
-	if maxCompactSnapshotLineBytes <= 16*1024*1024 {
-		t.Fatalf("bound = %d, want more than the 16 MiB the decoder used to cap at", maxCompactSnapshotLineBytes)
-	}
 	reader := bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 4096)), 64)
 	if _, err := readCompactSnapshotLine(reader, 1024); err == nil {
 		t.Fatal("expected an over-bound line to be refused")
@@ -652,5 +649,88 @@ func TestCompactSnapshotLineReaderRefusesLineOverBound(t *testing.T) {
 	}
 	if len(line) != 1024 {
 		t.Fatalf("line length = %d, want 1024", len(line))
+	}
+}
+
+// The bound is derived, not fixed: it tracks the listing cap this process
+// resolves (which the encoder honours too), rises to cover an artifact whose own
+// file records prove a larger corpus, and disappears when the operator disables
+// the listing cap — because then the encoder may write a summary of any size.
+func TestCompactSnapshotLineLimitIsDerived(t *testing.T) {
+	base := compactSnapshotLineLimit(0)
+	if base <= 16*1024*1024 {
+		t.Fatalf("default bound = %d, want more than the 16 MiB the decoder used to cap at", base)
+	}
+	if want := compactSnapshotSummaryBytesPerFile * defaultMaxSourceFiles; base != want {
+		t.Fatalf("default bound = %d, want %d", base, want)
+	}
+	if raised := compactSnapshotLineLimit(defaultMaxSourceFiles * 4); raised != compactSnapshotSummaryBytesPerFile*defaultMaxSourceFiles*4 {
+		t.Fatalf("bound for a larger artifact = %d, want %d", raised, compactSnapshotSummaryBytesPerFile*defaultMaxSourceFiles*4)
+	}
+
+	t.Setenv(maxSourceFilesEnv, "1000000")
+	if got, want := compactSnapshotLineLimit(0), compactSnapshotSummaryBytesPerFile*1_000_000; got != want {
+		t.Fatalf("bound under a raised listing cap = %d, want %d", got, want)
+	}
+
+	t.Setenv(maxSourceFilesEnv, "-1")
+	if got := compactSnapshotLineLimit(0); got != -1 {
+		t.Fatalf("bound under a disabled listing cap = %d, want -1", got)
+	}
+	// A disabled bound must actually read an arbitrarily long line.
+	reader := bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 200_000)+"\n"), 64)
+	line, err := readCompactSnapshotLine(reader, compactSnapshotLineLimit(0))
+	if err != nil {
+		t.Fatalf("unbounded read: %v", err)
+	}
+	if len(line) != 200_000 {
+		t.Fatalf("line length = %d, want 200000", len(line))
+	}
+}
+
+// An artifact written with an explicitly larger MaxFiles than this process's
+// resolved listing cap is still readable: its own file records are the artifact's
+// statement of how large its summary is entitled to be.
+func TestCompactSnapshotDecodesSummaryJustifiedByItsFileRecords(t *testing.T) {
+	t.Setenv(maxSourceFilesEnv, "2")
+
+	var buffer bytes.Buffer
+	encoder := NewCompactSnapshotEncoder(&buffer)
+	if err := encoder.Encode(SnapshotHeader{SchemaVersion: SchemaVersion}); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 40; index++ {
+		if err := encoder.Encode(FileRecord{
+			RecordType: "file",
+			ID:         fmt.Sprintf("file-%03d", index),
+			Path:       fmt.Sprintf("src/module%03d.go", index),
+			Blob:       fmt.Sprintf("%040d", index),
+			Language:   "Go",
+			Bytes:      1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	summary := SnapshotSummary{RecordType: "summary", Languages: []string{"Go"}, Warnings: []ProviderWarning{}}
+	for index := 0; index < 40; index++ {
+		summary.PartialFailures = append(summary.PartialFailures, PartialFailure{
+			Code:                 "E_FILE_TOO_LARGE",
+			Severity:             "warning",
+			FilePath:             fmt.Sprintf("src/module%03d.go", index),
+			EffectOnCompleteness: "file skipped because it exceeds the parse byte limit",
+			Detail:               "file exceeds the configured max parse bytes",
+		})
+	}
+	if err := encoder.Encode(summary); err != nil {
+		t.Fatal(err)
+	}
+
+	// The summary line must be past the bound the resolved listing cap alone
+	// would allow, so only the file-record term can admit it.
+	if base := compactSnapshotLineLimit(0); base >= len(buffer.Bytes())/2 {
+		t.Fatalf("fixture is not discriminating: base bound %d", base)
+	}
+	if _, err := DecodeCompactSnapshot(bytes.NewReader(buffer.Bytes()), func(any) error { return nil }); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
 }
