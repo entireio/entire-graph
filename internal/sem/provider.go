@@ -1012,6 +1012,89 @@ func registrationBindableKind(kind string) bool {
 	return false
 }
 
+// registrationCandidateCounts counts, across the whole corpus, how many symbols
+// of a kind a registration table can bind carry each handler name. A verb is
+// attached only to a name that is counted exactly once, so the count has to be
+// complete before the FIRST candidate is emitted.
+//
+// It is a separate pass because the file pipeline cannot supply it. That
+// pipeline reduces results as workers finish -- the coordinator admits only
+// twice the worker count of unreduced results -- so at the moment a handler's
+// own file is reduced, the files after it have not been parsed and its rivals
+// are not yet knowable. Holding the candidate RECORDS back until the loop ended
+// answered that, but it moved them out of their file's place in the record
+// stream: a symbol from the first file was written after the last file's record
+// and its symbols, which the snapshot format documents as impossible ("file
+// records, then symbol records, emitted per file as parsing progresses"), and a
+// consumer that closes file-scoped state when the next file record arrives has
+// nowhere to put them. Buffering the DECISION instead keeps every symbol in its
+// own file's block.
+//
+// The cost is confined to repositories that ship a registration table: with no
+// commands/<name>.json the map is empty and this returns immediately. Where
+// there is one, every file is read and tokenized once more, and only the files
+// that MENTION a handler name -- the identifier has to appear for the file to
+// define it -- are parsed a second time.
+func registrationCandidateCounts(
+	ctx context.Context,
+	sc sourceContext,
+	spec profileSpec,
+	maxParseBytes int,
+	workers int,
+	aliasesByHandler map[string][]string,
+) (map[string]int, error) {
+	counts := map[string]int{}
+	if len(aliasesByHandler) == 0 {
+		return counts, nil
+	}
+	err := runProviderFilePipeline(ctx, sc.paths, workers,
+		func(workerCtx context.Context, index int, path string) providerFileResult {
+			content, readable := sc.read(path)
+			if !readable || !mentionsRegistrationHandler(content, aliasesByHandler) {
+				return providerFileResult{index: index, path: path}
+			}
+			return processProviderFile(workerCtx, sc, spec, maxParseBytes, index, path)
+		},
+		func(result providerFileResult) error {
+			for _, symbol := range result.symbols {
+				if len(aliasesByHandler[symbol.Name]) > 0 && registrationBindableKind(symbol.Kind) {
+					counts[symbol.Name]++
+				}
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return counts, nil
+}
+
+// mentionsRegistrationHandler reports whether the content writes a handler name
+// as a whole identifier. Content is tokenized once and each token looked up,
+// rather than searched once per handler, so a table of several hundred verbs
+// costs the same single pass as one verb. A file that never writes the
+// identifier cannot define it, which is what keeps the census from parsing the
+// whole corpus twice.
+func mentionsRegistrationHandler(content string, aliasesByHandler map[string][]string) bool {
+	for index := 0; index < len(content); {
+		character := content[index]
+		if !(character == '_' || (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z')) {
+			index++
+			continue
+		}
+		end := index
+		for end < len(content) && isIdentifierByte(content[end]) {
+			end++
+		}
+		if _, isHandler := aliasesByHandler[content[index:end]]; isHandler {
+			return true
+		}
+		index = end
+	}
+	return false
+}
+
 // dedupeSortedStrings removes adjacent duplicates from a sorted slice in place.
 func dedupeSortedStrings(sorted []string) []string {
 	if len(sorted) < 2 {
@@ -1187,12 +1270,14 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// with a same-named function in another package — or a method, or a
 	// declaration in a different language entirely — answered the command query
 	// with symbols that are not the handler, ranked as an exact alias hit.
-	// Uniqueness is only knowable once the corpus is parsed, so candidates are
-	// held back here and emitted after the file loop; nothing else uses Aliases
-	// (relations are built from recordsByFile, which never reads them), so
-	// holding only these few records changes no other output.
-	var aliasCandidates []SymbolRecord
-	aliasCandidateCount := map[string]int{}
+	// Uniqueness is only knowable once the corpus is parsed, so it is decided
+	// by its own census pass BEFORE the file loop; the candidate symbols
+	// themselves are then emitted in their own file's place, as every other
+	// symbol is.
+	aliasCandidateCount, err := registrationCandidateCounts(ctx, sc, spec, maxParseBytes, workers, aliasesByHandler)
+	if err != nil {
+		return err
+	}
 
 	// Phase 1: workers independently read, classify, and parse files. Only this
 	// reducer mutates graph indexes or calls emit, and it consumes the original
@@ -1221,14 +1306,23 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			if result.parsed {
 				parsedFileCount++
 				applyCppSpecializationAliases(result.symbols)
-				for _, symbol := range result.symbols {
-					if len(aliasesByHandler[symbol.Name]) > 0 {
-						if registrationBindableKind(symbol.Kind) {
-							aliasCandidateCount[symbol.Name]++
-						}
-						aliasCandidates = append(aliasCandidates, symbol)
+				for index := range result.symbols {
+					symbol := &result.symbols[index]
+					// Only a callable can carry the verb: a registration table
+					// binds it to a function, never to a type, field, constant
+					// or variable, so counting those kinds turned an unrelated
+					// same-named struct into a phantom rival and suppressed the
+					// one real handler. An ambiguous name carries none, because
+					// a symbol that claims to be a command it does not implement
+					// is worse than a command with no symbol.
+					if len(aliasesByHandler[symbol.Name]) == 0 || !registrationBindableKind(symbol.Kind) {
 						continue
 					}
+					if aliasCandidateCount[symbol.Name] == 1 {
+						symbol.Aliases = appendUnique(symbol.Aliases, aliasesByHandler[symbol.Name]...)
+					}
+				}
+				for _, symbol := range result.symbols {
 					if err := emit(symbol); err != nil {
 						return err
 					}
@@ -1250,23 +1344,6 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	)
 	if err != nil {
 		return err
-	}
-	// Registration aliases resolved against the whole corpus: a handler name
-	// declared exactly once AS A CALLABLE is the registered callable and carries
-	// the verb; an ambiguous name carries none, because a symbol that claims to
-	// be a command it does not implement is worse than a command with no symbol.
-	// Only callables are counted and only callables can carry the verb: a
-	// registration table binds a verb to a function, never to a type, field,
-	// constant or variable, so counting those kinds turned an unrelated
-	// same-named struct into a phantom rival and suppressed the one real
-	// handler.
-	for _, symbol := range aliasCandidates {
-		if registrationBindableKind(symbol.Kind) && aliasCandidateCount[symbol.Name] == 1 {
-			symbol.Aliases = appendUnique(symbol.Aliases, aliasesByHandler[symbol.Name]...)
-		}
-		if err := emit(symbol); err != nil {
-			return err
-		}
 	}
 	emitProgress(BuildPhaseParse, len(sc.paths), symbolCount, relationCount)
 

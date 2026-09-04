@@ -13929,6 +13929,80 @@ func getrangeCommand() {}
 	}
 }
 
+// TestRegistrationAliasSymbolsKeepTheirFilesPlaceInTheStream pins WHERE a
+// registration-alias symbol is written, not just what it carries.
+//
+// Deciding a verb's owner needs the whole corpus -- a handler name declared
+// once as a callable owns it, an ambiguous one owns nothing -- and the file
+// pipeline reduces results as workers finish, so the rivals of a symbol are not
+// known when its own file is reduced. Holding the candidate RECORDS back until
+// the file loop ended answered that, and moved them out of their file's place:
+// a symbol from the first file was written after the LAST file's record and its
+// symbols. docs/snapshot-format.md documents the opposite -- "file records,
+// then symbol records (emitted per file as parsing progresses)" -- and a
+// consumer that closes file-scoped state when the next file record arrives has
+// nowhere to put a symbol that arrives after every file. The decision is
+// buffered now instead of the records, so each candidate is written inside its
+// own file's block.
+func TestRegistrationAliasSymbolsKeepTheirFilesPlaceInTheStream(t *testing.T) {
+	streamed := func(t *testing.T, repo string) (stray, aliased []string) {
+		t.Helper()
+		openFile := ""
+		if err := StreamSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true}, func(record any) error {
+			switch typed := record.(type) {
+			case FileRecord:
+				openFile = typed.Path
+			case SymbolRecord:
+				if typed.FilePath != openFile {
+					stray = append(stray, typed.Name+" from "+typed.FilePath+" written while "+openFile+" was the open file")
+				}
+				if slices.Contains(typed.Aliases, "substr") {
+					aliased = append(aliased, typed.Name+" in "+typed.FilePath)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return stray, aliased
+	}
+
+	// The handler is in the FIRST file of the corpus, so a record held back
+	// until the loop ended is written after every other file and its symbols.
+	t.Run("an unambiguous handler is written inside its own file", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "src/commands/substr.json", `{"function":"getrangeCommand"}`)
+		writeFile(t, repo, "src/a_string.go", "package src\n\nfunc getrangeCommand() {}\n\nfunc helper() {}\n")
+		writeFile(t, repo, "src/z_other.go", "package src\n\nfunc other() {}\n")
+
+		stray, aliased := streamed(t, repo)
+		if len(stray) != 0 {
+			t.Errorf("symbols written outside their own file's block: %v; the stream is file records then their symbols, per file, as parsing progresses", stray)
+		}
+		if want := []string{"getrangeCommand in src/a_string.go"}; !reflect.DeepEqual(aliased, want) {
+			t.Errorf("aliased = %v, want %v: the sole callable with the handler's name still carries the verb", aliased, want)
+		}
+	})
+
+	// The other direction: an ambiguous name carries no verb, and both of its
+	// rivals are still written inside their own files.
+	t.Run("an ambiguous handler is declined and still written in place", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "src/commands/substr.json", `{"function":"getrangeCommand"}`)
+		writeFile(t, repo, "src/a_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+		writeFile(t, repo, "src/z_other.go", "package src\n\nfunc other() {}\n")
+		writeFile(t, repo, "web/app.ts", "export function getrangeCommand() { return 1; }\n")
+
+		stray, aliased := streamed(t, repo)
+		if len(stray) != 0 {
+			t.Errorf("symbols written outside their own file's block: %v; the stream is file records then their symbols, per file, as parsing progresses", stray)
+		}
+		if len(aliased) != 0 {
+			t.Errorf("aliased = %v, want none: two callables share the handler's name, so neither is the registered one", aliased)
+		}
+	})
+}
+
 // collectRegistrationAliases maps a handler to the sorted, de-duplicated command
 // verbs bound to it, touching only commands/*.json paths.
 func TestCollectRegistrationAliases(t *testing.T) {
