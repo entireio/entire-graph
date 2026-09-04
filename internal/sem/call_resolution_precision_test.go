@@ -1108,6 +1108,15 @@ func pythonRelationsFromApp(t *testing.T, app string, extra map[string]string, r
 	return out
 }
 
+func relationWithEndpoints(relations []RelationRecord, fromSuffix, targetSuffix string) (RelationRecord, bool) {
+	for _, relation := range relations {
+		if strings.HasSuffix(relation.FromID, fromSuffix) && strings.HasSuffix(relation.ToID, targetSuffix) {
+			return relation, true
+		}
+	}
+	return RelationRecord{}, false
+}
+
 func TestPythonScopedImportBindingExtendsAsyncAndDataFlow(t *testing.T) {
 	for _, test := range []struct {
 		name, relationType, source string
@@ -1160,20 +1169,6 @@ func TestPythonScopedImportBindingExtendsAsyncAndDataFlow(t *testing.T) {
 			fromSuffix:   "app.py:function:plain", targetSuffix: "frobnicate.c:function:compute", want: false,
 		},
 		{
-			name:         "a function-local import does not leak into async sibling",
-			relationType: "ASYNC_CALLS",
-			source:       "from frobnicate import compute\nasync def local():\n    from helper import compute\n    return await compute(1)\nasync def plain():\n    return await compute(1)\n",
-			extra:        map[string]string{"helper.py": "def compute(value):\n    return value\n"},
-			fromSuffix:   "app.py:function:plain", targetSuffix: "frobnicate.c:function:compute", want: true,
-		},
-		{
-			name:         "a function-local import does not leak into data-flow sibling",
-			relationType: "DATA_FLOWS",
-			source:       "from frobnicate import compute\ndef local(value):\n    from helper import compute\n    return compute(value)\ndef plain(value):\n    return compute(value)\n",
-			extra:        map[string]string{"helper.py": "def compute(value):\n    return value\n"},
-			fromSuffix:   "app.py:function:plain", targetSuffix: "frobnicate.c:function:compute", want: true,
-		},
-		{
 			name:         "C and Ruby ambiguity does not widen async call",
 			relationType: "ASYNC_CALLS",
 			source:       "from frobnicate import compute\nasync def plain():\n    return await compute(1)\n",
@@ -1185,6 +1180,32 @@ func TestPythonScopedImportBindingExtendsAsyncAndDataFlow(t *testing.T) {
 			relationType: "DATA_FLOWS",
 			source:       "from frobnicate import compute\ndef plain(value):\n    return compute(value)\n",
 			extra:        map[string]string{"frobnicate.rb": "def compute(value)\n  value\nend\n"},
+			fromSuffix:   "app.py:function:plain", targetSuffix: "", want: false,
+		},
+		{
+			name:         "aliased C and Ruby ambiguity does not widen async call",
+			relationType: "ASYNC_CALLS",
+			source:       "from frobnicate import compute as run\nasync def plain():\n    return await run(1)\n",
+			extra:        map[string]string{"frobnicate.rb": "def compute(value)\n  value\nend\n"},
+			fromSuffix:   "app.py:function:plain", targetSuffix: "", want: false,
+		},
+		{
+			name:         "aliased C and Ruby ambiguity does not widen data flow",
+			relationType: "DATA_FLOWS",
+			source:       "from frobnicate import compute as run\ndef plain(value):\n    return run(value)\n",
+			extra:        map[string]string{"frobnicate.rb": "def compute(value)\n  value\nend\n"},
+			fromSuffix:   "app.py:function:plain", targetSuffix: "", want: false,
+		},
+		{
+			name:         "bare module alias does not widen async call",
+			relationType: "ASYNC_CALLS",
+			source:       "import frobnicate as m\nasync def plain():\n    return await m(1)\n",
+			fromSuffix:   "app.py:function:plain", targetSuffix: "", want: false,
+		},
+		{
+			name:         "bare module alias does not widen data flow",
+			relationType: "DATA_FLOWS",
+			source:       "import frobnicate as m\ndef plain(value):\n    return m(value)\n",
 			fromSuffix:   "app.py:function:plain", targetSuffix: "", want: false,
 		},
 		{
@@ -1210,4 +1231,73 @@ func TestPythonScopedImportBindingExtendsAsyncAndDataFlow(t *testing.T) {
 			}
 		})
 	}
+
+	for _, test := range []struct {
+		name, relationType, source string
+	}{
+		{
+			name:         "function-local async alias does not leak to sibling",
+			relationType: "ASYNC_CALLS",
+			source:       "async def local():\n    from frobnicate import compute as c\n    return await c(1)\nasync def plain():\n    return await c(1)\n",
+		},
+		{
+			name:         "function-local data-flow alias does not leak to sibling",
+			relationType: "DATA_FLOWS",
+			source:       "def local(value):\n    from frobnicate import compute as c\n    return c(value)\ndef plain(value):\n    return c(value)\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			local := pythonRelationsFromApp(t, test.source, nil, test.relationType, "app.py:function:local", "frobnicate.c:function:compute")
+			if len(local) != 1 {
+				t.Fatalf("got %#v, want one local %s edge", local, test.relationType)
+			}
+			sibling := pythonRelationsFromApp(t, test.source, nil, test.relationType, "app.py:function:plain", "")
+			if len(sibling) != 0 {
+				t.Fatalf("got %#v, want no sibling %s edge", sibling, test.relationType)
+			}
+		})
+	}
+
+	t.Run("aliased and unaliased data flows match", func(t *testing.T) {
+		unaliased := pythonRelationsFromApp(t,
+			"from frobnicate import compute\ndef plain(value):\n    return compute(value)\n",
+			nil, "DATA_FLOWS", "", "")
+		aliased := pythonRelationsFromApp(t,
+			"from frobnicate import compute as c\ndef plain(value):\n    return c(value)\n",
+			nil, "DATA_FLOWS", "", "")
+		if len(unaliased) != 2 || len(aliased) != 2 {
+			t.Fatalf("want exactly two flows in each fixture: unaliased=%#v aliased=%#v", unaliased, aliased)
+		}
+		for _, endpoints := range [][2]string{
+			{"app.py:function:plain", "frobnicate.c:function:compute"},
+			{"frobnicate.c:function:compute", "app.py:function:plain"},
+		} {
+			want, wantOK := relationWithEndpoints(unaliased, endpoints[0], endpoints[1])
+			got, gotOK := relationWithEndpoints(aliased, endpoints[0], endpoints[1])
+			if !wantOK || !gotOK {
+				t.Fatalf("missing data-flow direction %s -> %s: unaliased=%#v aliased=%#v", endpoints[0], endpoints[1], unaliased, aliased)
+			}
+			if got.Resolution != want.Resolution || got.RelationScope != want.RelationScope || got.Confidence != want.Confidence || got.Reason != want.Reason {
+				t.Fatalf("aliased flow %#v differs from unaliased flow %#v", got, want)
+			}
+		}
+	})
+
+	t.Run("commented aliased import preserves original member", func(t *testing.T) {
+		source := "from frobnicate import compute as c  # comment\ndef plain(value):\n    return c(value)\nasync def asyncPlain():\n    return await c(1)\n"
+		for _, test := range []struct {
+			name, relationType, fromSuffix string
+		}{
+			{"calls", "CALLS", "app.py:function:plain"},
+			{"async calls", "ASYNC_CALLS", "app.py:function:asyncPlain"},
+			{"data flows", "DATA_FLOWS", "app.py:function:plain"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				edges := pythonRelationsFromApp(t, source, nil, test.relationType, test.fromSuffix, "frobnicate.c:function:compute")
+				if len(edges) != 1 {
+					t.Fatalf("got %#v, want one %s edge to imported compute", edges, test.relationType)
+				}
+			})
+		}
+	})
 }
