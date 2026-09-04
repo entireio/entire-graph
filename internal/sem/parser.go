@@ -5028,26 +5028,30 @@ func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language,
 			signature = strings.Join(strings.Fields(templateHead+typeText+" "+member.declarator.Content(src)), " ")
 		}
 		out = append(out, Entity{
-			Kind:           "method",
-			Name:           qualify(scope, member.name),
-			Signature:      signature,
-			StartLine:      int(span.StartPoint().Row) + 1,
-			EndLine:        int(span.EndPoint().Row) + 1,
-			BodyHash:       hash(normalize(span.Content(src))),
-			Fingerprint:    hash(normalize(signature)),
-			bodyless:       true,
-			cPlusPlusOwner: cPlusPlusDeclarationOwner(node, src, scope),
+			Kind:            "method",
+			Name:            qualify(scope, member.name),
+			Signature:       signature,
+			StartLine:       int(span.StartPoint().Row) + 1,
+			EndLine:         int(span.EndPoint().Row) + 1,
+			BodyHash:        hash(normalize(span.Content(src))),
+			Fingerprint:     hash(normalize(signature)),
+			bodyless:        true,
+			cPlusPlusOwners: cPlusPlusDeclarationOwners(node, src, scope),
 		})
 	}
 	return out
 }
 
-// cPlusPlusDeclarationOwner returns the full lexical namespace/class owner of
+// cPlusPlusDeclarationOwners returns legal lexical namespace/class owners of
 // an in-class declaration without changing its graph-qualified name or stable
-// ID. The latter intentionally uses the immediate container; this spelling is
-// private matching evidence for `acct::Outer::Ledger::Add` definitions.
-func cPlusPlusDeclarationOwner(node *sitter.Node, src []byte, scope string) string {
-	parts := []string{scope}
+// ID. C++ lets definitions omit inline namespace segments, so bounded aliases
+// for those omissions are included.
+func cPlusPlusDeclarationOwners(node *sitter.Node, src []byte, scope string) []string {
+	type segment struct {
+		name       string
+		inlineable bool
+	}
+	parts := []segment{{name: scope}}
 	skippedImmediate := false
 	for current := node.Parent(); validNode(current); current = current.Parent() {
 		switch current.Type() {
@@ -5067,9 +5071,46 @@ func cPlusPlusDeclarationOwner(node *sitter.Node, src []byte, scope string) stri
 			skippedImmediate = true
 			continue
 		}
-		parts = append([]string{text}, parts...)
+		inlineable := false
+		if current.Type() == "namespace_definition" {
+			start, end := int(current.StartByte()), int(name.StartByte())
+			if start >= 0 && end > start && end <= len(src) {
+				inlineable = strings.Contains(string(src[start:end]), "inline")
+			}
+		}
+		parts = append([]segment{{name: text, inlineable: inlineable}}, parts...)
 	}
-	return strings.Join(parts, "::")
+	inlineCount := 0
+	for _, part := range parts {
+		if part.inlineable {
+			inlineCount++
+		}
+	}
+	masks := 1 << minInt(inlineCount, 4)
+	if inlineCount > 4 {
+		masks = 2
+	}
+	owners := make([]string, 0, masks)
+	for mask := 0; mask < masks; mask++ {
+		var names []string
+		inlineIndex := 0
+		for _, part := range parts {
+			omit := false
+			if part.inlineable {
+				if inlineCount <= 4 {
+					omit = mask&(1<<inlineIndex) != 0
+				} else {
+					omit = mask == 1
+				}
+				inlineIndex++
+			}
+			if !omit {
+				names = append(names, part.name)
+			}
+		}
+		owners = append(owners, strings.Join(names, "::"))
+	}
+	return owners
 }
 
 // cPlusPlusDeclarationSpan returns the node that spans a whole in-class

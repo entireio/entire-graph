@@ -452,6 +452,40 @@ int run() { a::Ledger ledger; return ledger.Add(3); }
 	}
 }
 
+func TestCPlusPlusOutOfLineDefinitionAllowsInlineNamespaceElision(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "api.hpp", `namespace api { inline namespace v1 {
+class Client { public: int Fetch(); };
+} }
+`)
+	writeFile(t, repo, "api.cpp", `#include "api.hpp"
+int api::Client::Fetch() { return 1; }
+`)
+	writeFile(t, repo, "main.cpp", `#include "api.hpp"
+int run() { api::Client client; return client.Fetch(); }
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		byID[symbol.ID] = symbol
+	}
+	var targets []string
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" && byID[relation.FromID].Name == "run" {
+			to := byID[relation.ToID]
+			targets = append(targets, fmt.Sprintf("%s:%s@%s:%d", to.Kind, to.Name, to.FilePath, to.StartLine))
+		}
+	}
+	want := "function:Fetch@api.cpp:2"
+	if len(targets) != 1 || targets[0] != want {
+		t.Fatalf("run() calls %v, want exactly [%s] through inline-namespace elision", targets, want)
+	}
+}
+
 func TestCPlusPlusOverloadsDoNotUseArbitraryBodyfulMethod(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()

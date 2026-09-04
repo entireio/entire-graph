@@ -30,11 +30,10 @@ type Entity struct {
 	// being downgraded as ambiguous. Private, like the other parse metadata, so
 	// the frozen schema is unchanged.
 	bodyless bool
-	// cPlusPlusOwner is the declaration's full lexical C++ owner spelling
-	// (`acct::Outer::Ledger`). Graph QualifiedName intentionally remains based
-	// on the immediate container for stable IDs, so out-of-line definition
-	// matching carries this separately.
-	cPlusPlusOwner string
+	// cPlusPlusOwners are the declaration's legal lexical C++ owner spellings,
+	// including bounded aliases produced by omitting inline namespaces. Graph
+	// QualifiedName remains based on the immediate container for stable IDs.
+	cPlusPlusOwners []string
 	// cLinkage marks a declaration that sits inside an `extern "C" { ... }`
 	// block (see declaredWithCLinkage). It is the only per-declaration record of
 	// which half of a dual-use C++-labelled header a C translation unit may

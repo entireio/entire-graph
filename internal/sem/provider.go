@@ -350,9 +350,9 @@ type SymbolRecord struct {
 	// ambiguous same-name definitions. Private, so the frozen schema and the
 	// compound-v1 IDs are unchanged.
 	bodyless bool
-	// cPlusPlusOwner carries the full lexical namespace/class owner used only to
-	// match a bodyless declaration to its out-of-line C++ definition.
-	cPlusPlusOwner string
+	// cPlusPlusOwners carry legal lexical namespace/class owner spellings used
+	// only to match a bodyless declaration to its out-of-line C++ definition.
+	cPlusPlusOwners []string
 	// cLinkage: this symbol is declared inside an `extern "C" { ... }` block
 	// (see Entity.cLinkage). candidateSharesDeclarations reads it to tell the
 	// C-linkage half of a dual-use header from the C++ half. Private, so the
@@ -1888,7 +1888,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			sourceStartByte: entity.sourceStartByte,
 			sourceEndByte:   entity.sourceEndByte,
 			bodyless:        entity.bodyless,
-			cPlusPlusOwner:  entity.cPlusPlusOwner,
+			cPlusPlusOwners: append([]string(nil), entity.cPlusPlusOwners...),
 			cLinkage:        entity.cLinkage,
 		}
 		// Carried for every language: the parser marks parameterNamesKnown only
@@ -9022,11 +9022,11 @@ func cPlusPlusOutOfLineDefinition(declaration SymbolRecord, candidates []SymbolR
 	if !declaration.bodyless || declaration.Language != "C++" || declaration.Name == "" {
 		return SymbolRecord{}, false
 	}
-	container := declaration.cPlusPlusOwner
-	if container == "" {
-		container = containerName(declaration.QualifiedName)
+	owners := declaration.cPlusPlusOwners
+	if len(owners) == 0 {
+		owners = []string{containerName(declaration.QualifiedName)}
 	}
-	if container == "" {
+	if len(owners) == 0 || owners[0] == "" {
 		return SymbolRecord{}, false
 	}
 	var definition SymbolRecord
@@ -9035,7 +9035,17 @@ func cPlusPlusOutOfLineDefinition(declaration SymbolRecord, candidates []SymbolR
 		if candidate.bodyless || candidate.Language != "C++" || candidate.ID == declaration.ID {
 			continue
 		}
-		if candidate.Name != declaration.Name || !signatureNamesQualifiedMethod(candidate.Signature, container, declaration.Name) {
+		if candidate.Name != declaration.Name {
+			continue
+		}
+		ownerMatches := false
+		for _, owner := range owners {
+			if signatureNamesQualifiedMethod(candidate.Signature, owner, declaration.Name) {
+				ownerMatches = true
+				break
+			}
+		}
+		if !ownerMatches {
 			continue
 		}
 		found++
