@@ -3419,3 +3419,157 @@ func TestTreeSitterParserCSharpBareAsyncArgumentMasked(t *testing.T) {
 		}
 	}
 }
+
+// TestCFamilyFieldSignatureCarriesTheDeclarator pins the two halves of a member's
+// declared type.
+//
+// The grammar splits it: the type field holds the base type and the declarator holds the
+// pointer, reference, array or function-pointer part. Building the signature from the
+// bare NAME and the base type alone rendered `char *data` and `char data` identically as
+// "data char", and hashing the base type alone gave them the same body hash, so entity
+// diff and impact saw no difference between two genuinely different fields and reported a
+// change between them as a generic module edit. Nothing about the output looked wrong,
+// which is what made it a silent miss.
+func TestCFamilyFieldSignatureCarriesTheDeclarator(t *testing.T) {
+	t.Parallel()
+
+	fieldOf := func(t *testing.T, source string) Entity {
+		t.Helper()
+		entities, _, _ := TreeSitterParser{}.ParseWithStatus("member.cpp", source)
+		for _, entity := range entities {
+			if entity.Kind == "field" {
+				return entity
+			}
+		}
+		t.Fatalf("no field extracted from %q", source)
+		return Entity{}
+	}
+
+	pointer := fieldOf(t, "struct S { char *data; };")
+	plain := fieldOf(t, "struct S { char data; };")
+	array := fieldOf(t, "struct S { char data[32]; };")
+
+	if pointer.Signature == plain.Signature {
+		t.Fatalf("`char *data` and `char data` share signature %q", pointer.Signature)
+	}
+	if pointer.BodyHash == plain.BodyHash {
+		t.Fatalf("`char *data` and `char data` share body hash %q", pointer.BodyHash)
+	}
+	if array.Signature == plain.Signature || array.BodyHash == plain.BodyHash {
+		t.Fatalf("`char data[32]` is indistinguishable from `char data`: %q/%q", array.Signature, array.BodyHash)
+	}
+}
+
+// TestCFamilyBitFieldWidthIsPartOfTheField pins the width as part of a member's identity.
+//
+// `unsigned ready : 1` and `unsigned ready : 2` are different fields, but the width hangs
+// off a bitfield_clause BESIDE the name rather than on the declarator, so neither the name
+// nor the declarator shape carried it. Both rendered "ready unsigned" and hashed the same,
+// which is the silent diff miss the declarator shape was added to close, arriving through
+// the one shape that shape cannot see.
+func TestCFamilyBitFieldWidthIsPartOfTheField(t *testing.T) {
+	t.Parallel()
+
+	fieldOf := func(t *testing.T, source string) Entity {
+		t.Helper()
+		entities, _, _ := TreeSitterParser{}.ParseWithStatus("member.cpp", source)
+		for _, entity := range entities {
+			if entity.Kind == "field" {
+				return entity
+			}
+		}
+		t.Fatalf("no field extracted from %q", source)
+		return Entity{}
+	}
+
+	// A bit-field's name may be WRAPPED: `unsigned (ready) : 1` puts it under a
+	// parenthesized declarator, where a direct-child match never saw it and the
+	// width was dropped again.
+	wrappedOne := fieldOf(t, "struct S { unsigned (ready) : 1; };")
+	wrappedTwo := fieldOf(t, "struct S { unsigned (ready) : 2; };")
+	if wrappedOne.Signature == wrappedTwo.Signature || wrappedOne.BodyHash == wrappedTwo.BodyHash {
+		t.Fatalf("a parenthesized bit-field lost its width: %q/%q vs %q/%q",
+			wrappedOne.Signature, wrappedOne.BodyHash, wrappedTwo.Signature, wrappedTwo.BodyHash)
+	}
+
+	oneBit := fieldOf(t, "struct S { unsigned ready : 1; };")
+	twoBits := fieldOf(t, "struct S { unsigned ready : 2; };")
+	plain := fieldOf(t, "struct S { unsigned ready; };")
+
+	if oneBit.Signature == twoBits.Signature || oneBit.BodyHash == twoBits.BodyHash {
+		t.Fatalf("widths 1 and 2 are indistinguishable: %q/%q vs %q/%q",
+			oneBit.Signature, oneBit.BodyHash, twoBits.Signature, twoBits.BodyHash)
+	}
+	if oneBit.Signature == plain.Signature || oneBit.BodyHash == plain.BodyHash {
+		t.Fatalf("a bit-field is indistinguishable from a plain member: %q/%q vs %q/%q",
+			oneBit.Signature, oneBit.BodyHash, plain.Signature, plain.BodyHash)
+	}
+}
+
+// TestAnonymousAggregateMembersAreScopedToTheirInstance pins where an anonymous
+// aggregate's members live.
+//
+// `union { int i; float f; } value;` declares no type symbol, so the inline-type descent
+// refuses it -- correctly, because `i` and `f` are not members of the enclosing struct.
+// They were then filed nowhere at all and vanished from the graph entirely: no symbol, no
+// CONTAINS relation, and a search for the field could not find it. They belong to the
+// INSTANCE, which is how the code reaches them (`packet.value.i`).
+func TestAnonymousAggregateMembersAreScopedToTheirInstance(t *testing.T) {
+	t.Parallel()
+
+	entities, _, _ := TreeSitterParser{}.ParseWithStatus("packet.cpp",
+		"struct Packet {\n  union { int i; float f; } value;\n  int plain;\n};\n")
+	names := map[string]string{}
+	for _, entity := range entities {
+		names[entity.Name] = entity.Kind
+	}
+
+	for _, want := range []string{"Packet.value", "Packet.value.i", "Packet.value.f", "Packet.plain"} {
+		if names[want] == "" {
+			t.Errorf("missing %q; got %v", want, names)
+		}
+	}
+	// Not members of the enclosing type: that is the filing the inline-type descent
+	// refuses, and this must not reintroduce it.
+	for _, unwanted := range []string{"Packet.i", "Packet.f"} {
+		if names[unwanted] != "" {
+			t.Errorf("%q was filed on the enclosing type: %v", unwanted, names)
+		}
+	}
+}
+
+// TestConversionOperatorWithAPlainTargetKeepsItsName pins the width of the mask's
+// stand-in identifier.
+//
+// `operator T()` is rewritten before tree-sitter sees it, and a symbol's name is later
+// sliced from the UNMASKED content at the node's byte range. The stand-in therefore has
+// to be as wide as the operator's OWN NAME, not merely leave the whole match the same
+// width: `convert` is seven characters and `operator int` is twelve, so the slice read
+// back the first seven bytes and the member was named `operato`. Every plain-target
+// conversion operator in a repository collapsed onto that one symbol -- one name, one id
+// -- while pointer and decltype targets, which this pattern does not match, named
+// correctly, which is what made it look like a naming bug rather than a masking one.
+func TestConversionOperatorWithAPlainTargetKeepsItsName(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		source string
+		want   string
+	}{
+		{"struct S {\n  operator int() { return 0; }\n};\n", "S.operator int"},
+		{"struct S {\n  operator bool() { return true; }\n};\n", "S.operator bool"},
+		{"struct S {\n  operator MyType() { return {}; }\n};\n", "S.operator MyType"},
+	} {
+		entities, _, _ := TreeSitterParser{}.ParseWithStatus("conv.cpp", testCase.source)
+		names := map[string]bool{}
+		for _, entity := range entities {
+			names[entity.Name] = true
+		}
+		if !names[testCase.want] {
+			t.Errorf("conversion operator %q not extracted; got %v", testCase.want, names)
+		}
+		if names["S.operato"] {
+			t.Errorf("the name was sliced short again: %v", names)
+		}
+	}
+}

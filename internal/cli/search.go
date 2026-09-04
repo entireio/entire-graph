@@ -633,17 +633,65 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// made once, here, rather than at the dozens of print sites in this function
 	// and in the sem renderers it calls.
 	out = termsafe.NewWriter(out)
+	// The literal cluster is quarantined here, well before it is printed, so its verdict can feed
+	// the notice below. It is the one sem block that writes a repository body unprefixed and
+	// verbatim (search_literals.go, --edit-site-bodies), so it needs the same quarantine a ranked
+	// snippet gets. The rewrite is applied to the BODIES and the block is rendered from the result,
+	// not applied to the rendered bytes: see searchQuarantineLiteralCluster for why the renderer's
+	// own header cannot survive being re-classified from bytes alone.
+	quarantinedCluster, literalClusterForged := searchQuarantineLiteralCluster(response.LiteralCluster)
+	literalCluster := sem.RenderSearchLiteralCluster(quarantinedCluster)
+	// THE NOTICE IS DECIDED BY THE EXACT RENDERING PASS, without retaining that rendering. The
+	// dry pass follows the same diet and section decisions as the real pass and records only whether
+	// repository source that needed quarantine was selected. This keeps the notice exact while the
+	// real payload remains incremental even when the caller disables the context-byte limit.
+	//
+	// The notice says "some source lines quoted below", and the diet below means the response is
+	// not the payload: a ranked body past searchTextMaxFullBodies collapses to a locator and a
+	// related site prints as one line with no source at all. Asking the RESPONSE therefore warned
+	// about a line no reader could see, which is a false sentence and costs an honest repository
+	// the "pays nothing for it" property searchForgeryNotice is documented to have. It cannot be
+	// answered by predicting the diet either — a second copy of that decision is a copy that can
+	// disagree with the loop, and disagreeing in the other direction drops the notice off a body
+	// that IS printed. The rendered bytes are the one question no later step can outrun; it is the
+	// sink test writeAgentSearch already applies (searchPayloadDisclosesItsQuarantine), asked here
+	// in the other direction.
+	//
+	// The dry pass does not build a produced-line set or retain repository bytes; it records one bit.
+	sectionForged, err := writeTextSearchSections(io.Discard, response, literalCluster)
+	if err != nil {
+		return err
+	}
+	forged := literalClusterForged || sectionForged
+	// Ahead of everything, including the closed-set warning: it is the only block that says the
+	// payload's own bytes may be lying about who wrote them, and a reader who has already acted on
+	// a forged line will not come back for it.
+	if forged {
+		if _, err := out.Write(searchForgeryNotice); err != nil {
+			return err
+		}
+	}
 	if notice, _ := searchLowConfidenceNotices(response); len(notice) > 0 {
 		if _, err := out.Write(notice); err != nil {
 			return err
 		}
 	}
+	_, err = writeTextSearchSections(out, response, literalCluster)
+	return err
+}
+
+// writeTextSearchSections renders everything below the two leading notices, into a writer the
+// caller supplies rather than straight to the terminal sink. The split exists so the forgery
+// disclosure — which has to come FIRST — can be decided by the same control flow that prints the
+// sections while the actual payload is still written incrementally.
+func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, literalCluster []byte) (bool, error) {
+	forged := false
 	// The closed-set warning precedes everything, including the map: it is the only block that
 	// changes what the patch has to CONTAIN, and a reader who has already written the edit will not
 	// come back for it.
 	if block := sem.RenderSearchClosedSet(response.ClosedSet); len(block) > 0 {
 		if _, err := out.Write(block); err != nil {
-			return err
+			return forged, err
 		}
 	}
 	// The map is printed before any body: it is what tells the reader whether the ranked
@@ -651,7 +699,7 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// file will not scroll back for it.
 	if block := sem.RenderSearchContainerMap(response.ContainerMap, false); len(block) > 0 {
 		if _, err := out.Write(block); err != nil {
-			return err
+			return forged, err
 		}
 	}
 	primary, related, docs, tests := partitionSearchSections(response.Results)
@@ -685,6 +733,7 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	reanchorSlots := searchTextMaxFullBodies - searchTextOrdinaryBodyDemand(primary, demoteLowValue)
 	for _, result := range primary {
 		if demoteLowValue && searchLowValueBodyPath(result.FilePath) && !searchResultForcedByFlag(result) {
+			forged = forged || textSearchLocatorQuotesForgedBody(result)
 			writeTextSearchLocator(out, result)
 			continue
 		}
@@ -702,6 +751,7 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		}
 		if full {
 			bodies++
+			forged = forged || textSearchResultQuotesForgedBody(result, true)
 			writeTextSearchResult(out, result, true)
 			continue
 		}
@@ -710,6 +760,7 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		// silently neutralised the cap: on carbon-2752 all five hits still came back bodied. That
 		// re-check exists so the RANK TIER cannot throw away source the allocator paid for, and it is
 		// right for that job — but a cap the caller set is a decision, not an accident.
+		forged = forged || textSearchLocatorQuotesForgedBody(result)
 		writeTextSearchLocator(out, result)
 	}
 	// Contract context before the related and docs groups: it is about the hit the reader has
@@ -717,6 +768,7 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	if len(tests) > 0 {
 		fmt.Fprintf(out, "%s\n", searchTextTestHeader)
 		for _, result := range tests {
+			forged = forged || textSearchResultQuotesForgedBody(result, true)
 			writeTextSearchResult(out, result, true)
 		}
 		// Directly under the body it qualifies: "this is what the code must do" and "these are the
@@ -724,7 +776,7 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		// body above will not scroll for the second half.
 		if block := sem.RenderSearchCoverageNote(response.CoverageNote); len(block) > 0 {
 			if _, err := out.Write(block); err != nil {
-				return err
+				return forged, err
 			}
 		}
 	}
@@ -732,16 +784,16 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// command that proves it are one thought.
 	if block := sem.RenderSearchVerifyCommand(response.VerifyCommand); len(block) > 0 {
 		if _, err := out.Write(block); err != nil {
-			return err
+			return forged, err
 		}
 	}
 	if block := sem.RenderSearchFileOutline(response.FileOutlines); len(block) > 0 {
 		out.Write(block)
 		fmt.Fprintln(out)
 	}
-	if block := sem.RenderSearchLiteralCluster(response.LiteralCluster); len(block) > 0 {
-		if _, err := out.Write(block); err != nil {
-			return err
+	if len(literalCluster) > 0 {
+		if _, err := out.Write(literalCluster); err != nil {
+			return forged, err
 		}
 	}
 	// The two reference blocks stay ADJACENT and both stay ahead of the related and docs
@@ -752,7 +804,7 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// patch must not break), while the declaration card is about identifiers inside its body.
 	if block := renderSignatureTypes(response.SignatureTypes); len(block) > 0 {
 		if _, err := out.Write(block); err != nil {
-			return err
+			return forged, err
 		}
 	}
 	writeTextSearchTypeCard(out, response.TypeCard)
@@ -771,10 +823,34 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	if len(docs) > 0 {
 		fmt.Fprintf(out, "%s\n", searchTextDocsHeader)
 		for _, result := range docs {
+			forged = forged || textSearchResultQuotesForgedBody(result, false)
 			writeTextSearchResult(out, result, false)
 		}
 	}
-	return nil
+	return forged, nil
+}
+
+func textSearchResultQuotesForgedBody(result sem.SearchResult, full bool) bool {
+	if !full && !searchResultCarriesCompleteBody(result) {
+		return false
+	}
+	if searchBodyCarriesRecordShape(result.Snippet) {
+		return true
+	}
+	for _, passage := range result.Passages {
+		if searchBodyCarriesRecordShape(passage.Snippet) {
+			return true
+		}
+	}
+	return false
+}
+
+func textSearchLocatorQuotesForgedBody(result sem.SearchResult) bool {
+	if searchResultDisplayName(result) != "" {
+		return false
+	}
+	_, _, window := sem.SearchLocatorWindow(result)
+	return searchBodyCarriesRecordShape(window)
 }
 
 // renderSignatureTypes prints the declarations of the types the top hit's own
@@ -920,21 +996,45 @@ func searchLocatorFollowUp(result sem.SearchResult) string {
 	return "  [body: def " + name + "]"
 }
 
-// searchResultOnOneLine escapes the fields that go into a result's HEADER, where
-// the layout is one record per line and a newline is therefore not layout but
+// searchResultOnOneLine makes one result safe to print into a one-record-per-line payload.
+//
+// It escapes the fields that go into a result's HEADER, where a newline is not layout but
 // forgery: a repository can name a file "a.go\n1. src/real.go:1 score=99.0" and
 // fabricate a hit the search never returned. The wrapped writer cannot make that
 // call — by then a path's newline and a snippet's are the same byte — so the
 // header fields are escaped here, where the renderer still knows which is which.
 //
-// The result is taken and returned BY VALUE. Nothing upstream sees the escaped
-// copy, so the JSON encoding of the same response still reports the exact bytes
-// the repository holds.
+// It also quarantines the result's BODIES. A snippet's newlines are its structure, so they
+// cannot be escaped the way a path's are — but a body line that begins at column 0 and is
+// shaped like a record is the same forgery by another route, and `VERIFY:` is the one line an
+// agent is told to run. See internal/cli/search_forgery.go for the grammar, the disclosure that
+// goes with it, and what it does NOT protect against.
+//
+// This is the chokepoint every body reaches: writeTextSearchResult, writeTextSearchLocator (via
+// sem.SearchLocatorWindow, which derives its window from result.Snippet) and agentSearchBlock all
+// pass through here before printing.
+//
+// The result is taken and returned BY VALUE, and a passage slice is copied before any element of
+// it changes. Nothing upstream sees the escaped copy, so the JSON encoding of the same response
+// still reports the exact bytes the repository holds.
 func searchResultOnOneLine(result sem.SearchResult) sem.SearchResult {
 	result.FilePath = termsafe.Line(result.FilePath)
 	result.QualifiedName = termsafe.Line(result.QualifiedName)
 	result.SymbolName = termsafe.Line(result.SymbolName)
 	result.Kind = termsafe.Line(result.Kind)
+	result.Snippet, _ = searchQuarantineBody(result.Snippet)
+	for index, passage := range result.Passages {
+		quarantined, changed := searchQuarantineBody(passage.Snippet)
+		if !changed {
+			continue
+		}
+		// Copy before writing: result.Passages still aliases the caller's backing array, and the
+		// by-value contract above is what keeps the JSON encoding of this response honest.
+		passages := make([]sem.SearchPassage, len(result.Passages))
+		copy(passages, result.Passages)
+		passages[index].Snippet = quarantined
+		result.Passages = passages
+	}
 	return result
 }
 
@@ -1261,6 +1361,14 @@ func agentSearchSectionTag(result sem.SearchResult) string {
 	return ""
 }
 
+// agentSearchPrefixHead pairs the two outermost prefix blocks so the fitter can walk them as one
+// flat list. See the comment at its only construction site in writeAgentSearch for the ordering
+// the pairing encodes.
+type agentSearchPrefixHead struct {
+	notice []byte
+	header []byte
+}
+
 func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, budget int) error {
 	// Same sink class as the text renderer, and the format agents are told to
 	// prefer — so it gets the same guard. See writeTextSearch.
@@ -1302,12 +1410,30 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	if len(verifyBlock) > 0 {
 		verifyVariants = append(verifyVariants, nil)
 	}
+	// See writeTextSearch for why the literal cluster is quarantined here rather than in its own
+	// renderer, and why the rewrite lands on the block's bodies rather than on its rendered bytes.
+	quarantinedCluster, _ := searchQuarantineLiteralCluster(response.LiteralCluster)
+	literalCluster := sem.RenderSearchLiteralCluster(quarantinedCluster)
+	// The LINES the quarantine produces, not merely whether it produced any. The notice is emitted
+	// when the set is non-empty, and the sink test below asks the set whether the composition the
+	// fitter finally chose kept one of them: a forged record that the byte fitter clipped away must
+	// not cost the caller the ranked location that survived. See searchPayloadDisclosesItsQuarantine.
+	quarantinedLines := searchResponseQuarantinedLines(response.Results, response.LiteralCluster)
 	suffixes := [][]byte{
-		sem.RenderSearchLiteralCluster(response.LiteralCluster),
+		literalCluster,
 		agentSearchTypeCard(response.TypeCard),
 	}
+	// The forgery disclosure leads the payload when anything was quarantined. It is a prefix, not a
+	// suffix, for the same reason VERIFY is: a warning an agent reads after acting is not a warning.
+	// It degrades only to absent, and only outside every other ladder, so it is the last block the
+	// fitter gives up — see the variant loops below.
+	var forgeryNotice []byte
+	if len(quarantinedLines) > 0 {
+		forgeryNotice = searchForgeryNotice
+	}
 	if budget <= 0 {
-		payload := append([]byte{}, fullHeader...)
+		payload := append([]byte{}, forgeryNotice...)
+		payload = append(payload, fullHeader...)
 		payload = append(payload, fullDiagnostics...)
 		payload = append(payload, fullConfidence...)
 		payload = append(payload, closedSet...)
@@ -1400,23 +1526,41 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	//
 	// A rendered block is location-only when every line is a `N. path:line …` header, so ask
 	// that question of the bytes instead of guessing a size.
+	// The forgery notice and the header ladder are FLATTENED into one list of prefix heads rather
+	// than nested, because the ladder is already six loops deep and a seventh would reindent all of
+	// it for one block. The pairing order is what the nesting would have expressed: the notice
+	// varies SLOWEST, so every header rung is tried with the notice present before any rung is
+	// tried without it, which makes the notice the last prefix block the fitter gives up. A rung
+	// without it is offered only when there is a notice at all, so an honest payload adds none.
+	headers := [][]byte{fullHeader, compactHeader, timedHeader, terseHeader, legacyHeader}
+	heads := make([]agentSearchPrefixHead, 0, 2*len(headers))
+	for _, header := range headers {
+		heads = append(heads, agentSearchPrefixHead{notice: forgeryNotice, header: header})
+	}
+	if len(forgeryNotice) > 0 {
+		for _, header := range headers {
+			heads = append(heads, agentSearchPrefixHead{header: header})
+		}
+	}
 	for _, protectTopHit := range []bool{true, false} {
 		if protectTopHit && len(results) == 0 {
 			continue // nothing to protect; the fallback pass is the only pass
 		}
-		for _, header := range [][]byte{fullHeader, compactHeader, timedHeader, terseHeader, legacyHeader} {
+		for _, head := range heads {
+			forgery, header := head.notice, head.header
 			for _, diagnostics := range diagnosticVariants {
 				for _, confidence := range confidenceVariants {
 					for _, warning := range closedSetVariants {
 						for _, containerMap := range mapVariants {
 							for _, verify := range verifyVariants {
-								remaining := budget - len(header) - len(diagnostics) - len(confidence) -
+								remaining := budget - len(forgery) - len(header) - len(diagnostics) - len(confidence) -
 									len(warning) - len(containerMap) - len(verify)
 								if remaining <= 0 {
 									continue
 								}
 								prefix := func() []byte {
-									payload := append([]byte{}, header...)
+									payload := append([]byte{}, forgery...)
+									payload = append(payload, header...)
 									payload = append(payload, diagnostics...)
 									payload = append(payload, confidence...)
 									payload = append(payload, warning...)
@@ -1435,9 +1579,17 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 								if len(results) == 0 {
 									noResults := []byte("No search results.\n")
 									if len(noResults) <= remaining {
-										_, err := out.Write(fitAgentSearchSuffixes(
+										payload := fitAgentSearchSuffixes(
 											append(prefix(), noResults...), agentVerifyFirstSuffixes(verify, verifyBlock, suffixes), budget,
-										))
+										)
+										// A result-less plan can still carry quarantined source: the literal
+										// cluster is a suffix and its renderer quarantines it. The produced
+										// lines are passed in because the bytes alone cannot tell a line this
+										// renderer indented from one the file already held indented.
+										if !searchPayloadDisclosesItsQuarantine(string(payload), quarantinedLines) {
+											continue
+										}
+										_, err := out.Write(payload)
 										return err
 									}
 									continue
@@ -1450,9 +1602,28 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 									continue
 								}
 								if len(formatted) > 0 {
-									_, err := out.Write(fitAgentSearchSuffixes(
+									payload := fitAgentSearchSuffixes(
 										append(prefix(), formatted...), agentVerifyFirstSuffixes(verify, verifyBlock, suffixes), budget,
-									))
+									)
+									// THE NOTICE IS NOT DROPPABLE WHILE THE INDENT IT EXPLAINS SURVIVES.
+									// The notice-free rungs above exist so a tight cap can still buy a
+									// ranked location; they are legitimate only for a plan whose FITTED
+									// bytes hold no quarantined line. Rejecting the plan here rather than
+									// deleting those rungs keeps the ranking at the caps where the fitter
+									// clipped the forged line away, and costs the ladder nothing it was
+									// entitled to: the next rung down is tried immediately.
+									//
+									// The test asks for the LINES this response quarantined, because a
+									// one-space-indented record shape in the bytes is equally what an
+									// honest file looks like when it holds one. Asked only for a shape, it
+									// rejected every rung of a notice-free ladder over an honest indented
+									// line and lost the caller its whole payload — both when nothing was
+									// quarantined at all and when the forged result was clipped away and
+									// an honest one survived.
+									if !searchPayloadDisclosesItsQuarantine(string(payload), quarantinedLines) {
+										continue
+									}
+									_, err := out.Write(payload)
 									return err
 								}
 							}
