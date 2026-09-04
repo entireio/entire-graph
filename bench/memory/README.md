@@ -28,7 +28,7 @@ identical spine. The only thing allowed to differ between arms is *which memorie
 - **Answerer AND judge are both `gpt-5.6-sol` (Azure AI, provider `azure_ai`) for every arm.**
   Same model generates the answer from retrieved context; same model judges it correct or not.
   No arm gets a different reader.
-- **`top_k=200`, all n=1540 LoCoMo questions, no subsetting.** LoCoMo-10, categories 1–4
+- **`top_k=200` requested (supermemory's API caps it at 100 — disclosed), all n=1540 LoCoMo questions, no subsetting.** LoCoMo-10, categories 1–4
   (multi-hop, temporal, open-domain, single-hop); category 5 (adversarial) is excluded per the
   upstream harness. A subset row is never a headline row.
 - **Ingest is native per system.** entire-graph performs **0 LLM calls** at ingest — deterministic,
