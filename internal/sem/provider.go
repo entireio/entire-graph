@@ -2018,12 +2018,52 @@ func fsharpQualifierMatchesModulePath(path, qualifier string) bool {
 	return path == qualifier || strings.HasSuffix(path, "."+qualifier)
 }
 
+// fsharpRootAnchoredPath reads F#'s `global.` prefix off a qualifier and
+// reports whether it was there. `global` is a KEYWORD, not an identifier, and
+// the grammar admits it only at the head of a long identifier, so a nested
+// `A.global.B` does not parse and only a leading occurrence is stripped --
+// leaving a mid-path `global` alone, which is the direction that cannot invent
+// a match.
+//
+// The prefix is an explicit ROOT ANCHOR: `global.Serde` names the top-level
+// `Serde` and nothing else, which is exactly why the keyword exists -- it is
+// how F# reaches a root path that a nearer declaration of the same name would
+// otherwise shadow. So the anchored reading is the stripped path matched
+// EXACTLY. Reading it as an ordinary qualifier instead would be wrong in both
+// directions at once: `global.Serde` matched no declared path at all, so the
+// call recorded bare and bound whatever `serialize` sat nearest; and merely
+// dropping the prefix would let the relative rules that follow admit a nested
+// `Deep.Serde` or the caller's own `Use.Serde`, collapsing two genuinely
+// different modules onto the one spelling the source went out of its way to
+// disambiguate.
+//
+// `namespace global` is the same keyword saying the same thing at the other
+// end, and fsharpNamespaceScopes already reads it as "no prefix", so a path
+// declared under it is stored at the root and an anchored qualifier finds it.
+func fsharpRootAnchoredPath(qualifier string) (string, bool) {
+	if qualifier == "global" {
+		return "", true
+	}
+	if rest, anchored := strings.CutPrefix(qualifier, "global."); anchored {
+		return rest, true
+	}
+	return qualifier, false
+}
+
 // fsharpModulePathDeclared reports whether the qualifier names a module the
 // PROJECT declares -- see fsharpProjectModulePaths for why the caller file's
 // own declarations are the wrong question. A qualifier that names no declared
 // module is not a module qualifier at all (a .NET namespace, a value receiver),
 // so it stays unrestricted and resolves by name.
+//
+// A root-anchored qualifier is tested against the declared paths EXACTLY: it
+// names one absolute path, so the suffix rule -- which exists for a qualifier
+// written relative to an enclosing scope -- does not apply to it. `global`
+// alone anchors nothing further and names no module, so it declares nothing.
 func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
+	if root, anchored := fsharpRootAnchoredPath(qualifier); anchored {
+		return root != "" && declared[root]
+	}
 	for path := range declared {
 		if fsharpQualifierMatchesModulePath(path, qualifier) {
 			return true
@@ -2707,6 +2747,16 @@ func fsharpQualifiedScope(symbols []SymbolRecord, qualifier, callerPath string, 
 		// the definition in scope and resolves over every candidate, exactly as
 		// the unrestricted path does.
 		return symbols
+	}
+	// A ROOT-ANCHORED qualifier (`global.Serde.serialize`) has exactly one
+	// reading and it is absolute, so the relative walk and the suffix fallback
+	// below are both skipped: they are how a qualifier written relative to an
+	// enclosing scope is resolved, and `global.` is the spelling that says the
+	// qualifier is NOT relative. Letting them run on the stripped path would
+	// undo the anchor -- from inside `Use`, a nested `Use.Serde` is the first
+	// reading tried and would win the call that named the root `Serde`.
+	if root, anchored := fsharpRootAnchoredPath(qualifier); anchored {
+		return fsharpNarrowToModule(symbols, pathBySymbolID, func(path string) bool { return path == root })
 	}
 	// A relative qualifier is read from the caller outwards, so resolve it
 	// against the caller's own module before falling back to a suffix. With both

@@ -18337,3 +18337,147 @@ let run (x: int) =
 		}
 	})
 }
+
+func TestFSharpRootAnchoredGlobalQualifierNamesTheRootModule(t *testing.T) {
+	// F#'s `global.` prefix is the explicit ROOT-NAMESPACE anchor -- a keyword,
+	// admitted by the grammar only at the head of a long identifier, so
+	// `global.Serde` names the top-level `Serde` and a nested `A.global.B` does
+	// not parse at all. It was never normalised where a qualifier or an
+	// abbreviation TARGET is tested against the project's declared module
+	// paths, so `global.Serde` matched no declared path: `module Json =
+	// global.Serde` had its alias rejected and `Json.serialize` recorded bare,
+	// and a bare spelling resolves unrestricted -- the call bound whatever
+	// `serialize` sat nearest instead of Serde's, which is the
+	// wrong-definition direction rather than a lost restriction. A directly
+	// spelled `global.Serde.serialize` lost its qualifier the same way.
+	//
+	// Normalising is not the same as DROPPING. The anchored path is absolute,
+	// so it is matched exactly; the relative readings and the suffix fallback
+	// are how an unanchored qualifier is resolved, and letting them run on the
+	// stripped path would collapse the root `Serde` onto a nested `Deep.Serde`
+	// or the caller's own `Use.Serde` -- the very ambiguity `global.` is
+	// written to remove. The last two subtests hold that direction.
+	callees := func(t *testing.T, declareRootSerde bool, useSource string) []string {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+		if declareRootSerde {
+			writeFile(t, repo, "src/Serde.fs", `module Serde
+
+let serialize (x: int) = x + 3
+`)
+		}
+		writeFile(t, repo, "src/Deep.fs", `namespace Deep
+
+module Serde =
+    let serialize (x: int) = x + 5
+`)
+		writeFile(t, repo, "src/Use.fs", useSource)
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		symbolsByID := map[string]SymbolRecord{}
+		for _, symbol := range snapshot.Symbols {
+			symbolsByID[symbol.ID] = symbol
+		}
+		var reached []string
+		for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+			to, isSymbol := symbolsByID[relation.ToID]
+			if !isSymbol || to.Name != "serialize" {
+				continue
+			}
+			if from, fromIsSymbol := symbolsByID[relation.FromID]; !fromIsSymbol || from.Name != "run" {
+				continue
+			}
+			reached = append(reached, filepath.Base(to.FilePath))
+		}
+		sort.Strings(reached)
+		return slices.Compact(reached)
+	}
+
+	t.Run("abbreviation of a root-anchored module", func(t *testing.T) {
+		got := callees(t, true, `module Use
+
+module Json = global.Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Serde.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = global.Serde` reached %v, want %v: `global.Serde` IS `Serde`, so the abbreviation redirects exactly as an unprefixed one does", got, want)
+		}
+	})
+
+	t.Run("abbreviation of a root-anchored dotted path", func(t *testing.T) {
+		got := callees(t, true, `module Use
+
+module Json = global.Deep.Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Deep.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = global.Deep.Serde` reached %v, want %v", got, want)
+		}
+	})
+
+	t.Run("root-anchored qualifier written at the call", func(t *testing.T) {
+		// The abbreviation is not the only place the prefix is tested: an
+		// UNSHADOWED qualifier is classified by the same declared-paths
+		// question, so `global.Serde.serialize` was not recognised as a module
+		// qualifier either and recorded bare.
+		got := callees(t, true, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = global.Serde.serialize x
+`)
+		if want := []string{"Serde.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`global.Serde.serialize` reached %v, want %v", got, want)
+		}
+	})
+
+	t.Run("anchor is not satisfied by a nested module of that name", func(t *testing.T) {
+		// The first opposite direction. With no top-level `Serde` declared,
+		// `global.Serde` names nothing this project holds -- the nested
+		// `Deep.Serde` is `Deep.Serde`, not `Serde`. Dropping the prefix and
+		// letting the ordinary suffix rule answer would pin the call to a
+		// module the source explicitly anchored AWAY from. It stays bare and
+		// resolves in scope, as any qualifier naming no declared module does.
+		got := callees(t, false, `module Use
+
+module Json = global.Serde
+
+let serialize (x: int) = x * 2
+
+let run (x: int) = Json.serialize x
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under `module Json = global.Serde` with only `Deep.Serde` declared reached %v, want %v: a root anchor is not matched by a nested module of the same name", got, want)
+		}
+	})
+
+	t.Run("anchor outranks a nested module in the caller's own scope", func(t *testing.T) {
+		// The second opposite direction, and the one a bare strip fails. An
+		// unanchored `Serde.serialize` inside `Use` is relative and means
+		// `Use.Serde`'s; `global.Serde.serialize` is absolute and means the
+		// top-level `Serde`'s. The two spellings must not collapse onto one
+		// module.
+		got := callees(t, true, `module Use
+
+module Serde =
+    let serialize (x: int) = x * 7
+
+let run (x: int) = global.Serde.serialize x
+`)
+		if want := []string{"Serde.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`global.Serde.serialize` with a nested `Use.Serde` in scope reached %v, want %v: the anchor names the ROOT module, so the nearer nested one does not answer it", got, want)
+		}
+	})
+}
