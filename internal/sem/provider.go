@@ -2108,10 +2108,6 @@ func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, 
 	return targets, true, false
 }
 
-func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
-	return resolveCallTargetsWithRawImport(name, from, candidates, nil, nil, sameFile, importsByName, allowMethodTargets)
-}
-
 // importsWithName replaces one binding in the normal import map with the
 // modules visible at a particular Python call site. The normal map contains
 // tagged repository-local paths beside authored specifiers; rebuild those tags
@@ -2134,6 +2130,63 @@ func importsWithName(imports map[string][]string, name string, modules []string,
 		copy[name] = uniqueStrings(resolved)
 	}
 	return copy
+}
+
+// callImportBinding is everything one call NAME contributes to resolution at a
+// call site: the import map the ordinary, language-filtered tiers read, plus the
+// two inputs to the raw-import FFI exception -- the UNFILTERED workspace
+// candidates and the import module sets allowed to bind them.
+//
+// It exists because four sites resolve a bare call name against the workspace
+// short-name index -- CALLS per symbol, CALLS for the file-level pseudo-symbol,
+// and the ASYNC_CALLS and DATA_FLOWS scans -- and the exception was added to the
+// two CALLS sites alone. `from frobnicate import compute` beside a parsed
+// `frobnicate.c` therefore produced the CALLS edge while silently dropping the
+// ASYNC_CALLS and DATA_FLOWS edges the same call site justifies. Deriving the
+// binding in one place is what keeps the four consistent.
+type callImportBinding struct {
+	// rawCandidates is the workspace short-name entry as-is, NOT narrowed by
+	// sharedTypeCandidates. A nil disables the exception for this name.
+	rawCandidates []SymbolRecord
+	// rawModuleSets are the import module paths visible at the call site. The
+	// exception binds a candidate only when a set resolves to that candidate's
+	// FILE and does so uniquely; anything ambiguous stays external.
+	rawModuleSets [][]string
+	// imports is the map every ordinary (filtered) resolution tier reads.
+	imports map[string][]string
+}
+
+// bindCallImports derives the binding for one call name.
+//
+// Python is the language whose imports are scoped below the file, so the raw
+// exception is valid there only for imports visible at an unshadowed AST call
+// site in this callable. Ordinary filtered resolution keeps its established
+// file-level map when scope analysis is incomplete; that incomplete view may
+// only disable the raw cross-language exception, never ordinary imports.
+//
+// scopes is nil whenever the file ran no call scan at all -- a profile may emit
+// ASYNC_CALLS or DATA_FLOWS with callResolution "none" -- and that counts as
+// incomplete for exactly the same reason: with no scope evidence the widening
+// is not licensed.
+func bindCallImports(name string, from SymbolRecord, language string, scopes *pythonBareImportScopes, symbolsByShortName map[string][]SymbolRecord, importsByName map[string][]string, importingPath string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) callImportBinding {
+	binding := callImportBinding{rawCandidates: symbolsByShortName[name], imports: importsByName}
+	if modules := importsByName[name]; len(modules) > 0 {
+		binding.rawModuleSets = [][]string{modules}
+	}
+	if language != "Python" {
+		return binding
+	}
+	if scopes != nil && scopes.complete {
+		binding.rawModuleSets = scopes.importModuleSets(from, name)
+		binding.imports = importsWithName(importsByName, name, scopes.importModules(from, name), importingPath, manifestImports, knownFiles, readContent)
+	} else {
+		binding.rawModuleSets = nil
+		binding.rawCandidates = nil
+	}
+	if len(binding.rawModuleSets) == 0 {
+		binding.rawCandidates = nil
+	}
+	return binding
 }
 
 // resolveCallTargetsWithRawImport keeps the normal language-filtered candidate
@@ -3730,30 +3783,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					rawCandidates := symbolsByShortName[name]
-					var rawImportModuleSets [][]string
-					importsForCall := callImportsByName
-					if modules := callImportsByName[name]; len(modules) > 0 {
-						rawImportModuleSets = [][]string{modules}
-					}
+					binding := bindCallImports(name, from, file.Language, pythonBareScopes, symbolsByShortName, callImportsByName, file.Path, manifestImports, knownFiles, readContent)
+					rawCandidates, rawImportModuleSets, importsForCall := binding.rawCandidates, binding.rawModuleSets, binding.imports
 					pythonAliasMember := ""
 					pythonModuleOnlyName := false
 					if file.Language == "Python" {
-						// The raw FFI exception is valid only for imports visible at an
-						// unshadowed AST call site in this callable. Ordinary filtered
-						// resolution keeps its established file-level map when scope
-						// analysis is incomplete; that incomplete view may only disable
-						// the raw cross-language exception, never ordinary imports.
-						if pythonBareScopes.complete {
-							rawImportModuleSets = pythonBareScopes.importModuleSets(from, name)
-							importsForCall = importsWithName(callImportsByName, name, pythonBareScopes.importModules(from, name), file.Path, manifestImports, knownFiles, readContent)
-						} else {
-							rawImportModuleSets = nil
-							rawCandidates = nil
-						}
-						if len(rawImportModuleSets) == 0 {
-							rawCandidates = nil
-						}
 						pythonAliasMember, _ = pythonImportedMemberName(pythonImportBindings, name)
 						pythonModuleOnlyName = pythonImportBindsModuleOnly(pythonImportBindings, name)
 					}
@@ -3883,7 +3917,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), currentFileSymbols, importsByName, false) {
+					// `await compute()` is the same call site the CALLS scan just
+					// resolved, so it gets the same import binding: an explicit
+					// import that resolves to the callee's file outranks the
+					// language-pair heuristic here too. Without it a Python
+					// `await compute()` bound to a parsed `frobnicate.c` kept its
+					// CALLS edge and lost its ASYNC_CALLS edge.
+					binding := bindCallImports(name, from, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					for _, to := range resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), binding.rawCandidates, binding.rawModuleSets, currentFileSymbols, binding.imports, false) {
 						if typeLikeKind(to.Kind) {
 							continue // construction, not an async call
 						}
@@ -3936,7 +3977,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if flow.Name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(flow.Name, from, sharedTypeCandidates(from, symbolsByShortName[flow.Name]), currentFileSymbols, importsByName, true) {
+					// Same call site, same import binding as CALLS and ASYNC_CALLS:
+					// a wrapper whose `return compute(arg)` binds a parsed C unit
+					// by import kept the CALLS edge and lost both flow directions.
+					binding := bindCallImports(flow.Name, from, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					for _, to := range resolveCallTargetsWithRawImport(flow.Name, from, sharedTypeCandidates(from, symbolsByShortName[flow.Name]), binding.rawCandidates, binding.rawModuleSets, currentFileSymbols, binding.imports, true) {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}
@@ -4249,24 +4294,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				for _, name := range sortedKeysOf(topLevelNames) {
-					rawCandidates := symbolsByShortName[name]
-					var rawImportModuleSets [][]string
-					importsForCall := importsByName
-					if modules := importsByName[name]; len(modules) > 0 {
-						rawImportModuleSets = [][]string{modules}
-					}
+					binding := bindCallImports(name, fileSource, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					rawCandidates, rawImportModuleSets, importsForCall := binding.rawCandidates, binding.rawModuleSets, binding.imports
 					pythonAliasMember := ""
 					if file.Language == "Python" {
-						if pythonBareScopes.complete {
-							rawImportModuleSets = pythonBareScopes.importModuleSets(fileSource, name)
-							importsForCall = importsWithName(importsByName, name, pythonBareScopes.importModules(fileSource, name), file.Path, manifestImports, knownFiles, readContent)
-						} else {
-							rawImportModuleSets = nil
-							rawCandidates = nil
-						}
-						if len(rawImportModuleSets) == 0 {
-							rawCandidates = nil
-						}
 						pythonAliasMember, _ = pythonImportedMemberName(pythonImportBindings, name)
 					}
 					var targets []resolvedCallTarget

@@ -5105,6 +5105,244 @@ def run():
 	})
 }
 
+// relationsTouching returns the relations of relType in the snapshot of `repo`
+// with `symbol` at either end, so a test can assert on the relation types
+// callRelationsFrom deliberately excludes. Either end, because DATA_FLOWS is
+// directional and the return-value half points from the callee back at the
+// caller.
+func relationsTouching(t *testing.T, repo, symbol, relType string) []RelationRecord {
+	t.Helper()
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type != relType {
+			continue
+		}
+		if strings.Contains(relation.FromID, symbol) || strings.Contains(relation.ToID, symbol) {
+			out = append(out, relation)
+		}
+	}
+	return out
+}
+
+// The import-over-language-pair exception is a property of the CALL SITE, not of
+// the relation type read off it, but it was wired into the two CALLS sites and
+// neither sibling scan. One `await compute(...)` therefore produced a resolved
+// CALLS edge and no ASYNC_CALLS edge at all. Measured over this fixture before
+// the fix, with the Python-to-Python control resolving all three:
+//
+//	CALLS       Python/run -> C/compute   res=import_resolved   resolved
+//	ASYNC_CALLS (none)                                          DROPPED
+//
+// The fixture is TestBareImportedCallResolvesAcrossFFIBoundary's, made async, so
+// the relation type asked for is the only difference between the two tests.
+func TestAsyncImportedCallResolvesAcrossFFIBoundary(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `from frobnicate import compute
+
+async def run():
+    return await compute(1)
+`)
+
+	async := relationsTouching(t, repo, "app.py:function:run", "ASYNC_CALLS")
+	if len(async) != 1 {
+		t.Fatalf("want one async call edge out of run, got %#v", async)
+	}
+	if !strings.Contains(async[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("import-resolved await was not bound to the C unit: %#v", async[0])
+	}
+	if async[0].Resolution != "import_resolved" {
+		t.Fatalf("want import_resolved, got %q: %#v", async[0].Resolution, async[0])
+	}
+}
+
+// The async scan reads past the language filter exactly as the bare-call scan
+// does, so it carries the same ambiguity rule: module paths are matched by
+// suffix, so one import can match same-named callables in several languages at
+// once and nothing then says which it bound. Two of them must produce no local
+// edge rather than an arbitrary pick -- and unlike CALLS there is no external
+// async edge to fall back to, so the correct outcome is no edge at all. Where
+// the compatibility relation does resolve a candidate it still wins outright.
+func TestAsyncImportedCallSuppressesCrossLanguageAmbiguity(t *testing.T) {
+	t.Run("ambiguous across languages", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.rb", `def compute(value)
+  value + 1
+end
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+async def run():
+    return await compute(1)
+`)
+
+		if async := relationsTouching(t, repo, "app.py:function:run", "ASYNC_CALLS"); len(async) != 0 {
+			t.Fatalf("ambiguous cross-language import must not resolve an async call: %#v", async)
+		}
+	})
+
+	t.Run("type-sharing candidate still wins", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.py", `def compute(value):
+    return value + 1
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+async def run():
+    return await compute(1)
+`)
+
+		async := relationsTouching(t, repo, "app.py:function:run", "ASYNC_CALLS")
+		if len(async) != 1 {
+			t.Fatalf("want one async call edge out of run, got %#v", async)
+		}
+		if !strings.Contains(async[0].ToID, "lib/frobnicate.py:function:compute") {
+			t.Fatalf("want the same-language module to win, got %#v", async[0])
+		}
+	})
+}
+
+// The data-flow scan is the third reader of the same call site and lost the same
+// exception. A Python wrapper forwarding a parameter into an imported C function
+// and returning its result keeps its CALLS edge while both flow directions
+// vanish. Measured over this fixture before the fix:
+//
+//	CALLS      Python/run -> C/compute                      resolved
+//	DATA_FLOWS Python/run -> C/compute (argument_forward)    DROPPED
+//	DATA_FLOWS C/compute -> Python/run (return_flow)         DROPPED
+func TestDataFlowImportedCallResolvesAcrossFFIBoundary(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(arg):
+    return compute(arg)
+`)
+
+	flows := relationsTouching(t, repo, "app.py:function:run", "DATA_FLOWS")
+	forward, back := false, false
+	for _, flow := range flows {
+		if flow.Resolution != "import_resolved" {
+			t.Fatalf("want import_resolved, got %q: %#v", flow.Resolution, flow)
+		}
+		if strings.Contains(flow.FromID, "app.py:function:run") && strings.Contains(flow.ToID, "frobnicate.c:function:compute") {
+			forward = true
+		}
+		if strings.Contains(flow.FromID, "frobnicate.c:function:compute") && strings.Contains(flow.ToID, "app.py:function:run") {
+			back = true
+		}
+	}
+	if !forward || !back {
+		t.Fatalf("want both flow directions across the FFI boundary, got %#v", flows)
+	}
+}
+
+// Same ambiguity rule as the call and async scans, and the same absence of an
+// external fallback: an import that could name either of two same-named foreign
+// declarations must produce no flow at all.
+func TestDataFlowImportedCallSuppressesCrossLanguageAmbiguity(t *testing.T) {
+	t.Run("ambiguous across languages", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.rb", `def compute(value)
+  value + 1
+end
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(arg):
+    return compute(arg)
+`)
+
+		if flows := relationsTouching(t, repo, "app.py:function:run", "DATA_FLOWS"); len(flows) != 0 {
+			t.Fatalf("ambiguous cross-language import must not resolve a flow: %#v", flows)
+		}
+	})
+
+	t.Run("type-sharing candidate still wins", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.py", `def compute(value):
+    return value + 1
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(arg):
+    return compute(arg)
+`)
+
+		for _, flow := range relationsTouching(t, repo, "app.py:function:run", "DATA_FLOWS") {
+			if strings.Contains(flow.FromID, "frobnicate.c") || strings.Contains(flow.ToID, "frobnicate.c") {
+				t.Fatalf("want the same-language module to win, got %#v", flow)
+			}
+		}
+	})
+}
+
+// Widening the two sibling scans to read past the language filter also hands
+// them Python's call-site-scoped import map, and that half must hold too: a
+// `from ... import` written inside one function is not visible to another, so
+// neither an await nor a flow in an unrelated function may bind through it.
+// This is the async/data-flow counterpart of
+// TestBareImportedCallIgnoresImportLocalToAnotherFunction, and it is what bounds
+// the widening -- the exception is licensed by an import VISIBLE AT THE CALL
+// SITE, not by one anywhere in the file.
+func TestAsyncAndFlowImportedCallsIgnoreImportLocalToAnotherFunction(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `async def uses_import(arg):
+    from frobnicate import compute
+
+    return await compute(arg)
+
+
+async def unrelated(arg):
+    return await compute(arg)
+`)
+
+	if async := relationsTouching(t, repo, "app.py:function:unrelated", "ASYNC_CALLS"); len(async) != 0 {
+		t.Fatalf("a function-local import leaked into an unrelated async call: %#v", async)
+	}
+	if flows := relationsTouching(t, repo, "app.py:function:unrelated", "DATA_FLOWS"); len(flows) != 0 {
+		t.Fatalf("a function-local import leaked into an unrelated flow: %#v", flows)
+	}
+	// Still resolves where the import really is visible.
+	async := relationsTouching(t, repo, "app.py:function:uses_import", "ASYNC_CALLS")
+	if len(async) != 1 || !strings.Contains(async[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("the importing function lost its async call to the C unit: %#v", async)
+	}
+	if flows := relationsTouching(t, repo, "app.py:function:uses_import", "DATA_FLOWS"); len(flows) == 0 {
+		t.Fatalf("the importing function lost its flows to the C unit: %#v", flows)
+	}
+}
+
 // `from mod import compute as c` binds `c` to mod's `compute`, so `c(...)` is a
 // call to compute and must produce the edge the un-aliased spelling produces.
 // It did not: every tier looks the call name up in the workspace short-name

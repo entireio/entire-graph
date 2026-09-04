@@ -182,9 +182,16 @@ func languagesShareTypes(from, target string) bool {
 // direct evidence the two files interoperate, and that outranks a language-pair
 // heuristic about naming types. Both spellings of such a call are excepted --
 // the qualified `frobnicate.compute()` in importedReceiverCallTargets and the
-// bare `compute()` in resolveCallTargets -- and both apply the same rule: prefer
-// these candidates, and consult the unfiltered set only when it names exactly
-// one target.
+// bare `compute()` in resolveCallTargetsWithRawImport -- and both apply the same
+// rule: prefer these candidates, and consult the unfiltered set only when it
+// names exactly one target.
+//
+// The exception belongs to the CALL SITE, not to the relation type read off it,
+// so every scan that resolves a bare name gets it: CALLS, the file-level
+// top-level CALLS, ASYNC_CALLS and DATA_FLOWS all derive their unfiltered
+// candidates from bindCallImports. Wiring it into the CALLS sites alone made one
+// `await compute()` produce a resolved CALLS edge and no ASYNC_CALLS edge at
+// all, and one `return compute(arg)` lose both flow directions.
 func sharedTypeCandidates(from SymbolRecord, candidates []SymbolRecord) []SymbolRecord {
 	filtered := candidates[:0:0]
 	for _, candidate := range candidates {
