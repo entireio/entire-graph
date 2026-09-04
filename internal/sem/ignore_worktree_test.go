@@ -83,7 +83,11 @@ func TestGitInfoExcludePath(t *testing.T) {
 			t.Fatal(err)
 		}
 		want = filepath.Join(resolvedParent, filepath.Base(want))
-		if got := gitInfoExcludePath(repo); got != want {
+		got, err := gitInfoExcludePath(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
 			t.Errorf("got %q want %q", got, want)
 		}
 	})
@@ -109,14 +113,22 @@ func TestGitInfoExcludePath(t *testing.T) {
 			t.Fatal(err)
 		}
 		want = filepath.Join(resolvedParent, filepath.Base(want))
-		if got := gitInfoExcludePath(repo); got != want {
+		got, err := gitInfoExcludePath(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
 			t.Errorf("got %q want %q", got, want)
 		}
 	})
 
 	t.Run("no git dir at all", func(t *testing.T) {
 		t.Parallel()
-		if got := gitInfoExcludePath(t.TempDir()); got != "" {
+		got, err := gitInfoExcludePath(t.TempDir())
+		if err != nil {
+			t.Fatalf("a directory that is not a repository must not be an error: %v", err)
+		}
+		if got != "" {
 			t.Errorf("non-git directory: got %q want \"\"", got)
 		}
 	})
