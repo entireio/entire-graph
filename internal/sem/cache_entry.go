@@ -87,29 +87,42 @@ type cacheGenerationMarker struct {
 	Generation string `json:"generation"`
 }
 
-// readCacheGeneration returns the current generation of an entry. No marker
-// means no rebuild has ever invalidated this entry's dependents, which is the
-// same generation every artifact derived before the first one recorded.
-func readCacheGeneration(cacheDir, family, version, key string) string {
+// readCacheGeneration returns the current generation of an entry. A marker that
+// does not exist is the pre-generation state: no rebuild has ever invalidated
+// this entry's dependents, which is the same generation every artifact derived
+// before the first one recorded, so fs.ErrNotExist answers the legacy empty
+// generation.
+//
+// Every OTHER failure is reported instead of collapsing into that same empty
+// string. An unreadable marker is not evidence that no rebuild happened; it is a
+// marker whose content is unknown, and the empty generation is precisely what a
+// pre-`--force` derivation stamped itself with. Answering it would revalidate
+// the artifact the rebuild retired and restore the silent staleness the marker
+// exists to end — so a caller that cannot read the marker must fail closed
+// rather than be told the reassuring value.
+func readCacheGeneration(cacheDir, family, version, key string) (string, error) {
 	entry, err := newCacheGenerationEntry(cacheDir, family, version, key)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	file, err := entry.open()
 	if err != nil {
-		return ""
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
 	}
 	defer file.Close()
 	reader, err := gzip.NewReader(file)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer reader.Close()
 	var marker cacheGenerationMarker
 	if err := json.NewDecoder(reader).Decode(&marker); err != nil {
-		return ""
+		return "", err
 	}
-	return marker.Generation
+	return marker.Generation, nil
 }
 
 // bumpCacheGeneration mints a new generation for an entry. A token only has to

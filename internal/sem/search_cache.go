@@ -228,13 +228,27 @@ func loadOrBuildSearchSnapshot(
 	// anything, is the artifact a rebuild replaces rather than discards, and is
 	// read by other entry points that know nothing about generations.
 	derivedFrom := ""
+	// generationKnown records whether the generation a derived entry must be
+	// compared against was actually read. Only a marker that does not exist yet
+	// means "no rebuild has retired anything"; a marker that could not be read
+	// means the answer is unknown, and the empty generation it would otherwise
+	// collapse to is the value every pre-`--force` derivation recorded. Serving
+	// or persisting a derived entry on an unknown generation therefore undoes the
+	// invalidation, so both are skipped and the query takes the build path.
+	generationKnown := true
 	key := completeKey
 	entry, err := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, completeKey)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
 	if len(options.OnlyFiles) > 0 {
-		derivedFrom = readCacheGeneration(cacheDir, "search", searchSnapshotCacheVersion, completeKey)
+		generation, generationErr := readCacheGeneration(cacheDir, "search", searchSnapshotCacheVersion, completeKey)
+		if generationErr != nil {
+			// Best effort, as everywhere on this query path: an optional cache
+			// that cannot be trusted becomes a miss, never a failed search.
+			generationKnown = false
+		}
+		derivedFrom = generation
 		key, err = searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree, options)
 		if err != nil {
 			return ProviderSnapshot{}, false, err
@@ -244,7 +258,7 @@ func loadOrBuildSearchSnapshot(
 			return ProviderSnapshot{}, false, err
 		}
 	}
-	if cached, err := readSearchSnapshot(entry); err == nil &&
+	if cached, err := readSearchSnapshot(entry); generationKnown && err == nil &&
 		validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, options) &&
 		cached.DerivedFrom == derivedFrom {
 		// See loadCachedCompleteSearchSnapshot: tree-only keying means this hit
@@ -273,7 +287,9 @@ func loadOrBuildSearchSnapshot(
 			}
 			// Persisting the exact selective view makes repeated identical queries
 			// a direct cache hit. As with ordinary search caching, this is best effort.
-			_ = writeSearchSnapshot(entry, newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, selective))
+			if generationKnown {
+				_ = writeSearchSnapshot(entry, newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, selective))
+			}
 			return selective, true
 		}
 		if preloadedFull != nil {
@@ -310,7 +326,9 @@ func loadOrBuildSearchSnapshot(
 	cache := newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot)
 	// Cache persistence is best effort. Retrieval correctness never depends on
 	// a writable cache directory.
-	_ = writeSearchSnapshot(entry, cache)
+	if generationKnown {
+		_ = writeSearchSnapshot(entry, cache)
+	}
 	return snapshot, false, nil
 }
 
