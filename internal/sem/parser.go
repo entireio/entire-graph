@@ -139,10 +139,99 @@ type TreeSitterParser struct{}
 
 const treeSitterParseTimeout = 5 * time.Second
 
+// maxParseWalkDepth bounds every recursive walk this package performs over a
+// tree-sitter parse tree while parsing a file: the entity walk and the helpers
+// it calls, the pre-parse Rust unwrap pass that runs before it, and the
+// error-detail walk that runs after it. The full inventory, and the walkers
+// deliberately left out of it, is in the "Walk inventory" comment below.
+//
+// Tree-sitter builds its tree iteratively on the C heap, so a source file can
+// nest as deeply as it has bytes for; the Go walkers over that tree recurse once
+// per level. Neither guard in front of the parser catches it: 900k nested
+// parentheses is 1.8 MB, well under defaultMaxParseBytes (4 MiB), and one
+// character per line so looksMinified's 5000-column test never fires. A Go stack
+// overflow is a fatal, unrecoverable process abort that recover() cannot catch,
+// so this has to be a LIMIT applied before recursing, not a rescue afterwards.
+//
+// The number: every walk below was instrumented and re-measured over 56,261 real
+// source files, in two corpora measured separately. First-party (entire-graph,
+// cli, entire-api, entiredb, entire.io/{frontend,api}/src, entire.io/website;
+// 7,515 files): p99=33, p99.9=46, max 463 — generated Go protobuf,
+// entiredb gen/proto/publicapi/admin/v1/admin.pb.go. Third-party
+// (entire.io/node_modules; 48,746 files): p99=37, p99.9=184, max 418 —
+// iconv-lite/types/encodings.d.ts. Not one file was truncated at 5000.
+//
+// Deepest level any single walk reached, across both corpora:
+//
+//	walkEntitiesScoped 463   initializerTypeBodies 359   collectParseErrorDetails 310
+//	jsFunctionLikeNode  12   jsPatternBindingNames   8   firstNameDescendant       7
+//	firstDescendantOfType 2
+//
+// So 5000 is ~10x the deepest whole-file nesting anyone ships (generated
+// protobuf, generated .d.ts) and far more than that for the name-resolution
+// descents, which start at a declaration and only ever look downward. It caps
+// the walk at ~3.8 MB of stack (walkEntitiesScoped frames measured at 752 bytes
+// on darwin/arm64) against Go's 1 GB goroutine limit.
+//
+// Walk inventory. internal/sem contains exactly nine self-recursive functions
+// whose signature takes a *sitter.Node, plus three recursive closures over one
+// (enumerated mechanically over the package call graph, not by eye; no MUTUALLY
+// recursive node cycle exists). ALL TWELVE are bounded here — none is left out:
+//
+//	parser.go       walkEntitiesScoped, initializerTypeBodies' walk,
+//	                collectParseErrorDetails' walk, firstNameDescendant,
+//	                firstDescendantOfType, rAssignedValueKind,
+//	                unwrapRustItemWrapperMacros' walk
+//	js_scopes.go    jsPatternBindingNames, jsFunctionLikeNode — both reached
+//	                from walkEntitiesScoped through jsEntityParameterNames;
+//	                jsScopeWalker.walk, jsMemberChainParts — the relation phase,
+//	                which reparses the file and walks its own tree after the
+//	                entity phase has returned, so the entity budget never
+//	                reaches them
+//	parameters.go   identifierDescendants — reached from walkEntitiesScoped
+//	                through astParameterNames on every callable, BEFORE the walk
+//	                descends into it, so the walk's own budget is unspent and
+//	                cannot bound it
+//
+// identifierDescendants was the one walker an earlier revision of this change
+// left unbounded, on the evidence that three C declarator shapes (parenthesized,
+// pointer, array) nested to 800,000 levels never drove it deep. That evidence
+// was real but partial: C takes parameterBindingNames' `name` branch and never
+// the `pattern`/`declarator` branch, so it reads 0 levels at any nesting. Rust
+// and Python parameter PATTERNS take the other branch and descend one level per
+// source level — instrumented at 2,001 levels for a 2,000-level fixture — and
+// `fn f(&&&…&a: u8) {}` aborts the process from ParseWithStatus. Two recursive
+// closures elsewhere in the package (kotlinReceiverTypeNames' visit, depth > 4;
+// uniqueImplementedMethod's walk, depth > 16) walk the SYMBOL graph rather than
+// a parse tree and carry their own explicit caps; they are not parse walkers and
+// are not governed by this limit.
+const maxParseWalkDepth = 5000
+
 type ParseStatus struct {
+	// ParseError reports that the parse did not fully succeed, so every
+	// consumer surfaces a machine-readable warning for the file.
 	ParseError bool
-	Code       string
-	Detail     string
+	// Partial reports that what WAS produced is nonetheless valid and usable:
+	// the file parsed, the entities returned are real, and the only thing
+	// missing is what the parser declined to reach. It separates a PARTIAL
+	// RESULT from a TOTAL FAILURE, which are handled differently — a total
+	// failure gives the diff no signal and suppresses the file's delta
+	// (analyze.go), while a partial result keeps it. A partial result is still
+	// a real coverage gap, so it counts toward completeness (provider.go);
+	// that is what distinguishes it from an intentional skip, where the graph
+	// chose not to look at the file at all.
+	Partial bool
+	// DepthExceeded reports that the AST walk hit maxParseWalkDepth,
+	// independent of Partial: a tree that is both too deep AND malformed sets
+	// this true while deliberately leaving Partial false (see the
+	// depthExceeded && root.HasError() case below), because the malformed
+	// tree's recovered entities may be wrong rather than merely incomplete.
+	// Consumers that need to know specifically "was this side truncated by
+	// the depth limit" — as opposed to "is what came back trustworthy" —
+	// read this field, not Partial.
+	DepthExceeded bool
+	Code          string
+	Detail        string
 }
 
 func (TreeSitterParser) Parse(path, content string) ([]Entity, string) {
@@ -294,7 +383,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	}
 
 	var entities []Entity
-	walkEntities(root, entitySrc, spec.language, "", &entities)
+	depthExceeded := walkEntities(root, entitySrc, spec.language, "", &entities)
 	if spec.language == "C++" {
 		entities = appendMissingEntities(entities, cPlusPlusTypeAliasEntities(content)...)
 	}
@@ -361,7 +450,42 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		return entities[i].StartLine < entities[j].StartLine
 	})
 	status := ParseStatus{}
-	if root.HasError() {
+	switch {
+	case depthExceeded && root.HasError():
+		// BOTH too deep and malformed. Truncation alone is a partial result,
+		// but a malformed tree is not: the entities recovered from it may be
+		// wrong, not merely fewer, so the caller must be free to suppress the
+		// file rather than diff against them. Error therefore dominates depth —
+		// Partial stays false, and a zero-entity side goes back down
+		// analyze.go's total-failure path instead of emitting every symbol on
+		// the other side as a phantom removal. Both conditions are named in the
+		// detail so the operator is not left guessing which one to fix; the
+		// error-detail walk is safe to run here because it is itself bounded.
+		status = ParseStatus{
+			ParseError:    true,
+			DepthExceeded: true,
+			Code:          "E_PARSE_ERROR",
+			Detail: fmt.Sprintf("%s; AST nesting also exceeded the %d-level walk limit, so declarations nested deeper than that were not extracted",
+				parseErrorDetailWithLineOffset(root, entitySrc, entityLineOffset), maxParseWalkDepth),
+		}
+	case depthExceeded:
+		// A truncated walk on a tree that PARSED CLEANLY (the case above takes
+		// the malformed one): truncation is why declarations are missing, and it
+		// is the actionable one, so it wins the single status slot. The
+		// error-detail walk is skipped with it: there is no error to report.
+		//
+		// Partial, not total: the entities above the limit were extracted from a
+		// tree that parsed, so they are real. Consumers must degrade rather than
+		// discard — the diff keeps this file's delta (analyze.go) — while still
+		// counting the file as an incompletely understood one (provider.go).
+		status = ParseStatus{
+			ParseError:    true,
+			Partial:       true,
+			DepthExceeded: true,
+			Code:          "E_PARSE_DEPTH_EXCEEDED",
+			Detail:        fmt.Sprintf("AST nesting exceeded the %d-level walk limit; declarations nested deeper than that were not extracted", maxParseWalkDepth),
+		}
+	case root.HasError():
 		status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetailWithLineOffset(root, entitySrc, entityLineOffset)}
 	}
 	return entities, spec.language, status
@@ -384,9 +508,14 @@ func collectParseErrorDetails(root *sitter.Node, src []byte, limit, lineOffset i
 		return nil
 	}
 	var details []string
-	var walk func(*sitter.Node)
-	walk = func(node *sitter.Node) {
-		if node == nil || node.IsNull() || len(details) >= limit {
+	// depth is capped at maxParseWalkDepth. The existing `limit` bounds RESULTS,
+	// not descent: a tree whose only error nodes sit at the bottom is walked all
+	// the way down, and this runs on every HasError file — precisely the
+	// adversarial input class. Measured: a 4,008,006-byte Python file (under the
+	// 4 MiB parser cap) nests 2,000,005 levels and overflows the stack here.
+	var walk func(*sitter.Node, int)
+	walk = func(node *sitter.Node, depth int) {
+		if node == nil || node.IsNull() || len(details) >= limit || depth >= maxParseWalkDepth {
 			return
 		}
 		if node.IsError() || node.IsMissing() {
@@ -409,10 +538,10 @@ func collectParseErrorDetails(root *sitter.Node, src []byte, limit, lineOffset i
 			details = append(details, fmt.Sprintf("%s %s at line %d column %d near %q", kind, node.Type(), line, point.Column+1, snippet))
 		}
 		for i := 0; i < int(node.ChildCount()) && len(details) < limit; i++ {
-			walk(node.Child(i))
+			walk(node.Child(i), depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 	return details
 }
 
@@ -628,8 +757,26 @@ func unwrapRustItemWrapperMacros(src []byte) bool {
 		return false
 	}
 	changed := false
-	var walk func(node *sitter.Node)
-	walk = func(node *sitter.Node) {
+	// depth is capped at maxParseWalkDepth. This pass runs BEFORE the guarded
+	// entity walk (it rewrites the source that walk is then given), on its own
+	// tree, so nothing downstream can protect it: a Rust file that merely
+	// CONTAINS a matching `cfg_*! {` hint — the hint is a regex over the whole
+	// file, it does not have to be anywhere near the nesting — drove this walk
+	// down an arbitrarily deep tree and aborted the process. Against the parent
+	// commit that is `fatal error: stack overflow` with frames in
+	// unwrapRustItemWrapperMacros.func1 and exit status 2; pinned by
+	// TestRustMacroUnwrapIsBoundedNotFatal.
+	//
+	// Truncating here means a cfg_*! wrapper nested deeper than the limit is
+	// left unexpanded, so the items inside it stay invisible — the same
+	// degradation as before this pass existed. The file is still reported: the
+	// entity walk over the same source hits its own guard and sets
+	// E_PARSE_DEPTH_EXCEEDED.
+	var walk func(node *sitter.Node, depth int)
+	walk = func(node *sitter.Node, depth int) {
+		if depth >= maxParseWalkDepth {
+			return
+		}
 		for i := 0; i < int(node.NamedChildCount()); i++ {
 			child := node.NamedChild(i)
 			if child == nil || child.IsNull() {
@@ -639,10 +786,10 @@ func unwrapRustItemWrapperMacros(src []byte) bool {
 				changed = true
 				continue
 			}
-			walk(child)
+			walk(child, depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 	return changed
 }
 
@@ -2330,17 +2477,6 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 				lines[i] = maskLineText(text) + newline
 			} else if strings.HasPrefix(trimmed, "FMT_PRAGMA_") {
 				lines[i] = maskLineText(text) + newline
-			} else if trimmed == `extern "C" {` {
-				for {
-					lines[i] = maskLineText(text) + newline
-					if (strings.HasPrefix(strings.TrimSpace(text), `}  // extern "C"`) || strings.HasPrefix(strings.TrimSpace(text), `} // extern "C"`)) || i+1 >= len(lines) {
-						break
-					}
-					i++
-					text, newline = splitLineEnding(lines[i])
-				}
-			} else if strings.HasPrefix(trimmed, `}  // extern "C"`) || strings.HasPrefix(trimmed, `} // extern "C"`) {
-				lines[i] = maskLineText(text) + newline
 			} else if strings.HasPrefix(trimmed, "(void)") && (strings.Contains(trimmed, "{}") || strings.Contains(trimmed, "{};")) {
 				lines[i] = paddedReplacement(leadingWhitespace(text), "(void)0;", len(text)) + newline
 			} else if strings.HasPrefix(trimmed, ": std::conditional<") {
@@ -3384,6 +3520,19 @@ var cFamilyNonFunctionNames = map[string]bool{
 	"while":   true,
 }
 
+// cFamilyTypedefLanguage reports whether a language's grammar spells a typedef
+// as C does, so that a `type_definition` node's name must be read from its
+// declarator rather than by descending to the first identifier. Objective-C is
+// a strict C superset and shares the node, so it shares the naming rule.
+func cFamilyTypedefLanguage(language string) bool {
+	switch language {
+	case "C", "C++", "Objective-C":
+		return true
+	default:
+		return false
+	}
+}
+
 func cFamilyTypedefAliasName(node *sitter.Node, src []byte) string {
 	text := strings.TrimSpace(stripCodeLiteralsAndComments(node.Content(src)))
 	if !strings.HasPrefix(text, "typedef ") {
@@ -3399,6 +3548,76 @@ func cFamilyTypedefAliasName(node *sitter.Node, src []byte) string {
 		return ""
 	}
 	return name
+}
+
+// cFamilyTypedefDeclaratorNames returns every name a C/C++ typedef binds, in
+// source order. One typedef can declare several — `typedef struct {…} A, B;`
+// is ordinary C, and so are `typedef int I1, I2;` and mixed forms like
+// `typedef struct {…} *H1, H2[4];`. Each declarator is an independent type
+// name that code refers to on its own, so each needs its own symbol.
+//
+// The grammar puts every one of them on a `declarator` field of the
+// type_definition, so this reads the AST rather than extending
+// cFamilyTypedefNameRe, whose `$` anchor can only ever see the last one. The
+// declarator is not always a bare identifier (`*H1`, `H2[4]`, `(*F1)(int)`),
+// so the name comes from firstNameDescendant, which unwraps pointer, array and
+// function declarators alike.
+func cFamilyTypedefDeclaratorNames(node *sitter.Node, src []byte) []string {
+	if !validNode(node) || node.Type() != "type_definition" {
+		return nil
+	}
+	var names []string
+	seen := map[string]bool{}
+	for i := 0; i < int(node.ChildCount()); i++ {
+		if node.FieldNameForChild(i) != "declarator" {
+			continue
+		}
+		name := firstNameDescendant(node.Child(i), src)
+		if name == "" || cFamilyNonFunctionNames[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
+}
+
+// cFamilyTypedefAliasEntities returns the typedef names entityFromNode did not
+// emit. entityFromNode returns a single Entity, so a multi-declarator typedef
+// kept exactly one name and silently dropped the rest: `typedef struct {int v;}
+// A, B;` produced only `type:B`, so a search for `A` found nothing and a
+// parameter typed `A` had no definition to resolve against.
+//
+// The name entityFromNode chose stays the primary entity — it is what scopes
+// the struct's fields — and these are emitted as its peers, so no existing
+// symbol moves and only the missing names are added.
+func cFamilyTypedefAliasEntities(node *sitter.Node, src []byte, language string, primary Entity) []Entity {
+	if language != "C" && language != "C++" {
+		return nil
+	}
+	if primary.Kind != "type" || !validNode(node) || node.Type() != "type_definition" {
+		return nil
+	}
+	names := cFamilyTypedefDeclaratorNames(node, src)
+	if len(names) < 2 {
+		return nil
+	}
+	block := node.Content(src)
+	var aliases []Entity
+	for _, name := range names {
+		if name == primary.Name {
+			continue
+		}
+		alias := primary
+		alias.Name = name
+		// Recompute rather than copy: for a single-line declaration the
+		// fingerprint is the signature with the entity's own name blanked out,
+		// so sharing the primary's would make every alias look like the same
+		// entity to change detection.
+		alias.Fingerprint = hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: primary.Signature}, block)))
+		aliases = append(aliases, alias)
+	}
+	return aliases
 }
 
 func fastCFamilyEntities(path, content, language string) []Entity {
@@ -3633,15 +3852,33 @@ func minInt(a, b int) int {
 	return b
 }
 
-func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) {
-	walkEntitiesScoped(node, src, language, scope, false, entities)
+// walkEntities extracts every entity in a parse tree. It reports whether the
+// walk was truncated at maxParseWalkDepth, which the caller turns into an
+// E_PARSE_DEPTH_EXCEEDED status so a truncated file is never silently reported
+// as fully understood.
+func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) (depthExceeded bool) {
+	exceeded := false
+	walkEntitiesScoped(node, src, language, scope, false, 0, entities, &exceeded)
+	return exceeded
 }
 
 // walkEntitiesScoped tracks whether the current node is inside a function body
 // (inFunc), so a callable defined there is marked Entity.Local — a nested/closure
 // def that call resolution must not name-match across scopes.
-func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, inFunc bool, entities *[]Entity) {
+//
+// depth is the current AST nesting level and is capped at maxParseWalkDepth: a
+// tree deeper than that truncates (setting *depthExceeded) instead of recursing
+// on until the goroutine stack is exhausted, which is a fatal process abort.
+// initializerTypeBodies below shares this counter rather than starting a fresh
+// one, because walkEntitiesScoped calls it and then descends into what it
+// returns; two independent budgets over the same root-to-leaf path would let the
+// two walkers amplify each other.
+func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, inFunc bool, depth int, entities *[]Entity, depthExceeded *bool) {
 	if !validNode(node) {
+		return
+	}
+	if depth >= maxParseWalkDepth {
+		*depthExceeded = true
 		return
 	}
 	// Field/property declarations emit one entity per declared name and are not
@@ -3664,8 +3901,8 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		// function-local (inFunc=true) exactly like the same idiom written
 		// inside a method body, so localReachable keeps them scoped to the
 		// declaration instead of name-colliding with real members.
-		for _, body := range initializerTypeBodies(node) {
-			walkEntitiesScoped(body, src, language, scope, true, entities)
+		for _, body := range initializerTypeBodies(node, depth, depthExceeded) {
+			walkEntitiesScoped(body, src, language, scope, true, depth+1, entities, depthExceeded)
 		}
 		return
 	}
@@ -3674,6 +3911,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	childInFunc := inFunc
 	if ok {
 		setEntitySourceRange(&entity, node, language, src)
+		entity.cLinkage = declaredWithCLinkage(language, node, src)
 		if entity.Kind == "function" || entity.Kind == "method" {
 			if language == "JavaScript" || language == "TypeScript" {
 				entity.parameterNames = jsEntityParameterNames(node, src)
@@ -3695,6 +3933,9 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			entity.Local = true // nested inside another function
 		}
 		*entities = append(*entities, entity)
+		// A C/C++ typedef can bind several names at once; entityFromNode
+		// returns one entity, so the remaining declarators are emitted here.
+		*entities = append(*entities, cFamilyTypedefAliasEntities(node, src, language, entity)...)
 		if scopesChildren(language, entity.Kind) {
 			childScope = entity.Name
 		}
@@ -3737,7 +3978,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, entities)
+		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, depth+1, entities, depthExceeded)
 	}
 }
 
@@ -4851,7 +5092,19 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			// *_type_defn child; the generic name descent would instead latch onto
 			// a leading attribute ([<CustomEquality>] type SemVerInfo -> "CustomEquality").
 			name = fsharpTypeName(node, src)
-		} else if (language == "C" || language == "C++") && node.Type() == "type_definition" {
+		} else if cFamilyTypedefLanguage(language) && node.Type() == "type_definition" {
+			// Objective-C belongs here with C and C++: its grammar is a C
+			// superset and emits the same type_definition node. Left out of
+			// this branch it fell through to nodeName, which finds no `name`
+			// field on a typedef and descends to the first identifier in
+			// pre-order — the SOURCE of the alias, never the alias. So every
+			// Objective-C typedef was published under the wrong name:
+			// `typedef struct {int v;} A, B;` became `type:v` (a field),
+			// `typedef struct Node {int q;} NodeAlias;` became `type:Node`
+			// (the tag), `typedef enum {RED, GREEN} Color;` became `type:RED`
+			// (an enum constant), and `typedef NSInteger MyInt;` became
+			// `type:NSInteger` — a phantom definition of a framework type this
+			// file does not define, while `MyInt` was not a symbol at all.
 			if alias := cFamilyTypedefAliasName(node, src); alias != "" {
 				name = alias
 			} else {
@@ -4932,12 +5185,18 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		if language == "Objective-C" && node.Type() == "struct_declaration" {
 			return Entity{}, false
 		}
+		if cFamilyTagReference(node, language) || cFamilyAnonymousSpecifier(node, language) {
+			return Entity{}, false
+		}
 		kind = "struct"
 		name = nodeName(node, src)
 	case "enum_item", "enum_declaration", "enum_specifier":
 		// Same as struct_declaration: Zig enums are anonymous literals named by
 		// the enclosing variable_declaration.
 		if language == "Zig" {
+			return Entity{}, false
+		}
+		if cFamilyTagReference(node, language) || cFamilyAnonymousSpecifier(node, language) {
 			return Entity{}, false
 		}
 		kind = "enum"
@@ -4996,6 +5255,26 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 	case "block":
 		kind = "block"
 		name = hclBlockName(node, src)
+	case "attribute":
+		// HCL top-level attribute (`region = "us-west-2"`). A Terraform
+		// variables file (`.tfvars`, `*.auto.tfvars`) contains nothing else —
+		// the format rejects blocks — so extracting only `block` nodes left
+		// every such file with zero symbols and zero relations while HCL was
+		// advertised as a semantic language. Hand-written Consul/Nomad/Vault
+		// `.hcl` configs carry the same top-level settings. Attributes nested
+		// inside a block are that block's body and stay folded into the block
+		// symbol, which keeps a Terraform module from fanning out one symbol
+		// per argument. The node type is HCL-only in this grammar set, but the
+		// gate is explicit so another language's `attribute` node cannot leak
+		// into this case.
+		if language != "HCL" || !hclTopLevelAttribute(node) {
+			return Entity{}, false
+		}
+		name = hclAttributeName(node, src)
+		if name == "" {
+			return Entity{}, false
+		}
+		kind = "setting"
 	case "field":
 		kind = "field"
 		name = cueFieldName(node, src)
@@ -6656,8 +6935,31 @@ func nodeName(node *sitter.Node, src []byte) string {
 	return firstNameDescendant(node, src)
 }
 
+// firstNameDescendant returns the first name-like token in a pre-order descent
+// of node's subtree.
+//
+// It carries its OWN depth budget rather than borrowing walkEntitiesScoped's,
+// because it is not part of that walk: entityFromNode calls it on a whole
+// declaration subtree while the walk is still only a level or two down, so it
+// runs BEFORE the walk's guard can fire and over a subtree the walk has not yet
+// entered. Unbounded, hostile input therefore killed the process without ever
+// reaching that guard. Against the parent commit, `graph diff` over a repo
+// holding one 12,024,026-byte C file of 6,000,000 nested declarator parentheses
+// dies with `fatal error: stack overflow`, frames in firstNameDescendant, exit
+// 2 — Analyze (analyze.go) hands git blob content to the parser with no size
+// cap at all, so nothing upstream keeps a file that large away from this
+// descent. Pinned by TestNameDescentIsBoundedNotFatal.
+//
+// Truncation is not reported from here. Any subtree deep enough to exhaust this
+// budget is also descended by walkEntitiesScoped or initializerTypeBodies, whose
+// guards set the file's E_PARSE_DEPTH_EXCEEDED status; pinned by
+// TestDeepNameDescentStillReportsTruncation.
 func firstNameDescendant(node *sitter.Node, src []byte) string {
-	if !validNode(node) {
+	return firstNameDescendantAt(node, src, 0)
+}
+
+func firstNameDescendantAt(node *sitter.Node, src []byte, depth int) string {
+	if !validNode(node) || depth >= maxParseWalkDepth {
 		return ""
 	}
 	if isNameNode(node.Type()) {
@@ -6673,7 +6975,7 @@ func firstNameDescendant(node *sitter.Node, src []byte) string {
 		if skipForNameDescent(child.Type()) {
 			continue
 		}
-		if name := firstNameDescendant(child, src); name != "" {
+		if name := firstNameDescendantAt(child, src, depth+1); name != "" {
 			return name
 		}
 	}
@@ -7098,8 +7400,24 @@ func objectiveCMethodEntities(content string) []Entity {
 	}
 
 	var entities []Entity
+	scope := ""
 	for i := 0; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
+		// Track the enclosing @interface/@implementation/@protocol so a
+		// recovered method carries the same qualified name the tree-sitter walk
+		// gives it. Without the scope every method the walk DID find gained an
+		// unqualified twin here: appendMissingEntities keys on kind+name, so
+		// `Ledger.add` and `add` were two different symbols at one source
+		// location, duplicating the method in the symbol table, duplicating
+		// every call edge into it, and pairing it with itself as SIMILAR_TO.
+		if declared, ok := objectiveCContainerName(trimmed); ok {
+			scope = declared
+			continue
+		}
+		if trimmed == "@end" {
+			scope = ""
+			continue
+		}
 		if !strings.HasPrefix(trimmed, "- (") && !strings.HasPrefix(trimmed, "+ (") {
 			continue
 		}
@@ -7128,7 +7446,7 @@ func objectiveCMethodEntities(content string) []Entity {
 			continue
 		}
 		header := strings.Join(headerParts, " ")
-		name := objectiveCMethodHeaderName(header)
+		name := qualify(scope, objectiveCMethodHeaderName(header))
 		if name == "" {
 			continue
 		}
@@ -7155,6 +7473,33 @@ func objectiveCMethodEntities(content string) []Entity {
 	}
 	return entities
 }
+
+// objectiveCContainerName returns the type an @interface, @implementation or
+// @protocol line declares, matching how the tree-sitter walk names the same
+// node: a category (`@implementation Foo (Bar)`) still names Foo, and a
+// superclass or protocol conformance list is not part of the name.
+func objectiveCContainerName(trimmed string) (string, bool) {
+	for _, keyword := range []string{"@interface", "@implementation", "@protocol"} {
+		if !strings.HasPrefix(trimmed, keyword) {
+			continue
+		}
+		rest := strings.TrimSpace(trimmed[len(keyword):])
+		if rest == "" {
+			// `@interface` with the name on the next line is not a shape the
+			// recovery scanner can attribute; leave the scope untouched rather
+			// than guessing at it.
+			return "", false
+		}
+		name := objectiveCContainerNamePattern.FindString(rest)
+		if name == "" {
+			return "", false
+		}
+		return name, true
+	}
+	return "", false
+}
+
+var objectiveCContainerNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*`)
 
 func objectiveCMethodHeaderName(header string) string {
 	closeReturnType := strings.IndexByte(header, ')')
@@ -7372,11 +7717,25 @@ func scopesChildren(language, kind string) bool {
 // field/property declaration's initializer — the anonymous-class idiom. The
 // search stops at the outermost body found on each branch; walkEntitiesScoped
 // handles anything nested inside it.
-func initializerTypeBodies(node *sitter.Node) []*sitter.Node {
+//
+// depth is the caller's AST nesting level, continued rather than restarted: this
+// walk descends the same tree walkEntitiesScoped is already descending. That
+// caller returns at a field declaration without descending into it itself, so
+// this is the ONLY recursion into a field's initializer, and budgeting
+// walkEntitiesScoped alone leaves `class C { x = ((( ... ))) }` walking
+// unbounded here (verified: the initializer test still fails with this check
+// removed). Sharing one counter keeps the two from amplifying each other along a
+// root-to-leaf path; a truncated descent sets *depthExceeded so the file is
+// reported, not silently shortened.
+func initializerTypeBodies(node *sitter.Node, depth int, depthExceeded *bool) []*sitter.Node {
 	var out []*sitter.Node
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
+	var walk func(n *sitter.Node, depth int)
+	walk = func(n *sitter.Node, depth int) {
 		if !validNode(n) {
+			return
+		}
+		if depth >= maxParseWalkDepth {
+			*depthExceeded = true
 			return
 		}
 		switch n.Type() {
@@ -7385,11 +7744,11 @@ func initializerTypeBodies(node *sitter.Node) []*sitter.Node {
 			return
 		}
 		for i := 0; i < int(n.NamedChildCount()); i++ {
-			walk(n.NamedChild(i))
+			walk(n.NamedChild(i), depth+1)
 		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walk(node.NamedChild(i))
+		walk(node.NamedChild(i), depth+1)
 	}
 	return out
 }
@@ -7440,8 +7799,21 @@ func rAssignmentEntity(node *sitter.Node, src []byte, scope string) (string, str
 	return kind, name, true
 }
 
+// rAssignedValueKind classifies what an R assignment binds, following chained
+// assignments (`a <- b <- function() 1`) to the terminal value.
+//
+// The chain is written by the source, so its length is attacker-controlled and
+// the recursion is independent of walkEntitiesScoped's: entityFromNode calls
+// this on the whole binary_operator subtree before the walk descends into it.
+// Against the parent commit a long enough chain of `a <- ` assignments aborts
+// the process with `fatal error: stack overflow`, frames in rAssignedValueKind;
+// pinned by TestRAssignmentChainIsBoundedNotFatal.
 func rAssignedValueKind(value *sitter.Node, src []byte) (string, bool) {
-	if !validNode(value) {
+	return rAssignedValueKindAt(value, src, 0)
+}
+
+func rAssignedValueKindAt(value *sitter.Node, src []byte, depth int) (string, bool) {
+	if !validNode(value) || depth >= maxParseWalkDepth {
 		return "", false
 	}
 	switch value.Type() {
@@ -7467,7 +7839,7 @@ func rAssignedValueKind(value *sitter.Node, src []byte) (string, bool) {
 		default:
 			return "", false
 		}
-		return rAssignedValueKind(assigned, src)
+		return rAssignedValueKindAt(assigned, src, depth+1)
 	}
 	return "", false
 }
@@ -7748,6 +8120,29 @@ func hclBlockName(node *sitter.Node, src []byte) string {
 	return strings.Join(parts, ".")
 }
 
+// hclTopLevelAttribute reports whether an `attribute` node sits directly in the
+// file body rather than inside a block. tree-sitter-hcl nests every attribute
+// under a `body`, so the distinguishing parent is the body's own parent:
+// `config_file` for a top-level setting, `block` for a block argument.
+func hclTopLevelAttribute(node *sitter.Node) bool {
+	body := node.Parent()
+	if !validNode(body) || body.Type() != "body" {
+		return false
+	}
+	root := body.Parent()
+	return validNode(root) && root.Type() == "config_file"
+}
+
+// hclAttributeName returns the name an HCL attribute binds — the identifier on
+// the left of the `=`.
+func hclAttributeName(node *sitter.Node, src []byte) string {
+	identifier := firstNamedChildOfType(node, "identifier")
+	if !validNode(identifier) {
+		return ""
+	}
+	return strings.TrimSpace(identifier.Content(src))
+}
+
 func hclBlockPart(node *sitter.Node, src []byte) string {
 	if node.Type() == "identifier" {
 		return strings.TrimSpace(node.Content(src))
@@ -7927,15 +8322,28 @@ func firstDeclaratorChild(node *sitter.Node) *sitter.Node {
 	return nil
 }
 
+// firstDescendantOfType returns the first node of nodeType in a pre-order
+// descent of node's subtree.
+//
+// Depth-budgeted for the same reason as firstNameDescendant above: entityFromNode
+// reaches it over a whole declaration subtree before walkEntitiesScoped has
+// descended into that subtree, so its recursion is independent of the walk's and
+// hits the goroutine stack first. It is the second name-resolution descent on
+// that path (C/Objective-C take the function name from the declarator here), so
+// bounding only firstNameDescendant would move the abort rather than remove it.
 func firstDescendantOfType(node *sitter.Node, nodeType string) *sitter.Node {
-	if !validNode(node) {
+	return firstDescendantOfTypeAt(node, nodeType, 0)
+}
+
+func firstDescendantOfTypeAt(node *sitter.Node, nodeType string, depth int) *sitter.Node {
+	if !validNode(node) || depth >= maxParseWalkDepth {
 		return nil
 	}
 	if node.Type() == nodeType {
 		return node
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		if found := firstDescendantOfType(node.NamedChild(i), nodeType); validNode(found) {
+		if found := firstDescendantOfTypeAt(node.NamedChild(i), nodeType, depth+1); validNode(found) {
 			return found
 		}
 	}
@@ -7965,6 +8373,51 @@ func goReceiverName(node *sitter.Node, src []byte) string {
 	return strings.TrimSpace(name)
 }
 
+// cFamilyTagReference reports whether a C-family struct/enum specifier NAMES a
+// tag rather than defining one. In C the tag name is part of the type syntax, so
+// `struct Ledger *l` and `enum Mode m` parse to the same struct_specifier /
+// enum_specifier node type as the definition does — the definition is the one
+// carrying a body. Without this check every mention of a type produced another
+// "definition" of it: a three-line C file that declares `struct Ledger` once and
+// uses it twice emitted three struct symbols at three different lines, and a
+// header whose only content is prototypes emitted a phantom definition for each
+// parameter type.
+//
+// A body-less specifier at file scope is a forward declaration
+// (`struct Ledger;`) — an incomplete type, not a definition either — so it is
+// skipped on the same rule.
+func cFamilyTagReference(node *sitter.Node, language string) bool {
+	switch language {
+	case "C", "C++", "Objective-C":
+	default:
+		return false
+	}
+	return !validNode(node.ChildByFieldName("body"))
+}
+
+// cFamilyAnonymousSpecifier reports whether a C-family struct/enum specifier
+// defines a body under NO tag of its own: `typedef struct {int x;} Point;`, or
+// an anonymous struct nested in another type. That is the ordinary way a C type
+// is declared — the type's only name is the typedef's, which the enclosing
+// type_definition already emits.
+//
+// The specifier itself must not be emitted, because it has no name to be
+// emitted under. nodeName finds no name node and falls through to the first
+// identifier in pre-order, which is the first FIELD, so the anonymous struct of
+// `typedef struct {int x; int y;} Point;` was emitted as a struct definition
+// called `x`. That symbol names nothing that exists: a search for the type finds
+// a field name, and a search for the field finds a struct. Skipping it also
+// leaves the fields correctly scoped, since "type" scopes its children and the
+// typedef is their nearest named container.
+func cFamilyAnonymousSpecifier(node *sitter.Node, language string) bool {
+	switch language {
+	case "C", "C++", "Objective-C":
+	default:
+		return false
+	}
+	return !validNode(node.ChildByFieldName("name"))
+}
+
 func qualify(scope, name string) string {
 	if scope == "" || name == "" || strings.HasPrefix(name, scope+".") {
 		return name
@@ -7974,6 +8427,218 @@ func qualify(scope, name string) string {
 
 func validNode(node *sitter.Node) bool {
 	return node != nil && !node.IsNull()
+}
+
+// declaredWithCLinkage reports whether a C-compatible declaration sits inside
+// an `extern "C" { ... }` linkage specification.
+//
+// That block is the ONE construct a C++ header uses to say which of its
+// declarations a C translation unit may name, and it is why the dual-use header
+// -- the one written precisely so a `.c` can include it -- exists at all. The
+// language label follows the FILE, so such a header is labelled C++ (see
+// looksLikeCPlusPlusHeader, which fires on the `extern "C"` marker itself), and
+// nothing else in a symbol record distinguishes the C-linkage half from the
+// templates, overloads, namespaces and classes around it. This flag is that
+// distinction; candidateSharesDeclarations is its only consumer.
+//
+// `extern "C++"` is deliberately not matched: it says the opposite.
+func declaredWithCLinkage(language string, node *sitter.Node, src []byte) bool {
+	switch language {
+	case "C", "C++", "Objective-C", "Objective-C++":
+	default:
+		return false
+	}
+	linkage := innermostLinkageSpecification(node)
+	if !validNode(linkage) || linkageSpecificationName(linkage, src) != "C" {
+		return false
+	}
+	if !cLinkageCompatibleDeclaration(node, src) {
+		return false
+	}
+	for parent := node.Parent(); validNode(parent) && parent != linkage; parent = parent.Parent() {
+		// A C-linkage spelling does not make declarations nested in a C++ class
+		// or namespace visible to a C translation unit.
+		if cxxLinkageForbiddenAncestor(parent, src) {
+			return false
+		}
+	}
+	return true
+}
+
+// innermostLinkageSpecification deliberately stops at the first enclosing
+// linkage specification. In particular, an `extern "C++"` nested inside an
+// outer `extern "C"` restores C++ linkage for its declarations.
+func innermostLinkageSpecification(node *sitter.Node) *sitter.Node {
+	for parent := node.Parent(); validNode(parent); parent = parent.Parent() {
+		if parent.Type() == "linkage_specification" {
+			return parent
+		}
+	}
+	return nil
+}
+
+func linkageSpecificationName(node *sitter.Node, src []byte) string {
+	value := node.ChildByFieldName("value")
+	if !validNode(value) {
+		return ""
+	}
+	return strings.Trim(value.Content(src), `"`)
+}
+
+func cxxLinkageForbiddenAncestor(node *sitter.Node, src []byte) bool {
+	switch node.Type() {
+	case "namespace_definition", "class_specifier", "class_declaration":
+		return true
+	case "struct_specifier", "union_specifier":
+		return cxxAggregateMembers(node, src)
+	default:
+		return false
+	}
+}
+
+// cLinkageCompatibleDeclaration filters the C++ declarations that tree-sitter
+// still places syntactically inside a linkage_specification but that a C source
+// cannot declare or name. Plain C aggregates, unscoped enums, typedefs and
+// ordinary functions intentionally remain eligible.
+func cLinkageCompatibleDeclaration(node *sitter.Node, src []byte) bool {
+	switch node.Type() {
+	case "class_specifier", "class_declaration", "alias_declaration", "using_declaration":
+		return false
+	case "enum_specifier", "enum_declaration":
+		return !cxxScopedEnum(node, src)
+	case "struct_specifier", "union_specifier":
+		return !cxxAggregateMembers(node, src)
+	}
+	return true
+}
+
+func cxxScopedEnum(node *sitter.Node, src []byte) bool {
+	fields := strings.Fields(stripCodeLiteralsAndComments(node.Content(src)))
+	return len(fields) >= 2 && fields[0] == "enum" && (fields[1] == "class" || fields[1] == "struct")
+}
+
+func cxxAggregateMembers(node *sitter.Node, src []byte) bool {
+	// Tree-sitter C is a compact, more complete compatibility oracle for an
+	// aggregate than maintaining a growing list of C++-only member forms. This
+	// is reached only after finding `extern "C"` ancestry, so its parser cost is
+	// bounded to the exceptional declarations whose linkage we refine.
+	parser := sitter.NewParser()
+	defer parser.Close()
+	parser.SetLanguage(c.GetLanguage())
+	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	defer cancel()
+	tree, err := parser.ParseCtx(ctx, nil, append([]byte(node.Content(src)), ';', '\n'))
+	if tree == nil {
+		return true
+	}
+	defer tree.Close()
+	if err != nil || ctx.Err() != nil || tree.RootNode().HasError() {
+		return true
+	}
+	return cxxAggregateHasExplicitMembers(node)
+}
+
+func cxxAggregateHasExplicitMembers(node *sitter.Node) bool {
+	var visit func(*sitter.Node) bool
+	visit = func(current *sitter.Node) bool {
+		if !validNode(current) {
+			return false
+		}
+		switch current.Type() {
+		case "access_specifier", "template_declaration", "alias_declaration", "using_declaration", "function_definition":
+			return true
+		case "field_declaration":
+			if cxxIncompatibleAggregateField(current) {
+				return true
+			}
+		}
+		for i := 0; i < int(current.NamedChildCount()); i++ {
+			if visit(current.NamedChild(i)) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(node)
+}
+
+func cxxIncompatibleAggregateField(node *sitter.Node) bool {
+	return cxxAggregateFieldHasStorageClass(node) ||
+		cxxNestedAggregateWithoutField(node) ||
+		cxxMemberFunctionDeclaration(node)
+}
+
+// C's grammar accepts a few C++ member shapes that are not C declarations.
+// Keep these checks structural and local to the aggregate: the surrounding C
+// parse remains the broad compatibility screen, while this catches static
+// members and nested tag declarations without a member declarator.
+func cxxAggregateFieldHasStorageClass(node *sitter.Node) bool {
+	var visit func(*sitter.Node) bool
+	visit = func(current *sitter.Node) bool {
+		if !validNode(current) {
+			return false
+		}
+		if current.Type() == "storage_class_specifier" {
+			return true
+		}
+		for i := 0; i < int(current.NamedChildCount()); i++ {
+			if visit(current.NamedChild(i)) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(node)
+}
+
+func cxxNestedAggregateWithoutField(node *sitter.Node) bool {
+	hasTaggedNestedAggregate := false
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "struct_specifier", "union_specifier", "class_specifier":
+			// C11 anonymous struct/union members intentionally have neither a
+			// tag nor a declarator. Only a tagged nested declaration without a
+			// field declarator is C++-only.
+			hasTaggedNestedAggregate = hasTaggedNestedAggregate || validNode(child.ChildByFieldName("name"))
+		}
+	}
+	return hasTaggedNestedAggregate && !validNode(node.ChildByFieldName("declarator"))
+}
+
+func cxxMemberFunctionDeclaration(node *sitter.Node) bool {
+	var visit func(*sitter.Node) bool
+	visit = func(current *sitter.Node) bool {
+		if !validNode(current) {
+			return false
+		}
+		if current.Type() == "function_declarator" {
+			return !cDeclaratorContainsPointer(current)
+		}
+		for i := 0; i < int(current.NamedChildCount()); i++ {
+			if visit(current.NamedChild(i)) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(node)
+}
+
+func cDeclaratorContainsPointer(node *sitter.Node) bool {
+	if !validNode(node) {
+		return false
+	}
+	switch node.Type() {
+	case "pointer_declarator", "abstract_pointer_declarator":
+		return true
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if cDeclaratorContainsPointer(node.NamedChild(i)) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalize(value string) string {

@@ -77,10 +77,33 @@ content from that validated snapshot.
 Each path must be missing or resolve to a regular file. Symlinks to regular
 files are supported, with the target written either relatively or as an
 absolute path, as long as it stays inside the project root; a symlink that
-resolves outside is refused and nothing is installed. Hard links are also
-supported, but every hard-linked pathname names the same inode: an update
-through `AGENTS.md` or `CLAUDE.md` is therefore visible through any other hard
-link to that file, including one outside the project. A directory, named pipe,
+resolves outside is refused and nothing is installed. Staying inside the project
+root is necessary but not sufficient: a symlink that lands inside a git
+directory — `.git` at any depth, including a nested checkout's and a linked
+worktree's `.git` pointer — is refused as well. `.git` is inside the project root
+but is not project content, and no instruction file belongs there; writing a
+managed block into `config` or a hook would corrupt the repository rather than
+configure an agent. The git directory is recognised by its structure rather than
+by its name, so a repository whose administrative directory is not called `.git`
+— `git init --separate-git-dir=admin`, or a checkout driven by `GIT_DIR` — is
+covered by the same refusal.
+
+The landing must also be an agent-instruction file. An alias exists so that
+`AGENTS.md` and `CLAUDE.md` can share one instruction file, so a target that is
+markdown by extension, or a rules file such as `.cursorrules`, is written; a
+target that is some other existing file — a `Makefile`, `.envrc`, or
+`.github/workflows/ci.yml` — is refused rather than having a managed block
+appended to it. A target that does not exist yet is still created, which is what
+the dangling-alias case below relies on, and a target this command wrote on an
+earlier run stays writable whatever it is named. Hard links are supported only
+between `AGENTS.md` and `CLAUDE.md`, which may share one inode and are updated
+once. The generated `.entire/graph-agent.md` guide must remain a distinct file.
+A managed target whose inode carries any other name is refused before anything
+is written, because an inode's other names cannot be read back from the file —
+`ln .git/config CLAUDE.md` resolves to `CLAUDE.md`, spells no `.git` component and looks like an
+ordinary regular file — so a second name that reaches `config`, a hook or a
+build file cannot be told from a harmless one. Share an instruction file through
+a symlink instead. A directory, named pipe,
 socket, device, or other non-regular target is rejected with its type named in
 the error. A dangling alias between `AGENTS.md` and `CLAUDE.md` is supported;
 the shared target is created and updated once.
