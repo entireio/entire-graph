@@ -7151,10 +7151,24 @@ func javascriptExportedVariableEntities(content string) []Entity {
 // the walk / other extractors and are excluded here (the alternation requires
 // the value to begin with `(`, `function(`, `function*(`, `async ... =>`, or a
 // braceless `class {`), so a named `function foo` / `class Foo` never matches.
-var jsDefaultExportPattern = regexp.MustCompile(`(?m)^\s*export\s+default\s+(async\s+)?(function\s*\*?\s*\(|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>|class\s*\{)`)
+// The leading indent is [ \t]* rather than \s*: `\s` matches newlines, so an
+// export preceded by blank (or comment-blanked) lines had its match START at
+// the first of them, and the symbol reported that line and that line's text as
+// its signature.
+var jsDefaultExportPattern = regexp.MustCompile(`(?m)^[ \t]*export\s+default\s+(async\s+)?(function\s*\*?\s*\(|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>|class\s*\{)`)
 
 func javascriptDefaultExportEntities(path, content string) []Entity {
-	loc := jsDefaultExportPattern.FindStringIndex(content)
+	// Match on comment- and literal-stripped source, exactly as the SQL regex
+	// fallbacks above do and for the same reason: this pattern is line-anchored
+	// but has no idea what a comment is, so an `export default () => {}` written
+	// out inside a block comment or a template literal (a README snippet, a
+	// codegen template) minted a phantom file-named symbol for a module that
+	// exports nothing. stripCodeLiteralsAndComments blanks those spans in place
+	// and preserves every byte offset and newline, so the offsets below still
+	// index the ORIGINAL content and the signature, block and hashes are cut
+	// from real source.
+	stripped := stripCodeLiteralsAndComments(content)
+	loc := jsDefaultExportPattern.FindStringSubmatchIndex(stripped)
 	if loc == nil {
 		return nil
 	}
@@ -7165,15 +7179,20 @@ func javascriptDefaultExportEntities(path, content string) []Entity {
 	if base == "" {
 		return nil
 	}
+	// Read the kind off the alternative that actually matched, not off the whole
+	// matched prefix: `export default classifier => classifier()` contains the
+	// substring "class" in its PARAMETER, and a containment test on the prefix
+	// therefore published a callable export as a container, which misranks it in
+	// search and breaks call resolution against it.
 	kind := "function"
-	if strings.Contains(content[loc[0]:loc[1]], "class") {
+	if value := stripped[loc[4]:loc[5]]; strings.HasPrefix(value, "class") &&
+		strings.TrimSpace(strings.TrimPrefix(value, "class")) == "{" {
 		kind = "class"
 	}
 	startLine := countLinesBefore(content, loc[0]) + 1
 	endLine := startLine
 	blockEnd := loc[1]
-	if openBrace := strings.IndexByte(content[loc[0]:], '{'); openBrace >= 0 {
-		openBrace += loc[0]
+	if openBrace := javascriptDefaultExportBodyBrace(stripped, loc); openBrace >= 0 {
 		if closeBrace := matchingDelimiterOffset(content, openBrace, '{', '}'); closeBrace >= 0 {
 			endLine = countLinesBefore(content, closeBrace) + 1
 			blockEnd = closeBrace + 1
@@ -7195,6 +7214,42 @@ func javascriptDefaultExportEntities(path, content string) []Entity {
 		BodyHash:    hash(normalize(block)),
 		Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: base, Signature: signature}, block))),
 	}}
+}
+
+// javascriptDefaultExportBodyBrace returns the offset of the `{` that opens the
+// default export's body, or -1 when the exported value has no braced body at
+// all. loc is a jsDefaultExportPattern submatch index over the same content.
+//
+// It anchors on the end of the match instead of scanning forward for the first
+// `{` in the rest of the file. That scan was unbounded, so an expression-bodied
+// arrow (`export default value => value + 1`) adopted the brace of whatever
+// object or function happened to come next in the module: the synthetic symbol
+// took that construct's end line and body hash, and its reported source range
+// covered code it does not contain.
+func javascriptDefaultExportBodyBrace(content string, loc []int) int {
+	if loc[1] <= loc[0] || loc[1] > len(content) {
+		return -1
+	}
+	cursor := loc[1]
+	switch content[loc[1]-1] {
+	case '{':
+		// `class {` — the pattern consumed the brace itself.
+		return loc[1] - 1
+	case '(':
+		// `function (` / `function* (` — the pattern stops at the paren that
+		// opens the parameter list; the body follows its match.
+		closeParen := matchingDelimiterOffset(content, loc[1]-1, '(', ')')
+		if closeParen < 0 {
+			return -1
+		}
+		cursor = closeParen + 1
+	}
+	// Arrow alternatives end at `=>`; a braced body is the next non-space byte.
+	cursor = skipSpace(content, cursor)
+	if cursor < len(content) && content[cursor] == '{' {
+		return cursor
+	}
+	return -1
 }
 
 func javascriptVariableDeclaratorEnd(content string, valueStart int) int {
