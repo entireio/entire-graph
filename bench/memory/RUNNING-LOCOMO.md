@@ -38,7 +38,7 @@ and no amount of care elsewhere fixes it.
 |---|---|
 | reader (answerer) | one model, identical for every arm |
 | judge | the same, identical for every arm |
-| retrieval budget | `top_k = 200` for every arm |
+| retrieval budget | `top_k = 200` requested for every arm; supermemory's API hard-caps it at 100 (disclosed below) |
 | questions | all 1,540, no subsetting |
 | ingest model | native per system, disclosed rather than equalised |
 | scoring | the run's own aggregate, never a hand-summed subset |
@@ -223,7 +223,9 @@ publishing.
 
 ## What we measured
 
-All 1,540 questions, shared reader and judge, `top_k = 200`, zero dropped questions in every row.
+All 1,540 questions, shared reader and judge, `top_k = 200` requested, zero dropped questions in
+every row. Two rows are not stock software and one did not receive the full retrieval budget; both
+are marked and explained under the table.
 
 | system | LoCoMo | ingest LLM calls | ingest tokens |
 |---|---|---|---|
@@ -231,10 +233,23 @@ All 1,540 questions, shared reader and judge, `top_k = 200`, zero dropped questi
 | mem0 OSS | 93.83 | 5,882 | 50.85M |
 | cognee | 92.86 | 11,749 | 12.35M |
 | BM25 | 91.88 | 0 | 0 |
-| cmm | 91.30 | 0 | 0 |
+| cmm (patched, Markdown-Section) † | 91.30 | 0 | 0 |
 | graphify | 87.34 | 0 | 0 |
 | letta | 84.68 | not projectable | not projectable |
-| supermemory | 82.08 | not measurable | not measurable |
+| supermemory (patched, top-100 cap) ‡ | 82.08 | not measurable | not measurable |
+
+† **cmm is not stock v0.9.0.** It was patched to emit Markdown sections
+(`patches/0005-cmm-v0.9.0-markdown-sections.patch`, vendored here).
+
+‡ **supermemory is not stock, and did not get the full retrieval budget.** Its server needed a
+binary capability-flag patch and a wire-level parameter adapter before it would reach the shared
+extraction model, plus a content-derived `custom_id` so retries survived its own dedup. Its search
+API then hard-caps `limit` at 100, so it answered from an **effective top-100 budget while every
+other row got 200** — an asymmetry that works against supermemory, disclosed rather than worked
+around. Unlike the other modified arms, these two changes are **not vendored as patch files** (the
+infrastructure that produced them was decommissioned); they are described in full, but this row is
+the one row in the table you cannot rebuild from this repository alone. See `LOCOMO-COMPARISON.md`
+§ ‡.
 
 The margin between the top two is **0.91 points at p = 0.125**, against a 0.65-point noise floor. We
 report the ranking and do not claim statistical significance for that margin. The ingest column is
