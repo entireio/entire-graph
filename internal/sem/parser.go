@@ -5072,7 +5072,8 @@ func cPlusPlusDeclarationOwners(node *sitter.Node, src []byte, scope string) []s
 		name       string
 		inlineable bool
 	}
-	parts := []segment{{name: scope}}
+	immediate := shortEntityName(scope)
+	parts := []segment{{name: immediate}}
 	skippedImmediate := false
 	for current := node.Parent(); validNode(current); current = current.Parent() {
 		switch current.Type() {
@@ -5088,7 +5089,7 @@ func cPlusPlusDeclarationOwners(node *sitter.Node, src []byte, scope string) []s
 		if text == "" {
 			continue
 		}
-		if !skippedImmediate && text == scope {
+		if !skippedImmediate && text == immediate {
 			skippedImmediate = true
 			continue
 		}

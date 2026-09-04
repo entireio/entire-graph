@@ -452,6 +452,41 @@ int run() { a::Ledger ledger; return ledger.Add(3); }
 	}
 }
 
+func TestCPlusPlusNestedClassDefinitionUsesLexicalOwner(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "outer.hpp", `class Outer {
+public:
+    class Inner { public: int Fetch(); };
+};
+`)
+	writeFile(t, repo, "outer.cpp", `#include "outer.hpp"
+int Outer::Inner::Fetch() { return 1; }
+`)
+	writeFile(t, repo, "main.cpp", `#include "outer.hpp"
+int run() { Outer::Inner inner; return inner.Fetch(); }
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		byID[symbol.ID] = symbol
+	}
+	var targets []string
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" && byID[relation.FromID].Name == "run" {
+			to := byID[relation.ToID]
+			targets = append(targets, fmt.Sprintf("%s:%s@%s:%d", to.Kind, to.Name, to.FilePath, to.StartLine))
+		}
+	}
+	want := "function:Fetch@outer.cpp:2"
+	if len(targets) != 1 || targets[0] != want {
+		t.Fatalf("run() calls %v, want exactly [%s] for nested class", targets, want)
+	}
+}
+
 func TestCPlusPlusOutOfLineDefinitionAllowsInlineNamespaceElision(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
