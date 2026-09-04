@@ -33,6 +33,10 @@ type CompactSnapshotEncoder struct {
 	dictionaryBytes int64
 	wroteHeader     bool
 	wroteSummary    bool
+	// summaryLineLimit overrides compactSnapshotSummaryLineCeiling. It exists so
+	// the ceiling can be exercised without materializing half a gigabyte, and is
+	// zero (meaning the ceiling) everywhere else.
+	summaryLineLimit int
 }
 
 func NewCompactSnapshotEncoder(out io.Writer) *CompactSnapshotEncoder {
@@ -59,7 +63,7 @@ func (encoder *CompactSnapshotEncoder) Encode(record any) error {
 			return errors.New("compact snapshot header must be first")
 		}
 		encoder.wroteSummary = true
-		return encoder.writeLine([]any{"m", typed})
+		return encoder.writeSummaryLine([]any{"m", typed})
 	case FileRecord:
 		if !encoder.wroteHeader {
 			return errors.New("compact snapshot header must be first")
@@ -108,6 +112,32 @@ func (encoder *CompactSnapshotEncoder) writeData(row []any, base int) error {
 
 func (encoder *CompactSnapshotEncoder) writeLine(value any) error {
 	return encoder.encoder.Encode(value)
+}
+
+// writeSummaryLine writes the summary and refuses to emit one past the ceiling
+// the decoder reads back.
+//
+// The summary is the one line whose length is not a property of the format, so
+// the two sides have to agree on a number somewhere. Agreeing here makes the
+// ceiling an INVARIANT of the artifact rather than a decoder policy: a snapshot
+// this build writes is a snapshot this build reads, whatever listing cap either
+// side was configured with. Refusing at encode time is also the failure a caller
+// can act on — the alternative is a file written successfully and unreadable
+// later, which is the defect this whole area exists to remove.
+func (encoder *CompactSnapshotEncoder) writeSummaryLine(value any) error {
+	line, err := compactJSONLine(value)
+	if err != nil {
+		return err
+	}
+	limit := encoder.summaryLineLimit
+	if limit <= 0 {
+		limit = compactSnapshotSummaryLineCeiling
+	}
+	if len(line) > limit {
+		return fmt.Errorf("compact snapshot summary is %d bytes, past the %d-byte limit the decoder reads back", len(line), limit)
+	}
+	_, err = encoder.out.Write(line)
+	return err
 }
 
 func compactJSONLine(value any) ([]byte, error) {
@@ -1079,7 +1109,7 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 		// header, before any summary — and only once.
 		if seenHeader && !seenSummary && !summaryAllowanceSpent {
 			if head, _ := reader.Peek(len(compactSnapshotSummaryLinePrefix)); string(head) == compactSnapshotSummaryLinePrefix {
-				limit = compactSnapshotSummaryLineLimit()
+				limit = compactSnapshotSummaryLineCeiling
 				summaryAllowanceSpent = true
 			}
 		}
@@ -1214,56 +1244,39 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 }
 
 // compactSnapshotRecordLineBytes bounds every compact line;
-// compactSnapshotSummaryLineLimit is the larger allowance the summary gets, and
-// compactSnapshotSummaryLinePrefix is how the summary is recognised before its
-// line is read.
+// compactSnapshotSummaryLineCeiling is the larger allowance the summary gets,
+// and compactSnapshotSummaryLinePrefix is how the summary is recognised before
+// its line is read.
 //
 // The summary is the ONE line whose length is not a property of the format. The
 // encoder writes it as a single JSON value carrying an entry per partial
 // failure, so it grows with the corpus while every other line — a header, a
 // dictionary update, a file, an external, a symbol, a relation — is one record
 // and does not. A 16 MiB cap on the summary left about 80 bytes per entry at the
-// DEFAULT listing cap, below the encoder's own floor, which is why
+// default listing cap, below the encoder's own floor, which is why
 // snapshot-query failed with "bufio.Scanner: token too long" on snapshots this
 // build had just written.
+//
+// The ceiling is enforced on BOTH sides — writeSummaryLine refuses to emit past
+// it — so it is an invariant of the artifact rather than a decoder policy. A
+// decoder-side bound derived from configuration cannot be: the process that
+// reads a snapshot need not share the listing cap of the process that wrote it,
+// so the same artifact would be readable on one machine and not another.
+//
+// Measured: 90,000 partial failures encode to 24.4 MB, about 270 bytes an entry,
+// so the ceiling holds roughly two million of them — an order of magnitude past
+// what a repository at the default listing cap can produce even if every file
+// fails. Past that the encoder fails loudly, which is a caller's error to act on
+// rather than a file that writes successfully and cannot be read back.
+//
+// The allowance is reachable only after a validated header, at a position where
+// a summary is legal, once per decode: the prefix that selects it comes from the
+// artifact, so it must not be the only thing in front of the larger buffer.
 const (
-	compactSnapshotRecordLineBytes     = 16 * 1024 * 1024
-	compactSnapshotSummaryBytesPerFile = 2048
-	compactSnapshotSummaryLineCeiling  = 512 * 1024 * 1024
-	compactSnapshotSummaryLinePrefix   = `["m",`
+	compactSnapshotRecordLineBytes    = 16 * 1024 * 1024
+	compactSnapshotSummaryLineCeiling = 512 * 1024 * 1024
+	compactSnapshotSummaryLinePrefix  = `["m",`
 )
-
-// compactSnapshotSummaryLineLimit returns the allowance for the summary line.
-//
-// It is derived from the listing cap this process resolves — the same
-// resolution the encoder honours, ENTIRE_GRAPH_MAX_FILES included — because that
-// cap is what decides how many entries the summary can carry. Measured: 90,000
-// partial failures encode to 24.4 MB, about 270 bytes an entry, so 2 KiB a file
-// is roughly eight times the observed cost of one.
-//
-// compactSnapshotSummaryLineCeiling then caps the result, and stands in when the
-// listing cap is disabled, so peak accumulation is bounded whatever the
-// configuration says. The floor keeps the summary from being held to less than
-// an ordinary record when the listing cap is small.
-//
-// Two residual limits, stated rather than removed. A repository whose paths
-// average past the per-file allowance, or one indexed with a listing cap an
-// order of magnitude above the default, can write a summary this refuses — a
-// bounded failure with a clear message, where no bound is an unbounded
-// allocation on a malformed artifact. And the allowance is reachable only after
-// a validated header, at a position where a summary is legal, once per decode:
-// the prefix that selects it comes from the artifact, so it cannot be the only
-// thing standing in front of the larger buffer.
-func compactSnapshotSummaryLineLimit() int {
-	files := resolveMaxSourceFiles(0)
-	if files < 0 || files > compactSnapshotSummaryLineCeiling/compactSnapshotSummaryBytesPerFile {
-		return compactSnapshotSummaryLineCeiling
-	}
-	if limit := compactSnapshotSummaryBytesPerFile * files; limit > compactSnapshotRecordLineBytes {
-		return limit
-	}
-	return compactSnapshotRecordLineBytes
-}
 
 // readCompactSnapshotLine returns the next line of a compact snapshot with its
 // line ending removed, and io.EOF once the reader is exhausted. A line longer

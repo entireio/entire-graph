@@ -9,9 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -681,8 +679,8 @@ func TestCompactSnapshotSummaryLineGetsTheLargerAllowance(t *testing.T) {
 // The summary allowance is spent at most once, so the leading bytes of a
 // malformed artifact cannot request the large buffer line after line.
 func TestCompactSnapshotSummaryAllowanceIsSpentOnce(t *testing.T) {
-	if compactSnapshotSummaryLineLimit() <= compactSnapshotRecordLineBytes {
-		t.Fatalf("summary allowance %d is not larger than the record cap %d", compactSnapshotSummaryLineLimit(), compactSnapshotRecordLineBytes)
+	if compactSnapshotSummaryLineCeiling <= compactSnapshotRecordLineBytes {
+		t.Fatalf("summary allowance %d is not larger than the record cap %d", compactSnapshotSummaryLineCeiling, compactSnapshotRecordLineBytes)
 	}
 	second := `["m",` + strings.Repeat("x", compactSnapshotRecordLineBytes)
 	input := compactHeaderLine() + `["m",{"record_type":"summary"}]` + "\n" + second + "\n"
@@ -711,31 +709,55 @@ func TestCompactSnapshotSummaryAllowanceStopsAfterTheSummary(t *testing.T) {
 	requireCompactDecodeError(t, compactHeaderLine()+spelled+"\n"+oversized+"\n", "compact snapshot line exceeds")
 }
 
-// The summary allowance is derived from the listing cap the encoder honours, is
-// never smaller than an ordinary record's, and is capped so that peak
-// accumulation stays bounded whatever the configuration says.
-func TestCompactSnapshotSummaryLineLimitIsDerivedAndCapped(t *testing.T) {
-	if got, want := compactSnapshotSummaryLineLimit(), compactSnapshotSummaryBytesPerFile*defaultMaxSourceFiles; got != want {
-		t.Fatalf("default allowance = %d, want %d", got, want)
+// The ceiling is an invariant of the artifact, not a decoder policy: the encoder
+// refuses to write a summary the decoder could not read back, so a snapshot this
+// build writes is a snapshot this build reads whatever either side's listing cap
+// was set to.
+func TestCompactSnapshotEncoderRefusesSummaryPastTheCeiling(t *testing.T) {
+	var buffer bytes.Buffer
+	encoder := NewCompactSnapshotEncoder(&buffer)
+	encoder.summaryLineLimit = 4096
+	if err := encoder.Encode(SnapshotHeader{SchemaVersion: SchemaVersion}); err != nil {
+		t.Fatal(err)
+	}
+	summary := SnapshotSummary{RecordType: "summary", Languages: []string{}, Warnings: []ProviderWarning{}}
+	for index := 0; index < 200; index++ {
+		summary.PartialFailures = append(summary.PartialFailures, PartialFailure{
+			Code:                 "E_FILE_TOO_LARGE",
+			Severity:             "warning",
+			FilePath:             fmt.Sprintf("src/module%03d.go", index),
+			EffectOnCompleteness: "file skipped because it exceeds the parse byte limit",
+		})
+	}
+	err := encoder.Encode(summary)
+	if err == nil {
+		t.Fatal("expected an over-ceiling summary to be refused")
+	}
+	if !strings.Contains(err.Error(), "past the 4096-byte limit") {
+		t.Fatalf("err = %v", err)
 	}
 
-	t.Setenv(maxSourceFilesEnv, "1000")
-	if got := compactSnapshotSummaryLineLimit(); got != compactSnapshotRecordLineBytes {
-		t.Fatalf("allowance under a tiny listing cap = %d, want the record cap %d", got, compactSnapshotRecordLineBytes)
+	// A summary inside the limit still writes, and still round-trips.
+	buffer.Reset()
+	encoder = NewCompactSnapshotEncoder(&buffer)
+	encoder.summaryLineLimit = 4096
+	if err := encoder.Encode(SnapshotHeader{SchemaVersion: SchemaVersion}); err != nil {
+		t.Fatal(err)
 	}
-
-	t.Setenv(maxSourceFilesEnv, "100000000")
-	if got := compactSnapshotSummaryLineLimit(); got != compactSnapshotSummaryLineCeiling {
-		t.Fatalf("allowance under a huge listing cap = %d, want the ceiling %d", got, compactSnapshotSummaryLineCeiling)
+	summary.PartialFailures = summary.PartialFailures[:10]
+	if err := encoder.Encode(summary); err != nil {
+		t.Fatalf("summary inside the limit: %v", err)
 	}
-
-	t.Setenv(maxSourceFilesEnv, "-1")
-	if got := compactSnapshotSummaryLineLimit(); got != compactSnapshotSummaryLineCeiling {
-		t.Fatalf("allowance under a disabled listing cap = %d, want the ceiling %d", got, compactSnapshotSummaryLineCeiling)
+	var readBack SnapshotSummary
+	if _, err := DecodeCompactSnapshot(bytes.NewReader(buffer.Bytes()), func(record any) error {
+		if typed, ok := record.(SnapshotSummary); ok {
+			readBack = typed
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-
-	t.Setenv(maxSourceFilesEnv, strconv.Itoa(math.MaxInt/2))
-	if got := compactSnapshotSummaryLineLimit(); got != compactSnapshotSummaryLineCeiling {
-		t.Fatalf("allowance under an overflowing listing cap = %d, want the ceiling %d", got, compactSnapshotSummaryLineCeiling)
+	if len(readBack.PartialFailures) != 10 {
+		t.Fatalf("partial failures = %d, want 10", len(readBack.PartialFailures))
 	}
 }

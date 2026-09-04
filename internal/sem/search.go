@@ -2237,12 +2237,20 @@ func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, s
 		handlers = append(handlers, handler)
 	}
 	sort.Strings(handlers)
-	if len(handlers) > budget {
-		handlers = handlers[:budget]
-	}
 	chosen := make(map[string]bool, len(selected))
 	for _, filePath := range selected {
 		chosen[filePath] = true
+	}
+	// A handler the selection already defines needs no file and must not hold a
+	// slot: truncating first let a lexicographically earlier handler that was
+	// already covered consume the only budget there was, and the handler that
+	// actually needed bridging was never reached.
+	handlers = unplacedRegistrationHandlers(handlers, placedRegistrationHandlers(handlers, selected, source.read))
+	if len(handlers) > budget {
+		handlers = handlers[:budget]
+	}
+	if len(handlers) == 0 {
+		return selected
 	}
 	placed := make(map[string]bool, len(handlers))
 	var added []string
@@ -2315,6 +2323,52 @@ func topLevelFunctionNames(path, content string) map[string]bool {
 		names[entity.Name] = true
 	}
 	return names
+}
+
+// placedRegistrationHandlers reports which handlers the already-selected files
+// define, so the bridge neither re-adds their file nor spends budget on them.
+func placedRegistrationHandlers(handlers, selected []string, read contentReader) map[string]bool {
+	placed := make(map[string]bool, len(handlers))
+	for _, filePath := range selected {
+		if len(placed) == len(handlers) {
+			break
+		}
+		if !Supported(filePath) {
+			continue
+		}
+		content, ok := read(filePath)
+		if !ok {
+			continue
+		}
+		candidate := false
+		for _, handler := range handlers {
+			if !placed[handler] && declaresAppliedIdentifier(content, handler) {
+				candidate = true
+				break
+			}
+		}
+		if !candidate {
+			continue
+		}
+		defined := topLevelFunctionNames(filePath, content)
+		for _, handler := range handlers {
+			if defined[handler] {
+				placed[handler] = true
+			}
+		}
+	}
+	return placed
+}
+
+// unplacedRegistrationHandlers keeps the handlers still needing a file, in order.
+func unplacedRegistrationHandlers(handlers []string, placed map[string]bool) []string {
+	remaining := handlers[:0:0]
+	for _, handler := range handlers {
+		if !placed[handler] {
+			remaining = append(remaining, handler)
+		}
+	}
+	return remaining
 }
 
 // declaresAppliedIdentifier reports whether name occurs in content as a whole

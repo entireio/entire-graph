@@ -290,3 +290,59 @@ func TestBridgeRegistrationHandlerFilesHonoursAPartialBudget(t *testing.T) {
 		t.Fatalf("bridged with budget 2 = %v, want %v", got, want)
 	}
 }
+
+// A handler the selection already defines must not hold a budget slot: with one
+// slot and a lexicographically earlier handler already covered, the handler that
+// actually needs bridging is the one that gets it.
+func TestBridgeRegistrationHandlerFilesSkipsAlreadyCoveredHandlers(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/append.json": `{"function":"appendCommand"}`,
+		"src/commands/substr.json": `{"function":"getrangeCommand"}`,
+		"src/t_append.go":          "package src\n\nfunc appendCommand() {}\n",
+		"src/t_string.go":          "package src\n\nfunc getrangeCommand() {}\n",
+	}
+	paths := []string{"src/commands/append.json", "src/commands/substr.json", "src/t_append.go", "src/t_string.go"}
+	source := sourceContext{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		},
+	}
+	// appendCommand sorts first and is already defined by a selected file, so the
+	// single slot must go to getrangeCommand.
+	selected := []string{"src/commands/append.json", "src/commands/substr.json", "src/t_append.go"}
+
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, selected, 1)
+	want := append(append([]string(nil), selected...), "src/t_string.go")
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged = %v, want %v", got, want)
+	}
+}
+
+// placedRegistrationHandlers reads only the definitions the selection already
+// carries, not its call sites.
+func TestPlacedRegistrationHandlers(t *testing.T) {
+	contents := map[string]string{
+		"src/t_append.go": "package src\n\nfunc appendCommand() {}\n",
+		"src/caller.go":   "package src\n\nfunc Caller() {\n\tgetrangeCommand()\n}\n",
+		"docs/notes.md":   "getrangeCommand and appendCommand",
+		// Declaration-shaped to the textual screen, but no symbol to the parser.
+		"src/doc.go": "package src\n\nconst doc = `\nfunc getrangeCommand() {}\n`\n",
+	}
+	read := func(path string) (string, bool) {
+		content, ok := contents[path]
+		return content, ok
+	}
+	placed := placedRegistrationHandlers(
+		[]string{"appendCommand", "getrangeCommand"},
+		[]string{"docs/notes.md", "src/caller.go", "src/doc.go", "src/t_append.go"},
+		read,
+	)
+	if !placed["appendCommand"] {
+		t.Fatalf("selected definition not reported: %v", placed)
+	}
+	if placed["getrangeCommand"] {
+		t.Fatalf("a call site or a quoted declaration reported as covered: %v", placed)
+	}
+}
