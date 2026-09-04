@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "b9e75267104d",
+  "session_id": "01a06b80-dfa7-7123-91b0-ca34ebda6388",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-04T08:53:30.195144Z",
+  "branch": "audit/graph-fsharp-pipeline-calls",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "52304e3daec6",
+  "checkpoint_transcript_start": 253,
+  "transcript_lines_at_start": 253,
+  "compact_transcript_start": 33,
+  "token_usage": {
+    "input_tokens": 24542,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2901888,
+    "output_tokens": 5728,
+    "api_call_count": 31
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-04T08:53:30.141719Z",
+    "agent_lines": 9,
+    "agent_removed": 5,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 9,
+    "total_lines_changed": 14,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
