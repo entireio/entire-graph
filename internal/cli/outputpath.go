@@ -1022,11 +1022,16 @@ func writeConfinedOutputFile(
 	return file.Close()
 }
 
-// outsideRouteHopLimit bounds the links the unconfined walk follows before it gives
-// up, so a cycle of caller-owned links is an error rather than a hang. It is the
-// Linux pathname limit, which is the most permissive of the families this tool runs
-// on; a chain the host itself would refuse fails at the host.
-const outsideRouteHopLimit = 40
+// The links this walk follows are bounded by containedLinkHopLimit — the SAME budget
+// the contained walk in agents.go applies, for the same reason and from the same
+// table (linkHopLimitFor). Two notions of the limit would be two answers to one
+// question, and the second one was wrong: a fixed 40 is the Linux figure, and the
+// claim that "a chain the host itself would refuse fails at the host" does not hold
+// here. This walk expands every link ITSELF and hands one link-free component at a
+// time to openat, so the kernel's cumulative ELOOP counter never fires and the limit
+// applied below is the only limit there is. At 40 it followed 32-to-40-link routes
+// that Darwin, the BSDs, illumos, Solaris and AIX all refuse, and wrote to a
+// destination the host's own pathname resolution cannot reach.
 
 // writeUnconfinedOutputFile writes the caller-owned half of the rule at the top of
 // this file, and it exists for the same reason openConfinedOutputFile does.
@@ -1098,6 +1103,7 @@ func openUnconfinedOutputFile(
 
 	pending := pathComponents(route)
 	hops := 0
+	fullyQualifiedTarget := false
 	for len(pending) > 0 {
 		component := pending[0]
 		pending = pending[1:]
@@ -1127,15 +1133,25 @@ func openUnconfinedOutputFile(
 			if rel, ok := containedInAnyRoot(confinements, full); ok {
 				return nil, traversedSymlinkError(rel, target.given)
 			}
-			hops++
-			if hops > outsideRouteHopLimit {
-				return nil, fmt.Errorf(
-					"refusing to write %s: the path follows more than %d symbolic links",
-					target.given, outsideRouteHopLimit)
-			}
 			link, readErr := directory.Readlink(component)
 			if readErr != nil {
 				return nil, readErr
+			}
+			hops++
+			if filepath.IsAbs(link) || filepath.VolumeName(link) != "" ||
+				(len(link) > 0 && os.IsPathSeparator(link[0])) {
+				// Windows resolves a chain of FULLY QUALIFIED reparse targets against a
+				// tighter budget than a relative one, and the flag is sticky here for the
+				// same reason it is in the contained walk: one such target lowers the
+				// limit for the whole resolution, and the drive-relative and drive-rooted
+				// spellings filepath.IsAbs reports false for are fully qualified too.
+				fullyQualifiedTarget = true
+			}
+			hopLimit := containedLinkHopLimit(fullyQualifiedTarget)
+			if hops > hopLimit {
+				return nil, fmt.Errorf(
+					"refusing to write %s: the path follows more than %d symbolic links",
+					target.given, hopLimit)
 			}
 			if filepath.IsAbs(link) {
 				restarted, restartedNames, openErr := openVolumeRoot(link)
