@@ -298,7 +298,10 @@ func TestGitInfoExcludePathAcceptsACaseDifferentCommonDirVolume(t *testing.T) {
 	lowerVolume := strings.ToLower(filepath.VolumeName(gitDir)) + gitDir[len(filepath.VolumeName(gitDir)):]
 	writeFile(t, repo, ".realgit/commondir", lowerVolume+"\n")
 
-	got := gitInfoExcludePath(repo)
+	got, err := gitInfoExcludePath(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got == "" {
 		t.Fatal("gitInfoExcludePath(repo) = empty: a commondir differing only in drive-letter case was treated as a different volume")
 	}
@@ -462,8 +465,9 @@ func TestGitInfoExcludePathRejectsAUNCCommonDirWithoutTouchingTheNetwork(t *test
 
 	done := make(chan struct{})
 	var got string
+	var gotErr error
 	go func() {
-		got = gitInfoExcludePath(repo)
+		got, gotErr = gitInfoExcludePath(repo)
 		close(done)
 	}()
 	select {
@@ -471,6 +475,9 @@ func TestGitInfoExcludePathRejectsAUNCCommonDirWithoutTouchingTheNetwork(t *test
 	case <-time.After(5 * time.Second):
 		t.Fatal("gitInfoExcludePath did not return within 5s: a UNC commondir target must be rejected by" +
 			" volume before any caller's os.Stat attempts to resolve it over the network")
+	}
+	if gotErr != nil {
+		t.Fatalf("a UNC commondir target must be refused by volume, not reported as unreadable: %v", gotErr)
 	}
 	if got != "" {
 		t.Errorf("gitInfoExcludePath(repo) = %q, want \"\": a UNC commondir target is never on the repository's own volume", got)
@@ -770,7 +777,11 @@ func TestGitInfoExcludePathRejectsWin32TrimAlias(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, ".git", "gitdir:   \n")
 	writeFile(t, repo, "info/exclude", "secret.go\n")
-	if got := gitInfoExcludePath(repo); got != "" {
+	got, err := gitInfoExcludePath(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
 		t.Fatalf("gitInfoExcludePath = %q, want empty for Git-rejected Win32 trim alias", got)
 	}
 }

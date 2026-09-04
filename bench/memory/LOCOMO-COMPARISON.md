@@ -553,14 +553,23 @@ It was caught before it reached this table.
   feature branch that later merged to `main` as
   [#104](https://github.com/entireio/entire-graph/pull/104) on 2026-08-18 and first shipped in
   [v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0). **v0.3.0 (released
-  2026-08-14, before #104 merged) and earlier do not have this feature** and score 91.56
-  (`mrq_base`) on the same benchmark, not 94.74. `sw_eg_mr3`, the run id this document cites for
+  2026-08-14, before #104 merged) does not have this feature** and scores 91.56 (`mrq_base`) on
+  the same benchmark, not 94.74. That figure belongs to the one revision actually measured — the
+  shipped default on 2026-08-14, the day v0.3.0 was tagged — and **not to "v0.3.0 and earlier" as
+  a range. No release before v0.3.0 was measured, and none can be assigned this score:** the
+  prose-memory retrieval this benchmark exercises shipped in
+  [#84](https://github.com/entireio/entire-graph/pull/84)
+  ([`2d565cc`](https://github.com/entireio/entire-graph/commit/2d565cc8803174ed1fd2425158c7b223ceeb002c),
+  2026-08-07), which is not an ancestor of v0.2.0 (2026-07-15) or v0.1.0 (2026-07-02) —
+  `git merge-base --is-ancestor 2d565cc v0.2.0` exits non-zero. Those releases cannot run this
+  benchmark at all, so 91.56 is not their score. `sw_eg_mr3`, the run id this document cites for
   94.74, has no corresponding row in [`RUN-INDEX.md`](RUN-INDEX.md) — the registry this document's
   own rules require. `plan_f_hyb` (08-14 14:08, `turn+session` ingest granularity) is a **different,
   non-default** run that happens to score the same 94.74; do not treat the two as
   interchangeable evidence for the default-granularity claim in §7 until this is resolved.
 - **Answerer and judge:** `gpt-5.6-sol` (Azure AI) for every system, no exceptions.
-- **Retrieval budget:** `top_k = 200` for every system.
+- **Retrieval budget:** `top_k = 200` requested for every system. supermemory's search API
+  hard-caps `limit` at 100, so that row alone answered from an effective top-100 budget (§ ‡).
 - **Questions:** all 1,540. No subsetting, no per-type headline.
 - **Ingest:** native to each system. entire-graph, cmm and graphify use no LLM. Extraction-based
   systems use `azure_ai/gpt-5.6-terra`.
