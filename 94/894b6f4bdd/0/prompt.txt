@@ -3,3 +3,7 @@ Reassess the hot path for the analyze command, give me a pprof for it.
 ---
 
 Focus on both 1-2 so that those are processed concurrently
+
+---
+
+yes for both
