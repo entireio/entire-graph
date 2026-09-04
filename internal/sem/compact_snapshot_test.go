@@ -676,20 +676,43 @@ func TestCompactSnapshotSummaryLineGetsTheLargerAllowance(t *testing.T) {
 	}
 }
 
-// The summary allowance is spent at most once, so the leading bytes of a
-// malformed artifact cannot request the large buffer line after line.
-func TestCompactSnapshotSummaryAllowanceIsSpentOnce(t *testing.T) {
+// The summary closes the artifact, so anything after it is refused as a record
+// after the summary — without the decoder buffering it, however large it is.
+func TestCompactSnapshotRefusesContentAfterTheSummary(t *testing.T) {
 	if compactSnapshotSummaryLineCeiling <= compactSnapshotRecordLineBytes {
 		t.Fatalf("summary allowance %d is not larger than the record cap %d", compactSnapshotSummaryLineCeiling, compactSnapshotRecordLineBytes)
 	}
-	second := `["m",` + strings.Repeat("x", compactSnapshotRecordLineBytes)
-	input := compactHeaderLine() + `["m",{"record_type":"summary"}]` + "\n" + second + "\n"
-	_, err := DecodeCompactSnapshot(strings.NewReader(input), func(any) error { return nil })
-	if err == nil {
-		t.Fatal("expected the second summary-prefixed line to be refused")
+	trailing := `["m",` + strings.Repeat("x", compactSnapshotRecordLineBytes)
+	input := compactHeaderLine() + `["m",{"record_type":"summary"}]` + "\n" + trailing + "\n"
+	requireCompactDecodeError(t, input, "record after summary")
+}
+
+// The summary is decoded off the stream, so a summary past the limit is refused
+// without ever being held.
+func TestCompactSnapshotSummaryStreamRefusesPastTheLimit(t *testing.T) {
+	summary := `["m",{"record_type":"summary","partial_failures":[`
+	entry := `{"code":"E_FILE_TOO_LARGE","severity":"warning","file_path":"src/x.go"}`
+	entries := make([]string, 0, 64)
+	for len(summary)+len(entries)*(len(entry)+1) <= 4096 {
+		entries = append(entries, entry)
 	}
-	if !strings.Contains(err.Error(), "compact snapshot line exceeds") {
-		t.Fatalf("err = %v, want a length refusal", err)
+	summary += strings.Join(entries, ",") + `]}]` + "\n"
+
+	reader := bufio.NewReaderSize(strings.NewReader(summary), 64)
+	if _, err := decodeCompactSummaryLine(reader, 1024); err == nil {
+		t.Fatal("expected an over-limit summary to be refused")
+	} else if !strings.Contains(err.Error(), "exceeds 1024 bytes") {
+		t.Fatalf("err = %v", err)
+	}
+
+	// The same summary decodes whole under a limit that admits it.
+	reader = bufio.NewReaderSize(strings.NewReader(summary), 64)
+	decoded, err := decodeCompactSummaryLine(reader, compactSnapshotSummaryLineCeiling)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(decoded.PartialFailures) != len(entries) {
+		t.Fatalf("partial failures = %d, want %d", len(decoded.PartialFailures), len(entries))
 	}
 }
 
@@ -699,8 +722,8 @@ func TestCompactSnapshotSummaryAllowanceRequiresAHeader(t *testing.T) {
 	requireCompactDecodeError(t, `["m",`+strings.Repeat("x", compactSnapshotRecordLineBytes), "compact snapshot line exceeds")
 }
 
-// Nor is the allowance available once a summary has been read, however that
-// summary was spelled: a line after it is never a legal summary.
+// Nor is the streaming route available once a summary has been read, however
+// that summary was spelled: a line after it is never a legal summary.
 func TestCompactSnapshotSummaryAllowanceStopsAfterTheSummary(t *testing.T) {
 	// Spelled with a space so the prefix peek misses it and the allowance is
 	// still unspent when the oversized line arrives.

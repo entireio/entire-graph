@@ -1096,24 +1096,30 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	seenHeader, seenSummary := false, false
 	tolerateSchemaAdditions := false
 	lineNumber := 0
-	summaryAllowanceSpent := false
 	for {
-		// Only the summary is unbounded, and only the summary needs to be: every
-		// other line is one record, so the fixed cap that protects against an
-		// unterminated line costs nothing there. The tag is the first thing on
-		// the line, so peeking it decides the limit before a byte is consumed.
-		limit := compactSnapshotRecordLineBytes
-		// The prefix comes from the artifact, so it may not be the only thing
-		// standing between a malformed file and the large buffer. Grant the
-		// allowance only where a summary is legal at all — after a validated
-		// header, before any summary — and only once.
-		if seenHeader && !seenSummary && !summaryAllowanceSpent {
+		// The summary is the one record that grows with the corpus, so it is the
+		// one record read straight off the stream rather than materialized as a
+		// line first: decodeCompactSummaryLine never holds the raw bytes beside
+		// the struct it builds, and never pays an append's doubling on the way.
+		// The tag is the first thing on a line, so peeking it routes the record
+		// before a byte is consumed — but the prefix comes from the artifact, so
+		// take that route only where a summary is legal at all: after a validated
+		// header, and before any summary.
+		if seenHeader && !seenSummary {
 			if head, _ := reader.Peek(len(compactSnapshotSummaryLinePrefix)); string(head) == compactSnapshotSummaryLinePrefix {
-				limit = compactSnapshotSummaryLineCeiling
-				summaryAllowanceSpent = true
+				summary, err := decodeCompactSummaryLine(reader, compactSnapshotSummaryLineCeiling)
+				if err != nil {
+					return warnings, err
+				}
+				lineNumber++
+				seenSummary = true
+				if err := emit(summary); err != nil {
+					return warnings, err
+				}
+				continue
 			}
 		}
-		line, readErr := readCompactSnapshotLine(reader, limit)
+		line, readErr := readCompactSnapshotLine(reader, compactSnapshotRecordLineBytes)
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				break
@@ -1274,9 +1280,84 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 // artifact, so it must not be the only thing in front of the larger buffer.
 const (
 	compactSnapshotRecordLineBytes    = 16 * 1024 * 1024
-	compactSnapshotSummaryLineCeiling = 512 * 1024 * 1024
+	compactSnapshotSummaryLineCeiling = 128 * 1024 * 1024
 	compactSnapshotSummaryLinePrefix  = `["m",`
 )
+
+// decodeCompactSummaryLine decodes the summary record directly from the stream.
+//
+// It is the answer to the one line whose length is not a property of the format:
+// materializing it first meant holding the raw bytes AND the struct they build,
+// with an append's doubling on top. Decoding through encoding/json's streaming
+// decoder holds only what it is parsing, and limit — enforced by an
+// io.LimitedReader, so nothing past it is ever read — bounds even that.
+//
+// The summary closes the artifact, so anything after it is a record after the
+// summary, which compactSnapshotTrailingIsEmpty reports without buffering it.
+func decodeCompactSummaryLine(reader *bufio.Reader, limit int) (SnapshotSummary, error) {
+	var summary SnapshotSummary
+	decoder := json.NewDecoder(io.LimitReader(reader, int64(limit)))
+	token, err := decoder.Token()
+	if err != nil {
+		return summary, compactSummaryStreamError(err, limit)
+	}
+	if delimiter, ok := token.(json.Delim); !ok || delimiter != '[' {
+		return summary, errors.New("compact snapshot summary has invalid placement or arity")
+	}
+	var tag string
+	if err := decoder.Decode(&tag); err != nil {
+		return summary, compactSummaryStreamError(err, limit)
+	}
+	if tag != "m" {
+		return summary, fmt.Errorf("compact snapshot summary tag %q", tag)
+	}
+	if err := decoder.Decode(&summary); err != nil {
+		return summary, compactSummaryStreamError(err, limit)
+	}
+	token, err = decoder.Token()
+	if err != nil {
+		return summary, compactSummaryStreamError(err, limit)
+	}
+	if delimiter, ok := token.(json.Delim); !ok || delimiter != ']' {
+		return summary, errors.New("compact snapshot summary has invalid placement or arity")
+	}
+	if err := compactSnapshotTrailingIsEmpty(io.MultiReader(decoder.Buffered(), reader)); err != nil {
+		return summary, err
+	}
+	return summary, nil
+}
+
+// compactSummaryStreamError names the two ways the stream can end early: a
+// truncated artifact, and one whose summary is past the limit, which the
+// LimitedReader presents the same way.
+func compactSummaryStreamError(err error, limit int) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("compact snapshot summary is truncated or exceeds %d bytes: %w", limit, err)
+	}
+	return fmt.Errorf("compact snapshot summary: %w", err)
+}
+
+// compactSnapshotTrailingIsEmpty reports whether only whitespace follows, in
+// fixed-size reads, so a large trailing blob costs no memory to reject.
+func compactSnapshotTrailingIsEmpty(reader io.Reader) error {
+	buffer := make([]byte, 32*1024)
+	for {
+		read, err := reader.Read(buffer)
+		for _, character := range buffer[:read] {
+			switch character {
+			case ' ', '\t', '\n', '\r':
+			default:
+				return errors.New("compact snapshot has record after summary")
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
 
 // readCompactSnapshotLine returns the next line of a compact snapshot with its
 // line ending removed, and io.EOF once the reader is exhausted. A line longer
