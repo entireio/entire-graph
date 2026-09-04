@@ -332,9 +332,18 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 					}
 				}
 			}
+			// Defaults are evaluated when the lambda expression itself runs, before
+			// the lambda call frame and its parameters exist. Resolve them through
+			// the eager enclosing scope; only the body is deferred and isolated.
+			body := node.ChildByFieldName("body")
+			for i := 0; i < int(node.NamedChildCount()); i++ {
+				if part := node.NamedChild(i); !samePythonNode(part, body) {
+					w.walk(part, scope, depth+1)
+				}
+			}
 			w.addParameters(child, parameters)
-			w.collectFunctionBindings(node.ChildByFieldName("body"), child, 0)
-			w.walk(node.ChildByFieldName("body"), child, depth+1)
+			w.collectFunctionBindings(body, child, 0)
+			w.walk(body, child, depth+1)
 			w.publish(child)
 		}
 		return

@@ -852,3 +852,101 @@ def outer():
 		}
 	})
 }
+
+// Lambda defaults, like function defaults, execute where the lambda expression
+// is evaluated. They therefore use the eager enclosing scope, while the lambda
+// body retains its own deferred scope and parameter bindings.
+func TestPythonLambdaDefaultsResolveThroughEnclosingImports(t *testing.T) {
+	t.Run("body call is the oracle", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return (lambda value: compute(value))()
+`), "app.py:function:plain")
+	})
+
+	t.Run("default argument", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return (lambda value=compute(): value)()
+`), "app.py:function:plain")
+	})
+
+	t.Run("a module-level lambda default", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+handler = lambda value=compute(): value
+`), "file:app.py")
+	})
+
+	t.Run("a parameter never shadows its own default", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return (lambda compute=compute(): compute)()
+`), "app.py:function:plain")
+	})
+
+	t.Run("the body still fails closed under its own parameter", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return (lambda compute: compute(1))()
+`), "the lambda's parameter rebinds `compute` for its body")
+	})
+
+	t.Run("an enclosing local still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def outer():
+    compute = 1
+    return (lambda value=compute(): value)()
+`), "the enclosing function rebound `compute` before the lambda is written")
+	})
+
+	t.Run("a comprehension target still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    return [(lambda value=compute(): value)() for compute in ys]
+`), "the comprehension binds `compute`, and its frame is where the lambda is written")
+	})
+
+	t.Run("a class-body lambda default sees the pre-class import", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    thunk = lambda value=compute(): value
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("the lambda default runs in the pre-class scope; got %#v", got)
+		}
+	})
+
+	t.Run("a method-header lambda default sees the pre-class import", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    def method(self, value=lambda default=compute(): default):
+        return value
+`
+		method := pythonScopeCallable(t, src, "app.py:method:compute.method", "method", "def method")
+		if got := pythonScopeModules(t, src, []SymbolRecord{method}, method, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("the method-header lambda default runs before the class name is bound; got %#v", got)
+		}
+	})
+
+	t.Run("a method-header lambda body sees the completed class", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    def method(self, value=lambda: compute()):
+        return value
+`
+		method := pythonScopeCallable(t, src, "app.py:method:compute.method", "method", "def method")
+		if got := pythonScopeModules(t, src, []SymbolRecord{method}, method, "compute"); len(got) != 0 {
+			t.Fatalf("the lambda body is deferred until the class name is bound; got %#v", got)
+		}
+	})
+}
