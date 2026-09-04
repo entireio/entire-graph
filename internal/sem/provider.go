@@ -7049,9 +7049,12 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if _, isParameter := varTypes[name]; isParameter {
 				continue
 			}
-			if _, exists := localTypes[name]; !exists {
-				localTypes[name] = typeName
-			}
+			// The declared left-hand type is authoritative and must replace the
+			// generic constructor inference. For `acct::Ledger* ledger = new
+			// acct::Ledger()` the generic `new T` scanner records the first path
+			// segment (`acct`), while the C++ declaration scanner deliberately
+			// records the terminal type (`Ledger`) used by the symbol index.
+			localTypes[name] = typeName
 		}
 	}
 	if from.Language == "TypeScript" {

@@ -250,12 +250,13 @@ public:
 // entity change at all, so nothing downstream saw the file move.
 func TestCPlusPlusMemberTemplateCarriesItsTemplateHead(t *testing.T) {
 	t.Parallel()
-	one := memberIndex(t, "one.hpp", `class Ledger {
+	oneSource := `class Ledger {
 public:
     template<class T>
     T Get();
 };
-`)
+`
+	one := memberIndex(t, "one.hpp", oneSource)
 	two := memberIndex(t, "two.hpp", `class Ledger {
 public:
     template<class T, class U>
@@ -283,6 +284,9 @@ public:
 	// the whole construct, or a reviewer following the range lands past it.
 	if first.StartLine != 3 {
 		t.Errorf("range starts at line %d, want the template head on line 3 (%d-%d)", first.StartLine, first.StartLine, first.EndLine)
+	}
+	if got := oneSource[first.sourceStartByte:first.sourceEndByte]; !strings.HasPrefix(got, "template<class T>") {
+		t.Errorf("exact source range dropped the template head: %q", got)
 	}
 }
 
@@ -373,6 +377,53 @@ int run() {
 	want := "function:Add@ledger.cpp:2"
 	if len(targets) != 1 || targets[0] != want {
 		t.Errorf("run() calls %v, want exactly [%s] — the definition, not the header declaration", targets, want)
+	}
+}
+
+// TestCPlusPlusNamespacedReceiverCallResolvesToTheOutOfLineDefinition pins
+// that graph qualification does not leak into the declaration's container.
+// The entity walk scopes a member to its immediate class (`Ledger.Add`), while
+// the definition may spell the enclosing namespace (`acct::Ledger::Add`).
+// Matching the bare immediate container inside that C++ qualification is what
+// redirects the call from the bodyless declaration to the implementation.
+func TestCPlusPlusNamespacedReceiverCallResolvesToTheOutOfLineDefinition(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "ledger.hpp", `namespace acct {
+class Ledger {
+public:
+    int Add(int amount) const;
+};
+}
+`)
+	writeFile(t, repo, "ledger.cpp", `#include "ledger.hpp"
+int acct::Ledger::Add(int amount) const { return amount + 1; }
+`)
+	writeFile(t, repo, "main.cpp", `#include "ledger.hpp"
+int run() {
+    acct::Ledger* ledger = new acct::Ledger();
+    return ledger->Add(3);
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		byID[symbol.ID] = symbol
+	}
+	var targets []string
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "CALLS" || byID[relation.FromID].Name != "run" {
+			continue
+		}
+		to := byID[relation.ToID]
+		targets = append(targets, fmt.Sprintf("%s:%s@%s:%d", to.Kind, to.Name, to.FilePath, to.StartLine))
+	}
+	want := "function:Add@ledger.cpp:2"
+	if len(targets) != 1 || targets[0] != want {
+		t.Errorf("run() calls %v, want exactly [%s] — the namespaced definition", targets, want)
 	}
 }
 

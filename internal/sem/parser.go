@@ -4169,7 +4169,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	// This remains separate from entityFromNode because one declaration can also
 	// declare several methods (`void Start(), Stop();`).
 	for _, member := range cPlusPlusMemberDeclarationEntities(node, src, language, scope) {
-		setEntitySourceRange(&member, node, language, src)
+		setEntitySourceRange(&member, cPlusPlusDeclarationSpan(node), language, src)
 		*entities = append(*entities, member)
 	}
 	// Field/property declarations emit one entity per declared name and are not
