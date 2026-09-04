@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "b5dbdbeaee9f",
+  "strategy": "manual-commit",
+  "branch": "audit/graph-fsharp-pipeline-calls",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b5/dbdbeaee9f/0/metadata.json",
+      "transcript": "/b5/dbdbeaee9f/0/full.jsonl",
+      "compact_transcript": "/b5/dbdbeaee9f/0/transcript.jsonl",
+      "content_hash": "/b5/dbdbeaee9f/0/content_hash.txt",
+      "prompt": "/b5/dbdbeaee9f/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 83660,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1752320,
+    "output_tokens": 5657,
+    "api_call_count": 29
+  }
+}
