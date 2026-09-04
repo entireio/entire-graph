@@ -218,11 +218,12 @@ const clojurePortableExt = ".cljc"
 // which is right — a JVM Clojure file cannot name a ClojureScript-only
 // declaration either.
 func candidateSharesDeclarations(from, candidate SymbolRecord) bool {
-	if from.Language == "C" && candidate.Language == "C++" {
-		// C++ as a LANGUAGE stays unreachable from C, which is why the pair is
-		// absent from typeSharingLanguageEdges and stays absent: a template, an
-		// overload set, a namespaced function and a class are declarations a C
-		// source cannot name, and licensing the pair would bind all of them.
+	if candidate.Language == "C++" && namesOnlyTheCLinkageHalfOfCPlusPlus(from.Language) {
+		// C++ as a LANGUAGE stays unreachable from these consumers, which is why
+		// neither pair is in typeSharingLanguageEdges and neither is added: a
+		// template, an overload set, a namespaced function and a class are
+		// declarations a C or Objective-C source cannot name, and licensing
+		// either pair would bind all of them.
 		//
 		// One construct is different, and it is the reason a `.h` gets the C++
 		// label in the first place. `extern "C" { ... }` is how a C++ header
@@ -239,9 +240,24 @@ func candidateSharesDeclarations(from, candidate SymbolRecord) bool {
 		//	C/callWidth    -> C++/widgetWidth     DROPPED  (same declaration)
 		//
 		// So the widening is per DECLARATION, not per language: only what the
-		// header itself put under C linkage is offered to C. Everything outside
-		// the block -- the template, the class, the overload, the namespaced
+		// header itself put under C linkage is offered. Everything outside the
+		// block -- the template, the class, the overload, the namespaced
 		// function -- keeps cLinkage false and stays filtered out.
+		//
+		// An Objective-C `.m` is the same consumer in a different file
+		// extension, and the guards make that literal: compiled as Objective-C,
+		// `__cplusplus` is not defined, so the preprocessor deletes
+		// `extern "C" {` and its closing `}` and the `.m` compiles the plain C
+		// between them exactly as a `.c` does. Measured over the same fixture
+		// with a `.m` consumer and the plain-C control beside it:
+		//
+		//	Objective-C/renderGadget -> C/Gadget          resolved (control)
+		//	Objective-C/renderWidget -> C++/Widget        DROPPED  (same declaration)
+		//	Objective-C/callWidth    -> C++/widgetWidth   DROPPED  (same declaration)
+		//
+		// Objective-C++ is NOT here: a `.mm` is a C++ translation unit and names
+		// the whole header, C-linkage or not, so it holds the `C++` edge at the
+		// language level instead.
 		return candidate.cLinkage
 	}
 	if !languagesShareTypes(from.Language, candidate.Language) {
@@ -287,6 +303,16 @@ func candidateSharesDeclarations(from, candidate SymbolRecord) bool {
 		return strings.EqualFold(path.Ext(candidate.FilePath), clojurePortableExt)
 	}
 	return true
+}
+
+// namesOnlyTheCLinkageHalfOfCPlusPlus reports whether a language may name a
+// C++-LABELLED declaration only when that declaration itself has C linkage. C
+// and Objective-C both compile the `extern "C"` half of a dual-use header
+// verbatim and neither can name the C++ half. C++ and Objective-C++ are absent
+// deliberately: both are C++ translation units, and routing them through this
+// exception would hide every ordinary C++ declaration from them.
+func namesOnlyTheCLinkageHalfOfCPlusPlus(language string) bool {
+	return language == "C" || language == "Objective-C"
 }
 
 // isCFamilyPlainConsumer reports whether a language compiles the plain C half of
