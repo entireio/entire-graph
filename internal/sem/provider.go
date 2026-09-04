@@ -2201,7 +2201,15 @@ func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
 		// A parameter is bound by the HEADER, not by an initializer, so unlike
 		// a `let` it shadows from the header line itself: the body of
 		// `let run (Json: JsonConvert) x = Json.serialize x` is written there.
-		for _, name := range fsharpFunctionParameterNames(line) {
+		//
+		// The header is read as a LOGICAL line, because F# lets one span
+		// several physical ones. Parameter extraction ended at the `=` and
+		// gave up on a line that had none, so `let run` followed by an
+		// indented `(Json: JsonConvert) =` bound nothing at all and the
+		// qualifier was classified by the project's module declarations alone
+		// -- the fabricated-edge direction again, into an unrelated project
+		// module `Json`.
+		for _, name := range fsharpFunctionParameterNames(fsharpJoinedFunctionHeader(lines, index)) {
 			bindings = append(bindings, fsharpShadowBinding{
 				name:        name,
 				fromLine:    index + 1,
@@ -2308,6 +2316,69 @@ func fsharpParameterRegion(rest string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// fsharpBindingKeywordPattern matches the keyword that can open a `let`/`use`
+// header, with the whitespace that must follow it. It is deliberately weaker
+// than fsharpFunctionHeaderPattern, which also demands whitespace AFTER the
+// bound name and so declines the very line this bug is about: `let run`, whose
+// parameters are written on the lines below it.
+var fsharpBindingKeywordPattern = regexp.MustCompile(`^[ \t]*(?:let|use)!?[ \t]`)
+
+// fsharpFunctionHeaderContinuationLines bounds how far a header is followed
+// down the file. A parameter list that long does not exist; the bound is what
+// stops a `let` whose `=` never arrives from swallowing the rest of the block.
+const fsharpFunctionHeaderContinuationLines = 32
+
+// fsharpJoinedFunctionHeader returns the LOGICAL header line that begins on
+// lines[index]: the line itself when it already carries the `=` (or the
+// top-level `:` introducing a return type) that ends a header, and otherwise
+// that line joined with the lines below it up to the one that does.
+//
+// F# writes a long signature across several lines, and a parameter binds a
+// qualifier from wherever it is written:
+//
+//	let run
+//	    (Json: JsonConvert)
+//	    (x: int) =
+//	    Json.serialize x
+//
+// Read one physical line at a time, `let run` has no `=` and bound nothing, so
+// `Json` was not recorded as shadowing and the call was pinned to whatever
+// project module happened to be named `Json`.
+//
+// The join follows the offside rule, which is what makes it safe: a
+// continuation of a header is indented PAST the `let` that opens it, so the
+// first following line back at the header's own indent -- the sibling binding
+// -- stops the join, and a blank line stops it too. Only a line that opens a
+// binding is followed at all, and the join stops at the first `=` outside
+// brackets, so it can never reach into a body. Where no such line is found the
+// caller reads no parameter region and binds nothing, which is the narrow
+// answer: a missed shadow leaves the previous classification standing, while an
+// invented one moves a call to a different definition.
+//
+// Completeness is judged on the JOINED text rather than the line just added, so
+// a header whose parenthesis opens on one line and closes on another is
+// followed to its real end instead of stopping inside the brackets.
+func fsharpJoinedFunctionHeader(lines []string, index int) string {
+	joined := lines[index]
+	if !fsharpBindingKeywordPattern.MatchString(joined) {
+		return joined
+	}
+	if _, complete := fsharpParameterRegion(joined); complete {
+		return joined
+	}
+	indent := fsharpIndentWidth(joined)
+	for next := index + 1; next < len(lines) && next-index <= fsharpFunctionHeaderContinuationLines; next++ {
+		if strings.TrimSpace(lines[next]) == "" || fsharpIndentWidth(lines[next]) <= indent {
+			break
+		}
+		joined += " " + lines[next]
+		if _, complete := fsharpParameterRegion(joined); complete {
+			break
+		}
+	}
+	return joined
 }
 
 // fsharpParameterGroupBinders returns the names one parameter group binds. A

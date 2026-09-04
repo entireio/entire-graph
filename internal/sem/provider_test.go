@@ -17647,6 +17647,212 @@ let run (Json payload) (x: int) = Json.serialize x
 	}
 }
 
+func TestFSharpQualifierShadowedByAMultiLineFunctionHeader(t *testing.T) {
+	// Parameter extraction read ONE physical line and gave up on a header that
+	// carried no `=`, so every signature F# writes across several lines bound
+	// nothing at all. The qualifier was then classified by the project's module
+	// declarations alone and `Json.serialize` was pinned to an unrelated
+	// project module `Json` -- the fabricated-edge direction, an edge into a
+	// definition the source never named, in place of the `serialize` the
+	// parameter leaves in scope.
+	//
+	// Measured over these fixtures before the fix, against the single-line
+	// control that always worked:
+	//
+	//	let run (Json: JsonConvert) (x: int) = Json.serialize x   -> Use.fs
+	//	let run
+	//	    (Json: JsonConvert)
+	//	    (x: int) =
+	//	    Json.serialize x                                      -> Json.fs   FABRICATED
+	//
+	// The header is a LOGICAL line, and the offside rule says where it ends: a
+	// continuation is indented past the `let` that opens it, so the sibling
+	// binding back at that indent stops the join, and the first `=` outside
+	// brackets stops it before any body can be reached.
+	for _, shadow := range []struct{ name, source string }{
+		{"header split before its parameters", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    (Json: Newtonsoft.Json.JsonConvert)
+    (x: int) =
+    Json.serialize x
+`},
+		{"header split after its first parameter", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json: Newtonsoft.Json.JsonConvert)
+        (x: int) =
+    Json.serialize x
+`},
+		{"bare parameter on its own line", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    Json
+    (x: int) =
+    Json.serialize x
+`},
+		// The parenthesis opens on one line and closes on another, so no single
+		// line of the header ends it. Completeness is judged on the JOINED
+		// text, which is what carries the join past the open bracket.
+		{"parameter whose parentheses span lines", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (
+    Json: Newtonsoft.Json.JsonConvert
+    ) (x: int) =
+    Json.serialize x
+`},
+		{"tuple split across lines", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    (Json: Newtonsoft.Json.JsonConvert,
+     x: int) =
+    Json.serialize x
+`},
+		// The modifiers keep their meaning across the join: the header pattern
+		// still reads them, in the one order F# permits.
+		{"accessibility-modified multiline header", `module Use
+
+let serialize (x: int) = x * 2
+
+let private run
+    (Json: Newtonsoft.Json.JsonConvert)
+    (x: int) =
+    Json.serialize x
+`},
+		{"recursive multiline header", `module Use
+
+let serialize (x: int) = x * 2
+
+let rec run
+    (Json: Newtonsoft.Json.JsonConvert)
+    (x: int) =
+    Json.serialize x
+`},
+	} {
+		t.Run(shadow.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, shadow.source)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under a %s reached %v, want %v: the parameter shadows the project module `Json`", shadow.name, got, want)
+			}
+		})
+	}
+
+	// The opposite direction, which matters as much: a shadowed qualifier
+	// records bare and resolves UNRESTRICTED, so joining lines that are not
+	// part of a header does not merely add a restriction -- it binds whatever
+	// same-name definition sits nearest instead of the module the source named.
+	// Every guard the single-line header already holds must survive the join.
+	for _, guard := range []struct{ name, why, source string }{
+		{"a multiline header binds only what it writes", "the header names `x`, and nothing rebinds `Json`", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    (x: int) =
+    Json.serialize x
+`},
+		{"a body line is not a header continuation", "the `=` ends the header, so the join can never reach the body below it", `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    Json.serialize x
+`},
+		{"a multiline parameter does not outlive its own function", "a parameter lives in the body its header opens, and `helper` ends at the next binding at its own indent", `module Use
+
+let serialize (x: int) = x * 2
+
+let helper
+    (Json: Newtonsoft.Json.JsonConvert)
+    (x: int) =
+    x
+
+let run (x: int) = Json.serialize x
+`},
+		{"a type annotation on a continuation line is not a binder", "`Json` here is the parameter's TYPE; the parameter is `x`", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    (x: Json) =
+    Json.serialize x
+`},
+		{"a union-case pattern on a continuation line is not a binder", "`Json payload` matches a union CASE and binds `payload`, not `Json`", `module Use
+
+let serialize (x: int) = x * 2
+
+let run
+    (Json payload)
+    (x: int) =
+    Json.serialize x
+`},
+		{"a nested multiline header stays inside its own function", "`inner`'s parameter is closed by the dedent that ends `inner`, so the call in the sibling function still names the project module", `module Use
+
+let serialize (x: int) = x * 2
+
+let outer (x: int) =
+    let inner
+        (Json: Newtonsoft.Json.JsonConvert) =
+        Json.serialize x
+    inner
+
+let run (x: int) = Json.serialize x
+`},
+	} {
+		t.Run(guard.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, guard.source)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` reached %v, want %v: %s, so nothing shadows the project module `Json`", got, want, guard.why)
+			}
+		})
+	}
+
+	// And the join itself, directly: what it follows, and the four things that
+	// stop it. Every one of these returns the head line alone, which the caller
+	// reads as no parameter region and therefore no binding -- the narrow
+	// answer, which leaves the previous classification standing.
+	t.Run("the join stops where the header does", func(t *testing.T) {
+		for _, tc := range []struct{ name, source, want string }{
+			{"follows an incomplete header to its `=`", "let run\n    (Json: T) =\n    Json.serialize x\n", "let run     (Json: T) ="},
+			{"stops at the `=`, never entering the body", "let run\n    (Json: T) =\n    Other.thing y\n", "let run     (Json: T) ="},
+			{"leaves a complete header alone", "let run (Json: T) =\n    (Other: T) =\n", "let run (Json: T) ="},
+			{"declines a line that opens no binding", "letters run\n    (Json: T) =\n", "letters run"},
+			{"stops at a line back at its own indent", "let run\nlet other (Json: T) = 1\n", "let run"},
+			{"stops at a dedent", "    let run\n(Json: T) =\n", "    let run"},
+			{"stops at a blank line", "let run\n\n    (Json: T) =\n", "let run"},
+		} {
+			if got := fsharpJoinedFunctionHeader(strings.Split(tc.source, "\n"), 0); got != tc.want {
+				t.Errorf("%s: fsharpJoinedFunctionHeader = %q, want %q", tc.name, got, tc.want)
+			}
+		}
+		// A header with no `=` at all must not swallow the block below it. The
+		// bound is what stops it; past the bound the join simply ends, and the
+		// text it collected has no parameter region, so it binds nothing.
+		var runaway strings.Builder
+		runaway.WriteString("let run\n")
+		for range fsharpFunctionHeaderContinuationLines + 8 {
+			runaway.WriteString("    a\n")
+		}
+		runaway.WriteString("    (Json: T) =\n")
+		joined := fsharpJoinedFunctionHeader(strings.Split(runaway.String(), "\n"), 0)
+		if strings.Contains(joined, "Json") {
+			t.Errorf("the join ran past its bound and reached line %d: %q", fsharpFunctionHeaderContinuationLines+10, joined)
+		}
+		if names := fsharpFunctionParameterNames(joined); names != nil {
+			t.Errorf("a header the join never completed bound %v, want nothing", names)
+		}
+	})
+}
+
 func TestFSharpQualifierShadowedByAComputationExpressionBinding(t *testing.T) {
 	// `let!` and `use!` are the same value binding written inside a computation
 	// expression, with the same ordered, offside-delimited scope -- but the
