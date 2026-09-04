@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.10.4-nightly.202609010627.a218ec13a.0.20260902021605-e5e7f6a938ff",
+  "checkpoint_id": "05825ba80721",
+  "strategy": "manual-commit",
+  "branch": "paulo-perf",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/kotlin.go",
+    "internal/sem/parser.go",
+    "internal/sem/ruby.go",
+    "internal/sem/rust.go",
+    "internal/sem/swift.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/05/825ba80721/0/metadata.json",
+      "transcript": "/05/825ba80721/0/full.jsonl",
+      "compact_transcript": "/05/825ba80721/0/transcript.jsonl",
+      "content_hash": "/05/825ba80721/0/content_hash.txt",
+      "prompt": "/05/825ba80721/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 644,
+    "cache_creation_tokens": 812157,
+    "cache_read_tokens": 96013419,
+    "output_tokens": 265265,
+    "api_call_count": 322
+  }
+}

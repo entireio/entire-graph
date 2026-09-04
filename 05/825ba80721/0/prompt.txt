@@ -1,0 +1,21 @@
+Assess key performance improvements across this project. Propose ways to improve wall clock time and decrease memory churn and allocations.
+
+---
+
+Implement 1-3
+
+---
+
+Create a new branch paulo-perf
+
+---
+
+commit changes on the suggested split
+
+---
+
+go ahead
+
+---
+
+try again
