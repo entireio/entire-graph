@@ -332,6 +332,24 @@ func TestSearchVerifyRubyRequiresADeclaredTestTaskAndAGemfile(t *testing.T) {
 			wantCommand: "bundle exec rake test",
 		},
 		{
+			name: "a parenthesised task declaration does too",
+			files: map[string]string{
+				"Gemfile":      "source 'x'\n",
+				"Rakefile":     "desc 'run the tests'\ntask(:test => :compile) do\n  sh 'ruby -Itest'\nend\n",
+				"lib/thing.rb": "",
+			},
+			wantCommand: "bundle exec rake test",
+		},
+		{
+			name: "a parenthesised prerequisite still does not",
+			files: map[string]string{
+				"Gemfile":      "source 'x'\n",
+				"Rakefile":     "task(:default => :test)\n",
+				"lib/thing.rb": "",
+			},
+			wantCommand: "",
+		},
+		{
 			name: "Rake::TestTask declares it too",
 			files: map[string]string{
 				"Gemfile":      "source 'x'\n",
@@ -402,5 +420,62 @@ func TestSearchVerifyStageSeparatorIgnoresQuotedAmpersands(t *testing.T) {
 	apostrophe := searchVerifyRunIn("it's&&here", "npm test")
 	if runner := searchVerifyRunner(apostrophe); runner != "npm" {
 		t.Fatalf("runner over %q = %q, want %q", apostrophe, runner, "npm")
+	}
+}
+
+// TestSearchVerifyRakefileDeclarationFormsAreRecognised pins BOTH directions of the Rakefile
+// predicate: the declaration syntaxes Rake actually accepts license `rake test`, and a file that
+// merely mentions the word still does not.
+//
+// The declaration check exists because substring-matching "test" emitted `rake test` for Rakefiles
+// that never define the task. The correction has the opposite failure mode: a pattern tight enough
+// to reject prose can also reject `task(:test)`, which is ordinary Rake and defines the task. Both
+// halves are load-bearing, so both are pinned here.
+func TestSearchVerifyRakefileDeclarationFormsAreRecognised(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		// --- declarations: every one of these defines a task rake will run ---
+		{name: "bare symbol", content: "task :test\n", want: true},
+		{name: "symbol with a block", content: "task :test do\n  sh 'ruby'\nend\n", want: true},
+		{name: "parenthesised symbol", content: "task(:test)\n", want: true},
+		{name: "parenthesised symbol with a block", content: "task(:test) do\n  sh 'ruby'\nend\n", want: true},
+		{name: "parenthesised with a space before the paren", content: "task (:test)\n", want: true},
+		{name: "hashrocket dependency", content: "task :test => :compile\n", want: true},
+		{name: "parenthesised hashrocket dependency", content: "task(:test => :compile)\n", want: true},
+		{name: "hashrocket dependency list", content: "task :test => [:compile, :lint]\n", want: true},
+		{name: "hash-argument dependency", content: "task test: :compile\n", want: true},
+		{name: "parenthesised hash-argument dependency", content: "task(test: :compile)\n", want: true},
+		{name: "hash-argument dependency list", content: "task test: %w[compile lint]\n", want: true},
+		{name: "double-quoted name", content: "task \"test\"\n", want: true},
+		{name: "single-quoted name", content: "task 'test' do\nend\n", want: true},
+		{name: "parenthesised quoted name", content: "task(\"test\")\n", want: true},
+		{name: "task arguments before the dependency", content: "task :test, [:pattern] => :compile do |t, args|\nend\n", want: true},
+		{name: "multitask", content: "multitask :test\n", want: true},
+		{name: "indented under a conditional", content: "if ENV['CI']\n  task(:test)\nend\n", want: true},
+		{name: "declared after a desc line", content: "desc 'run the tests'\ntask(:test)\n", want: true},
+		{name: "Rake::TestTask generator", content: "require 'rake/testtask'\nRake::TestTask.new(:test)\n", want: true},
+
+		// --- mentions: none of these defines a task named `test` ---
+		{name: "prerequisite of another task", content: "task default: %w[test rubocop]\n", want: false},
+		{name: "parenthesised prerequisite of another task", content: "task(:default => :test)\n", want: false},
+		{name: "comment mentioning the latest tests", content: "# run the latest tests with rake\ntask :lint\n", want: false},
+		{name: "comment containing a declaration", content: "# task(:test) was removed\ntask :lint\n", want: false},
+		{name: "prose using the word", content: "# the test suite lives elsewhere\n", want: false},
+		{name: "a differently named task with the prefix", content: "task(:test_all)\n", want: false},
+		{name: "a differently named symbol task", content: "task :testing\n", want: false},
+		{name: "a differently named quoted task", content: "task(\"testing\")\n", want: false},
+		{name: "a differently named hash-argument task", content: "task test_helper: :compile\n", want: false},
+		{name: "the word inside a shell line", content: "task :lint do\n  sh 'rake test'\nend\n", want: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := searchVerifyRakefileDefinesTest(testCase.content); got != testCase.want {
+				t.Fatalf("searchVerifyRakefileDefinesTest(%q) = %v, want %v", testCase.content, got, testCase.want)
+			}
+		})
 	}
 }

@@ -1053,8 +1053,11 @@ func searchVerifyBundlePrefix(hasGemfile bool) string {
 // "Don't know how to build task 'test'" — a hard-gate command that cannot run, which is strictly
 // worse than the silence this block prefers.
 //
-// What licenses the command is a declaration: `task :test`, `task "test"`, `task test: :deps`, or
-// the Rake::TestTask generator, which defines `:test` by default.
+// What licenses the command is a declaration, in any of the shapes Rake accepts for one: `task
+// :test`, `task(:test)`, `task "test"`, the dependency forms `task :test => :deps` and `task test:
+// :deps` with or without parentheses, `multitask :test`, or the Rake::TestTask generator, which
+// defines `:test` by default. Rejecting a shape is not free either: a Rakefile that declares
+// `task(:test)` and gets declined loses a command that would have run.
 func searchVerifyRakefileDefinesTest(content string) bool {
 	if strings.Contains(content, "Rake::TestTask.new") || strings.Contains(content, "TestTask.new") {
 		return true
@@ -1063,9 +1066,18 @@ func searchVerifyRakefileDefinesTest(content string) bool {
 }
 
 // searchVerifyRakeTestTaskPattern matches a `test` task DECLARATION at the start of a line, so a
-// prerequisite list (`task default: %w[test]`) and prose cannot license the command.
+// prerequisite list (`task default: %w[test]`), a shell line inside another task (`sh 'rake test'`)
+// and prose cannot license the command.
+//
+// The name must follow `task` immediately, as the first argument, in one of the three ways Rake
+// names a task: the symbol `:test`, the string `"test"`/`'test'`, or the hash-key `test:` of the
+// `task test: :deps` dependency form. The separator admits `(` as well as whitespace, because
+// `task(:test)` is the same declaration written with parentheses — requiring whitespace there was
+// what declined valid Rakefiles. Nothing else is admitted: `:test\b` and the closing quote stop
+// `:testing` and `"test_all"`, and the hash-key form needs its colon straight after the word, so
+// `task test_helper: :compile` still does not match.
 var searchVerifyRakeTestTaskPattern = regexp.MustCompile(
-	`(?m)^[ \t]*task\s+(?::test\b|["']test["']|test\s*:)`)
+	`(?m)^[ \t]*(?:multi)?task[ \t(]+(?::test\b|["']test["']|test[ \t]*:)`)
 
 func deriveSearchVerifySuiteMake(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	content, ok := evidence.file(searchVerifyJoin(dir, "Makefile"))
