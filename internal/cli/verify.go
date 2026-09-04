@@ -351,6 +351,15 @@ func validateVerifyBaseline(
 			"verify --pre-edit-baseline %s has format_version %d, this build writes %d: re-record it",
 			path, baseline.FormatVersion, verifyBaselineFormatVersion)
 	}
+	if !filepath.IsAbs(baseline.Repo) {
+		// Written by a build that stored the --repo spelling verbatim. The checkout it names cannot
+		// be recovered from the spelling alone, so the only choice is which way to be wrong; this one
+		// is loud and costs a re-record. See verifySameRepo.
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s recorded its repository as %q, a relative spelling written "+
+				"by an older build: the checkout it named cannot be identified now, so no delta "+
+				"between repositories can be trusted. Re-record it", path, baseline.Repo)
+	}
 	if !verifySameRepo(baseline.Repo, repo) {
 		return fmt.Errorf(
 			"verify --pre-edit-baseline %s was recorded in repository %q but this run is in %q: "+
@@ -407,6 +416,12 @@ func verifyRecordedRepo(repo string) string {
 // and compared with os.SameFile, which is the filesystem's own answer (device plus inode; file index
 // on Windows) rather than a guess about how paths spell out.
 //
+// WHAT A RELATIVE RECORDED SPELLING GETS. Nothing: it is refused outright, before the equality below.
+// Only baselines this build wrote are canonical (verifyRecordedRepo), and a baseline from an older
+// build carries a spelling whose anchor — the directory that invocation ran in — was never recorded.
+// It cannot be upgraded, and accepting it on string equality is the false accept the canonicalization
+// closed. See the refusal itself for why resolving both sides is not the remedy it looks like.
+//
 // WHAT THE FALLBACK GUARANTEES. When either side cannot be stat'd — the recorded checkout has since
 // been moved or deleted, or the process cannot traverse to it — there is no identity to compare and
 // the cleaned-string comparison above stands alone. That is exactly the previous behavior, and its
@@ -420,6 +435,21 @@ func verifyRecordedRepo(repo string) string {
 // contents. The same checkout with different code in it is still the same repository here — that is
 // the question this predicate is asked, and the baseline's other fields cover the rest.
 func verifySameRepo(recorded, current string) bool {
+	if !filepath.IsAbs(recorded) {
+		// A LEGACY BASELINE, written before the record-time canonicalization above existed, stored
+		// the caller's spelling verbatim — `--repo .` reached the file as ".". Nothing here can turn
+		// that back into a location: "." is resolved against the working directory of whichever
+		// invocation is asking, so resolving BOTH sides (the remedy that suggests itself) resolves
+		// them against the SAME directory and answers "same repository" for every pair of checkouts
+		// that both spelled it ".". That is precisely the false accept the canonicalization closed,
+		// re-entered through the early string equality below.
+		//
+		// So such a baseline is REFUSED rather than upgraded. There is no record of where it was
+		// recorded, and no evidence anywhere on this machine that could supply one; the only honest
+		// readings are "unknown" and "guess". Refusing costs a re-record and says so, which is the
+		// loud direction — the same trade the unstattable fallback below already takes.
+		return false
+	}
 	if recorded == current {
 		return true
 	}
@@ -591,13 +621,24 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 // otherwise know. Where a runner IS listed the set is deliberately narrow: a false INCOMPLETE costs
 // the caller one investigation, while a false PASS is the failure class this whole verb exists to
 // prevent.
+//
+// RSPEC IS DELIBERATELY UNLISTED, and that is a statement about RSpec rather than an omission. Its
+// failure exit code is CONFIGURABLE — `--failure-exit-code N` on the command line, and
+// `config.failure_exit_code = N` in spec_helper.rb — so "the code RSpec uses for a test failure" is
+// not a property of RSpec at all; it is a property of the project. Neither source is visible here:
+// the configuration lives in a Ruby file this verb never reads, and even the flag can arrive through
+// `.rspec`, `SPEC_OPTS` or a rake task rather than the recorded command. Listing {1} therefore
+// adjudicated every suite that set the option INCOMPLETE however complete it was, which is the same
+// false negative PHPUnit's missing 2 produced. Reading the flag out of the command string would fix
+// only the spelling that happens to be on the command line and would still be wrong for the
+// configured majority — a narrower guess is still a guess. The permissive rule is the honest answer
+// for a runner whose grading codes this build cannot know.
 var verifyTestFailureExitCodes = map[string][]int{
 	"pytest":      {1},
 	"cargo test":  {101},
 	"go test":     {1},
 	"phpunit":     {1, 2},
 	"jest/vitest": {1},
-	"rspec":       {1},
 	"minitest":    {1},
 	"surefire":    {1},
 	"ctest":       {8},
