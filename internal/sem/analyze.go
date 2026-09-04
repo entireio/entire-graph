@@ -187,6 +187,17 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	// what makes the reads cheap, and it is defined over a run of files.
 	processChangedFile := func(i int, file gitutil.ChangedFile) changedFileScan {
 		var scan changedFileScan
+		// The sequential loop tested the budget before each file, not once per
+		// metadata window. Without the same test here a window that goes over
+		// budget still parses all of its remaining files, and the reducer names
+		// the wrong ones as skipped. Carry the decision out as a flag instead of
+		// acting on it, exactly as the dependent scan does: the reducer is the
+		// only stage that sees files in order, so only it can stop at the index
+		// the sequential loop stopped at.
+		if overBudget() {
+			scan.stopped = true
+			return scan
+		}
 		path := file.Path
 		oldPath := file.OldPath
 		if oldPath == "" {
@@ -685,12 +696,16 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 					return scan.err
 				}
 				i := start + j
-				emitProgressEvent("parse", i, len(changed), changed[i].Path, i > 0 && i%100 == 0)
+				// The budget decision comes before the progress event, as it did
+				// in the sequential loop: a file the budget skips is reported as
+				// skipped in the warnings, so announcing it as parsed first would
+				// contradict the result the same run returns.
 				if scan.stopped {
 					appendBudgetWarnings(i)
 					stopped = true
 					return errAnalyzeParseStopped
 				}
+				emitProgressEvent("parse", i, len(changed), changed[i].Path, i > 0 && i%100 == 0)
 				result.Warnings = append(result.Warnings, scan.warnings...)
 				if scan.delta != nil {
 					deltas = append(deltas, scan.delta)
