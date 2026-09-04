@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "374f6cea70e5",
+  "strategy": "manual-commit",
+  "branch": "audit/lang-cpp-inclass-declarations",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/model.go",
+    "internal/sem/parser.go",
+    "internal/sem/parser_cpp_member_declaration_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/37/4f6cea70e5/0/metadata.json",
+      "transcript": "/37/4f6cea70e5/0/full.jsonl",
+      "compact_transcript": "/37/4f6cea70e5/0/transcript.jsonl",
+      "content_hash": "/37/4f6cea70e5/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 29024,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4443264,
+    "output_tokens": 8455,
+    "api_call_count": 27
+  }
+}
