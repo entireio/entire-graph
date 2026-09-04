@@ -20685,7 +20685,7 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(stripPythonDirectImportComment(line)); len(matches) == 2 {
+		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {
@@ -20706,9 +20706,40 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 	return imports, forms
 }
 
-func stripPythonDirectImportComment(line string) string {
+// pythonDirectImportStatement cuts a source line down to the `import ...`
+// statement a scanner may read off it: the comment goes, and so does a `;`
+// statement separator together with everything after it.
+//
+// Python lets a simple statement follow an import on one line, and left
+// attached that statement's words are read as import items: `import frobnicate
+// as m; x = 1` splits into the fields `frobnicate`, `as`, `m;`, `x`, `=`, `1`,
+// so `as` is no longer second-to-last, the alias is lost, and `m` binds
+// nothing at all -- `m.compute(v)` below it produced no edge of any kind.
+//
+// The cut takes the FIRST `;` and needs no quote tracking, which is what makes
+// it safe even though the trailing statement may itself contain a string.
+// CPython 3.14.6 settles both halves:
+//
+//	$ python3 -c 'import ast; print(ast.dump(ast.parse("import frobnicate as m; x = 1")))'
+//	Module(body=[Import(names=[alias(name='frobnicate', asname='m')]), Assign(...)])
+//	$ python3 -c 'import ast; ast.parse("import \"mod\"")'
+//	SyntaxError: invalid syntax
+//
+// A `;` is a statement separator and nothing else -- it cannot appear inside an
+// import statement -- and an import statement admits no string literal at all,
+// so nothing quoted can precede the first `;` on a line whose import this
+// scanner is reading. A `;` inside a string therefore always lies AFTER the
+// cut, never before it. The same argument is why the `#` needs no quote
+// tracking either.
+//
+// Both cuts only ever remove a suffix, so a line that was not an import cannot
+// become one: `X = ";"; import evil` still starts with `X`.
+func pythonDirectImportStatement(line string) string {
 	if index := strings.IndexByte(line, '#'); index >= 0 {
 		line = line[:index]
+	}
+	if separator := strings.IndexByte(line, ';'); separator >= 0 {
+		line = line[:separator]
 	}
 	return strings.TrimSpace(line)
 }
@@ -23709,7 +23740,7 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(stripPythonDirectImportComment(line)); len(matches) == 2 {
+		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {

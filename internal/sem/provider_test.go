@@ -1937,6 +1937,127 @@ def run():
 	}
 }
 
+// Python lets a simple statement follow an import on one line, separated by
+// `;`. The direct-import scanner cut the comment off such a line but not the
+// separator, so the trailing statement's words were read as import items:
+// `import frobnicate as m; x = 1` splits into `frobnicate`, `as`, `m;`, `x`,
+// `=`, `1`, `as` is no longer second-to-last, and the alias is lost. `m` then
+// bound nothing at all and `m.compute(v)` below it produced no edge of ANY
+// kind -- both the external and the resolved one, measured over this fixture:
+//
+//	import frobnicate as m; x = 1   +  m.compute(v)
+//	CALLS  run -> external:symbol:frobnicate.compute      DROPPED
+//	CALLS  run -> C:frobnicate.c:function:compute         DROPPED
+//
+// The cut takes the FIRST `;` and needs no quote tracking, which is what makes
+// it safe even though the trailing statement may itself contain a string.
+// CPython 3.14.6 settles both halves:
+//
+//	$ python3 -c 'import ast; print(ast.dump(ast.parse("import frobnicate as m; x = 1")))'
+//	Module(body=[Import(names=[alias(name='frobnicate', asname='m')]), Assign(targets=[Name(id='x', ctx=Store())], value=Constant(value=1))])
+//	$ python3 -c 'import io,tokenize; [print(tokenize.tok_name[t.type], repr(t.string)) for t in tokenize.generate_tokens(io.StringIO("from mod import compute as c; x = \"#\"\n").readline)]'
+//	NAME 'from' / NAME 'mod' / NAME 'import' / NAME 'compute' / NAME 'as' / NAME 'c'
+//	OP ';' / NAME 'x' / OP '=' / STRING '"#"'
+//	$ python3 -c 'import ast; ast.parse("import \"mod\"")'
+//	SyntaxError: invalid syntax
+//
+// The `;` is a two-statement boundary and cannot appear inside an import
+// statement, and an import admits no string literal at all -- so every quote on
+// the line lies after the first `;`, never before it. The oracle is therefore
+// the semicolon-free spelling of the same line: a second statement is not part
+// of the import, so it must change nothing the import records.
+func TestPythonDirectImportSemicolonPreservesAliasBindingsAndDottedCalls(t *testing.T) {
+	const importLine = "import frobnicate as m"
+	var baseline []string
+	for i, line := range []string{
+		importLine,
+		importLine + "; x = 1",
+		// The trailing statement may hold a string, and that string may hold
+		// more separators and a `#`. None of it can reach in front of the cut.
+		importLine + "; x = \"#\"",
+		importLine + "; x = \"a;b;c\"",
+		// Either order of the two terminators: a `;` after the comment opener
+		// belongs to the comment, a `#` after the `;` belongs to the second
+		// statement, and both go.
+		importLine + "  # noqa; x = 1",
+		importLine + "; x = 1  # noqa",
+	} {
+		content := line + "\n"
+		names, forms := importedPythonNamesAndForms(content)
+		if got := names["m"]; !slices.Equal(got, []string{"frobnicate"}) {
+			t.Fatalf("%q names[m] = %#v, want [frobnicate]", line, got)
+		}
+		if got := forms["m"]["frobnicate"]; got != pythonAliasRename {
+			t.Fatalf("%q form[m][frobnicate] = %v, want alias rename", line, got)
+		}
+		bindings := importedPythonBindings(content)["m"]
+		if len(bindings) != 1 || bindings[0].Module != "frobnicate" || bindings[0].Imported != "" {
+			t.Fatalf("%q bindings[m] = %#v, want frobnicate module alias", line, bindings)
+		}
+
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate/__init__.py", "")
+		writeFile(t, repo, "frobnicate/helper.py", "def fn():\n    return 1\n")
+		writeFile(t, repo, "consumer.py", content+"\n\ndef call_it():\n    return m.helper.fn()\n")
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets := callItTargetsNamed(t, snapshot, "fn")
+		if len(targets) != 1 || targets[0] != "frobnicate/helper.py" {
+			t.Fatalf("%q dotted call targets = %#v, want [frobnicate/helper.py]", line, targets)
+		}
+		if i == 0 {
+			baseline = targets
+		} else if !slices.Equal(targets, baseline) {
+			t.Fatalf("compound direct import changed dotted call targets: %#v vs %#v", targets, baseline)
+		}
+	}
+
+	// The opposite direction, which is the one that would hurt: the cut only
+	// ever removes a suffix, so a line that was not an import cannot become
+	// one, and a quoted separator in front of import-looking words must stay
+	// inert. Inventing a binding here would name a module the file never
+	// imported.
+	for _, inert := range []string{
+		"COMMENT = \"; import frobnicate as m\"\n",
+		"COMMENT = \"x\"; import frobnicate as m\n",
+		"COMMENT = \"#\"; import frobnicate as m\n",
+	} {
+		if names := importedPythonNames(inert); len(names) != 0 {
+			t.Fatalf("a quoted separator created names %#v for %q", names, inert)
+		}
+		if bindings := importedPythonBindings(inert); len(bindings) != 0 {
+			t.Fatalf("a quoted separator created bindings %#v for %q", bindings, inert)
+		}
+	}
+
+	// And the cut itself, directly: it removes the second statement and the
+	// comment and nothing else, and it cannot manufacture an import prefix out
+	// of a line that lacked one.
+	for _, tc := range []struct{ line, want string }{
+		{"import frobnicate as m; x = 1", "import frobnicate as m"},
+		{"import frobnicate as m; x = \"a;b\"", "import frobnicate as m"},
+		{"    import frobnicate as m ;x=1", "import frobnicate as m"},
+		{"import frobnicate as m  # noqa; x = 1", "import frobnicate as m"},
+		{"import frobnicate as m; x = 1  # noqa", "import frobnicate as m"},
+		{"import frobnicate as m", "import frobnicate as m"},
+		{"; import evil", ""},
+		{"   ;", ""},
+		{"", ""},
+		{"COMMENT = \"; import evil\"", "COMMENT = \""},
+		{"COMMENT = \"x\"; import evil", "COMMENT = \"x\""},
+	} {
+		if got := pythonDirectImportStatement(tc.line); got != tc.want {
+			t.Fatalf("pythonDirectImportStatement(%q) = %q, want %q", tc.line, got, tc.want)
+		}
+		looksLikeImport := func(text string) bool { return strings.HasPrefix(strings.TrimSpace(text), "import ") }
+		if !looksLikeImport(tc.line) && looksLikeImport(pythonDirectImportStatement(tc.line)) {
+			t.Fatalf("cutting the statement turned a non-import line into an import: %q", tc.line)
+		}
+	}
+}
+
 func TestPythonDirectImportCommentsPreserveAliasBindingsAndDottedCalls(t *testing.T) {
 	const importLine = "import frobnicate as m"
 	var baseline []string
