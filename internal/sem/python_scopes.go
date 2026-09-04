@@ -308,11 +308,39 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 		}
 	case "assignment", "augmented_assignment", "annotated_assignment":
 		if scope != nil {
-			w.addTarget(scope, node.ChildByFieldName("left"))
+			// Python evaluates the value expression BEFORE it binds the target, so
+			// a call on the right-hand side still reads the binding the statement
+			// is about to replace. CPython is the oracle --
+			//
+			//	$ python3 -c 'import sys, types
+			//	m = types.ModuleType("native"); m.compute = lambda: "IMPORTED"
+			//	sys.modules["native"] = m
+			//	from native import compute
+			//	compute = compute()
+			//	print(compute)'                              -> IMPORTED
+			//
+			// -- so recording the target at its OWN offset made the scope view
+			// call that import shadowed, and a `complete` view that reports no
+			// modules for a name makes importsWithName DELETE the file-level
+			// import binding, taking the resolved call edge with it. Inside a
+			// FUNCTION the same source raises UnboundLocalError instead, because a
+			// name assigned anywhere in a function is local throughout it, and the
+			// function-wide `locals` set keeps failing closed there regardless of
+			// offsets.
+			w.addTargetFrom(scope, node.ChildByFieldName("left"), int(node.EndByte()))
 		}
 	case "for_statement":
 		if scope != nil {
-			w.addTarget(scope, w.targetFieldOrFirst(node, "left"))
+			// The iterable is evaluated once, before the target is ever bound:
+			//
+			//	$ python3 -c '...same preamble...
+			//	from native import compute
+			//	for compute in compute():
+			//	    pass'                                    -> iterates the IMPORT
+			//
+			// The target is in force from the body onwards, which is also where a
+			// `for ... else` and the loop's own repetitions read it.
+			w.addTargetFrom(scope, w.targetFieldOrFirst(node, "left"), w.bindingOffset(node, node.ChildByFieldName("body")))
 		}
 	case "with_item":
 		if scope != nil {
@@ -529,11 +557,23 @@ func (w *pythonScopeWalker) fieldName(node *sitter.Node, field string) string {
 }
 
 func (w *pythonScopeWalker) addTarget(scope *pythonBindingScope, node *sitter.Node) {
+	w.addTargetFrom(scope, node, 0)
+}
+
+// addTargetFrom binds a target's identifiers from boundFrom -- the offset at
+// which the binding actually takes effect -- or from the identifier's own
+// offset, whichever is later. A target that is bound where it is written passes
+// 0 and keeps its own offset.
+func (w *pythonScopeWalker) addTargetFrom(scope *pythonBindingScope, node *sitter.Node, boundFrom int) {
 	if !validNode(node) {
 		return
 	}
 	if node.Type() == "identifier" {
-		scope.addName(node.Content(w.src), int(node.StartByte()), scope.owner != "")
+		offset := int(node.StartByte())
+		if boundFrom > offset {
+			offset = boundFrom
+		}
+		scope.addName(node.Content(w.src), offset, scope.owner != "")
 		return
 	}
 	// Assignment targets may be destructured, but an attribute or subscription
@@ -544,7 +584,7 @@ func (w *pythonScopeWalker) addTarget(scope *pythonBindingScope, node *sitter.No
 	switch node.Type() {
 	case "tuple", "list", "pattern_list", "list_pattern", "tuple_pattern", "parenthesized_expression", "starred_expression", "list_splat_pattern", "dictionary_splat_pattern", "as_pattern_target":
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			w.addTarget(scope, node.NamedChild(i))
+			w.addTargetFrom(scope, node.NamedChild(i), boundFrom)
 		}
 	}
 }
@@ -602,6 +642,29 @@ func (w *pythonScopeWalker) collectFunctionBindings(node *sitter.Node, scope *py
 		w.collectTargetNames(w.targetFieldOrFirst(node, "name"), scope)
 	case "delete_statement":
 		w.collectTargetNames(node.NamedChild(0), scope)
+	case "case_clause":
+		// A `case` pattern CAPTURES the names it names, and a captured name is a
+		// local of the whole function exactly like an assignment target. CPython
+		// is the oracle --
+		//
+		//	$ python3 -c '...compute imported from a native module...
+		//	def f(v):
+		//	    r = compute()
+		//	    match v:
+		//	        case compute:
+		//	            pass
+		//	    return r
+		//	f(1)'  -> UnboundLocalError: cannot access local variable 'compute'
+		//
+		// -- so a bare `compute()` anywhere in this body is NOT the import, and
+		// reporting it as an unshadowed one lets it resolve across the FFI
+		// boundary. The guard and the consequence are ordinary code and are
+		// reached by the generic descent below.
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			if child := node.NamedChild(i); validNode(child) && child.Type() == "case_pattern" {
+				w.collectCaseCaptures(child, scope, depth+1)
+			}
+		}
 	case "global_statement":
 		w.statementNames(node, scope.globals)
 	case "nonlocal_statement":
@@ -631,6 +694,70 @@ func (w *pythonScopeWalker) collectComprehensionWalrus(node *sitter.Node, scope 
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		w.collectComprehensionWalrus(node.NamedChild(i), scope, depth+1)
+	}
+}
+
+// collectCaseCaptures declares the names ONE `case` pattern captures. Every
+// other identifier a pattern mentions is a load: a class pattern's class, a
+// keyword pattern's keyword, a mapping key, and a dotted value pattern all read
+// a binding rather than making one --
+//
+//	$ python3 -c 'src = """
+//	def f(v):
+//	    match v:
+//	        case [a, *b]:
+//	            pass
+//	        case {"k": c, **rest}:
+//	            pass
+//	        case int() as d:
+//	            pass
+//	        case Point(x=e):
+//	            pass
+//	        case _:
+//	            pass
+//	"""
+//	ns = {}; exec(compile(src, "<s>", "exec"), ns)
+//	print(ns["f"].__code__.co_varnames)'  -> ('v', 'a', 'b', 'c', 'd', 'e', 'rest')
+//
+// -- neither `Point` nor the keyword `x` nor the key "k" is among them. Calling
+// one of those a binding would report a real import as shadowed, and a
+// `complete` view that reports no modules for a name makes importsWithName
+// DELETE that import and the resolved call edge with it, so an unrecognised
+// pattern node contributes nothing rather than everything.
+func (w *pythonScopeWalker) collectCaseCaptures(node *sitter.Node, scope *pythonBindingScope, depth int) {
+	if !validNode(node) || depth >= maxParseWalkDepth {
+		if validNode(node) {
+			w.complete = false
+		}
+		return
+	}
+	switch node.Type() {
+	case "identifier":
+		// An `as` alias and a `*rest` name are written as bare identifiers.
+		scope.locals[node.Content(w.src)] = true
+	case "dotted_name":
+		// tree-sitter spells a bare capture as a one-part dotted name; a real
+		// dotted name is a value pattern, which only reads.
+		if node.NamedChildCount() == 1 {
+			w.collectCaseCaptures(node.NamedChild(0), scope, depth+1)
+		}
+	case "case_pattern", "union_pattern", "list_pattern", "tuple_pattern", "as_pattern", "splat_pattern":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			w.collectCaseCaptures(node.NamedChild(i), scope, depth+1)
+		}
+	case "class_pattern", "dict_pattern":
+		// The class being matched and a mapping's keys sit beside the
+		// sub-patterns as plain children; only the wrapped sub-patterns capture.
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			if child := node.NamedChild(i); validNode(child) && (child.Type() == "case_pattern" || child.Type() == "splat_pattern") {
+				w.collectCaseCaptures(child, scope, depth+1)
+			}
+		}
+	case "keyword_pattern":
+		// `Point(x=e)` READS the keyword `x` and binds the pattern beside it.
+		for i := 1; i < int(node.NamedChildCount()); i++ {
+			w.collectCaseCaptures(node.NamedChild(i), scope, depth+1)
+		}
 	}
 }
 

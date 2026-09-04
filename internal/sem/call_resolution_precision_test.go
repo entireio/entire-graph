@@ -1138,3 +1138,254 @@ def plain():
 `), "the comprehension binds `compute`, and its frame is where the lambda is written")
 	})
 }
+
+// Python binds an assignment target only AFTER the value expression has been
+// evaluated, so a call on the right-hand side still reads the binding the
+// statement is about to replace. CPython is the oracle --
+//
+//	$ python3 -c 'import sys, types
+//	m = types.ModuleType("native"); m.compute = lambda: "IMPORTED"; sys.modules["native"] = m
+//	from native import compute
+//	compute = compute()
+//	print(compute)'                                  -> IMPORTED
+//
+// -- and the same holds for a `for` target, whose iterable is evaluated once
+// before the target is ever bound. Recording the target at its OWN offset made
+// the scope view report those calls as shadowed, and a `complete` view that
+// reports no modules for a name makes importsWithName DELETE the file-level
+// import binding, taking the resolved call edge with it. Inside a FUNCTION the
+// very same source raises UnboundLocalError, because a name assigned anywhere in
+// a function is local throughout it --
+//
+//	$ python3 -c '...same preamble...
+//	def f(): compute = compute()
+//	f()'   -> UnboundLocalError: cannot access local variable 'compute'
+//
+// -- so the function-wide `locals` set has to keep failing closed there.
+func TestPythonAssignmentTargetBindsAfterItsValueExpression(t *testing.T) {
+	t.Run("module-level self assignment", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+compute = compute()
+`), "file:app.py")
+	})
+
+	t.Run("module-level augmented assignment", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+compute += compute()
+`), "file:app.py")
+	})
+
+	t.Run("module-level for target", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+for compute in compute():
+    pass
+`), "file:app.py")
+	})
+
+	t.Run("the same shape in a function still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    compute = compute()
+    return compute
+`), "a name assigned anywhere in a function is local throughout it, so CPython raises UnboundLocalError")
+	})
+
+	t.Run("a function for target still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    for compute in compute():
+        pass
+`), "a for target is a function-wide local, so CPython raises UnboundLocalError")
+	})
+
+	t.Run("a later module-level call still sees the rebinding", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+compute = 1
+handler = compute()
+`), "the module-level assignment has finished before the later call runs")
+	})
+
+	t.Run("a for body still sees its own loop target", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+for compute in items:
+    handler = compute()
+`), "the loop target is bound before the body runs")
+	})
+}
+
+// A `case` pattern CAPTURES the names it names, and a captured name is local for
+// the WHOLE function like any other assignment. CPython is the oracle --
+//
+//	$ python3 -c '...import compute from a native module...
+//	def f(v):
+//	    r = compute()
+//	    match v:
+//	        case compute:
+//	            pass
+//	    return r
+//	f(1)'   -> UnboundLocalError: cannot access local variable 'compute'
+//
+// -- so the function-wide binding pass has to see capture patterns, or a bare
+// `compute()` elsewhere in the body is reported as an unshadowed import and can
+// resolve across the FFI boundary. Only the capturing positions bind: a class
+// pattern's class, a keyword pattern's keyword, a mapping key and a dotted value
+// pattern are ordinary loads, and treating any of them as a binding would DELETE
+// a real edge, so each keeps a fence here.
+//
+//	$ python3 -c 'src = """
+//	def f(v):
+//	    match v:
+//	        case [a, *b]:
+//	            pass
+//	        case {"k": c, **rest}:
+//	            pass
+//	        case int() as d:
+//	            pass
+//	        case Point(x=e):
+//	            pass
+//	        case _:
+//	            pass
+//	"""
+//	ns = {}; exec(compile(src, "<s>", "exec"), ns)
+//	print(ns["f"].__code__.co_varnames)'   -> ('v', 'a', 'b', 'c', 'd', 'e', 'rest')
+func TestPythonMatchCaseCapturesAreFunctionWideLocals(t *testing.T) {
+	t.Run("a capture shadows a later call", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    match value:
+        case compute:
+            pass
+    return compute()
+`), "`case compute:` captures the name, making it a local of the whole function")
+	})
+
+	t.Run("a capture shadows an earlier call too", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    result = compute()
+    match value:
+        case compute:
+            pass
+    return result
+`), "a captured name is local for the whole function body, before the match as well")
+	})
+
+	t.Run("an as-pattern alias captures", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    match value:
+        case int() as compute:
+            pass
+    return compute()
+`), "`as compute` captures the matched value")
+	})
+
+	t.Run("a sequence star captures", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    match value:
+        case [first, *compute]:
+            pass
+    return compute()
+`), "`*compute` captures the rest of the sequence")
+	})
+
+	t.Run("a mapping value captures", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    match value:
+        case {"k": compute}:
+            pass
+    return compute()
+`), "a mapping pattern's VALUE is a capture position")
+	})
+
+	t.Run("a mapping double star captures", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    match value:
+        case {"k": first, **compute}:
+            pass
+    return compute()
+`), "`**compute` captures the rest of the mapping")
+	})
+
+	t.Run("a class pattern's positional sub-pattern captures", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    match value:
+        case Point(compute):
+            pass
+    return compute()
+`), "a class pattern's positional sub-pattern is a capture position")
+	})
+
+	t.Run("a class pattern's class name is a load, not a binding", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    match value:
+        case Point(x=y):
+            pass
+    return compute()
+`), "app.py:function:plain")
+	})
+
+	t.Run("a keyword pattern's keyword is not a binding", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    match value:
+        case Point(compute=y):
+            pass
+    return compute()
+`), "app.py:function:plain")
+	})
+
+	t.Run("a dotted value pattern is not a binding", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    match value:
+        case Color.compute:
+            pass
+    return compute()
+`), "app.py:function:plain")
+	})
+
+	t.Run("the wildcard binds nothing", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    match value:
+        case _:
+            pass
+    return compute()
+`), "app.py:function:plain")
+	})
+
+	t.Run("a mapping key is a load, not a binding", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain(value):
+    match value:
+        case {Color.compute: y}:
+            pass
+    return compute()
+`), "app.py:function:plain")
+	})
+}
