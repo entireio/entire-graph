@@ -32,19 +32,26 @@ func useEnc() {
 }
 
 func TestResolveQualifiedType(t *testing.T) {
-	jsonEnc := SymbolRecord{ID: "m:Go:internal/json/enc.go:type:Encoder", Name: "Encoder", Kind: "type", FilePath: "internal/json/enc.go"}
-	cborEnc := SymbolRecord{ID: "m:Go:internal/cbor/enc.go:type:Encoder", Name: "Encoder", Kind: "type", FilePath: "internal/cbor/enc.go"}
+	from := SymbolRecord{Language: "Go"}
+	jsonEnc := SymbolRecord{ID: "m:Go:internal/json/enc.go:type:Encoder", Language: "Go", Name: "Encoder", Kind: "type", FilePath: "internal/json/enc.go"}
+	cborEnc := SymbolRecord{ID: "m:Go:internal/cbor/enc.go:type:Encoder", Language: "Go", Name: "Encoder", Kind: "type", FilePath: "internal/cbor/enc.go"}
 	idx := map[string][]SymbolRecord{"Encoder": {jsonEnc, cborEnc}}
 
 	// json.Encoder must resolve to the Encoder in the json/ directory, not cbor's.
-	got, ok := resolveQualifiedType(pkgQualType{alias: "json", typeName: "Encoder"}, nil, idx, "example.com/m")
+	got, ok := resolveQualifiedType(from, pkgQualType{alias: "json", typeName: "Encoder"}, nil, idx, "example.com/m")
 	if !ok || got.ID != jsonEnc.ID {
 		t.Fatalf("expected json Encoder, got %+v ok=%v", got, ok)
 	}
 
 	// An alias matching no package directory resolves to nothing (not a wrong guess).
-	if _, ok := resolveQualifiedType(pkgQualType{alias: "msgpack", typeName: "Encoder"}, nil, idx, "example.com/m"); ok {
+	if _, ok := resolveQualifiedType(from, pkgQualType{alias: "msgpack", typeName: "Encoder"}, nil, idx, "example.com/m"); ok {
 		t.Fatalf("unknown alias must not resolve")
+	}
+
+	// A directory match from an incompatible language is not a Go package type.
+	pythonEnc := SymbolRecord{ID: "m:Python:internal/json/enc.py:class:Encoder", Language: "Python", Name: "Encoder", Kind: "class", FilePath: "internal/json/enc.py"}
+	if _, ok := resolveQualifiedType(from, pkgQualType{alias: "json", typeName: "Encoder"}, nil, map[string][]SymbolRecord{"Encoder": {pythonEnc}}, "example.com/m"); ok {
+		t.Fatalf("Go qualified type resolved to a foreign declaration")
 	}
 }
 
