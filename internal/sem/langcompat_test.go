@@ -899,6 +899,17 @@ int callNamespaced(void) { return namespaced(); }
 void renderGadget(struct Gadget g) { }
 int callGadget(void) { struct Gadget g; return gadgetSize(g); }
 `)
+	writeFile(t, repo, "use.m", `#import "engine.h"
+#import "gadget.h"
+
+void objcRenderWidget(struct Widget w) { }
+int objcCallWidth(void) { struct Widget w; return widgetWidth(w); }
+void objcRenderEngine(Engine e) { }
+int objcCallHelper(void) { return helperCount(); }
+int objcCallOverloaded(void) { return overloaded(1); }
+void objcRenderGadget(struct Gadget g) { }
+int objcCallGadget(void) { return gadgetSize(g); }
+`)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -1007,6 +1018,38 @@ int callGadget(void) { struct Gadget g; return gadgetSize(g); }
 		if relation, ok := edges[impossible]; ok {
 			t.Fatalf("C bound a C++-only declaration: %s (resolution=%s); all edges: %v",
 				impossible, relation.Resolution, edgeKeys(edges))
+		}
+	}
+	// Objective-C compiles the same C half of the dual-use header as C does:
+	// `__cplusplus` is undefined for a `.m`, so preprocessing removes the
+	// linkage guards. It must still not name the ordinary C++ half.
+	for _, control := range []string{
+		"USES_TYPE Objective-C/objcRenderGadget->C/Gadget",
+		"CALLS Objective-C/objcCallGadget->C/gadgetSize",
+	} {
+		if _, ok := edges[control]; !ok {
+			t.Fatalf("Objective-C -> C control edge is missing, the fixture proves nothing: %s; all edges: %v", control, edgeKeys(edges))
+		}
+	}
+	for _, want := range []string{
+		"USES_TYPE Objective-C/objcRenderWidget->C++/Widget",
+		"PARAM_TYPE Objective-C/objcRenderWidget->C++/Widget",
+		"CALLS Objective-C/objcCallWidth->C++/widgetWidth",
+	} {
+		if _, ok := edges[want]; !ok {
+			t.Fatalf("C-linkage declaration is unreachable from Objective-C: %s; all edges: %v", want, edgeKeys(edges))
+		}
+	}
+	for _, impossible := range []string{
+		"USES_TYPE Objective-C/objcRenderEngine->C++/Engine",
+		"PARAM_TYPE Objective-C/objcRenderEngine->C++/Engine",
+		"CALLS Objective-C/objcCallHelper->C++/helperCount",
+		"CALLS Objective-C/objcCallOverloaded->C++/overloaded",
+		"DATA_FLOWS C++/helperCount->Objective-C/objcCallHelper",
+		"DATA_FLOWS C++/overloaded->Objective-C/objcCallOverloaded",
+	} {
+		if relation, ok := edges[impossible]; ok {
+			t.Fatalf("Objective-C bound a C++-only declaration: %s (resolution=%s); all edges: %v", impossible, relation.Resolution, edgeKeys(edges))
 		}
 	}
 }
