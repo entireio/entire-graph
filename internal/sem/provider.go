@@ -8943,6 +8943,12 @@ func signatureNamesQualifiedMethod(signature, container, name string) bool {
 		if start > 0 && isIdentifierByte(signature[start-1]) {
 			continue
 		}
+		// It must also start the owner qualification, not merely a suffix of
+		// one: owner `a::Ledger` must not match `x::a::Ledger`. Whitespace is
+		// legal around `::`, so inspect the trimmed prefix.
+		if strings.HasSuffix(strings.TrimRight(signature[:start], " \t\r\n"), "::") {
+			continue
+		}
 		rest := signature[offset:]
 		matched := true
 		for index, part := range append(ownerParts[1:], name) {

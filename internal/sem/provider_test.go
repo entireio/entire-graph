@@ -18951,6 +18951,7 @@ func TestSignatureNamesQualifiedMethodUsesTokenBoundaries(t *testing.T) {
 		{"full namespace owner", "int a::Ledger::foo(int x)", "a::Ledger", "foo", true},
 		{"nested templated owner", "int a::Outer<T>::Inner<U>::foo(int x)", "a::Outer::Inner", "foo", true},
 		{"different namespace owner", "int b::Ledger::foo(int x)", "a::Ledger", "foo", false},
+		{"owner suffix is not the full owner", "int x::a::Ledger::foo(int x)", "a::Ledger", "foo", false},
 		{"a longer class name is not this class", "int BA::foo(int x)", "A", "foo", false},
 		{"a longer method name is not this method", "int A::foobar(int x)", "A", "foo", false},
 		{"a different class does not match", "int B::foo(int x)", "A", "foo", false},
