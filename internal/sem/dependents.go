@@ -4,15 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
-
-var identifierBoundary = regexp.MustCompile(`[A-Za-z0-9_$]+`)
 
 type referenceIndex map[string]map[string]struct{}
 
@@ -392,12 +389,11 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		// out here — and, crucially, a file with no exact-token occurrence
 		// skips the (far more expensive) tree-sitter parse entirely.
 		relevant := map[string]struct{}{}
-		for _, span := range identifierBoundary.FindAllStringIndex(content, -1) {
-			token := content[span[0]:span[1]]
+		forEachIdentifierToken(content, func(token string) {
 			if _, isName := names[token]; isName {
 				relevant[token] = struct{}{}
 			}
-		}
+		})
 		if len(relevant) == 0 {
 			return scan
 		}
@@ -417,15 +413,14 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			// scans of every block in the repo.
 			self := shortEntityName(entity.Name)
 			entityKey := path + "#" + entity.Kind + ":" + entity.Name
-			for _, span := range identifierBoundary.FindAllStringIndex(block, -1) {
-				token := block[span[0]:span[1]]
+			forEachIdentifierToken(block, func(token string) {
 				if token == self {
-					continue
+					return
 				}
 				if _, isRelevant := relevant[token]; isRelevant {
 					scan.hits = append(scan.hits, referenceHit{token: token, entityKey: entityKey})
 				}
-			}
+			})
 		}
 		return scan
 	}
@@ -645,9 +640,9 @@ func entityBlock(lines []string, entity Entity) string {
 
 func identifiersIn(content string) map[string]struct{} {
 	identifiers := map[string]struct{}{}
-	for _, token := range identifierBoundary.FindAllString(content, -1) {
+	forEachIdentifierToken(content, func(token string) {
 		identifiers[token] = struct{}{}
-	}
+	})
 	return identifiers
 }
 
