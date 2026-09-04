@@ -252,6 +252,11 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
   because this map is both persisted and interpolated into the `FAIR_MODE` exception text
 - `code_md5` — the 16-entry reconstructed-harness map in B9, including the Entra helper and
   dependency lock
+- `implementations` — the resolved path and sha256 of every backend build the run actually
+  executed (`ENTIRE_GRAPH_BIN`, `CMM_BIN`, `GRAPHIFY_PYTHON`, and the git state of
+  `GRAPHIFY_SOURCE`), recorded whether the build came from the env override or from PATH.
+  `code_md5` binds the harness; this binds the thing the harness drives, so a run cannot
+  execute a modified `entire-graph` and still be stamped fair
 - `host`
 
 An audit should never again have to reconstruct a config from launcher scripts.
@@ -310,7 +315,7 @@ c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 041f93a130c1a91d1b81f67622555b8c  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
-f12e0b21cd877cc14b277fcf7b56f425  benchmarks/common/runmeta.py
+b30cbb4284aab56d241d7785f46a81ad  benchmarks/common/runmeta.py
 7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
 4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
 8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py

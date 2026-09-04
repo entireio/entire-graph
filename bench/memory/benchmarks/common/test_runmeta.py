@@ -264,6 +264,66 @@ class EnumSyncTest(unittest.TestCase):
         )
 
 
+class ImplementationProvenanceTest(unittest.TestCase):
+    """FAIR_MODE permits pointing an arm at a different build, and PATH does so
+    with no env var at all. `code_hashes()` covers the harness, not the binary
+    the harness drives, so what actually ran is bound here instead.
+    """
+
+    def setUp(self) -> None:
+        runmeta._DIGEST_CACHE.clear()
+
+    def test_an_overridden_backend_binary_is_bound_by_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            binary = Path(tempdir) / "entire-graph"
+            binary.write_bytes(b"#!/bin/sh\nexit 0\n")
+            with patch.dict("os.environ", {"ENTIRE_GRAPH_BIN": str(binary)}, clear=True):
+                recorded = runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]
+
+            self.assertEqual(recorded["path"], str(binary))
+            self.assertEqual(recorded["source"], "env")
+            self.assertEqual(
+                recorded["digest"],
+                "sha256:" + hashlib.sha256(b"#!/bin/sh\nexit 0\n").hexdigest(),
+            )
+
+    def test_a_different_build_produces_a_different_digest(self) -> None:
+        """Two runs of the 'same' arm are only comparable if this differs."""
+        digests = []
+        for body in (b"build one\n", b"build two\n"):
+            with tempfile.TemporaryDirectory() as tempdir:
+                binary = Path(tempdir) / "entire-graph"
+                binary.write_bytes(body)
+                runmeta._DIGEST_CACHE.clear()
+                with patch.dict("os.environ", {"ENTIRE_GRAPH_BIN": str(binary)}, clear=True):
+                    digests.append(runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]["digest"])
+        self.assertNotEqual(*digests)
+
+    def test_a_path_resolved_binary_is_bound_too(self) -> None:
+        """The override is not the only unbound route; PATH is the default one."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            binary = Path(tempdir) / "entire-graph"
+            binary.write_bytes(b"from PATH\n")
+            with patch.dict("os.environ", {}, clear=True), \
+                    patch.object(runmeta.shutil, "which",
+                                 lambda name: str(binary) if name == "entire-graph" else None):
+                recorded = runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]
+
+        self.assertEqual(recorded["source"], "PATH")
+        self.assertEqual(
+            recorded["digest"], "sha256:" + hashlib.sha256(b"from PATH\n").hexdigest()
+        )
+
+    def test_an_unreadable_binary_is_recorded_as_unreadable(self) -> None:
+        with patch.dict("os.environ", {"ENTIRE_GRAPH_BIN": "/nonexistent/entire-graph"}, clear=True):
+            recorded = runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]
+        self.assertTrue(recorded["digest"].startswith("unreadable:"))
+
+    def test_capture_carries_the_block(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertIn("implementations", runmeta.capture())
+
+
 class FairModeGuardTest(unittest.TestCase):
     """FAIR_MODE=1 is the published-numbers guarantee.
 

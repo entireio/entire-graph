@@ -13,6 +13,7 @@ import hashlib
 import os
 import sys
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -75,6 +76,10 @@ ASYMMETRIC_PREFIXES = ("EG_",)
 # Arm-scoped variables that only say WHERE a backend lives or WHICH arm runs.
 # They cannot change what an arm ingests, retrieves, or says, so they are legal
 # under FAIR_MODE -- `run_locomo.sh` sets several of them on every fair run.
+# The *_BIN / *_SOURCE / *_PYTHON entries do select which build implements an
+# arm, which code_hashes() does not cover; rejecting them would close nothing
+# (PATH selects a build with no env var at all), so implementation_provenance()
+# binds whatever was actually resolved instead.
 SYMMETRIC_ARM_SETTINGS = frozenset({
     "ENTIRE_CORPUS_ROOT",
     "ENTIRE_GRAPH_BIN",
@@ -343,6 +348,62 @@ def _reported_value(name: str, value: str) -> str:
     return _fingerprint(value) if _SECRET_RE.search(name) else value
 
 
+# The executables and source checkouts an arm actually runs. code_hashes()
+# binds the harness, not the thing the harness drives, and SYMMETRIC_ARM_SETTINGS
+# deliberately permits pointing an arm at a different build -- but so does PATH,
+# which no env var records at all. Rejecting the overrides would therefore close
+# nothing; binding what was resolved closes both. Without this a run can execute
+# a modified entire-graph build and still be stamped fair.
+_ARM_EXECUTABLES = {
+    # env override -> the name looked up on PATH when the override is unset
+    "ENTIRE_GRAPH_BIN": "entire-graph",
+    "CMM_BIN": "cmm",
+    "GRAPHIFY_PYTHON": None,
+}
+# Source checkouts an arm imports at run time rather than executing.
+_ARM_SOURCE_DIRS = ("GRAPHIFY_SOURCE",)
+
+_DIGEST_CACHE: dict = {}
+
+
+def _file_digest(path: str) -> str:
+    """sha256 of a file, cached: capture() runs at four metadata sites."""
+    if path not in _DIGEST_CACHE:
+        digest = hashlib.sha256()
+        try:
+            with open(path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    digest.update(chunk)
+            _DIGEST_CACHE[path] = "sha256:" + digest.hexdigest()
+        except OSError as exc:
+            _DIGEST_CACHE[path] = f"unreadable: {type(exc).__name__}"
+    return _DIGEST_CACHE[path]
+
+
+def implementation_provenance() -> dict:
+    """What each arm actually ran: resolved path + content digest.
+
+    Recorded for every arm whose implementation lives outside the harness, so
+    two runs of the "same" arm can be shown to have executed the same build.
+    """
+    out: dict = {}
+    for var, path_name in _ARM_EXECUTABLES.items():
+        resolved = os.environ.get(var) or (shutil.which(path_name) if path_name else None)
+        if not resolved:
+            continue
+        out[var] = {
+            "path": resolved,
+            "source": "env" if os.environ.get(var) else "PATH",
+            "digest": _file_digest(resolved),
+        }
+    for var in _ARM_SOURCE_DIRS:
+        root = os.environ.get(var)
+        if not root:
+            continue
+        out[var] = {"path": root, "source": "env", **git_state(root)}
+    return dict(sorted(out.items()))
+
+
 def asymmetry_report() -> dict:
     """Which arm-asymmetric knobs are active right now."""
     active = {
@@ -386,6 +447,7 @@ def capture(extra: dict | None = None) -> dict:
         "asymmetric_settings_active": asymmetry_report(),
         "fair_mode": os.getenv("FAIR_MODE") == "1",
         "code_md5": code_hashes(),
+        "implementations": implementation_provenance(),
         "git": git_state(),
         "host": os.uname().nodename,
         "argv": redact_argv(),
