@@ -1771,6 +1771,251 @@ fn main() {}
 	}
 }
 
+func TestInventoryOnlyFilesEmitNoCallRelations(t *testing.T) {
+	// An inventory-only filetype gets a single `document` symbol whose block is
+	// the whole file. The generic `name(` call scanner ran over it like any
+	// other symbol body, so a unified diff, a CoffeeScript file or an Arduino
+	// sketch could emit a CALLS edge into an unrelated language's symbol
+	// through the globally-unique-name fallback. docs/language-support.md
+	// promises the opposite: inventory-only coverage is file and document
+	// symbols "without claiming call/type/data-flow analysis", and
+	// `capabilities --json` declares only CONTAINS/DEFINES for these languages.
+	repo := t.TempDir()
+	writeFile(t, repo, "svc/service.go", `package svc
+
+type Stage struct{}
+
+func (s Stage) Advance() int {
+	return 1
+}
+
+func RunPipeline() int {
+	return 1
+}
+`)
+	writeFile(t, repo, "notes/change.patch", `--- a/x
++++ b/x
+@@ -1 +1 @@
+-old
++RunPipeline()
+`)
+	writeFile(t, repo, "sketch/blink.ino", `void loop() {
+  RunPipeline();
+}
+`)
+	// A receiver-shaped call exercises the second CALLS producer
+	// (receiverCallRelations), which is gated separately from the bare-name scan.
+	writeFile(t, repo, "web/app.coffee", `run = -> Stage.Advance()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	languageByID := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		languageByID[symbol.ID] = symbol.Language
+	}
+	inventory := map[string]bool{"Patch": true, "Diff": true, "Arduino": true, "CoffeeScript": true}
+	for _, relation := range snapshot.Relations {
+		switch relation.Type {
+		case "CALLS", "CONSTRUCTS", "ASYNC_CALLS":
+		default:
+			continue
+		}
+		if inventory[languageByID[relation.FromID]] {
+			t.Fatalf("inventory-only %s symbol emitted %s: %s -> %s",
+				languageByID[relation.FromID], relation.Type, relation.FromID, relation.ToID)
+		}
+	}
+	// The semantic side of the same repository is untouched.
+	if !hasSymbolNamed(snapshot.Symbols, "RunPipeline") {
+		t.Fatalf("Go symbol missing: %#v", snapshot.Symbols)
+	}
+}
+
+func TestCapabilityMatrixDeclaresTypeAndFlowRelations(t *testing.T) {
+	// Companion to TestCapabilityMatrixCoversEmittedRelations, which reads the
+	// golden fixtures. Those fixtures do not exercise annotated signatures or
+	// argument forwarding in every semantic language, so ten languages emitted
+	// USES_TYPE / PARAM_TYPE / DATA_FLOWS that `capabilities --json` declared
+	// they could not. AGENTS.md tells agents to feature-detect with that report
+	// before trusting a language, so an under-declaration makes them skip
+	// relations the provider does produce.
+	//
+	// This builds one repository whose files carry the constructs the generic
+	// type and data-flow passes read, and asserts the same invariant directly.
+	repo := t.TempDir()
+	writeFile(t, repo, "clj/core.cljc", `(ns fixture.core)
+
+(defrecord Point [x y])
+
+(defn add [a b] (+ a b))
+
+(defn make-point [x y] (Point. x y))
+
+(defn point-sum [^Point p] (add (:x p) (:y p)))
+`)
+	writeFile(t, repo, "ex/point.ex", `defmodule Fixture.Point do
+  def add(a, b) do
+    a + b
+  end
+
+  def sum(x, y) do
+    add(x, y)
+  end
+end
+`)
+	// The record is named `coord`, not `point`: USES_TYPE resolves signature
+	// identifiers against every type symbol in the repository by short name, so
+	// a record named `point` here was resolving the `point` in this file's R
+	// and Clojure signatures too, crediting those languages with a type edge
+	// that pointed at Erlang.
+	writeFile(t, repo, "erl/fix.erl", `-module(fix).
+-export([sum/1, add/2]).
+
+-record(coord, {x = 0, y = 0}).
+
+add(A, B) ->
+    A + B.
+
+sum(#coord{x = X, y = Y}) ->
+    add(X, Y).
+`)
+	writeFile(t, repo, "fs/Fix.fs", `module Fixture
+
+type Point = { X: int; Y: int }
+
+let add a b = a + b
+
+let sum (p: Point) = add p.X p.Y
+`)
+	writeFile(t, repo, "hs/Fix.hs", `module Fixture where
+
+data Point = Point
+  { px :: Int
+  , py :: Int
+  }
+
+add :: Int -> Int -> Int
+add a b = a + b
+
+pointSum :: Point -> Int
+pointSum p = add (px p) (py p)
+
+main :: IO ()
+main = print (pointSum (Point 1 2))
+`)
+	writeFile(t, repo, "jl/fix.jl", `struct Point
+    x::Int
+    y::Int
+end
+
+function add(a, b)
+    return a + b
+end
+
+function pointsum(p::Point)
+    return add(p.x, p.y)
+end
+`)
+	writeFile(t, repo, "lua/fix.lua", `local function add(a, b)
+  return a + b
+end
+
+local function total(x, y)
+  return add(x, y)
+end
+
+return total
+`)
+	writeFile(t, repo, "objc/Fix.m", `#import <Foundation/Foundation.h>
+
+static NSInteger addValues(NSInteger a, NSInteger b) {
+    return a + b;
+}
+
+static NSInteger total(NSInteger x, NSInteger y) {
+    return addValues(x, y);
+}
+`)
+	writeFile(t, repo, "perl/fix.pl", `use strict;
+use warnings;
+
+sub add {
+    my ($a, $b) = @_;
+    return $a + $b;
+}
+
+sub total {
+    my ($x, $y) = @_;
+    return add($x, $y);
+}
+
+1;
+`)
+	writeFile(t, repo, "r/fix.R", `add <- function(a, b) {
+  a + b
+}
+
+make_point <- function(x, y) {
+  structure(list(x = x, y = y), class = "point")
+}
+
+point_sum <- function(p) {
+  add(p$x, p$y)
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := Capabilities()
+	global := map[string]bool{}
+	for _, relation := range capabilities.HeuristicRelationTypes {
+		global[relation] = true
+	}
+	declared := map[string]map[string]bool{}
+	for language, relations := range capabilities.RelationSupportByLanguage {
+		set := make(map[string]bool, len(relations))
+		for _, relation := range relations {
+			set[relation] = true
+		}
+		declared[language] = set
+	}
+	languageByID := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		languageByID[symbol.ID] = symbol.Language
+	}
+	seen := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		language := languageByID[relation.FromID]
+		if language == "" || global[relation.Type] || declared[language][relation.Type] {
+			continue
+		}
+		key := language + "\x00" + relation.Type
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		t.Errorf("%s emits %s but capabilities declares neither it per-language nor as a global heuristic", language, relation.Type)
+	}
+	// Guard against the assertion passing because nothing was extracted.
+	for _, language := range []string{"Clojure", "Elixir", "Erlang", "F#", "Haskell", "Julia", "Lua", "Objective-C", "Perl", "R"} {
+		found := false
+		for _, symbol := range snapshot.Symbols {
+			if symbol.Language == language {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("fixture produced no %s symbols", language)
+		}
+	}
+}
+
 func TestResourceDependsOnGraph(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "main.tf", `resource "aws_vpc" "main" {
@@ -1798,6 +2043,60 @@ resource "aws_subnet" "web" {
 	}
 	if deps[0][0] != "resource.aws_subnet.web" || deps[0][1] != "resource.aws_vpc.main" {
 		t.Fatalf("unexpected dependency %v", deps[0])
+	}
+}
+
+func TestHCLTopLevelAttributesEmitSymbols(t *testing.T) {
+	// A Terraform variables file (`.tfvars`, `*.auto.tfvars`) is by definition
+	// nothing but top-level attribute assignments: the format rejects blocks.
+	// Extracting only `block` nodes therefore made every .tfvars file in every
+	// repository produce zero symbols and zero relations, silently — the file
+	// was parsed, HCL is advertised as a semantic language, and nothing was
+	// reported as missing. Top-level attributes in hand-written .hcl configs
+	// (Consul/Nomad/Vault `datacenter = "dc1"`) were invisible for the same
+	// reason. Attributes INSIDE a block stay folded into the block symbol.
+	repo := t.TempDir()
+	writeFile(t, repo, "prod.tfvars", `region         = "us-west-2"
+instance_count = 3
+
+tags = {
+  env = "prod"
+}
+`)
+	writeFile(t, repo, "main.tf", `datacenter = "dc1"
+
+resource "aws_s3_bucket" "logs" {
+  bucket = "app-logs"
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		if symbol.Language == "HCL" {
+			got[symbol.FilePath+":"+symbol.Name] = symbol.Kind
+		}
+	}
+	for _, want := range []string{
+		"prod.tfvars:region",
+		"prod.tfvars:instance_count",
+		"prod.tfvars:tags",
+		"main.tf:datacenter",
+	} {
+		if got[want] != "setting" {
+			t.Fatalf("HCL top-level attribute %q not extracted as a setting: %#v", want, got)
+		}
+	}
+	if got["main.tf:logs"] != "block" {
+		t.Fatalf("HCL block symbol regressed: %#v", got)
+	}
+	// A nested attribute is part of its block's body, not a symbol of its own.
+	if _, nested := got["main.tf:bucket"]; nested {
+		t.Fatalf("attribute nested in a block must not be extracted: %#v", got)
 	}
 }
 
@@ -12435,6 +12734,272 @@ end
 	}
 }
 
+func TestJuliaSameContainerMethodCallTargetsFailClosed(t *testing.T) {
+	from := SymbolRecord{ID: "caller", Kind: "method", Name: "caller", FilePath: "src/app.jl", Language: "Julia", ContainerID: "module-a", StartLine: 1, EndLine: 100}
+	target := SymbolRecord{ID: "target", Kind: "method", Name: "target", FilePath: from.FilePath, Language: from.Language, ContainerID: from.ContainerID, StartLine: 110, EndLine: 120}
+
+	tests := []struct {
+		name        string
+		candidates  []SymbolRecord
+		wantID      string
+		wantFound   bool
+		wantBlocked bool
+	}{
+		{name: "unique same-container target", candidates: []SymbolRecord{target}, wantID: target.ID, wantFound: true},
+		{name: "local binding declines fallback", candidates: []SymbolRecord{target}},
+		{name: "sibling module", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.ContainerID = "module-b"; return s }()}},
+		{name: "different file", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.FilePath = "src/other.jl"; return s }()}},
+		{name: "different language", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.Language = "Java"; return s }()}},
+		{name: "type target remains generic", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.Kind = "struct"; return s }()}},
+		{name: "ambiguous overloads", candidates: []SymbolRecord{target, func() SymbolRecord { s := target; s.ID = "target-overload"; return s }()}, wantFound: true},
+		{name: "local declaration blocks resolution", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.Local = true; s.StartLine = 10; s.EndLine = 20; return s }()}, wantFound: true, wantBlocked: true},
+		{name: "nested callable disables fallback", candidates: []SymbolRecord{target, {ID: "inner", Kind: "method", Name: "inner", FilePath: from.FilePath, Language: from.Language, ContainerID: from.ContainerID, Local: true, StartLine: 10, EndLine: 20}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bindings := map[string]struct{}{}
+			if tt.name == "local binding declines fallback" {
+				bindings["target"] = struct{}{}
+			}
+			targets, found, blocked := resolveJuliaSameContainerMethodCallTargets("target", from, tt.candidates, bindings)
+			if found != tt.wantFound || blocked != tt.wantBlocked {
+				t.Fatalf("found, blocked = %v, %v; want %v, %v", found, blocked, tt.wantFound, tt.wantBlocked)
+			}
+			if tt.wantID == "" {
+				if len(targets) != 0 {
+					t.Fatalf("unsafe targets emitted: %#v", targets)
+				}
+				return
+			}
+			if len(targets) != 1 || targets[0].ID != tt.wantID {
+				t.Fatalf("targets = %#v, want only %q", targets, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestJuliaModuleCallResolutionRejectsLocalBindingShadows(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/bindings.jl", `
+module Bound
+helper() = 1
+plain(callback) = (helper = callback; helper())
+function looped(callbacks)
+    for helper in callbacks
+        helper()
+    end
+end
+function caught(callback)
+    try
+        callback()
+    catch helper
+        helper()
+    end
+end
+function lexical(callback)
+    let helper = callback
+        helper()
+    end
+end
+function destructured(callbacks)
+    local (helper::Function, other...) = callbacks
+    helper()
+end
+function closure(callback)
+    map([callback]) do helper
+        helper()
+    end
+end
+function generated(callbacks)
+    [helper() for helper in callbacks]
+end
+function multi_let(callback)
+    let unrelated = callback, helper = callback
+        helper()
+    end
+end
+function multiline_let()
+    let unrelated,
+        helper
+        helper()
+    end
+end
+function commented_let(callback)
+    let #= header comment =# helper = callback
+        helper()
+    end
+end
+function control()
+    unrelated = identity
+    helper()
+end
+function bare_let()
+    let
+        helper
+        helper()
+    end
+end
+function bare_catch()
+    try
+        error()
+    catch
+        helper
+        helper()
+    end
+end
+function inline_let()
+    let; helper; helper(); end
+end
+function inline_catch()
+    try
+    catch; helper; helper(); end
+end
+struct Widget end
+function constructor_control(callback)
+    Widget()
+    let Widget = callback
+        Widget()
+    end
+end
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := symbolByKindAndName(snapshot.Symbols, "method", "Bound.helper")
+	if helper.ID == "" {
+		t.Fatalf("missing Bound.helper: %#v", snapshot.Symbols)
+	}
+	for _, name := range []string{"plain", "looped", "caught", "lexical", "destructured", "closure", "generated", "multi_let", "multiline_let", "commented_let"} {
+		caller := symbolByKindAndName(snapshot.Symbols, "method", "Bound."+name)
+		if caller.ID == "" {
+			t.Fatalf("missing Bound.%s: %#v", name, snapshot.Symbols)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && relation.FromID == caller.ID && relation.ToID == helper.ID {
+				t.Fatalf("local binding in Bound.%s resolved to module helper: %#v", name, relation)
+			}
+		}
+	}
+	for _, name := range []string{"control", "bare_let", "bare_catch", "inline_let", "inline_catch"} {
+		caller := symbolByKindAndName(snapshot.Symbols, "method", "Bound."+name)
+		callsHelper := false
+		for _, relation := range snapshot.Relations {
+			callsHelper = callsHelper || relation.Type == "CALLS" && relation.FromID == caller.ID && relation.ToID == helper.ID
+		}
+		if !callsHelper {
+			t.Fatalf("non-shadowing Bound.%s lost its call to Bound.helper: %#v", name, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+	widget := symbolByKindAndName(snapshot.Symbols, "struct", "Widget")
+	constructorControl := symbolByKindAndName(snapshot.Symbols, "method", "Bound.constructor_control")
+	if widget.ID == "" || constructorControl.ID == "" {
+		t.Fatalf("missing constructor-control symbols: %#v", snapshot.Symbols)
+	}
+	constructsWidget := false
+	for _, relation := range snapshot.Relations {
+		constructsWidget = constructsWidget || relation.Type == "CONSTRUCTS" && relation.FromID == constructorControl.ID && relation.ToID == widget.ID
+	}
+	if !constructsWidget {
+		t.Fatalf("local-binding veto removed existing constructor resolution: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+	}
+}
+
+func TestJuliaModuleCallResolutionIsContainerScoped(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/scopes.jl", `
+target() = 0
+
+module A
+shared(x::Int) = x
+shared(x::String) = x
+caller() = shared(1)
+end
+
+module B
+only() = 1
+end
+
+module C
+caller() = only()
+end
+
+module D; helper() = 1; function f(); helper(); end; end
+
+module E
+target(x) = x
+caller() = target(1)
+end
+
+module F
+struct Widget end
+Widget(x::Int) = Widget()
+caller() = Widget(1)
+end
+
+module G
+shadow() = 0
+function caller()
+    shadow() = 1
+end
+end
+
+module H
+helper() = 1
+function outer()
+    function inner()
+        helper()
+    end
+end
+end
+
+module I
+helper() = 1
+caller(helper) = helper()
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbol := func(kind, name string) SymbolRecord {
+		got := symbolByKindAndName(snapshot.Symbols, kind, name)
+		if got.ID == "" {
+			t.Fatalf("missing %s %s: %#v", kind, name, snapshot.Symbols)
+		}
+		return got
+	}
+	aCaller, cCaller := symbol("method", "A.caller"), symbol("method", "C.caller")
+	dHelper, dF := symbol("method", "D.helper"), symbol("method", "D.f")
+	eTarget, eCaller := symbol("method", "E.target"), symbol("method", "E.caller")
+	fWidget, fCaller := symbol("struct", "Widget"), symbol("method", "F.caller")
+	gCaller, hOuter := symbol("method", "G.caller"), symbol("method", "H.outer")
+	iCaller := symbol("method", "I.caller")
+
+	has := func(relationType string, from, to SymbolRecord) bool {
+		for _, relation := range snapshot.Relations {
+			if relation.Type == relationType && relation.FromID == from.ID && relation.ToID == to.ID {
+				return true
+			}
+		}
+		return false
+	}
+	for _, from := range []SymbolRecord{aCaller, cCaller, dHelper, gCaller, hOuter, iCaller} {
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && relation.FromID == from.ID {
+				t.Fatalf("unsafe Julia CALLS from %s: %#v", from.QualifiedName, relation)
+			}
+		}
+	}
+	if !has("CALLS", dF, dHelper) || !has("CALLS", eCaller, eTarget) {
+		t.Fatalf("missing container-scoped Julia CALLS: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !has("CONSTRUCTS", fCaller, fWidget) {
+		t.Fatalf("existing Julia constructor resolution changed: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+	}
+}
+
 func TestClojureSemanticExtraction(t *testing.T) {
 	// Clojure was promoted from inventory to the semantic tier (vendored
 	// grammar). tree-sitter-clojure only produces generic list_lit nodes, so
@@ -14553,8 +15118,21 @@ func TestObjectiveCMethodFallbackExtractsColonSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshotHasSymbol(snapshot, "invalidateSessionCancelingTasks") {
+	// The method is qualified by its @implementation, exactly as the
+	// tree-sitter walk names it. The recovery scanner used to emit an
+	// unqualified twin instead, so this method existed twice at one source
+	// location; count the records so that cannot come back.
+	if !snapshotHasSymbol(snapshot, "AFURLSessionManager.invalidateSessionCancelingTasks") {
 		t.Fatalf("missing Objective-C colon selector method: %#v", snapshot.Symbols)
+	}
+	records := 0
+	for _, symbol := range snapshot.Symbols {
+		if strings.HasSuffix(symbol.QualifiedName, "invalidateSessionCancelingTasks") {
+			records++
+		}
+	}
+	if records != 1 {
+		t.Fatalf("expected exactly one record for invalidateSessionCancelingTasks, got %d: %#v", records, snapshot.Symbols)
 	}
 }
 
