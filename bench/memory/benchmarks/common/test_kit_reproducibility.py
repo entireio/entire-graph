@@ -25,6 +25,14 @@ from bench.memory.benchmarks.common.entire_client import (
 from bench.memory.benchmarks.common.graphify_client import GraphifyClient
 
 _COMMON = Path(__file__).resolve().parent
+_KIT = _COMMON.parents[1]
+
+# The BM25 exclusion list of `src/mcp/mcp.c::bm25_search`, before and after
+# `patches/0005-cmm-v0.9.0-markdown-sections.patch`. Spelled out here rather
+# than imported from the adapter so that the adapter's build fingerprints are
+# checked against the patch itself, not against a copy of themselves.
+_STOCK_EXCLUSION = b"'File','Folder','Module','Section','Variable','Project'"
+_PATCHED_EXCLUSION = b"'File','Folder','Module','Variable','Project'"
 
 
 def _clean_env(**overrides: str) -> dict:
@@ -102,21 +110,164 @@ class GraphifyRequiredConfigurationTest(unittest.TestCase):
 
 
 class CmmBinaryResolutionTest(unittest.TestCase):
+    """The cmm arm publishes a PATCHED build, so it must never run an unverified one.
+
+    The published row is `cmm (patched, Markdown-Section)`: `patches/0005` drops
+    `'Section'` from the two BM25 exclusion lists in `src/mcp/mcp.c`. The shipped
+    v0.9.0 build retrieves *nothing* on a prose corpus, so resolving a bare name
+    on PATH could attribute a shipped build's score to the patched row -- a
+    silently wrong number, which is the one failure this kit exists to prevent.
+    Every accepted binary is therefore fingerprinted against the build the
+    operator declared, and anything else aborts at construction.
+    """
+
     @staticmethod
-    def _fake_binary(directory: str, name: str = "codebase-memory-mcp") -> str:
+    def _binary(directory: str, marker: bytes, name: str = "codebase-memory-mcp") -> str:
         path = os.path.join(directory, name)
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write("#!/bin/sh\nexit 0\n")
+        with open(path, "wb") as handle:
+            handle.write(b"#!/bin/sh\n# fake cmm build\n# " + marker + b"\nexit 0\n")
         os.chmod(path, 0o755)
         return path
 
-    def test_default_is_a_bare_name_resolved_on_path(self) -> None:
-        self.assertEqual("codebase-memory-mcp", cmm_client._DEFAULT_BIN)
+    def _patched(self, directory: str, name: str = "codebase-memory-mcp") -> str:
+        return self._binary(directory, _PATCHED_EXCLUSION, name)
+
+    def _stock(self, directory: str, name: str = "codebase-memory-mcp") -> str:
+        return self._binary(directory, _STOCK_EXCLUSION, name)
+
+    @staticmethod
+    def _state(tmp: str) -> str:
+        return os.path.join(tmp, "state")
+
+    def test_a_binary_on_path_is_never_selected_implicitly(self) -> None:
+        """Even a perfectly good binary on PATH must be named, not discovered."""
         with tempfile.TemporaryDirectory() as tmp:
-            binary = self._fake_binary(tmp)
+            self._patched(tmp)
             with patch.dict(
                 os.environ,
-                _clean_env(PATH=tmp, CMM_STATE_ROOT=os.path.join(tmp, "state")),
+                _clean_env(PATH=tmp, CMM_STATE_ROOT=self._state(tmp)),
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    CmmClient()
+        self.assertIn("CMM_BIN", str(ctx.exception))
+
+    def test_the_shipped_unpatched_build_is_refused(self) -> None:
+        """The regression: a stock v0.9.0 binary must not score as the patched row."""
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = self._stock(tmp)
+            with patch.dict(
+                os.environ,
+                _clean_env(CMM_BIN=binary, CMM_STATE_ROOT=self._state(tmp)),
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    CmmClient()
+        message = str(ctx.exception)
+        self.assertIn("CMM_UNPATCHED_BINARY", message)
+        self.assertIn("Markdown-Section", message)
+        self.assertIn("CMM_BUILD", message)
+
+    def test_the_patched_build_is_accepted_and_labelled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = self._patched(tmp)
+            with patch.dict(
+                os.environ,
+                _clean_env(CMM_BIN=binary, CMM_STATE_ROOT=self._state(tmp)),
+                clear=True,
+            ):
+                client = CmmClient()
+        self.assertEqual(binary, client.binary)
+        self.assertEqual("patched", client.build)
+
+    def test_a_binary_carrying_neither_fingerprint_is_refused(self) -> None:
+        """An unidentifiable build fails loudly; it never falls back to trusted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = self._binary(tmp, b"some other program entirely")
+            with patch.dict(
+                os.environ,
+                _clean_env(CMM_BIN=binary, CMM_STATE_ROOT=self._state(tmp)),
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    CmmClient()
+        self.assertIn("CMM_UNVERIFIED_BINARY", str(ctx.exception))
+
+    def test_the_shipped_build_runs_only_when_it_is_declared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = self._stock(tmp)
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    CMM_BIN=binary,
+                    CMM_BUILD="stock",
+                    CMM_STATE_ROOT=self._state(tmp),
+                ),
+                clear=True,
+            ):
+                client = CmmClient()
+        self.assertEqual("stock", client.build)
+
+    def test_declaring_the_shipped_build_still_rejects_a_patched_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = self._patched(tmp)
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    CMM_BIN=binary,
+                    CMM_BUILD="stock",
+                    CMM_STATE_ROOT=self._state(tmp),
+                ),
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    CmmClient()
+        self.assertIn("CMM_BUILD", str(ctx.exception))
+
+    def test_an_unknown_build_declaration_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = self._patched(tmp)
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    CMM_BIN=binary,
+                    CMM_BUILD="probably-patched",
+                    CMM_STATE_ROOT=self._state(tmp),
+                ),
+                clear=True,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    CmmClient()
+        self.assertIn("CMM_BUILD", str(ctx.exception))
+
+    def test_the_fingerprint_survives_a_chunk_boundary(self) -> None:
+        """A real binary is megabytes; the scan must not miss a straddling marker."""
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = os.path.join(tmp, "codebase-memory-mcp")
+            marker = _PATCHED_EXCLUSION
+            with open(binary, "wb") as handle:
+                handle.write(b"\x00" * ((1 << 20) - (len(marker) // 2)))
+                handle.write(marker)
+                handle.write(b"\x00" * (1 << 20))
+            os.chmod(binary, 0o755)
+            with patch.dict(
+                os.environ,
+                _clean_env(CMM_BIN=binary, CMM_STATE_ROOT=self._state(tmp)),
+                clear=True,
+            ):
+                client = CmmClient()
+        self.assertEqual("patched", client.build)
+
+    def test_a_named_bare_binary_is_resolved_on_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = self._patched(tmp)
+            with patch.dict(
+                os.environ,
+                _clean_env(
+                    PATH=tmp,
+                    CMM_BIN="codebase-memory-mcp",
+                    CMM_STATE_ROOT=self._state(tmp),
+                ),
                 clear=True,
             ):
                 client = CmmClient()
@@ -126,12 +277,40 @@ class CmmBinaryResolutionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(
                 os.environ,
-                _clean_env(PATH=tmp, CMM_STATE_ROOT=os.path.join(tmp, "state")),
+                _clean_env(
+                    PATH=tmp,
+                    CMM_BIN="codebase-memory-mcp",
+                    CMM_STATE_ROOT=self._state(tmp),
+                ),
                 clear=True,
             ):
                 with self.assertRaises(RuntimeError) as ctx:
                     CmmClient()
         self.assertIn("CMM_BIN", str(ctx.exception))
+
+    def test_the_build_fingerprints_are_the_patch_0005_exclusion_lists(self) -> None:
+        """The fingerprints must track the patch, not the other way round."""
+        patch_text = (
+            _KIT / "patches" / "0005-cmm-v0.9.0-markdown-sections.patch"
+        ).read_text(encoding="utf-8")
+        removed = [
+            line for line in patch_text.splitlines()
+            if line.startswith("-") and not line.startswith("---")
+        ]
+        added = [
+            line for line in patch_text.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        ]
+        self.assertTrue(
+            all(_STOCK_EXCLUSION.decode() in line for line in removed),
+            "patch 0005 no longer removes exactly the shipped exclusion list",
+        )
+        self.assertTrue(
+            any(_PATCHED_EXCLUSION.decode() in line for line in added),
+            "patch 0005 no longer introduces the patched exclusion list",
+        )
+        self.assertEqual(_STOCK_EXCLUSION, cmm_client._STOCK_MARKER)
+        self.assertEqual(_PATCHED_EXCLUSION, cmm_client._PATCHED_MARKER)
 
     def test_explicit_binary_that_does_not_exist_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

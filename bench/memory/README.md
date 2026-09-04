@@ -81,12 +81,17 @@ python3.12 -m venv .venv
 export AZURE_AI_ENDPOINT=... AZURE_AI_API_VERSION=2024-05-01-preview
 
 # 6. Point the non-entire arms at their engine. There is deliberately no
-#    default that resolves on only one machine, so each adapter validates its
-#    configuration at construction and fails with the variable to set.
-#      cmm      CMM_BIN, or `codebase-memory-mcp` on PATH
+#    default -- neither one that resolves on only one machine, nor one that
+#    resolves on PATH -- so each adapter validates its configuration at
+#    construction and fails with the variable to set.
+#      cmm      CMM_BIN (required): the path to a cmm binary, or a bare name to
+#               resolve on PATH. The published row is the PATCHED build, so the
+#               binary is fingerprinted at construction (see 3.3) and the run
+#               aborts unless it is the build CMM_BUILD declares.
+#               CMM_BUILD is `patched` (default) or `stock`.
 #      graphify GRAPHIFY_PYTHON (interpreter with graphify + networkx importable)
 #               and GRAPHIFY_SOURCE (the graphify checkout added to sys.path)
-export CMM_BIN=...
+export CMM_BIN=/path/to/codebase-memory-mcp   # built with patches/0005
 
 # 7. Run an arm
 bash <path-to-this-dir>/run_locomo.sh cmm
@@ -186,8 +191,24 @@ that drops `'Section'` from that exclusion list in both queries and changes noth
 which also adds an upstream regression test.
 
 **This row must always be labelled `cmm (patched, Markdown-Section)`.** It is not the shipped
-product's score; it is the most charitable version of the product. The unpatched binary remains
-selectable via `CMM_BIN`.
+product's score; it is the most charitable version of the product.
+
+Because the two builds differ only in a string constant and the shipped one scores a structural
+zero, the adapter refuses to run a binary it has not identified. `CMM_BIN` is **required** — there
+is no PATH default, because an implicit lookup would resolve to whichever build happened to be
+installed and publish its score under this row. The binary named by `CMM_BIN` is then fingerprinted
+without being executed: both exclusion lists are adjacent C string literals, so each form survives
+compilation verbatim in the binary's read-only data, and the file is scanned for them.
+
+| resolved binary | `CMM_BUILD` unset / `patched` | `CMM_BUILD=stock` |
+|---|---|---|
+| patched (no `'Section'` in the list) | runs, labelled `patched` | aborts: `CMM_BUILD` mismatch |
+| shipped v0.9.0 (`'Section'` still excluded) | aborts: `CMM_UNPATCHED_BINARY` | runs, labelled `stock` |
+| neither fingerprint found | aborts: `CMM_UNVERIFIED_BINARY` | aborts: `CMM_UNVERIFIED_BINARY` |
+
+There is no fallback in any cell: an unrecognised build aborts rather than have an unknown score
+attributed to the published row. The unpatched binary remains selectable, but only by declaring it
+with `CMM_BUILD=stock`, which labels the run as the shipped build rather than this one.
 
 ### Why this matters
 
@@ -223,8 +244,9 @@ The defects we found on our own side are listed in `RESULTS.md` §6 and were rem
 
 No adapter default encodes a path from the benchmark host. Engine locations come from the env
 vars documented in each module docstring, and each adapter validates them at construction: `cmm`
-defaults to the bare name `codebase-memory-mcp` resolved on `PATH`, and `graphify` requires
-`GRAPHIFY_PYTHON` and `GRAPHIFY_SOURCE` because it has no discoverable default. The files are
+requires `CMM_BIN` and additionally verifies that the binary it resolves is the build `CMM_BUILD`
+declares, and `graphify` requires `GRAPHIFY_PYTHON` and `GRAPHIFY_SOURCE` because it has no
+discoverable default. The files are
 vendored **verbatim** so that their md5s match the fingerprints recorded in the run artifacts by
 `runmeta.code_hashes()`.
 
