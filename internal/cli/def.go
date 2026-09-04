@@ -611,13 +611,36 @@ func (index *defIndex) groupPartials(matches []sem.SymbolRecord) [][]sem.SymbolR
 // incomplete; merging them is the answer that is wrong.
 func (index *defIndex) sharesMemberOwner(group []sem.SymbolRecord, candidate sem.SymbolRecord) bool {
 	if len(index.membersByOwner[candidate.ID]) == 0 {
-		return declaresPartialType(candidate)
+		// BOTH SIDES must say `partial`. The candidate's own keyword says it is A part; it says
+		// nothing about whether the group already seated is the type it is a part OF. C# and F#
+		// require every part of a partial type to carry the keyword, so a group whose declarations
+		// are all non-partial is a DIFFERENT type that merely shares the name — another namespace,
+		// another assembly, another project in the same graph. Seating an empty part on it produced
+		// one declaration carrying a PARTIAL part from a type it was never split across, and the
+		// ambiguity the caller needed to see disappeared: exactly the failure the memberless rule
+		// above was written to stop, reached from the other side.
+		return declaresPartialType(candidate) && groupDeclaresPartialType(group)
 	}
 	for _, part := range group {
 		for _, member := range index.membersByOwner[part.ID] {
 			if member.symbol.FilePath == candidate.FilePath {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// groupDeclaresPartialType reports whether a group already seated is one a
+// memberless part can join: at least one of its declarations says `partial`.
+//
+// One is enough because a group grows only by this predicate or by shared
+// membership, so a partial declaration anywhere in it is evidence that the group
+// is the split type and not a same-named neighbour.
+func groupDeclaresPartialType(group []sem.SymbolRecord) bool {
+	for _, part := range group {
+		if declaresPartialType(part) {
+			return true
 		}
 	}
 	return false

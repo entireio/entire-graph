@@ -142,7 +142,9 @@ func TestNdjsonSearchSummaryCarriesSignatureTypes(t *testing.T) {
 // invitation to run something else.
 func TestDisambiguationSelectorsQuoteRepositoryControlledValues(t *testing.T) {
 	t.Parallel()
-	selectors := disambiguationSelectors([]neighborEndpoint{
+	// The shell family is passed in rather than taken from the host, because WHICH selectors exist
+	// is a property of the shell the caller pastes into. This subject is the POSIX one.
+	selectors := disambiguationSelectorsFor("linux", []neighborEndpoint{
 		{Name: "State", FilePath: "src/a b.go", StartLine: 12, Kind: "struct"},
 		{Name: "State;id", FilePath: "src/$(id).go", StartLine: 20, Kind: "struct"},
 		{Name: "State", FilePath: "src/plain.go", StartLine: 30, Kind: "struct"},
@@ -276,6 +278,77 @@ func TestIndexLatencyExcludesSourceReaderOpen(t *testing.T) {
 		if outsideIndex < 200 {
 			t.Fatalf("%s: source-reader open was charged to the index (index=%dms total=%dms)",
 				verb, response.IndexLatencyMS, response.TotalLatencyMS)
+		}
+	}
+}
+
+// TestDisambiguationSelectorsDeclineUnquotableValuesOnWindows is the regression for POSIX quoting
+// being emitted to a shell that does not have it.
+//
+// `'` is an ORDINARY CHARACTER to cmd.exe. So `--file 'src/a b.go'` reaches the program as the two
+// arguments `'src/a` and `b.go'` and resolves nothing, and — the half that is not merely cosmetic —
+// `'a&whoami'` still runs `whoami`, because cmd.exe parses `&` before the program ever sees the
+// quotes. The quoting is not just ineffective on Windows, it is a false guarantee about exactly the
+// characters it was added for. PowerShell reads `'` as a quote but disagrees with cmd.exe about the
+// bare spelling, so no single string is right for both.
+//
+// The answer is to withhold the command, not to invent a second dialect: the definition line still
+// carries the file and the line, which is what navigation needs.
+func TestDisambiguationSelectorsDeclineUnquotableValuesOnWindows(t *testing.T) {
+	t.Parallel()
+	definitions := []neighborEndpoint{
+		{Name: "State", FilePath: "src/a b.go", StartLine: 12, Kind: "struct"},
+		{Name: "State&whoami", FilePath: "src/x.go", StartLine: 20, Kind: "struct"},
+		{Name: "O'Brien", FilePath: "src/y.go", StartLine: 25, Kind: "struct"},
+		{Name: "State", FilePath: "src/plain.go", StartLine: 30, Kind: "struct"},
+	}
+	selectors := disambiguationSelectorsFor("windows", definitions)
+	for index, selector := range selectors[:3] {
+		if selector != "" {
+			t.Fatalf("definition %d advertised %q on Windows, where no quoting of %q holds: "+
+				"the command either resolves nothing or executes part of the value",
+				index, selector, definitions[index].Name+" "+definitions[index].FilePath)
+		}
+	}
+	// A value no shell reads as syntax still gets its selector: the common case is unchanged on
+	// every platform, which is what keeps this a decline and not a Windows-wide regression.
+	if !strings.Contains(selectors[3], "--symbol State --file src/plain.go --line 30") {
+		t.Fatalf("an ordinary Windows selector was withheld: %q", selectors[3])
+	}
+	// And the same values keep their POSIX selectors, so the decline is scoped to the shell that
+	// cannot express them rather than applied to everyone.
+	posix := disambiguationSelectorsFor("darwin", definitions)
+	for index, selector := range posix {
+		if selector == "" {
+			t.Fatalf("definition %d lost its POSIX selector: %+v", index, definitions[index])
+		}
+	}
+}
+
+// TestDefKeepsAPartialDeclarationOutOfANonPartialGroup is the regression for the OTHER direction of
+// the memberless-merge rule.
+//
+// The candidate's own `partial` keyword says it is A part; it says nothing about whether the group
+// already seated is the type it is a part of. A non-partial `Config` that sorts first therefore
+// absorbed partial `Config` declarations from another namespace or assembly, and `def` answered with
+// one type carrying PARTIAL parts it was never split across — the confident wrong answer in place of
+// a visible ambiguity, reached from the side the first fix did not cover.
+func TestDefKeepsAPartialDeclarationOutOfANonPartialGroup(t *testing.T) {
+	t.Parallel()
+	snapshot := memberlessTypeSnapshot("C#", "public partial class Config")
+	// src/a sorts first and is NOT partial: a different Config that merely shares the name.
+	snapshot.Symbols[0].Signature = "public class Config"
+	response := buildDefResponse(snapshot, defFlags{Symbol: "Config", MemberLimit: defaultDefMemberLimit})
+	if len(response.Declarations) != 2 {
+		t.Fatalf("a non-partial C# Config absorbed a partial Config from elsewhere: got %d "+
+			"declaration(s), want 2: %+v", len(response.Declarations), response.Declarations)
+	}
+	for _, declaration := range response.Declarations {
+		for _, part := range declaration.Parts {
+			if part.Relation == "PARTIAL" {
+				t.Fatalf("%s:%d was reported as a PARTIAL part of a type it is not part of",
+					part.FilePath, part.StartLine)
+			}
 		}
 	}
 }

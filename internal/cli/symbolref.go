@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -292,6 +293,14 @@ func focusSymbolSpansLine(symbol sem.SymbolRecord, line int) bool {
 // differently-named record on the same line. Accepting the shorthand as input is useful;
 // recommending it is not.
 func disambiguationSelectors(definitions []neighborEndpoint) []string {
+	return disambiguationSelectorsFor(runtime.GOOS, definitions)
+}
+
+// disambiguationSelectorsFor is disambiguationSelectors with the host family passed in, so both
+// shell families can be asserted from one machine — the same reason linkTargetAnchorFor takes one.
+// Which selectors exist is a property of the shell the caller will paste into, and the only signal
+// this process has about that shell is the platform it runs on.
+func disambiguationSelectorsFor(goos string, definitions []neighborEndpoint) []string {
 	named := make(map[string]int, len(definitions))
 	for _, definition := range definitions {
 		named[endpointNamedLocationKey(definition)]++
@@ -303,11 +312,21 @@ func disambiguationSelectors(definitions []neighborEndpoint) []string {
 		}
 		// The selector is printed at the end of a definition's line, so it is a
 		// one-line value like the rest of that line.
+		name, nameOK := shellQuoteArgument(goos, endpointDisplayName(definition))
+		file, fileOK := shellQuoteArgument(goos, definition.FilePath)
+		if !nameOK || !fileOK {
+			// No spelling of this selector is safe to advertise on this shell. The definition is
+			// still listed with its file and line; only the copyable command is withheld.
+			continue
+		}
 		selector := fmt.Sprintf("--symbol %s --file %s --line %d",
-			termsafe.Line(shellQuoteArgument(endpointDisplayName(definition))),
-			termsafe.Line(shellQuoteArgument(definition.FilePath)), definition.StartLine)
+			termsafe.Line(name), termsafe.Line(file), definition.StartLine)
 		if named[endpointNamedLocationKey(definition)] > 1 && definition.Kind != "" {
-			selector += " --kind " + termsafe.Line(shellQuoteArgument(definition.Kind))
+			kind, kindOK := shellQuoteArgument(goos, definition.Kind)
+			if !kindOK {
+				continue
+			}
+			selector += " --kind " + termsafe.Line(kind)
 		}
 		selectors[index] = selector
 	}
@@ -315,7 +334,8 @@ func disambiguationSelectors(definitions []neighborEndpoint) []string {
 }
 
 // shellQuoteArgument renders one argument so that a shell hands it to the
-// command as the single word it is meant to be.
+// command as the single word it is meant to be, and reports whether a spelling
+// exists at all on the named platform.
 //
 // The selectors above are advertised as a command to COPY, and every value in
 // them is repository-controlled: a symbol name and a tracked file path. Spaces
@@ -325,15 +345,48 @@ func disambiguationSelectors(definitions []neighborEndpoint) []string {
 // happens here, at the point that composes the command line, rather than being
 // left to whoever copies it.
 //
-// Single quotes are the POSIX form that suppresses every expansion; an embedded
-// single quote is closed, escaped and reopened. A value made only of characters
-// no shell treats specially is emitted unquoted, so the ordinary selector reads
-// exactly as it did before.
-func shellQuoteArgument(value string) string {
-	if value == "" {
-		return "''"
+// A value made only of characters no shell treats specially is emitted
+// unquoted, on every platform, so the ordinary selector reads exactly as it did
+// before. That is the overwhelming majority of symbol names and tracked paths.
+//
+// WHERE QUOTING IS AVAILABLE, and where it is not. Single quotes are the POSIX
+// form that suppresses every expansion; an embedded single quote is closed,
+// escaped and reopened. On Windows there is no counterpart to reach for. `'` is
+// an ORDINARY CHARACTER to cmd.exe, so `'a&b'` still runs `b` — the quoting is
+// not merely ineffective there, it is a false guarantee about the exact
+// characters that motivated it — while PowerShell does read `'` as a quote and
+// therefore mis-parses the bare spelling cmd.exe needs. The two Windows shells
+// disagree with each other as well as with POSIX, so one emitted string cannot
+// be right for both, and this process cannot know which one the reader will
+// paste into.
+//
+// So on Windows the answer is NO SELECTOR rather than a second dialect: false
+// is returned and the caller withholds the command. That is the incomplete
+// answer, not the wrong one — the definition is still listed with its file and
+// line, which is what navigation actually needs, and nothing is advertised that
+// could misfire or execute. Inventing cmd.exe caret-escaping here would be a
+// guess about the reader's shell on the one code path whose whole purpose is to
+// stop repository-controlled text from being run.
+func shellQuoteArgument(goos, value string) (string, bool) {
+	if shellArgumentIsBareWord(value) {
+		return value, true
 	}
-	safe := true
+	if goos == "windows" {
+		return "", false
+	}
+	if value == "" {
+		return "''", true
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'", true
+}
+
+// shellArgumentIsBareWord reports whether a value is made only of characters no
+// shell — POSIX, cmd.exe or PowerShell — reads as syntax, so it can be handed
+// over with no quoting anywhere.
+func shellArgumentIsBareWord(value string) bool {
+	if value == "" {
+		return false
+	}
 	for i := 0; i < len(value); i++ {
 		c := value[i]
 		switch {
@@ -344,16 +397,10 @@ func shellQuoteArgument(value string) string {
 			// as syntax. Quoting it would only make ordinary Unicode identifiers
 			// unreadable.
 		default:
-			safe = false
-		}
-		if !safe {
-			break
+			return false
 		}
 	}
-	if safe {
-		return value
-	}
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+	return true
 }
 
 func endpointLocationKey(endpoint neighborEndpoint) string {
