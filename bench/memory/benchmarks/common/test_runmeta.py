@@ -123,6 +123,22 @@ class RedactArgvTest(unittest.TestCase):
             ["run.py", "--mem0-host", "https://<redacted>@mem0.local/"],
         )
 
+    def test_negative_numbers_survive_as_option_values(self) -> None:
+        """argparse reads `-1` as a value; the artifact must record it as one."""
+        argv = ["run.py", "--seed", "-1", "--max-questions", "-1", "--rpm", "-2.5"]
+        self.assertEqual(runmeta.redact_argv(argv), argv)
+
+    def test_a_negative_number_is_not_a_licence_to_consume_any_token(self) -> None:
+        """Consuming any `-`-leading token as a value would leak this key."""
+        self.assertEqual(
+            runmeta.redact_argv(["run.py", "--top-k", f"--mem0-api-key={FAKE_KEY}"]),
+            ["run.py", "--top-k", "--mem0-api-key=<redacted>"],
+        )
+        self.assertEqual(
+            runmeta.redact_argv(["run.py", "--debug", "-1"]),
+            ["run.py", "--debug", "<redacted>"],
+        )
+
     def test_url_path_segments_are_dropped(self) -> None:
         """A path segment carries a webhook token as readily as a query does."""
         self.assertEqual(

@@ -124,6 +124,13 @@ _ARGV_SAFE_TOGGLES = frozenset({
 _ARGV_SECRET_OPTS = frozenset({"--mem0-api-key"})
 _ARGV_SAFE_OPTS = _ARGV_SAFE_VALUE_OPTS | _ARGV_SAFE_TOGGLES | _ARGV_SECRET_OPTS
 
+# argparse's own `_negative_number_matcher`: a token like `-1` is the *value* of
+# the preceding option, not a new option, so `--seed -1` must survive intact.
+# Deliberately narrow -- consuming any `-`-leading token as a pending value would
+# let `--top-k --mem0-api-key=SECRET` record the credential verbatim, and
+# argparse rejects that command line anyway.
+_NEGATIVE_NUMBER_RE = re.compile(r"-\d+$|-\d*\.\d+$")
+
 
 
 def _scrub_value(value: str) -> str:
@@ -176,6 +183,10 @@ def redact_argv(argv=None) -> list[str]:
     out = [os.path.basename(argv[0])]
     pending_safe_value = False
     for token in argv[1:]:
+        if pending_safe_value and _NEGATIVE_NUMBER_RE.fullmatch(token):
+            out.append(token)
+            pending_safe_value = False
+            continue
         if token.startswith("-") and token not in ("-", "--"):
             name, sep, value = token.partition("=")
             if name not in _ARGV_SAFE_OPTS:
