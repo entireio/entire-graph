@@ -19235,14 +19235,10 @@ func TestFSharpQualifierIsNotBlockedByAnotherLanguagesSameName(t *testing.T) {
 	}
 }
 
-func TestFSharpQualifierKeepsANonFSharpCandidateItsModuleCannotSupply(t *testing.T) {
-	// The other direction, and the reason the qualifier cannot simply delete
-	// every pathless symbol: an F# module name may also name a module of
-	// another language in the same repository. Here module `Codec` supplies
-	// `decode` only, so `Codec.encode` is not module Codec's -- it is the
-	// Python `encode`, which carries no F# module path. A qualifier must keep
-	// the candidates its own module cannot supply and leave them to the
-	// ordinary cross-language resolution.
+func TestFSharpQualifierDoesNotFallBackToAForeignHomonym(t *testing.T) {
+	// `Codec.encode` explicitly names the declared F# module Codec. When that
+	// module lacks encode, the call is unresolved; an unrelated Python encode
+	// with the same terminal name is not a valid fallback.
 	repo := t.TempDir()
 	writeFile(t, repo, "src/Codec.fs", `module Codec =
     let decode (x: int) = x - 1
@@ -19272,8 +19268,8 @@ func TestFSharpQualifierKeepsANonFSharpCandidateItsModuleCannotSupply(t *testing
 			reached[filepath.Base(to.FilePath)] = true
 		}
 	}
-	if want := map[string]bool{"codec.py": true}; !reflect.DeepEqual(reached, want) {
-		t.Errorf("`Codec.encode` from Use.fs reached %v, want %v", sortedKeysOf(reached), sortedKeysOf(want))
+	if len(reached) != 0 {
+		t.Errorf("`Codec.encode` from Use.fs fabricated cross-language targets: %v", sortedKeysOf(reached))
 	}
 }
 

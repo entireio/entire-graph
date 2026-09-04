@@ -3435,43 +3435,20 @@ func fsharpQualifiedScope(symbols []SymbolRecord, qualifier, callerPath string, 
 }
 
 // fsharpNarrowToModule keeps the candidates an F# module qualifier admits.
-// `admits` is asked only about F# symbols; a symbol with no entry in
-// pathBySymbolID belongs to another language and has no F# module path to
-// judge.
-//
-// Those pathless symbols are the whole difficulty, because the candidate set is
-// the project's, not the language's. Keeping them unconditionally -- right in
-// the sense that an F# module qualifier says nothing about another language --
-// left every same-named foreign symbol standing beside the one member the
-// qualifier had just singled out, and resolveCallTargets, seeing two candidates
-// for the name, emitted NO edge: a Python `convert` anywhere in the repository
-// silently cost `A.convert` its edge. Dropping them unconditionally trades that
-// for the opposite loss, because an F# module name is not reserved: with module
-// `Codec` declaring only `decode`, `Codec.encode` is not module Codec's at all
-// and the pathless `encode` is the real target.
-//
-// So the module answers first and the other languages answer only if it cannot:
-// where the named module supplies the name, that member IS the call and the
-// foreign homonyms are noise; where it supplies nothing, the qualifier has
-// nothing to say and the candidates go on to the ordinary cross-language
-// resolution untouched. Repositories of one language are unaffected either way
-// -- with no pathless candidate the two branches return the same set.
+// The qualifier has already been checked against the project's declared F#
+// modules before this helper runs. It therefore names that F# module, not an
+// arbitrary same-named symbol from another language. If the module lacks the
+// terminal member, the call is unresolved; falling back to a Python or other
+// pathless homonym fabricates an edge the source never named.
 func fsharpNarrowToModule(symbols []SymbolRecord, pathBySymbolID map[string]string, admits func(path string) bool) []SymbolRecord {
 	scoped := make([]SymbolRecord, 0, len(symbols))
-	var foreign []SymbolRecord
 	for _, symbol := range symbols {
 		path, known := pathBySymbolID[symbol.ID]
-		switch {
-		case !known:
-			foreign = append(foreign, symbol)
-		case admits(path):
+		if known && admits(path) {
 			scoped = append(scoped, symbol)
 		}
 	}
-	if len(scoped) > 0 {
-		return scoped
-	}
-	return foreign
+	return scoped
 }
 
 // fsharpModuleInitBlock returns an F# module's own source with every binding
