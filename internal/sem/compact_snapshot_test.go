@@ -692,3 +692,19 @@ func TestCompactSnapshotSummaryAllowanceIsSpentOnce(t *testing.T) {
 		t.Fatalf("err = %v, want a length refusal", err)
 	}
 }
+
+// The allowance is granted only where a summary is legal, so a malformed file
+// that merely STARTS with the summary prefix is refused on length.
+func TestCompactSnapshotSummaryAllowanceRequiresAHeader(t *testing.T) {
+	requireCompactDecodeError(t, `["m",`+strings.Repeat("x", compactSnapshotRecordLineBytes), "compact snapshot line exceeds")
+}
+
+// Nor is the allowance available once a summary has been read, however that
+// summary was spelled: a line after it is never a legal summary.
+func TestCompactSnapshotSummaryAllowanceStopsAfterTheSummary(t *testing.T) {
+	// Spelled with a space so the prefix peek misses it and the allowance is
+	// still unspent when the oversized line arrives.
+	spelled := `["m" ,{"record_type":"summary"}]`
+	oversized := `["m",` + strings.Repeat("x", compactSnapshotRecordLineBytes)
+	requireCompactDecodeError(t, compactHeaderLine()+spelled+"\n"+oversized+"\n", "compact snapshot line exceeds")
+}

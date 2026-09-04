@@ -1073,7 +1073,11 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 		// unterminated line costs nothing there. The tag is the first thing on
 		// the line, so peeking it decides the limit before a byte is consumed.
 		limit := compactSnapshotRecordLineBytes
-		if !summaryAllowanceSpent {
+		// The prefix comes from the artifact, so it may not be the only thing
+		// standing between a malformed file and the large buffer. Grant the
+		// allowance only where a summary is legal at all — after a validated
+		// header, before any summary — and only once.
+		if seenHeader && !seenSummary && !summaryAllowanceSpent {
 			if head, _ := reader.Peek(len(compactSnapshotSummaryLinePrefix)); string(head) == compactSnapshotSummaryLinePrefix {
 				limit = compactSnapshotSummaryLineBytes
 				summaryAllowanceSpent = true
@@ -1225,10 +1229,11 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 //
 // Measured: 90,000 partial failures encode to 24.4 MB, so a repository that
 // failed on every one of defaultMaxSourceFiles files writes roughly 54 MB. The
-// allowance is an order of magnitude above that, and it is spent AT MOST ONCE
-// per decode — the prefix comes from the artifact, so without that the leading
-// bytes of a truncated file could ask for the large buffer over and over. Peak
-// accumulation is therefore bounded by the two constants together.
+// allowance is an order of magnitude above that. Because the prefix that selects
+// it comes from the artifact, it is granted only where a summary is legal — after
+// a validated header and before any summary — and only once per decode, so the
+// leading bytes of a malformed file cannot ask for the large buffer at all, let
+// alone repeatedly. Peak accumulation is bounded by the two constants together.
 //
 // The residual limit is deliberate and stated rather than removed: an operator
 // who raises ENTIRE_GRAPH_MAX_FILES an order of magnitude past the default can
