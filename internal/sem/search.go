@@ -2277,7 +2277,7 @@ func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, s
 			continue
 		}
 		parsed++
-		defined := parsedSymbolNames(filePath, content)
+		defined := topLevelFunctionNames(filePath, content)
 		for _, handler := range handlers {
 			if placed[handler] || !defined[handler] {
 				continue
@@ -2295,12 +2295,23 @@ func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, s
 	return append(append(make([]string, 0, len(selected)+len(added)), selected...), added...)
 }
 
-// parsedSymbolNames returns the symbol names a file declares, so the bridge can
-// tell the file that DEFINES a handler from the files that merely call it.
-func parsedSymbolNames(path, content string) map[string]bool {
+// topLevelFunctionNames returns the names of the top-level functions a file
+// defines, so the bridge can tell the file that DEFINES a handler from the files
+// that merely call it.
+//
+// It is deliberately narrower than "declares this name anywhere". A registration
+// table names a bare identifier that the runtime dispatches to, which is a
+// top-level function by construction; a method or a nested closure that happens
+// to share the name is a different symbol, and accepting one would mark the
+// handler placed, spend a slot on the wrong file, and hide the real definition
+// that a later path would have supplied.
+func topLevelFunctionNames(path, content string) map[string]bool {
 	entities, _ := (TreeSitterParser{}).Parse(path, content)
 	names := make(map[string]bool, len(entities))
 	for _, entity := range entities {
+		if entity.Kind != "function" || entity.Local {
+			continue
+		}
 		names[entity.Name] = true
 	}
 	return names

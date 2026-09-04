@@ -141,18 +141,51 @@ func TestBridgeRegistrationHandlerFilesPrefersTheDefinition(t *testing.T) {
 	}
 }
 
-// parsedSymbolNames is what separates a definition from a call site.
-func TestParsedSymbolNames(t *testing.T) {
-	defining := parsedSymbolNames("src/t_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+// topLevelFunctionNames is what separates a handler's definition from a call
+// site, and from a method or closure that merely shares its name.
+func TestTopLevelFunctionNames(t *testing.T) {
+	defining := topLevelFunctionNames("src/t_string.go", "package src\n\nfunc getrangeCommand() {}\n")
 	if !defining["getrangeCommand"] {
 		t.Fatalf("definition not reported: %v", defining)
 	}
-	calling := parsedSymbolNames("src/caller.go", "package src\n\nfunc Caller() { getrangeCommand() }\n")
+	calling := topLevelFunctionNames("src/caller.go", "package src\n\nfunc Caller() { getrangeCommand() }\n")
 	if calling["getrangeCommand"] {
 		t.Fatalf("call site reported as a definition: %v", calling)
 	}
 	if !calling["Caller"] {
 		t.Fatalf("caller's own definition missing: %v", calling)
+	}
+	method := topLevelFunctionNames("src/store.go", "package src\n\ntype Store struct{}\n\nfunc (s Store) getrangeCommand() {}\n")
+	if method["getrangeCommand"] {
+		t.Fatalf("method reported as a top-level function: %v", method)
+	}
+	nested := topLevelFunctionNames("src/nested.js", "function outer() {\n  function getrangeCommand() {}\n  return getrangeCommand\n}\n")
+	if nested["getrangeCommand"] {
+		t.Fatalf("nested function reported as top level: %v", nested)
+	}
+}
+
+// A same-named method earlier in path order must not consume the handler's slot
+// and hide the real definition.
+func TestBridgeRegistrationHandlerFilesSkipsSameNamedMethod(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/substr.json": `{"function":"getrangeCommand"}`,
+		"src/aaa_store.go":         "package src\n\ntype Store struct{}\n\nfunc (s Store) getrangeCommand() {}\n",
+		"src/t_string.go":          "package src\n\nfunc getrangeCommand() {}\n",
+	}
+	paths := []string{"src/aaa_store.go", "src/commands/substr.json", "src/t_string.go"}
+	source := sourceContext{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		},
+	}
+
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"}, 4)
+	want := []string{"src/commands/substr.json", "src/t_string.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged = %v, want %v", got, want)
 	}
 }
 

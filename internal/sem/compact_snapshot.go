@@ -10,7 +10,6 @@ import (
 	"fmt"
 	stdhash "hash"
 	"io"
-	"math"
 	"net/url"
 	"sort"
 	"strconv"
@@ -1067,9 +1066,16 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	seenHeader, seenSummary := false, false
 	tolerateSchemaAdditions := false
 	lineNumber := 0
-	fileRecords := 0
 	for {
-		line, readErr := readCompactSnapshotLine(reader, compactSnapshotLineLimit(fileRecords))
+		// Only the summary is unbounded, and only the summary needs to be: every
+		// other line is one record, so the fixed cap that protects against an
+		// unterminated line costs nothing there. The tag is the first thing on
+		// the line, so peeking it decides the limit before a byte is consumed.
+		limit := compactSnapshotRecordLineBytes
+		if head, _ := reader.Peek(len(compactSnapshotSummaryLinePrefix)); string(head) == compactSnapshotSummaryLinePrefix {
+			limit = -1
+		}
+		line, readErr := readCompactSnapshotLine(reader, limit)
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				break
@@ -1165,12 +1171,6 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 			if err != nil {
 				return warnings, fmt.Errorf("compact snapshot line %d: %w", lineNumber, err)
 			}
-			if tag == "f" {
-				// The summary that closes this artifact carries roughly one
-				// entry per admitted file, so the file records are the artifact's
-				// own statement of how large it is entitled to be.
-				fileRecords++
-			}
 			if err := emit(record); err != nil {
 				return warnings, err
 			}
@@ -1205,53 +1205,30 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 	return warnings, nil
 }
 
-// compactSnapshotSummaryBytesPerFile is the per-file allowance in the record
-// line bound. A summary entry is a repository-relative path plus fixed
-// code/severity/effect text; 2 KiB is far above any real one.
-const compactSnapshotSummaryBytesPerFile = 2048
-
-// compactSnapshotLineLimit returns the byte bound for one compact record line,
-// for a decode that has so far seen filesSeen file records. A value of -1 means
-// no bound.
+// compactSnapshotRecordLineBytes bounds every compact line except the summary,
+// and compactSnapshotSummaryLinePrefix is how the summary is recognised before
+// its line is read.
 //
-// A bound is needed because the reader accumulates until a newline, so an
-// arbitrarily long line in a hostile artifact would otherwise be an unbounded
-// allocation before any JSON validation runs. But it cannot be a constant: the
-// encoder writes the entire SnapshotSummary as ONE line, that summary carries
-// roughly an entry per admitted file, and how many files are admitted is a
-// policy the operator sets (ProviderSnapshotOptions.MaxFiles, else
-// ENTIRE_GRAPH_MAX_FILES, else defaultMaxSourceFiles) and may raise or disable.
-// The 16 MiB cap this replaced allowed about 80 bytes per entry at the DEFAULT
-// listing cap — below the encoder's own floor — which is why snapshot-query
-// could not read snapshots this build had just written.
+// The summary is the ONE line whose length is not a property of the format. The
+// encoder writes it as a single JSON value carrying an entry per partial
+// failure, and how many files a snapshot may admit is a policy the operator sets
+// (ProviderSnapshotOptions.MaxFiles, else ENTIRE_GRAPH_MAX_FILES, else
+// defaultMaxSourceFiles) and may raise or disable. Any constant applied there is
+// therefore a decoder that refuses artifacts its own encoder produced — which is
+// exactly the defect this replaced, where a 16 MiB cap left about 80 bytes per
+// entry at the DEFAULT listing cap and snapshot-query failed with
+// "bufio.Scanner: token too long" on snapshots this build had just written. So
+// the summary is read without a length cap; the memory it costs is the memory
+// LoadCompactSnapshot must hold for it anyway.
 //
-// So it is derived, from configuration and from the artifact:
-//
-//   - the listing cap this process resolves, which honours the same env override
-//     the encoder does; and
-//   - the file records already decoded, which is this artifact's own statement of
-//     a larger corpus when it was written with an explicitly larger MaxFiles.
-//
-// A disabled listing cap means the encoder may write a summary of any size, so
-// the bound is disabled too: refusing it would refuse an artifact this build can
-// produce, which is the defect this replaced.
-func compactSnapshotLineLimit(filesSeen int) int {
-	files := resolveMaxSourceFiles(0)
-	if files < 0 {
-		return -1
-	}
-	if filesSeen > files {
-		files = filesSeen
-	}
-	// A listing cap large enough to overflow the multiplication would produce a
-	// zero or negative bound, which readCompactSnapshotLine reads as "no bound" —
-	// turning an absurd configured value into the unbounded allocation this
-	// function exists to prevent. Saturate instead.
-	if files > math.MaxInt/compactSnapshotSummaryBytesPerFile {
-		return math.MaxInt
-	}
-	return compactSnapshotSummaryBytesPerFile * files
-}
+// Every other line is exactly one record — a header, a dictionary update, a
+// file, an external, a symbol, a relation — none of which grows with the corpus.
+// They keep the fixed cap, so an unterminated or garbage line still cannot drive
+// an unbounded allocation before JSON validation runs.
+const (
+	compactSnapshotRecordLineBytes   = 16 * 1024 * 1024
+	compactSnapshotSummaryLinePrefix = `["m",`
+)
 
 // readCompactSnapshotLine returns the next line of a compact snapshot with its
 // line ending removed, and io.EOF once the reader is exhausted. A line longer
