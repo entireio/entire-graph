@@ -1911,7 +1911,7 @@ func preselectSearchFiles(
 	if exactFullPreindex && !options.Worktree && !options.Deep && grepSafe {
 		matches, grepErr := gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
 		if grepErr == nil {
-			selection.files = committedSearchFiles(source.paths, matches, q)
+			selection.files = bridgeRegistrationHandlerFiles(ctx, source, committedSearchFiles(source.paths, matches, q))
 			selection.sparseFiles = append([]string(nil), selection.files...)
 			selection.preselectionBackend = "git-tree-grep"
 			selection.preselectionPasses = 1
@@ -2154,6 +2154,7 @@ func preselectSearchFiles(
 		}
 		selection.preselectionPasses = 1
 	}
+	selection.files = bridgeRegistrationHandlerFiles(ctx, source, selection.files)
 	selection.filesContentRead = contentReads
 	selection.preselectionBackend = "go-content"
 	selection.preselectionFilesExamined = len(scanPaths)
@@ -2171,6 +2172,116 @@ func preselectSearchFiles(
 		selection.gitGrepTreeish = ""
 	}
 	return selection, nil
+}
+
+const (
+	// searchRegistrationBridgeMaxHandlers bounds how many distinct handlers one
+	// preselection will chase, searchRegistrationBridgeMaxFiles how many files it
+	// may add, and searchRegistrationBridgeScanLimit how much of the corpus it
+	// may read looking for them.
+	searchRegistrationBridgeMaxHandlers = 16
+	searchRegistrationBridgeMaxFiles    = 4
+	searchRegistrationBridgeScanLimit   = 50_000
+)
+
+// bridgeRegistrationHandlerFiles adds the source files that define the handlers
+// named by the command tables already in the selection.
+//
+// A command verb reaches its implementation only through a registration table
+// (commands/<verb>.json -> "function": handler); the verb never appears in the
+// handler body. The provider indexes the verb as a searchable ALIAS of the
+// handler symbol, but it can only do that for a handler it parsed, and on a
+// repository above MaxIndexedFiles the selective snapshot is built from these
+// preselected files alone. A query for the verb then matches the JSON table,
+// which is exactly the file that cannot answer it, and the handler is never
+// indexed — so the alias the provider exists to attach can never be attached.
+//
+// The bridge belongs here rather than in the provider: the provider's OnlyFiles
+// scope is the contract that its graph and search's lexical scope describe the
+// SAME files, so widening the corpus inside the provider would silently break
+// it. Widening the selection keeps both sides derived from one list.
+//
+// It is deliberately cheap and rare. Nothing runs unless a selected file is a
+// commands/*.json carrying a "function" field, and the walk stops at the first
+// searchRegistrationBridgeMaxFiles hits, so the MaxIndexedFiles guard on cold
+// selective indexing is exceeded by at most that many files.
+func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, selected []string) []string {
+	if len(selected) == 0 || len(selected) >= len(source.paths) {
+		return selected
+	}
+	aliases := collectRegistrationAliases(selected, source.read)
+	if len(aliases) == 0 {
+		return selected
+	}
+	handlers := make([]string, 0, len(aliases))
+	for handler := range aliases {
+		handlers = append(handlers, handler)
+	}
+	sort.Strings(handlers)
+	if len(handlers) > searchRegistrationBridgeMaxHandlers {
+		handlers = handlers[:searchRegistrationBridgeMaxHandlers]
+	}
+	chosen := make(map[string]bool, len(selected))
+	for _, filePath := range selected {
+		chosen[filePath] = true
+	}
+	var added []string
+	examined := 0
+	for _, filePath := range source.paths {
+		if len(added) >= searchRegistrationBridgeMaxFiles || examined >= searchRegistrationBridgeScanLimit {
+			break
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		if chosen[filePath] || !Supported(filePath) {
+			continue
+		}
+		content, ok := source.read(filePath)
+		if !ok {
+			continue
+		}
+		examined++
+		for _, handler := range handlers {
+			if !containsAppliedIdentifier(content, handler) {
+				continue
+			}
+			chosen[filePath] = true
+			added = append(added, filePath)
+			break
+		}
+	}
+	if len(added) == 0 {
+		return selected
+	}
+	return append(append(make([]string, 0, len(selected)+len(added)), selected...), added...)
+}
+
+// containsAppliedIdentifier reports whether name occurs in content as a whole
+// identifier immediately applied to a parameter list. That is the one shape a
+// handler's definition and its call sites share across the C, Go and JavaScript
+// families that use registration tables, and it excludes the registration table
+// itself, where the handler name is a quoted JSON string.
+func containsAppliedIdentifier(content, name string) bool {
+	if name == "" {
+		return false
+	}
+	for offset := 0; offset <= len(content)-len(name); {
+		at := strings.Index(content[offset:], name)
+		if at < 0 {
+			return false
+		}
+		start := offset + at
+		end := start + len(name)
+		offset = end
+		if start > 0 && isJSIdentifierPart(content[start-1]) {
+			continue
+		}
+		if cursor := skipSpace(content, end); cursor < len(content) && content[cursor] == '(' {
+			return true
+		}
+	}
+	return false
 }
 
 func searchSnapshotMatchesSelection(snapshot ProviderSnapshot, selection searchFileSelection) bool {
