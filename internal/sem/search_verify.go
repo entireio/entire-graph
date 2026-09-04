@@ -1320,6 +1320,39 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 	return []byte(rendered + searchVerifyContractNote)
 }
 
+// composeSearchVerifyExplain pipes a derived VERIFY command through the caller's `explain` filter
+// WITHOUT letting the filter decide the line's exit status.
+//
+// `<test> 2>&1 | <explain>` is a pipeline, and a pipeline's exit status in every POSIX shell is the
+// status of its LAST command. `explain` succeeds at explaining a failure, so the composed line exits
+// 0 on a failing test and any agent or harness that keys on the exit status reads a failed
+// verification as a passing one. That is the severe direction of the error: a verification tool
+// reporting success on a run that actually failed.
+//
+// `set -o pipefail` is NOT the fix here. The emitted line is run by whatever shell the caller has,
+// and the only shell this binary itself invokes is `sh -c` (see runVerifyShell). On Debian-family
+// systems /bin/sh is dash, where `set -o pipefail` is not merely absent but fatal:
+//
+//	$ dash -c 'set -o pipefail; echo REACHED'
+//	dash: 1: set: Illegal option -o pipefail   (exit 2, REACHED never prints)
+//
+// So the status is captured explicitly instead, in pure POSIX: run the test in a command
+// substitution, keep its `$?`, feed the captured output to `explain`, and exit with the status that
+// was kept. The whole thing is wrapped in a subshell so the trailing `exit` ends the wrapper and not
+// an interactive shell the agent pasted it into, and so the subshell's own status IS the test's.
+//
+// The cost is that output is buffered rather than streamed. `explain` reads its input to EOF before
+// it writes anything, so nothing downstream was streaming in the first place.
+func composeSearchVerifyExplain(command, explain string) (composed string, overhead int) {
+	const (
+		prefix = "( o=$("
+		middle = " 2>&1); r=$?; printf '%s\\n' \"$o\" | "
+		suffix = "; exit $r )"
+	)
+	return prefix + command + middle + explain + suffix,
+		len(prefix) + len(middle) + len(suffix) + len(explain)
+}
+
 // filePathToSlash normalizes a repository path for the string handling above. Repository paths are
 // already slash-separated everywhere in this package; this states it at the boundary.
 func filePathToSlash(filePath string) string {

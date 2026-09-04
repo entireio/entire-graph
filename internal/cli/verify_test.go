@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -311,5 +312,202 @@ func TestParseVerifyFlagsRequiresABaseline(t *testing.T) {
 	}
 	if !verifyCompiledCommand("cargo test -p x") || verifyCompiledCommand("pytest -q") {
 		t.Fatal("timeout ecosystem split is wrong")
+	}
+}
+
+// TestVerifySetupFailureStopsTheRun pins the exit code of the SETUP command. runVerifyShell reports a
+// command that ran and failed as (nonzero, nil error), so a caller that keeps only the error learns
+// nothing about a failed install or build. The regression this guards is not cosmetic: the test
+// command then runs against a tree whose dependencies were never built and its results are
+// adjudicated as if setup had worked, which is a confident verdict about the wrong tree.
+func TestVerifySetupFailureStopsTheRun(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "setup.sh", "#!/bin/sh\nexit 3\n")
+	// The test command's ONLY observable effect is this file. Asserting on its absence proves the
+	// command was never launched, rather than proving something about a message.
+	write(t, repo, "run.sh", "#!/bin/sh\n: > ran\necho \"tests/test_a.py::test_x PASSED\"\n")
+	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
+
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+		[]string{"verify", "--repo", repo, "--setup", "sh setup.sh", "--test", "sh run.sh",
+			"--record-baseline", baselinePath})
+	if err == nil {
+		t.Fatalf("a setup command exiting 3 was accepted; output = %q", out.String())
+	}
+	if !strings.Contains(err.Error(), "setup command exited 3") {
+		t.Fatalf("error does not name the setup exit code: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(repo, "ran")); statErr == nil {
+		t.Fatal("the test command ran after setup failed")
+	}
+}
+
+// TestVerifyRefusesAForeignBaseline pins that a baseline is checked against THIS run before it is
+// diffed against it. Nothing in the id diff can tell that two id sets came from different
+// repositories or different test commands, so an unchecked baseline yields an authoritative-looking
+// verdict about nothing.
+func TestVerifyRefusesAForeignBaseline(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "run.sh", "#!/bin/sh\necho \"tests/test_a.py::test_x PASSED\"\n")
+	baselineDir := t.TempDir()
+
+	record := func(path, testCommand string) {
+		t.Helper()
+		var out bytes.Buffer
+		if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+			[]string{"verify", "--repo", repo, "--test", testCommand, "--record-baseline", path}); err != nil {
+			t.Fatalf("record %s: %v", path, err)
+		}
+	}
+	adjudicate := func(path, testCommand string) error {
+		var out bytes.Buffer
+		return Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+			[]string{"verify", "--repo", repo, "--test", testCommand, "--pre-edit-baseline", path})
+	}
+
+	good := filepath.Join(baselineDir, "good.json")
+	record(good, "sh run.sh")
+	if err := adjudicate(good, "sh run.sh"); err != nil {
+		t.Fatalf("a matching baseline was refused: %v", err)
+	}
+
+	// A baseline recorded from a DIFFERENT test command.
+	other := filepath.Join(baselineDir, "other.json")
+	record(other, "sh ./run.sh")
+	if err := adjudicate(other, "sh run.sh"); err == nil {
+		t.Fatal("a baseline from another test command was accepted")
+	} else if !strings.Contains(err.Error(), "test command") {
+		t.Fatalf("error does not name the mismatched test command: %v", err)
+	}
+
+	// A baseline recorded in a DIFFERENT repository, and one written by a future format version.
+	for _, testCase := range []struct {
+		name  string
+		patch func(*verifyBaseline)
+		want  string
+	}{
+		{name: "repo", patch: func(b *verifyBaseline) { b.Repo = filepath.Join(t.TempDir(), "elsewhere") },
+			want: "repository"},
+		{name: "format", patch: func(b *verifyBaseline) { b.FormatVersion = verifyBaselineFormatVersion + 1 },
+			want: "format_version"},
+		{name: "parser", patch: func(b *verifyBaseline) { b.Parser = "cargo test" }, want: "parsed by"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var baseline verifyBaseline
+			content, readErr := os.ReadFile(good)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if unmarshalErr := json.Unmarshal(content, &baseline); unmarshalErr != nil {
+				t.Fatal(unmarshalErr)
+			}
+			testCase.patch(&baseline)
+			encoded, marshalErr := json.Marshal(baseline)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			path := filepath.Join(baselineDir, testCase.name+".json")
+			if writeErr := os.WriteFile(path, encoded, 0o644); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+			err := adjudicate(path, "sh run.sh")
+			if err == nil {
+				t.Fatalf("a baseline with a mismatched %s was accepted", testCase.name)
+			}
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error does not name the mismatch (%s): %v", testCase.want, err)
+			}
+		})
+	}
+}
+
+// TestRenderVerifyVerdictRefusesAnUnexplainedNonzeroExit pins that parsed mode still reads the process
+// exit code. A collection error, a configuration error or a crash after the first test can leave the
+// per-test output entirely green while the runner exits nonzero; adjudicating that as "PASS —
+// verification is complete" is exactly the false PASS this verb exists to prevent.
+func TestRenderVerifyVerdictRefusesAnUnexplainedNonzeroExit(t *testing.T) {
+	t.Parallel()
+	baseline := verifyBaseline{Parser: "pytest", Results: verifyResults{
+		"a::fixed": verifyStatusFail,
+		"a::green": verifyStatusPass,
+	}}
+	current := verifyResults{"a::fixed": verifyStatusPass, "a::green": verifyStatusPass}
+
+	crashed := string(renderVerifyVerdict(verifyVerdictInput{
+		baseline: baseline, current: current, parser: "pytest", parsed: true,
+		exitCode: 2, maxBytes: verifyDefaultMaxBytes,
+	}))
+	if strings.Contains(crashed, "VERDICT: PASS") {
+		t.Fatalf("a nonzero exit with no failing test was adjudicated a PASS:\n%s", crashed)
+	}
+	if !strings.Contains(crashed, "VERDICT: INCOMPLETE") || !strings.Contains(crashed, "exited 2") {
+		t.Fatalf("the unexplained exit is not reported:\n%s", crashed)
+	}
+
+	// EXPLAINED: the same nonzero exit accompanied by a failing test is the runner's normal way of
+	// reporting that failure, and must stay a REGRESSION rather than becoming INCOMPLETE.
+	regressed := string(renderVerifyVerdict(verifyVerdictInput{
+		baseline: baseline, current: verifyResults{"a::fixed": verifyStatusPass, "a::green": verifyStatusFail},
+		parser: "pytest", parsed: true, exitCode: 1, maxBytes: verifyDefaultMaxBytes,
+	}))
+	if !strings.Contains(regressed, "VERDICT: REGRESSION in 1 test: a::green") {
+		t.Fatalf("an explained nonzero exit lost its regression verdict:\n%s", regressed)
+	}
+
+	// A clean exit with a fix is still the complete verification it always was.
+	clean := string(renderVerifyVerdict(verifyVerdictInput{
+		baseline: baseline, current: current, parser: "pytest", parsed: true,
+		exitCode: 0, maxBytes: verifyDefaultMaxBytes,
+	}))
+	if !strings.Contains(clean, "VERDICT: PASS") {
+		t.Fatalf("a clean run stopped being a PASS:\n%s", clean)
+	}
+}
+
+// TestRenderVerifyVerdictReportsDisappearedBaselineTests pins the class the delta loop structurally
+// cannot see: the loop iterates ids in the CURRENT output, so a baseline test the run never reached
+// is silently dropped. A run that prints one newly passing test and then aborts would otherwise be
+// adjudicated "PASS — introduces no regressions" on the strength of a single line.
+func TestRenderVerifyVerdictReportsDisappearedBaselineTests(t *testing.T) {
+	t.Parallel()
+	baseline := verifyBaseline{Parser: "pytest", Results: verifyResults{
+		"a::fixed":     verifyStatusFail,
+		"a::never_ran": verifyStatusPass,
+		"a::also_gone": verifyStatusPass,
+	}}
+	// The run reported ONE test and then stopped. Exit 0 on purpose: the exit code must not be the
+	// only thing standing between this and a PASS.
+	aborted := string(renderVerifyVerdict(verifyVerdictInput{
+		baseline: baseline, current: verifyResults{"a::fixed": verifyStatusPass},
+		parser: "pytest", parsed: true, exitCode: 0, maxBytes: verifyDefaultMaxBytes,
+	}))
+	if strings.Contains(aborted, "VERDICT: PASS") {
+		t.Fatalf("a partial run was adjudicated a PASS:\n%s", aborted)
+	}
+	if !strings.Contains(aborted, "VERDICT: INCOMPLETE") {
+		t.Fatalf("a partial run did not report itself incomplete:\n%s", aborted)
+	}
+	for _, id := range []string{"a::never_ran", "a::also_gone"} {
+		if !strings.Contains(aborted, id) {
+			t.Fatalf("disappeared test %q is not named:\n%s", id, aborted)
+		}
+	}
+	if !strings.Contains(aborted, "NOT RUN") {
+		t.Fatalf("the disappeared class is unlabelled:\n%s", aborted)
+	}
+	// A complete run keeps its old verdict: nothing here fires when every baseline id reported.
+	complete := string(renderVerifyVerdict(verifyVerdictInput{
+		baseline: baseline,
+		current: verifyResults{
+			"a::fixed": verifyStatusPass, "a::never_ran": verifyStatusPass, "a::also_gone": verifyStatusPass,
+		},
+		parser: "pytest", parsed: true, exitCode: 0, maxBytes: verifyDefaultMaxBytes,
+	}))
+	if !strings.Contains(complete, "VERDICT: PASS") {
+		t.Fatalf("a complete run lost its PASS:\n%s", complete)
+	}
+	if strings.Contains(complete, "NOT RUN") {
+		t.Fatalf("a complete run reported a disappeared test:\n%s", complete)
 	}
 }

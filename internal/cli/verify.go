@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,6 +49,11 @@ const (
 	verifyCompiledTimeout    = 900 * time.Second
 	verifyInterpretedTimeout = 300 * time.Second
 )
+
+// verifyBaselineFormatVersion is the on-disk shape this build writes AND the only shape it will
+// adjudicate. A baseline is compared field-by-field against ids the current run produced, so a file
+// this build cannot claim to understand must be refused rather than half-read.
+const verifyBaselineFormatVersion = 1
 
 // verifyBaseline is the on-disk pre-edit record. The format is deliberately boring — a status per id
 // plus provenance — because its only consumer is the diff below and its only job is to still be
@@ -132,7 +138,9 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	if runErr != nil {
 		// A command that could not be LAUNCHED is a different failure from a command that ran and
 		// reported. Saying which is the difference between "fix your invocation" and "fix your code".
-		return fmt.Errorf("verify could not run the test command: %w", runErr)
+		// runVerifyCommands has already said which, so the message is returned as written rather than
+		// re-labelled as a test failure — a setup command that exited nonzero is not a test result.
+		return runErr
 	}
 	results, parser, parsed := parseVerifyOutput(output)
 
@@ -141,6 +149,9 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	}
 	baseline, err := readVerifyBaseline(flags.PreEditBaseline)
 	if err != nil {
+		return err
+	}
+	if err := validateVerifyBaseline(baseline, flags.PreEditBaseline, repo, flags.Test, parser, parsed); err != nil {
 		return err
 	}
 	_, writeErr := opts.Stdout.Write(renderVerifyVerdict(
@@ -161,15 +172,29 @@ func runVerifyCommands(ctx context.Context, repo string, flags verifyFlags) (str
 	}
 	if flags.Setup != "" {
 		setupCtx, cancel := context.WithTimeout(ctx, timeout)
-		_, _, err := runVerifyShell(setupCtx, repo, flags.Setup)
+		_, setupExit, err := runVerifyShell(setupCtx, repo, flags.Setup)
 		cancel()
 		if err != nil {
-			return "", 0, fmt.Errorf("setup command failed to launch: %w", err)
+			return "", 0, fmt.Errorf("verify could not launch the setup command: %w", err)
+		}
+		// runVerifyShell reports a command that RAN and failed as (exit != 0, nil error), so the exit
+		// code is the only evidence setup succeeded. Discarding it lets a failed install or build fall
+		// through to the test command, and the results of a tree whose dependencies were never built
+		// then get adjudicated as if setup had worked — a verdict about the wrong tree. Refuse instead:
+		// a verification tool reporting success on a run that actually failed is the severe outcome.
+		if setupExit != 0 {
+			return "", setupExit, fmt.Errorf(
+				"verify setup command exited %d, so the test command was not run: the tree it would "+
+					"have adjudicated was never prepared", setupExit)
 		}
 	}
 	testCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return runVerifyShell(testCtx, repo, flags.Test)
+	output, exitCode, err := runVerifyShell(testCtx, repo, flags.Test)
+	if err != nil {
+		return "", 0, fmt.Errorf("verify could not run the test command: %w", err)
+	}
+	return output, exitCode, nil
 }
 
 // verifyCompiledCommand reports whether a command belongs to an ecosystem that builds before it tests,
@@ -218,7 +243,7 @@ func writeVerifyBaseline(
 	results verifyResults, parser string, parsed bool, exitCode int,
 ) error {
 	baseline := verifyBaseline{
-		FormatVersion: 1,
+		FormatVersion: verifyBaselineFormatVersion,
 		RecordedAt:    time.Now().UTC().Format(time.RFC3339),
 		Repo:          repo,
 		TestCommand:   flags.Test,
@@ -267,6 +292,58 @@ func readVerifyBaseline(path string) (verifyBaseline, error) {
 		baseline.Results = verifyResults{}
 	}
 	return baseline, nil
+}
+
+// validateVerifyBaseline refuses a baseline that does not describe THIS run.
+//
+// The verdict below is a field-by-field diff of two id sets, and nothing in that diff can tell that
+// the two sets came from different repositories, different test commands or different runners. A
+// baseline recorded elsewhere therefore produces an authoritative-looking PASS or REGRESSION that is
+// about nothing at all: every id the other suite reported reads as a disappeared test, and every id
+// this one reports reads as brand new. Refusing is the only honest answer, and it is refused loudly
+// because the failure mode this verb exists to prevent is a confident verdict on a run that did not
+// happen the way the verdict assumes.
+func validateVerifyBaseline(
+	baseline verifyBaseline, path, repo, testCommand, parser string, parsed bool,
+) error {
+	if baseline.FormatVersion != verifyBaselineFormatVersion {
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s has format_version %d, this build writes %d: re-record it",
+			path, baseline.FormatVersion, verifyBaselineFormatVersion)
+	}
+	if !verifySameRepo(baseline.Repo, repo) {
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s was recorded in repository %q but this run is in %q: "+
+				"a delta between two repositories is not a delta", path, baseline.Repo, repo)
+	}
+	if baseline.TestCommand != testCommand {
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s recorded test command %q but this run ran %q: "+
+				"the two id sets are not comparable", path, baseline.TestCommand, testCommand)
+	}
+	// Parser is checked only when BOTH sides parsed. An exit-code-only baseline is a legitimate,
+	// self-describing degradation that renderVerifyVerdict already handles as coarse mode.
+	if parsed && baseline.Parser != "exit-code-only" && baseline.Parser != parser {
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s was parsed by %q but this run was parsed by %q: "+
+				"ids from two runners do not name the same tests", path, baseline.Parser, parser)
+	}
+	return nil
+}
+
+// verifySameRepo compares two --repo values as locations rather than as strings, so recording with
+// `--repo .` and adjudicating with `--repo /abs/path` is not reported as a different repository.
+// resolveRepo returns the caller's argument verbatim, which is what makes this necessary.
+func verifySameRepo(recorded, current string) bool {
+	if recorded == current {
+		return true
+	}
+	recordedAbs, recordedErr := filepath.Abs(recorded)
+	currentAbs, currentErr := filepath.Abs(current)
+	if recordedErr != nil || currentErr != nil {
+		return false
+	}
+	return filepath.Clean(recordedAbs) == filepath.Clean(currentAbs)
 }
 
 func verifyCountByStatus(results verifyResults) (passed, failed int) {
@@ -326,9 +403,27 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 			stillFailing = append(stillFailing, id)
 		}
 	}
+	// A DISAPPEARED test is the one class the loop above structurally cannot see, because it iterates
+	// only ids the CURRENT run reported. An aborted, crashed or truncated run therefore drops every
+	// baseline id it never reached, and each of those absences reads as "nothing changed" — which is
+	// the single most misleading thing a regression delta can say. Classify them explicitly.
+	var notRun []string
+	for id := range input.baseline.Results {
+		if _, present := input.current[id]; !present {
+			notRun = append(notRun, id)
+		}
+	}
 	sort.Strings(newlyPassing)
 	sort.Strings(newlyFailing)
 	sort.Strings(stillFailing)
+	sort.Strings(notRun)
+
+	// An UNEXPLAINED nonzero exit is a run that failed for a reason the per-test output does not
+	// contain: a collection error, a configuration error, a build failure, a signal. Once any output
+	// parsed, that exit code was the only remaining evidence the run was whole, and ignoring it let a
+	// suite that printed one newly passing test and then died be adjudicated "PASS — verification is
+	// complete". A nonzero exit is EXPLAINED only when the parsed results themselves carry a failure.
+	unexplainedExit := input.exitCode != 0 && !verifyResultsHaveFailure(input.current)
 
 	if len(newlyPassing) > 0 {
 		verifyWriteList(&buffer, "NEWLY PASSING", newlyPassing)
@@ -340,11 +435,25 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 		verifyWriteList(&buffer,
 			"PRE-EXISTING FAILURES (also failing before your edit; not caused by your change)", stillFailing)
 	}
+	if len(notRun) > 0 {
+		verifyWriteList(&buffer,
+			"NOT RUN (in the baseline, absent from this run: aborted, filtered, renamed or deleted)", notRun)
+	}
 
 	switch {
 	case len(newlyFailing) > 0:
 		fmt.Fprintf(&buffer, "VERDICT: REGRESSION in %d test%s: %s\n",
 			len(newlyFailing), pluralSuffix(len(newlyFailing)), verifyJoinIDs(newlyFailing))
+	case len(notRun) > 0:
+		fmt.Fprintf(&buffer,
+			"VERDICT: INCOMPLETE — %d baseline test%s did not report in this run, so no claim "+
+				"about regressions can be made. Verification is NOT complete.\n",
+			len(notRun), pluralSuffix(len(notRun)))
+	case unexplainedExit:
+		fmt.Fprintf(&buffer,
+			"VERDICT: INCOMPLETE — the runner exited %d while every test it reported passed, so it "+
+				"failed for a reason its per-test output does not name. Verification is NOT complete.\n",
+			input.exitCode)
 	case len(newlyPassing) > 0:
 		// The second sentence is a statement about the DELTA, not an instruction: a zero-regression,
 		// at-least-one-fix delta is by construction a complete verification of the change. See the
@@ -355,6 +464,16 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 		buffer.WriteString("VERDICT: NO EFFECT — the target tests behave exactly as before your edit.\n")
 	}
 	return verifyTruncateOutput(buffer.String(), input.maxBytes)
+}
+
+// verifyResultsHaveFailure reports whether the parsed results themselves explain a nonzero exit.
+func verifyResultsHaveFailure(results verifyResults) bool {
+	for _, status := range results {
+		if status != verifyStatusPass {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyWriteList prints one class, capped, with the remainder counted rather than dropped.
