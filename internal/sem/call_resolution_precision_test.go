@@ -569,3 +569,286 @@ def plain():
 `), "the with statement rebound `compute` through a tuple target")
 	})
 }
+
+// pythonScopeCallable is a hand-built function/method record for the scope
+// walker. Its byte range only needs to contain the corresponding definition.
+func pythonScopeCallable(t *testing.T, src, id, kind, header string) SymbolRecord {
+	t.Helper()
+	start := strings.Index(src, header)
+	if start < 0 {
+		t.Fatalf("header %q is not in the fixture", header)
+	}
+	record := SymbolRecord{ID: id, Kind: kind, Language: "Python", FilePath: "app.py"}
+	record.sourceStartByte = start
+	record.sourceEndByte = len(src)
+	return record
+}
+
+func pythonScopeModules(t *testing.T, src string, symbols []SymbolRecord, owner SymbolRecord, name string) []string {
+	t.Helper()
+	scopes := newPythonBareImportScopes(src, symbols)
+	if !scopes.complete {
+		t.Fatalf("scope analysis did not complete for:\n%s", src)
+	}
+	return scopes.importModules(owner, name)
+}
+
+var pythonScopeModule = SymbolRecord{Kind: "file", ID: "file:app.py", FilePath: "app.py"}
+
+func TestPythonDefinitionNameBindsOnlyAfterItsOwnSignature(t *testing.T) {
+	t.Run("a default argument reaches the enclosing import", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+def compute(value=compute()):
+    return value
+`
+		fn := pythonScopeCallable(t, src, "app.py:function:compute", "function", "def compute")
+		if got := pythonScopeModules(t, src, []SymbolRecord{fn}, fn, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("the default runs before `def` rebinds `compute`; got %#v", got)
+		}
+	})
+
+	t.Run("an annotation reaches the enclosing import", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+def compute(value: compute()):
+    return value
+`
+		fn := pythonScopeCallable(t, src, "app.py:function:compute", "function", "def compute")
+		if got := pythonScopeModules(t, src, []SymbolRecord{fn}, fn, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("the annotation runs before `def` rebinds `compute`; got %#v", got)
+		}
+	})
+
+	t.Run("the body is deferred and stays shadowed", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+def compute():
+    return compute()
+`
+		fn := pythonScopeCallable(t, src, "app.py:function:compute", "function", "def compute")
+		if got := pythonScopeModules(t, src, []SymbolRecord{fn}, fn, "compute"); len(got) != 0 {
+			t.Fatalf("a recursive body call runs after the name is bound; got %#v", got)
+		}
+	})
+
+	t.Run("a class base reaches the enclosing import", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute(compute()):
+    pass
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("the base runs before `class` rebinds `compute`; got %#v", got)
+		}
+	})
+
+	t.Run("a class-body statement reaches the enclosing import", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    value = compute()
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("the class body runs before the class name is bound; got %#v", got)
+		}
+	})
+
+	t.Run("a class-body lambda sees the completed class binding", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    thunk = lambda: compute()
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 0 {
+			t.Fatalf("a deferred lambda runs after the class exists; got %#v", got)
+		}
+	})
+
+	t.Run("a class-body generator body sees the completed class binding", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    values = (compute() for _ in ())
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 0 {
+			t.Fatalf("a deferred generator body runs after the class exists; got %#v", got)
+		}
+	})
+
+	t.Run("a class-body generator first iterable is eager", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    values = (value for value in compute())
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("the generator's first iterable reaches the import; got %#v", got)
+		}
+	})
+
+	t.Run("a generator nested in a class-body comprehension sees the completed class binding", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    values = [(compute() for _ in ()) for _ in range(1)]
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 0 {
+			t.Fatalf("a nested deferred generator runs after the class exists; got %#v", got)
+		}
+	})
+
+	t.Run("a class-body list comprehension stays on the pre-class view", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    values = [compute() for _ in ()]
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("an immediate list comprehension reaches the import; got %#v", got)
+		}
+	})
+
+	t.Run("a lambda nested in a class-body comprehension sees the completed class binding", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    values = [lambda: compute() for _ in range(1)]
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 0 {
+			t.Fatalf("a deferred lambda in a comprehension runs after the class exists; got %#v", got)
+		}
+	})
+
+	t.Run("a lambda nested in a class-body comprehension keeps its local binding", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class Holder:
+    values = [lambda: compute() for compute in factories]
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 0 {
+			t.Fatalf("the deferred lambda must capture the comprehension-local name; got %#v", got)
+		}
+	})
+
+	t.Run("a walrus in a class base supersedes an imported same-name binding", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute((compute := list)):
+    value = compute()
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 0 {
+			t.Fatalf("the walrus-bound class base name wins over the import; got %#v", got)
+		}
+	})
+
+	t.Run("a method signature sees the pre-class scope", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    def method(self, value=compute()):
+        return value
+`
+		method := pythonScopeCallable(t, src, "app.py:method:compute.method", "method", "def method")
+		if got := pythonScopeModules(t, src, []SymbolRecord{method}, method, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("a method default runs before the class name is bound; got %#v", got)
+		}
+	})
+
+	t.Run("a method-header list comprehension sees the pre-class scope", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    def method(self, value=[compute() for _ in range(1)]):
+        return value
+`
+		method := pythonScopeCallable(t, src, "app.py:method:compute.method", "method", "def method")
+		if got := pythonScopeModules(t, src, []SymbolRecord{method}, method, "compute"); len(got) != 1 || got[0] != "frobnicate" {
+			t.Fatalf("a method-header comprehension runs before the class name is bound; got %#v", got)
+		}
+	})
+
+	t.Run("a lambda in a method-header comprehension sees the completed class binding", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    def method(self, value=[lambda: compute() for _ in range(1)]):
+        return value
+`
+		method := pythonScopeCallable(t, src, "app.py:method:compute.method", "method", "def method")
+		if got := pythonScopeModules(t, src, []SymbolRecord{method}, method, "compute"); len(got) != 0 {
+			t.Fatalf("the deferred lambda runs after the class exists; got %#v", got)
+		}
+	})
+
+	t.Run("a generator in a method-header comprehension sees the completed class binding", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    def method(self, value=[(compute() for _ in range(1)) for _ in range(1)]):
+        return value
+`
+		method := pythonScopeCallable(t, src, "app.py:method:compute.method", "method", "def method")
+		if got := pythonScopeModules(t, src, []SymbolRecord{method}, method, "compute"); len(got) != 0 {
+			t.Fatalf("the deferred generator runs after the class exists; got %#v", got)
+		}
+	})
+
+	t.Run("a method body sees the completed class binding", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    def method(self):
+        return compute()
+`
+		method := pythonScopeCallable(t, src, "app.py:method:compute.method", "method", "def method")
+		if got := pythonScopeModules(t, src, []SymbolRecord{method}, method, "compute"); len(got) != 0 {
+			t.Fatalf("a method body runs after the class exists; got %#v", got)
+		}
+	})
+
+	t.Run("a class-body call after a same-named method stays shadowed", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class Holder:
+    def compute(self):
+        return 1
+    value = compute()
+`
+		method := pythonScopeCallable(t, src, "app.py:method:Holder.compute", "method", "def compute")
+		if got := pythonScopeModules(t, src, []SymbolRecord{method}, pythonScopeModule, "compute"); len(got) != 0 {
+			t.Fatalf("the class body bound `compute` above this call; got %#v", got)
+		}
+	})
+
+	t.Run("code after a class statement stays shadowed", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+class compute:
+    pass
+
+value = compute()
+`
+		if got := pythonScopeModules(t, src, nil, pythonScopeModule, "compute"); len(got) != 0 {
+			t.Fatalf("the class is bound by the later call; got %#v", got)
+		}
+	})
+
+	t.Run("an enclosing function local still fails closed", func(t *testing.T) {
+		src := `from frobnicate import compute
+
+def outer():
+    def compute(value=compute()):
+        return value
+    return compute
+`
+		outer := pythonScopeCallable(t, src, "app.py:function:outer", "function", "def outer")
+		inner := pythonScopeCallable(t, src, "app.py:function:compute", "function", "def compute")
+		inner.sourceEndByte = strings.Index(src, "    return compute\n")
+		for _, owner := range []SymbolRecord{outer, inner} {
+			if got := pythonScopeModules(t, src, []SymbolRecord{outer, inner}, owner, "compute"); len(got) != 0 {
+				t.Fatalf("`compute` is an unbound local of `outer` there, so %q must not reach the import; got %#v", owner.ID, got)
+			}
+		}
+	})
+}

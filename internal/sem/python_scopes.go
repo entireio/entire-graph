@@ -126,16 +126,28 @@ func (s *pythonBareImportScopes) genericCallAllowed(from SymbolRecord, name stri
 }
 
 type pythonBindingScope struct {
-	owner     string
-	parent    *pythonBindingScope
-	class     bool
-	comp      bool
-	header    bool
-	bindings  map[string][]pythonBindingEvent
-	locals    map[string]bool // function-local declarations shadow enclosing bindings everywhere
-	globals   map[string]bool
-	nonlocals map[string]bool
-	calls     []pythonScopedCall
+	owner string
+	// parent is the scope as code running right now sees it; deferred, set only
+	// on a class scope, is the scope as code that runs later -- the bodies of the
+	// methods defined in it -- sees it. They differ by the class's own name.
+	parent   *pythonBindingScope
+	deferred *pythonBindingScope
+	// deferredParent is used by a comprehension created in a method header:
+	// its eager expressions stay on the pre-class parent, while nested deferred
+	// bodies still need the completed enclosing scope.
+	deferredParent *pythonBindingScope
+	class          bool
+	comp           bool
+	header         bool
+	// hiddenName is one binding this view cannot see at hiddenAt: the definition's
+	// own synthetic event, invisible while its statement is being evaluated.
+	hiddenName string
+	hiddenAt   int
+	bindings   map[string][]pythonBindingEvent
+	locals     map[string]bool // function-local declarations shadow enclosing bindings everywhere
+	globals    map[string]bool
+	nonlocals  map[string]bool
+	calls      []pythonScopedCall
 }
 
 type pythonBindingEvent struct {
@@ -220,11 +232,19 @@ func (s *pythonBindingScope) headerNestedParent() *pythonBindingScope {
 	if s == nil || !s.header {
 		return s
 	}
-	return s.parent.lexicalContainer()
+	parent := s.parent
+	for parent != nil && parent.class {
+		parent = parent.parent
+	}
+	return parent
 }
 
 func (s *pythonBindingScope) lexicalContainer() *pythonBindingScope {
 	for s != nil && s.class {
+		if s.deferred != nil {
+			s = s.deferred
+			continue
+		}
 		s = s.parent
 	}
 	return s
@@ -248,7 +268,11 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 	switch node.Type() {
 	case "function_definition":
 		if scope != nil {
-			scope.addName(w.fieldName(node, "name"), int(node.StartByte()), false)
+			// A `def` does not rebind its own name until the whole statement has
+			// run, so the name starts shadowing at the BODY: defaults and
+			// annotations that call a same-named enclosing symbol still reach it,
+			// while recursive calls in the deferred body resolve to the function.
+			scope.addName(w.fieldName(node, "name"), w.bindingOffset(node, node.ChildByFieldName("body")), false)
 		}
 		matched, ok := w.functionSymbol(node)
 		if ok && scope != nil {
@@ -268,28 +292,36 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 		}
 		return
 	case "class_definition":
-		if scope != nil {
-			scope.addName(w.fieldName(node, "name"), int(node.StartByte()), false)
-		}
 		body := w.targetFieldOrLast(node, "body")
-		for i := 0; i < int(node.NamedChildCount()); i++ {
-			child := node.NamedChild(i)
-			if !samePythonNode(child, body) {
-				w.walk(child, scope, depth+1) // decorators and base expressions
-			}
-		}
-		// Class bindings are isolated, but executable class-body calls retain the
-		// enclosing emitted owner rather than leaking class locals outward.
 		if scope != nil {
-			classScope := newPythonBindingScope(scope.owner, scope)
+			// Bases and executable class-body code run before the class name is
+			// bound. Use a view that hides this definition's event for that code;
+			// deferred method bodies use the completed enclosing scope instead.
+			scope.addName(w.fieldName(node, "name"), int(node.StartByte()), false)
+			pre := scope.preDefinitionView(w.fieldName(node, "name"), int(node.StartByte()))
+			for i := 0; i < int(node.NamedChildCount()); i++ {
+				child := node.NamedChild(i)
+				if !samePythonNode(child, body) {
+					w.walk(child, pre, depth+1) // decorators and base expressions
+				}
+			}
+			w.publish(pre)
+			// Class bindings are isolated, but executable class-body calls retain the
+			// enclosing emitted owner rather than leaking class locals outward.
+			classScope := newPythonBindingScope(scope.owner, pre)
 			classScope.class = true
+			classScope.deferred = scope
 			w.walk(body, classScope, depth+1)
 			w.publish(classScope)
 		}
 		return
 	case "lambda":
 		if scope != nil {
-			child := newPythonBindingScope(scope.owner, scope.headerNestedParent())
+			parent := scope.deferredNestedParent()
+			// A lambda in a class body runs after the class is created, so its
+			// deferred body resolves through the completed enclosing scope rather
+			// than the pre-definition view used by eager class-body code.
+			child := newPythonBindingScope(scope.owner, parent)
 			parameters := node.ChildByFieldName("parameters")
 			if !validNode(parameters) {
 				for i := 0; i < int(node.NamedChildCount()); i++ {
@@ -371,8 +403,18 @@ func (w *pythonScopeWalker) walkComprehension(node *sitter.Node, parent *pythonB
 	if parent == nil {
 		return
 	}
-	child := newPythonBindingScope(parent.owner, parent.headerNestedParent())
+	compParent := parent.headerNestedParent()
+	deferredAmbient := parent.deferredNestedParent()
+	// A generator expression's first iterable is eager, but its remaining
+	// clauses and result are deferred until after the surrounding class exists.
+	if node.Type() == "generator_expression" {
+		compParent = deferredAmbient
+	}
+	child := newPythonBindingScope(parent.owner, compParent)
 	child.comp = true
+	if compParent != deferredAmbient {
+		child.deferredParent = deferredAmbient
+	}
 	var result []*sitter.Node
 	firstIterable := true
 	for i := 0; i < int(node.NamedChildCount()); i++ {
@@ -438,6 +480,16 @@ func (w *pythonScopeWalker) functionScopeForSymbol(node *sitter.Node, parent *py
 	w.addParameters(scope, node.ChildByFieldName("parameters"))
 	w.collectFunctionBindings(node.ChildByFieldName("body"), scope, 0)
 	return scope
+}
+
+// bindingOffset is where a definition's own name starts shadowing the enclosing
+// binding: at its body, because Python evaluates decorators, bases, defaults and
+// annotations first and rebinds the name only once the statement has run.
+func (w *pythonScopeWalker) bindingOffset(node, body *sitter.Node) int {
+	if validNode(body) && body.StartByte() > node.StartByte() {
+		return int(body.StartByte())
+	}
+	return int(node.StartByte())
 }
 
 func (w *pythonScopeWalker) publish(scope *pythonBindingScope) {
@@ -561,8 +613,7 @@ func (s *pythonBindingScope) bindingAt(name string, byteOffset int) []string {
 
 func (s *pythonBindingScope) contextAt(name string, byteOffset int) (pythonImportContext, bool) {
 	for events := s.bindings[name]; len(events) > 0; events = events[:len(events)-1] {
-		if events[len(events)-1].byteOffset <= byteOffset {
-			event := events[len(events)-1]
+		if event := events[len(events)-1]; event.byteOffset <= byteOffset && !s.hides(name, event) {
 			return pythonImportContext{modules: event.modules, member: event.member}, true
 		}
 	}
@@ -571,11 +622,50 @@ func (s *pythonBindingScope) contextAt(name string, byteOffset int) (pythonImpor
 
 func (s *pythonBindingScope) hasBindingAt(name string, byteOffset int) bool {
 	for _, event := range s.bindings[name] {
-		if event.byteOffset <= byteOffset {
+		if event.byteOffset <= byteOffset && !s.hides(name, event) {
 			return true
 		}
 	}
 	return false
+}
+
+// preDefinitionView is the enclosing scope as the parts of a `class` statement
+// that run before it finishes see it. Only the class's own name is hidden, and
+// the bindings map stays shared, so a walrus in a base really does bind out here
+// just as one in a default argument does.
+func (s *pythonBindingScope) preDefinitionView(name string, byteOffset int) *pythonBindingScope {
+	view := *s
+	view.hiddenName = strings.TrimSpace(name)
+	view.hiddenAt = byteOffset
+	view.calls = nil
+	return &view
+}
+
+// hides reports the one binding a pre-definition view cannot see.
+func (s *pythonBindingScope) hides(name string, event pythonBindingEvent) bool {
+	return s.hiddenName != "" && name == s.hiddenName && event.byteOffset == s.hiddenAt
+}
+
+// deferredNestedParent selects the scope visible to a body that runs after the
+// current eager evaluation boundary. Comprehensions retain their bindings while
+// swapping only the class boundary to its completed enclosing parent.
+func (s *pythonBindingScope) deferredNestedParent() *pythonBindingScope {
+	if s == nil {
+		return nil
+	}
+	if s.deferredParent != nil {
+		view := *s
+		view.parent = s.deferredParent
+		view.deferredParent = nil
+		return &view
+	}
+	if s.header {
+		return s.parent.lexicalContainer()
+	}
+	if s.class && s.deferred != nil {
+		return s.deferred
+	}
+	return s
 }
 
 func (s *pythonBindingScope) moduleScope() *pythonBindingScope {
@@ -598,7 +688,7 @@ func (w *pythonScopeWalker) addTarget(scope *pythonBindingScope, node *sitter.No
 		return
 	}
 	if node.Type() == "identifier" {
-		scope.addName(node.Content(w.src), int(node.StartByte()), scope.owner != "")
+		scope.addName(node.Content(w.src), int(node.StartByte()), scope.owner != "" || scope.comp)
 		return
 	}
 	// Assignment targets may be destructured, but an attribute or subscription
