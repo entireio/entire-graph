@@ -18482,6 +18482,124 @@ let run (x: int) = global.Serde.serialize x
 	})
 }
 
+func TestFSharpQualifierShadowedByATupleBinding(t *testing.T) {
+	// Shadow detection recognised only a `let` binding whose pattern was a
+	// single NAME, so a binding that destructured a tuple bound nothing at all.
+	// `let (Json, code) = parse s` puts `Json` in scope exactly as
+	// `let Json = ...` does, but the qualifier below it was still classified by
+	// the project's module declarations alone and `Json.serialize` was pinned to
+	// an unrelated project module named `Json` -- an edge into a definition the
+	// source never wrote, in place of the value the binding leaves in scope.
+	for _, binding := range []struct{ name, pattern string }{
+		{"parenthesised tuple", "(Json, code)"},
+		{"tuple written without parentheses", "Json, code"},
+		{"annotated components", "(Json: JsonConvert, code: int)"},
+		{"single parenthesised name", "(Json)"},
+		{"wildcard beside the binder", "(_, Json)"},
+	} {
+		t.Run(binding.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let `+binding.pattern+` = parse x
+    Json.serialize(x)
+`)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `let %s = ...` reached %v, want %v: a tuple pattern binds each of its names, so the qualifier names the binding and not the project module", binding.pattern, got, want)
+			}
+		})
+	}
+
+	// The opposite direction, which matters more: a name that only LOOKS like a
+	// binder must not shadow. A shadowed qualifier records bare and resolves
+	// unrestricted, so inventing one does not lose a restriction -- it binds
+	// whatever same-name definition sits nearest instead of the module the
+	// source named.
+	for _, declined := range []struct{ name, line string }{
+		// The sub-pattern after a record field's `=` is a pattern position in
+		// the fullest sense: `{ Result = Error }` matches the nullary union
+		// case and binds nothing, and nothing on the line tells it from a
+		// binder.
+		{"record pattern", "let { Result = Json } = parse x"},
+		// A list or array pattern is refutable by construction, so it is never
+		// a plain destructuring of a known shape.
+		{"list pattern", "let [a; Json] = parse x"},
+		{"array pattern", "let [| a; Json |] = parse x"},
+		// `as` binds unambiguously but is not a tuple; it is left for a change
+		// that can state its own evidence.
+		{"as pattern", "let (a, b) as Json = parse x"},
+		// A type annotation is a MENTION, not a binder -- the same rule the
+		// parameter reader states.
+		{"an annotation naming the module", "let (x: Json, y: int) = parse x"},
+		// An operator definition and an active pattern both open with `(` and
+		// bind neither the text inside it nor anything named here.
+		{"operator definition", "let (+.) Json y = Json"},
+	} {
+		t.Run("declined: "+declined.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    `+declined.line+`
+    Json.serialize(x)
+`)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `%s` reached %v, want %v: nothing there is unambiguously a binder, so the qualifier keeps naming the project module", declined.line, got, want)
+			}
+		})
+	}
+
+	t.Run("a tuple binding does not shadow its own initializer", func(t *testing.T) {
+		// A destructured `let` is no more recursive than a single-name one, so
+		// the names it binds are invisible inside the right-hand side that
+		// defines them.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let (Json, code) = (Json.serialize(x), 1)
+    Json
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` inside `let (Json, code) = ...`'s own initializer reached %v, want %v: a destructured binding is not in scope in its own right-hand side", got, want)
+		}
+	})
+
+	t.Run("a tuple binding below the call does not reach it", func(t *testing.T) {
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let first = Json.serialize(x)
+    let (Json, code) = parse x
+    first
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` written ABOVE a tuple binding of `Json` reached %v, want %v: F# scoping is ordered, so a binding below the call is not in scope at it", got, want)
+		}
+	})
+
+	t.Run("a tuple PARAMETER still binds through the header", func(t *testing.T) {
+		// The new pattern reader must not swallow a function header whose
+		// parameter happens to be a tuple: `let run (Json, x) = ...` names a
+		// function and binds its parameters, and that pass still owns it.
+		got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (Json, x) = Json.serialize(x)
+`)
+		if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` under the tuple PARAMETER `(Json, x)` reached %v, want %v: a function header still binds its parameters", got, want)
+		}
+	})
+}
+
 func TestFSharpExplicitLetInBodyIsInsideTheBinding(t *testing.T) {
 	// A non-recursive binding's shadow starts once its initializer has ended,
 	// and that start was rounded up to a whole LINE. `let Json = value in

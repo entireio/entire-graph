@@ -2236,6 +2236,32 @@ func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
 			})
 			continue
 		}
+		// A `let` whose pattern is a TUPLE binds every name in it, and each one
+		// shadows exactly as a single-name binding does: `let (Json, code) =
+		// parse s` names the bound value below it, not the project module
+		// `Json`. Only a single name was recognised, so the whole line bound
+		// nothing and the qualifier was classified by the project's module
+		// declarations alone -- the fabricated-edge direction, into an
+		// unrelated project module named `Json`.
+		//
+		// Their scope is a `let`'s, not a parameter's: the same offside block,
+		// and the same exclusion from the initializer, which is why they are
+		// collected here rather than through the parameter pass. `let rec` does
+		// not apply -- F# admits `rec` only on a binding that names a single
+		// value or function -- so a destructured binding is never recursive.
+		if names := fsharpDestructuringBindingNames(line); len(names) > 0 {
+			fromLine, fromColumn := fsharpBindingScopeStart(lines, index, false)
+			throughLine := fsharpBindingScopeEnd(lines, index)
+			for _, name := range names {
+				bindings = append(bindings, fsharpShadowBinding{
+					name:        name,
+					fromLine:    fromLine,
+					fromColumn:  fromColumn,
+					throughLine: throughLine,
+				})
+			}
+			continue
+		}
 		// A function binding binds its PARAMETERS, and they shadow exactly as a
 		// `let` does: `let run (Json: JsonConvert) x = Json.serialize x` names
 		// the parameter, not the project module `Json`. Their scope is the body
@@ -2383,6 +2409,82 @@ func fsharpLetInBodyColumn(line string) (int, bool) {
 // `in` or `for` from being read as the keyword.
 func fsharpWordByte(character byte) bool {
 	return character == '\'' || isIdentifierByte(character)
+}
+
+// fsharpDestructuringBindingHeadPattern matches the keyword and modifiers that
+// open a `let`/`use` binding, stopping at the pattern it binds. It is the same
+// head fsharpValueBindingPattern reads, minus the single NAME that pattern
+// requires next, so the shapes a name cannot describe are reachable.
+var fsharpDestructuringBindingHeadPattern = regexp.MustCompile(`^[ \t]*(?:let|use)!?[ \t]+(?:(?:rec|inline|mutable|private|internal|public)[ \t]+)*`)
+
+// fsharpDestructuringBindingNames lists the names a `let`/`use` binding whose
+// pattern is a TUPLE binds -- `let (Json, code) = parse s`, and the same
+// pattern written without its parentheses, `let Json, code = parse s`.
+//
+// The admitted set is closed by shape and checked component by component: the
+// pattern must be a single parenthesised group, or a top-level comma-separated
+// list, and EVERY name taken from it must be a plain identifier carrying at
+// most a type annotation. That is the identical rule fsharpParameterGroupBinders
+// already applies to a tuple in PARAMETER position, and it is reused verbatim
+// here, because a parameter and a `let` pattern are the same grammar
+// production: reading a tuple as binders in one and not the other was an
+// inconsistency, not a safety margin.
+//
+// Every other pattern shape is declined, for refinement 4's reason -- a name
+// standing in a pattern position need not be a binder, and binding one that is
+// really a union case un-qualifies calls that legitimately name a module of
+// that name:
+//
+//   - A RECORD pattern (`let { Result = Json } = r`). The name stands after a
+//     field's own `=`, which is a nested pattern position in the fullest sense:
+//     `let { Result = Error } = r` matches the nullary case `Error` and binds
+//     nothing at all, and nothing on the line tells the two apart. The braces
+//     are shared with computation, object and anonymous-record expressions and
+//     the field label may itself be dotted, so the form is not even closed by
+//     its brackets.
+//   - A LIST or ARRAY pattern (`let [a; Json] = xs`, `let [| a; Json |] = xs`).
+//     Same nested pattern position, and the form is refutable by construction,
+//     so it is never a plain destructuring of a known shape.
+//   - A CONS pattern (`let head :: Json = xs`) -- refutable in the same way.
+//   - An `as` pattern (`let (a, b) as Json = pair`) and a union-case
+//     application (`let (Ok Json) = result`), whose binder is unambiguous but
+//     which are not tuples and are left for a change that can state its own
+//     evidence.
+//
+// A pattern spread over several lines is declined too: with no `=` on the line
+// there is no region to read, and the narrow answer keeps the previous
+// classification rather than inventing a shadow.
+func fsharpDestructuringBindingNames(line string) []string {
+	head := fsharpDestructuringBindingHeadPattern.FindString(line)
+	if head == "" {
+		return nil
+	}
+	region, found := fsharpParameterRegion(line[len(head):])
+	if !found {
+		return nil
+	}
+	// A top-level comma is the tuple written without parentheses. Reading it
+	// first keeps `let f (a, b) c = ...` out: that comma sits inside the
+	// parameter's brackets, so the header falls through to the parameter pass
+	// that owns it.
+	if parts := fsharpSplitTopLevel(region, ','); len(parts) > 1 {
+		var names []string
+		for _, part := range parts {
+			if name := fsharpParameterBinderName(part); name != "" {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	// A parenthesised pattern binds only when the parentheses are the WHOLE
+	// region: `let (a, Json) = ...` is a tuple binding, while `let f (a, b) =
+	// ...` names a function and `let (|Even|Odd|) n = ...` an active pattern,
+	// both of which carry text outside the group and belong to other passes.
+	pattern := strings.TrimSpace(region)
+	if !strings.HasPrefix(pattern, "(") || !strings.HasSuffix(pattern, ")") {
+		return nil
+	}
+	return fsharpParameterGroupBinders(pattern)
 }
 
 // fsharpFunctionHeaderPattern matches the head of a `let`/`use` FUNCTION
