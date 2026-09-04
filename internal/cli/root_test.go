@@ -476,7 +476,7 @@ func TestSnapshotCompactNDJSONRoundTripsToNativeRecords(t *testing.T) {
 		t.Fatalf("canonical semantic hash = %s, want %s", got, want)
 	}
 	var decoded []any
-	if err := sem.DecodeCompactSnapshot(bytes.NewReader(compact.Bytes()), func(record any) error {
+	if _, err := sem.DecodeCompactSnapshot(bytes.NewReader(compact.Bytes()), func(record any) error {
 		decoded = append(decoded, record)
 		return nil
 	}); err != nil {

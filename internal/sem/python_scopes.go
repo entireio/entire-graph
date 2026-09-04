@@ -1,0 +1,1020 @@
+package sem
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/python"
+)
+
+// pythonBareImportScopes is a single AST-derived scope view for one Python
+// file. It records whether each callable has at least one bare identifier call
+// that is not shadowed at that call site. The raw FFI import exception consults
+// only this view; ordinary call resolution continues to use its existing rules.
+type pythonBareImportScopes struct {
+	imports        map[string]map[string][][]string
+	module         map[string][][]string
+	contexts       map[string]map[string][]pythonImportContext
+	moduleContexts map[string][]pythonImportContext
+	genericAllowed map[string]map[string]bool
+	moduleGeneric  map[string]bool
+	complete       bool
+}
+
+func newPythonBareImportScopes(ctx context.Context, content string, symbols []SymbolRecord) *pythonBareImportScopes {
+	state := &pythonBareImportScopes{imports: map[string]map[string][][]string{}, module: map[string][][]string{}, contexts: map[string]map[string][]pythonImportContext{}, moduleContexts: map[string][]pythonImportContext{}, genericAllowed: map[string]map[string]bool{}, moduleGeneric: map[string]bool{}}
+	parser := sitter.NewParser()
+	defer parser.Close()
+	parser.SetLanguage(python.GetLanguage())
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	tree, err := parser.ParseCtx(ctx, nil, []byte(content))
+	if err != nil || tree == nil {
+		return state
+	}
+	defer tree.Close()
+	root := tree.RootNode()
+	if !validNode(root) || root.HasError() {
+		return state
+	}
+	walker := pythonScopeWalker{src: []byte(content), symbols: symbols, state: state, complete: true}
+	module := newPythonBindingScope("", nil)
+	walker.walk(root, module, 0)
+	if !walker.complete {
+		return state
+	}
+	walker.publish(module)
+	state.complete = true
+	return state
+}
+
+func (s *pythonBareImportScopes) importModules(from SymbolRecord, name string) []string {
+	sets := s.importModuleSets(from, name)
+	var modules []string
+	for _, set := range sets {
+		modules = append(modules, set...)
+	}
+	return uniqueStrings(modules)
+}
+
+// genericImportModules excludes `import module as local` bindings. They are
+// retained by importModules for the established scope API, but a module object
+// cannot be treated as a bare callable by provider resolution.
+func (s *pythonBareImportScopes) genericImportModules(from SymbolRecord, name string) []string {
+	sets := s.genericImportModuleSets(from, name)
+	var modules []string
+	for _, set := range sets {
+		modules = append(modules, set...)
+	}
+	return uniqueStrings(modules)
+}
+
+func (s *pythonBareImportScopes) importModuleSets(from SymbolRecord, name string) [][]string {
+	if s == nil || !s.complete {
+		return nil
+	}
+	if from.Kind == "file" {
+		return s.module[name]
+	}
+	return s.imports[from.ID][name]
+}
+
+func (s *pythonBareImportScopes) genericImportModuleSets(from SymbolRecord, name string) [][]string {
+	if s == nil || !s.complete {
+		return nil
+	}
+	var contexts []pythonImportContext
+	if from.Kind == "file" {
+		contexts = s.moduleContexts[name]
+	} else {
+		contexts = s.contexts[from.ID][name]
+	}
+	var sets [][]string
+	for _, context := range contexts {
+		if context.member == name {
+			sets = appendModuleSet(sets, context.modules)
+		}
+	}
+	return sets
+}
+
+func (s *pythonBareImportScopes) importContexts(from SymbolRecord, name string) []pythonImportContext {
+	if s == nil || !s.complete {
+		return nil
+	}
+	if from.Kind == "file" {
+		return s.moduleContexts[name]
+	}
+	return s.contexts[from.ID][name]
+}
+
+// genericCallAllowed is true when at least one call for this owner/name can
+// use ordinary bare-name resolution. Alias and module-object bindings are
+// deliberately not generic, while an unbound name or an ordinary `from ...
+// import name` binding is. This union is needed because provider relations are
+// per owner/name rather than per individual call site.
+func (s *pythonBareImportScopes) genericCallAllowed(from SymbolRecord, name string) bool {
+	if s == nil || !s.complete {
+		return true
+	}
+	if from.Kind == "file" {
+		allowed, ok := s.moduleGeneric[name]
+		if !ok {
+			return true
+		}
+		return allowed
+	}
+	allowed, ok := s.genericAllowed[from.ID][name]
+	if !ok {
+		return true
+	}
+	return allowed
+}
+
+type pythonBindingScope struct {
+	owner string
+	// parent is the scope as code running right now sees it; deferred, set only
+	// on a class scope, is the scope as code that runs later -- the bodies of the
+	// methods defined in it -- sees it. They differ by the class's own name.
+	parent   *pythonBindingScope
+	deferred *pythonBindingScope
+	// deferredParent is used by a comprehension created in a method header:
+	// its eager expressions stay on the pre-class parent, while nested deferred
+	// bodies still need the completed enclosing scope.
+	deferredParent *pythonBindingScope
+	class          bool
+	comp           bool
+	header         bool
+	// hiddenName is one binding this view cannot see at hiddenAt: the definition's
+	// own synthetic event, invisible while its statement is being evaluated.
+	hiddenName string
+	hiddenAt   int
+	bindings   map[string][]pythonBindingEvent
+	locals     map[string]bool // function-local declarations shadow enclosing bindings everywhere
+	globals    map[string]bool
+	nonlocals  map[string]bool
+	calls      []pythonScopedCall
+}
+
+type pythonBindingEvent struct {
+	byteOffset int
+	modules    []string // nil = ordinary assignment/declaration
+	member     string   // original member for `from module import member as local`
+}
+
+type pythonImportContext struct {
+	modules []string
+	member  string
+}
+
+type pythonScopedCall struct {
+	name       string
+	byteOffset int
+}
+
+func (s *pythonBindingScope) importModules(name string, byteOffset int) []string {
+	context, ok := s.importContext(name, byteOffset)
+	if !ok {
+		return nil
+	}
+	return context.modules
+}
+
+func (s *pythonBindingScope) importContext(name string, byteOffset int) (pythonImportContext, bool) {
+	if s == nil {
+		return pythonImportContext{}, false
+	}
+	if s.nonlocals[name] {
+		if context, bound := s.contextAt(name, byteOffset); bound {
+			return context, len(context.modules) > 0
+		}
+		return s.lexicalParent().importContext(name, byteOffset)
+	}
+	if s.globals[name] {
+		if context, bound := s.contextAt(name, byteOffset); bound {
+			return context, len(context.modules) > 0
+		}
+		for module := s.parent; module != nil; module = module.parent {
+			if module.parent == nil {
+				context, bound := module.contextAt(name, byteOffset)
+				return context, bound && len(context.modules) > 0
+			}
+		}
+		return pythonImportContext{}, false
+	}
+	if s.locals[name] {
+		context, bound := s.contextAt(name, byteOffset)
+		return context, bound && len(context.modules) > 0
+	}
+	if context, bound := s.contextAt(name, byteOffset); bound {
+		return context, len(context.modules) > 0
+	}
+	if s.header {
+		return s.parent.importContext(name, byteOffset)
+	}
+	return s.lexicalParent().importContext(name, byteOffset)
+}
+
+func newPythonBindingScope(owner string, parent *pythonBindingScope) *pythonBindingScope {
+	return &pythonBindingScope{owner: owner, parent: parent, bindings: map[string][]pythonBindingEvent{}, locals: map[string]bool{}, globals: map[string]bool{}, nonlocals: map[string]bool{}}
+}
+
+func (s *pythonBindingScope) lexicalParent() *pythonBindingScope {
+	if s == nil {
+		return nil
+	}
+	p := s.parent
+	for p != nil && p.class {
+		p = p.parent
+	}
+	return p
+}
+
+// headerNestedParent applies the class-body exception to scopes nested inside a
+// method header. Defaults and eager annotations execute in the class namespace,
+// while a nested lambda and the non-first portions of a comprehension use their
+// ordinary lexical scope and must skip class bindings.
+func (s *pythonBindingScope) headerNestedParent() *pythonBindingScope {
+	if s == nil || !s.header {
+		return s
+	}
+	parent := s.parent
+	for parent != nil && parent.class {
+		parent = parent.parent
+	}
+	return parent
+}
+
+func (s *pythonBindingScope) lexicalContainer() *pythonBindingScope {
+	for s != nil && s.class {
+		if s.deferred != nil {
+			s = s.deferred
+			continue
+		}
+		s = s.parent
+	}
+	return s
+}
+
+type pythonScopeWalker struct {
+	src      []byte
+	symbols  []SymbolRecord
+	state    *pythonBareImportScopes
+	complete bool
+}
+
+func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, depth int) {
+	if !validNode(node) {
+		return
+	}
+	if depth >= maxParseWalkDepth {
+		w.complete = false
+		return
+	}
+	switch node.Type() {
+	case "function_definition":
+		if scope != nil {
+			// A `def` does not rebind its own name until the whole statement has
+			// run, so the name starts shadowing at the BODY: defaults and
+			// annotations that call a same-named enclosing symbol still reach it,
+			// while recursive calls in the deferred body resolve to the function.
+			scope.addName(w.fieldName(node, "name"), w.bindingOffset(node, node.ChildByFieldName("body")), false)
+		}
+		matched, ok := w.functionSymbol(node)
+		if ok && scope != nil {
+			// Defaults and annotations execute while the definition is evaluated,
+			// before the function body scope (and its local declarations) exists.
+			// Attribute their calls to the function while resolving names through
+			// the lexical parent; deliberately skip decorators to retain their
+			// established handling.
+			header := newPythonBindingScope(matched.ID, scope)
+			header.header = true
+			w.walk(node.ChildByFieldName("parameters"), header, depth+1)
+			w.walk(node.ChildByFieldName("return_type"), header, depth+1)
+			w.publish(header)
+			child := w.functionScopeForSymbol(node, scope, matched)
+			w.walk(node.ChildByFieldName("body"), child, depth+1)
+			w.publish(child)
+		}
+		return
+	case "class_definition":
+		body := w.targetFieldOrLast(node, "body")
+		if scope != nil {
+			// Bases and executable class-body code run before the class name is
+			// bound. Use a view that hides this definition's event for that code;
+			// deferred method bodies use the completed enclosing scope instead.
+			scope.addName(w.fieldName(node, "name"), int(node.StartByte()), false)
+			pre := scope.preDefinitionView(w.fieldName(node, "name"), int(node.StartByte()))
+			for i := 0; i < int(node.NamedChildCount()); i++ {
+				child := node.NamedChild(i)
+				if !samePythonNode(child, body) {
+					w.walk(child, pre, depth+1) // decorators and base expressions
+				}
+			}
+			w.publish(pre)
+			// Class bindings are isolated, but executable class-body calls retain the
+			// enclosing emitted owner rather than leaking class locals outward.
+			classScope := newPythonBindingScope(scope.owner, pre)
+			classScope.class = true
+			classScope.deferred = scope
+			w.walk(body, classScope, depth+1)
+			w.publish(classScope)
+		}
+		return
+	case "lambda":
+		if scope != nil {
+			parent := scope.deferredNestedParent()
+			// A lambda in a class body runs after the class is created, so its
+			// deferred body resolves through the completed enclosing scope rather
+			// than the pre-definition view used by eager class-body code.
+			child := newPythonBindingScope(scope.owner, parent)
+			parameters := node.ChildByFieldName("parameters")
+			if !validNode(parameters) {
+				for i := 0; i < int(node.NamedChildCount()); i++ {
+					candidate := node.NamedChild(i)
+					if candidate.Type() == "lambda_parameters" {
+						parameters = candidate
+						break
+					}
+				}
+			}
+			// Defaults are evaluated when the lambda expression itself runs, before
+			// the lambda call frame and its parameters exist. Resolve them through
+			// the eager enclosing scope; only the body is deferred and isolated.
+			body := node.ChildByFieldName("body")
+			for i := 0; i < int(node.NamedChildCount()); i++ {
+				if part := node.NamedChild(i); !samePythonNode(part, body) {
+					w.walk(part, scope, depth+1)
+				}
+			}
+			w.addParameters(child, parameters)
+			w.collectFunctionBindings(body, child, 0)
+			w.walk(body, child, depth+1)
+			w.publish(child)
+		}
+		return
+	case "list_comprehension", "set_comprehension", "dictionary_comprehension", "generator_expression":
+		w.walkComprehension(node, scope, depth+1)
+		return
+	case "call":
+		if scope != nil {
+			fn := node.ChildByFieldName("function")
+			if validNode(fn) && fn.Type() == "identifier" {
+				scope.calls = append(scope.calls, pythonScopedCall{name: fn.Content(w.src), byteOffset: int(fn.StartByte())})
+			}
+		}
+	case "assignment":
+		if scope != nil {
+			// Tree-sitter represents annotations as assignments with a `type`
+			// child. A bare annotation declares a name but does not rebind it.
+			if !validNode(node.ChildByFieldName("type")) || validNode(node.ChildByFieldName("right")) {
+				w.addTargetFrom(scope, node.ChildByFieldName("left"), int(node.EndByte()))
+			}
+		}
+	case "augmented_assignment":
+		if scope != nil {
+			w.addTargetFrom(scope, node.ChildByFieldName("left"), int(node.EndByte()))
+		}
+	case "for_statement":
+		if scope != nil {
+			w.addTargetFrom(scope, w.targetFieldOrFirst(node, "left"), w.bindingOffset(node, node.ChildByFieldName("body")))
+		}
+	case "with_item":
+		if scope != nil {
+			w.addTarget(scope, w.asPatternAlias(node))
+		}
+	case "except_clause", "except_group_clause":
+		if scope != nil {
+			// The exception expression and the handler body are both ordinary
+			// code of this scope, so neither is skipped: the generic child walk
+			// below reaches them exactly like any other statement.
+			w.addTarget(scope, w.asPatternAlias(node))
+		}
+	case "case_clause":
+		if scope != nil {
+			w.walkCaseClause(node, scope, depth)
+		}
+	case "named_expression":
+		if scope != nil {
+			w.addTargetFrom(w.walrusScope(scope), w.targetFieldOrFirst(node, "name"), int(node.EndByte()))
+		}
+	case "delete_statement":
+		if scope != nil {
+			w.addTarget(scope, node.NamedChild(0))
+		}
+	case "global_statement":
+		if scope != nil {
+			w.statementNames(node, scope.globals)
+		}
+	case "nonlocal_statement":
+		if scope != nil {
+			w.statementNames(node, scope.nonlocals)
+		}
+	case "import_statement", "import_from_statement":
+		if scope != nil {
+			for _, binding := range w.importBindings(node) {
+				scope.addImport(binding.name, binding.modules, binding.member, int(node.StartByte()))
+			}
+		}
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		w.walk(node.NamedChild(i), scope, depth+1)
+	}
+}
+
+func samePythonNode(a, b *sitter.Node) bool {
+	return validNode(a) && validNode(b) && a.Type() == b.Type() && a.StartByte() == b.StartByte() && a.EndByte() == b.EndByte()
+}
+
+func (w *pythonScopeWalker) walkCaseClause(node *sitter.Node, scope *pythonBindingScope, depth int) {
+	if scope.owner != "" && !scope.class {
+		return
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		pattern := node.NamedChild(i)
+		if validNode(pattern) && pattern.Type() == "case_pattern" {
+			w.addCaseCaptures(pattern, scope, int(pattern.EndByte()), depth+1)
+			return
+		}
+	}
+}
+
+func (w *pythonScopeWalker) addCaseCaptures(node *sitter.Node, scope *pythonBindingScope, boundFrom, depth int) {
+	if !validNode(node) || depth >= maxParseWalkDepth {
+		if validNode(node) {
+			w.complete = false
+		}
+		return
+	}
+	switch node.Type() {
+	case "identifier":
+		scope.addName(node.Content(w.src), boundFrom, scope.owner != "" || scope.comp)
+	case "dotted_name":
+		if node.NamedChildCount() == 1 {
+			w.addCaseCaptures(node.NamedChild(0), scope, boundFrom, depth+1)
+		}
+	case "case_pattern", "union_pattern", "list_pattern", "tuple_pattern", "as_pattern", "splat_pattern":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			w.addCaseCaptures(node.NamedChild(i), scope, boundFrom, depth+1)
+		}
+	case "class_pattern", "dict_pattern":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			child := node.NamedChild(i)
+			if validNode(child) && (child.Type() == "case_pattern" || child.Type() == "splat_pattern") {
+				w.addCaseCaptures(child, scope, boundFrom, depth+1)
+			}
+		}
+	case "keyword_pattern":
+		for i := 1; i < int(node.NamedChildCount()); i++ {
+			w.addCaseCaptures(node.NamedChild(i), scope, boundFrom, depth+1)
+		}
+	}
+}
+
+func (w *pythonScopeWalker) walkComprehension(node *sitter.Node, parent *pythonBindingScope, depth int) {
+	if parent == nil {
+		return
+	}
+	compParent := parent.headerNestedParent()
+	deferredAmbient := parent.deferredNestedParent()
+	// A generator expression's first iterable is eager, but its remaining
+	// clauses and result are deferred until after the surrounding class exists.
+	if node.Type() == "generator_expression" {
+		compParent = deferredAmbient
+	}
+	child := newPythonBindingScope(parent.owner, compParent)
+	child.comp = true
+	if compParent != deferredAmbient {
+		child.deferredParent = deferredAmbient
+	}
+	var result []*sitter.Node
+	firstIterable := true
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		part := node.NamedChild(i)
+		if part.Type() != "for_in_clause" {
+			result = append(result, part)
+			continue
+		}
+		// Each iterable is evaluated before its own target is bound. Later
+		// clauses and the result expression see that target in the isolated
+		// comprehension scope.
+		if firstIterable {
+			w.walk(part.ChildByFieldName("right"), parent, depth+1)
+			firstIterable = false
+		} else {
+			w.walk(part.ChildByFieldName("right"), child, depth+1)
+		}
+		w.addTarget(child, part.ChildByFieldName("left"))
+		for j := 0; j < int(part.NamedChildCount()); j++ {
+			clause := part.NamedChild(j)
+			if clause != part.ChildByFieldName("left") && clause != part.ChildByFieldName("right") {
+				w.walk(clause, child, depth+1)
+			}
+		}
+	}
+	for _, part := range result {
+		w.walk(part, child, depth+1)
+	}
+	w.publish(child)
+}
+
+func (w *pythonScopeWalker) functionSymbol(node *sitter.Node) (SymbolRecord, bool) {
+	start, end := int(node.StartByte()), int(node.EndByte())
+	var matched SymbolRecord
+	found := false
+	for _, symbol := range w.symbols {
+		if symbol.Kind != "function" && symbol.Kind != "method" {
+			continue
+		}
+		if symbol.sourceStartByte <= start && end <= symbol.sourceEndByte && (!found || symbol.sourceEndByte-symbol.sourceStartByte < matched.sourceEndByte-matched.sourceStartByte) {
+			matched, found = symbol, true
+		}
+	}
+	if !found {
+		name := w.fieldName(node, "name")
+		line := int(node.StartPoint().Row) + 1
+		for _, symbol := range w.symbols {
+			if (symbol.Kind != "function" && symbol.Kind != "method") || symbol.Name != name || symbol.StartLine != line {
+				continue
+			}
+			matched, found = symbol, true
+			break
+		}
+	}
+	if !found {
+		return SymbolRecord{}, false
+	}
+	return matched, true
+}
+
+func (w *pythonScopeWalker) functionScopeForSymbol(node *sitter.Node, parent *pythonBindingScope, matched SymbolRecord) *pythonBindingScope {
+	scope := newPythonBindingScope(matched.ID, parent.lexicalContainer())
+	w.addParameters(scope, node.ChildByFieldName("parameters"))
+	w.collectFunctionBindings(node.ChildByFieldName("body"), scope, 0)
+	return scope
+}
+
+// bindingOffset is where a definition's own name starts shadowing the enclosing
+// binding: at its body, because Python evaluates decorators, bases, defaults and
+// annotations first and rebinds the name only once the statement has run.
+func (w *pythonScopeWalker) bindingOffset(node, body *sitter.Node) int {
+	if validNode(body) && body.StartByte() > node.StartByte() {
+		return int(body.StartByte())
+	}
+	return int(node.StartByte())
+}
+
+func (w *pythonScopeWalker) publish(scope *pythonBindingScope) {
+	for _, call := range scope.calls {
+		context, ok := scope.importContext(call.name, call.byteOffset)
+		generic := !ok && !scope.blocksImport(call.name, call.byteOffset)
+		if ok && context.member == call.name {
+			generic = true
+		}
+		if scope.owner == "" {
+			w.state.moduleGeneric[call.name] = w.state.moduleGeneric[call.name] || generic
+			if ok {
+				w.state.moduleContexts[call.name] = appendPythonImportContext(w.state.moduleContexts[call.name], context)
+				if context.member == call.name || context.member == "" {
+					w.state.module[call.name] = appendModuleSet(w.state.module[call.name], context.modules)
+				}
+			}
+			continue
+		}
+		if w.state.genericAllowed[scope.owner] == nil {
+			w.state.genericAllowed[scope.owner] = map[string]bool{}
+		}
+		w.state.genericAllowed[scope.owner][call.name] = w.state.genericAllowed[scope.owner][call.name] || generic
+		if ok {
+			if w.state.contexts[scope.owner] == nil {
+				w.state.contexts[scope.owner] = map[string][]pythonImportContext{}
+			}
+			w.state.contexts[scope.owner][call.name] = appendPythonImportContext(w.state.contexts[scope.owner][call.name], context)
+			if context.member == call.name || context.member == "" {
+				if w.state.imports[scope.owner] == nil {
+					w.state.imports[scope.owner] = map[string][][]string{}
+				}
+				w.state.imports[scope.owner][call.name] = appendModuleSet(w.state.imports[scope.owner][call.name], context.modules)
+			}
+		}
+	}
+}
+
+func (s *pythonBindingScope) blocksImport(name string, byteOffset int) bool {
+	if s == nil {
+		return false
+	}
+	if s.nonlocals[name] {
+		if context, bound := s.contextAt(name, byteOffset); bound {
+			return len(context.modules) == 0
+		}
+		return s.lexicalParent().blocksImport(name, byteOffset)
+	}
+	if s.globals[name] {
+		if context, bound := s.contextAt(name, byteOffset); bound {
+			return len(context.modules) == 0
+		}
+		return s.moduleScope().blocksImport(name, byteOffset)
+	}
+	if s.locals[name] {
+		context, bound := s.contextAt(name, byteOffset)
+		return !bound || len(context.modules) == 0
+	}
+	if context, bound := s.contextAt(name, byteOffset); bound {
+		// A module-level definition is a real workspace binding (classes in
+		// particular are constructor targets), not a function-local shadow.
+		if s.owner == "" && len(context.modules) == 0 {
+			return false
+		}
+		return len(context.modules) == 0
+	}
+	if s.header {
+		return s.parent.blocksImport(name, byteOffset)
+	}
+	return s.lexicalParent().blocksImport(name, byteOffset)
+}
+
+func appendPythonImportContext(contexts []pythonImportContext, context pythonImportContext) []pythonImportContext {
+	context.modules = uniqueStrings(context.modules)
+	for _, existing := range contexts {
+		if existing.member == context.member && strings.Join(existing.modules, "\x00") == strings.Join(context.modules, "\x00") {
+			return contexts
+		}
+	}
+	return append(contexts, context)
+}
+
+func appendModuleSet(sets [][]string, modules []string) [][]string {
+	modules = uniqueStrings(modules)
+	for _, set := range sets {
+		if len(set) == len(modules) && strings.Join(set, "\x00") == strings.Join(modules, "\x00") {
+			return sets
+		}
+	}
+	return append(sets, modules)
+}
+
+func (s *pythonBindingScope) addName(name string, byteOffset int, local bool) {
+	name = strings.TrimSpace(name)
+	if name != "" {
+		if local {
+			s.locals[name] = true
+		}
+		s.bindings[name] = append(s.bindings[name], pythonBindingEvent{byteOffset: byteOffset})
+	}
+}
+
+func (s *pythonBindingScope) addImport(name string, modules []string, member string, byteOffset int) {
+	name = strings.TrimSpace(name)
+	if name != "" && len(modules) > 0 {
+		s.bindings[name] = append(s.bindings[name], pythonBindingEvent{byteOffset: byteOffset, modules: uniqueStrings(modules), member: member})
+	}
+}
+
+func (w *pythonScopeWalker) walrusScope(scope *pythonBindingScope) *pythonBindingScope {
+	for scope != nil && scope.comp {
+		scope = scope.parent
+	}
+	return scope
+}
+
+func (s *pythonBindingScope) bindingAt(name string, byteOffset int) []string {
+	context, _ := s.contextAt(name, byteOffset)
+	return context.modules
+}
+
+func (s *pythonBindingScope) contextAt(name string, byteOffset int) (pythonImportContext, bool) {
+	for events := s.bindings[name]; len(events) > 0; events = events[:len(events)-1] {
+		if event := events[len(events)-1]; event.byteOffset <= byteOffset && !s.hides(name, event) {
+			return pythonImportContext{modules: event.modules, member: event.member}, true
+		}
+	}
+	return pythonImportContext{}, false
+}
+
+func (s *pythonBindingScope) hasBindingAt(name string, byteOffset int) bool {
+	for _, event := range s.bindings[name] {
+		if event.byteOffset <= byteOffset && !s.hides(name, event) {
+			return true
+		}
+	}
+	return false
+}
+
+// preDefinitionView is the enclosing scope as the parts of a `class` statement
+// that run before it finishes see it. Only the class's own name is hidden, and
+// the bindings map stays shared, so a walrus in a base really does bind out here
+// just as one in a default argument does.
+func (s *pythonBindingScope) preDefinitionView(name string, byteOffset int) *pythonBindingScope {
+	view := *s
+	view.hiddenName = strings.TrimSpace(name)
+	view.hiddenAt = byteOffset
+	view.calls = nil
+	return &view
+}
+
+// hides reports the one binding a pre-definition view cannot see.
+func (s *pythonBindingScope) hides(name string, event pythonBindingEvent) bool {
+	return s.hiddenName != "" && name == s.hiddenName && event.byteOffset == s.hiddenAt
+}
+
+// deferredNestedParent selects the scope visible to a body that runs after the
+// current eager evaluation boundary. Comprehensions retain their bindings while
+// swapping only the class boundary to its completed enclosing parent.
+func (s *pythonBindingScope) deferredNestedParent() *pythonBindingScope {
+	if s == nil {
+		return nil
+	}
+	if s.deferredParent != nil {
+		view := *s
+		view.parent = s.deferredParent
+		view.deferredParent = nil
+		return &view
+	}
+	if s.header {
+		return s.parent.lexicalContainer()
+	}
+	if s.class && s.deferred != nil {
+		return s.deferred
+	}
+	return s
+}
+
+func (s *pythonBindingScope) moduleScope() *pythonBindingScope {
+	for s.parent != nil {
+		s = s.parent
+	}
+	return s
+}
+
+func (w *pythonScopeWalker) fieldName(node *sitter.Node, field string) string {
+	child := node.ChildByFieldName(field)
+	if !validNode(child) {
+		return ""
+	}
+	return child.Content(w.src)
+}
+
+func (w *pythonScopeWalker) addTarget(scope *pythonBindingScope, node *sitter.Node) {
+	w.addTargetFrom(scope, node, 0)
+}
+
+func (w *pythonScopeWalker) addTargetFrom(scope *pythonBindingScope, node *sitter.Node, boundFrom int) {
+	if !validNode(node) {
+		return
+	}
+	if node.Type() == "identifier" {
+		offset := int(node.StartByte())
+		if boundFrom > offset {
+			offset = boundFrom
+		}
+		scope.addName(node.Content(w.src), offset, scope.owner != "" || scope.comp)
+		return
+	}
+	// Assignment targets may be destructured, but an attribute or subscription
+	// writes through an existing object and binds no identifier in this scope.
+	if node.Type() == "attribute" || node.Type() == "subscript" {
+		return
+	}
+	switch node.Type() {
+	case "tuple", "list", "pattern_list", "list_pattern", "tuple_pattern", "parenthesized_expression", "starred_expression", "list_splat_pattern", "dictionary_splat_pattern", "as_pattern_target":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			w.addTargetFrom(scope, node.NamedChild(i), boundFrom)
+		}
+	}
+}
+
+func (w *pythonScopeWalker) addParameters(scope *pythonBindingScope, node *sitter.Node) {
+	if !validNode(node) {
+		return
+	}
+	if node.Type() == "identifier" {
+		scope.addName(node.Content(w.src), int(node.StartByte()), true)
+		return
+	}
+	if node.Type() == "default_parameter" || node.Type() == "typed_parameter" || node.Type() == "typed_default_parameter" || node.Type() == "list_splat_pattern" || node.Type() == "dictionary_splat_pattern" || node.Type() == "parameters" || node.Type() == "lambda_parameters" {
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			child := node.NamedChild(i)
+			if node.Type() == "default_parameter" || node.Type() == "typed_default_parameter" {
+				if i > 0 {
+					continue
+				}
+			}
+			w.addParameters(scope, child)
+		}
+	}
+}
+
+// collectFunctionBindings performs Python's function-wide local declaration
+// pass before calls are evaluated. Imports still retain ordered runtime events;
+// a call before its local import is therefore unresolved rather than inheriting
+// an enclosing binding.
+func (w *pythonScopeWalker) collectFunctionBindings(node *sitter.Node, scope *pythonBindingScope, depth int) {
+	if !validNode(node) || depth >= maxParseWalkDepth {
+		if validNode(node) {
+			w.complete = false
+		}
+		return
+	}
+	switch node.Type() {
+	case "function_definition", "class_definition":
+		scope.addName(w.fieldName(node, "name"), int(node.StartByte()), true)
+		return
+	case "lambda":
+		return
+	case "list_comprehension", "set_comprehension", "dictionary_comprehension", "generator_expression":
+		w.collectComprehensionWalrus(node, scope, depth+1)
+		return
+	case "assignment", "augmented_assignment", "annotated_assignment":
+		w.collectTargetNames(node.ChildByFieldName("left"), scope)
+	case "for_statement":
+		w.collectTargetNames(w.targetFieldOrFirst(node, "left"), scope)
+	case "with_item":
+		w.collectTargetNames(w.asPatternAlias(node), scope)
+	case "except_clause", "except_group_clause":
+		w.collectTargetNames(w.asPatternAlias(node), scope)
+	case "named_expression":
+		w.collectTargetNames(w.targetFieldOrFirst(node, "name"), scope)
+	case "delete_statement":
+		w.collectTargetNames(node.NamedChild(0), scope)
+	case "case_clause":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			if child := node.NamedChild(i); validNode(child) && child.Type() == "case_pattern" {
+				w.collectCaseCaptures(child, scope, depth+1)
+			}
+		}
+	case "global_statement":
+		w.statementNames(node, scope.globals)
+	case "nonlocal_statement":
+		w.statementNames(node, scope.nonlocals)
+	case "import_statement", "import_from_statement":
+		for _, binding := range w.importBindings(node) {
+			scope.locals[binding.name] = true
+		}
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		w.collectFunctionBindings(node.NamedChild(i), scope, depth+1)
+	}
+}
+
+func (w *pythonScopeWalker) collectCaseCaptures(node *sitter.Node, scope *pythonBindingScope, depth int) {
+	if !validNode(node) || depth >= maxParseWalkDepth {
+		if validNode(node) {
+			w.complete = false
+		}
+		return
+	}
+	switch node.Type() {
+	case "identifier":
+		scope.locals[node.Content(w.src)] = true
+	case "dotted_name":
+		if node.NamedChildCount() == 1 {
+			w.collectCaseCaptures(node.NamedChild(0), scope, depth+1)
+		}
+	case "case_pattern", "union_pattern", "list_pattern", "tuple_pattern", "as_pattern", "splat_pattern":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			w.collectCaseCaptures(node.NamedChild(i), scope, depth+1)
+		}
+	case "class_pattern", "dict_pattern":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			if child := node.NamedChild(i); validNode(child) && (child.Type() == "case_pattern" || child.Type() == "splat_pattern") {
+				w.collectCaseCaptures(child, scope, depth+1)
+			}
+		}
+	case "keyword_pattern":
+		for i := 1; i < int(node.NamedChildCount()); i++ {
+			w.collectCaseCaptures(node.NamedChild(i), scope, depth+1)
+		}
+	}
+}
+
+func (w *pythonScopeWalker) collectComprehensionWalrus(node *sitter.Node, scope *pythonBindingScope, depth int) {
+	if !validNode(node) || depth >= maxParseWalkDepth {
+		if validNode(node) {
+			w.complete = false
+		}
+		return
+	}
+	switch node.Type() {
+	case "function_definition", "class_definition", "lambda":
+		return
+	case "named_expression":
+		w.collectTargetNames(w.targetFieldOrFirst(node, "name"), scope)
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		w.collectComprehensionWalrus(node.NamedChild(i), scope, depth+1)
+	}
+}
+
+func (w *pythonScopeWalker) collectTargetNames(node *sitter.Node, scope *pythonBindingScope) {
+	if !validNode(node) {
+		return
+	}
+	if node.Type() == "identifier" {
+		scope.locals[node.Content(w.src)] = true
+		return
+	}
+	if node.Type() == "attribute" || node.Type() == "subscript" {
+		return
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		w.collectTargetNames(node.NamedChild(i), scope)
+	}
+}
+
+// asPatternAlias returns the target an `X as t` clause binds. tree-sitter hangs
+// that alias off a nested `as_pattern`, so neither `with_item` nor
+// `except_clause` carries an alias field of its own; asking them for their last
+// named child instead landed on the handler's own block. In the walk that bound
+// nothing, and in the function-wide local pass -- which recurses into whatever
+// it is handed -- it declared every name written anywhere inside the handler a
+// local of the function, reporting the imports they stood for as shadowed.
+func (w *pythonScopeWalker) asPatternAlias(node *sitter.Node) *sitter.Node {
+	if !validNode(node) {
+		return nil
+	}
+	if node.Type() == "as_pattern" {
+		return node.ChildByFieldName("alias")
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if child := node.NamedChild(i); validNode(child) && child.Type() == "as_pattern" {
+			return child.ChildByFieldName("alias")
+		}
+	}
+	return nil
+}
+
+func (w *pythonScopeWalker) targetFieldOrFirst(node *sitter.Node, field string) *sitter.Node {
+	if target := node.ChildByFieldName(field); validNode(target) {
+		return target
+	}
+	return node.NamedChild(0)
+}
+
+func (w *pythonScopeWalker) targetFieldOrLast(node *sitter.Node, field string) *sitter.Node {
+	if target := node.ChildByFieldName(field); validNode(target) {
+		return target
+	}
+	count := int(node.NamedChildCount())
+	if count == 0 {
+		return nil
+	}
+	return node.NamedChild(count - 1)
+}
+
+func (w *pythonScopeWalker) statementNames(node *sitter.Node, out map[string]bool) {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if child.Type() == "identifier" {
+			out[child.Content(w.src)] = true
+		}
+	}
+}
+
+type pythonScopedImport struct {
+	name    string
+	modules []string
+	member  string
+}
+
+func (w *pythonScopeWalker) importBindings(node *sitter.Node) []pythonScopedImport {
+	text := node.Content(w.src)
+	if node.Type() == "import_statement" {
+		items := strings.Split(strings.TrimSpace(strings.TrimPrefix(text, "import")), ",")
+		out := make([]pythonScopedImport, 0, len(items))
+		for _, item := range items {
+			module, alias := parsePythonImportItem(item)
+			if module == "" {
+				continue
+			}
+			name := alias
+			if name == "" {
+				name = strings.Split(module, ".")[0] // import a.b binds a
+			}
+			out = append(out, pythonScopedImport{name: name, modules: []string{module}})
+		}
+		return out
+	}
+	if node.Type() != "import_from_statement" {
+		return nil
+	}
+	statements := pythonFromImportStatements(text)
+	if len(statements) != 1 {
+		return nil
+	}
+	var out []pythonScopedImport
+	for _, item := range statements[0].items {
+		name, alias := parsePythonImportItem(item)
+		if name == "" || name == "*" {
+			continue
+		}
+		local := alias
+		if local == "" {
+			local = name
+		}
+		out = append(out, pythonScopedImport{name: local, modules: []string{pythonFromImportModuleSpec(statements[0].module, name)}, member: name})
+	}
+	return out
+}

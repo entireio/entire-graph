@@ -39,6 +39,12 @@ type jsScanState struct {
 	lineStarts   []int
 	contentLen   int
 	parsed       bool
+	// depthTruncated reports that a relation-phase walk stopped at
+	// maxParseWalkDepth (parser.go). The scope state stays usable — everything
+	// above the limit was collected — but it is incomplete, so the provider
+	// records it as an E_PARSE_DEPTH_EXCEEDED partial failure rather than
+	// letting a silently short scope scan look like a complete one.
+	depthTruncated bool
 }
 
 type jsNamespaceScope struct {
@@ -182,7 +188,7 @@ func buildJSScanState(ctx context.Context, grammar *sitter.Language, parseSrc []
 		lexEnd:    len(content),
 		funcStart: -1,
 		funcEnd:   len(content),
-	})
+	}, 0)
 	if walker.stopped {
 		return emptyJSScanState(content), fmt.Errorf("tree-sitter scope walk stopped by caller: %w", ctx.Err())
 	}
@@ -471,11 +477,17 @@ func (w *jsScopeWalker) budgetGone() bool {
 	return w.stopped
 }
 
-func (w *jsScopeWalker) walk(node *sitter.Node, ctx jsScopeContext) {
+// walk descends the whole relation-phase parse tree, bounded by both the
+// caller's wall-clock budget and maxParseWalkDepth.
+func (w *jsScopeWalker) walk(node *sitter.Node, ctx jsScopeContext, depth int) {
 	if w.budgetGone() {
 		return
 	}
 	if !validNode(node) {
+		return
+	}
+	if depth >= maxParseWalkDepth {
+		w.state.depthTruncated = true
 		return
 	}
 	switch node.Type() {
@@ -521,7 +533,7 @@ func (w *jsScopeWalker) walk(node *sitter.Node, ctx jsScopeContext) {
 		w.addDottedCall(node.ChildByFieldName("constructor"), node.ChildByFieldName("arguments"))
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		w.walk(node.NamedChild(i), ctx)
+		w.walk(node.NamedChild(i), ctx, depth+1)
 	}
 }
 
@@ -680,7 +692,19 @@ func (w *jsScopeWalker) addPatternBindings(pattern *sitter.Node, scopeStart, sco
 // default-value expressions are never entered, so their identifiers cannot
 // leak in as phantom bindings.
 func jsPatternBindingNames(pattern *sitter.Node, src []byte) []string {
-	if !validNode(pattern) {
+	return jsPatternBindingNamesAt(pattern, src, 0)
+}
+
+// depth is capped at maxParseWalkDepth (parser.go). Object/array patterns nest
+// as deeply as the source writes them, and walkEntitiesScoped reaches this
+// through jsEntityParameterNames on a callable's parameter list — a separate
+// recursion from its own, started while the walk is still at the declaration,
+// so the walk's guard cannot protect it. Against the parent commit
+// `function g({a:{a:{…}}}) {}` aborts the process with `fatal error: stack
+// overflow`, frames in jsPatternBindingNames; pinned by
+// TestJSPatternBindingsAreBoundedNotFatal.
+func jsPatternBindingNamesAt(pattern *sitter.Node, src []byte, depth int) []string {
+	if !validNode(pattern) || depth >= maxParseWalkDepth {
 		return nil
 	}
 	switch pattern.Type() {
@@ -693,19 +717,19 @@ func jsPatternBindingNames(pattern *sitter.Node, src []byte) []string {
 	case "formal_parameters", "object_pattern", "array_pattern":
 		var names []string
 		for i := 0; i < int(pattern.NamedChildCount()); i++ {
-			names = append(names, jsPatternBindingNames(pattern.NamedChild(i), src)...)
+			names = append(names, jsPatternBindingNamesAt(pattern.NamedChild(i), src, depth+1)...)
 		}
 		return names
 	case "required_parameter", "optional_parameter":
-		return jsPatternBindingNames(pattern.ChildByFieldName("pattern"), src)
+		return jsPatternBindingNamesAt(pattern.ChildByFieldName("pattern"), src, depth+1)
 	case "assignment_pattern", "object_assignment_pattern":
-		return jsPatternBindingNames(pattern.ChildByFieldName("left"), src)
+		return jsPatternBindingNamesAt(pattern.ChildByFieldName("left"), src, depth+1)
 	case "pair_pattern":
-		return jsPatternBindingNames(pattern.ChildByFieldName("value"), src)
+		return jsPatternBindingNamesAt(pattern.ChildByFieldName("value"), src, depth+1)
 	case "rest_pattern":
 		var names []string
 		for i := 0; i < int(pattern.NamedChildCount()); i++ {
-			names = append(names, jsPatternBindingNames(pattern.NamedChild(i), src)...)
+			names = append(names, jsPatternBindingNamesAt(pattern.NamedChild(i), src, depth+1)...)
 		}
 		return names
 	default:
@@ -717,7 +741,10 @@ func (w *jsScopeWalker) addDottedCall(function, arguments *sitter.Node) {
 	if !validNode(function) || !validNode(arguments) || arguments.Type() != "arguments" {
 		return
 	}
-	parts := jsMemberChainParts(function, w.src)
+	parts, truncated := jsMemberChainPartsAt(function, w.src, 0)
+	if truncated {
+		w.state.depthTruncated = true
+	}
 	if len(parts) < 2 {
 		return
 	}
@@ -729,25 +756,44 @@ func (w *jsScopeWalker) addDottedCall(function, arguments *sitter.Node) {
 // (`A.B.f` -> [A B f]); any non-identifier link (calls, subscripts, `this`,
 // parenthesized receivers) disqualifies the chain.
 func jsMemberChainParts(node *sitter.Node, src []byte) []string {
+	parts, _ := jsMemberChainPartsAt(node, src, 0)
+	return parts
+}
+
+// depth is capped at maxParseWalkDepth (parser.go). A member chain is as long as
+// the source writes it (`a.b.c…z()`), and walk hands this the whole chain from
+// its head — before descending into it — so this recursion is independent of
+// walk's and reaches the stack first: with the ceiling lowered to 16 MiB a
+// 100,000-link chain aborts here while walk itself survives. Truncation reports
+// upward rather than silently returning a short path, because a partial chain
+// would resolve the call to the WRONG target; the reported chain is either
+// complete or refused.
+func jsMemberChainPartsAt(node *sitter.Node, src []byte, depth int) (parts []string, truncated bool) {
+	if depth >= maxParseWalkDepth {
+		return nil, true
+	}
 	switch node.Type() {
 	case "identifier":
-		return []string{node.Content(src)}
+		return []string{node.Content(src)}, false
 	case "member_expression":
 		property := node.ChildByFieldName("property")
 		if !validNode(property) || property.Type() != "property_identifier" {
-			return nil
+			return nil, false
 		}
 		object := node.ChildByFieldName("object")
 		if !validNode(object) {
-			return nil
+			return nil, false
 		}
-		parts := jsMemberChainParts(object, src)
+		parts, truncated := jsMemberChainPartsAt(object, src, depth+1)
+		if truncated {
+			return nil, true
+		}
 		if parts == nil {
-			return nil
+			return nil, false
 		}
-		return append(parts, property.Content(src))
+		return append(parts, property.Content(src)), false
 	default:
-		return nil
+		return nil, false
 	}
 }
 
@@ -768,8 +814,21 @@ func jsEntityParameterNames(node *sitter.Node, src []byte) []string {
 	return jsPatternBindingNames(parameters, src)
 }
 
+// jsFunctionLikeNode finds the callable node an entity's declaration wraps.
+//
+// depth is capped at maxParseWalkDepth (parser.go). It is the sibling descent to
+// jsPatternBindingNames on the very same jsEntityParameterNames call, over the
+// same attacker-supplied subtree, and is bounded with it: no input was found
+// that drives it deep (a declarator whose arrow function is buried under 1M
+// parentheses stops being classified as a callable, so this is never called),
+// but leaving one of the pair unbounded would only relocate the abort if that
+// classification ever changes.
 func jsFunctionLikeNode(node *sitter.Node) *sitter.Node {
-	if !validNode(node) {
+	return jsFunctionLikeNodeAt(node, 0)
+}
+
+func jsFunctionLikeNodeAt(node *sitter.Node, depth int) *sitter.Node {
+	if !validNode(node) || depth >= maxParseWalkDepth {
 		return nil
 	}
 	switch node.Type() {
@@ -779,7 +838,7 @@ func jsFunctionLikeNode(node *sitter.Node) *sitter.Node {
 		return node
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		if found := jsFunctionLikeNode(node.NamedChild(i)); found != nil {
+		if found := jsFunctionLikeNodeAt(node.NamedChild(i), depth+1); found != nil {
 			return found
 		}
 	}

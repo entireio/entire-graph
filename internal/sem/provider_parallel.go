@@ -283,14 +283,22 @@ func processProviderFile(
 		})
 		return result
 	}
-	if parseStatus.ParseError {
+	// Partial is included so a status whose output is valid but incomplete is
+	// still reported. It reaches completeness as a COUNTED failure: unlike
+	// E_FILE_TOO_LARGE/E_MINIFIED, which are in intentionalSkipFailureCodes
+	// because the parser never opened the file, a partial result means the graph
+	// tried, succeeded in part, and is missing declarations it should have had.
+	if parseStatus.ParseError || parseStatus.Partial {
 		code := parseStatus.Code
 		if code == "" {
 			code = "E_PARSE_ERROR"
 		}
 		effect := "file parsed with syntax errors; semantic facts may be incomplete"
-		if code == "E_PARSE_TIMEOUT" {
+		switch code {
+		case "E_PARSE_TIMEOUT":
 			effect = "file record emitted but symbol parsing skipped because parser time budget was exceeded"
+		case "E_PARSE_DEPTH_EXCEEDED":
+			effect = "file record and symbols above the parser depth limit emitted; more deeply nested declarations were not walked, so this file counts against completeness"
 		}
 		result.failures = append(result.failures, PartialFailure{
 			Code:                 code,

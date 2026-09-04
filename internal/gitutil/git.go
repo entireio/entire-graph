@@ -23,7 +23,18 @@ type ChangedFile struct {
 	Status  string `json:"status"`
 	Path    string `json:"path"`
 	OldPath string `json:"old_path,omitempty"`
+	// OldMode and NewMode are the Git tree entry modes for the base and head
+	// sides ("100644", "100755", "120000" for a symbolic link, "160000" for a
+	// gitlink, "000000" when that side does not exist). Callers need them
+	// because mode decides whether a blob is file content at all: a symlink is
+	// stored as a blob whose bytes are its target path, so nothing downstream
+	// can tell it apart from a one-line source file by content or name.
+	OldMode string `json:"old_mode,omitempty"`
+	NewMode string `json:"new_mode,omitempty"`
 }
+
+// SymlinkMode is the Git tree entry mode for a symbolic link.
+const SymlinkMode = "120000"
 
 type FileCochange struct {
 	Left  string
@@ -600,10 +611,17 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 	return matches, nil
 }
 
+// ChangedFiles lists the entries that differ between two tree-ish revisions.
+//
+// It asks for `--raw` rather than `--name-status` so each record carries the
+// base and head tree entry modes alongside the status. Mode is not decoration:
+// Git stores a symbolic link as a blob holding its target path, so without the
+// mode a caller that reads blob content sees `docs/real.py` as a one-line
+// Python file and has no way to know it is not source.
 func ChangedFiles(ctx context.Context, repo, base, head string, paths []string) ([]ChangedFile, error) {
 	args := []string{
 		"diff", "--no-relative", "--ignore-submodules=none",
-		"-z", "--name-status", "--find-renames", base, head, "--",
+		"-z", "--raw", "--find-renames", base, head, "--",
 	}
 	args = append(args, paths...)
 	out, err := run(ctx, repo, "git", args...)
@@ -614,20 +632,41 @@ func ChangedFiles(ctx context.Context, repo, base, head string, paths []string) 
 	var files []ChangedFile
 	fields := strings.Split(out, "\x00")
 	for i := 0; i < len(fields); {
-		status := fields[i]
+		metadata := fields[i]
 		i++
-		if status == "" {
+		if metadata == "" {
 			continue
 		}
+		// ":<oldmode> <newmode> <oldsha> <newsha> <status>" — one NUL-terminated
+		// field under -z, followed by one pathname (two for R/C).
+		if !strings.HasPrefix(metadata, ":") {
+			return nil, fmt.Errorf("git diff returned malformed raw metadata %q", metadata)
+		}
+		parts := strings.Fields(strings.TrimPrefix(metadata, ":"))
+		if len(parts) < 5 {
+			return nil, fmt.Errorf("git diff returned malformed raw metadata %q", metadata)
+		}
+		oldMode, newMode, status := parts[0], parts[1], parts[4]
 		switch {
 		case strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C"):
 			if i+1 < len(fields) {
-				files = append(files, ChangedFile{Status: status[:1], OldPath: fields[i], Path: fields[i+1]})
+				files = append(files, ChangedFile{
+					Status:  status[:1],
+					OldPath: fields[i],
+					Path:    fields[i+1],
+					OldMode: oldMode,
+					NewMode: newMode,
+				})
 				i += 2
 			}
 		default:
 			if i < len(fields) {
-				files = append(files, ChangedFile{Status: status[:1], Path: fields[i]})
+				files = append(files, ChangedFile{
+					Status:  status[:1],
+					Path:    fields[i],
+					OldMode: oldMode,
+					NewMode: newMode,
+				})
 				i++
 			}
 		}
