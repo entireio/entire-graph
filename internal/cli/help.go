@@ -247,7 +247,7 @@ var commandDocs = []commandDoc{
 			{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
 		},
 		examples: []string{
-			"go test ./internal/configs -run '^TestX$' 2>&1 | entire graph explain --repo .",
+			`( o=$(go test ./internal/configs -run '^TestX$' 2>&1); r=$?; printf '%s\n' "$o" | entire graph explain --repo .; exit $r )`,
 		},
 	},
 	{
@@ -512,10 +512,33 @@ func findCommandDoc(name string) (commandDoc, bool) {
 	return commandDoc{}, false
 }
 
-// wantsHelp reports whether the args request help for a command.
-func wantsHelp(args []string) bool {
-	for _, a := range args {
-		if a == "--help" || a == "-h" {
+// wantsHelp reports whether the args request help for the command documented by doc.
+//
+// It reads the args the way the command's own parser will, because a flat scan for the two spellings
+// cannot tell a request for help from DATA that happens to be spelled like one. Two ways it got that
+// wrong: `search --query --help` is a search for the literal text "--help" and printed help instead,
+// and `diff -- --help` addresses a path named `--help` — after the separator every remaining argument
+// is positional by definition, so nothing there can be a flag at all.
+//
+// The value-taking flags come from the doc registry rather than a second list, because that registry
+// is already the thing this file renders and the command parsers are already checked against it
+// (agentguide_test.go). A hand-copied list here would be a third spelling of the same fact, and the
+// one nothing would notice going stale.
+func wantsHelp(doc commandDoc, args []string) bool {
+	valued := make(map[string]bool, len(doc.flags))
+	for _, flag := range doc.flags {
+		if flag.arg != "" {
+			valued[flag.name] = true
+		}
+	}
+	for index := 0; index < len(args); index++ {
+		switch {
+		case args[index] == "--":
+			return false
+		case valued[args[index]]:
+			// The next argument is this flag's VALUE, whatever it is spelled like.
+			index++
+		case args[index] == "--help" || args[index] == "-h":
 			return true
 		}
 	}

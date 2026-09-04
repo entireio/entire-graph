@@ -143,6 +143,11 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 	return encoder.Encode(response)
 }
 
+// indexTextPartialFailures caps how many unparsed files the summary names before it defers the rest
+// to --format json. A tree with a broken toolchain can produce thousands; the first few identify the
+// pattern, and a summary longer than the terminal is not a summary.
+const indexTextPartialFailures = 5
+
 // writeIndexText renders the human-facing summary shown when index runs at a
 // terminal. It reads the same indexResponse the JSON contract carries, so the
 // two never diverge.
@@ -176,6 +181,35 @@ func writeIndexText(w io.Writer, r indexResponse, reportPath string) error {
 
 	if n := len(r.Warnings); n > 0 {
 		fmt.Fprintf(w, "  ⚠️  %d warning(s) — run with --format json for detail\n", n)
+	}
+	// Partial failures are NAMED, not counted. They are the files the graph could not parse, so they
+	// are the reason a completeness claim above them is smaller than it looks — and this rendering
+	// dropped them entirely, which meant a terminal `index` over a tree full of E_PARSE_ERROR printed
+	// a clean summary and the machine-readable partial_failures list was the only place the loss
+	// survived. Pointing at --format json is the right answer for a warning and the wrong one here:
+	// the file is the actionable part and it belongs on the line.
+	if n := len(r.PartialFailures); n > 0 {
+		fmt.Fprintf(w, "  ⚠️  %d file(s) not fully analyzed:\n", n)
+		shown := r.PartialFailures
+		if len(shown) > indexTextPartialFailures {
+			shown = shown[:indexTextPartialFailures]
+		}
+		for _, failure := range shown {
+			// termsafe.Line, because file_path is a Git pathname and this writer is not wrapped: a
+			// newline in it would forge a line of this summary.
+			label := termsafe.Line(failure.FilePath)
+			if label == "" {
+				label = "(repository)"
+			}
+			code := termsafe.Line(failure.Code)
+			if code == "" {
+				code = "unknown"
+			}
+			fmt.Fprintf(w, "      %s (%s)\n", label, code)
+		}
+		if remaining := n - len(shown); remaining > 0 {
+			fmt.Fprintf(w, "      %d more — run with --format json for the rest\n", remaining)
+		}
 	}
 	if reportPath != "" {
 		fmt.Fprintf(w, "  report written to %s\n", reportPath)

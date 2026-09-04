@@ -61,11 +61,9 @@ func Run(ctx context.Context, opts Options, args []string) error {
 	// have a doc entry — which includes `help` itself, so `help --help` prints
 	// help's own detail view rather than the root listing. A bare `--help` has
 	// no command word and is handled above.
-	if wantsHelp(args[1:]) {
-		if _, ok := findCommandDoc(args[0]); ok {
-			renderCommandHelp(opts.Stdout, args[0])
-			return nil
-		}
+	if doc, ok := findCommandDoc(args[0]); ok && wantsHelp(doc, args[1:]) {
+		renderCommandHelp(opts.Stdout, args[0])
+		return nil
 	}
 
 	switch args[0] {
@@ -871,15 +869,34 @@ type diffFlags struct {
 //
 // Paths that genuinely look like flags still work: that is what the documented `-- path...`
 // separator is for.
+// diffValueFlags are the `diff`/`analyze` flags whose value is the NEXT argument: the two
+// parseCommonFlags consumes and the two the loop below does. It exists only for the separator scan
+// above, which runs before either parser and so cannot ask them.
+var diffValueFlags = map[string]bool{
+	"--repo":        true,
+	"--max-seconds": true,
+	"--base":        true,
+	"--head":        true,
+}
+
 func parseDiffFlags(args []string) (diffFlags, []string, error) {
 	parsed := diffFlags{base: "HEAD~1", head: "HEAD"}
 
 	// Split on `--` here rather than letting parseCommonFlags consume it: that function flattens
 	// everything after the separator into rest, which would leave a literal path named `--base`
 	// indistinguishable from the real flag.
+	//
+	// Skipping each value-taking flag's value is what keeps `--` a separator rather than a pattern:
+	// `diff --repo --` addresses a repository directory literally named `--`, and a raw scan cut the
+	// arguments off in front of it and failed with "--repo requires a value" — with no `--repo=--`
+	// spelling to fall back on, because these parsers accept no `=` form.
 	flagArgs, literalPaths := args, []string(nil)
-	for i, arg := range args {
-		if arg == "--" {
+	for i := 0; i < len(args); i++ {
+		if diffValueFlags[args[i]] {
+			i++
+			continue
+		}
+		if args[i] == "--" {
 			flagArgs, literalPaths = args[:i], args[i+1:]
 			break
 		}

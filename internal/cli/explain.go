@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"path"
+	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
@@ -35,7 +37,13 @@ import (
 // and the VERIFY block emits it pre-composed, so the agent runs the command it was given and the
 // declarations arrive with the failure:
 //
-//	go test ./internal/configs -run '^TestX$' 2>&1 | entire graph explain --repo .
+//	( o=$(go test ./internal/configs -run '^TestX$' 2>&1); r=$?; printf '%s\n' "$o" | entire graph explain --repo .; exit $r )
+//
+// The status capture is not decoration. `<test> 2>&1 | entire graph explain` replaces the test's exit
+// status with the PIPE's, which is this command's — so a failing test reports success and the agent
+// stops. `set -o pipefail` cannot fix it either: the line runs in whatever shell the caller has, and
+// on Debian-family systems /bin/sh is dash, where `set -o pipefail` is fatal rather than merely
+// absent. The POSIX capture above keeps the test's own `$?` and exits with it.
 //
 // One turn replaces build -> grep symbol -> read range. It quotes no source it was not asked for and
 // it stays read-only: the build is run by the shell, not by this process, so the provider remains a
@@ -48,6 +56,14 @@ const (
 	// explainMaxBytes bounds the whole block, on the same reasoning as the search payload: bytes here
 	// are replayed into the model on every later turn.
 	explainMaxBytes = 2048
+
+	// explainMaxScannedNames bounds the distinct names the counter behind Scanned/Omitted remembers.
+	// The scan now runs to end-of-input rather than stopping at MaxSymbols — it has to, because the
+	// echo is that same read — so the dedupe set is no longer bounded by MaxSymbols and a hostile
+	// build could otherwise grow it without limit. Scanned saturates here rather than growing: a
+	// build naming more than a thousand distinct missing symbols is already "everything is broken",
+	// and an exact count of it buys nothing worth unbounded memory.
+	explainMaxScannedNames = 1024
 )
 
 // explainErrorPatterns are the ways compilers and test runners name a symbol they cannot resolve.
@@ -82,6 +98,45 @@ var explainErrorPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?:not enough|too many) arguments (?:in call to|to)\s+([A-Za-z_][A-Za-z0-9_.]*)`),
 }
 
+// explainLocationPatterns pull the FILE an error line is about. Every compiler prints it, and it is
+// the only thing that tells `Config` in one package apart from `Config` in another — without it the
+// resolver picks a same-named declaration by shape alone and can send the reader to a file the build
+// never mentioned. Each pattern captures one path.
+var explainLocationPatterns = []*regexp.Regexp{
+	// Rust: "  --> src/lib.rs:3:5"
+	regexp.MustCompile(`-->\s+([A-Za-z0-9_./\\+-]+\.[A-Za-z0-9_+]+):\d+`),
+	// TypeScript: "src/a.ts(4,7): error TS2339: ..."
+	regexp.MustCompile(`([A-Za-z0-9_./\\+-]+\.[A-Za-z0-9_+]+)\((\d+),\d+\):`),
+	// Go, Java, C/C++, Python tracebacks: "./x.go:12:2:", "Foo.java:8:", "file \"a/b.py\", line 3"
+	regexp.MustCompile(`(?:^|[\s"(\[])(?:\./)?([A-Za-z0-9_./\\+-]+\.[A-Za-z0-9_+]+):\d+`),
+}
+
+// explainOwnerPatterns pull the TYPE an error attributes a member to. When the build says the method
+// belongs to `*Parser`, a declaration whose container is `Parser` is not a better guess than the
+// others — it is the answer, and every other same-named method is noise.
+var explainOwnerPatterns = []*regexp.Regexp{
+	// Go: "p.cfg undefined (type *Parser has no field or method cfg)"
+	regexp.MustCompile(`type \**([A-Za-z_][A-Za-z0-9_.]*) has no field or method`),
+	// TypeScript: "Property 'brokenLinks' does not exist on type 'Cfg'."
+	regexp.MustCompile(`does not exist on type '\**([A-Za-z_][A-Za-z0-9_]*)'`),
+	// Python: "'Sheet' object has no attribute 'calcFormula'"
+	regexp.MustCompile(`'([A-Za-z_][A-Za-z0-9_]*)' object has no attribute`),
+	// PHP: "Call to undefined method RuleSet::getRuleNames()"
+	regexp.MustCompile(`Call to undefined method\s+(?:[A-Za-z_][A-Za-z0-9_\\]*\\)?([A-Za-z_][A-Za-z0-9_]*)::`),
+	// Java: "location: class Foo"
+	regexp.MustCompile(`location:\s+(?:class|interface|enum)\s+(?:[A-Za-z_][A-Za-z0-9_.]*\.)?([A-Za-z_][A-Za-z0-9_]*)`),
+}
+
+// explainCandidate is one name the build named, together with what the same error line said about
+// WHERE it lives. The context is carried per candidate rather than per run because one build reports
+// several failures from several files, and attributing the last file seen to every name would be a
+// worse guess than having no file at all.
+type explainCandidate struct {
+	Name  string
+	File  string
+	Owner string
+}
+
 // ExplainSymbol is one resolved declaration.
 type ExplainSymbol struct {
 	Query     string `json:"query"`
@@ -96,6 +151,12 @@ type ExplainSymbol struct {
 	// hidden: "the repository does not define this" is itself the answer the agent needs, and a silent
 	// omission would read as "no information".
 	Resolved bool `json:"resolved"`
+	// Candidates is how many declarations carry this name when more than one does. The resolver picks
+	// the best of them from the error's own file and type context, but a name like `Config` or `String`
+	// can be defined in a dozen packages and the pick is still a pick. Saying so is the difference
+	// between an answer and an assertion: a reader who sees "3 definitions" checks, and one who sees a
+	// bare file:line does not.
+	Candidates int `json:"candidates,omitempty"`
 }
 
 // ExplainResponse is the whole answer.
@@ -138,32 +199,45 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 	if opts.Stdin == nil {
 		// An embedder that wired no stdin gets a clear error rather than a nil dereference: this
 		// command is meaningless without piped input, so that is a usage mistake worth naming.
-		return fmt.Errorf("explain reads a failing build's output on stdin: pipe it, e.g. `<verify command> 2>&1 | entire graph explain --repo .`")
+		// Spelled with the status capture, not a bare pipe: a bare pipe hands the caller this
+		// command's exit status in place of the test's, so a failing test reads as a pass. Anyone who
+		// copies the example gets the form that keeps the status.
+		return errors.New("explain reads a failing build's output on stdin: pipe it, e.g. " +
+			`( o=$(<verify command> 2>&1); r=$?; printf '%s\n' "$o" | entire graph explain --repo .; exit $r )`)
 	}
-	text, err := io.ReadAll(opts.Stdin)
-	if err != nil {
-		return fmt.Errorf("reading build output from stdin: %w", err)
-	}
-	// PASS THE BUILD OUTPUT THROUGH FIRST. This is what makes the command safe to bake into the VERIFY
-	// line as `<test command> 2>&1 | entire graph explain`: a filter adds to what the agent sees, a
-	// sink replaces it, and an agent that loses its own test output has been made worse off.
+	// PASS THE BUILD OUTPUT THROUGH, AS IT ARRIVES. This is what makes the command safe to bake into
+	// the VERIFY line as `<test command> 2>&1 | entire graph explain`: a filter adds to what the agent
+	// sees, a sink replaces it, and an agent that loses its own test output has been made worse off.
 	//
 	// It is also the only form that gets used at all. Measured over 27 sessions whose prompt carried an
 	// explicit rule to pipe the failure into this command, with VERIFY present in 14 of their payloads:
 	// ZERO agents typed the pipe, while 79 VERIFY-style commands were run. Instructing an agent to
 	// compose two commands does not work; emitting one command that is already composed does.
-	if flags.Echo && len(text) > 0 {
-		if _, err := opts.Stdout.Write(text); err != nil {
-			return err
-		}
-		if text[len(text)-1] != '\n' {
-			if _, err := io.WriteString(opts.Stdout, "\n"); err != nil {
-				return err
-			}
-		}
+	//
+	// STREAMED, not buffered. This used to io.ReadAll the pipe and then convert the result to a string,
+	// so a verbose or runaway build was held twice over in memory before a single byte was echoed —
+	// unbounded input, on the exact command whose job is to survive a build that went wrong. The tee
+	// below echoes each read as it happens and the scan keeps only one line plus a bounded name set,
+	// so peak memory no longer depends on how much the build printed.
+	echo := &explainEchoWriter{out: opts.Stdout}
+	var source io.Reader = opts.Stdin
+	if flags.Echo {
+		source = io.TeeReader(opts.Stdin, echo)
 	}
-	names := explainCandidateNames(string(text), flags.MaxSymbols)
-	if len(names) == 0 {
+	candidates, scanned, scanErr := explainCandidates(source, flags.MaxSymbols)
+	// Drain whatever the scan did not reach before deciding anything. A line longer than the scanner's
+	// token limit stops the scan, and with the echo riding on the same reader that would silently
+	// truncate the agent's own output — the one failure this command must never cause.
+	if _, err := io.Copy(io.Discard, source); err != nil {
+		return fmt.Errorf("reading build output from stdin: %w", err)
+	}
+	if err := echo.finish(); err != nil {
+		return err
+	}
+	if scanErr != nil && !errors.Is(scanErr, bufio.ErrTooLong) {
+		return fmt.Errorf("reading build output from stdin: %w", scanErr)
+	}
+	if len(candidates) == 0 {
 		// Silence is the right answer: the build output named nothing this command can resolve, and a
 		// header over an empty list would claim otherwise.
 		return nil
@@ -193,7 +267,7 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	response := buildExplainResponse(snapshot, names)
+	response := buildExplainResponse(snapshot, candidates, scanned)
 	// One decision, both renderings. The text header and the JSON fields are computed from the same
 	// expression so they can never disagree about which tree was read — the disagreement this command's
 	// provenance work exists to remove.
@@ -213,18 +287,76 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 	}
 }
 
+// explainEchoWriter passes the piped build output through and remembers whether it ended in a
+// newline, so the declaration block below it starts on a line of its own. It exists because the echo
+// is now a STREAM: nothing holds the last byte any more, so the writer has to be the thing that
+// noticed it.
+type explainEchoWriter struct {
+	out      io.Writer
+	lastByte byte
+	wrote    bool
+}
+
+func (w *explainEchoWriter) Write(chunk []byte) (int, error) {
+	if len(chunk) == 0 {
+		return 0, nil
+	}
+	written, err := w.out.Write(chunk)
+	if written > 0 {
+		w.wrote = true
+		w.lastByte = chunk[written-1]
+	}
+	return written, err
+}
+
+// finish terminates the echoed output if the build did not.
+func (w *explainEchoWriter) finish() error {
+	if !w.wrote || w.lastByte == '\n' {
+		return nil
+	}
+	_, err := io.WriteString(w.out, "\n")
+	return err
+}
+
 // explainCandidateNames extracts the symbols an error names, in first-seen order — a build reports
 // the root cause before the cascade, so order is information and must not be sorted away.
 func explainCandidateNames(text string, limit int) []string {
+	candidates, _, _ := explainCandidates(strings.NewReader(text), limit)
+	if len(candidates) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		names = append(names, candidate.Name)
+	}
+	return names
+}
+
+// explainCandidates scans a build's output as it arrives, reporting the names it can resolve and how
+// many distinct names the build named in total.
+//
+// It reads to END OF INPUT even after it has collected `limit` of them, and that is deliberate twice
+// over. The caller reads this same stream through an io.TeeReader that echoes it, so stopping the
+// scan early would stop the ECHO early and the agent would lose the tail of its own test output.
+// And the count it returns is what makes truncation visible: the collector used to return the moment
+// it hit the limit, so `Scanned` was a restatement of the limit and `Omitted` was never set at all —
+// a machine consumer could not tell exactly eight names from eight out of ninety.
+//
+// Nothing is retained beyond one line and a bounded name set, so the memory cost does not depend on
+// how much the build printed.
+func explainCandidates(input io.Reader, limit int) ([]explainCandidate, int, error) {
 	if limit <= 0 {
 		limit = explainMaxSymbols
 	}
 	seen := map[string]bool{}
-	var names []string
-	scanner := bufio.NewScanner(strings.NewReader(text))
+	var candidates []explainCandidate
+	scanned := 0
+	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
+		var file, owner string
+		context := false
 		for _, pattern := range explainErrorPatterns {
 			for _, match := range pattern.FindAllStringSubmatch(line, -1) {
 				if len(match) < 2 {
@@ -238,18 +370,40 @@ func explainCandidateNames(text string, limit int) []string {
 				if name == "" || seen[name] {
 					continue
 				}
-				seen[name] = true
-				names = append(names, name)
-				if len(names) >= limit {
-					return names
+				if len(seen) >= explainMaxScannedNames {
+					// The set is what dedupes, so once it stops growing, collecting stops with it —
+					// otherwise a name already reported could be reported a second time. Scanned
+					// saturates here rather than lying about a build this broken.
+					continue
 				}
+				seen[name] = true
+				scanned++
+				if len(candidates) >= limit {
+					continue
+				}
+				if !context {
+					// Read once per line, not once per match: every name on one error line shares
+					// that line's file and type context.
+					file, owner, context = explainFirstMatch(explainLocationPatterns, line), explainFirstMatch(explainOwnerPatterns, line), true
+				}
+				candidates = append(candidates, explainCandidate{Name: name, File: file, Owner: owner})
 			}
 		}
 	}
-	return names
+	return candidates, scanned, scanner.Err()
 }
 
-func buildExplainResponse(snapshot sem.ProviderSnapshot, names []string) ExplainResponse {
+// explainFirstMatch returns the first capture any of the patterns finds on the line, or "".
+func explainFirstMatch(patterns []*regexp.Regexp, line string) string {
+	for _, pattern := range patterns {
+		if match := pattern.FindStringSubmatch(line); len(match) >= 2 && match[1] != "" {
+			return match[1]
+		}
+	}
+	return ""
+}
+
+func buildExplainResponse(snapshot sem.ProviderSnapshot, candidates []explainCandidate, scanned int) ExplainResponse {
 	byName := map[string][]sem.SymbolRecord{}
 	byID := map[string]sem.SymbolRecord{}
 	for _, symbol := range snapshot.Symbols {
@@ -261,27 +415,29 @@ func buildExplainResponse(snapshot sem.ProviderSnapshot, names []string) Explain
 		}
 		byName[symbol.Name] = append(byName[symbol.Name], symbol)
 	}
-	response := ExplainResponse{Scanned: len(names)}
-	for _, name := range names {
-		group := byName[name]
+	if scanned < len(candidates) {
+		scanned = len(candidates)
+	}
+	response := ExplainResponse{Scanned: scanned, Omitted: scanned - len(candidates)}
+	for _, candidate := range candidates {
+		group := byName[candidate.Name]
 		if len(group) == 0 {
-			response.Symbols = append(response.Symbols, ExplainSymbol{Query: name})
+			response.Symbols = append(response.Symbols, ExplainSymbol{Query: candidate.Name})
 			continue
 		}
-		// Prefer a definition with a signature and the widest span: that is the declaration, not a
-		// forward declaration or a same-named local.
-		sort.SliceStable(group, func(a, b int) bool {
-			sa, sb := group[a], group[b]
-			if (sa.Signature != "") != (sb.Signature != "") {
-				return sa.Signature != ""
+		anchor, best := group[0], explainRank(group[0], candidate, byID)
+		for _, symbol := range group[1:] {
+			if rank := explainRank(symbol, candidate, byID); rank.Less(best) {
+				anchor, best = symbol, rank
 			}
-			return sa.EndLine-sa.StartLine > sb.EndLine-sb.StartLine
-		})
-		anchor := group[0]
+		}
 		entry := ExplainSymbol{
-			Query: name, Name: anchor.Name, Kind: anchor.Kind, Signature: anchor.Signature,
+			Query: candidate.Name, Name: anchor.Name, Kind: anchor.Kind, Signature: anchor.Signature,
 			FilePath: anchor.FilePath, StartLine: anchor.StartLine, EndLine: anchor.EndLine,
 			Resolved: true,
+		}
+		if len(group) > 1 {
+			entry.Candidates = len(group)
 		}
 		if owner, ok := byID[anchor.ContainerID]; ok {
 			entry.Owner = owner.Name
@@ -289,6 +445,85 @@ func buildExplainResponse(snapshot sem.ProviderSnapshot, names []string) Explain
 		response.Symbols = append(response.Symbols, entry)
 	}
 	return response
+}
+
+// explainRankKey orders the same-named declarations a build error could be talking about. Lowest
+// wins, and the fields are in the order a reader would resolve them by hand: the type the error
+// named, then the file it named, and only then the shape of the declaration.
+//
+// Shape alone is what this used to sort by, and shape alone cannot tell two `Config` types in two
+// packages apart — it returned whichever happened to be widest and discarded the rest, so an error
+// about `internal/api.Config` could point at `internal/store/config.go` with no sign anything had
+// been chosen. The error line already carries the answer; this reads it.
+type explainRankKey struct {
+	owner     int // 0 when the declaration's container is the type the error blamed
+	file      int // 0 same file as the error, 1 same directory, 2 elsewhere
+	signature int // 0 when the declaration carries a signature (a definition, not a forward decl)
+	span      int // negative width, so the widest declaration sorts first among equals
+}
+
+// Less reports whether key sorts ahead of other.
+func (key explainRankKey) Less(other explainRankKey) bool {
+	switch {
+	case key.owner != other.owner:
+		return key.owner < other.owner
+	case key.file != other.file:
+		return key.file < other.file
+	case key.signature != other.signature:
+		return key.signature < other.signature
+	default:
+		return key.span < other.span
+	}
+}
+
+// explainRank scores one candidate declaration against the context its error line carried. A context
+// the build did not supply scores every declaration alike, so an absent file or type never reorders
+// anything — it just leaves the decision to the field below it.
+func explainRank(symbol sem.SymbolRecord, candidate explainCandidate, byID map[string]sem.SymbolRecord) explainRankKey {
+	key := explainRankKey{signature: 1, span: -(symbol.EndLine - symbol.StartLine)}
+	if symbol.Signature != "" {
+		key.signature = 0
+	}
+	if candidate.Owner != "" {
+		key.owner = 1
+		if container, ok := byID[symbol.ContainerID]; ok && container.Name == candidate.Owner {
+			key.owner = 0
+		}
+	}
+	if candidate.File != "" {
+		key.file = explainPathRank(symbol.FilePath, candidate.File)
+	}
+	return key
+}
+
+// explainPathRank scores a declaration's file against the file the error named: same file, same
+// directory, or neither.
+func explainPathRank(symbolPath, errorPath string) int {
+	symbolPath = path.Clean(filepath.ToSlash(symbolPath))
+	errorPath = path.Clean(filepath.ToSlash(errorPath))
+	if explainSamePath(symbolPath, errorPath) {
+		return 0
+	}
+	if symbolDir, errorDir := path.Dir(symbolPath), path.Dir(errorPath); errorDir != "." && explainSamePath(symbolDir, errorDir) {
+		return 1
+	}
+	return 2
+}
+
+// explainSamePath reports whether two paths name the same thing as far as either can tell.
+//
+// Neither is a prefix of the other: a compiler prints a path relative to whatever directory it ran
+// in and the graph records one relative to the repository root, so `./explain.go` and
+// `internal/cli/explain.go` are the same file written from two places. Only the shared TAIL can be
+// compared, and only on a component boundary — otherwise `cli.go` would match `internal/mycli.go`.
+func explainSamePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if len(a) < len(b) {
+		a, b = b, a
+	}
+	return b != "" && b != "." && strings.HasSuffix(a, "/"+b)
 }
 
 // RenderExplain prints the block. Unresolved names are listed last and on one line: they are a short
@@ -333,6 +568,11 @@ func RenderExplainWithProvenance(response ExplainResponse, maxBytes int, useHead
 		line += " " + termsafe.Line(symbol.Name)
 		if symbol.Owner != "" {
 			line += " (in " + termsafe.Line(symbol.Owner) + ")"
+		}
+		if symbol.Candidates > 1 {
+			// The pick is a pick. A reader who is sent to the wrong `Config` has no way to know it
+			// unless the block says the name was ambiguous.
+			line += fmt.Sprintf(" [%d definitions]", symbol.Candidates)
 		}
 		line += "\n"
 		if symbol.Signature != "" {
