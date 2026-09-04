@@ -14,13 +14,17 @@ import (
 // that is not shadowed at that call site. The raw FFI import exception consults
 // only this view; ordinary call resolution continues to use its existing rules.
 type pythonBareImportScopes struct {
-	imports  map[string]map[string][][]string
-	module   map[string][][]string
-	complete bool
+	imports        map[string]map[string][][]string
+	module         map[string][][]string
+	contexts       map[string]map[string][]pythonImportContext
+	moduleContexts map[string][]pythonImportContext
+	genericAllowed map[string]map[string]bool
+	moduleGeneric  map[string]bool
+	complete       bool
 }
 
 func newPythonBareImportScopes(content string, symbols []SymbolRecord) *pythonBareImportScopes {
-	state := &pythonBareImportScopes{imports: map[string]map[string][][]string{}, module: map[string][][]string{}}
+	state := &pythonBareImportScopes{imports: map[string]map[string][][]string{}, module: map[string][][]string{}, contexts: map[string]map[string][]pythonImportContext{}, moduleContexts: map[string][]pythonImportContext{}, genericAllowed: map[string]map[string]bool{}, moduleGeneric: map[string]bool{}}
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(python.GetLanguage())
@@ -55,6 +59,18 @@ func (s *pythonBareImportScopes) importModules(from SymbolRecord, name string) [
 	return uniqueStrings(modules)
 }
 
+// genericImportModules excludes `import module as local` bindings. They are
+// retained by importModules for the established scope API, but a module object
+// cannot be treated as a bare callable by provider resolution.
+func (s *pythonBareImportScopes) genericImportModules(from SymbolRecord, name string) []string {
+	sets := s.genericImportModuleSets(from, name)
+	var modules []string
+	for _, set := range sets {
+		modules = append(modules, set...)
+	}
+	return uniqueStrings(modules)
+}
+
 func (s *pythonBareImportScopes) importModuleSets(from SymbolRecord, name string) [][]string {
 	if s == nil || !s.complete {
 		return nil
@@ -63,6 +79,50 @@ func (s *pythonBareImportScopes) importModuleSets(from SymbolRecord, name string
 		return s.module[name]
 	}
 	return s.imports[from.ID][name]
+}
+
+func (s *pythonBareImportScopes) genericImportModuleSets(from SymbolRecord, name string) [][]string {
+	if s == nil || !s.complete {
+		return nil
+	}
+	var contexts []pythonImportContext
+	if from.Kind == "file" {
+		contexts = s.moduleContexts[name]
+	} else {
+		contexts = s.contexts[from.ID][name]
+	}
+	var sets [][]string
+	for _, context := range contexts {
+		if context.member == name {
+			sets = appendModuleSet(sets, context.modules)
+		}
+	}
+	return sets
+}
+
+func (s *pythonBareImportScopes) importContexts(from SymbolRecord, name string) []pythonImportContext {
+	if s == nil || !s.complete {
+		return nil
+	}
+	if from.Kind == "file" {
+		return s.moduleContexts[name]
+	}
+	return s.contexts[from.ID][name]
+}
+
+// genericCallAllowed is true when at least one call for this owner/name can
+// use ordinary bare-name resolution. Alias and module-object bindings are
+// deliberately not generic, while an unbound name or an ordinary `from ...
+// import name` binding is. This union is needed because provider relations are
+// per owner/name rather than per individual call site.
+func (s *pythonBareImportScopes) genericCallAllowed(from SymbolRecord, name string) bool {
+	if s == nil || !s.complete {
+		return true
+	}
+	if from.Kind == "file" {
+		return s.moduleGeneric[name]
+	}
+	return s.genericAllowed[from.ID][name]
 }
 
 type pythonBindingScope struct {
@@ -81,6 +141,12 @@ type pythonBindingScope struct {
 type pythonBindingEvent struct {
 	byteOffset int
 	modules    []string // nil = ordinary assignment/declaration
+	member     string   // original member for `from module import member as local`
+}
+
+type pythonImportContext struct {
+	modules []string
+	member  string
 }
 
 type pythonScopedCall struct {
@@ -89,36 +155,46 @@ type pythonScopedCall struct {
 }
 
 func (s *pythonBindingScope) importModules(name string, byteOffset int) []string {
-	if s == nil {
+	context, ok := s.importContext(name, byteOffset)
+	if !ok {
 		return nil
 	}
+	return context.modules
+}
+
+func (s *pythonBindingScope) importContext(name string, byteOffset int) (pythonImportContext, bool) {
+	if s == nil {
+		return pythonImportContext{}, false
+	}
 	if s.nonlocals[name] {
-		if modules := s.bindingAt(name, byteOffset); modules != nil || s.hasBindingAt(name, byteOffset) {
-			return modules
+		if context, bound := s.contextAt(name, byteOffset); bound {
+			return context, len(context.modules) > 0
 		}
-		return s.lexicalParent().importModules(name, byteOffset)
+		return s.lexicalParent().importContext(name, byteOffset)
 	}
 	if s.globals[name] {
-		if modules := s.bindingAt(name, byteOffset); modules != nil || s.hasBindingAt(name, byteOffset) {
-			return modules
+		if context, bound := s.contextAt(name, byteOffset); bound {
+			return context, len(context.modules) > 0
 		}
 		for module := s.parent; module != nil; module = module.parent {
 			if module.parent == nil {
-				return module.bindingAt(name, byteOffset)
+				context, bound := module.contextAt(name, byteOffset)
+				return context, bound && len(context.modules) > 0
 			}
 		}
-		return nil
+		return pythonImportContext{}, false
 	}
 	if s.locals[name] {
-		return s.bindingAt(name, byteOffset)
+		context, bound := s.contextAt(name, byteOffset)
+		return context, bound && len(context.modules) > 0
 	}
-	if modules := s.bindingAt(name, byteOffset); modules != nil || s.hasBindingAt(name, byteOffset) {
-		return modules
+	if context, bound := s.contextAt(name, byteOffset); bound {
+		return context, len(context.modules) > 0
 	}
 	if s.header {
-		return s.parent.importModules(name, byteOffset)
+		return s.parent.importContext(name, byteOffset)
 	}
-	return s.lexicalParent().importModules(name, byteOffset)
+	return s.lexicalParent().importContext(name, byteOffset)
 }
 
 func newPythonBindingScope(owner string, parent *pythonBindingScope) *pythonBindingScope {
@@ -277,7 +353,7 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 	case "import_statement", "import_from_statement":
 		if scope != nil {
 			for _, binding := range w.importBindings(node) {
-				scope.addImport(binding.name, binding.modules, int(node.StartByte()))
+				scope.addImport(binding.name, binding.modules, binding.member, int(node.StartByte()))
 			}
 		}
 	}
@@ -365,19 +441,82 @@ func (w *pythonScopeWalker) functionScopeForSymbol(node *sitter.Node, parent *py
 
 func (w *pythonScopeWalker) publish(scope *pythonBindingScope) {
 	for _, call := range scope.calls {
-		modules := scope.importModules(call.name, call.byteOffset)
-		if len(modules) == 0 {
-			continue
+		context, ok := scope.importContext(call.name, call.byteOffset)
+		generic := !ok && !scope.blocksImport(call.name, call.byteOffset)
+		if ok && context.member == call.name {
+			generic = true
 		}
 		if scope.owner == "" {
-			w.state.module[call.name] = appendModuleSet(w.state.module[call.name], modules)
+			w.state.moduleGeneric[call.name] = w.state.moduleGeneric[call.name] || generic
+			if ok {
+				w.state.moduleContexts[call.name] = appendPythonImportContext(w.state.moduleContexts[call.name], context)
+				if context.member == call.name || context.member == "" {
+					w.state.module[call.name] = appendModuleSet(w.state.module[call.name], context.modules)
+				}
+			}
 			continue
 		}
-		if w.state.imports[scope.owner] == nil {
-			w.state.imports[scope.owner] = map[string][][]string{}
+		if w.state.genericAllowed[scope.owner] == nil {
+			w.state.genericAllowed[scope.owner] = map[string]bool{}
 		}
-		w.state.imports[scope.owner][call.name] = appendModuleSet(w.state.imports[scope.owner][call.name], modules)
+		w.state.genericAllowed[scope.owner][call.name] = w.state.genericAllowed[scope.owner][call.name] || generic
+		if ok {
+			if w.state.contexts[scope.owner] == nil {
+				w.state.contexts[scope.owner] = map[string][]pythonImportContext{}
+			}
+			w.state.contexts[scope.owner][call.name] = appendPythonImportContext(w.state.contexts[scope.owner][call.name], context)
+			if context.member == call.name || context.member == "" {
+				if w.state.imports[scope.owner] == nil {
+					w.state.imports[scope.owner] = map[string][][]string{}
+				}
+				w.state.imports[scope.owner][call.name] = appendModuleSet(w.state.imports[scope.owner][call.name], context.modules)
+			}
+		}
 	}
+}
+
+func (s *pythonBindingScope) blocksImport(name string, byteOffset int) bool {
+	if s == nil {
+		return false
+	}
+	if s.nonlocals[name] {
+		if context, bound := s.contextAt(name, byteOffset); bound {
+			return len(context.modules) == 0
+		}
+		return s.lexicalParent().blocksImport(name, byteOffset)
+	}
+	if s.globals[name] {
+		if context, bound := s.contextAt(name, byteOffset); bound {
+			return len(context.modules) == 0
+		}
+		return s.moduleScope().blocksImport(name, byteOffset)
+	}
+	if s.locals[name] {
+		context, bound := s.contextAt(name, byteOffset)
+		return !bound || len(context.modules) == 0
+	}
+	if context, bound := s.contextAt(name, byteOffset); bound {
+		// A module-level definition is a real workspace binding (classes in
+		// particular are constructor targets), not a function-local shadow.
+		if s.owner == "" && len(context.modules) == 0 {
+			return false
+		}
+		return len(context.modules) == 0
+	}
+	if s.header {
+		return s.parent.blocksImport(name, byteOffset)
+	}
+	return s.lexicalParent().blocksImport(name, byteOffset)
+}
+
+func appendPythonImportContext(contexts []pythonImportContext, context pythonImportContext) []pythonImportContext {
+	context.modules = uniqueStrings(context.modules)
+	for _, existing := range contexts {
+		if existing.member == context.member && strings.Join(existing.modules, "\x00") == strings.Join(context.modules, "\x00") {
+			return contexts
+		}
+	}
+	return append(contexts, context)
 }
 
 func appendModuleSet(sets [][]string, modules []string) [][]string {
@@ -400,10 +539,10 @@ func (s *pythonBindingScope) addName(name string, byteOffset int, local bool) {
 	}
 }
 
-func (s *pythonBindingScope) addImport(name string, modules []string, byteOffset int) {
+func (s *pythonBindingScope) addImport(name string, modules []string, member string, byteOffset int) {
 	name = strings.TrimSpace(name)
 	if name != "" && len(modules) > 0 {
-		s.bindings[name] = append(s.bindings[name], pythonBindingEvent{byteOffset: byteOffset, modules: uniqueStrings(modules)})
+		s.bindings[name] = append(s.bindings[name], pythonBindingEvent{byteOffset: byteOffset, modules: uniqueStrings(modules), member: member})
 	}
 }
 
@@ -415,12 +554,18 @@ func (w *pythonScopeWalker) walrusScope(scope *pythonBindingScope) *pythonBindin
 }
 
 func (s *pythonBindingScope) bindingAt(name string, byteOffset int) []string {
+	context, _ := s.contextAt(name, byteOffset)
+	return context.modules
+}
+
+func (s *pythonBindingScope) contextAt(name string, byteOffset int) (pythonImportContext, bool) {
 	for events := s.bindings[name]; len(events) > 0; events = events[:len(events)-1] {
 		if events[len(events)-1].byteOffset <= byteOffset {
-			return events[len(events)-1].modules
+			event := events[len(events)-1]
+			return pythonImportContext{modules: event.modules, member: event.member}, true
 		}
 	}
-	return nil
+	return pythonImportContext{}, false
 }
 
 func (s *pythonBindingScope) hasBindingAt(name string, byteOffset int) bool {
@@ -599,6 +744,7 @@ func (w *pythonScopeWalker) statementNames(node *sitter.Node, out map[string]boo
 type pythonScopedImport struct {
 	name    string
 	modules []string
+	member  string
 }
 
 func (w *pythonScopeWalker) importBindings(node *sitter.Node) []pythonScopedImport {
@@ -636,7 +782,7 @@ func (w *pythonScopeWalker) importBindings(node *sitter.Node) []pythonScopedImpo
 		if local == "" {
 			local = name
 		}
-		out = append(out, pythonScopedImport{name: local, modules: []string{statements[0].module}})
+		out = append(out, pythonScopedImport{name: local, modules: []string{pythonFromImportModuleSpec(statements[0].module, name)}, member: name})
 	}
 	return out
 }

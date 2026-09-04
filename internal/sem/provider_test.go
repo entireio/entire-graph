@@ -1463,6 +1463,382 @@ class Service:
 	assertTarget("iterable_default", "classmod.c")
 }
 
+func TestPythonScopedFromImportAliasesResolveOriginalMember(t *testing.T) {
+	assertCalls := func(t *testing.T, source string, want map[string]string) {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "two.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", source)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for caller, target := range want {
+			if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", caller, "app.py", "compute", target) {
+				t.Fatalf("%s did not resolve alias to %s: %#v", caller, target, relationsOfType(snapshot.Relations, "CALLS"))
+			}
+		}
+	}
+
+	assertCalls(t, `from one import compute as c
+
+def basic():
+    return c(1)
+
+def local():
+    from two import compute as c
+    return c(1)
+
+def sibling():
+    return c(1)
+`, map[string]string{"basic": "one.c", "local": "two.c", "sibling": "one.c"})
+
+	t.Run("sequential and sibling aliases stay scoped", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "two.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", `from one import compute as first
+from two import compute as second
+
+def first_sibling():
+    return first(1)
+
+def second_sibling():
+    return second(1)
+
+def sequential():
+    from one import compute as c
+    c(1)
+    from two import compute as c
+    c(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "first_sibling", "app.py", "compute", "one.c") ||
+			!hasRelationBySymbolNameAndFile(snapshot, "CALLS", "second_sibling", "app.py", "compute", "two.c") {
+			t.Fatalf("sibling aliases leaked or lost their original members: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+		calls := callRelationsFrom(t, repo, "app.py:function:sequential")
+		seen := map[string]bool{}
+		for _, call := range calls {
+			if strings.Contains(call.ToID, ".c:function:compute") {
+				seen[call.ToID] = true
+			}
+		}
+		if len(seen) != 2 {
+			t.Fatalf("sequential alias rebindings did not retain both visible targets: %#v", calls)
+		}
+	})
+
+	t.Run("top level and parenthesized", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "app.py", `from one import (
+    compute as c,
+)
+
+c(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.HasSuffix(relation.FromID, "file:app.py") && strings.Contains(relation.ToID, "one.c:function:compute") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("top-level parenthesized alias did not resolve original member: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+
+	t.Run("same-language and unresolved top-level aliases", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.py", "def compute(value):\n    return value + 1\n")
+		writeFile(t, repo, "app.py", `from one import compute as c
+
+def run():
+    return c(1)
+`)
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "one.py:function:compute") {
+			t.Fatalf("same-language alias did not use its original import member: %#v", calls)
+		}
+
+		writeFile(t, repo, "app.py", "from missing import compute as c\nc(1)\n")
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.HasSuffix(relation.FromID, "file:app.py") {
+				t.Fatalf("top-level unresolved alias invented an external edge: %#v", relation)
+			}
+		}
+	})
+
+	t.Run("shadowing and module-only aliases do not fall through", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "other.py", `def c(value):
+    return value
+`)
+		writeFile(t, repo, "app.py", `from one import compute as c
+import one as module_alias
+
+def before():
+    c(1)
+    from one import compute as c
+
+def assigned():
+    c = lambda value: value
+    return c(1)
+
+def parameter(c):
+    return c(1)
+
+def module_only():
+    return module_alias(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, caller := range []string{"before", "assigned", "parameter", "module_only"} {
+			for _, relation := range snapshot.Relations {
+				if relation.Type == "CALLS" && strings.Contains(relation.FromID, "app.py:function:"+caller) && (strings.Contains(relation.ToID, "one.c:function:compute") || strings.Contains(relation.ToID, "other.py:function:c") || relation.Resolution == "import_external") {
+					t.Fatalf("%s fell through an alias scope guard: %#v", caller, relation)
+				}
+			}
+		}
+	})
+
+	t.Run("ambiguous and incomplete aliases do not guess a local FFI target", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "lib/frobnicate.rb", "def compute(value)\n  value + 1\nend\n")
+		writeFile(t, repo, "app.py", `from frobnicate import compute as c
+
+def run():
+    return c(1)
+`)
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || calls[0].ToID != externalID("symbol", "frobnicate.compute") {
+			t.Fatalf("ambiguous alias must stay external under the imported member: %#v", calls)
+		}
+
+		writeFile(t, repo, "app.py", "from frobnicate import compute as c\n\ndef run():\n    return c(1)\n\nbroken = (\n")
+		calls = callRelationsFrom(t, repo, "app.py:function:run")
+		for _, call := range calls {
+			if strings.Contains(call.ToID, ".c:function:compute") || strings.Contains(call.ToID, ".rb:function:compute") {
+				t.Fatalf("incomplete alias scope guessed a local foreign target: %#v", calls)
+			}
+		}
+	})
+}
+
+func TestPythonScopedAliasesComposeWithGenericResolution(t *testing.T) {
+	t.Run("resolved and unresolved aliases both publish", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "app.py", `def run():
+    from one import compute as c
+    c(1)
+    from missing import remote_compute as c
+    c(1)
+`)
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		foundLocal := false
+		foundExternal := false
+		for _, call := range calls {
+			if strings.Contains(call.ToID, "one.c:function:compute") {
+				foundLocal = true
+			}
+			if call.ToID == externalID("symbol", "missing.remote_compute") {
+				foundExternal = true
+			}
+		}
+		if !foundLocal {
+			t.Fatalf("resolved alias disappeared beside unresolved rebind: %#v", calls)
+		}
+		if !foundExternal {
+			t.Fatalf("unresolved alias was not retained beside a local target: %#v", calls)
+		}
+	})
+
+	t.Run("lambda-local shadow leaves an outer imported call generic", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "app.py", `from one import compute
+
+def run(value):
+    handler = lambda compute: compute(value)
+    return compute(value)
+`)
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "one.c:function:compute") {
+			t.Fatalf("lambda-local binding suppressed its enclosing imported call: %#v", calls)
+		}
+	})
+
+	t.Run("module definitions remain generic constructor candidates", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "auth.py", `class AuthService:
+    pass
+
+def build():
+    return AuthService()
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasRelationBySymbolNameAndFile(snapshot, "CONSTRUCTS", "build", "auth.py", "AuthService", "auth.py") {
+			t.Fatalf("module class binding was mistaken for an import blocker: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+		}
+
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "app.py", `from one import compute as c
+c = lambda value: value
+c(1)
+`)
+		snapshot, err = BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.Contains(relation.ToID, "one.c:function:compute") {
+				t.Fatalf("module temporal rebinding retained a stale alias target: %#v", relation)
+			}
+		}
+
+		writeFile(t, repo, "one.c", "int c(int value) { return value; }\n")
+		writeFile(t, repo, "app.py", `import one as c
+
+def before():
+    return c(1)
+
+c = lambda value: value
+
+def after():
+    return c(1)
+`)
+		snapshot, err = BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.Contains(relation.ToID, "one.c:function:c") {
+				t.Fatalf("module alias or its later lambda rebinding became a bare C call: %#v", relation)
+			}
+		}
+	})
+
+	t.Run("global nonlocal relative and class-header aliases retain their member", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "src/util.py", `def compute(value=1):
+    return value
+`)
+		writeFile(t, repo, "src/app.py", `from .util import compute as module_compute
+
+def global_call():
+    global module_compute
+    return module_compute()
+
+def outer():
+    from .util import compute as nested_compute
+    def inner():
+        nonlocal nested_compute
+        return nested_compute()
+    return inner()
+
+class Service:
+    from .util import compute as class_compute
+    def method(self, value=class_compute()):
+        return value
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, caller := range []string{"global_call", "inner", "method"} {
+			if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", caller, "src/app.py", "compute", "src/util.py") {
+				t.Fatalf("%s lost its relative alias member: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+			}
+		}
+	})
+
+	t.Run("pure-dot relative aliases retain their resolved module path", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "pkg/sub/compute.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "pkg/compute.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "pkg/sub/app.py", `from . import compute as sibling
+from .. import (
+    compute as parent,
+)
+
+def run():
+    return sibling(1) + parent(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var calls []RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.Contains(relation.FromID, "pkg/sub/app.py:function:run") {
+				calls = append(calls, relation)
+			}
+		}
+		seen := map[string]bool{}
+		for _, call := range calls {
+			if strings.Contains(call.ToID, ".c:function:compute") {
+				seen[call.ToID] = true
+			}
+		}
+		if len(seen) != 2 {
+			t.Fatalf("pure-dot relative aliases lost their distinct C modules: %#v", calls)
+		}
+	})
+
+	t.Run("incomplete alias keeps its imported external spelling", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "lib.c", "int Widget(int value) { return value; }\n")
+		writeFile(t, repo, "app.py", "from lib import Widget as W\n\ndef run():\n    return W(1)\n\nbroken = (\n")
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || calls[0].ToID != externalID("symbol", "lib.Widget") {
+			t.Fatalf("incomplete alias must remain external under Widget, not W: %#v", calls)
+		}
+
+		writeFile(t, repo, "one.c", "int compute(int value) { return value; }\n")
+		writeFile(t, repo, "app.py", "from one import compute as c\nc(1)\nbroken = (\n")
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, relation := range snapshot.Relations {
+			if relation.Type != "CALLS" || !strings.HasSuffix(relation.FromID, "file:app.py") {
+				continue
+			}
+			if strings.Contains(relation.ToID, "one.c:function:compute") {
+				t.Fatalf("incomplete top-level alias recovered a local target: %#v", relation)
+			}
+			if relation.ToID == externalID("symbol", "one.compute") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("incomplete top-level alias lost its original external member: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+}
+
 func TestParenthesizedPythonFromImportKeepsScopedFFIAndImportScannersAligned(t *testing.T) {
 	content := `from frobnicate import (
     compute, # imported callable
