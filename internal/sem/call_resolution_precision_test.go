@@ -1026,3 +1026,39 @@ func TestPythonFromImportKeywordBoundaryForms(t *testing.T) {
 		}
 	})
 }
+
+func TestPythonScopeDelayedBindingsAndMatchCaptures(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{"assignment rhs", "from frobnicate import compute\ncompute = compute()\n", true},
+		{"chained assignment rhs", "from frobnicate import compute\ncompute = other = compute()\n", true},
+		{"destructured assignment rhs", "from frobnicate import compute\ncompute, other = compute(), 1\n", true},
+		{"augmented assignment rhs", "from frobnicate import compute\ncompute += compute()\n", true},
+		{"for iterable", "from frobnicate import compute\nfor compute in compute():\n    pass\n", true},
+		{"valued annotation rhs", "from frobnicate import compute\ncompute: int = compute()\n", true},
+		{"bare annotation keeps import", "from frobnicate import compute\ncompute: int\nhandler = compute()\n", true},
+		{"class bare annotation keeps import", "from frobnicate import compute\nclass Holder:\n    compute: int\nhandler = compute()\n", true},
+		{"function assignment remains local", "from frobnicate import compute\ndef plain():\n    compute = compute()\n", false},
+		{"function bare annotation remains local", "from frobnicate import compute\ndef plain():\n    compute: int\n    return compute()\n", false},
+		{"module case guard and body bind", "from frobnicate import compute\nmatch value:\n    case compute if compute():\n        pass\nhandler = compute()\n", false},
+		{"class case guard and body bind", "from frobnicate import compute\nclass Holder:\n    match value:\n        case compute if compute():\n            pass\n    handler = compute()\n", false},
+		{"function case capture remains local", "from frobnicate import compute\ndef plain(value):\n    match value:\n        case compute:\n            pass\n    return compute()\n", false},
+		{"module walrus rhs", "from frobnicate import compute\nif (compute := compute()):\n    pass\n", true},
+		{"module walrus later call", "from frobnicate import compute\nif (compute := 1):\n    pass\nhandler = compute()\n", false},
+		{"function walrus remains local", "from frobnicate import compute\ndef plain():\n    if (compute := compute()):\n        return compute\n", false},
+		{"comprehension walrus remains enclosing local", "from frobnicate import compute\ndef plain(values):\n    return [compute() for value in values if (compute := 1)]\n", false},
+		{"lambda walrus remains lambda local", "from frobnicate import compute\nhandler = (lambda: (compute(), (compute := 1)))()\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			edges := pythonFFICallEdges(t, test.src)
+			if test.want {
+				assertOneImportResolvedComputeEdge(t, edges, "file:app.py")
+			} else {
+				assertNoComputeEdge(t, edges, "the binding must shadow the imported callable")
+			}
+		})
+	}
+}

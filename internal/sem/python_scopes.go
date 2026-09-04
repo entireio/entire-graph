@@ -357,13 +357,21 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 				scope.calls = append(scope.calls, pythonScopedCall{name: fn.Content(w.src), byteOffset: int(fn.StartByte())})
 			}
 		}
-	case "assignment", "augmented_assignment", "annotated_assignment":
+	case "assignment":
 		if scope != nil {
-			w.addTarget(scope, node.ChildByFieldName("left"))
+			// Tree-sitter represents annotations as assignments with a `type`
+			// child. A bare annotation declares a name but does not rebind it.
+			if !validNode(node.ChildByFieldName("type")) || validNode(node.ChildByFieldName("right")) {
+				w.addTargetFrom(scope, node.ChildByFieldName("left"), int(node.EndByte()))
+			}
+		}
+	case "augmented_assignment":
+		if scope != nil {
+			w.addTargetFrom(scope, node.ChildByFieldName("left"), int(node.EndByte()))
 		}
 	case "for_statement":
 		if scope != nil {
-			w.addTarget(scope, w.targetFieldOrFirst(node, "left"))
+			w.addTargetFrom(scope, w.targetFieldOrFirst(node, "left"), w.bindingOffset(node, node.ChildByFieldName("body")))
 		}
 	case "with_item":
 		if scope != nil {
@@ -376,9 +384,13 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 			// below reaches them exactly like any other statement.
 			w.addTarget(scope, w.asPatternAlias(node))
 		}
+	case "case_clause":
+		if scope != nil {
+			w.walkCaseClause(node, scope, depth)
+		}
 	case "named_expression":
 		if scope != nil {
-			w.addTarget(w.walrusScope(scope), w.targetFieldOrFirst(node, "name"))
+			w.addTargetFrom(w.walrusScope(scope), w.targetFieldOrFirst(node, "name"), int(node.EndByte()))
 		}
 	case "delete_statement":
 		if scope != nil {
@@ -406,6 +418,51 @@ func (w *pythonScopeWalker) walk(node *sitter.Node, scope *pythonBindingScope, d
 
 func samePythonNode(a, b *sitter.Node) bool {
 	return validNode(a) && validNode(b) && a.Type() == b.Type() && a.StartByte() == b.StartByte() && a.EndByte() == b.EndByte()
+}
+
+func (w *pythonScopeWalker) walkCaseClause(node *sitter.Node, scope *pythonBindingScope, depth int) {
+	if scope.owner != "" && !scope.class {
+		return
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		pattern := node.NamedChild(i)
+		if validNode(pattern) && pattern.Type() == "case_pattern" {
+			w.addCaseCaptures(pattern, scope, int(pattern.EndByte()), depth+1)
+			return
+		}
+	}
+}
+
+func (w *pythonScopeWalker) addCaseCaptures(node *sitter.Node, scope *pythonBindingScope, boundFrom, depth int) {
+	if !validNode(node) || depth >= maxParseWalkDepth {
+		if validNode(node) {
+			w.complete = false
+		}
+		return
+	}
+	switch node.Type() {
+	case "identifier":
+		scope.addName(node.Content(w.src), boundFrom, scope.owner != "" || scope.comp)
+	case "dotted_name":
+		if node.NamedChildCount() == 1 {
+			w.addCaseCaptures(node.NamedChild(0), scope, boundFrom, depth+1)
+		}
+	case "case_pattern", "union_pattern", "list_pattern", "tuple_pattern", "as_pattern", "splat_pattern":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			w.addCaseCaptures(node.NamedChild(i), scope, boundFrom, depth+1)
+		}
+	case "class_pattern", "dict_pattern":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			child := node.NamedChild(i)
+			if validNode(child) && (child.Type() == "case_pattern" || child.Type() == "splat_pattern") {
+				w.addCaseCaptures(child, scope, boundFrom, depth+1)
+			}
+		}
+	case "keyword_pattern":
+		for i := 1; i < int(node.NamedChildCount()); i++ {
+			w.addCaseCaptures(node.NamedChild(i), scope, boundFrom, depth+1)
+		}
+	}
 }
 
 func (w *pythonScopeWalker) walkComprehension(node *sitter.Node, parent *pythonBindingScope, depth int) {
@@ -693,11 +750,19 @@ func (w *pythonScopeWalker) fieldName(node *sitter.Node, field string) string {
 }
 
 func (w *pythonScopeWalker) addTarget(scope *pythonBindingScope, node *sitter.Node) {
+	w.addTargetFrom(scope, node, 0)
+}
+
+func (w *pythonScopeWalker) addTargetFrom(scope *pythonBindingScope, node *sitter.Node, boundFrom int) {
 	if !validNode(node) {
 		return
 	}
 	if node.Type() == "identifier" {
-		scope.addName(node.Content(w.src), int(node.StartByte()), scope.owner != "" || scope.comp)
+		offset := int(node.StartByte())
+		if boundFrom > offset {
+			offset = boundFrom
+		}
+		scope.addName(node.Content(w.src), offset, scope.owner != "" || scope.comp)
 		return
 	}
 	// Assignment targets may be destructured, but an attribute or subscription
@@ -708,7 +773,7 @@ func (w *pythonScopeWalker) addTarget(scope *pythonBindingScope, node *sitter.No
 	switch node.Type() {
 	case "tuple", "list", "pattern_list", "list_pattern", "tuple_pattern", "parenthesized_expression", "starred_expression", "list_splat_pattern", "dictionary_splat_pattern", "as_pattern_target":
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			w.addTarget(scope, node.NamedChild(i))
+			w.addTargetFrom(scope, node.NamedChild(i), boundFrom)
 		}
 	}
 }
@@ -766,6 +831,12 @@ func (w *pythonScopeWalker) collectFunctionBindings(node *sitter.Node, scope *py
 		w.collectTargetNames(w.targetFieldOrFirst(node, "name"), scope)
 	case "delete_statement":
 		w.collectTargetNames(node.NamedChild(0), scope)
+	case "case_clause":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			if child := node.NamedChild(i); validNode(child) && child.Type() == "case_pattern" {
+				w.collectCaseCaptures(child, scope, depth+1)
+			}
+		}
 	case "global_statement":
 		w.statementNames(node, scope.globals)
 	case "nonlocal_statement":
@@ -777,6 +848,37 @@ func (w *pythonScopeWalker) collectFunctionBindings(node *sitter.Node, scope *py
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		w.collectFunctionBindings(node.NamedChild(i), scope, depth+1)
+	}
+}
+
+func (w *pythonScopeWalker) collectCaseCaptures(node *sitter.Node, scope *pythonBindingScope, depth int) {
+	if !validNode(node) || depth >= maxParseWalkDepth {
+		if validNode(node) {
+			w.complete = false
+		}
+		return
+	}
+	switch node.Type() {
+	case "identifier":
+		scope.locals[node.Content(w.src)] = true
+	case "dotted_name":
+		if node.NamedChildCount() == 1 {
+			w.collectCaseCaptures(node.NamedChild(0), scope, depth+1)
+		}
+	case "case_pattern", "union_pattern", "list_pattern", "tuple_pattern", "as_pattern", "splat_pattern":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			w.collectCaseCaptures(node.NamedChild(i), scope, depth+1)
+		}
+	case "class_pattern", "dict_pattern":
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			if child := node.NamedChild(i); validNode(child) && (child.Type() == "case_pattern" || child.Type() == "splat_pattern") {
+				w.collectCaseCaptures(child, scope, depth+1)
+			}
+		}
+	case "keyword_pattern":
+		for i := 1; i < int(node.NamedChildCount()); i++ {
+			w.collectCaseCaptures(node.NamedChild(i), scope, depth+1)
+		}
 	}
 }
 
