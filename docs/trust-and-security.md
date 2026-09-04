@@ -237,6 +237,37 @@ command does so.
   command first. Both run with your privileges; pass only commands you would
   run yourself.
 
+## Payload integrity (`text` and `agent` formats)
+
+The `text` and `agent` payloads are a line-anchored record stream: every record
+— a ranked hit, a passage header, the `VERIFY:` command, a declaration card
+entry — begins at column 0, and the source quoted between records is lifted
+verbatim out of tracked files. A file whose own content holds a column-0 line
+shaped like a record is therefore, once quoted into a snippet, hard to tell
+apart from output this tool authored. `VERIFY:` is the sharp edge: it is the
+one line the agent guide tells an agent to run.
+
+What the tool does about it: every repository-derived body these two formats
+print is scanned, and any line that would be read as one of the tool's own
+record heads is indented by one space, which takes it out of record position
+while leaving its content byte-for-byte intact. A payload that indented
+anything says so, on its own first line, beginning `UNTRUSTED FILE CONTENT:`.
+
+What that does **not** give you:
+
+- It is not authentication. A forged record becomes detectable, not
+  impossible; nothing stops a reader that ignores indentation from acting on an
+  indented line.
+- The grammar is a closed set covering the records the `search` renderers emit.
+  `def`, `impact`, `neighbors` and `callsite` print source through their own
+  paths and are not covered.
+- `--presearch` echoes a caller-supplied file verbatim and is not inspected.
+
+**`json` and `ndjson` are structurally immune** and are the right choice for
+any consumer that parses output: a snippet is a quoted string value with its
+newlines escaped, so repository content cannot become a record there whatever
+it holds.
+
 ## Determinism and heuristics
 
 The same repository view and options produce the same graph. There is no

@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -140,8 +141,10 @@ var ooRelationSupport = map[string][]string{
 	// produces none), so every USES_TYPE edge observed from R had resolved to a
 	// foreign type.
 	"C": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	// C++ shares C's extraction path, so it reaches the same passes.
-	"C++":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	// C++ shares C's extraction path and can resolve reads, writes and
+	// address-taking through typed receivers now that class data members are
+	// extracted.
+	"C++":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "DATA_FLOWS"},
 	"Clojure": {"USES_TYPE"},
 	// ClojureScript reads .cljs with the Clojure grammar and so reaches the same
 	// `^Point` type hint, but it was not a key of this map at all -- the
@@ -2064,6 +2067,1457 @@ func nameCallMayTargetMethod(lang string) bool {
 	return implicitReceiverLanguage(lang) || lang == "Rust"
 }
 
+// fsharpNamespaceScope is one `namespace X` declaration: the line it opens on
+// and the dotted path it nests everything below it under.
+type fsharpNamespaceScope struct {
+	line   int
+	prefix string
+}
+
+// A namespace declaration is a top-level form, so it starts at column 0. `rec`
+// is allowed between the keyword and the path (`namespace rec X.Y`).
+var fsharpNamespaceDeclPattern = regexp.MustCompile(`(?m)^namespace[ \t]+(?:rec[ \t]+)?([A-Za-z_][A-Za-z0-9_'.]*)[ \t]*\r?$`)
+
+// fsharpNamespaceScopes lists the namespaces an F# file opens, in source order.
+//
+// F# writes `namespace X` when a file's contents nest under a path without
+// introducing a module of that name, and the parser emits NO symbol for it --
+// a namespace holds no bindings of its own, so there is nothing to emit. The
+// container chain a module path is built from therefore starts at the module,
+// and `namespace X` + `module A` recorded its members under `A`. The call that
+// names them, `X.A.f`, then matched no declared module at all: it was not
+// recognised as a module qualifier, recorded bare, resolved unrestricted, and
+// bound to whichever same-named definition sat nearest -- or, once a second
+// module declared that name too, emitted no edge whatsoever despite naming its
+// target in full.
+//
+// Literals and comments are masked first, so a `namespace` line inside a
+// triple-quoted string or a `(* ... *)` block cannot open a scope. `namespace
+// global` is the root namespace and adds no prefix.
+func fsharpNamespaceScopes(content string) []fsharpNamespaceScope {
+	if !strings.Contains(content, "namespace") {
+		return nil
+	}
+	masked := maskFSharpLiteralsAndLineComments(maskFSharpBlockComments(content))
+	matches := fsharpNamespaceDeclPattern.FindAllStringSubmatchIndex(masked, -1)
+	scopes := make([]fsharpNamespaceScope, 0, len(matches))
+	for _, match := range matches {
+		prefix := masked[match[2]:match[3]]
+		if prefix == "global" {
+			prefix = ""
+		}
+		scopes = append(scopes, fsharpNamespaceScope{line: 1 + strings.Count(masked[:match[0]], "\n"), prefix: prefix})
+	}
+	return scopes
+}
+
+// fsharpNamespaceAt returns the namespace a line sits in -- the last one
+// declared at or above it. A file may open several in sequence, and anything
+// above the first declaration is in none.
+func fsharpNamespaceAt(scopes []fsharpNamespaceScope, line int) string {
+	prefix := ""
+	for _, scope := range scopes {
+		if scope.line > line {
+			break
+		}
+		prefix = scope.prefix
+	}
+	return prefix
+}
+
+// fsharpModulePaths maps each symbol in an F# file to the dotted path of the
+// modules it is declared in ("A", "LoadingScripts.ScriptGeneration"), and
+// returns the set of paths the file declares. F# files routinely hold several
+// modules, so a call written `A.convert` must be held to module A's members
+// instead of binding to whichever same-named definition sits nearest.
+//
+// The file's namespace declarations are part of that path even though no
+// symbol carries them (see fsharpNamespaceScopes): a file-heading `module
+// A.B.C` already spells its whole path in the symbol's name, and `namespace X`
+// + `module A` must record the same `X.A` rather than a bare `A`.
+func fsharpModulePaths(fileSymbols []SymbolRecord, namespaces []fsharpNamespaceScope) (map[string]string, map[string]bool) {
+	byID := make(map[string]SymbolRecord, len(fileSymbols))
+	for _, symbol := range fileSymbols {
+		byID[symbol.ID] = symbol
+	}
+	pathBySymbolID := make(map[string]string, len(fileSymbols))
+	declared := map[string]bool{}
+	for _, symbol := range fileSymbols {
+		var segments []string
+		// Bound by the file's symbol count: a container chain cannot revisit a
+		// symbol, and a malformed one stops at the first unknown container.
+		for container, hops := symbol.ContainerID, 0; container != "" && hops <= len(fileSymbols); hops++ {
+			parent, ok := byID[container]
+			if !ok {
+				break
+			}
+			if parent.Kind == "module" {
+				segments = append([]string{parent.Name}, segments...)
+			}
+			container = parent.ContainerID
+		}
+		path := strings.Join(segments, ".")
+		// The namespace the declaration sits in prefixes the whole chain: it is
+		// a container the symbol set does not model, not one the walk above
+		// missed.
+		if prefix := fsharpNamespaceAt(namespaces, symbol.StartLine); prefix != "" {
+			if path == "" {
+				path = prefix
+			} else {
+				path = prefix + "." + path
+			}
+		}
+		pathBySymbolID[symbol.ID] = path
+		if symbol.Kind == "module" {
+			own := symbol.Name
+			if path != "" {
+				own = path + "." + symbol.Name
+			}
+			declared[own] = true
+		}
+	}
+	return pathBySymbolID, declared
+}
+
+// fsharpProjectModulePaths is fsharpModulePaths over every F# file at once.
+//
+// F# modules are PROJECT-scoped, not file-scoped, and the usual layout is one
+// module per file, so `A.convert` written anywhere in the project names module
+// A wherever A is declared. Deciding what a qualifier may name from the caller
+// FILE's declarations alone therefore threw the restriction away on exactly the
+// calls that most need it: a cross-file `A.convert` was recorded as bare
+// `convert`, and once a second module declared a `convert` too, the
+// globally-unique fallback emitted NO edge at all despite the explicit
+// qualifier. The path map has to widen with it, because the scope a cross-file
+// qualifier names lives in another file and a map keyed on this file's symbols
+// cannot filter it.
+//
+// A qualifier naming no module the project declares -- a .NET namespace
+// (`System.Text.encode`), a value receiver (`svc.encode`) -- is still not a
+// qualifier here and still records as bare, so it keeps resolving unrestricted
+// instead of being held to an empty scope and losing its edge.
+//
+// Container chains never cross files, so merging the per-file maps is exact.
+func fsharpProjectModulePaths(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) (map[string]string, map[string]bool) {
+	pathBySymbolID := map[string]string{}
+	declared := map[string]bool{}
+	for _, file := range files {
+		if file.Language != "F#" {
+			continue
+		}
+		// The file's namespace declarations carry no symbol, so the path map
+		// has to read them out of the source.
+		var namespaces []fsharpNamespaceScope
+		if content, ok := readContent(file.Path); ok {
+			namespaces = fsharpNamespaceScopes(content)
+		}
+		filePaths, fileDeclared := fsharpModulePaths(recordsByFile[file.Path], namespaces)
+		for id, path := range filePaths {
+			pathBySymbolID[id] = path
+		}
+		for path := range fileDeclared {
+			declared[path] = true
+		}
+	}
+	return pathBySymbolID, declared
+}
+
+// fsharpQualifierMatchesModulePath reports whether a call's qualifier names the
+// module a symbol is declared in. A qualifier may be written relative to the
+// enclosing scope (`ScriptGeneration.f` inside `LoadingScripts`), so a suffix on
+// a dot boundary counts.
+func fsharpQualifierMatchesModulePath(path, qualifier string) bool {
+	return path == qualifier || strings.HasSuffix(path, "."+qualifier)
+}
+
+// fsharpRootAnchoredPath reads F#'s `global.` prefix off a qualifier and
+// reports whether it was there. `global` is a KEYWORD, not an identifier, and
+// the grammar admits it only at the head of a long identifier, so a nested
+// `A.global.B` does not parse and only a leading occurrence is stripped --
+// leaving a mid-path `global` alone, which is the direction that cannot invent
+// a match.
+//
+// The prefix is an explicit ROOT ANCHOR: `global.Serde` names the top-level
+// `Serde` and nothing else, which is exactly why the keyword exists -- it is
+// how F# reaches a root path that a nearer declaration of the same name would
+// otherwise shadow. So the anchored reading is the stripped path matched
+// EXACTLY. Reading it as an ordinary qualifier instead would be wrong in both
+// directions at once: `global.Serde` matched no declared path at all, so the
+// call recorded bare and bound whatever `serialize` sat nearest; and merely
+// dropping the prefix would let the relative rules that follow admit a nested
+// `Deep.Serde` or the caller's own `Use.Serde`, collapsing two genuinely
+// different modules onto the one spelling the source went out of its way to
+// disambiguate.
+//
+// `namespace global` is the same keyword saying the same thing at the other
+// end, and fsharpNamespaceScopes already reads it as "no prefix", so a path
+// declared under it is stored at the root and an anchored qualifier finds it.
+func fsharpRootAnchoredPath(qualifier string) (string, bool) {
+	if qualifier == "global" {
+		return "", true
+	}
+	if rest, anchored := strings.CutPrefix(qualifier, "global."); anchored {
+		return rest, true
+	}
+	return qualifier, false
+}
+
+// fsharpModulePathDeclared reports whether the qualifier names a module the
+// PROJECT declares -- see fsharpProjectModulePaths for why the caller file's
+// own declarations are the wrong question. A qualifier that names no declared
+// module is not a module qualifier at all (a .NET namespace, a value receiver),
+// so it stays unrestricted and resolves by name.
+//
+// A root-anchored qualifier is tested against the declared paths EXACTLY: it
+// names one absolute path, so the suffix rule -- which exists for a qualifier
+// written relative to an enclosing scope -- does not apply to it. `global`
+// alone anchors nothing further and names no module, so it declares nothing.
+func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
+	if root, anchored := fsharpRootAnchoredPath(qualifier); anchored {
+		return root != "" && declared[root]
+	}
+	for path := range declared {
+		if fsharpQualifierMatchesModulePath(path, qualifier) {
+			return true
+		}
+	}
+	return false
+}
+
+// fsharpModuleAbbreviationPattern matches an F# module abbreviation
+// (`module Json = Newtonsoft.Json`), which binds a LOCAL name to a module or
+// namespace path. The right-hand side is captured so the verbose nested-module
+// BLOCK form can be told apart by the one word that heads it; a plain
+// `module Nested =` heading a block has nothing after the `=` at all.
+//
+// The right-hand side used to be required to start with an UPPERCASE letter,
+// which is not what distinguishes an abbreviation -- it is only how the paths
+// in the common case happen to be spelled. F# writes the global namespace with
+// the lowercase keyword `global` (`module Json = global.Newtonsoft.Json`), and
+// lets a module or namespace be named in lowercase or with a leading
+// underscore, so every one of those abbreviations was missed and the alias it
+// binds went unrecorded. A missed abbreviation is not a neutral omission: the
+// qualifier is then classified by the project's module declarations alone, so
+// `Json.serialize` under `module Json = global.Newtonsoft.Json` was pinned to
+// an unrelated project module named `Json`.
+//
+// The WHOLE dotted right-hand side is captured, not just the word that heads
+// it, because the path is what the abbreviation binds the name TO. Keeping only
+// the first segment was enough to tell an abbreviation from a `begin` block but
+// left `module Json = Deep.Serde` indistinguishable from `module Json = Deep`,
+// so the alias could not be followed to the module it actually names.
+//
+// No accessibility modifier is accepted between `module` and the name, unlike
+// the `let` binding below. F# parses `module private Json = Serde` and then
+// rejects it outright -- FS0536, "The 'private' accessibility attribute is not
+// allowed on module abbreviation. Module abbreviations are always private."
+// (`pars.fsy` raises it from the abbreviation branch of the `moduleIntro EQUALS
+// namedModuleDefnBlock` rule). An abbreviation therefore never carries one, and
+// accepting the spelling would only invent an alias out of a line that does not
+// compile. `module private Json =` heading a nested module BLOCK stays outside
+// this pattern for the reason every block does: it has no path after the `=`.
+var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]+([A-Za-z_][A-Za-z0-9_']*)[ \t]*=[ \t]*([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)`)
+
+func fsharpModuleAbbreviationTargetIgnored(target string) bool {
+	switch target {
+	case "begin", "do", "exception", "external", "let", "module", "namespace", "open", "type", "val":
+		return true
+	default:
+		return false
+	}
+}
+
+// fsharpValueBindingPattern matches a `let`/`use` VALUE binding
+// (`let Json = Newtonsoft.Json.JsonConvert`, `let Json : JsonConvert = ...`),
+// which also binds the name lexically. A function binding carries parameters
+// between the name and the `=`, so it never matches here -- its parameters are
+// read by fsharpFunctionParameterNames instead, which is the only other thing
+// a `let` line can bind.
+//
+// The bang forms `let!` and `use!` are the same binding written inside a
+// computation expression (`let! Json = fetch ()` in an `async { ... }`), with
+// the same ordered, offside-delimited scope. Requiring the bare keyword missed
+// every one of them, so a qualifier the CE had rebound was still classified by
+// the project's module declarations and pinned `Json.serialize` to an unrelated
+// project module named `Json`.
+//
+// The modifiers before the name are captured rather than skipped because `rec`
+// changes the binding's SCOPE: without it the name is invisible inside its own
+// initializer, with it the name is in scope there. `rec` was not accepted at
+// all, so `let rec Json = ...` bound nothing and its own body was classified by
+// the project's module declarations alone.
+//
+// They are spelled in F#'s own order rather than as a set of interchangeable
+// words, because F# fixes that order: `let` takes `rec`, then the binding takes
+// `inline`, then `mutable`, and the accessibility modifier is part of the
+// PATTERN, so it stands last of all, immediately before the name --
+// `let rec inline mutable private Json = ...`. Writing it anywhere else
+// (`let private rec Json = ...`) is a syntax error, so a line spelled that way
+// is not F# and no shadow is invented for it.
+//
+// Accessibility was missing entirely, which is the same class of miss as `rec`
+// and not a neutral one: `let private Json = ...` bound nothing, so the
+// qualifier was classified by the project's module declarations alone and
+// `Json.serialize` was pinned to an unrelated project module named `Json` over
+// the `serialize` the binding leaves in scope. The gap also split one `let`
+// line in half -- fsharpFunctionHeaderPattern has always read `private`, so an
+// accessibility-modified FUNCTION bound its parameters while an
+// accessibility-modified VALUE bound nothing at all.
+var fsharpValueBindingPattern = regexp.MustCompile(`(?m)^[ \t]*(?:let|use)!?[ \t]+((?:rec[ \t]+)?(?:inline[ \t]+)?(?:mutable[ \t]+)?(?:(?:private|internal|public)[ \t]+)?)([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::[^=\n]*)?=`)
+
+// fsharpShadowBinding is one name a file binds lexically, together with the
+// lines that binding governs. F# scoping is ordered and offside-based: a
+// binding is invisible to everything written above it, and it dies at the
+// dedent that closes the block it was written in.
+type fsharpShadowBinding struct {
+	name string
+	// target is the module path a module ABBREVIATION binds the name to
+	// (`Newtonsoft.Json` for `module Json = Newtonsoft.Json`). Every other
+	// binder -- a value binding, a function parameter -- binds a value rather
+	// than a module and leaves this empty.
+	target string
+	// fromLine is the first line the binding shadows the name on, 1-based in
+	// file coordinates. That is NOT always the line the binding is written on:
+	// a non-recursive `let` is not in scope inside its own initializer, so its
+	// shadow starts only once the right-hand side has ended.
+	fromLine int
+	// fromColumn is the 0-based byte column ON fromLine from which the shadow
+	// applies; earlier columns of that line are outside it. It is 0 for every
+	// binding whose scope starts at a whole line, which is all of them but one:
+	// `let Json = value in Json.serialize x` writes the initializer and the body
+	// the binding governs on the SAME line, so the line cannot answer both ends
+	// of it and the start has to be a point rather than a line.
+	fromColumn int
+	// throughLine is the last line the binding still shadows the name on.
+	throughLine int
+}
+
+// fsharpFileShadowBindings lists the bindings this file makes, so a dotted
+// prefix spelling one of them can be recognised as NOT naming a project module
+// at the call sites the binding actually reaches.
+//
+// A qualifier was classified by the project's module declarations alone, which
+// is the wrong question whenever the file rebinds the name: with
+// `module Json = Newtonsoft.Json` (or `let Json = ...`) above a call and an
+// unrelated project module `Json` elsewhere, `Json.serialize` was held to the
+// project module and fabricated the edge into it. The local binding wins in F#'s
+// own scoping, so the qualifier names the alias, not the module, and belongs in
+// the same class as `System.Text.encode` and `svc.encode`: it names no project
+// module, so it records bare and resolves unrestricted rather than being pinned
+// to a module the source never meant.
+//
+// Each binding keeps its position because a file-wide set answers the question
+// in the wrong place as well as the right one. A `let Json = ...` inside ONE
+// function, or written BELOW the call, un-qualified every `Json.serialize` in
+// the file; and since a bare qualifier resolves unrestricted, those calls did
+// not merely lose a restriction, they bound whatever same-name definition sat
+// nearest instead of the module the source named.
+//
+// Every comment and literal form is masked first, because a binding has to be
+// WRITTEN to bind: only block comments were, so a `let Json = ...` line carried
+// inside a triple-quoted or verbatim string -- the shapes that reach a whole
+// line of their own, since a literal spanning newlines puts arbitrary text at
+// the head of a line -- was collected as a real binder, and so was a
+// `module Json = Newtonsoft.Json` there, which additionally REDIRECTED the
+// qualifier. A `//` comment reaches the parameter pass the same way, because
+// the region between a header's name and its `=` swallows a trailing comment
+// when the `=` continues on the next line. A phantom shadow is the
+// wrong-definition direction rather than a lost restriction: a shadowed
+// qualifier records bare and resolves unrestricted, so the call binds whatever
+// same-name definition sits nearest instead of the module the source wrote.
+//
+// The two maskers are length- and newline-preserving, which is what makes them
+// usable here: shadow bindings carry LINE NUMBERS, and the offside-rule scope
+// walk reads indentation, so blanking has to leave every line where it was.
+//
+// Bindings are per file because F# `let` and module abbreviations are lexically
+// scoped to the file that writes them, unlike module declarations themselves,
+// which are project-scoped.
+func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
+	lines := strings.Split(maskFSharpLiteralsAndLineComments(maskFSharpBlockComments(content)), "\n")
+	var bindings []fsharpShadowBinding
+	for index, line := range lines {
+		if name, target, recursive := fsharpShadowBindingAt(line); name != "" {
+			// F# `let` is not recursive: the name a binding introduces is not
+			// in scope inside the initializer that defines it, so
+			// `let Json = Json.serialize x` still names the project module on
+			// its right-hand side and only rebinds the name below. Starting the
+			// shadow on the binding line read that qualifier as the new value,
+			// and a shadowed qualifier records bare and resolves unrestricted --
+			// the wrong-definition direction, an edge into whatever `serialize`
+			// sat nearest rather than the module the source wrote. `rec` asks
+			// for exactly the opposite rule and keeps the binding line.
+			fromLine, fromColumn := fsharpBindingScopeStart(lines, index, recursive)
+			bindings = append(bindings, fsharpShadowBinding{
+				name:        name,
+				target:      target,
+				fromLine:    fromLine,
+				fromColumn:  fromColumn,
+				throughLine: fsharpBindingScopeEnd(lines, index),
+			})
+			continue
+		}
+		// A `let` whose pattern is a TUPLE binds every name in it, and each one
+		// shadows exactly as a single-name binding does: `let (Json, code) =
+		// parse s` names the bound value below it, not the project module
+		// `Json`. Only a single name was recognised, so the whole line bound
+		// nothing and the qualifier was classified by the project's module
+		// declarations alone -- the fabricated-edge direction, into an
+		// unrelated project module named `Json`.
+		//
+		// Their scope is a `let`'s, not a parameter's: the same offside block,
+		// and the same exclusion from the initializer, which is why they are
+		// collected here rather than through the parameter pass. `let rec` does
+		// not apply -- F# admits `rec` only on a binding that names a single
+		// value or function -- so a destructured binding is never recursive.
+		if names := fsharpDestructuringBindingNames(line); len(names) > 0 {
+			fromLine, fromColumn := fsharpBindingScopeStart(lines, index, false)
+			throughLine := fsharpBindingScopeEnd(lines, index)
+			for _, name := range names {
+				bindings = append(bindings, fsharpShadowBinding{
+					name:        name,
+					fromLine:    fromLine,
+					fromColumn:  fromColumn,
+					throughLine: throughLine,
+				})
+			}
+			continue
+		}
+		// A function binding binds its PARAMETERS, and they shadow exactly as a
+		// `let` does: `let run (Json: JsonConvert) x = Json.serialize x` names
+		// the parameter, not the project module `Json`. Their scope is the body
+		// the header opens rather than the block the header sits in, so it is
+		// closed by the next line at the header's OWN indent -- the sibling
+		// binding after the function -- not only by a dedent past it.
+		//
+		// A parameter is bound by the HEADER, not by an initializer, so unlike
+		// a `let` it shadows from the header line itself: the body of
+		// `let run (Json: JsonConvert) x = Json.serialize x` is written there.
+		//
+		// The header is read as a LOGICAL line, because F# lets one span
+		// several physical ones. Parameter extraction ended at the `=` and
+		// gave up on a line that had none, so `let run` followed by an
+		// indented `(Json: JsonConvert) =` bound nothing at all and the
+		// qualifier was classified by the project's module declarations alone
+		// -- the fabricated-edge direction again, into an unrelated project
+		// module `Json`.
+		for _, name := range fsharpFunctionParameterNames(fsharpJoinedFunctionHeader(lines, index)) {
+			bindings = append(bindings, fsharpShadowBinding{
+				name:        name,
+				fromLine:    index + 1,
+				throughLine: fsharpParameterScopeEnd(lines, index),
+			})
+		}
+	}
+	return bindings
+}
+
+// fsharpShadowBindingAt returns the name this line binds lexically; when the
+// binder is a module abbreviation, the module path it binds that name TO; and
+// whether the binding is RECURSIVE, which decides whether it shadows inside its
+// own initializer. A name bound to no module path -- a value, a parameter --
+// comes back with an empty target. The name is empty if the line binds nothing.
+//
+// A module abbreviation is never recursive: `module Json = Newtonsoft.Json`
+// resolves its right-hand side in the scope OUTSIDE itself, exactly as a
+// non-recursive `let` does.
+func fsharpShadowBindingAt(line string) (string, string, bool) {
+	if match := fsharpModuleAbbreviationPattern.FindStringSubmatch(line); match != nil {
+		// A module element on the same physical line still starts a nested module
+		// BLOCK: `module M = let value = 1`. Its leading keyword is not a path
+		// being aliased. Treating `let` as the target made M shadow the real nested
+		// module and left `M.value` free to bind an unrelated same-named symbol.
+		if fsharpModuleAbbreviationTargetIgnored(match[2]) {
+			return "", "", false
+		}
+		return match[1], match[2], false
+	}
+	if match := fsharpValueBindingPattern.FindStringSubmatch(line); match != nil {
+		return match[2], "", slices.Contains(strings.Fields(match[1]), "rec")
+	}
+	return "", "", false
+}
+
+// fsharpBindingScopeStart returns the first POINT -- line and 0-based byte
+// column on it -- from which the binding written on lines[index] shadows its
+// name.
+//
+// Three of the four answers are whole lines and were already settled: `rec`
+// asks for the binding's own line, because the name is in scope inside its own
+// body; without it the shadow starts on the line after the initializer ends,
+// because the name is invisible in the right-hand side that defines it; and a
+// PARAMETER, which does not pass through here, shadows from its header line.
+//
+// The fourth is `let name = initializer in body`, and it is why a column is
+// needed at all. F# scope starts at a point in the token stream, not at a line
+// boundary; the line was only ever a workable approximation of it, and the
+// explicit `in` is the shape that breaks the approximation by writing the
+// initializer and the body it governs on ONE line. Rounding the start up to
+// the next line put the body outside the shadow, so `let Json = value in
+// Json.serialize x` -- a call the binding plainly reaches -- was classified by
+// the project's module declarations and pinned to an unrelated module `Json`.
+// Rounding it down to the whole line instead would break the other direction
+// that is already pinned: `let Json = Json.serialize x in Json` must keep its
+// right-hand side OUT of the shadow. Only a column answers both, so the start
+// is the column just past the `in`.
+func fsharpBindingScopeStart(lines []string, index int, recursive bool) (int, int) {
+	if recursive {
+		return index + 1, 0
+	}
+	if column, explicit := fsharpLetInBodyColumn(lines[index]); explicit {
+		return index + 1, column
+	}
+	return fsharpInitializerEnd(lines, index) + 1, 0
+}
+
+// fsharpLetInBodyColumn returns the column at which the body of an explicit
+// `let ... = ... in <body>` begins on this line, and whether the line writes
+// one. The `in` taken is the one this binding's own initializer reaches, and
+// finding it needs a DEPTH count rather than a first-match: an initializer may
+// itself open bindings, and each of those consumes an `in` of its own before
+// this binding's arrives.
+//
+// Taking the first one instead read the wrong keyword whenever the initializer
+// nested a binding of its own. In `let Json = let x = 1 in Json.serialize x`
+// the only `in` on the line closes the INNER `let x`, so the whole line is
+// still the outer binding's initializer and `Json` is unavailable across all of
+// it; starting the shadow past that `in` moved it EARLIER than the binding and
+// pinned the call to the local value instead of the project module `Json`.
+// That is the fabricated-edge direction, not the narrow one. Counting `let`
+// and `use` opened after the first `=` and spending one per `in` gives the
+// outer binding its own keyword back: the line above now opens no body at all,
+// and `let a = let x = 1 in x in a + 1` takes the SECOND `in`, not the first.
+//
+// Everything before the `in` that is taken belongs to an initializer, and
+// everything after it is governed by this binding, so a shadow that starts
+// there can only be too late, never too early -- which is what the count
+// restores.
+//
+// A top-level `for` before the `in` means the `in` is a SEQUENCE iterator
+// (`let total = for x in xs do count x`), not the keyword that opens a binding
+// body, so the line is declined: the loop body is still the initializer, and
+// the binding is not in scope there. `in` inside brackets is left alone for the
+// same reason -- a `for` or a nested `let` written inside a comprehension,
+// sequence expression or parenthesised group is not this binding's body.
+//
+// A nested binding that spends no `in` -- a computation expression's `let!`,
+// which is closed by the line ending rather than by a keyword -- leaves the
+// count one too high and the line is declined. That is the narrow answer: a
+// missed shadow leaves the previous classification standing, while an invented
+// one moves a call to a different definition.
+//
+// The line reaching here has already been through both maskers, so an `in`
+// written inside a string or a comment is blanked and cannot be seen.
+func fsharpLetInBodyColumn(line string) (int, bool) {
+	depth, afterEquals, nested := 0, false, 0
+	for index := 0; index < len(line); {
+		if fsharpWordByte(line[index]) {
+			end := index
+			for end < len(line) && fsharpWordByte(line[end]) {
+				end++
+			}
+			if depth == 0 {
+				switch line[index:end] {
+				case "for":
+					return 0, false
+				case "let", "use":
+					if afterEquals {
+						nested++
+					}
+				case "in":
+					if afterEquals {
+						if nested == 0 {
+							return end, true
+						}
+						nested--
+					}
+				}
+			}
+			index = end
+			continue
+		}
+		switch line[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case '=':
+			if depth == 0 {
+				afterEquals = true
+			}
+		}
+		index++
+	}
+	return 0, false
+}
+
+// fsharpWordByte reports whether the byte can stand inside an F# identifier.
+// The apostrophe is one of them (`xs'`), which is what keeps a name ending in
+// `in` or `for` from being read as the keyword.
+func fsharpWordByte(character byte) bool {
+	return character == '\'' || isIdentifierByte(character)
+}
+
+// fsharpDestructuringBindingHeadPattern matches the keyword and modifiers that
+// open a `let`/`use` binding, stopping at the pattern it binds. It is the same
+// head fsharpValueBindingPattern reads, minus the single NAME that pattern
+// requires next, so the shapes a name cannot describe are reachable.
+var fsharpDestructuringBindingHeadPattern = regexp.MustCompile(`^[ \t]*(?:let|use)!?[ \t]+(?:(?:rec|inline|mutable|private|internal|public)[ \t]+)*`)
+
+// fsharpDestructuringBindingNames lists the names a `let`/`use` binding whose
+// pattern is a TUPLE binds -- `let (Json, code) = parse s`, and the same
+// pattern written without its parentheses, `let Json, code = parse s`.
+//
+// The pattern must be a single parenthesised group, or a top-level
+// comma-separated list; a parenthesised one is then read by the same
+// fsharpParameterGroupBinders that reads a group in PARAMETER position, and
+// admits exactly what that function admits -- names, tuples and their
+// nestings, `as`, and a union-case application (`let (Ok Json) = result`
+// binds `Json`). A parameter and a `let` pattern are the same grammar
+// production, so reading a shape as binders in one and not the other is an
+// inconsistency, not a safety margin.
+//
+// Shapes the group reader declines are declined here too, for refinement 4's
+// reason -- a name standing in a pattern position need not be a binder, and
+// binding one that is really a union case un-qualifies calls that legitimately
+// name a module of that name. Two more are declined by this function's own
+// region test, which requires a SINGLE group and so never reaches the reader:
+//
+//   - A RECORD pattern (`let { Result = Json } = r`). The name stands after a
+//     field's own `=`, which is a nested pattern position in the fullest sense:
+//     `let { Result = Error } = r` matches the nullary case `Error` and binds
+//     nothing at all, and nothing on the line tells the two apart. The braces
+//     are shared with computation, object and anonymous-record expressions and
+//     the field label may itself be dotted, so the form is not even closed by
+//     its brackets.
+//   - A LIST or ARRAY pattern (`let [a; Json] = xs`, `let [| a; Json |] = xs`).
+//     Same nested pattern position, and the form is refutable by construction,
+//     so it is never a plain destructuring of a known shape.
+//   - A CONS pattern (`let head :: Json = xs`) -- refutable in the same way.
+//   - An `as` pattern written outside the group (`let (a, b) as Json = pair`),
+//     whose binder is unambiguous but whose region is a group followed by more
+//     text, which is also how an operator definition and an active pattern are
+//     told apart from a destructuring. Inside a group -- a parameter's
+//     `(pair as Json)` -- `as` IS read.
+//
+// A pattern spread over several lines is declined too: with no `=` on the line
+// there is no region to read, and the narrow answer keeps the previous
+// classification rather than inventing a shadow.
+func fsharpDestructuringBindingNames(line string) []string {
+	head := fsharpDestructuringBindingHeadPattern.FindString(line)
+	if head == "" {
+		return nil
+	}
+	region, found := fsharpParameterRegion(line[len(head):])
+	if !found {
+		return nil
+	}
+	// A top-level comma is the tuple written without parentheses. Reading it
+	// first keeps `let f (a, b) c = ...` out: that comma sits inside the
+	// parameter's brackets, so the header falls through to the parameter pass
+	// that owns it.
+	if parts := fsharpSplitTopLevel(region, ','); len(parts) > 1 {
+		var names []string
+		for _, part := range parts {
+			if name := fsharpParameterBinderName(part); name != "" {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	// A parenthesised pattern binds only when the parentheses are the WHOLE
+	// region: `let (a, Json) = ...` is a tuple binding, while `let f (a, b) =
+	// ...` names a function and `let (|Even|Odd|) n = ...` an active pattern,
+	// both of which carry text outside the group and belong to other passes.
+	pattern := strings.TrimSpace(region)
+	if !strings.HasPrefix(pattern, "(") || !strings.HasSuffix(pattern, ")") {
+		return nil
+	}
+	return fsharpParameterGroupBinders(pattern)
+}
+
+// fsharpFunctionHeaderPattern matches the head of a `let`/`use` FUNCTION
+// binding: the keyword, any modifiers, the name it binds, and the whitespace
+// before its first parameter. A VALUE binding writes `=` or a type annotation
+// straight after the name, so the two forms stay disjoint and a line is read as
+// one or the other, never both.
+var fsharpFunctionHeaderPattern = regexp.MustCompile(`^[ \t]*(?:let|use)!?[ \t]+(?:(?:rec|inline|mutable|private|internal|public)[ \t]+)*[A-Za-z_][A-Za-z0-9_']*[ \t]+`)
+
+// fsharpParameterBinderPattern matches a parameter that is a plain name,
+// carrying an optional type annotation (`Json`, `Json: JsonConvert`). Only the
+// NAME is captured: `let run (x: Json) = Json.serialize x` binds `x` and merely
+// MENTIONS the type `Json`, so reading an annotation as a binder would shadow a
+// qualifier nothing rebound -- and a shadowed qualifier resolves unrestricted,
+// which binds whatever same-name definition sits nearest instead of the module
+// the source wrote.
+var fsharpParameterBinderPattern = regexp.MustCompile(`^[ \t]*([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::.*)?$`)
+
+// fsharpFunctionParameterNames lists the names a function header binds through
+// its parameters. A parameter shadows a module qualifier exactly as a `let`
+// does -- `let run (Json: JsonConvert) x = Json.serialize x` names the
+// parameter -- but only value bindings were recognised, so the qualifier was
+// classified by the project's module declarations alone and the call was pinned
+// to an unrelated project module named `Json`.
+//
+// Each whitespace-separated group is one parameter, and what a group binds is
+// fsharpPatternComponentBinders' answer: a name, a tuple and its nestings, an
+// `as` pattern, or the arguments of a union-case application. A list, record,
+// cons, or/and pattern is left unbound, because a name standing there need not
+// be a binding at all: `Some`, `None` and `Error` are union CASES, and binding
+// them would un-qualify calls that legitimately name a module of that name.
+// Missing a shadow leaves the previous answer; inventing one changes a call's
+// target, so the unmodelled shapes stay out.
+func fsharpFunctionParameterNames(line string) []string {
+	header := fsharpFunctionHeaderPattern.FindString(line)
+	if header == "" {
+		return nil
+	}
+	region, found := fsharpParameterRegion(line[len(header):])
+	if !found {
+		return nil
+	}
+	var names []string
+	for _, group := range fsharpSplitTopLevel(region, ' ', '\t') {
+		names = append(names, fsharpParameterGroupBinders(group)...)
+	}
+	return names
+}
+
+// fsharpParameterRegion returns the parameter text of a function header: what
+// stands between the name and the `=` that opens the body. Brackets are counted
+// so a `=` inside an attribute is not mistaken for the one ending the header,
+// and a top-level `:` ends the region too because what follows it is the RETURN
+// type, not a parameter. A header split across lines carries no `=` on this
+// line and binds nothing here -- the narrow answer, which keeps the previous
+// classification rather than inventing a shadow.
+func fsharpParameterRegion(rest string) (string, bool) {
+	depth := 0
+	for index := 0; index < len(rest); index++ {
+		switch rest[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case ':', '=':
+			if depth == 0 {
+				return rest[:index], true
+			}
+		}
+	}
+	return "", false
+}
+
+// fsharpBindingKeywordPattern matches the keyword that can open a `let`/`use`
+// header, with the whitespace that must follow it. It is deliberately weaker
+// than fsharpFunctionHeaderPattern, which also demands whitespace AFTER the
+// bound name and so declines the very line this bug is about: `let run`, whose
+// parameters are written on the lines below it.
+var fsharpBindingKeywordPattern = regexp.MustCompile(`^[ \t]*(?:let|use)!?[ \t]`)
+
+// fsharpFunctionHeaderContinuationLines bounds how far a header is followed
+// down the file. A parameter list that long does not exist; the bound is what
+// stops a `let` whose `=` never arrives from swallowing the rest of the block.
+const fsharpFunctionHeaderContinuationLines = 32
+
+// fsharpJoinedFunctionHeader returns the LOGICAL header line that begins on
+// lines[index]: the line itself when it already carries the `=` (or the
+// top-level `:` introducing a return type) that ends a header, and otherwise
+// that line joined with the lines below it up to the one that does.
+//
+// F# writes a long signature across several lines, and a parameter binds a
+// qualifier from wherever it is written:
+//
+//	let run
+//	    (Json: JsonConvert)
+//	    (x: int) =
+//	    Json.serialize x
+//
+// Read one physical line at a time, `let run` has no `=` and bound nothing, so
+// `Json` was not recorded as shadowing and the call was pinned to whatever
+// project module happened to be named `Json`.
+//
+// The join follows the offside rule, which is what makes it safe: a
+// continuation of a header is indented PAST the `let` that opens it, so the
+// first following line back at the header's own indent -- the sibling binding
+// -- stops the join, and a blank line stops it too. Only a line that opens a
+// binding is followed at all, and the join stops at the first `=` outside
+// brackets, so it can never reach into a body. Where no such line is found the
+// caller reads no parameter region and binds nothing, which is the narrow
+// answer: a missed shadow leaves the previous classification standing, while an
+// invented one moves a call to a different definition.
+//
+// Completeness is judged on the JOINED text rather than the line just added, so
+// a header whose parenthesis opens on one line and closes on another is
+// followed to its real end instead of stopping inside the brackets.
+func fsharpJoinedFunctionHeader(lines []string, index int) string {
+	joined := lines[index]
+	if !fsharpBindingKeywordPattern.MatchString(joined) {
+		return joined
+	}
+	if _, complete := fsharpParameterRegion(joined); complete {
+		return joined
+	}
+	indent := fsharpIndentWidth(joined)
+	for next := index + 1; next < len(lines) && next-index <= fsharpFunctionHeaderContinuationLines; next++ {
+		if strings.TrimSpace(lines[next]) == "" || fsharpIndentWidth(lines[next]) <= indent {
+			break
+		}
+		joined += " " + lines[next]
+		if _, complete := fsharpParameterRegion(joined); complete {
+			break
+		}
+	}
+	return joined
+}
+
+// fsharpParameterGroupBinders returns the names one parameter group binds. A
+// parenthesised group holds a PATTERN, which is read by fsharpPatternBinders;
+// an unparenthesised group is a bare parameter and binds only when it is a
+// plain name.
+func fsharpParameterGroupBinders(group string) []string {
+	trimmed := strings.TrimSpace(group)
+	if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, ")") {
+		return fsharpPatternBinders(trimmed[1 : len(trimmed)-1])
+	}
+	if name := fsharpParameterBinderName(trimmed); name != "" {
+		return []string{name}
+	}
+	return nil
+}
+
+// fsharpPatternBinders returns the names the CONTENTS of a parenthesised
+// pattern bind. A top-level comma makes it a tuple, and every component is a
+// pattern in its own right.
+func fsharpPatternBinders(pattern string) []string {
+	if components := fsharpSplitTopLevel(pattern, ','); len(components) > 1 {
+		var names []string
+		for _, component := range components {
+			names = append(names, fsharpPatternComponentBinders(component)...)
+		}
+		return names
+	}
+	return fsharpPatternComponentBinders(pattern)
+}
+
+// fsharpPatternComponentBinders returns the names one pattern component binds.
+// Only names, tuples and their parenthesised nestings were read before, so
+// every other shape bound nothing: `let run (Some Json) = Json.serialize x`
+// left `Json` unbound and the qualifier resolution pinned the call to an
+// unrelated project module named `Json` -- an edge into a definition the source
+// never wrote, in place of the value the pattern leaves in scope.
+//
+// Four shapes are ADMITTED, each because the name it yields cannot be anything
+// but a binder:
+//
+//   - A plain name, with at most a type annotation (`Json`, `Json: JsonConvert`).
+//     Only the name is taken; the annotation is a MENTION.
+//   - A parenthesised nesting (`(a, (b, Json))`). A tuple inside a tuple is
+//     still a tuple, and reading the outer one but not the inner was an
+//     omission rather than a margin.
+//   - An `as` pattern (`(p as Json)`). F# grammar admits only an identifier
+//     after `as`, and it always binds. The pattern to its LEFT is read as a
+//     component too, which declines a type test (`(:? Stream as Json)` binds
+//     `Json` and not the type `Stream`) without a rule of its own.
+//   - A union-case application (`(Some Json)`, `(Response (code, Json))`). The
+//     HEAD of an application in pattern position is a case, never a binder, so
+//     it is dropped and the arguments are read. This is the one shape a
+//     previous round declined that the PARAMETER position argues back: peeling
+//     a single-case union in the header (`let handle (Request Json) = ...`) is
+//     how F# code uses one, it is irrefutable, and it draws no warning.
+//
+// The shapes still declined are the ones where a name standing in the pattern
+// need not be a binder at all -- `Some`, `None` and `Error` are union CASES,
+// and binding one un-qualifies calls that legitimately name a module of that
+// name. A shadowed qualifier records bare and resolves unrestricted, so
+// inventing a binder does not merely lose a restriction, it binds whatever
+// same-name definition sits nearest:
+//
+//   - The WILDCARD `_`, alone or annotated, which binds nothing by definition.
+//   - A RECORD pattern (`{ Result = Json }`). The name stands after a field's
+//     own `=`, where `{ Result = Error }` matches the nullary case and binds
+//     nothing; the braces are shared with computation, object and
+//     anonymous-record expressions, and the field label may be dotted.
+//   - A LIST or ARRAY pattern (`[a; Json]`, `[| a; Json |]`) and a CONS
+//     pattern (`head :: Json`), refutable by construction and never the plain
+//     peeling of a known shape that the union-case form is.
+//   - An OR or AND pattern (`Some Json | Other Json`, `a & Json`), whose
+//     alternatives are cases as readily as binders.
+//   - Anything carrying a top-level `:` the plain-name reader did not consume,
+//     which is an annotation on a shape this function does not model, and
+//     `?optional`, which exists only on members -- a form this pass never sees,
+//     because it reads `let`/`use` headers alone.
+func fsharpPatternComponentBinders(component string) []string {
+	trimmed := strings.TrimSpace(component)
+	if trimmed == "" {
+		return nil
+	}
+	if name := fsharpParameterBinderName(trimmed); name != "" {
+		return []string{name}
+	}
+	if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, ")") {
+		return fsharpPatternBinders(trimmed[1 : len(trimmed)-1])
+	}
+	if left, bound, isAs := fsharpAsPatternSplit(trimmed); isAs {
+		return append(fsharpPatternComponentBinders(left), bound)
+	}
+	if fsharpPatternComponentDeclined(trimmed) {
+		return nil
+	}
+	// An application: the head is the union case being matched and every
+	// argument after it is a pattern.
+	arguments := fsharpSplitTopLevel(trimmed, ' ', '\t')
+	if len(arguments) < 2 {
+		return nil
+	}
+	var names []string
+	for _, argument := range arguments[1:] {
+		names = append(names, fsharpPatternComponentBinders(argument)...)
+	}
+	return names
+}
+
+// fsharpAsPatternSplit splits `<pattern> as <name>` at its LAST top-level `as`,
+// which is the one that binds outermost in `a as b as c`. The name it binds is
+// reported only when it is a plain identifier, so a line that merely writes the
+// word is not read as the keyword.
+func fsharpAsPatternSplit(component string) (string, string, bool) {
+	depth, keyword := 0, -1
+	for index := 0; index < len(component); {
+		if fsharpWordByte(component[index]) {
+			end := index
+			for end < len(component) && fsharpWordByte(component[end]) {
+				end++
+			}
+			if depth == 0 && component[index:end] == "as" {
+				keyword = index
+			}
+			index = end
+			continue
+		}
+		switch component[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+		index++
+	}
+	if keyword < 0 {
+		return "", "", false
+	}
+	bound := fsharpParameterBinderName(component[keyword+len("as"):])
+	if bound == "" {
+		return "", "", false
+	}
+	return component[:keyword], bound, true
+}
+
+// fsharpPatternComponentDeclined reports whether a component carries a
+// top-level token that puts it in one of the shapes this reader does not model
+// -- a list or record body, a cons, an or/and pattern, an annotation the
+// plain-name reader did not consume, or an optional parameter. Brackets are
+// counted, so the same token written inside a nested group is not read here.
+func fsharpPatternComponentDeclined(component string) bool {
+	if strings.HasPrefix(component, "[") || strings.HasPrefix(component, "{") {
+		return true
+	}
+	depth := 0
+	for index := 0; index < len(component); index++ {
+		switch component[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case ':', ';', '|', '&', '?':
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// fsharpParameterBinderName returns the name a parameter binds, or "" when it
+// is not a plain name. The wildcard `_` binds nothing.
+func fsharpParameterBinderName(text string) string {
+	match := fsharpParameterBinderPattern.FindStringSubmatch(text)
+	if match == nil || match[1] == "_" {
+		return ""
+	}
+	return match[1]
+}
+
+// fsharpSplitTopLevel splits text on the separators, ignoring any that fall
+// inside brackets, and drops empty fields.
+func fsharpSplitTopLevel(text string, separators ...byte) []string {
+	var fields []string
+	depth, start := 0, -1
+	for index := 0; index < len(text); index++ {
+		character := text[index]
+		switch character {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth == 0 && slices.Contains(separators, character) {
+			if start >= 0 {
+				fields = append(fields, text[start:index])
+				start = -1
+			}
+			continue
+		}
+		if start < 0 {
+			start = index
+		}
+	}
+	if start >= 0 {
+		fields = append(fields, text[start:])
+	}
+	return fields
+}
+
+// fsharpBindingScopeEnd returns the last line the binding written on
+// lines[index] is still in scope for. F#'s offside rule closes the block a
+// binding lives in at the first following line indented less than the binding
+// itself, so a function-local binding ends with its function; a binding at its
+// module's own level is closed by nothing and reaches the end of the file.
+// Blank and comment-only lines carry no indentation of their own, so they never
+// close a block.
+func fsharpBindingScopeEnd(lines []string, index int) int {
+	return fsharpScopeEnd(lines, index, false)
+}
+
+// fsharpInitializerEnd returns the last line of the initializer belonging to the
+// binding written on lines[index] -- the whole right-hand side, which the
+// offside rule writes as the block that line opens and the first following line
+// back at the binding's own indent closes. A single-line binding therefore ends
+// on its own line, and a binding whose right-hand side runs on ends with the
+// last continuation line.
+//
+// This is what a non-recursive binding is NOT in scope for. It is the same
+// offside question a parameter's body asks, so it shares the rule, but it is a
+// different question and is asked at the other end of the binding.
+func fsharpInitializerEnd(lines []string, index int) int {
+	return fsharpScopeEnd(lines, index, true)
+}
+
+// fsharpParameterScopeEnd returns the last line the parameters declared by the
+// header on lines[index] are still in scope for. A parameter lives in the body
+// the header OPENS, and that body is written indented past the header, so the
+// next line back at the header's own indent -- the sibling `let` after the
+// function -- already ends it. Reusing the `let` rule instead would carry a
+// top-level function's parameters to the end of the file and un-qualify every
+// call below it, which is the wrong-definition direction of this same bug.
+func fsharpParameterScopeEnd(lines []string, index int) int {
+	return fsharpScopeEnd(lines, index, true)
+}
+
+func fsharpScopeEnd(lines []string, index int, closedByOwnIndent bool) int {
+	indent := fsharpIndentWidth(lines[index])
+	for i := index + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		width := fsharpIndentWidth(lines[i])
+		if width < indent || (closedByOwnIndent && width == indent) {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+func fsharpIndentWidth(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " \t"))
+}
+
+// fsharpShadowsAt returns a lookup from a byte offset inside one call block --
+// which starts at startLine in the file -- to the names shadowed on the LINE
+// that offset falls on.
+//
+// The shadow set used to be computed once for a whole block. F# scoping is
+// ordered, so that answered the question in the wrong place as well as the
+// right one: a `let Json = ...` written partway down a function was applied to
+// the `Json.serialize` calls ABOVE it too, and because a shadowed qualifier
+// records bare and resolves unrestricted, the earlier call did not merely lose
+// its restriction -- it bound whatever same-name definition sat nearest instead
+// of the module the source named. Both sightings then collapsed onto the bare
+// one and the module-qualified edge disappeared. Deciding per call SITE is the
+// same rule applied at the granularity F# actually scopes at.
+//
+// Blank lines need no special case any more: a call site is never on one. The
+// lookup is memoised per line because a block commonly holds many call sites on
+// few distinct lines.
+//
+// Each name maps to the module path it was bound to, empty for a binder that
+// binds no module. Bindings are visited in source order, so where two of them
+// reach the same line the LATER one is left standing -- the inner or nearer
+// binding, which is the one F# resolves the name to.
+func fsharpShadowsAt(bindings []fsharpShadowBinding, block string, startLine int) func(offset int) map[string]string {
+	if len(bindings) == 0 {
+		return func(int) map[string]string { return nil }
+	}
+	if startLine < 1 {
+		startLine = 1
+	}
+	newlines := newlineOffsets(block)
+	byLine := map[int][]fsharpShadowBinding{}
+	return func(offset int) map[string]string {
+		lineInBlock := lineAtOffset(newlines, offset)
+		at := startLine + lineInBlock - 1
+		reaching, known := byLine[at]
+		if !known {
+			for _, binding := range bindings {
+				if binding.fromLine <= at && at <= binding.throughLine {
+					reaching = append(reaching, binding)
+				}
+			}
+			byLine[at] = reaching
+		}
+		if len(reaching) == 0 {
+			return nil
+		}
+		// Only the line is memoised, because the column matters for at most
+		// the one binding whose scope STARTS on this line -- an explicit
+		// `let ... in ...`, whose initializer and body share it. Every other
+		// binding carries column 0 and is admitted by the same comparison.
+		//
+		// The column is the call site's offset within its line, and it is a
+		// FILE column because every F# block handed to this lookup begins at
+		// the start of startLine and holds whole lines from there.
+		column := offset - fsharpLineStartOffset(newlines, lineInBlock)
+		var shadows map[string]string
+		for _, binding := range reaching {
+			if at == binding.fromLine && column < binding.fromColumn {
+				continue
+			}
+			if shadows == nil {
+				shadows = map[string]string{}
+			}
+			shadows[binding.name] = binding.target
+		}
+		return shadows
+	}
+}
+
+// fsharpLineStartOffset returns the byte offset the 1-based line begins at,
+// given the newline offsets of the same text.
+func fsharpLineStartOffset(newlines []int, line int) int {
+	if line <= 1 {
+		return 0
+	}
+	if line-2 >= len(newlines) {
+		return 0
+	}
+	return newlines[line-2] + 1
+}
+
+// newlineOffsets lists the byte offset of every newline in text, so a byte
+// offset can be turned into a line number by a binary search instead of by
+// re-counting the text once per call site.
+func newlineOffsets(text string) []int {
+	var offsets []int
+	for start := 0; start < len(text); {
+		index := strings.IndexByte(text[start:], '\n')
+		if index < 0 {
+			break
+		}
+		offsets = append(offsets, start+index)
+		start += index + 1
+	}
+	return offsets
+}
+
+// lineAtOffset returns the 1-based line offset falls on, given the newline
+// offsets of the same text.
+func lineAtOffset(newlines []int, offset int) int {
+	return sort.SearchInts(newlines, offset) + 1
+}
+
+// fsharpShadowedQualifierAlias reports whether the shadows in scope at the call
+// site rebind the name the qualifier leads with, and if that binding was a
+// module abbreviation, returns the qualifier REWRITTEN through it. Only the
+// FIRST segment can be shadowed: a local `module Json = ...` rebinds `Json` and
+// therefore `Json.Linq`, but says nothing about `Newtonsoft.Json`.
+//
+// The rewrite is the point of keeping the abbreviation's target. `module Json =
+// Serde` does not make `Json.serialize` unqualified -- it makes it
+// `Serde.serialize`. Only the head is substituted, so `Json.Linq.parse` under
+// that binding reads `Serde.Linq.parse`, which is what the abbreviation means.
+func fsharpShadowedQualifierAlias(shadows map[string]string, qualifier string) (string, bool) {
+	if len(shadows) == 0 {
+		return "", false
+	}
+	head, rest := qualifier, ""
+	if cut := strings.Index(qualifier, "."); cut >= 0 {
+		head, rest = qualifier[:cut], qualifier[cut:]
+	}
+	target, shadowed := shadows[head]
+	if !shadowed || target == "" {
+		return "", shadowed
+	}
+	return target + rest, true
+}
+
+// recordFSharpCallQualifier remembers which module a qualified call named, so
+// resolution can keep `A.convert` off `B.convert`. EVERY distinct qualifier is
+// kept, because each one is its own call site: a caller writing
+// `x |> A.convert |> B.convert` calls two different functions, and collapsing
+// them onto one entry for the name loses one of the two edges. A call written
+// without a qualifier the project declares -- or spelling a name the FILE
+// rebinds, which is the same thing once F#'s own scoping is applied -- records
+// the empty string: that spelling names no module, so it means "the definition
+// in scope" and is resolved unrestricted -- alongside, not instead of, the
+// qualified sightings.
+func recordFSharpCallQualifier(qualifiers map[string]map[string]struct{}, declared map[string]bool, shadows map[string]string, name, target string) {
+	qualifier := ""
+	if cut := strings.LastIndex(target, "."); cut > 0 {
+		candidate := target[:cut]
+		alias, shadowed := fsharpShadowedQualifierAlias(shadows, candidate)
+		switch {
+		case !shadowed:
+			if fsharpModulePathDeclared(declared, candidate) {
+				qualifier = candidate
+			}
+		case alias != "" && fsharpModulePathDeclared(declared, alias):
+			// A module ABBREVIATION is the one shadow that still names a
+			// module. Treating it like any other rebinding recorded bare, and a
+			// bare spelling resolves unrestricted -- so `Json.serialize` under
+			// `module Json = Serde` bound whatever `serialize` sat nearest
+			// instead of Serde's, which is the wrong-definition direction of
+			// this same bug rather than a lost restriction. Follow the alias
+			// instead: the call names the module the abbreviation points at.
+			//
+			// Only when that target is a module the PROJECT declares. An
+			// abbreviation of an external path (`module Json =
+			// Newtonsoft.Json`) names nothing this index can hold the call to,
+			// so it stays bare exactly as before -- the same test
+			// `fsharpModulePathDeclared` already applies to an unshadowed
+			// qualifier, asked of the aliased spelling.
+			qualifier = alias
+		}
+	}
+	if qualifiers[name] == nil {
+		qualifiers[name] = map[string]struct{}{}
+	}
+	qualifiers[name][qualifier] = struct{}{}
+}
+
+// fsharpResolvableQualifiers lists the spellings a name was called with, one
+// resolution per spelling.
+//
+// The two spellings MEAN different things and are different call sites. A bare
+// `convert(x)` names no module: F# resolves it by scope, to whatever `convert`
+// is in scope at that point. A qualified `A.convert(x)` names module A
+// explicitly and can only be A's. A caller writing both therefore makes two
+// calls, and both edges exist.
+//
+// The empty string is one of those spellings, not a veto over the others.
+// Treating it as a veto -- reporting nothing, so the whole name fell back to
+// unrestricted resolution -- resolved `A.convert(x)` as if it had been written
+// bare, and unrestricted resolution emits only the same-name definition nearest
+// the call site, so A's edge was dropped outright.
+func fsharpResolvableQualifiers(qualifiers map[string]struct{}) []string {
+	return sortedKeysOf(qualifiers)
+}
+
+// fsharpRelativeQualifierPaths lists the module paths a relative qualifier may
+// name from inside callerPath, innermost enclosing scope first.
+//
+// A qualifier is read from the caller OUTWARDS, so every enclosing scope is a
+// reading, not just the caller's own module: inside `Root.Caller`, `A.f` means
+// the sibling `Root.A`. Trying only `callerPath + "." + qualifier` matched
+// nothing there and dropped to the plain suffix, which admits `Root.A` AND an
+// unrelated top-level `A` -- and `resolveCallTargets` then picked whichever sat
+// nearer the call site.
+//
+// The walk subsumes the caller's own path as a reading in its own right: from
+// inside `LoadingScripts.ScriptGeneration`, the scope `LoadingScripts` yields
+// `LoadingScripts.ScriptGeneration`, which is where `ScriptGeneration.build`
+// really points. The outermost scope is the empty one, so a qualifier naming a
+// top-level module resolves exactly rather than by suffix.
+//
+// A caller in no module at all -- a statement at file level, the normal shape
+// of an .fsx script -- has exactly one reading: the qualifier spelled from the
+// project root. It is the outermost step of the same walk with nothing above
+// it, so it is returned alone; concatenating it onto an empty caller path would
+// produce the leading-dot `.A`, which names nothing.
+func fsharpRelativeQualifierPaths(callerPath, qualifier string) []string {
+	if callerPath == "" {
+		return []string{qualifier}
+	}
+	paths := []string{callerPath + "." + qualifier}
+	for scope := callerPath; scope != ""; {
+		cut := strings.LastIndex(scope, ".")
+		if cut < 0 {
+			scope = ""
+		} else {
+			scope = scope[:cut]
+		}
+		if scope == "" {
+			paths = append(paths, qualifier)
+			break
+		}
+		paths = append(paths, scope+"."+qualifier)
+	}
+	return paths
+}
+
+// fsharpQualifiedScope drops the symbols that the qualifier rules out. F#
+// modules are project-scoped, so this reaches other files too: `A.convert`
+// written in C.fs is module A's, wherever A is declared. Symbols of another
+// language have no module path and are left alone.
+func fsharpQualifiedScope(symbols []SymbolRecord, qualifier, callerPath string, pathBySymbolID map[string]string, declared map[string]bool) []SymbolRecord {
+	if qualifier == "" {
+		// The BARE spelling restricts nothing: it names no module, so it means
+		// the definition in scope and resolves over every candidate, exactly as
+		// the unrestricted path does.
+		return symbols
+	}
+	// A ROOT-ANCHORED qualifier (`global.Serde.serialize`) has exactly one
+	// reading and it is absolute, so the relative walk and the suffix fallback
+	// below are both skipped: they are how a qualifier written relative to an
+	// enclosing scope is resolved, and `global.` is the spelling that says the
+	// qualifier is NOT relative. Letting them run on the stripped path would
+	// undo the anchor -- from inside `Use`, a nested `Use.Serde` is the first
+	// reading tried and would win the call that named the root `Serde`.
+	if root, anchored := fsharpRootAnchoredPath(qualifier); anchored {
+		return fsharpNarrowToModule(symbols, pathBySymbolID, func(path string) bool { return path == root })
+	}
+	// A relative qualifier is read from the caller outwards, so resolve it
+	// against the caller's own module before falling back to a suffix. With both
+	// `ScriptGeneration` and `LoadingScripts.ScriptGeneration` declaring `f`, a
+	// plain suffix admits BOTH and the winner then depends on caller scope and
+	// source order. From inside `LoadingScripts`, `ScriptGeneration.f` names the
+	// nested one, and that reading is exact rather than ambiguous.
+	//
+	// A file-level caller passes "" and has exactly one reading, the qualifier
+	// itself -- and it was skipped entirely, so those calls went straight to the
+	// suffix. That is too loose: at file level `A.build` names the top-level
+	// module A, while the suffix admits a nested `Outer.A` as well, and the
+	// nearest-definition tie-break then bound the call to a module the source
+	// never named. Trying the exact reading first fixes that without touching
+	// the case the suffix exists for -- a qualifier naming a module only ever
+	// declared inside another one, reached through an `open` this does not
+	// model, still finds no exact reading and still falls through.
+	//
+	// Innermost reading first: a module the caller's own module declares
+	// shadows the outer binding of the same name. Concatenating
+	// unconditionally repeated the segment
+	// (`...ScriptGeneration.ScriptGeneration`), matched nothing, and
+	// dropped to the plain suffix, which admits the nested module AND an
+	// unrelated top-level `ScriptGeneration`; the winner was then the
+	// definition nearest the call site rather than the one written.
+	// Which reading applies is a property of the PROJECT's declarations, not
+	// of the symbol set being filtered. F# modules are project-scoped and the
+	// usual layout is one module per file, so the sibling a relative
+	// qualifier names is normally declared somewhere ELSE: with `Outer.A` in
+	// one file and `Outer.Caller` in another, picking the reading by which
+	// candidate sat in the caller's own file made `Outer.A` unmatchable, and
+	// the call fell through to the plain suffix -- which admits `Outer.A` AND
+	// an unrelated top-level `A`. That lost the call both ways: ambiguous
+	// candidates dropped the edge outright, and where the top-level `A` was
+	// declared in the caller's own file it matched the OUTERMOST reading and
+	// won, so the nearer scope the caller actually meant was shadowed by the
+	// farther one. Reading against `declared` also keeps the two scopes this
+	// is called on -- the project-wide candidates and the caller file's own
+	// symbols -- agreeing on ONE reading; choosing per set let the narrower
+	// one settle on an outer reading the wider one had already rejected, and
+	// the same-file branch of resolveCallTargets then won with it.
+	for _, exact := range fsharpRelativeQualifierPaths(callerPath, qualifier) {
+		if !declared[exact] {
+			continue
+		}
+		return fsharpNarrowToModule(symbols, pathBySymbolID, func(path string) bool { return path == exact })
+	}
+	// Every F# symbol in the project has a known module path, so a qualified
+	// call is held to the module it names WHEREVER that module is declared.
+	// Exempting other files -- correct only while the qualifier's meaning was
+	// read from this file alone -- meant a cross-file `A.convert` never narrowed
+	// anything, so `B.convert` stayed a candidate and the ambiguity dropped the
+	// edge.
+	return fsharpNarrowToModule(symbols, pathBySymbolID, func(path string) bool {
+		return fsharpQualifierMatchesModulePath(path, qualifier)
+	})
+}
+
+// fsharpNarrowToModule keeps the candidates an F# module qualifier admits.
+// The qualifier has already been checked against the project's declared F#
+// modules before this helper runs. It therefore names that F# module, not an
+// arbitrary same-named symbol from another language. If the module lacks the
+// terminal member, the call is unresolved; falling back to a Python or other
+// pathless homonym fabricates an edge the source never named.
+func fsharpNarrowToModule(symbols []SymbolRecord, pathBySymbolID map[string]string, admits func(path string) bool) []SymbolRecord {
+	scoped := make([]SymbolRecord, 0, len(symbols))
+	for _, symbol := range symbols {
+		path, known := pathBySymbolID[symbol.ID]
+		if known && admits(path) {
+			scoped = append(scoped, symbol)
+		}
+	}
+	return scoped
+}
+
+// fsharpModuleInitBlock returns an F# module's own source with every binding
+// nested under it blanked out, so what is left is the module's
+// initialisation code.
+//
+// A `module` block spans every binding declared under it, so a scan of the
+// module's whole text sees the pipelines and calls written inside its
+// FUNCTIONS; crediting the module too produced a second edge from a symbol
+// that never made the call -- `B.run |> helper` appeared as both
+// `run -> helper` and `B -> helper`. Withdrawing every module-attributed call
+// cured that but also dropped the calls the module really does make: a
+// statement-position expression or a `do` binding runs when the module
+// initialises, belongs to no nested symbol, and cannot be recovered by the
+// file-level pass, which masks the module's whole line range. Blanking the
+// nested symbols separates the two: the members' bodies -- and their
+// definition heads, which read as calls to the generic scanner -- go, the
+// module's own statements stay.
+//
+// Only symbols strictly inside the module are blanked: an enclosing module
+// spans this one entirely and would blank all of it, and a symbol sharing the
+// module's exact range would do the same.
+//
+// Line numbering is preserved (nested lines become empty, they are not
+// removed) so the block stays comparable to the unmasked one.
+func fsharpModuleInitBlock(lines []string, symbol SymbolRecord, fileSymbols []SymbolRecord) string {
+	start := maxInt(1, symbol.StartLine)
+	if start > len(lines) {
+		return ""
+	}
+	end := maxInt(start, symbol.EndLine)
+	if end > len(lines) {
+		end = len(lines)
+	}
+	own := append([]string(nil), lines[start-1:end]...)
+	for _, other := range fileSymbols {
+		if other.ID == symbol.ID {
+			continue
+		}
+		otherStart := maxInt(1, other.StartLine)
+		otherEnd := maxInt(otherStart, other.EndLine)
+		if otherStart < start || otherEnd > end || (otherStart == start && otherEnd == end) {
+			continue
+		}
+		for i := otherStart; i <= otherEnd; i++ {
+			own[i-start] = ""
+		}
+	}
+	return strings.Join(own, "\n")
+}
+
 // resolveJuliaSameContainerMethodCallTargets is a conservative fallback for
 // module-scoped Julia definitions, which the parser represents as methods.
 // found distinguishes "no module candidate" from ambiguous overloads, while
@@ -3440,6 +4894,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 
+	// Every F# module path in the project, collected once: an F# qualifier is
+	// read against the whole project, not against the caller file. Repos with no
+	// F# file get two empty maps for one pass over the file list.
+	var fsharpProjectModulePathBySymbolID map[string]string
+	var fsharpProjectDeclaredModulePaths map[string]bool
+	if needsCallScan {
+		fsharpProjectModulePathBySymbolID, fsharpProjectDeclaredModulePaths = fsharpProjectModulePaths(files, recordsByFile, readContent)
+	}
+
 	for _, file := range files {
 		if shouldStop != nil && shouldStop() {
 			return
@@ -3616,6 +5079,17 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// and let receiverCallRelations apply the usual shadowing rules.
 			typeScriptPropTypes = typeScriptPropertyTypes(content, recordsByFile[file.Path])
 		}
+		var fsharpModulePathBySymbolID map[string]string
+		var fsharpDeclaredModulePaths map[string]bool
+		var fsharpShadowBindings []fsharpShadowBinding
+		if file.Language == "F#" && fileNeedsCallScan {
+			fsharpModulePathBySymbolID, fsharpDeclaredModulePaths = fsharpProjectModulePathBySymbolID, fsharpProjectDeclaredModulePaths
+			// Module abbreviations and value bindings are file-scoped, so this
+			// is read per file rather than merged into the project-wide map.
+			// They keep their positions: which of them shadows a qualifier is a
+			// question each call block answers for itself, below.
+			fsharpShadowBindings = fsharpFileShadowBindings(content)
+		}
 		var fsharpCallableNames map[string]bool
 		if file.Language == "F#" && fileNeedsCallScan {
 			// The names a bare juxtaposition call may name: this file's own
@@ -3714,6 +5188,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			} else if fileNeedsCallScan && !typeLikeKind(from.Kind) {
 				callBlock := block
+				if file.Language == "F#" && from.Kind == "module" {
+					// A module's block spans its members, so scanning it whole
+					// credits the module with the calls its FUNCTIONS make.
+					// Its own initialisation code is what is left once those
+					// are blanked out, and it is the only scan that can see it.
+					callBlock = fsharpModuleInitBlock(lines, from, currentFileSymbols)
+				}
 				if file.Language == "Rust" {
 					callBlock = stripRustCodegenMacroBodies(block)
 				}
@@ -3737,6 +5218,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				callNames := callLikeIdentifiers(callBlock, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
+				fsharpCallQualifiers := map[string]map[string]struct{}{}
 				var juliaLocalBindings map[string]struct{}
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
@@ -3793,9 +5275,48 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				if file.Language == "F#" {
 					// F# module-qualified calls (`UpdateProcess.SmartInstall(...)`,
 					// `LoadingScripts.ScriptGeneration.constructScriptsFromData(...)`)
-					// hide the target behind a dotted path.
-					for name := range fsharpDottedCallIdentifiers(callBlock) {
+					// hide the target behind a dotted path; forward pipes
+					// (`value |> normalize`) apply a function by juxtaposition, with
+					// no dot and no parentheses, so neither the dotted scanners nor
+					// the generic `name(` one sees them. Resolution matches on the
+					// name, but the qualifier is kept so a call naming a module this
+					// file declares stays inside it.
+					masked := maskFSharpBlockComments(callBlock)
+					// Shadowing is lexical AND ordered, so it is answered per
+					// call SITE: only the file's bindings that reach the line a
+					// call is written on may un-qualify it. A binding local to a
+					// sibling function, written below the block, or written
+					// below the call inside this very block, is not in scope
+					// there and leaves the qualifier alone.
+					fsharpShadowedQualifiers := fsharpShadowsAt(fsharpShadowBindings, masked, from.StartLine)
+					// An unqualified call written with parentheses (`convert(x)`)
+					// has no dot and no pipe, so only the generic scanner above
+					// sees it and it reached no qualifier record. A block holding
+					// both `A.convert(x)` and `convert(x)` was then restricted to
+					// A, and the bare site -- which meant this module's own
+					// `convert` -- resolved to A's. Record the generic names
+					// first, unqualified, exactly as a bare pipe target is
+					// recorded, so both spellings of a bare call clear the
+					// restriction alike. They are read from the masked block for
+					// the same reason the targets are: a call inside `(* ... *)`
+					// is not a call site.
+					for name := range callLikeIdentifiers(masked, file.Language) {
+						// A bare spelling carries no qualifier to shadow, so no
+						// binding can change what it records.
+						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, nil, name, name)
+					}
+					for target, offsets := range fsharpCallTargetSites(masked) {
+						name := lastDottedCallSegment(target)
+						if name == "" {
+							continue
+						}
 						callNames[name] = struct{}{}
+						// One record per SIGHTING: the same spelling written
+						// above and below a binding of its head is two call
+						// sites with two different answers.
+						for _, offset := range offsets {
+							recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers(offset), name, target)
+						}
 					}
 					// Plain juxtaposition (`add ledger amount`) is F#'s ordinary
 					// call syntax and has neither a dot, a pipe nor parentheses
@@ -3805,6 +5326,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// file — an unrecognized name is never guessed into a call.
 					for name := range fsharpJuxtapositionCallIdentifiers(callBlock, fsharpCallableNames) {
 						callNames[name] = struct{}{}
+						// Juxtaposition is a bare spelling just like convert(x).
+						// Keep it beside any A.convert sighting with the same
+						// terminal name instead of inheriting A's restriction.
+						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, nil, name, name)
 					}
 				}
 				if file.Language == "Lua" {
@@ -3905,6 +5430,31 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						targets = resolveJSNamespaceCallChain(name, from, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, func(terminal string) bool {
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
+					} else if quals := fsharpResolvableQualifiers(fsharpCallQualifiers[name]); len(quals) > 0 {
+						// One resolution per SPELLING, not one per name: with both
+						// `A.convert` and `B.convert` written in this caller, a single
+						// entry had to pick one module or neither, and picking neither
+						// left `resolveCallTargets` choosing the same-file definition
+						// nearest the call site -- one real call dropped and the
+						// survivor decided by line distance rather than by what was
+						// written. A bare sighting is a spelling too, resolved
+						// unrestricted BESIDE the qualified ones rather than
+						// cancelling them. Targets are de-duplicated because two
+						// qualifiers may name the same module by different relative
+						// paths, and because a bare and a qualified sighting can agree.
+						seenTargets := map[string]bool{}
+						for _, qualifier := range quals {
+							for _, to := range resolveCallTargets(name, from,
+								fsharpQualifiedScope(symbolsByShortName[name], qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
+								fsharpQualifiedScope(currentFileSymbols, qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
+								callImportsByName, false) {
+								if seenTargets[to.ID] {
+									continue
+								}
+								seenTargets[to.ID] = true
+								targets = append(targets, to)
+							}
+						}
 					} else {
 						targets = resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
 						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols, juliaLocalBindings)
@@ -4344,6 +5894,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
+				topLevelFSharpQualifiers := map[string]map[string]struct{}{}
 				if file.Language == "Julia" {
 					topLevelNames = juliaCallIdentifiers(topLevel)
 				}
@@ -4368,8 +5919,30 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				if file.Language == "F#" {
-					for name := range fsharpDottedCallIdentifiers(topLevel) {
+					// Statement-position pipelines (`"x" |> normalize |> ignore` in an
+					// .fsx script, or in a module body) are bound to no symbol, so the
+					// per-symbol scan above never sees them.
+					masked := maskFSharpBlockComments(topLevel)
+					// The top-level block spans the file with every symbol's
+					// lines blanked, so it is already in file coordinates and a
+					// binding buried in a function body covers only lines that
+					// hold no top-level call site.
+					fsharpShadowedQualifiers := fsharpShadowsAt(fsharpShadowBindings, masked, 1)
+					// Same as the per-symbol path: a parenthesised bare call is
+					// seen only by the generic scanner, so it has to clear the
+					// qualifier here too, and it carries no qualifier to shadow.
+					for name := range callLikeIdentifiers(masked, file.Language) {
+						recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, nil, name, name)
+					}
+					for target, offsets := range fsharpCallTargetSites(masked) {
+						name := lastDottedCallSegment(target)
+						if name == "" {
+							continue
+						}
 						topLevelNames[name] = struct{}{}
+						for _, offset := range offsets {
+							recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers(offset), name, target)
+						}
 					}
 				}
 				if file.Language == "Lua" {
@@ -4424,6 +5997,24 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// file-level pseudo-symbol has no self-call or member names
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
+					} else if quals := fsharpResolvableQualifiers(topLevelFSharpQualifiers[name]); len(quals) > 0 {
+						// Same as the per-symbol path: each spelling resolves on its
+						// own, so a statement-position `1 |> A.convert |> B.convert`
+						// keeps both edges and a file that writes `convert(1)` as
+						// well as `A.convert(2)` keeps both of those.
+						seenTargets := map[string]bool{}
+						for _, qualifier := range quals {
+							for _, to := range resolveCallTargets(name, fileSource,
+								fsharpQualifiedScope(symbolsByShortName[name], qualifier, "", fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
+								fsharpQualifiedScope(currentFileSymbols, qualifier, "", fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
+								importsByName, false) {
+								if seenTargets[to.ID] {
+									continue
+								}
+								seenTargets[to.ID] = true
+								targets = append(targets, to)
+							}
+						}
 					} else {
 						targets = resolveCallTargetsWithRawImport(name, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
 					}
@@ -21219,6 +22810,334 @@ func callNameIgnored(content string, start int, name, language string) bool {
 	default:
 		return false
 	}
+}
+
+// maskFSharpBlockComments blanks `(* ... *)` comment bodies, preserving length and
+// line structure so every offset around them is unchanged.
+//
+// The generic literal/comment stripper does not know this form, so a commented
+// pipeline -- `(* xs |> helper *)` -- reached the F# scanners and emitted a CALLS edge
+// to a function the code does not call. Commented-out code is the shape most likely to
+// contain a call, which is what makes the fabrication easy to hit.
+//
+// F# block comments NEST, so the scan counts depth rather than stopping at the first
+// `*)`; a single-pass strip would end the mask early and expose the tail of an outer
+// comment. Line comments are already handled by the generic stripper.
+func maskFSharpBlockComments(text string) string {
+	if !strings.Contains(text, "(*") {
+		return text
+	}
+	return maskFSharpSource(text, true, false)
+}
+
+// maskFSharpLiteralsAndLineComments blanks F# STRING and CHARACTER literal
+// bodies and `//` line comments, preserving length and line structure.
+//
+// The F# call scanners used stripCodeLiteralsAndComments, which is shared by
+// thirty-odd languages and models none of F#'s literal forms. A triple-quoted
+// string is raw -- it ends only at the next `"""` -- but the generic stripper
+// pairs quotes two at a time, so `let s = """a " x |> helper """` left
+// `x |> helper` standing as code and the pipeline scanner emitted a CALLS edge
+// to a function the file never calls. The same held for anything a verbatim or
+// triple-quoted literal spanned a newline to reach, because the generic
+// stripper abandons a string at the first line break, and for `""` preceded by
+// a backslash, which it consumed as an escape a verbatim string does not have.
+// It went wrong in the other direction too: F# spells a generic type parameter
+// with the same apostrophe as a character literal, so `'T` opened a literal
+// that closed on the next `'` on the line and blanked the real pipeline between
+// them -- `let run (xs: 'T list) = xs |> other 'a'` lost its call to `other`.
+//
+// The state machine that already reads these forms correctly is the block
+// comment masker's, so it is shared rather than reimplemented. Only literals
+// are blanked here: `(* ... *)` is left exactly as it was, because in
+// production this runs on a block that maskFSharpBlockComments has already
+// masked, and on raw input the pipeline scanner deliberately matches its dotted
+// sibling instead of diverging from it.
+func maskFSharpLiteralsAndLineComments(text string) string {
+	return maskFSharpSource(text, false, true)
+}
+
+// fsharpLiteral is the F# string form the masker is currently inside.
+//
+// `dollars` is the number of `$` sigils the literal opened with, and it is the
+// width of its interpolation delimiter: `$"{x}"` holds an expression in ONE
+// brace, `$$"""{{x}}"""` in two. Zero means the literal is not interpolated and
+// has no holes at all.
+type fsharpLiteral struct {
+	verbatim bool
+	triple   bool
+	dollars  int
+}
+
+// fsharpHole is an OPEN interpolation hole: the literal to resume when it
+// closes, how deeply bracketed the expression inside it currently is, and
+// whether the scan has passed the `,`/`:` that ends the expression and begins
+// the alignment/format text.
+type fsharpHole struct {
+	lit    fsharpLiteral
+	nested int
+	format bool
+}
+
+// maskFSharpSource walks F# source once, tracking the block comment depth and
+// the literal it is inside, and blanks whichever of the two the caller asked
+// for. Blanking is always length- and line-preserving.
+//
+// The holes of an INTERPOLATED string are the exception: they are not literal
+// text, they are expressions the compiler evaluates, so `$"{value |> normalize}"`
+// really does call normalize. Blanking the whole literal deleted that call and
+// every other one written in a hole. Only the literal text around a hole is
+// blanked; the expression inside it is left standing as the code it is, and a
+// hole is entered by leaving string state entirely, so a string nested inside
+// one (`$"{f (g "a |> helper")}"`) is masked by the same machine.
+//
+// What is deliberately NOT modelled: a run of `{` longer than the delimiter in
+// a `$$`-style raw literal is read as escapes plus one opener, which is the
+// rule F# states for `$` and merely extends to the wider delimiter; and the
+// alignment/format text after an unbracketed `,` or `:` is blanked as the
+// literal text it is, so a `::`, `:>` or `:?` operator is spelled out here to
+// keep a cons or a cast from being mistaken for one.
+func maskFSharpSource(text string, blankComments, blankLiterals bool) string {
+	out := []byte(text)
+	blank := func(from, to int) {
+		if blankLiterals {
+			maskBytes(out, from, to)
+		}
+	}
+	depth := 0
+	inString := false
+	var cur fsharpLiteral
+	var holes []fsharpHole
+	for i := 0; i < len(out); i++ {
+		if inString {
+			start := i
+			if cur.dollars > 0 && out[i] == '{' {
+				// A run of `{` inside an interpolated literal either OPENS A
+				// HOLE or is an escaped brace. Either way the braces themselves
+				// are literal syntax and go; what follows an opener is code.
+				run := fsharpBraceRun(out, i, '{')
+				blank(start, i+run)
+				i += run - 1
+				if fsharpHoleOpens(run, cur.dollars) {
+					holes = append(holes, fsharpHole{lit: cur})
+					inString = false
+				}
+				continue
+			}
+			switch {
+			case cur.triple:
+				// A TRIPLE-QUOTED string is raw and ends only at the next
+				// `"""`, so the unescaped quotes it exists to hold are
+				// ordinary content. Ending it at the first one left the rest
+				// of the literal being read as code: `"""a " (* b"""`
+				// opened a block comment that never closed, and every genuine
+				// pipeline after it was blanked away.
+				if out[i] == '"' && i+2 < len(out) && out[i+1] == '"' && out[i+2] == '"' {
+					i += 2
+					inString = false
+				}
+			case !cur.verbatim && out[i] == '\\' && i+1 < len(out):
+				// An escape consumes the next byte, so a `\"` does not end the
+				// string and expose the code after it to the comment scanner.
+				i++
+			case out[i] == '"':
+				if cur.verbatim && i+1 < len(out) && out[i+1] == '"' {
+					i++ // "" is one escaped quote inside a verbatim string
+					blank(start, i+1)
+					continue
+				}
+				inString = false
+			}
+			blank(start, i+1)
+			continue
+		}
+		if n := len(holes); n > 0 && depth == 0 {
+			hole := &holes[n-1]
+			if out[i] == '}' && hole.nested == 0 && fsharpBraceRun(out, i, '}') >= hole.lit.dollars {
+				// The hole CLOSES: its delimiter is literal syntax, and the
+				// text after it is literal text again.
+				blank(i, i+hole.lit.dollars)
+				i += hole.lit.dollars - 1
+				cur, inString = hole.lit, true
+				holes = holes[:n-1]
+				continue
+			}
+			if hole.format {
+				blank(i, i+1)
+				continue
+			}
+			switch out[i] {
+			case '(', '[', '{':
+				hole.nested++
+			case ')', ']', '}':
+				if hole.nested > 0 {
+					hole.nested--
+				}
+			case ',', ':':
+				// `,` and `:` end the expression and begin the alignment and
+				// FORMAT text, which is literal: a date format's dots
+				// (`$"{d:yyyy.MM.dd}"`) would otherwise read as a qualified
+				// call. `::`, `:>` and `:?` are operators, not a format.
+				if out[i] == ':' && i+1 < len(out) && (out[i+1] == ':' || out[i+1] == '>' || out[i+1] == '?') {
+					i++
+					continue
+				}
+				// Only a TOP-LEVEL separator begins the format text. Inside a
+				// bracket the same byte is ordinary code -- the argument comma
+				// of `$"{f(a, b) |> normalize}"`, the type annotation of
+				// `$"{(v: int) |> normalize}"` -- and reading it as a format
+				// did not merely blank that hole: the `)` that followed was
+				// blanked too, so `nested` never came back to zero, the hole
+				// never closed, and every byte after it in the masked text was
+				// blanked as literal. One nested comma deleted the call in the
+				// hole and every call written after it.
+				if hole.nested > 0 {
+					break
+				}
+				hole.format = true
+				blank(i, i+1)
+				continue
+			}
+		}
+		switch {
+		case depth == 0 && out[i] == '/' && i+1 < len(out) && out[i+1] == '/':
+			// A LINE COMMENT is not code, and it is the likeliest place in a
+			// file for a lone `"` -- prose, or a quoted word. Counting that
+			// quote as a string opener left the scan stuck inside a string for
+			// the rest of the block, so a `(* xs |> helper *)` below it was
+			// never masked and the pipeline scanner emitted a CALLS edge to a
+			// function the code does not call.
+			start := i
+			for i+1 < len(out) && out[i+1] != '\n' {
+				i++
+			}
+			blank(start, i+1)
+		case depth == 0 && out[i] == '\'':
+			// A CHARACTER LITERAL is one token: the quote in `'"'` opens
+			// nothing. Reading it as a string opener stranded the scan the same
+			// way a line comment did. F# spells generic type parameters with
+			// the same leading apostrophe (`'T`, `'a`) and allows a trailing
+			// one in identifiers (`f'`), so only a well-formed literal is
+			// consumed and anything else is left exactly as before -- blanking
+			// a `'T` and everything up to the next apostrophe is how the
+			// generic stripper deleted real calls.
+			if end := fsharpCharLiteralEnd(out, i); end > i {
+				blank(i, end+1)
+				i = end
+			}
+		case depth == 0 && out[i] == '"':
+			// A STRING is not code. `let marker = "(*"` used to open a comment
+			// that never closed, and the rest of the block -- every real
+			// pipeline in it -- was blanked away, dropping those calls silently.
+			start := i
+			prefix, lit := fsharpLiteralPrefix(out, i)
+			cur, inString = lit, true
+			// `@"""x"""` is a VERBATIM string whose `""` are escaped
+			// quotes, not a triple-quoted one, so the `@` is read first and
+			// only an unprefixed `"""` opens the raw form.
+			if !cur.verbatim && i+2 < len(out) && out[i+1] == '"' && out[i+2] == '"' {
+				cur.triple = true
+				i += 2
+			}
+			// The `$` and `@` sigils belong to the literal, not to the code
+			// around it.
+			blank(prefix, start)
+			blank(start, i+1)
+		case i+1 < len(out) && out[i] == '(' && out[i+1] == '*':
+			depth++
+			if blankComments {
+				out[i], out[i+1] = ' ', ' '
+			}
+			i++
+		case depth > 0 && i+1 < len(out) && out[i] == '*' && out[i+1] == ')':
+			depth--
+			if blankComments {
+				out[i], out[i+1] = ' ', ' '
+			}
+			i++
+		case depth > 0 && blankComments:
+			// The line structure is load-bearing: callers index the masked copy
+			// at offsets they read from the original, and entity line numbers
+			// are counted in it. maskBytes leaves BOTH break bytes alone --
+			// blanking a lone `\r` inside a comment, which this branch used to
+			// do, breaks that invariant on a CRLF file.
+			maskBytes(out, i, i+1)
+		}
+	}
+	return string(out)
+}
+
+// fsharpLiteralPrefix reads the `$` and `@` sigils in front of the quote at
+// `quote`, returning where they start and the literal form they describe.
+//
+// The number of `$` is load-bearing: it sets how many braces open a hole, so
+// `$$"""{{x}}"""` is read with a two-brace delimiter and its single braces stay
+// literal text. `@` may come on either side of the `$` (`$@"..."`, `@$"..."`).
+func fsharpLiteralPrefix(out []byte, quote int) (int, fsharpLiteral) {
+	var lit fsharpLiteral
+	start := quote
+	for start > 0 && (out[start-1] == '$' || out[start-1] == '@') {
+		start--
+		if out[start] == '$' {
+			lit.dollars++
+		} else {
+			lit.verbatim = true
+		}
+	}
+	return start, lit
+}
+
+// fsharpBraceRun counts the run of `brace` bytes starting at i.
+func fsharpBraceRun(out []byte, i int, brace byte) int {
+	run := 0
+	for i+run < len(out) && out[i+run] == brace {
+		run++
+	}
+	return run
+}
+
+// fsharpHoleOpens reports whether a run of `run` opening braces in a literal
+// whose delimiter is `dollars` wide opens an interpolation hole.
+//
+// In a one-`$` literal `{{` is an ESCAPED brace, so pairs cancel and only an
+// odd brace is left to open a hole -- `$"{{x}}"` prints `{x}` and calls
+// nothing. The same rule read at the wider delimiter covers `$$`.
+func fsharpHoleOpens(run, dollars int) bool {
+	if dollars == 1 {
+		return run%2 == 1
+	}
+	return run >= dollars
+}
+
+// fsharpCharLiteralEnd returns the index of the closing quote of the F#
+// character literal starting at the apostrophe at i, or -1 when that apostrophe
+// is not one. F# reuses the apostrophe for generic type parameters (`'T`) and
+// permits it inside identifiers (`f'`), so the shape is checked rather than
+// assumed: a bare `'` is left untouched and the caller's state is unchanged.
+func fsharpCharLiteralEnd(b []byte, i int) int {
+	if i+2 >= len(b) {
+		return -1
+	}
+	if b[i+1] == '\\' {
+		// An escape runs to the closing quote: `'\n'`, `'\''`, `'\u0041'`,
+		// `'\U0001F600'`. Bounded so a stray backslash cannot swallow the file.
+		for j := i + 2; j < len(b) && j <= i+12; j++ {
+			if b[j] == '\n' || b[j] == '\r' {
+				return -1
+			}
+			if b[j] == '\'' {
+				return j
+			}
+		}
+		return -1
+	}
+	if b[i+1] == '\'' || b[i+1] == '\n' || b[i+1] == '\r' {
+		return -1
+	}
+	if b[i+2] == '\'' {
+		return i + 2
+	}
+	return -1
 }
 
 func stripCodeLiteralsAndComments(content string) string {
