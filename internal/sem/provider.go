@@ -20685,7 +20685,7 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(stripPythonDirectImportComment(line)); len(matches) == 2 {
+		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {
@@ -20706,11 +20706,14 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 	return imports, forms
 }
 
-func stripPythonDirectImportComment(line string) string {
-	if index := strings.IndexByte(line, '#'); index >= 0 {
-		line = line[:index]
+func pythonDirectImportStatement(line string) string {
+	end := len(line)
+	for _, terminator := range []byte{'#', ';'} {
+		if index := strings.IndexByte(line, terminator); index >= 0 && index < end {
+			end = index
+		}
 	}
-	return strings.TrimSpace(line)
+	return strings.TrimSpace(line[:end])
 }
 
 func parsePythonImportItem(item string) (name, alias string) {
@@ -23709,7 +23712,7 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(stripPythonDirectImportComment(line)); len(matches) == 2 {
+		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {

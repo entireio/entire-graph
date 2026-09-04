@@ -1974,6 +1974,48 @@ func TestPythonDirectImportCommentsPreserveAliasBindingsAndDottedCalls(t *testin
 	}
 }
 
+func TestPythonDirectImportTerminatorsPreserveAliasBindingsAndDottedFFI(t *testing.T) {
+	const importLine = "import frobnicate as m"
+	for _, line := range []string{
+		importLine + "; m.compute(1)",
+		importLine + " # noqa; m.compute(1)",
+		importLine + "; x = 1 # noqa",
+	} {
+		content := line + "\n"
+		names, forms := importedPythonNamesAndForms(content)
+		if len(names) != 1 || !slices.Equal(names["m"], []string{"frobnicate"}) {
+			t.Fatalf("%q names = %#v, want only m=frobnicate", line, names)
+		}
+		if len(forms) != 1 || forms["m"]["frobnicate"] != pythonAliasRename {
+			t.Fatalf("%q forms = %#v, want only m=frobnicate alias", line, forms)
+		}
+		bindings := importedPythonBindings(content)
+		if len(bindings) != 1 || len(bindings["m"]) != 1 || bindings["m"][0].Module != "frobnicate" || bindings["m"][0].Imported != "" {
+			t.Fatalf("%q bindings = %#v, want only m=frobnicate module alias", line, bindings)
+		}
+
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		// Keep the compound spelling under test and use a function body for the
+		// call site so the scoped resolver has an unambiguous owner.
+		writeFile(t, repo, "app.py", content+"\ndef run():\n    return m.compute(1)\n")
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		var ffiCall *RelationRecord
+		for i := range calls {
+			if strings.Contains(calls[i].ToID, "frobnicate.c:function:compute") {
+				ffiCall = &calls[i]
+				break
+			}
+		}
+		if ffiCall == nil {
+			t.Fatalf("%q direct import alias did not resolve dotted FFI call: %#v", line, calls)
+		}
+		if ffiCall.Resolution != "import_resolved" {
+			t.Fatalf("%q dotted FFI call resolution = %q, want import_resolved: %#v", line, ffiCall.Resolution, calls)
+		}
+	}
+}
+
 func TestPythonFromImportParserKeepsLaterImportsVisibleAfterUnclosedList(t *testing.T) {
 	content := "from broken import (\n    thing,\nfrom mod import helper\n"
 	names := importedPythonNames(content)
