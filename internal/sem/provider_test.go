@@ -5727,6 +5727,191 @@ async def unrelated(v):
 	})
 }
 
+// Comment stripping used to happen in ONE place: inside the multi-line join,
+// after a parenthesised `from ... import (` had been recognised. Every import
+// that fit on one line was handed to parsePythonImportItem with its trailing
+// comment still attached, and a comment is made of words: `compute as c # noqa`
+// splits into five fields, `as` is no longer second-to-last, and the item reads
+// as the plain member `compute`. The alias `c` was then bound by the
+// tree-sitter scope view (which never sees the comment) to the MODULE alone,
+// with no member behind it -- so the call did not merely lose its edge, it got
+// a WRONG one. Measured over these fixtures before the fix:
+//
+//	from frobnicate import compute as c  # noqa   +  c(v)
+//	CALLS       run -> symbol:frobnicate.c        res=import_external conf=0.78   INVENTED
+//	ASYNC_CALLS (none)                                                            DROPPED
+//	DATA_FLOWS  (none, both directions)                                           DROPPED
+//
+// `symbol:frobnicate.c` is the alias spelling glued onto the module: a member
+// that does not exist in frobnicate.c, pointed at by a confident-looking edge.
+//
+// A `#` on an import line needs no quote tracking to find, because an import
+// statement cannot contain a string. CPython 3.14.6 settles it:
+//
+//	$ python3 -c 'import ast; ast.parse("from mod import \"compute\"")'
+//	SyntaxError: invalid syntax
+//	$ python3 -c 'import ast; ast.parse("from \"mod\" import compute")'
+//	SyntaxError: invalid syntax
+//	$ python3 -c 'import ast; ast.parse("from mod import compute as \"c\"")'
+//	SyntaxError: cannot use literal as import target
+//	$ python3 -c 'import io,tokenize; [print(tokenize.tok_name[t.type], repr(t.string)) for t in tokenize.generate_tokens(io.StringIO("from mod import compute as c  # noqa\n").readline)]'
+//	NAME 'from' / NAME 'mod' / NAME 'import' / NAME 'compute' / NAME 'as' / NAME 'c' / COMMENT '# noqa'
+//
+// The statement admits names, dots, commas, parens and `as` and nothing else,
+// so the `#` is always a COMMENT token. The oracle here is therefore the
+// comment-free spelling of the same line: a comment is not part of the
+// statement, so it must change nothing about any edge the line produces.
+func TestPythonCommentedImportBindsTheSameAliasAsTheCommentFreeLine(t *testing.T) {
+	const foreign = `int compute(int value) {
+	return value + 1;
+}
+`
+	relationsFor := func(t *testing.T, source string) map[string][]RelationRecord {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", source)
+		out := map[string][]RelationRecord{}
+		for _, relType := range []string{"CALLS", "ASYNC_CALLS", "DATA_FLOWS"} {
+			out[relType] = relationsTouching(t, repo, "app.py:function:run", relType)
+		}
+		return out
+	}
+	// Each fixture gets its own temp repo, so the ID's repo-key prefix differs
+	// by construction; everything after it must not.
+	target := func(id string) string { return id[strings.Index(id, ":")+1:] }
+	edge := func(r RelationRecord) string { return target(r.FromID) + " -> " + target(r.ToID) }
+	// sameEdges compares two whole relation sets edge for edge. Detail is left
+	// out on purpose: it records the spelling at the CALL site, which the
+	// comment does not touch, and comparing it would only re-test the fixture.
+	// Errorf, not Fatalf: a comment defect hits the three relation types
+	// independently, and stopping at CALLS would hide which of the others the
+	// line also lost.
+	sameEdges := func(t *testing.T, relType, label string, got, want []RelationRecord) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Errorf("%s %s: want %d edge(s) like the comment-free line, got %d:\n commented = %#v\n clean     = %#v",
+				label, relType, len(want), len(got), got, want)
+			return
+		}
+		byEdge := map[string]RelationRecord{}
+		for _, r := range got {
+			byEdge[edge(r)] = r
+		}
+		for _, w := range want {
+			g, ok := byEdge[edge(w)]
+			if !ok {
+				t.Errorf("%s %s: the comment-free edge %s is missing: %#v", label, relType, edge(w), got)
+				continue
+			}
+			if g.Type != w.Type || g.Resolution != w.Resolution || g.RelationScope != w.RelationScope ||
+				g.Confidence != w.Confidence || g.Reason != w.Reason {
+				t.Errorf("%s %s: a commented import diverged from its comment-free oracle:\n commented = %#v\n clean     = %#v",
+					label, relType, g, w)
+			}
+		}
+	}
+	// compare runs one commented spelling against the same source with the
+	// comment deleted, over all three relation types the site justifies.
+	compare := func(t *testing.T, label, commented, clean string, wantPerType map[string]int) {
+		t.Helper()
+		got, want := relationsFor(t, commented), relationsFor(t, clean)
+		for _, relType := range []string{"CALLS", "ASYNC_CALLS", "DATA_FLOWS"} {
+			// Guard the oracle first: a comment-free line that resolves nothing
+			// would make every comparison below vacuously true.
+			if n := wantPerType[relType]; len(want[relType]) != n {
+				t.Fatalf("%s %s: the comment-free oracle is broken, want %d edge(s), got %#v", label, relType, n, want[relType])
+			}
+			sameEdges(t, relType, label, got[relType], want[relType])
+		}
+	}
+
+	// The reported line, and the two relation types it silently dropped.
+	t.Run("a trailing comment does not move the alias", func(t *testing.T) {
+		compare(t, "module-level call",
+			"from frobnicate import compute as c  # noqa\n\ndef run(v):\n    return c(v)\n",
+			"from frobnicate import compute as c\n\ndef run(v):\n    return c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 0, "DATA_FLOWS": 2})
+		compare(t, "module-level await",
+			"from frobnicate import compute as c  # noqa\n\nasync def run(v):\n    return await c(v)\n",
+			"from frobnicate import compute as c\n\nasync def run(v):\n    return await c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 1, "DATA_FLOWS": 2})
+	})
+
+	// The line scanner reads function bodies too, and a `# type: ignore` on a
+	// deferred import inside a function is where these comments actually live.
+	t.Run("a comment on a function-local import does not move the alias", func(t *testing.T) {
+		compare(t, "function-local",
+			"def run(v):\n    from frobnicate import compute as c  # type: ignore\n    return c(v)\n",
+			"def run(v):\n    from frobnicate import compute as c\n    return c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 0, "DATA_FLOWS": 2})
+	})
+
+	// `import mod as m` is parsed by the same item parser off the same line, so
+	// it carried the same defect: with the comment attached the alias `m` bound
+	// nothing and `m.compute(v)` produced no edge at all.
+	t.Run("a comment on a plain import does not move the alias", func(t *testing.T) {
+		compare(t, "plain import alias",
+			"import frobnicate as m  # noqa\n\ndef run(v):\n    return m.compute(v)\n",
+			"import frobnicate as m\n\ndef run(v):\n    return m.compute(v)\n",
+			map[string]int{"CALLS": 2, "ASYNC_CALLS": 0, "DATA_FLOWS": 0})
+	})
+
+	// The parenthesised join already stripped comments; it must keep doing so
+	// now that the caller strips first. The head line's comment sits BEFORE the
+	// list opens, where a naive cut of the joined text would lose the members.
+	t.Run("the multi-line join still strips its comments", func(t *testing.T) {
+		compare(t, "comment after the open paren",
+			"from frobnicate import (  # noqa\n    compute as c,\n)\n\ndef run(v):\n    return c(v)\n",
+			"from frobnicate import (\n    compute as c,\n)\n\ndef run(v):\n    return c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 0, "DATA_FLOWS": 2})
+		compare(t, "comment between the items",
+			"from frobnicate import (\n    compute as c,  # keep\n)\n\ndef run(v):\n    return c(v)\n",
+			"from frobnicate import (\n    compute as c,\n)\n\ndef run(v):\n    return c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 0, "DATA_FLOWS": 2})
+	})
+
+	// The fence for the quoting question CPython answered above. A `#` inside a
+	// string is a real thing in Python -- it just cannot occur inside an import
+	// statement, so the cut needs no quote tracking. What it must never do is
+	// let a quoted `#` on some OTHER line turn into an import: the cut only
+	// ever removes a suffix, so a line that was not an import cannot become
+	// one. A false import here would be the worst outcome available -- it would
+	// name a member of frobnicate.c that the file never imported.
+	t.Run("a quoted hash on a non-import line invents nothing", func(t *testing.T) {
+		compare(t, "string holding a fake import",
+			"COMMENT = \"# from frobnicate import measure\"\nfrom frobnicate import compute as c\n\ndef run(v):\n    return c(v)\n",
+			"from frobnicate import compute as c\n\ndef run(v):\n    return c(v)\n",
+			map[string]int{"CALLS": 1, "ASYNC_CALLS": 0, "DATA_FLOWS": 2})
+	})
+
+	// And the cut itself, directly: it removes the comment and nothing else,
+	// and it cannot manufacture an import prefix out of a line that lacked one.
+	t.Run("the cut removes only the comment", func(t *testing.T) {
+		looksLikeImport := func(text string) bool {
+			text = strings.TrimSpace(text)
+			return strings.HasPrefix(text, "import ") || strings.HasPrefix(text, "from ")
+		}
+		for _, tc := range []struct{ line, want string }{
+			{"from mod import compute as c  # noqa", "from mod import compute as c"},
+			{"    from mod import compute as c\t# type: ignore", "from mod import compute as c"},
+			{"from mod import compute as c", "from mod import compute as c"},
+			{"# from mod import compute as c", ""},
+			{"   # noqa", ""},
+			{"#", ""},
+			{"", ""},
+			{"COMMENT = \"# from mod import measure\"", "COMMENT = \""},
+		} {
+			if got := pythonImportLineWithoutComment(tc.line); got != tc.want {
+				t.Fatalf("pythonImportLineWithoutComment(%q) = %q, want %q", tc.line, got, tc.want)
+			}
+			if !looksLikeImport(tc.line) && looksLikeImport(pythonImportLineWithoutComment(tc.line)) {
+				t.Fatalf("cutting the comment turned a non-import line into an import: %q", tc.line)
+			}
+		}
+	})
+}
+
 // Regression for the jdx/mise report: a bare type name in a signature must
 // resolve through the file's import bindings before any global fallback, and
 // an ambiguous name with no import evidence must resolve to nothing. mise's

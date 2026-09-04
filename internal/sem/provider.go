@@ -20502,10 +20502,16 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 	fromRe := regexp.MustCompile(`^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+(.+)$`)
 	lines := strings.Split(content, "\n")
 	for index := 0; index < len(lines); index++ {
-		line := strings.TrimSpace(lines[index])
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
+		// An import statement is spelled out of names, dots, commas, parens and
+		// `as`; CPython rejects a string literal anywhere in one, so a `#` on
+		// an import line always opens a comment and can be cut without any
+		// quote tracking. Cutting it HERE rather than only inside the
+		// multi-line join is what makes `from mod import compute as c # noqa`
+		// bind `c`: left in place, the comment's words are import-list fields,
+		// `as` is no longer second-to-last, and the alias is read as the plain
+		// member `compute`. A pure comment line strips to empty, which neither
+		// pattern below matches.
+		line := pythonImportLineWithoutComment(lines[index])
 		// A from-import list may be parenthesised across several lines, which is
 		// how real code writes anything longer than the shortest import. Read
 		// line by line, the statement is just `from mod import (`, whose only
@@ -20564,8 +20570,8 @@ const pythonImportContinuationLines = 256
 // spans lines into one logical line, returning it with the index of the last
 // line consumed. It reports false -- leaving the caller the single line it
 // already had -- unless the line really is a from-import whose list opens a
-// paren it does not close, and that list closes within the bound. Only comments
-// are stripped, and only from the joined text: an import list cannot hold a
+// paren it does not close, and that list closes within the bound. Comments are
+// stripped from every continuation line: an import statement cannot hold a
 // string, so a `#` inside one always starts a comment.
 func pythonJoinedFromImportLine(lines []string, start int, fromRe *regexp.Regexp) (string, int, bool) {
 	head := pythonImportLineWithoutComment(lines[start])
@@ -20589,6 +20595,12 @@ func pythonJoinedFromImportLine(lines []string, start int, fromRe *regexp.Regexp
 	return "", start, false
 }
 
+// pythonImportLineWithoutComment cuts an import line at its comment. Python
+// admits only names, dots, commas, parentheses and `as` inside an `import` or
+// `from ... import` statement -- every string-literal spelling is a
+// SyntaxError -- so a `#` on such a line is never inside a quote and needs no
+// quote tracking to find. Removing a suffix can only shorten a line, so a line
+// that was not an import cannot become one: the cut fails closed.
 func pythonImportLineWithoutComment(line string) string {
 	if hash := strings.IndexByte(line, '#'); hash >= 0 {
 		line = line[:hash]
@@ -23557,10 +23569,10 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 	fromRe := regexp.MustCompile(`^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+(.+)$`)
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
+		// Same comment cut as importedPythonNamesAndForms, for the same reason:
+		// a trailing `# noqa` otherwise reaches parsePythonImportItem as import
+		// items and buries the alias.
+		line := pythonImportLineWithoutComment(scanner.Text())
 		if matches := importRe.FindStringSubmatch(line); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
