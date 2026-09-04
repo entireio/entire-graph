@@ -15,6 +15,7 @@ import sys
 import re
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 # Env vars that can change what an arm sees or says. Prefix match.
 _CAPTURE_PREFIXES = (
@@ -123,12 +124,36 @@ _ARGV_SAFE_TOGGLES = frozenset({
 _ARGV_SECRET_OPTS = frozenset({"--mem0-api-key"})
 _ARGV_SAFE_OPTS = _ARGV_SAFE_VALUE_OPTS | _ARGV_SAFE_TOGGLES | _ARGV_SECRET_OPTS
 
-# Credentials also ride inside an otherwise safe value: https://user:pass@host.
-_URL_USERINFO_RE = re.compile(r"(?<=://)[^/@\s]*@")
 
 
 def _scrub_value(value: str) -> str:
-    return _URL_USERINFO_RE.sub(_ARGV_REDACTED + "@", value)
+    """Keep a URL value's location; drop every component that can carry a secret.
+
+    Credentials ride in more than one place: userinfo (`https://user:pass@host`),
+    a query parameter (`?token=...`), and a fragment. Only scheme, host, port and
+    path are provenance, so the rest is dropped wholesale rather than
+    pattern-matched -- for the same reason the option filter is an allowlist.
+    Non-URL values (paths, model names) are returned unchanged.
+    """
+    try:
+        parts = urlsplit(value)
+        scheme, netloc, path = parts.scheme, parts.netloc, parts.path
+        query, fragment = parts.query, parts.fragment
+    except ValueError:
+        return _ARGV_REDACTED
+    if not scheme or not netloc:
+        return value
+    if "@" in netloc:
+        # Split on the LAST "@": userinfo may not contain an unescaped one, so
+        # a value that does is malformed and stripping more of it is the safe
+        # direction.
+        netloc = _ARGV_REDACTED + "@" + netloc.rpartition("@")[2]
+    scrubbed = urlunsplit((scheme, netloc, path, "", ""))
+    if query:
+        scrubbed += "?" + _ARGV_REDACTED
+    if fragment:
+        scrubbed += "#" + _ARGV_REDACTED
+    return scrubbed
 
 
 def redact_argv(argv=None) -> list[str]:

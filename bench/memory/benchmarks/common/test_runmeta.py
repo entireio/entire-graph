@@ -97,6 +97,38 @@ class RedactArgvTest(unittest.TestCase):
             ["run.py", "--mem0-host", "https://<redacted>@mem0.local/v1"],
         )
 
+    def test_url_query_string_is_dropped(self) -> None:
+        """A credential rides in a query parameter as readily as in userinfo."""
+        self.assertEqual(
+            runmeta.redact_argv(
+                ["run.py", "--mem0-host", f"https://mem0.local/v1?token={FAKE_KEY}"]
+            ),
+            ["run.py", "--mem0-host", "https://mem0.local/v1?<redacted>"],
+        )
+
+    def test_url_fragment_is_dropped(self) -> None:
+        self.assertEqual(
+            runmeta.redact_argv(
+                ["run.py", "--mem0-host", f"https://mem0.local/v1#{FAKE_KEY}"]
+            ),
+            ["run.py", "--mem0-host", "https://mem0.local/v1#<redacted>"],
+        )
+
+    def test_url_password_containing_an_at_sign_leaks_no_suffix(self) -> None:
+        """Splitting on the first @ would leave the tail of the password behind."""
+        self.assertEqual(
+            runmeta.redact_argv(
+                ["run.py", "--mem0-host", f"https://admin:pa@ss{FAKE_PASSWORD}@mem0.local/"]
+            ),
+            ["run.py", "--mem0-host", "https://<redacted>@mem0.local/"],
+        )
+
+    def test_non_url_values_are_left_alone(self) -> None:
+        argv = ["run.py", "--output-dir", "/results/locomo",
+                "--answerer-model", "gpt-5.6-sol",
+                "--mem0-host", "http://localhost:18888"]
+        self.assertEqual(runmeta.redact_argv(argv), argv)
+
     def test_no_synthetic_credential_survives_any_argv_shape(self) -> None:
         """The property that matters: nothing secret reaches the artifact."""
         argv = [
@@ -111,6 +143,9 @@ class RedactArgvTest(unittest.TestCase):
             FAKE_KEY,
             "-k", FAKE_KEY,
             "--mem0-host", f"https://admin:{FAKE_PASSWORD}@mem0.local/",
+            "--mem0-host", f"https://mem0.local/?token={FAKE_KEY}",
+            "--mem0-host", f"https://mem0.local/#{FAKE_KEY}",
+            "--mem0-host", f"https://admin:pa@ss{FAKE_PASSWORD}@mem0.local/",
         ]
         rendered = " ".join(runmeta.redact_argv(argv))
         self.assertNotIn(FAKE_KEY, rendered)

@@ -46,7 +46,8 @@ identical spine. The only thing allowed to differ between arms is *which memorie
   redacted argv, git state, and md5 of every file that can change a measured number — secret-named
   env vars are recorded as `sha256:<12 hex>` fingerprints, and the command line is filtered
   through an allowlist of known options so a credential passed on it (`--mem0-api-key`, a
-  `NAME=value` prefix, a bare token) never reaches a published artifact.
+  `NAME=value` prefix, a bare token, a URL's userinfo or `?token=` query) never reaches a
+  published artifact.
 - **Scoring reads ONLY the aggregate `metrics_by_cutoff.top_200`** from the run's results JSON.
   Never a per-conversation re-derivation, never a hand-summed subset.
 - **Gate: a run is void if drops exceed 1%, or if zero-context questions cluster by conversation.**

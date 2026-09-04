@@ -231,7 +231,9 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
 - `argv` — the command line, which is what records `--user-profile`, filtered through an
   allowlist of known options: any other token (an unrecognised flag and its value, a
   `NAME=value` prefix, a bare positional) and the value of `--mem0-api-key` are replaced by
-  `<redacted>`, so a credential passed on the command line never reaches the artifact
+  `<redacted>`, so a credential passed on the command line never reaches the artifact. A URL
+  value keeps only scheme, host, port and path — userinfo, query string and fragment are
+  dropped, since a credential rides in `?token=` as readily as in `https://user:pass@host`
 - `asymmetric_settings_active` and `fair_mode`
 - `code_md5` — the 16-entry reconstructed-harness map in B9, including the Entra helper and
   dependency lock
@@ -293,7 +295,7 @@ c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 041f93a130c1a91d1b81f67622555b8c  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
-570a71cc56eae73437841748a68cbd41  benchmarks/common/runmeta.py
+d2fd739dd3ab71683450cf171accb60f  benchmarks/common/runmeta.py
 7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
 4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
 8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py
