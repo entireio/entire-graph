@@ -83,7 +83,11 @@ func TestGitInfoExcludePath(t *testing.T) {
 			t.Fatal(err)
 		}
 		want = filepath.Join(resolvedParent, filepath.Base(want))
-		if got := gitInfoExcludePath(repo); got != want {
+		got, err := gitInfoExcludePath(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
 			t.Errorf("got %q want %q", got, want)
 		}
 	})
@@ -109,14 +113,22 @@ func TestGitInfoExcludePath(t *testing.T) {
 			t.Fatal(err)
 		}
 		want = filepath.Join(resolvedParent, filepath.Base(want))
-		if got := gitInfoExcludePath(repo); got != want {
+		got, err := gitInfoExcludePath(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
 			t.Errorf("got %q want %q", got, want)
 		}
 	})
 
 	t.Run("no git dir at all", func(t *testing.T) {
 		t.Parallel()
-		if got := gitInfoExcludePath(t.TempDir()); got != "" {
+		got, err := gitInfoExcludePath(t.TempDir())
+		if err != nil {
+			t.Fatalf("a directory that is not a repository must not be an error: %v", err)
+		}
+		if got != "" {
 			t.Errorf("non-git directory: got %q want \"\"", got)
 		}
 	})
@@ -135,7 +147,7 @@ func TestGitInfoExcludePath(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(repo, ".git"), oversized, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if got := gitInfoExcludePath(repo); got != "" {
+		if got, err := gitInfoExcludePath(repo); err != nil || got != "" {
 			t.Errorf("oversized .git file: got %q, want refusal (\"\")", got)
 		}
 	})
@@ -149,7 +161,7 @@ func TestGitInfoExcludePath(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("/etc/passwd\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if got := gitInfoExcludePath(repo); got != "" {
+		if got, err := gitInfoExcludePath(repo); err != nil || got != "" {
 			t.Errorf("gitdir-prefixless .git file: got %q, want refusal (\"\")", got)
 		}
 	})
@@ -181,7 +193,7 @@ func TestGitInfoExcludePath(t *testing.T) {
 		// directory. Refusing is also the safe direction for this branch: no
 		// exclude list is loaded, so no path can be removed from the corpus by
 		// one, which is the failure this disclosure exists to catch.
-		if got := gitInfoExcludePath(repo); got != "" {
+		if got, err := gitInfoExcludePath(repo); err != nil || got != "" {
 			t.Errorf("oversized commondir: got %q, want refusal (\"\")", got)
 		}
 	})

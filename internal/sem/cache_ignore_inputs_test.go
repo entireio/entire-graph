@@ -246,7 +246,10 @@ func TestWorktreeSnapshotAppliesGitInfoExcludeWithoutCaching(t *testing.T) {
 		t.Fatal("cold snapshot did not include app.go")
 	}
 
-	exclude := gitInfoExcludePath(repo)
+	exclude, err := gitInfoExcludePath(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if exclude == "" {
 		t.Fatal("test repository did not resolve info/exclude")
 	}
