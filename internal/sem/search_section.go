@@ -127,9 +127,16 @@ func RelatedSiteKind(result SearchResult) string {
 // data/configuration, and machine-written artifacts. Vendored and example trees are
 // deliberately absent — they ARE program text, and the ranker's prior already handles the fact
 // that editing them is usually wrong.
+//
+// Fixtures are the second half of this section's own name. A `.snap`, `.golden` or `.ambr` file is
+// a machine-written RECORDING of expected output, on the same footing as a lock file: it quotes the
+// reported symptom verbatim, which is what makes it rank, and it is never the file a behavioural
+// fix edits. Leaving the class out kept those artifacts in the PRIMARY list, where an agent reads
+// the list as an edit set — and, worse, where a fixture at rank 1 anchors related-site expansion on
+// a neighbourhood that is not the change's.
 func searchDocsSectionClass(class searchFileClass) bool {
 	switch class {
-	case searchFileClassDoc, searchFileClassData, searchFileClassGenerated:
+	case searchFileClassDoc, searchFileClassData, searchFileClassGenerated, searchFileClassFixture:
 		return true
 	}
 	return false
@@ -154,15 +161,23 @@ func searchDocsSectionPath(q searchQuery, filePath string) bool {
 // A payload whose hits are ALL non-code has no primary list to protect: those hits are the
 // only answer there is, so they stay primary rather than being labelled away into an empty
 // page of fix sites.
+//
+// IDEMPOTENT, deliberately: a result already carrying the docs label is counted as one rather
+// than skipped, so running the pass twice reaches the same decision — including the all-docs
+// fallback — as running it once. That is what lets the caller price the label WITH the ranking
+// (the label is bytes on every result it touches) and still take the final decision on the
+// payload that is actually going out.
 func assignSearchSections(results []SearchResult, q searchQuery) []SearchResult {
 	docs := 0
 	for index := range results {
-		if results[index].Section != searchSectionPrimary {
-			continue
-		}
-		if searchDocsSectionPath(q, results[index].FilePath) {
-			results[index].Section = searchSectionDocs
+		switch results[index].Section {
+		case searchSectionDocs:
 			docs++
+		case searchSectionPrimary:
+			if searchDocsSectionPath(q, results[index].FilePath) {
+				results[index].Section = searchSectionDocs
+				docs++
+			}
 		}
 	}
 	if docs > 0 && docs == len(results) {

@@ -244,9 +244,14 @@ var (
 		"example", "examples", "sample", "samples", "demo", "demos",
 		"snippet", "snippets", "cookbook", "recipe", "recipes", "playground",
 	}
+	// Deliberately WITHOUT "expected": an intent term switches the whole class prior off, and
+	// "expected" is the most common word in a bug report ("expected X, got Y"). Including it
+	// handed snapshot and golden files full ranking strength on exactly the ordinary defect
+	// queries the fixture prior exists to correct, so they could again outrank the implementation.
+	// The words that remain all NAME the artifact rather than describe a symptom.
 	searchFixtureIntentTerms = []string{
 		"fixture", "fixtures", "snapshot", "snapshots", "golden", "goldens",
-		"testdata", "baseline", "baselines", "expected", "insta", "approvals",
+		"testdata", "baseline", "baselines", "insta", "approvals",
 	}
 	// Words that mean "I am asking about a config/data file". Kept narrow on purpose:
 	// terms like "package", "version" or "data" appear in almost every bug report
@@ -332,9 +337,23 @@ func searchDocumentationClassPath(lower, base string, dirs []string) bool {
 		}
 	}
 	for _, prefix := range searchDocBasePrefixes {
-		if strings.HasPrefix(base, prefix) {
-			return true
+		if !strings.HasPrefix(base, prefix) {
+			continue
 		}
+		// A PREFIX, NOT A SUBSTRING OF A FILETYPE. `license_check.go`, `history_store.py` and
+		// `readme_parser.ts` all begin with a prose prefix and are ordinary executable sources.
+		// The raw prefix match halved their score AND — because NonProgramTextPath consumes this
+		// same classification — declared them incapable of holding a relation, so a real fix site
+		// was pushed out of the ranking and out of call-chain reasoning at once.
+		//
+		// Nothing prose is lost by the narrowing: every prose FILETYPE is caught by
+		// searchDocExtensions (and the roff/manpage rules) below, so this rule only has to cover
+		// the extensionless repository files it was written for -- README, LICENSE,
+		// LICENSE-APACHE, COPYING, AUTHORS, NEWS, CHANGES.
+		if _, known := languageForPath(base); known {
+			continue
+		}
+		return true
 	}
 	for _, ext := range searchDocExtensions {
 		if strings.HasSuffix(lower, ext) {
@@ -476,7 +495,73 @@ func searchReferenceDeclaration(result SearchResult) bool {
 		if strings.ContainsRune(body, '{') {
 			return false
 		}
+		// An EXPRESSION BODY opens no block and is still an implementation. Kotlin and Scala write
+		// `fun f() = expr`, C# and Java write `T F() => expr`, and both are exactly the executable
+		// code a behavioural fix edits. Multiplying them by the reference-declaration prior can push
+		// the real fix site out of the result set, which is the failure this rule exists to prevent
+		// -- in the opposite direction.
+		if searchExpressionBodiedCallable(body) {
+			return false
+		}
 		return strings.TrimSpace(body) != ""
+	}
+	return false
+}
+
+// searchExpressionBodiedCallable reports whether a braceless callable carries an EXPRESSION body.
+//
+// `=>` is unambiguous. A bare `=` is the Kotlin/Scala form, and it is read as an implementation
+// unless what follows is one of the three C++ special-member forms that assign no expression at
+// all: `= 0` (pure virtual), `= delete` and `= default`. Those remain declarations.
+//
+// The bias is deliberate. Treating an implementation as a declaration DEMOTES a fix site out of
+// the ranking; treating a declaration as an implementation merely leaves it at full weight, where
+// it competes on its score like anything else.
+func searchExpressionBodiedCallable(body string) bool {
+	// Only what follows the SIGNATURE counts. A DEFAULT ARGUMENT is an `=` inside the parameter
+	// list — `public function previous($fallback = false);` is a PHP interface method and nothing
+	// else — so the scan starts after the parameter list closes, which is the first balanced paren
+	// group. Not the LAST `)`: an expression body routinely ends in a call of its own, and
+	// `fun formatAmount(value: Int) = value.toString()` would then be scanned from an empty tail.
+	// A callable written without parentheses at all (Scala's `def f: Int = 42`) has none to skip,
+	// and is scanned whole.
+	tail := body
+	if open := strings.IndexByte(body, '('); open >= 0 {
+		depth := 0
+		for index := open; index < len(body); index++ {
+			switch body[index] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			if depth == 0 {
+				tail = body[index+1:]
+				break
+			}
+		}
+	}
+	if strings.Contains(tail, "=>") {
+		return true
+	}
+	for index := 0; index < len(tail); index++ {
+		if tail[index] != '=' {
+			continue
+		}
+		// Skip the comparison operators: `==`, `!=`, `<=`, `>=`.
+		if index+1 < len(tail) && tail[index+1] == '=' {
+			index++
+			continue
+		}
+		if index > 0 && strings.IndexByte("=!<>", tail[index-1]) >= 0 {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(tail[index+1:]), ";"))
+		switch rest {
+		case "", "0", "delete", "default":
+			return false
+		}
+		return true
 	}
 	return false
 }
