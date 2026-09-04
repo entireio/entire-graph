@@ -5038,14 +5038,20 @@ func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language,
 	if declaredType := node.ChildByFieldName("type"); validNode(declaredType) {
 		typeText = declaredType.Content(src)
 	}
+	declaratorCount := 0
+	for i := 0; i < int(node.ChildCount()); i++ {
+		if node.FieldNameForChild(i) == "declarator" {
+			declaratorCount++
+		}
+	}
 	out := make([]Entity, 0, len(members))
 	for _, member := range members {
 		signature := declarationSignature
-		if len(members) > 1 {
-			// Several methods share one declaration, so each takes its own
-			// declarator text: a shared signature would give two members of one
-			// class the same fingerprint, which rename matching reads as one
-			// symbol.
+		if declaratorCount > 1 {
+			// Several declarators share one declaration, so each method takes
+			// its own declarator text. That keeps both method-method declarations
+			// distinct and a mixed method-field sibling out of the method's
+			// signature and body hash.
 			signature = strings.Join(strings.Fields(templateHead+typeText+" "+member.declarator.Content(src)), " ")
 		}
 		out = append(out, Entity{
@@ -5054,7 +5060,10 @@ func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language,
 			Signature:       signature,
 			StartLine:       int(span.StartPoint().Row) + 1,
 			EndLine:         int(span.EndPoint().Row) + 1,
-			BodyHash:        hash(normalize(span.Content(src))),
+			// A bodyless declaration has no implementation body to hash. Use
+			// this member's own signature so a sibling declarator in the same
+			// field_declaration cannot make the unchanged method look edited.
+			BodyHash:        hash(normalize(signature)),
 			Fingerprint:     hash(normalize(signature)),
 			bodyless:        true,
 			cPlusPlusOwners: cPlusPlusDeclarationOwners(node, src, scope),

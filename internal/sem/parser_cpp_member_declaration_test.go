@@ -216,6 +216,22 @@ public:
 	if start.Fingerprint == stop.Fingerprint {
 		t.Errorf("Start and Stop share fingerprint %q (signatures %q / %q)", start.Fingerprint, start.Signature, stop.Signature)
 	}
+
+	// A shared declaration is only syntax ownership, not a shared method body.
+	// Editing a sibling data member must not report the unchanged method as a
+	// body change during entity comparison.
+	after := memberIndex(t, "runner_after.hpp", `class Runner {
+public:
+    void Start(), Stop();
+    int Restart(), status;
+    int a, b;
+};
+`)
+	if restart, ok := after["method:Runner.Restart"]; !ok {
+		t.Fatalf("missing method:Runner.Restart after sibling edit: %#v", mapKeys(after))
+	} else if restart.BodyHash != got["method:Runner.Restart"].BodyHash {
+		t.Errorf("Restart body hash changed after editing only its sibling: %q -> %q", got["method:Runner.Restart"].BodyHash, restart.BodyHash)
+	}
 }
 
 // TestCPlusPlusDeeplyPointedReturnTypeIsExtracted covers the same fixed-budget
