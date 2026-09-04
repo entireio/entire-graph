@@ -1059,11 +1059,38 @@ func searchVerifyBundlePrefix(hasGemfile bool) string {
 // defines `:test` by default. Rejecting a shape is not free either: a Rakefile that declares
 // `task(:test)` and gets declined loses a command that would have run.
 func searchVerifyRakefileDefinesTest(content string) bool {
-	if strings.Contains(content, "Rake::TestTask.new") || strings.Contains(content, "TestTask.new") {
-		return true
-	}
-	return searchVerifyRakeTestTaskPattern.MatchString(content)
+	return searchVerifyRakeTestTaskGeneratorPattern.MatchString(content) ||
+		searchVerifyRakeTestTaskPattern.MatchString(content)
 }
+
+// searchVerifyRakeTestTaskGeneratorPattern matches a Rake::TestTask / Minitest::TestTask generator
+// call that defines the task `test`, under the same discipline as the `task` forms above:
+// line-anchored, so a comment, prose or a shell line inside another task cannot license the command.
+//
+// Substring-matching "TestTask.new" did not. `# Rake::TestTask.new` — the shape a Rakefile is left
+// in when the task is retired — counted as a declaration, and so did a NAMED generator: the name is
+// TestTask#initialize's first argument and :test is only its DEFAULT, so `Rake::TestTask.new(:spec)`
+// defines `spec` and the emitted `rake test` dies on "Don't know how to build task 'test'".
+//
+// So the name has to be `test`, in one of the two ways a generator can say so. Either it is omitted
+// and Rake's default stands — the call ends the line, or carries only empty parentheses, a `do`/`{`
+// block or a trailing comment — or it is written out as the first argument, as `:test`, `"test"`,
+// `'test'`, or the `test:` / `:test =>` dependency key. Anything else is left alone rather than
+// guessed at: a name held in a variable, or an argument list broken across lines, declines and the
+// derivation stays silent, which is the direction this block already prefers to a command that
+// cannot run.
+//
+// The namespace prefix is optional and repeatable so that `Rake::TestTask`, `Minitest::TestTask` and
+// a bare `TestTask` after `include Rake::DSL` all match, while `RSpec::Core::RakeTask.new` and a
+// project's own `MyTestTask.new` — whose default name nothing here knows — do not.
+//
+// Leading whitespace is admitted, which leaves the `namespace :foo do` case of issue #205 behaving
+// exactly as it did: a generator nested in a namespace defines `foo:test` and still matches, because
+// separating it needs block tracking rather than a regex.
+var searchVerifyRakeTestTaskGeneratorPattern = regexp.MustCompile(
+	`(?m)^[ \t]*(?:[A-Za-z_]\w*::)*TestTask\.new` +
+		`(?:[ \t]*(?:\([ \t]*\))?[ \t]*(?:$|#|\{|do\b)` +
+		`|[ \t]*\(?[ \t]*(?::test\b|["']test["']|test[ \t]*:))`)
 
 // searchVerifyRakeTestTaskPattern matches a `test` task DECLARATION at the start of a line, so a
 // prerequisite list (`task default: %w[test]`), a shell line inside another task (`sh 'rake test'`)
@@ -2085,8 +2112,38 @@ func searchVerifyRunnerMissing(command string, evidence *searchVerifyEvidence) b
 	case "bundle", "bundler":
 		lock, ok := evidence.file("Gemfile.lock")
 		return !ok || !strings.Contains(lock, inner)
-	case "npx", "pnpm", "yarn":
+	case "npx":
 		return !evidence.exists("node_modules/.bin/" + inner)
+	case "npm", "pnpm", "yarn":
+		// These three run the package's own SCRIPTS by default, and a script lives in package.json,
+		// not in node_modules/.bin. The suite tier emits exactly that — `yarn test`, `pnpm test`,
+		// `npm test` — so reading `test` as a binary demanded `node_modules/.bin/test`, a file no
+		// repository has, and gated every command the emitter produced for a yarn or pnpm tree. The
+		// manager resolving on PATH is the whole of the question; only `exec` asks one of them to
+		// launch a binary, and that is the only form worth looking through.
+		if !searchVerifyNodeExecsABinary(command, runner) {
+			return false
+		}
+		return !evidence.exists("node_modules/.bin/" + inner)
+	}
+	return false
+}
+
+// searchVerifyNodeExecsABinary reports whether a package-manager invocation is the `exec` form,
+// which runs a binary, rather than the script form, which runs a package.json entry.
+func searchVerifyNodeExecsABinary(command, runner string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	for index, field := range fields {
+		if field != runner {
+			continue
+		}
+		for _, candidate := range fields[index+1:] {
+			if strings.HasPrefix(candidate, "-") {
+				continue
+			}
+			return candidate == "exec"
+		}
+		return false
 	}
 	return false
 }

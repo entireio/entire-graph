@@ -1618,3 +1618,58 @@ func TestSearchVerifyBuildCheckDoesNotExecuteRepositoryData(t *testing.T) {
 		t.Fatalf("command %q failed: %v\n%s", command.Command, runErr, output)
 	}
 }
+
+// TestSearchVerifyRunnerMissingReadsPackageManagerScriptsAsScripts is the follow-up to the lockfile
+// precedence fix.
+//
+// The Node suite tier used to emit `npm test` unconditionally; it now reads the repository's own
+// statement and emits `yarn test` or `pnpm test`. The look-through probe had not moved with it: it
+// took the word after `yarn` to be a BINARY and required `node_modules/.bin/test`, a file no
+// repository has, so every command the new emitter produced for a yarn or pnpm tree was annotated as
+// having an uninstalled runner — a false gate on a command that runs.
+//
+// The distinction is what the manager was asked to do. `npm`, `yarn` and `pnpm` run the package's
+// own SCRIPTS by default, and a script lives in package.json, not in node_modules/.bin; the manager
+// resolving on PATH is the whole of the question. Only their explicit binary-execution subcommand,
+// `exec`, launches something out of node_modules/.bin — as does `npx`, which is nothing else.
+func TestSearchVerifyRunnerMissingReadsPackageManagerScriptsAsScripts(t *testing.T) {
+	t.Parallel()
+	installed := map[string]string{"node_modules/.bin/jest": "#!/usr/bin/env node\n"}
+	for _, tc := range []struct {
+		name    string
+		command string
+		files   map[string]string
+		want    bool
+	}{
+		// --- scripts: answered by package.json, not by node_modules/.bin ---
+		{"yarn runs the test script", "yarn test", map[string]string{}, false},
+		{"pnpm runs the test script", "pnpm test", map[string]string{}, false},
+		{"npm runs the test script", "npm test", map[string]string{}, false},
+		{"yarn run spells it out", "yarn run test", map[string]string{}, false},
+		{"pnpm run spells it out", "pnpm run test", map[string]string{}, false},
+		{"bun runs the test script", "bun run test", map[string]string{}, false},
+		{"a workspace leaf still runs its script", "cd packages/core && pnpm test", map[string]string{}, false},
+
+		// --- binaries: the launcher does resolve one, so the look-through stands ---
+		{"pnpm exec finds the binary", "pnpm exec jest src/a.test.ts", installed, false},
+		{"pnpm exec has nothing to run", "pnpm exec jest src/a.test.ts", map[string]string{}, true},
+		{"yarn exec has nothing to run", "yarn exec jest src/a.test.ts", map[string]string{}, true},
+		{"npx is unchanged", "npx jest src/a.test.ts", map[string]string{}, true},
+
+		// --- and the manager itself still has to exist ---
+		{"the manager is not installed", "pnpm test", map[string]string{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var evidence searchVerifyEvidence
+			if tc.name == "the manager is not installed" {
+				evidence = searchVerifyTestEvidenceWithout(tc.files, "pnpm")
+			} else {
+				evidence = searchVerifyTestEvidenceWithout(tc.files)
+			}
+			if got := searchVerifyRunnerMissing(tc.command, &evidence); got != tc.want {
+				t.Fatalf("searchVerifyRunnerMissing(%q) = %v, want %v", tc.command, got, tc.want)
+			}
+		})
+	}
+}

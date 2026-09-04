@@ -479,3 +479,72 @@ func TestSearchVerifyRakefileDeclarationFormsAreRecognised(t *testing.T) {
 		})
 	}
 }
+
+// TestSearchVerifyRakeTestTaskGeneratorMustNameTheTestTask is the other half of the declaration
+// check.
+//
+// The `task` forms were tightened to a line-anchored declaration; the generator arm was left as a
+// bare substring search for "TestTask.new", so it licensed `rake test` on the two shapes that most
+// obviously do not declare it:
+//
+//   - a commented-out generator — `# Rake::TestTask.new` — which is the shape a Rakefile is left in
+//     when the task is retired, exactly the case the `task` half already rejects; and
+//   - a NAMED generator. Rake::TestTask#initialize takes the task name as its first argument and
+//     only DEFAULTS to :test, so `Rake::TestTask.new(:spec)` defines `spec` and nothing else. The
+//     emitted `rake test` then dies on "Don't know how to build task 'test'" — the hard-gate failure
+//     the declaration check exists to prevent.
+//
+// The rule is the same one the `task` half uses: line-anchored (so a comment, prose or a shell line
+// inside another task cannot license it), and the name must actually be `test` — either omitted, in
+// which case Rake's default applies, or written out as `:test` / `"test"` / the `test:` dependency
+// key.
+//
+// Not fixed here, and deliberately: a generator nested in `namespace :foo do` defines `foo:test` and
+// still matches, because separating it needs block tracking rather than a regex (issue #205). Line
+// anchoring admits leading whitespace precisely so that case behaves exactly as it did before.
+func TestSearchVerifyRakeTestTaskGeneratorMustNameTheTestTask(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		// --- generators that define `test` ---
+		{name: "bare generator takes Rake's default name", content: "require 'rake/testtask'\nRake::TestTask.new\n", want: true},
+		{name: "default name with a block", content: "Rake::TestTask.new do |t|\n  t.libs << 'test'\nend\n", want: true},
+		{name: "default name with a brace block", content: "Rake::TestTask.new { |t| t.verbose = true }\n", want: true},
+		{name: "default name with empty parentheses", content: "Rake::TestTask.new()\n", want: true},
+		{name: "empty parentheses and a block", content: "Rake::TestTask.new() do |t|\nend\n", want: true},
+		{name: "default name with a trailing comment", content: "Rake::TestTask.new # defines :test\n", want: true},
+		{name: "explicit symbol name", content: "Rake::TestTask.new(:test)\n", want: true},
+		{name: "explicit symbol name without parentheses", content: "Rake::TestTask.new :test\n", want: true},
+		{name: "explicit symbol name with a block", content: "Rake::TestTask.new(:test) do |t|\n  t.warning = false\nend\n", want: true},
+		{name: "explicit double-quoted name", content: "Rake::TestTask.new(\"test\")\n", want: true},
+		{name: "explicit single-quoted name", content: "Rake::TestTask.new('test') do |t|\nend\n", want: true},
+		{name: "hashrocket dependency form", content: "Rake::TestTask.new(:test => :compile)\n", want: true},
+		{name: "hash-argument dependency form", content: "Rake::TestTask.new(test: :compile)\n", want: true},
+		{name: "Minitest's generator", content: "require 'minitest/test_task'\nMinitest::TestTask.new(:test)\n", want: true},
+		{name: "unqualified after include Rake", content: "include Rake::DSL\nTestTask.new\n", want: true},
+		{name: "indented under a conditional", content: "if ENV['CI']\n  Rake::TestTask.new(:test)\nend\n", want: true},
+
+		// --- generators that define something else, or nothing at all ---
+		{name: "commented-out generator", content: "# Rake::TestTask.new\ntask :lint\n", want: false},
+		{name: "commented-out named generator", content: "  # Rake::TestTask.new(:test)\ntask :lint\n", want: false},
+		{name: "prose mentioning the generator", content: "# use Rake::TestTask.new to add one\n", want: false},
+		{name: "generator named spec", content: "require 'rake/testtask'\nRake::TestTask.new(:spec)\n", want: false},
+		{name: "generator named spec as a string", content: "Rake::TestTask.new(\"spec\")\n", want: false},
+		{name: "generator named integration with a block", content: "Rake::TestTask.new(:integration) do |t|\nend\n", want: false},
+		{name: "generator named with the test prefix", content: "Rake::TestTask.new(:test_all)\n", want: false},
+		{name: "generator named with a hash key that is not test", content: "Rake::TestTask.new(spec: :compile)\n", want: false},
+		{name: "generator named from a variable", content: "name = :spec\nRake::TestTask.new(name)\n", want: false},
+		{name: "a different generator entirely", content: "require 'rspec/core/rake_task'\nRSpec::Core::RakeTask.new(:spec)\n", want: false},
+		{name: "a generator inside a shell line", content: "task :lint do\n  sh 'ruby -e \"Rake::TestTask.new\"'\nend\n", want: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := searchVerifyRakefileDefinesTest(testCase.content); got != testCase.want {
+				t.Fatalf("searchVerifyRakefileDefinesTest(%q) = %v, want %v", testCase.content, got, testCase.want)
+			}
+		})
+	}
+}
