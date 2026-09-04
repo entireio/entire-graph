@@ -19,21 +19,35 @@ example is shown below.
 
 The Entire Graph retrieval engine ranked first in an eight-system LoCoMo comparison
 (1,540 questions, shared reader and judge, a 200-item retrieval budget requested for
-every arm) while building its index without model calls. Measured 2026-08-14, on the
-retrieval path that first shipped in
-[v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0)
-([#104](https://github.com/entireio/entire-graph/pull/104))
+every arm) while building its index without model calls. Measured 2026-08-14 on the
+[#104](https://github.com/entireio/entire-graph/pull/104) branch, before that work merged; the
+retrieval path it exercises first shipped in
+[v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0) (tagged four days later,
+2026-08-18). See § below for what that does and does not license you to claim.
 
 | System | LoCoMo | Index-time tokens | Version tested |
 | --- | --- | --- | --- |
-| **entire-graph** | **94.74** | **0** | [v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0) ([#104](https://github.com/entireio/entire-graph/pull/104)) |
+| **entire-graph** § | **94.74** | **0** | [#104](https://github.com/entireio/entire-graph/pull/104) branch, 2026-08-14 (pre-merge) |
 | [mem0](https://github.com/mem0ai/mem0) | 93.83 | 50.85M | commit [`4debc58`](https://github.com/mem0ai/mem0/commit/4debc58a83377b18be81ae1e5969a300736b2fac) |
 | [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M | commit [`38eece5`](https://github.com/topoteretes/cognee/commit/38eece5bbb0cb9f5706fed908abd16dba0f5505e) |
 | [bm25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 | [0.2.2](https://github.com/dorianbrown/rank_bm25/releases/tag/0.2.2) |
-| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) † | 91.30 | 0 | [v0.9.0](https://github.com/DeusData/codebase-memory-mcp/releases#release-v0.9.0) |
-| [graphify](https://github.com/Graphify-Labs/graphify) | 87.34 | 0 | [v0.9.43](https://github.com/Graphify-Labs/graphify/releases/tag/v0.9.43) |
+| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) † | 91.30 | 0 | [v0.9.0](https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.0) |
+| [graphify](https://github.com/Graphify-Labs/graphify) ¶ | 87.34 | 0 | unpinned — see ¶ |
 | [letta](https://github.com/letta-ai/letta) | 84.68 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
 | [supermemory](https://github.com/supermemoryai/supermemory) ‡ | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
+
+§ **The 94.74 run is not a measurement of a released tag.** It ran on 2026-08-14 on the #104
+branch; v0.4.0 was tagged 2026-08-18, after further retrieval fixes, so the released revision was
+never benchmarked. The run id this number comes from, `sw_eg_mr3`, also has **no row in
+[`RUN-INDEX.md`](bench/memory/RUN-INDEX.md)**, the registry our own rules require, and the one
+registered run that also scores 94.74 (`plan_f_hyb`) used a **non-default** ingest granularity and
+is explicitly *not* interchangeable evidence. Quote 94.74 as the #104 branch result, not as v0.4.0's
+score. The shipped default at the time, `mrq_base`, scored **91.56**.
+
+¶ **graphify's tested version is not v0.9.43 and is not recoverable.** The run finished 2026-08-14
+16:25 UTC; v0.9.43 was published 19:17 UTC the same day — after the run — so it cannot be what was
+measured. The checkout no longer exists, so the exact revision cannot be recovered; it was whatever
+was current in that window. `UPSTREAM.md` records this as "not a confirmed exact pin".
 
 † **cmm is patched, not stock v0.9.0.** It was modified to emit Markdown sections
 ([patch](bench/memory/patches/0005-cmm-v0.9.0-markdown-sections.patch)); the linked release alone
