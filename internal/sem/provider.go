@@ -1322,7 +1322,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			symbolsByID, filesByID = recordIndexes(files, recordsByFile)
 		}
 		var relationFailures []PartialFailure
-		forEachRelation(sc.key, files, recordsByFile, sc.read, precomputedImports, spec, func() bool {
+		forEachRelation(ctx, sc.key, files, recordsByFile, sc.read, precomputedImports, spec, workers, func() bool {
 			return emitErr != nil || ctx.Err() != nil
 		}, func(r RelationRecord) {
 			emitRelation(r, symbolsByID, filesByID)
@@ -4066,11 +4066,18 @@ func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []Symb
 // emitting an edge. Files without namespaces — or whose scope parse fails —
 // yield "" for every symbol; each file is read and scanned at most once.
 func jsCrossFileNamespaceLookup(readContent contentReader, recordsByFile map[string][]SymbolRecord) func(SymbolRecord) string {
+	// The relation phase resolves files across workers, so the memo is shared.
+	// The lock is held across the scan rather than only across the map access:
+	// this fires for TypeScript namespaces alone, which is rare enough that
+	// serializing it costs less than letting two workers scan the same file.
+	var mu sync.Mutex
 	cache := map[string]map[string]string{}
 	return func(symbol SymbolRecord) string {
 		if symbol.Language != "JavaScript" && symbol.Language != "TypeScript" {
 			return ""
 		}
+		mu.Lock()
+		defer mu.Unlock()
 		byID, ok := cache[symbol.FilePath]
 		if !ok {
 			if content, okRead := readContent(symbol.FilePath); okRead {
@@ -4315,7 +4322,7 @@ func sameFileOverloadSet(candidates []SymbolRecord) ([]SymbolRecord, bool) {
 // snapshot path; the streaming path uses forEachRelation directly.
 func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	var relations []RelationRecord
-	forEachRelation(repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), nil, func(r RelationRecord) {
+	forEachRelation(context.Background(), repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), defaultProviderWorkerCount(), nil, func(r RelationRecord) {
 		relations = append(relations, r)
 	}, nil)
 	relations = dedupeRelations(relations)
@@ -4462,7 +4469,38 @@ func jsScanDepthPartialFailure(path string) PartialFailure {
 	}
 }
 
-func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
+// fileRelationScan is one file's share of the relation phase: what its scan
+// would have emitted inline, held until the reducer replays it in file order.
+//
+// The three entry slices are the accumulator writes the scan used to make
+// directly. They are kept as ordered entries rather than merged maps so the
+// reducer reproduces the exact append order the sequential loop produced, which
+// is what routeBridgeRelations and the OVERRIDES derivation read.
+type fileRelationScan struct {
+	relations       []RelationRecord
+	failures        []PartialFailure
+	resolvedImports map[string][]string
+	routeHandlers   []routeHandlerEntry
+	httpCalls       []httpCallEntry
+	inheritance     []RelationRecord
+}
+
+type routeHandlerEntry struct {
+	route   string
+	handler SymbolRecord
+}
+
+type httpCallEntry struct {
+	route    string
+	relation RelationRecord
+}
+
+// errRelationScanStopped unwinds the pipeline when the consumer has errored or
+// the context is done. It never reaches a caller: forEachRelation reports a stop
+// by returning, exactly as the sequential loop did.
+var errRelationScanStopped = errors.New("relation scan stopped")
+
+func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, workers int, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelations(repoKey, files, recordsByFile, emit)
 		return
@@ -4831,8 +4869,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	// identical importsByName entry — by asking whether the submodule actually
 	// exists. Results are memoized; the scan is restricted to Python files so a
 	// same-stem file in another language is never mistaken for a module.
+	// Shared by the relation workers below, so the memo is locked. Each module
+	// is scanned for once and answered from the map after that.
+	var pythonModuleMu sync.Mutex
 	pythonModuleFileExists := map[string]bool{}
 	pythonModuleExists := func(module string) bool {
+		pythonModuleMu.Lock()
+		defer pythonModuleMu.Unlock()
 		if v, ok := pythonModuleFileExists[module]; ok {
 			return v
 		}
@@ -4893,12 +4936,29 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		fsharpProjectModulePathBySymbolID, fsharpProjectDeclaredModulePaths = fsharpProjectModulePaths(files, recordsByFile, readContent)
 	}
 
-	for _, file := range files {
-		if shouldStop != nil && shouldStop() {
-			return
+	// The file scan. Every index built above is read-only from here on, and the
+	// four accumulators it feeds are append-only, so files resolve on workers
+	// while a reducer replays each file's relations, failures and accumulator
+	// entries in the original file order. The reducer decides emission order, so
+	// worker timing cannot reach the snapshot bytes.
+	resolveFileRelations := func(workerCtx context.Context, file FileRecord) fileRelationScan {
+		var result fileRelationScan
+		// emit and recordFailure are shadowed deliberately: the scan below calls
+		// them exactly as it did when it ran inline, and they now buffer for the
+		// reducer rather than reaching the consumer from a worker goroutine.
+		// recordFailure stays nil when the caller passed nil, so the scan skips
+		// building records nobody asked for, as it did before.
+		emit := func(relation RelationRecord) { result.relations = append(result.relations, relation) }
+		var bufferFailure func(PartialFailure)
+		if recordFailure != nil {
+			bufferFailure = func(failure PartialFailure) { result.failures = append(result.failures, failure) }
 		}
-		if !profileNeedsPerFileScan(spec) {
-			break // syntax-only: no content-derived relations
+		recordFailure := bufferFailure
+		// The outer shouldStop reads emitErr, which the reducer writes. A worker
+		// has to ask the context instead.
+		shouldStop := func() bool { return workerCtx.Err() != nil }
+		if shouldStop() {
+			return result
 		}
 		imports, havePrecomputedImports := precomputedImports[file.Path]
 		content := ""
@@ -4906,7 +4966,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			var ok bool
 			content, ok = readContent(file.Path)
 			if !ok {
-				continue
+				return result
 			}
 			if !havePrecomputedImports {
 				imports = importsFor(file.Path, content)
@@ -4979,7 +5039,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		importsByName := importedNamesFor(file.Path, content)
 		importsByName = resolvedImportedNameModules(file.Path, importsByName, manifestImports, knownFiles, readContent)
 		if needsSignatureTypeImports && len(importsByName) > 0 {
-			resolvedImportsByFile[file.Path] = importsByName
+			result.resolvedImports = importsByName
 		}
 		// The Python dotted-call composer resolves `alias.<tail>.fn()` from the
 		// syntactic form each import binding was recorded with (plain, alias
@@ -4991,7 +5051,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			pythonImportForms = importedPythonImportForms(content)
 		}
 		if skipFastProfilePerSymbolScan(spec, file.Language) {
-			continue
+			return result
 		}
 		lines := strings.Split(content, "\n")
 		currentFileSymbols := recordsByFile[file.Path]
@@ -5134,8 +5194,8 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			swiftTypes = swiftFileTypeInfo(content)
 		}
 		for _, from := range currentFileSymbols {
-			if shouldStop != nil && shouldStop() {
-				return
+			if shouldStop() {
+				return result
 			}
 			block := symbolBlockFromLines(lines, from)
 			if file.Language == "JavaScript" || file.Language == "TypeScript" || file.Language == "Julia" {
@@ -5742,7 +5802,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						WarningCodes: []string{},
 					}
 					emit(relation)
-					routeHandlers[route] = append(routeHandlers[route], from)
+					result.routeHandlers = append(result.routeHandlers, routeHandlerEntry{route: route, handler: from})
 				}
 			}
 			if fileNeedsHTTPScan && callableSymbol {
@@ -5771,7 +5831,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						WarningCodes: []string{},
 					}
 					emit(relation)
-					httpCallsByRoute[call.Path] = append(httpCallsByRoute[call.Path], relation)
+					result.httpCalls = append(result.httpCalls, httpCallEntry{route: call.Path, relation: relation})
 				}
 			}
 			if fileNeedsChannelScan {
@@ -6055,7 +6115,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		if needsTypes {
 			for _, r := range typeRelationsForFile(repoKey, file, content, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName) {
 				if r.Type == "EXTENDS" || r.Type == "IMPLEMENTS" {
-					inheritanceEdges = append(inheritanceEdges, r)
+					result.inheritance = append(result.inheritance, r)
 				}
 				emit(r)
 			}
@@ -6064,6 +6124,42 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			for _, r := range extensionMemberRelations(repoKey, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName) {
 				emit(r)
 			}
+		}
+		return result
+	}
+	// Syntax-only resolves no content-derived relations, so it runs no scan at
+	// all rather than starting workers that would each return nothing.
+	if profileNeedsPerFileScan(spec) {
+		scanErr := runIndexedPipeline(ctx, len(files), workers,
+			func(workerCtx context.Context, index int) fileRelationScan {
+				return resolveFileRelations(workerCtx, files[index])
+			},
+			func(index int, scanned fileRelationScan) error {
+				if shouldStop != nil && shouldStop() {
+					return errRelationScanStopped
+				}
+				for _, relation := range scanned.relations {
+					emit(relation)
+				}
+				if recordFailure != nil {
+					for _, failure := range scanned.failures {
+						recordFailure(failure)
+					}
+				}
+				if scanned.resolvedImports != nil {
+					resolvedImportsByFile[files[index].Path] = scanned.resolvedImports
+				}
+				for _, entry := range scanned.routeHandlers {
+					routeHandlers[entry.route] = append(routeHandlers[entry.route], entry.handler)
+				}
+				for _, entry := range scanned.httpCalls {
+					httpCallsByRoute[entry.route] = append(httpCallsByRoute[entry.route], entry.relation)
+				}
+				inheritanceEdges = append(inheritanceEdges, scanned.inheritance...)
+				return nil
+			})
+		if scanErr != nil {
+			return
 		}
 	}
 
