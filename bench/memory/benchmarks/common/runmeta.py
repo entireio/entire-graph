@@ -362,6 +362,32 @@ ENV_DERIVED_VALUES = frozenset({
 })
 
 
+_ENV_FALSEY = frozenset({"", "0", "false", "False", "FALSE", "no", "off"})
+
+
+def _is_active(name: str, value: str) -> bool:
+    """Whether a knob is switched ON, rather than merely present.
+
+    A declared boolean or numeric knob set to its off value is not active:
+    `EG_DEEP=0` and `MEM0_DATE_INJECT=false` are how an operator *disables* a
+    feature, and treating any non-empty string as active made the guard abort
+    fair runs for saying "off" the correct way. A knob with no declared domain
+    is active whenever it is non-empty, so an unrecognised one still fails
+    closed.
+    """
+    if not value:
+        return False
+    domain = ENV_VALUE_DOMAINS.get(name)
+    if domain is _ENV_BOOL:
+        return value not in _ENV_FALSEY
+    if domain is _ENV_INT_RE or domain is _ENV_NUM_RE:
+        try:
+            return float(value) != 0.0
+        except ValueError:
+            return True
+    return True
+
+
 def _env_value(name: str, value: str) -> str:
     """The one place an env value is turned into something recordable.
 
@@ -558,7 +584,11 @@ def implementation_provenance() -> dict:
         via = "literal" if os.sep in candidate else "PATH"
         resolved = candidate if via == "literal" else (shutil.which(candidate) or candidate)
         out[var] = {
-            "path": resolved,
+            # A path can carry a username or a secret-bearing component, and
+            # env_snapshot() already fingerprints these same variables. The
+            # content digest below is what identifies the build; the path only
+            # has to stay comparable across runs.
+            "path": _fingerprint(resolved),
             "source": source,          # where the name came from: env override or the arm default
             "resolved_via": via,       # how it became a path: as written, or a PATH lookup
             "digest": _file_digest(resolved),
@@ -569,7 +599,7 @@ def implementation_provenance() -> dict:
             root, source = _client_default(module, attribute), "default"
         if not root:
             continue
-        out[var] = {"path": root, "source": source, **git_state(root)}
+        out[var] = {"path": _fingerprint(root), "source": source, **git_state(root)}
     return dict(sorted(out.items()))
 
 
@@ -578,10 +608,10 @@ def asymmetry_report() -> dict:
     active = {
         k: _env_value(k, os.environ[k])
         for k in ASYMMETRY_FLAGS
-        if os.environ.get(k)
+        if _is_active(k, os.environ.get(k, ""))
     }
     for k, v in os.environ.items():
-        if not v or k in active or k in SYMMETRIC_ARM_SETTINGS:
+        if k in active or k in SYMMETRIC_ARM_SETTINGS or not _is_active(k, v):
             continue
         if k.startswith(ASYMMETRIC_PREFIXES):
             active[k] = _env_value(k, v)
@@ -600,7 +630,9 @@ def assert_fair_mode(args=None) -> None:
     # Arm selection must not disagree with the arm the artifact records.
     selected = os.environ.get("MEM0_BACKEND")
     if selected and selected != getattr(args, "backend", None):
-        active["MEM0_BACKEND"] = selected
+        # Through _env_value like every other reported value: a valid arm name
+        # stays readable, a free-form one does not reach the CI log.
+        active["MEM0_BACKEND"] = _env_value("MEM0_BACKEND", selected)
     # --user-profile is a CLI flag, not an env var: it injected a "## User Profile"
     # prompt section that only the entire arm ever received (498/500 vs 0/500).
     if args is not None and getattr(args, "user_profile", False):

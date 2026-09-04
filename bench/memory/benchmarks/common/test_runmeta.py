@@ -350,7 +350,7 @@ class ImplementationProvenanceTest(unittest.TestCase):
             with patch.dict("os.environ", {"ENTIRE_GRAPH_BIN": str(binary)}, clear=True):
                 recorded = runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]
 
-            self.assertEqual(recorded["path"], str(binary))
+            self.assertEqual(recorded["path"], runmeta._fingerprint(str(binary)))
             self.assertEqual(recorded["source"], "env")
             self.assertEqual(recorded["resolved_via"], "literal")
             self.assertEqual(
@@ -397,7 +397,7 @@ class ImplementationProvenanceTest(unittest.TestCase):
                                  lambda name: str(binary) if name == "entire-graph" else None):
                 recorded = runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]
 
-        self.assertEqual(recorded["path"], str(binary))
+        self.assertEqual(recorded["path"], runmeta._fingerprint(str(binary)))
         self.assertEqual(recorded["resolved_via"], "PATH")
         self.assertEqual(
             recorded["digest"], "sha256:" + hashlib.sha256(b"named on PATH\n").hexdigest()
@@ -457,9 +457,18 @@ class ImplementationProvenanceTest(unittest.TestCase):
                 patch.dict("os.environ", {}, clear=True):
             recorded = runmeta.implementation_provenance()["GRAPHIFY_SOURCE"]
 
-        self.assertEqual(recorded["path"], "/repos/graphify")
+        self.assertEqual(recorded["path"], runmeta._fingerprint("/repos/graphify"))
         self.assertEqual(recorded["source"], "default")
         self.assertIn("commit", recorded)
+
+    def test_a_resolved_path_is_not_disclosed(self) -> None:
+        """A path can carry a username; env_snapshot fingerprints these same
+        variables, so the inventory must not publish them verbatim."""
+        secret_path = f"/home/{FAKE_KEY}/bin/entire-graph"
+        with patch.dict("os.environ", {"ENTIRE_GRAPH_BIN": secret_path}, clear=True):
+            recorded = runmeta.implementation_provenance()["ENTIRE_GRAPH_BIN"]
+        self.assertNotIn(FAKE_KEY, str(recorded))
+        self.assertRegex(recorded["path"], r"^sha256:[0-9a-f]{12}$")
 
     def test_an_unreadable_binary_is_recorded_as_unreadable(self) -> None:
         with patch.dict("os.environ", {"ENTIRE_GRAPH_BIN": "/nonexistent/entire-graph"}, clear=True):
@@ -620,6 +629,43 @@ class FairModeGuardTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 runmeta.assert_fair_mode(Args())
         self.assertIn("MEM0_BACKEND=oss", str(raised.exception))
+
+    def test_a_free_form_backend_override_is_not_printed(self) -> None:
+        """The mismatch message lands in CI logs; it goes through _env_value."""
+        class Args:
+            backend = "entire"
+            user_profile = False
+
+        env = {"FAIR_MODE": "1", "MEM0_BACKEND": f"https://{FAKE_KEY}.host/"}
+        with patch.dict("os.environ", env, clear=True):
+            with self.assertRaises(SystemExit) as raised:
+                runmeta.assert_fair_mode(Args())
+        self.assertNotIn(FAKE_KEY, str(raised.exception))
+        self.assertIn("MEM0_BACKEND", str(raised.exception))
+
+    def test_a_knob_explicitly_switched_off_does_not_abort(self) -> None:
+        """`EG_DEEP=0` is how an operator disables a feature; aborting for it
+        punished the correct way of saying "off"."""
+        for name, value in (("EG_DEEP", "0"), ("MEM0_DATE_INJECT", "false"),
+                            ("EG_SESSION_EXPAND", "0"), ("BM25_STEM", "False")):
+            with self.subTest(knob=f"{name}={value}"):
+                with patch.dict("os.environ", {"FAIR_MODE": "1", name: value}, clear=True):
+                    runmeta.assert_fair_mode(None)
+                    self.assertEqual(runmeta.asymmetry_report(), {})
+
+    def test_a_knob_switched_on_still_aborts(self) -> None:
+        for name, value in (("EG_DEEP", "1"), ("MEM0_DATE_INJECT", "true"),
+                            ("EG_SESSION_EXPAND", "2")):
+            with self.subTest(knob=f"{name}={value}"):
+                with patch.dict("os.environ", {"FAIR_MODE": "1", name: value}, clear=True):
+                    with self.assertRaises(SystemExit):
+                        runmeta.assert_fair_mode(None)
+
+    def test_an_unrecognised_knob_still_fails_closed_when_zero(self) -> None:
+        """No declared domain means no way to know `0` is off."""
+        with patch.dict("os.environ", {"FAIR_MODE": "1", "EG_UNKNOWN": "0"}, clear=True):
+            with self.assertRaises(SystemExit):
+                runmeta.assert_fair_mode(None)
 
     def test_allows_a_backend_override_that_agrees_with_the_flag(self) -> None:
         class Args:

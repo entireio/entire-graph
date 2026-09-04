@@ -160,7 +160,10 @@ Fixed: `search()` now raises `RuntimeError("BUFFER_MISSING...")` on a missing in
 instead of returning an empty list, in every affected client. Verify with
 `grep -c 'BUFFER_MISSING' benchmarks/common/{cognee,graphiti,letta,supermemory}_client.py` — must
 be ≥1 in each. The same guard was applied to *our own* `entire_client.py`, which had the same
-silent-`[]` behaviour while the competitors already raised.
+silent-`[]` behaviour while the competitors already raised — and to `mem0_client.py`, whose
+`_search_oss`/`_search_cloud` swallowed an exhausted search the same way (patch `0002`, now
+raising `SEARCH_EXHAUSTED`). Every adapter therefore signals a failed search by raising, and
+an empty list means a genuine zero-match retrieval everywhere.
 
 **cognee gained +13.77pp: 79.09 → 92.86** (1430/1540). It had hit 301 questions; graphiti 356.
 

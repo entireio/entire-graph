@@ -61,17 +61,6 @@ class Mem0Client:
         return value
 
 
-class RaisingClient(Mem0Client):
-    """Stands in for every other adapter, which raises on a failed search."""
-
-
-# The wrapper identifies swallowing clients by class and module name, so the
-# stand-in has to carry a non-Mem0 identity.
-RaisingClient.__name__ = "EntireMemoryClient"
-RaisingClient.__qualname__ = "EntireMemoryClient"
-RaisingClient.__module__ = "benchmarks.common.entire_client"
-
-
 async def _no_sleep(*args, **kwargs) -> None:
     return None
 
@@ -90,20 +79,29 @@ class SearchRetryDropAccountingTest(unittest.IsolatedAsyncioTestCase):
                 client, "question?", "user_1", 200, False, self.logger
             )
 
-    async def test_exhausted_search_returning_empty_is_counted_as_a_drop(self) -> None:
-        """The non-raising failure shape: [] from a client that swallows."""
-        client = Mem0Client([[], [], [], [], [], []])
+    async def test_an_exhausted_search_is_counted_as_a_drop(self) -> None:
+        """Patch 0002 makes the client raise SEARCH_EXHAUSTED rather than
+        returning [], so the drop comes from an explicit signal."""
+        client = Mem0Client([RuntimeError("SEARCH_EXHAUSTED after 5 attempts for user=u")] * 4)
         results, dropped = await self.search(client)
         self.assertEqual(results, [])
-        self.assertTrue(dropped, "a non-raising search failure was not counted as a drop")
-        self.assertGreater(client.calls, 1, "the empty result was never retried")
+        self.assertTrue(dropped, "an exhausted search was not counted as a drop")
 
-    async def test_a_search_that_recovers_on_retry_is_not_a_drop(self) -> None:
-        client = Mem0Client([[], [{"memory": "m"}]])
+    async def test_an_exhausted_search_is_not_retried_again(self) -> None:
+        """The client already spent its own retries; retrying here would add
+        35s per query and buy nothing."""
+        client = Mem0Client([RuntimeError("SEARCH_EXHAUSTED after 5 attempts for user=u")] * 4)
+        await self.search(client)
+        self.assertEqual(client.calls, 1)
+
+    async def test_a_genuine_zero_match_is_not_a_drop(self) -> None:
+        """`[]` is a valid retrieval result. Inferring a drop from emptiness
+        would retry a valid query and then count it against the denominator."""
+        client = Mem0Client([[]])
         results, dropped = await self.search(client)
-        self.assertEqual(len(results), 1)
+        self.assertEqual(results, [])
         self.assertFalse(dropped)
-        self.assertEqual(client.calls, 2)
+        self.assertEqual(client.calls, 1, "a valid empty retrieval was retried")
 
     async def test_a_successful_search_is_never_a_drop(self) -> None:
         client = Mem0Client([[{"memory": "m"}]])
@@ -118,13 +116,34 @@ class SearchRetryDropAccountingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results, [])
         self.assertTrue(dropped)
 
-    async def test_empty_from_a_raising_client_is_a_real_empty_result(self) -> None:
-        """Clients that raise on failure (README 3.2) keep their [] meaningful."""
-        client = RaisingClient([[]])
-        results, dropped = await self.search(client)
-        self.assertEqual(results, [])
-        self.assertFalse(dropped)
-        self.assertEqual(client.calls, 1, "a non-swallowing client must not be retried")
+    async def test_every_client_signals_failure_the_same_way(self) -> None:
+        """mem0 raises SEARCH_EXHAUSTED, the others BUFFER_MISSING (README 3.2);
+        neither is distinguished from the other by this wrapper."""
+        for error in ("SEARCH_EXHAUSTED after 5 attempts for user=u",
+                      "BUFFER_MISSING for conversation 3"):
+            with self.subTest(error=error.split()[0]):
+                _, dropped = await self.search(Mem0Client([RuntimeError(error)] * 4))
+                self.assertTrue(dropped)
+
+
+class Patch0002Test(unittest.TestCase):
+    """Patch 0002 supplies the explicit failure signal patch 0003 relies on."""
+
+    PATCH = (
+        Path(__file__).resolve().parents[1]
+        / "patches"
+        / "0002-mem0_client-optional-date-injection.patch"
+    )
+
+    def test_both_swallow_sites_raise_instead_of_returning_empty(self) -> None:
+        text = self.PATCH.read_text(encoding="utf-8")
+        removed = [l for l in text.splitlines() if l.strip() == "-                    return []"]
+        added = [l for l in text.splitlines() if "SEARCH_EXHAUSTED" in l and l.startswith("+")]
+        self.assertEqual(
+            len(removed), 2,
+            "_search_oss and _search_cloud must both stop returning [] on exhaustion",
+        )
+        self.assertEqual(len(added), 2, "both sites must raise SEARCH_EXHAUSTED")
 
 
 if __name__ == "__main__":
