@@ -198,10 +198,14 @@ func TestCPlusPlusCommaSeparatedMemberDeclarations(t *testing.T) {
 	got := memberIndex(t, "runner.hpp", `class Runner {
 public:
     void Start(), Stop();
+    int Restart(), state;
     int a, b;
 };
 `)
-	for _, want := range []string{"method:Runner.Start", "method:Runner.Stop", "field:Runner.a", "field:Runner.b"} {
+	for _, want := range []string{
+		"method:Runner.Start", "method:Runner.Stop", "method:Runner.Restart",
+		"field:Runner.state", "field:Runner.a", "field:Runner.b",
+	} {
 		if _, ok := got[want]; !ok {
 			t.Errorf("missing %q: %#v", want, mapKeys(got))
 		}

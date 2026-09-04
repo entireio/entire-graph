@@ -4162,6 +4162,16 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		*depthExceeded = true
 		return
 	}
+	// In-class C++ method declarations must be emitted before the field early
+	// return below. One declaration can legally mix callable and data
+	// declarators (`int Start(), state;`): fieldEntities handles state and then
+	// stops the walk, so extracting methods afterwards silently loses Start.
+	// This remains separate from entityFromNode because one declaration can also
+	// declare several methods (`void Start(), Stop();`).
+	for _, member := range cPlusPlusMemberDeclarationEntities(node, src, language, scope) {
+		setEntitySourceRange(&member, node, language, src)
+		*entities = append(*entities, member)
+	}
 	// Field/property declarations emit one entity per declared name and are not
 	// descended into (their name nodes would otherwise look like field accesses).
 	if fields, ok := fieldEntities(node, src, language, scope, inFunc); ok {
@@ -4207,15 +4217,6 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			}
 		}
 		return
-	}
-	// In-class C++ method declarations. Emitted here rather than through
-	// entityFromNode because one declaration can declare several methods
-	// (`void Start(), Stop();`), which one-entity-per-node cannot express. The
-	// walk still descends: a declaration has no body, but a default argument can
-	// hold one.
-	for _, member := range cPlusPlusMemberDeclarationEntities(node, src, language, scope) {
-		setEntitySourceRange(&member, node, language, src)
-		*entities = append(*entities, member)
 	}
 	entity, ok := entityFromNode(node, src, language, scope)
 	childScope := scope
