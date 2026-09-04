@@ -1937,6 +1937,27 @@ def run():
 	}
 }
 
+func TestPythonFromImportParserKeepsLaterImportsVisibleAfterUnclosedList(t *testing.T) {
+	content := "from broken import (\n    thing,\nfrom mod import helper\n"
+	names := importedPythonNames(content)
+	if got := names["helper"]; len(got) != 1 || got[0] != "mod" {
+		t.Fatalf("names[\"helper\"] = %#v, want [mod] after an unclosed list", got)
+	}
+}
+
+func TestPythonFromImportParserBoundsMalformedListProbe(t *testing.T) {
+	var content strings.Builder
+	content.WriteString("from broken import (\n")
+	for i := 0; i < pythonImportContinuationLines+1; i++ {
+		content.WriteString("    thing,\n")
+	}
+	content.WriteString("from mod import helper\n")
+	names := importedPythonNames(content.String())
+	if got := names["helper"]; len(got) != 1 || got[0] != "mod" {
+		t.Fatalf("names[\"helper\"] = %#v, want [mod] beyond malformed-list probe bound", got)
+	}
+}
+
 func TestPythonDottedImportedModuleCallsResolveToLocalSymbols(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/acme_pkg/__init__.py", "")
@@ -5284,7 +5305,7 @@ def valid():
 		}
 	}
 	for _, name := range []string{
-		"assignment", "annotated", "augmented", "deleted", "destructuring", "loop", "with_as", "except_as", "walrus", "comprehension_walrus", "nested_def", "nested_class", "nonlocal_outer", "nonlocal_inner", "comprehension_bound", "parameter", "lambda_parameter", "lambda_walrus", "except_type",
+		"assignment", "annotated", "augmented", "deleted", "destructuring", "loop", "with_as", "except_as", "walrus", "comprehension_walrus", "nested_def", "nested_class", "nonlocal_outer", "nonlocal_inner", "comprehension_bound", "parameter", "lambda_parameter", "lambda_walrus",
 	} {
 		if modules := scopes.importModules(byName[name], "compute"); len(modules) > 0 {
 			t.Fatalf("%s shadowed the imported name but remained FFI-eligible through %q", name, modules)
@@ -5293,7 +5314,9 @@ def valid():
 	if modules := scopes.importModules(byName["local_import"], "compute"); len(modules) != 1 || modules[0] != "localmod" {
 		t.Fatalf("function-local import did not replace the module binding: %q", modules)
 	}
-	for _, name := range []string{"inner", "global_decl", "comprehension_unbound", "comp_iterable", "class_base", "class_body", "subscript_target", "valid"} {
+	// `except_type` has no `as` target, so its exception expression does not
+	// rebind the imported `compute` name.
+	for _, name := range []string{"inner", "global_decl", "comprehension_unbound", "comp_iterable", "class_base", "class_body", "subscript_target", "except_type", "valid"} {
 		if modules := scopes.importModules(byName[name], "compute"); len(modules) == 0 || modules[0] != "frobnicate" {
 			t.Fatalf("%s has an unshadowed imported call but got modules %q", name, modules)
 		}

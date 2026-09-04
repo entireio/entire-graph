@@ -20451,6 +20451,11 @@ type pythonFromImportStatement struct {
 
 var pythonFromImportRE = regexp.MustCompile(`(?s)^from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import(?:[ \t]+(.*))?$`)
 
+// pythonImportContinuationLines bounds how far a parenthesized import list is
+// followed. A malformed unclosed list must not make scanning the rest of a
+// file quadratic (or consume every later import while probing it).
+const pythonImportContinuationLines = 256
+
 // pythonFromImportStatements parses the parenthesized and one-line forms of
 // `from module import item [, item ...]`. The ordinary import scanners share
 // it with the AST scope walker so multiline bindings cannot diverge between
@@ -20474,9 +20479,10 @@ func pythonFromImportStatements(content string) []pythonFromImportStatement {
 		}
 		if strings.HasPrefix(strings.TrimSpace(rawItems), "(") {
 			depth := pythonImportParenDepth(rawItems)
-			for (depth > 0 || continued) && line+1 < len(lines) {
-				line++
-				rawItems += "\n" + lines[line]
+			cursor := line
+			for (depth > 0 || continued) && cursor+1 < len(lines) && cursor-startLine < pythonImportContinuationLines {
+				cursor++
+				rawItems += "\n" + lines[cursor]
 				depth = pythonImportParenDepth(rawItems)
 				continued, validContinuation = pythonImportContinuation(rawItems)
 				if !validContinuation {
@@ -20486,14 +20492,16 @@ func pythonFromImportStatements(content string) []pythonFromImportStatement {
 			if !validContinuation || depth != 0 || continued {
 				continue
 			}
+			line = cursor
 		} else if continued {
-			for continued && line+1 < len(lines) {
-				if pythonImportContinuationTargetEmpty(lines[line+1]) {
+			cursor := line
+			for continued && cursor+1 < len(lines) && cursor-startLine < pythonImportContinuationLines {
+				if pythonImportContinuationTargetEmpty(lines[cursor+1]) {
 					validContinuation = false
 					break
 				}
-				line++
-				rawItems += "\n" + lines[line]
+				cursor++
+				rawItems += "\n" + lines[cursor]
 				continued, validContinuation = pythonImportContinuation(rawItems)
 				if !validContinuation {
 					break
@@ -20502,6 +20510,7 @@ func pythonFromImportStatements(content string) []pythonFromImportStatement {
 			if !validContinuation || continued {
 				continue
 			}
+			line = cursor
 		}
 		items := pythonFromImportItems(rawItems)
 		if len(items) > 0 {

@@ -430,3 +430,142 @@ sub go {
 		t.Fatalf("run -> go resolved to the wrong target: %#v", to)
 	}
 }
+
+// pythonFFICallEdges builds a repo whose only `compute` lives in C, so the
+// name-only tier cannot rescue the edge: an import binding either survives
+// Python scope analysis and resolves across the FFI boundary, or the edge is
+// gone entirely.
+func pythonFFICallEdges(t *testing.T, app string) []RelationRecord {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", app)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []RelationRecord
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && strings.HasSuffix(r.ToID, "frobnicate.c:function:compute") {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// assertOneImportResolvedComputeEdge demands the exact edge an unshadowed
+// imported call in a plain function body produces, so a signature call is held
+// to the body oracle rather than to a weaker surviving tier.
+func assertOneImportResolvedComputeEdge(t *testing.T, edges []RelationRecord, fromSuffix string) {
+	t.Helper()
+	if len(edges) != 1 {
+		t.Fatalf("want exactly one CALLS edge to the imported C `compute`, got %d: %#v", len(edges), edges)
+	}
+	if !strings.HasSuffix(edges[0].FromID, fromSuffix) {
+		t.Fatalf("edge came from %q, want a symbol ending %q", edges[0].FromID, fromSuffix)
+	}
+	if edges[0].Resolution != "import_resolved" {
+		t.Fatalf("want the import tier to bind the call, got resolution %q: %#v", edges[0].Resolution, edges[0])
+	}
+}
+
+func assertNoComputeEdge(t *testing.T, edges []RelationRecord, why string) {
+	t.Helper()
+	if len(edges) != 0 {
+		t.Fatalf("%s, so no CALLS edge to the imported C `compute` may exist, got %d: %#v", why, len(edges), edges)
+	}
+}
+
+// tree-sitter gives `except_clause` no fields at all: its exception expression,
+// its `as` target and its handler block are plain named children. The walker
+// must visit all of them as ordinary code in the enclosing function scope.
+func TestPythonExceptClauseIsOrdinaryCodeOfItsScope(t *testing.T) {
+	t.Run("exception expression", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    try:
+        pass
+    except compute():
+        pass
+`), "app.py:function:plain")
+	})
+
+	t.Run("handler body", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    try:
+        pass
+    except ValueError:
+        return compute(1)
+`), "app.py:function:plain")
+	})
+
+	t.Run("a handler must not make the try body's call a local", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    try:
+        return compute(1)
+    except ValueError:
+        return compute(2)
+`), "app.py:function:plain")
+	})
+
+	t.Run("an `as` target still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    try:
+        pass
+    except ValueError as compute:
+        return compute(1)
+`), "the handler rebound `compute` to the caught exception")
+	})
+
+	t.Run("except* binds its `as` target too", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    try:
+        pass
+    except* ValueError as compute:
+        return compute(1)
+`), "an exception-group handler rebinds `compute` exactly like a plain one")
+	})
+}
+
+// `with_item` has no alias field either: the alias hangs off a nested
+// `as_pattern`, while the context expression remains ordinary executable code.
+func TestPythonWithItemBindsOnlyItsAlias(t *testing.T) {
+	t.Run("the context expression is not a binding", func(t *testing.T) {
+		assertOneImportResolvedComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    with compute() as handle:
+        return handle
+`), "app.py:function:plain")
+	})
+
+	t.Run("the alias still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    with ctx() as compute:
+        return compute(1)
+`), "the with statement rebound `compute`")
+	})
+
+	t.Run("a destructured alias still fails closed", func(t *testing.T) {
+		assertNoComputeEdge(t, pythonFFICallEdges(t, `from frobnicate import compute
+
+def plain():
+    with ctx() as (compute, other):
+        return compute(1)
+`), "the with statement rebound `compute` through a tuple target")
+	})
+}
