@@ -722,14 +722,45 @@ func TestCompactSnapshotSummaryAllowanceRequiresAHeader(t *testing.T) {
 	requireCompactDecodeError(t, `["m",`+strings.Repeat("x", compactSnapshotRecordLineBytes), "compact snapshot line exceeds")
 }
 
-// Nor is the streaming route available once a summary has been read, however
-// that summary was spelled: a line after it is never a legal summary.
-func TestCompactSnapshotSummaryAllowanceStopsAfterTheSummary(t *testing.T) {
-	// Spelled with a space so the prefix peek misses it and the allowance is
-	// still unspent when the oversized line arrives.
-	spelled := `["m" ,{"record_type":"summary"}]`
-	oversized := `["m",` + strings.Repeat("x", compactSnapshotRecordLineBytes)
-	requireCompactDecodeError(t, compactHeaderLine()+spelled+"\n"+oversized+"\n", "compact snapshot line exceeds")
+// The summary tag is read structurally, so the whitespace JSON permits around it
+// does not decide which path a record takes: `[ "m" , {…}]` is the same record
+// and gets the same allowance.
+func TestCompactSnapshotSummaryTagIsReadStructurally(t *testing.T) {
+	for _, spelling := range []string{`["m",`, `[ "m" ,`, "[\t\"m\"\t,"} {
+		reader := bufio.NewReaderSize(strings.NewReader(spelling+`{}]`), 64)
+		if !compactSnapshotLineIsSummary(reader) {
+			t.Fatalf("%q not recognised as a summary", spelling)
+		}
+	}
+	for _, spelling := range []string{`["f",`, `["h",`, `[ "mm" ,`, `["m"]`, `"m",`, `[xmy,`, `['m',`, ``} {
+		reader := bufio.NewReaderSize(strings.NewReader(spelling+`{}]`), 64)
+		if compactSnapshotLineIsSummary(reader) {
+			t.Fatalf("%q wrongly recognised as a summary", spelling)
+		}
+	}
+
+	// A whitespace-spelled summary past the record cap decodes, where a byte
+	// prefix match would have sent it down the ordinary path and refused it.
+	summary := `[ "m" , {"record_type":"summary","partial_failures":[`
+	entry := `{"code":"E_FILE_TOO_LARGE","severity":"warning","file_path":"src/x.go","effect_on_semantic_completeness":"skipped"}`
+	entries := make([]string, 0, 200_000)
+	for len(summary)+len(entries)*(len(entry)+1) <= compactSnapshotRecordLineBytes {
+		entries = append(entries, entry)
+	}
+	summary += strings.Join(entries, ",") + `]} ]`
+	if len(summary) <= compactSnapshotRecordLineBytes {
+		t.Fatalf("fixture is %d bytes, want more than the %d-byte record cap", len(summary), compactSnapshotRecordLineBytes)
+	}
+	decoded := 0
+	if _, err := DecodeCompactSnapshot(strings.NewReader(compactHeaderLine()+summary+"\n"), func(any) error {
+		decoded++
+		return nil
+	}); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded != 2 {
+		t.Fatalf("decoded %d records, want 2", decoded)
+	}
 }
 
 // The ceiling is an invariant of the artifact, not a decoder policy: the encoder

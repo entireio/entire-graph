@@ -1106,7 +1106,7 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 		// take that route only where a summary is legal at all: after a validated
 		// header, and before any summary.
 		if seenHeader && !seenSummary {
-			if head, _ := reader.Peek(len(compactSnapshotSummaryLinePrefix)); string(head) == compactSnapshotSummaryLinePrefix {
+			if compactSnapshotLineIsSummary(reader) {
 				summary, err := decodeCompactSummaryLine(reader, compactSnapshotSummaryLineCeiling)
 				if err != nil {
 					return warnings, err
@@ -1281,8 +1281,40 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarnin
 const (
 	compactSnapshotRecordLineBytes    = 16 * 1024 * 1024
 	compactSnapshotSummaryLineCeiling = 128 * 1024 * 1024
-	compactSnapshotSummaryLinePrefix  = `["m",`
+	// compactSnapshotTagPeekBytes is how far compactSnapshotLineIsSummary looks
+	// for the record tag. The encoder writes it at offset one; the window is
+	// generous enough for any whitespace a reformatter might insert ahead of it.
+	compactSnapshotTagPeekBytes = 4096
 )
+
+// compactSnapshotLineIsSummary reports whether the next line's record tag is the
+// summary's, WITHOUT consuming anything.
+//
+// It reads the tag rather than matching a byte prefix. The encoder emits no
+// whitespace, but the format is JSON and `[ "m" , {…}]` is the same record; a
+// prefix match sent such a line down the ordinary path and refused a valid
+// summary over the record cap.
+func compactSnapshotLineIsSummary(reader *bufio.Reader) bool {
+	head, _ := reader.Peek(compactSnapshotTagPeekBytes)
+	index := 0
+	skipBlanks := func() {
+		for index < len(head) && (head[index] == ' ' || head[index] == '\t') {
+			index++
+		}
+	}
+	skipBlanks()
+	if index >= len(head) || head[index] != '[' {
+		return false
+	}
+	index++
+	skipBlanks()
+	if index+2 >= len(head) || head[index] != '"' || head[index+1] != 'm' || head[index+2] != '"' {
+		return false
+	}
+	index += 3
+	skipBlanks()
+	return index < len(head) && head[index] == ','
+}
 
 // decodeCompactSummaryLine decodes the summary record directly from the stream.
 //
