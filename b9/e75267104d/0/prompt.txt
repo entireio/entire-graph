@@ -1,5 +1,1 @@
-Address the open findings in entire trail 122
-
----
-
 There is a new finding and the branch is 29 commits behind main
