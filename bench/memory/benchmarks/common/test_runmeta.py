@@ -28,6 +28,53 @@ class CodeHashesTest(unittest.TestCase):
             {"LLM_REASONING_EFFORT": "low", "LLM_TIMEOUT": "600"},
         )
 
+    # Two runs whose cmm/graphify/bm25 configuration differs materially. Only
+    # infrastructure knobs differ: the asymmetry knobs among these namespaces
+    # are reported separately by asymmetry_report(), so if the env block cannot
+    # separate these two, nothing in the artifact can.
+    _RUN_A = {
+        "FAIR_MODE": "1",
+        "LLM_TIMEOUT": "600",
+        "MEM0_HOST": "http://localhost:18888",
+        "ENTIRE_CORPUS_ROOT": "/state/A/entire",
+        "CMM_STATE_ROOT": "/state/A/cmm",
+        "GRAPHIFY_STATE_ROOT": "/state/A/graphify",
+        "GRAPHIFY_BRIDGE": "/opt/bridge-a.py",
+        "BM25_STATE_ROOT": "/state/A/bm25",
+    }
+    _RUN_B = dict(
+        _RUN_A,
+        CMM_STATE_ROOT="/state/B/cmm",
+        GRAPHIFY_STATE_ROOT="/state/B/graphify",
+        GRAPHIFY_BRIDGE="/opt/bridge-b.py",
+        BM25_STATE_ROOT="/state/B/bm25",
+    )
+
+    def test_every_arm_namespace_reaches_the_env_block(self) -> None:
+        """BM25_, CMM_ and GRAPHIFY_ were the arm namespaces left uncaptured."""
+        with patch.dict("os.environ", self._RUN_A, clear=True):
+            snapshot = runmeta.env_snapshot()
+        self.assertEqual(snapshot, self._RUN_A)
+
+    def test_configurations_that_differ_serialize_differently(self) -> None:
+        with patch.dict("os.environ", self._RUN_A, clear=True):
+            first = runmeta.env_snapshot()
+        with patch.dict("os.environ", self._RUN_B, clear=True):
+            second = runmeta.env_snapshot()
+        self.assertNotEqual(
+            first,
+            second,
+            "two runs with different cmm/graphify/bm25 state serialize the same "
+            "env block, so the artifact cannot say which configuration ran",
+        )
+
+    def test_a_secret_named_arm_knob_is_still_fingerprinted(self) -> None:
+        """Widening capture must not widen what is emitted in cleartext."""
+        with patch.dict("os.environ", {"CMM_API_KEY": FAKE_KEY}, clear=True):
+            snapshot = runmeta.env_snapshot()
+        self.assertNotIn(FAKE_KEY, str(snapshot))
+        self.assertTrue(snapshot["CMM_API_KEY"].startswith("sha256:"))
+
     def test_hashes_entra_helper_and_dependency_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             harness = Path(tempdir)
@@ -470,10 +517,10 @@ class AsymmetryCoverageTest(unittest.TestCase):
     time an adapter gains a setting.
     """
 
-    ARM_PREFIXES = (
-        "EG_", "ENTIRE_", "MEM0_", "BM25_", "CMM_", "GRAPHIFY_",
-        "COGNEE_", "LETTA_", "GRAPHITI_", "SUPERMEMORY_",
-    )
+    # runmeta owns the definition: the same tuple decides what the env block
+    # captures, so a namespace cannot be arm-scoped for the classification guard
+    # and invisible to provenance at the same time.
+    ARM_PREFIXES = runmeta.ARM_PREFIXES
     ENV_READ = re.compile(
         r"""os\.(?:getenv\(|environ\.get\(|environ\[)\s*["']([A-Z][A-Z0-9_]*)["']"""
     )
@@ -501,6 +548,32 @@ class AsymmetryCoverageTest(unittest.TestCase):
             "says where a backend lives",
         )
         self.assertIn("EG_SESSION_EXPAND", classified)
+
+    def test_every_classified_knob_reaches_the_env_block(self) -> None:
+        """Classifying a knob is not enough -- it has to be recorded.
+
+        `CMM_STATE_ROOT`, `GRAPHIFY_BRIDGE` and friends were classified
+        infrastructure, which excludes them from `asymmetry_report()`, while
+        their namespaces were absent from `_CAPTURE_PREFIXES`, which excluded
+        them from the env block. They reached no part of the artifact. This
+        keeps capture total as the classification tables grow.
+        """
+        classified = (set(runmeta.ASYMMETRY_FLAGS) | runmeta.SYMMETRIC_ARM_SETTINGS
+                      | runmeta.ARM_SELECTION_SETTINGS)
+        uncaptured = sorted(
+            k for k in classified if not k.startswith(runmeta._CAPTURE_PREFIXES)
+        )
+        self.assertEqual(
+            uncaptured,
+            [],
+            "classified arm knobs that env_snapshot() would drop. Add their "
+            "namespace to runmeta.ARM_PREFIXES so the run artifact records "
+            "which configuration actually ran",
+        )
+
+    def test_the_arm_namespaces_are_captured_verbatim_from_one_list(self) -> None:
+        for prefix in runmeta.ARM_PREFIXES:
+            self.assertIn(prefix, runmeta._CAPTURE_PREFIXES)
 
 
 if __name__ == "__main__":

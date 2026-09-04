@@ -224,10 +224,17 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
 `benchmarks/common/runmeta.py` (new) is called at all four metadata sites —
 `longmemeval/run.py:1263,1446` and `locomo/run.py:870,1024` — writing `metadata.env_capture`:
 
-- `env` — every `EG_* ENTIRE_* MEM0_* QDRANT_* SUPERMEMORY_* SM_* LETTA_* COGNEE_* GRAPHITI_*
-  NEO4J_* REDIS_* EMBED_* OPENAI_* AZURE_* ANTHROPIC_* LLM_* FAIR_* BENCH_* HARNESS_* COLLECTION_*`
-  variable, with any name matching `KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API` replaced by a
-  `sha256:` fingerprint so configs are comparable without leaking credentials
+- `env` — every variable under an **arm namespace** (`runmeta.ARM_PREFIXES`: `EG_* ENTIRE_*
+  MEM0_* BM25_* CMM_* GRAPHIFY_* COGNEE_* LETTA_* GRAPHITI_* SUPERMEMORY_*`) or a shared
+  infrastructure namespace (`QDRANT_* SM_* NEO4J_* REDIS_* EMBED_* OPENAI_* AZURE_* ANTHROPIC_*
+  LLM_* FAIR_* BENCH_* HARNESS_* COLLECTION_*`), with any name matching
+  `KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API` replaced by a `sha256:` fingerprint so configs are
+  comparable without leaking credentials. `BM25_*`, `CMM_*` and `GRAPHIFY_*` were previously
+  absent while every other arm namespace was captured, so two runs differing in `CMM_STATE_ROOT`,
+  `GRAPHIFY_BRIDGE` or `BM25_STATE_ROOT` serialized byte-identical environment metadata — those
+  knobs are classified infrastructure, so `asymmetric_settings_active` excludes them by design
+  and they reached no part of the artifact at all. `runmeta.ARM_PREFIXES` is now the single
+  definition of "arm-scoped": the same tuple drives capture and the coverage guard below
 - `argv` — the command line, which is what records `--user-profile`. Both the option name and
   its value are allowlisted: names against the set the runners accept, values against the
   **closed domain of their own option**, never trusted because the name is known. A value is
@@ -284,7 +291,10 @@ args.backend)`), so without the check a run could record one arm in argv — the
 (`ENTIRE_CORPUS_ROOT`, `MEM0_HOST`, the `*_STATE_ROOT` paths) are declared in
 `runmeta.SYMMETRIC_ARM_SETTINGS` and stay legal, and
 `benchmarks/common/test_runmeta.py::AsymmetryCoverageTest` fails if an adapter gains an arm-scoped
-knob that is in neither list. Verified live on both benchmarks:
+knob that is in neither list, and — since classifying a knob as infrastructure is what excludes it
+from `asymmetric_settings_active` — also fails if a classified knob's namespace is not captured in
+`env`, so every classified knob reaches the artifact through one block or the other. Verified live
+on both benchmarks:
 
 ```
 FAIR_MODE=1 but arm-asymmetric settings are active: EG_SESSION_EXPAND=2, EG_ANSWER_ENUM=2
@@ -324,7 +334,7 @@ c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 041f93a130c1a91d1b81f67622555b8c  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
-1fe013f845b0db387a2c2cdc1a1d69b8  benchmarks/common/runmeta.py
+77e5d2c8fc30440a95e4c343045127a3  benchmarks/common/runmeta.py
 7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
 4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
 8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py

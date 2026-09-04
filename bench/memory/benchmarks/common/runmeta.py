@@ -18,10 +18,36 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+# Env namespaces owned by a benchmark arm: a variable under one of these is by
+# construction part of some arm's configuration. This tuple is the single
+# definition of "arm-scoped" -- `test_runmeta.py` scans the kit with it and
+# fails the build when an arm-prefixed knob is read but classified in none of
+# ASYMMETRY_FLAGS / SYMMETRIC_ARM_SETTINGS / ARM_SELECTION_SETTINGS, and
+# `_CAPTURE_PREFIXES` below folds it in so classification and capture cannot
+# disagree.
+ARM_PREFIXES = (
+    "EG_", "ENTIRE_", "MEM0_", "BM25_", "CMM_", "GRAPHIFY_",
+    "COGNEE_", "LETTA_", "GRAPHITI_", "SUPERMEMORY_",
+)
+
 # Env vars that can change what an arm sees or says. Prefix match.
-_CAPTURE_PREFIXES = (
-    "EG_", "ENTIRE_", "MEM0_", "QDRANT_", "SUPERMEMORY_", "SM_", "LETTA_",
-    "COGNEE_", "GRAPHITI_", "NEO4J_", "REDIS_", "EMBED_", "OPENAI_", "AZURE_",
+#
+# `BM25_`, `CMM_` and `GRAPHIFY_` used to be missing while every other arm
+# namespace was present, so the `env` block could not tell one cmm/graphify/bm25
+# configuration from another: two runs against different state roots, a
+# different graphify bridge, or a different cmm memory budget serialized
+# byte-identical environment metadata. The asymmetry knobs among them were
+# reported by `asymmetry_report()` and the executables bound by
+# `implementation_provenance()`, but everything classified as infrastructure --
+# `CMM_STATE_ROOT`, `GRAPHIFY_STATE_ROOT`, `GRAPHIFY_BRIDGE`, `BM25_STATE_ROOT`
+# -- reached no part of the artifact at all.
+#
+# Capture is by namespace rather than by name on purpose: an arm's own binary
+# reads knobs the kit never mentions, so a name allowlist would record only what
+# the harness happens to call `os.getenv` on. Values are still fingerprinted by
+# `_SECRET_RE` exactly as in every other captured namespace.
+_CAPTURE_PREFIXES = ARM_PREFIXES + (
+    "QDRANT_", "SM_", "NEO4J_", "REDIS_", "EMBED_", "OPENAI_", "AZURE_",
     "ANTHROPIC_", "LLM_", "FAIR_", "BENCH_", "HARNESS_", "COLLECTION_",
 )
 # Never emit these values in cleartext; emit a stable fingerprint instead.
