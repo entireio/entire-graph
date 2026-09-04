@@ -4719,14 +4719,31 @@ func cPlusPlusMemberDeclaratorName(declarator *sitter.Node, src []byte) string {
 		}
 		return strings.TrimSpace(name.Content(src))
 	case "operator_name":
-		// An operator overload is deliberately left out. maskCPlusPlusOperatorCall
-		// rewrites `operator=(` to `op(` before tree-sitter sees it, so the name
-		// in the parsed source is not the name in the file — and every masked
-		// operator collapses onto the same `op`, so `operator=` and `operator==`
-		// on one class would produce two symbols with one name. Extracting these
-		// correctly means recovering the name from the unmasked content, which
-		// belongs with the mask, not here.
-		return ""
+		// An operator spelled with PUNCTUATION never arrives here.
+		// maskCPlusPlusOperatorCall rewrites `operator=(` to a same-width `op(`
+		// before tree-sitter sees the file, so the parser reports an ordinary
+		// identifier and the branch above reads the real spelling back out of
+		// the unmasked source at that (unmoved) byte range.
+		//
+		// What is left is the operators spelled with a WORD --
+		// `void* operator new(size_t)`, `void operator delete(void*)` and their
+		// array forms -- which that regex cannot match, because it requires
+		// punctuation between `operator` and the `(`. Nothing rewrites them, so
+		// the node's own range still holds the real name. Discarding it dropped
+		// every in-class allocation and deallocation member: no symbol to search
+		// for, no CONTAINS edge, and no target for a call.
+		if !cFamilyNameEndsAtTokenBoundary(name, src) {
+			return ""
+		}
+		text := normalize(name.Content(src))
+		// A rewritten range would no longer read as an operator name. Report
+		// nothing rather than a stand-in: a wrong name is worse than a missing
+		// one, because it collides with every other symbol that shares it.
+		if !strings.HasPrefix(text, "operator") ||
+			(len(text) > len("operator") && isIdentifierByte(text[len("operator")])) {
+			return ""
+		}
+		return text
 	}
 	return ""
 }

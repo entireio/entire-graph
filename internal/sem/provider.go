@@ -7327,11 +7327,20 @@ func signatureNamesQualifiedMethod(signature, container, name string) bool {
 		}
 		rest := signature[offset:]
 		// A template definition qualifies through its argument list
-		// (`A<T>::foo`), which is part of the same name.
+		// (`A<T>::foo`), which is part of the same name. The list closes at the
+		// MATCHING `>`, not the first one seen: `A<std::vector<T>>::foo` and
+		// `A<std::vector<T> >::foo` both close the outer list at the second, so
+		// cutting at the first left `>::foo` behind and rejected the definition
+		// -- every nested-template class's out-of-line body stayed disconnected
+		// from its callers. An argument list that never closes is not a
+		// qualification at all, so that occurrence is skipped rather than
+		// accepted on a truncated remainder.
 		if strings.HasPrefix(rest, "<") {
-			if close := strings.IndexByte(rest, '>'); close >= 0 {
-				rest = rest[close+1:]
+			after, closed := skipBalancedAngles(rest)
+			if !closed {
+				continue
 			}
+			rest = after
 		}
 		if !strings.HasPrefix(rest, "::"+name) {
 			continue
@@ -7342,6 +7351,28 @@ func signatureNamesQualifiedMethod(signature, container, name string) bool {
 			return true
 		}
 	}
+}
+
+// skipBalancedAngles returns the text following the template argument list that
+// begins at text[0] == '<', and whether that list was closed. Angle brackets
+// nest, so the list ends at the bracket that matches the opening one -- the
+// SECOND `>` of `<std::vector<T>>` -- and a depth count is the only way to find
+// it. `>>` is two ordinary `>` bytes here, so the C++11 spelling and the
+// spaced-out `> >` both close at the same depth.
+func skipBalancedAngles(text string) (string, bool) {
+	depth := 0
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '<':
+			depth++
+		case '>':
+			depth--
+			if depth == 0 {
+				return text[i+1:], true
+			}
+		}
+	}
+	return text, false
 }
 
 // cPlusPlusOutOfLineDefinition returns the definition that a bodyless C++
