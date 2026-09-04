@@ -294,7 +294,10 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
   arm client's own default read from the module the run imported) and `resolved_via` whether it
   was already a path or was looked up on PATH. Digests are cached by file identity (device,
   inode, size, mtime) rather than by path, so a binary rebuilt between the four capture sites
-  is re-hashed instead of being reported as the build the run started with — a bare `ENTIRE_GRAPH_BIN=entire-graph` is
+  is re-hashed instead of being reported as the build the run started with; a dirty source
+  checkout additionally records a `dirty_digest` of its working tree, so two different
+  uncommitted implementations at one path do not both serialize as `commit=X, dirty=true`
+  — a bare `ENTIRE_GRAPH_BIN=entire-graph` is
   executed through PATH by the adapter, so it is resolved the same way here.
   `code_md5` binds the harness; this binds the thing the harness drives, so a run cannot
   execute a modified `entire-graph` and still be stamped fair
@@ -317,7 +320,11 @@ args.backend)`), so without the check a run could record one arm in argv — the
 (`MEM0_DATE_INJECT`), the BM25 scoring parameters, and the per-arm budgets and deadlines
 (`CMM_MEM_BUDGET_MB`, `CMM_TIMEOUT`, `GRAPHIFY_TIMEOUT`). Location-only variables
 (`ENTIRE_CORPUS_ROOT`, `MEM0_HOST`, the `*_STATE_ROOT` paths) are declared in
-`runmeta.SYMMETRIC_ARM_SETTINGS` and stay legal, and
+`runmeta.SYMMETRIC_ARM_SETTINGS` and stay legal. A knob counts as *active* only when it
+deviates from what the arm does unset, taken from the client's own `os.getenv` default
+(`runmeta.ENV_KNOB_DEFAULTS`): `EG_DEEP=0` and `EG_INGEST_GRANULARITY=session` are the
+defaults and do not abort, while `BM25_STEM=0` and `BM25_K1=0` do — those two default *on*,
+so reading `0` as "off" had the polarity backwards. And
 `benchmarks/common/test_runmeta.py::AsymmetryCoverageTest` fails if an adapter gains an arm-scoped
 knob that is in neither list, and — since classifying a knob as infrastructure is what excludes it
 from `asymmetric_settings_active` — also fails if a classified knob's namespace is not captured in
@@ -362,11 +369,11 @@ c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
 bb763cabd9e586cf9aa2699c67f96358  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
-b577e3c25e8e439500a51f92ae93f512  benchmarks/common/runmeta.py
+91a45f3dde782187cc9a6814df0a9b08  benchmarks/common/runmeta.py
 7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
 4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
 8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py
-ff54808670e9bc3a0388b2f3debb0540  benchmarks/locomo/run.py
+c3331bce8631d07cf69ae94cb82f821c  benchmarks/locomo/run.py
 180750bea9900b826dd5990fc9e16787  benchmarks/longmemeval/prompts.py
 632e01d52537e5b931994d61a246cd9b  benchmarks/longmemeval/run.py
 72544a7a6b0f0a10103d640b1f281e68  requirements-lock-py312.txt

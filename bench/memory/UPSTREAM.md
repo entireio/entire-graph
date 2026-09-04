@@ -47,7 +47,7 @@ upstream's, untouched, and therefore identical for every arm.
 |---|---|---|---|
 | `benchmarks/common/llm_client.py` | `6a5da3c1d05dbf6a78cd364b59fc7a09` | `592bbcc560b15b88aabb2c9d0280380f` | `patches/0001-llm_client-azure-ai-provider-timeouts-reasoning.patch` |
 | `benchmarks/common/mem0_client.py` | `44e367847d94be3a90cdfa1d21aebe96` | `bb763cabd9e586cf9aa2699c67f96358` | `patches/0002-mem0_client-optional-date-injection.patch` |
-| `benchmarks/locomo/run.py` | `f791a93df6257fe869ec6687865f8457` | `ff54808670e9bc3a0388b2f3debb0540` | `patches/0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch` |
+| `benchmarks/locomo/run.py` | `f791a93df6257fe869ec6687865f8457` | `c3331bce8631d07cf69ae94cb82f821c` | `patches/0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch` |
 | `docker/mem0/main.py` | `e4e1e6076c9016bc37de6715ea29e67a` | `3fe9a40ba1cc8b494daadee2b977f411` | `patches/0004-docker-mem0-server-topk-fix-and-ingest-usage-metering.patch` |
 | `requirements.txt` | `13815b8f1ba4ecc628a44fc963a67679` | `51c617883adf40e4ca22b79533f4662a` | `patches/0006-requirements-bm25-deps.patch` |
 
@@ -84,7 +84,10 @@ What each patch does:
   signal — patch 0002 makes mem0 raise `SEARCH_EXHAUSTED` — so `[]` keeps meaning a genuine
   zero-match retrieval. Inferring a drop from emptiness instead would retry a valid query and then
   count it against the denominator, corrupting the accounting from the other direction; adds ingest-phase timing output; wires `runmeta` provenance capture
-  and the `FAIR_MODE` guard; splits `--max-workers` (conversations) from a new `--question-workers`.
+  and the `FAIR_MODE` guard; splits `--max-workers` (conversations) from a new
+  `--question-workers`, both validated as `>= 1` because either at zero caps a semaphore that
+  then blocks every task forever; and rejects `HARNESS_SEARCH_RETRIES < 1`, which would run no
+  search at all and mark every question dropped.
 - **0004 `docker/mem0/main.py`** — the mem0 `top_k` fix described in `README.md` §3.1 (one line,
   at upstream line 233 / patched-container line 351), plus ingest token-usage metering for the
   cost table and optional Anthropic OAuth-bearer wiring. The metering and OAuth wiring are
@@ -143,8 +146,8 @@ Written by us; no upstream code involved.
 | `benchmarks/common/graphify_client.py` | 364 |
 | `benchmarks/common/cmm_client.py` | 418 |
 | `benchmarks/common/graphify_mem_bridge.py` | 184 |
-| `benchmarks/common/runmeta.py` | 684 |
-| `benchmarks/common/test_runmeta.py` | 825 |
+| `benchmarks/common/runmeta.py` | 726 |
+| `benchmarks/common/test_runmeta.py` | 914 |
 | `benchmarks/common/bm25_client.py` | 369 |
 | `benchmarks/common/test_bm25_client.py` | 40 |
 | `benchmarks/common/entra_auth.py` | 94 |

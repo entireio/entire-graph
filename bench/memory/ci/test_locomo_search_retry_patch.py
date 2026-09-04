@@ -15,6 +15,7 @@ primary Mem0 arms.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import os
@@ -27,7 +28,7 @@ PATCH_PATH = (
     / "patches"
     / "0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch"
 )
-BLOCK_START = "+_RETRY_MAX = "
+BLOCK_START = "+def _positive_int"
 BLOCK_END = "+    return [], True"
 
 
@@ -41,7 +42,7 @@ def load_wrapper() -> dict:
         if not line.startswith("+"):
             raise AssertionError(f"unexpected non-added line in the wrapper: {line!r}")
         added.append(line[1:])
-    namespace: dict = {"os": os, "asyncio": asyncio}
+    namespace: dict = {"os": os, "asyncio": asyncio, "argparse": argparse}
     exec("\n".join(added) + "\n", namespace)  # noqa: S102 - the artifact under test
     return namespace
 
@@ -124,6 +125,51 @@ class SearchRetryDropAccountingTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(error=error.split()[0]):
                 _, dropped = await self.search(Mem0Client([RuntimeError(error)] * 4))
                 self.assertTrue(dropped)
+
+
+class PositiveIntTest(unittest.TestCase):
+    """Zero is never a benign default for these: it turns the retry loop into
+    zero searches and a semaphore into a permanent block, and both fail
+    silently as a fully-dropped or a hung run."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Held in the namespace dict: assigning a plain function to a class
+        # attribute would bind it as a method and pass self as the first arg.
+        cls.wrapper = load_wrapper()
+
+    def test_accepts_counts_of_at_least_one(self) -> None:
+        self.assertEqual(self.wrapper["_positive_int"]("10"), 10)
+        self.assertEqual(self.wrapper["_positive_int"]("1"), 1)
+
+    def test_rejects_zero_and_negatives_and_non_integers(self) -> None:
+        for raw in ("0", "-3", "abc", ""):
+            with self.subTest(raw=raw):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    self.wrapper["_positive_int"](raw)
+
+    def test_both_worker_flags_are_validated(self) -> None:
+        """Each caps a semaphore; --max-workers had the identical deadlock."""
+        added = [l[1:].strip() for l in PATCH_PATH.read_text(encoding="utf-8").splitlines()
+                 if l.startswith("+") and "add_argument(" in l]
+        for flag in ("--max-workers", "--question-workers"):
+            with self.subTest(flag=flag):
+                declared = [l for l in added if l.startswith(f'parser.add_argument("{flag}"')]
+                self.assertEqual(len(declared), 1, f"{flag} is not declared once")
+                self.assertIn("type=_positive_int", declared[0])
+
+    def test_a_zero_retry_budget_is_rejected_at_import(self) -> None:
+        """Zero retries runs no search and marks every question dropped."""
+        added = [l[1:] for l in PATCH_PATH.read_text(encoding="utf-8").splitlines()
+                 if l.startswith("+")]
+        self.assertTrue(
+            any(l.strip().startswith("_RETRY_MAX = _positive_int(") for l in added),
+            "the retry budget is not validated",
+        )
+        self.assertTrue(
+            any("raise SystemExit(" in l and "HARNESS_SEARCH_RETRIES" in l for l in added),
+            "an invalid retry budget does not abort the run",
+        )
 
 
 class Patch0002Test(unittest.TestCase):

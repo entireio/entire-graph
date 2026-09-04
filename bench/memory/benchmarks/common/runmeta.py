@@ -364,28 +364,62 @@ ENV_DERIVED_VALUES = frozenset({
 
 _ENV_FALSEY = frozenset({"", "0", "false", "False", "FALSE", "no", "off"})
 
+# What each knob is worth when it is NOT set, taken from the client's own
+# `os.getenv(NAME, default)`; `""` means the client reads it bare, so unset is
+# off. test_runmeta.py re-derives these from the kit and fails on drift.
+#
+# This table exists because "truthy" is the wrong question. Half these knobs
+# default ON -- `BM25_STEM`, `BM25_STOPWORDS` are disabled only by the exact
+# string "0", and `BM25_K1` has a default of 1.2 -- so reading `0` as "off"
+# had the polarity backwards and let `BM25_STEM=0`, `BM25_K1=0` and
+# `CMM_MEM_BUDGET_MB=0` through FAIR_MODE while each one changes an arm.
+ENV_KNOB_DEFAULTS = {
+    "BM25_B": "0.75",
+    "BM25_K1": "1.2",
+    "BM25_STEM": "1",
+    "BM25_STOPWORDS": "1",
+    "CMM_MEM_BUDGET_MB": "4096",
+    "CMM_TIMEOUT": "900",
+    "GRAPHIFY_TIMEOUT": "900",
+    "EG_INGEST_GRANULARITY": "session",
+    "EG_PROFILE_FACT_CAP": "40",
+    "EG_PROFILE_TIMELINE_CAP": "30",
+    "EG_SESSION_EXPAND_CAP": "0",
+    "EG_SESSION_EXPAND": "",
+    "EG_ANSWER_ENUM": "",
+    "EG_ANSWER_ENUM_R": "",
+    "EG_USER_PROFILE": "",
+    "EG_CHRONO_ORDER": "",
+    "EG_CONSOLIDATE": "",
+    "EG_DEEP": "",
+    "EG_PROFILE": "",
+    "ENTIRE_MAX_CONTEXT_BYTES": "",
+    "MEM0_DATE_INJECT": "",
+}
+
 
 def _is_active(name: str, value: str) -> bool:
-    """Whether a knob is switched ON, rather than merely present.
+    """Whether a knob deviates from what the arm does when it is unset.
 
-    A declared boolean or numeric knob set to its off value is not active:
-    `EG_DEEP=0` and `MEM0_DATE_INJECT=false` are how an operator *disables* a
-    feature, and treating any non-empty string as active made the guard abort
-    fair runs for saying "off" the correct way. A knob with no declared domain
-    is active whenever it is non-empty, so an unrecognised one still fails
-    closed.
+    Not "is it truthy" -- that question has no answer without the default.
+    A knob whose default is off is inactive at any value the client also reads
+    as off, so `EG_DEEP=0` and `MEM0_DATE_INJECT=false` do not abort a fair run;
+    that is how an operator *disables* a feature. A knob whose default is on or
+    non-zero is active whenever it differs from that default, so `BM25_STEM=0`
+    does abort while `BM25_K1=1.2` does not.
+
+    A knob with no declared default is active whenever it is non-empty: unknown
+    means fail closed. Erring towards active costs a re-run; erring the other
+    way publishes an unfair number.
     """
     if not value:
         return False
-    domain = ENV_VALUE_DOMAINS.get(name)
-    if domain is _ENV_BOOL:
+    default = ENV_KNOB_DEFAULTS.get(name)
+    if default is None:
+        return True
+    if default in _ENV_FALSEY:
         return value not in _ENV_FALSEY
-    if domain is _ENV_INT_RE or domain is _ENV_NUM_RE:
-        try:
-            return float(value) != 0.0
-        except ValueError:
-            return True
-    return True
+    return value != default
 
 
 def _env_value(name: str, value: str) -> str:
@@ -498,8 +532,16 @@ def git_state(root: Path | str | None = None) -> dict:
                                   timeout=15).stdout.strip()
         except Exception:
             return ""
-    return {"commit": _run("git", "rev-parse", "HEAD"),
-            "dirty": bool(_run("git", "status", "--porcelain"))}
+    status = _run("git", "status", "--porcelain")
+    state = {"commit": _run("git", "rev-parse", "HEAD"), "dirty": bool(status)}
+    if status:
+        # `commit=X, dirty=true` is the same string for two different
+        # uncommitted implementations at one checkout, which defeats the point
+        # of binding what ran. Digest the working tree so two dirty states are
+        # distinguishable: the tracked diff, plus the porcelain list so an
+        # untracked file counts too.
+        state["dirty_digest"] = _fingerprint(status + "\n" + _run("git", "diff", "HEAD"))
+    return state
 
 
 # The executables and source checkouts an arm actually runs. code_hashes()

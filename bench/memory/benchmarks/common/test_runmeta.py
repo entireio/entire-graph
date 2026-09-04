@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
 import tempfile
 import time
 import types
@@ -92,6 +93,34 @@ class CodeHashesTest(unittest.TestCase):
             snapshot = runmeta.env_snapshot()
         self.assertNotIn(FAKE_KEY, str(snapshot))
         self.assertEqual(snapshot["CMM_API_KEY"], "<redacted>")
+
+    def test_two_dirty_checkouts_are_distinguishable(self) -> None:
+        """`commit=X, dirty=true` is the same string for two different
+        uncommitted implementations at one checkout."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            def git(*args):
+                subprocess.run(("git",) + args, cwd=root, capture_output=True, check=True)
+            git("init", "-q")
+            git("config", "user.email", "t@t")
+            git("config", "user.name", "t")
+            (root / "impl.py").write_text("original\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-qm", "base")
+
+            clean = runmeta.git_state(root)
+            (root / "impl.py").write_text("variant one\n", encoding="utf-8")
+            first = runmeta.git_state(root)
+            (root / "impl.py").write_text("variant two\n", encoding="utf-8")
+            second = runmeta.git_state(root)
+
+        self.assertNotIn("dirty_digest", clean)
+        self.assertEqual(first["commit"], second["commit"])
+        self.assertTrue(first["dirty"] and second["dirty"])
+        self.assertNotEqual(
+            first["dirty_digest"], second["dirty_digest"],
+            "two different uncommitted implementations serialize identically",
+        )
 
     def test_hashes_entra_helper_and_dependency_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -607,7 +636,8 @@ class FairModeGuardTest(unittest.TestCase):
             self.assertIn(knob, str(raised.exception))
 
     def test_rejects_ingest_granularity(self) -> None:
-        self._assert_rejected("EG_INGEST_GRANULARITY", "session")
+        """`session` is the client default; `turn+session` is the deviation."""
+        self._assert_rejected("EG_INGEST_GRANULARITY", "turn+session")
 
     def test_rejects_consolidation(self) -> None:
         self._assert_rejected("EG_CONSOLIDATE")
@@ -622,8 +652,10 @@ class FairModeGuardTest(unittest.TestCase):
         self._assert_rejected("MEM0_DATE_INJECT")
 
     def test_rejects_bm25_scoring_knobs(self) -> None:
+        """Non-default values only: the client's own defaults are 1.2 and 0.75,
+        and setting a knob to its default changes nothing."""
         self._assert_rejected("BM25_K1", "1.5")
-        self._assert_rejected("BM25_B", "0.75")
+        self._assert_rejected("BM25_B", "0.9")
 
     def test_rejects_an_unrecognised_entire_graph_knob(self) -> None:
         """EG_ is our own arm's namespace: unknown knobs fail closed."""
@@ -676,8 +708,34 @@ class FairModeGuardTest(unittest.TestCase):
     def test_a_knob_explicitly_switched_off_does_not_abort(self) -> None:
         """`EG_DEEP=0` is how an operator disables a feature; aborting for it
         punished the correct way of saying "off"."""
+        # BM25_STEM is deliberately absent: its client default is "1" and only
+        # the exact string "0" disables it, so "False" is a deviation, not an
+        # "off" -- covered by test_a_default_on_knob_deviates_at_zero.
         for name, value in (("EG_DEEP", "0"), ("MEM0_DATE_INJECT", "false"),
-                            ("EG_SESSION_EXPAND", "0"), ("BM25_STEM", "False")):
+                            ("EG_SESSION_EXPAND", "0"), ("EG_CONSOLIDATE", "0")):
+            with self.subTest(knob=f"{name}={value}"):
+                with patch.dict("os.environ", {"FAIR_MODE": "1", name: value}, clear=True):
+                    runmeta.assert_fair_mode(None)
+                    self.assertEqual(runmeta.asymmetry_report(), {})
+
+    def test_a_default_on_knob_deviates_at_zero(self) -> None:
+        """`BM25_STEM`/`BM25_STOPWORDS` are disabled only by the exact string
+        "0", and `BM25_K1` defaults to 1.2, so reading `0` as "off" let a real
+        arm change through the guard."""
+        for name, value in (("BM25_STEM", "0"), ("BM25_STOPWORDS", "0"),
+                            ("BM25_K1", "0"), ("BM25_B", "0"),
+                            ("CMM_MEM_BUDGET_MB", "0"), ("CMM_TIMEOUT", "1")):
+            with self.subTest(knob=f"{name}={value}"):
+                with patch.dict("os.environ", {"FAIR_MODE": "1", name: value}, clear=True):
+                    with self.assertRaises(SystemExit):
+                        runmeta.assert_fair_mode(None)
+
+    def test_setting_a_knob_to_its_own_default_is_not_a_deviation(self) -> None:
+        """Explicitly writing the default changes nothing, so it must not abort
+        a fair run -- `EG_INGEST_GRANULARITY=session` is the published config."""
+        for name, value in (("BM25_K1", "1.2"), ("BM25_B", "0.75"),
+                            ("BM25_STEM", "1"), ("CMM_TIMEOUT", "900"),
+                            ("EG_INGEST_GRANULARITY", "session")):
             with self.subTest(knob=f"{name}={value}"):
                 with patch.dict("os.environ", {"FAIR_MODE": "1", name: value}, clear=True):
                     runmeta.assert_fair_mode(None)
@@ -765,6 +823,37 @@ class AsymmetryCoverageTest(unittest.TestCase):
             "says where a backend lives",
         )
         self.assertIn("EG_SESSION_EXPAND", classified)
+
+    GETENV_DEFAULT = re.compile(
+        r"""os\.getenv\(\s*["']([A-Z][A-Z0-9_]*)["']\s*,\s*["']([^"']*)["']"""
+    )
+
+    def test_declared_knob_defaults_match_the_clients(self) -> None:
+        """`_is_active` compares against the default, so a stale default is a
+        silent fairness hole rather than a visible error."""
+        kit = Path(runmeta.__file__).resolve().parents[2]
+        if not (kit / "patches").is_dir():
+            self.skipTest("not the kit checkout (reconstructed harness has no patches/)")
+        sources = sorted(kit.rglob("*.py")) + sorted((kit / "patches").glob("*.patch"))
+        found: dict[str, str] = {}
+        for path in sources:
+            if path.name == "runmeta.py" or path.name.startswith("test_"):
+                continue
+            for name, default in self.GETENV_DEFAULT.findall(path.read_text(encoding="utf-8")):
+                found.setdefault(name, default)
+
+        drifted = {
+            name: (default, runmeta.ENV_KNOB_DEFAULTS[name])
+            for name, default in sorted(found.items())
+            if name in runmeta.ENV_KNOB_DEFAULTS
+            and runmeta.ENV_KNOB_DEFAULTS[name] != default
+        }
+        self.assertEqual(
+            drifted, {},
+            "runmeta.ENV_KNOB_DEFAULTS disagrees with the client's own "
+            "os.getenv default (source value, declared value)",
+        )
+        self.assertEqual(runmeta.ENV_KNOB_DEFAULTS.get("BM25_STEM"), "1")
 
     def test_every_arm_scoped_knob_declares_a_value_class(self) -> None:
         """The env analogue of the argv enum-sync guard.
