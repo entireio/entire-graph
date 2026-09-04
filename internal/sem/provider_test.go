@@ -1360,6 +1360,798 @@ def open_stream():
 	}
 }
 
+func TestPythonScopedBareCallsRetainResolvedRelativeImportsAtTopLevel(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/util.py", `def helper():
+    return 1
+`)
+	writeFile(t, repo, "src/consumer.py", `from .util import helper
+
+helper()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" && strings.HasSuffix(relation.FromID, "file:src/consumer.py") && strings.Contains(relation.ToID, "src/util.py:function:helper") {
+			return
+		}
+	}
+	t.Fatalf("top-level scoped relative import lost its local call: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+}
+
+func TestPythonFunctionHeadersUseLexicalImportScope(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "other.py", `def compute(value):
+    return value - 1
+`)
+	writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(value=compute(1)):
+    compute = lambda value: value
+    return value
+
+def lambda_default(value=(lambda: compute(1))()):
+    return value
+
+def comprehension_default(value=[compute(1) for _ in range(1)]):
+    return value
+`)
+
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("function-header call must use the lexical import, not its body-local binding or same-name fallback: %#v", calls)
+	}
+	for _, caller := range []string{"lambda_default", "comprehension_default"} {
+		calls := callRelationsFrom(t, repo, "app.py:function:"+caller)
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("%s lost the module import inside its nested header expression: %#v", caller, calls)
+		}
+	}
+}
+
+func TestPythonMethodHeadersUseClassExecutionScopeOnlyWherePythonDoes(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "modulemod.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "classmod.c", "int compute(int value) { return value - 1; }\n")
+	writeFile(t, repo, "app.py", `from modulemod import compute
+
+class Service:
+    from classmod import compute
+
+    def direct(value=compute(1)):
+        return value
+
+    def annotated(value: compute()):
+        return value
+
+    def body():
+        return compute(1)
+
+    def lambda_default(value=(lambda: compute(1))()):
+        return value
+
+    def result_default(value=[compute(1) for _ in range(1)]):
+        return value
+
+    def filter_default(value=[value for value in range(1) if compute(1)]):
+        return value
+
+    def iterable_default(value=[value for value in compute(1)]):
+        return value
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTarget := func(caller, target string) {
+		t.Helper()
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", caller, "app.py", "compute", target) {
+			t.Fatalf("%s did not resolve compute through %s: %#v", caller, target, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+	assertTarget("direct", "classmod.c")
+	assertTarget("annotated", "classmod.c")
+	assertTarget("body", "modulemod.c")
+	assertTarget("lambda_default", "modulemod.c")
+	assertTarget("result_default", "modulemod.c")
+	assertTarget("filter_default", "modulemod.c")
+	assertTarget("iterable_default", "classmod.c")
+}
+
+func TestPythonScopedFromImportAliasesResolveOriginalMember(t *testing.T) {
+	assertCalls := func(t *testing.T, source string, want map[string]string) {
+		t.Helper()
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "two.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", source)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for caller, target := range want {
+			if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", caller, "app.py", "compute", target) {
+				t.Fatalf("%s did not resolve alias to %s: %#v", caller, target, relationsOfType(snapshot.Relations, "CALLS"))
+			}
+		}
+	}
+
+	assertCalls(t, `from one import compute as c
+
+def basic():
+    return c(1)
+
+def local():
+    from two import compute as c
+    return c(1)
+
+def sibling():
+    return c(1)
+`, map[string]string{"basic": "one.c", "local": "two.c", "sibling": "one.c"})
+
+	t.Run("sequential and sibling aliases stay scoped", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "two.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", `from one import compute as first
+from two import compute as second
+
+def first_sibling():
+    return first(1)
+
+def second_sibling():
+    return second(1)
+
+def sequential():
+    from one import compute as c
+    c(1)
+    from two import compute as c
+    c(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "first_sibling", "app.py", "compute", "one.c") ||
+			!hasRelationBySymbolNameAndFile(snapshot, "CALLS", "second_sibling", "app.py", "compute", "two.c") {
+			t.Fatalf("sibling aliases leaked or lost their original members: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+		calls := callRelationsFrom(t, repo, "app.py:function:sequential")
+		seen := map[string]bool{}
+		for _, call := range calls {
+			if strings.Contains(call.ToID, ".c:function:compute") {
+				seen[call.ToID] = true
+			}
+		}
+		if len(seen) != 2 {
+			t.Fatalf("sequential alias rebindings did not retain both visible targets: %#v", calls)
+		}
+	})
+
+	t.Run("top level and parenthesized", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "app.py", `from one import (
+    compute as c,
+)
+
+c(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.HasSuffix(relation.FromID, "file:app.py") && strings.Contains(relation.ToID, "one.c:function:compute") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("top-level parenthesized alias did not resolve original member: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+
+	t.Run("same-language and unresolved top-level aliases", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.py", "def compute(value):\n    return value + 1\n")
+		writeFile(t, repo, "app.py", `from one import compute as c
+
+def run():
+    return c(1)
+`)
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "one.py:function:compute") {
+			t.Fatalf("same-language alias did not use its original import member: %#v", calls)
+		}
+
+		writeFile(t, repo, "app.py", "from missing import compute as c\nc(1)\n")
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.HasSuffix(relation.FromID, "file:app.py") {
+				t.Fatalf("top-level unresolved alias invented an external edge: %#v", relation)
+			}
+		}
+	})
+
+	t.Run("shadowing and module-only aliases do not fall through", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "other.py", `def c(value):
+    return value
+`)
+		writeFile(t, repo, "app.py", `from one import compute as c
+import one as module_alias
+
+def before():
+    c(1)
+    from one import compute as c
+
+def assigned():
+    c = lambda value: value
+    return c(1)
+
+def parameter(c):
+    return c(1)
+
+def module_only():
+    return module_alias(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, caller := range []string{"before", "assigned", "parameter", "module_only"} {
+			for _, relation := range snapshot.Relations {
+				if relation.Type == "CALLS" && strings.Contains(relation.FromID, "app.py:function:"+caller) && (strings.Contains(relation.ToID, "one.c:function:compute") || strings.Contains(relation.ToID, "other.py:function:c") || relation.Resolution == "import_external") {
+					t.Fatalf("%s fell through an alias scope guard: %#v", caller, relation)
+				}
+			}
+		}
+	})
+
+	t.Run("ambiguous and incomplete aliases do not guess a local FFI target", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "lib/frobnicate.rb", "def compute(value)\n  value + 1\nend\n")
+		writeFile(t, repo, "app.py", `from frobnicate import compute as c
+
+def run():
+    return c(1)
+`)
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || calls[0].ToID != externalID("symbol", "frobnicate.compute") {
+			t.Fatalf("ambiguous alias must stay external under the imported member: %#v", calls)
+		}
+
+		writeFile(t, repo, "app.py", "from frobnicate import compute as c\n\ndef run():\n    return c(1)\n\nbroken = (\n")
+		calls = callRelationsFrom(t, repo, "app.py:function:run")
+		for _, call := range calls {
+			if strings.Contains(call.ToID, ".c:function:compute") || strings.Contains(call.ToID, ".rb:function:compute") {
+				t.Fatalf("incomplete alias scope guessed a local foreign target: %#v", calls)
+			}
+		}
+	})
+}
+
+func TestPythonScopedAliasesComposeWithGenericResolution(t *testing.T) {
+	t.Run("resolved and unresolved aliases both publish", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "app.py", `def run():
+    from one import compute as c
+    c(1)
+    from missing import remote_compute as c
+    c(1)
+`)
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		foundLocal := false
+		foundExternal := false
+		for _, call := range calls {
+			if strings.Contains(call.ToID, "one.c:function:compute") {
+				foundLocal = true
+			}
+			if call.ToID == externalID("symbol", "missing.remote_compute") {
+				foundExternal = true
+			}
+		}
+		if !foundLocal {
+			t.Fatalf("resolved alias disappeared beside unresolved rebind: %#v", calls)
+		}
+		if !foundExternal {
+			t.Fatalf("unresolved alias was not retained beside a local target: %#v", calls)
+		}
+	})
+
+	t.Run("lambda-local shadow leaves an outer imported call generic", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "app.py", `from one import compute
+
+def run(value):
+    handler = lambda compute: compute(value)
+    return compute(value)
+`)
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "one.c:function:compute") {
+			t.Fatalf("lambda-local binding suppressed its enclosing imported call: %#v", calls)
+		}
+	})
+
+	t.Run("module definitions remain generic constructor candidates", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "auth.py", `class AuthService:
+    pass
+
+def build():
+    return AuthService()
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasRelationBySymbolNameAndFile(snapshot, "CONSTRUCTS", "build", "auth.py", "AuthService", "auth.py") {
+			t.Fatalf("module class binding was mistaken for an import blocker: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+		}
+
+		writeFile(t, repo, "one.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "app.py", `from one import compute as c
+c = lambda value: value
+c(1)
+`)
+		snapshot, err = BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.Contains(relation.ToID, "one.c:function:compute") {
+				t.Fatalf("module temporal rebinding retained a stale alias target: %#v", relation)
+			}
+		}
+
+		writeFile(t, repo, "one.c", "int c(int value) { return value; }\n")
+		writeFile(t, repo, "app.py", `import one as c
+
+def before():
+    return c(1)
+
+c = lambda value: value
+
+def after():
+    return c(1)
+`)
+		snapshot, err = BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.Contains(relation.ToID, "one.c:function:c") {
+				t.Fatalf("module alias or its later lambda rebinding became a bare C call: %#v", relation)
+			}
+		}
+	})
+
+	t.Run("global nonlocal relative and class-header aliases retain their member", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "src/util.py", `def compute(value=1):
+    return value
+`)
+		writeFile(t, repo, "src/app.py", `from .util import compute as module_compute
+
+def global_call():
+    global module_compute
+    return module_compute()
+
+def outer():
+    from .util import compute as nested_compute
+    def inner():
+        nonlocal nested_compute
+        return nested_compute()
+    return inner()
+
+class Service:
+    from .util import compute as class_compute
+    def method(self, value=class_compute()):
+        return value
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, caller := range []string{"global_call", "inner", "method"} {
+			if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", caller, "src/app.py", "compute", "src/util.py") {
+				t.Fatalf("%s lost its relative alias member: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+			}
+		}
+	})
+
+	t.Run("pure-dot relative aliases retain their resolved module path", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "pkg/sub/compute.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "pkg/compute.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "pkg/sub/app.py", `from . import compute as sibling
+from .. import (
+    compute as parent,
+)
+
+def run():
+    return sibling(1) + parent(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var calls []RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.Contains(relation.FromID, "pkg/sub/app.py:function:run") {
+				calls = append(calls, relation)
+			}
+		}
+		seen := map[string]bool{}
+		for _, call := range calls {
+			if strings.Contains(call.ToID, ".c:function:compute") {
+				seen[call.ToID] = true
+			}
+		}
+		if len(seen) != 2 {
+			t.Fatalf("pure-dot relative aliases lost their distinct C modules: %#v", calls)
+		}
+	})
+
+	t.Run("incomplete alias keeps its imported external spelling", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "lib.c", "int Widget(int value) { return value; }\n")
+		writeFile(t, repo, "app.py", "from lib import Widget as W\n\ndef run():\n    return W(1)\n\nbroken = (\n")
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || calls[0].ToID != externalID("symbol", "lib.Widget") {
+			t.Fatalf("incomplete alias must remain external under Widget, not W: %#v", calls)
+		}
+
+		writeFile(t, repo, "one.c", "int compute(int value) { return value; }\n")
+		writeFile(t, repo, "app.py", "from one import compute as c\nc(1)\nbroken = (\n")
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, relation := range snapshot.Relations {
+			if relation.Type != "CALLS" || !strings.HasSuffix(relation.FromID, "file:app.py") {
+				continue
+			}
+			if strings.Contains(relation.ToID, "one.c:function:compute") {
+				t.Fatalf("incomplete top-level alias recovered a local target: %#v", relation)
+			}
+			if relation.ToID == externalID("symbol", "one.compute") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("incomplete top-level alias lost its original external member: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+}
+
+func TestParenthesizedPythonFromImportKeepsScopedFFIAndImportScannersAligned(t *testing.T) {
+	content := `from frobnicate import (
+    compute, # imported callable
+    helper as local_helper, # alias
+) # closing delimiter
+`
+	if modules := importedPythonNames(content)["compute"]; len(modules) != 1 || modules[0] != "frobnicate" {
+		t.Fatalf("parenthesized from-import names = %#v", modules)
+	}
+	bindings := importedPythonBindings(content)["local_helper"]
+	if len(bindings) != 1 || bindings[0].Module != "frobnicate" || bindings[0].Imported != "helper" {
+		t.Fatalf("parenthesized from-import bindings = %#v", bindings)
+	}
+	if modules := scanPythonImports(content); !slices.Contains(modules, "frobnicate.compute") {
+		t.Fatalf("parenthesized from-import scan omitted member module: %#v", modules)
+	}
+	if modules := importedPythonNames("from\tother import value\n")["value"]; len(modules) != 1 || modules[0] != "other" {
+		t.Fatalf("tab-separated from-import names = %#v", modules)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "other.py", `def compute(value):
+    return value - 1
+`)
+	writeFile(t, repo, "app.py", content+`
+def run():
+    return compute(1)
+`)
+
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("parenthesized FFI import must outrank same-name fallback: %#v", calls)
+	}
+}
+
+func TestPythonFromImportParsersPreserveSourceOrder(t *testing.T) {
+	content := `from first import handler
+import second as handler
+`
+	if got := importedPythonNames(content)["handler"]; !slices.Equal(got, []string{"first", "second"}) {
+		t.Fatalf("from/import binding order = %#v", got)
+	}
+	bindings := importedPythonBindings(content)["handler"]
+	if len(bindings) != 2 || bindings[0].Module != "first" || bindings[0].Imported != "handler" || bindings[1].Module != "second" || bindings[1].Imported != "" {
+		t.Fatalf("router binding order = %#v", bindings)
+	}
+}
+
+func TestPythonFromImportParserHandlesExplicitContinuationAndRejectsMalformedKeywords(t *testing.T) {
+	content := "from frobnicate import compute, \\\n    helper as local_helper\n"
+	if modules := importedPythonNames(content)["compute"]; len(modules) != 1 || modules[0] != "frobnicate" {
+		t.Fatalf("continued from-import names = %#v", modules)
+	}
+	bindings := importedPythonBindings(content)["local_helper"]
+	if len(bindings) != 1 || bindings[0].Module != "frobnicate" || bindings[0].Imported != "helper" {
+		t.Fatalf("continued from-import bindings = %#v", bindings)
+	}
+	if modules := scanPythonImports(content); !slices.Contains(modules, "frobnicate.compute") {
+		t.Fatalf("continued from-import scan omitted member module: %#v", modules)
+	}
+	parenthesized := "from pkg import (\n    first, \\\n    # an ordinary parenthesized comment\n\n    second,\n)\n"
+	if names := importedPythonNames(parenthesized); !slices.Equal(names["first"], []string{"pkg"}) || !slices.Equal(names["second"], []string{"pkg"}) {
+		t.Fatalf("parenthesized continuation lost imports around comments: %#v", names)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "other.py", `def compute(value):
+    return value - 1
+`)
+	writeFile(t, repo, "app.py", content+`
+def run():
+    return compute(1)
+`)
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("continued FFI import must outrank same-name fallback: %#v", calls)
+	}
+
+	for _, malformed := range []string{
+		"from pkg importfoo\n",
+		"from pkg import_foo\n",
+		"from pkg import value, \\",
+		"from pkg import value, \\ # comment\nnext_item\n",
+		"from pkg import value, \\   \nnext_item\n",
+		"from pkg import value, \\\n# continuation target\nnext_item\n",
+		"from pkg import value, \\\n    \nnext_item\n",
+	} {
+		if names := importedPythonNames(malformed); len(names) != 0 {
+			t.Fatalf("malformed from-import created names %#v for %q", names, malformed)
+		}
+		if modules := scanPythonImports(malformed); len(modules) != 0 {
+			t.Fatalf("malformed from-import created modules %#v for %q", modules, malformed)
+		}
+	}
+}
+
+func TestPythonDirectImportCommentsPreserveAliasBindingsAndDottedCalls(t *testing.T) {
+	const importLine = "import frobnicate as m"
+	var baseline []string
+	for i, line := range []string{importLine, importLine + " # noqa"} {
+		content := line + "\n"
+		names, forms := importedPythonNamesAndForms(content)
+		if got := names["m"]; !slices.Equal(got, []string{"frobnicate"}) {
+			t.Fatalf("%q names[m] = %#v, want [frobnicate]", line, got)
+		}
+		if got := forms["m"]["frobnicate"]; got != pythonAliasRename {
+			t.Fatalf("%q form[m][frobnicate] = %v, want alias rename", line, got)
+		}
+		bindings := importedPythonBindings(content)["m"]
+		if len(bindings) != 1 || bindings[0].Module != "frobnicate" || bindings[0].Imported != "" {
+			t.Fatalf("%q bindings[m] = %#v, want frobnicate module alias", line, bindings)
+		}
+
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate/__init__.py", "")
+		writeFile(t, repo, "frobnicate/helper.py", "def fn():\n    return 1\n")
+		writeFile(t, repo, "consumer.py", content+"\n\ndef call_it():\n    return m.helper.fn()\n")
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets := callItTargetsNamed(t, snapshot, "fn")
+		if len(targets) != 1 || targets[0] != "frobnicate/helper.py" {
+			t.Fatalf("%q dotted call targets = %#v, want [frobnicate/helper.py]", line, targets)
+		}
+		if i == 0 {
+			baseline = targets
+		} else if !slices.Equal(targets, baseline) {
+			t.Fatalf("commented direct import changed dotted call targets: %#v vs %#v", targets, baseline)
+		}
+	}
+}
+
+func TestPythonDirectImportTerminatorsPreserveAliasBindingsAndDottedFFI(t *testing.T) {
+	const importLine = "import frobnicate as m"
+	for _, line := range []string{
+		importLine + "; m.compute(1)",
+		importLine + " # noqa; m.compute(1)",
+		importLine + "; x = 1 # noqa",
+	} {
+		content := line + "\n"
+		names, forms := importedPythonNamesAndForms(content)
+		if len(names) != 1 || !slices.Equal(names["m"], []string{"frobnicate"}) {
+			t.Fatalf("%q names = %#v, want only m=frobnicate", line, names)
+		}
+		if len(forms) != 1 || forms["m"]["frobnicate"] != pythonAliasRename {
+			t.Fatalf("%q forms = %#v, want only m=frobnicate alias", line, forms)
+		}
+		bindings := importedPythonBindings(content)
+		if len(bindings) != 1 || len(bindings["m"]) != 1 || bindings["m"][0].Module != "frobnicate" || bindings["m"][0].Imported != "" {
+			t.Fatalf("%q bindings = %#v, want only m=frobnicate module alias", line, bindings)
+		}
+
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		// Keep the compound spelling under test and use a function body for the
+		// call site so the scoped resolver has an unambiguous owner.
+		writeFile(t, repo, "app.py", content+"\ndef run():\n    return m.compute(1)\n")
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		var ffiCall *RelationRecord
+		for i := range calls {
+			if strings.Contains(calls[i].ToID, "frobnicate.c:function:compute") {
+				ffiCall = &calls[i]
+				break
+			}
+		}
+		if ffiCall == nil {
+			t.Fatalf("%q direct import alias did not resolve dotted FFI call: %#v", line, calls)
+		}
+		if ffiCall.Resolution != "import_resolved" {
+			t.Fatalf("%q dotted FFI call resolution = %q, want import_resolved: %#v", line, ffiCall.Resolution, calls)
+		}
+	}
+}
+
+func TestPythonFromImportParserKeepsLaterImportsVisibleAfterUnclosedList(t *testing.T) {
+	content := "from broken import (\n    thing,\nfrom mod import helper\n"
+	names := importedPythonNames(content)
+	if got := names["helper"]; len(got) != 1 || got[0] != "mod" {
+		t.Fatalf("names[\"helper\"] = %#v, want [mod] after an unclosed list", got)
+	}
+}
+
+func TestPythonFromImportParserRecoversRepeatedMalformedLists(t *testing.T) {
+	var content strings.Builder
+	for i := 0; i < 256; i++ {
+		fmt.Fprintf(&content, "from broken%d import (\n    thing,\n", i)
+	}
+	content.WriteString("from mod import helper\n")
+	names := importedPythonNames(content.String())
+	if got := names["helper"]; len(got) != 1 || got[0] != "mod" {
+		t.Fatalf("names[\"helper\"] = %#v, want [mod] after repeated malformed lists", got)
+	}
+}
+
+func TestPythonFromImportParserAllowsLongContinuations(t *testing.T) {
+	const itemCount = 260
+	makeContent := func(parenthesized bool) string {
+		var content strings.Builder
+		if parenthesized {
+			content.WriteString("from frobnicate import (\n    compute as c,\n")
+			for i := 0; i < itemCount; i++ {
+				fmt.Fprintf(&content, "    helper%d,\n", i)
+			}
+			content.WriteString(")\n")
+		} else {
+			content.WriteString("from frobnicate import compute as c, \\\n")
+			for i := 0; i < itemCount; i++ {
+				if i == itemCount-1 {
+					fmt.Fprintf(&content, "    helper%d\n", i)
+				} else {
+					fmt.Fprintf(&content, "    helper%d, \\\n", i)
+				}
+			}
+		}
+		content.WriteString("\ndef run():\n    return c(1)\n")
+		return content.String()
+	}
+
+	for _, test := range []struct {
+		name          string
+		parenthesized bool
+	}{
+		{name: "parenthesized", parenthesized: true},
+		{name: "explicit backslash", parenthesized: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content := makeContent(test.parenthesized)
+			names, forms := importedPythonNamesAndForms(content)
+			if got := names["c"]; !slices.Equal(got, []string{"frobnicate"}) {
+				t.Fatalf("names[c] = %#v, want [frobnicate]", got)
+			}
+			if got := forms["c"]["frobnicate"]; got != pythonFromImport {
+				t.Fatalf("forms[c][frobnicate] = %v, want from-import", got)
+			}
+			bindings := importedPythonBindings(content)["c"]
+			if len(bindings) != 1 || bindings[0].Module != "frobnicate" || bindings[0].Imported != "compute" {
+				t.Fatalf("bindings[c] = %#v, want frobnicate.compute", bindings)
+			}
+
+			repo := t.TempDir()
+			writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+			writeFile(t, repo, "app.py", content)
+			calls := callRelationsFrom(t, repo, "app.py:function:run")
+			if len(calls) != 1 || !strings.HasSuffix(calls[0].ToID, "frobnicate.c:function:compute") || calls[0].Resolution != "import_resolved" {
+				t.Fatalf("long %s import calls = %#v, want one import-resolved C edge", test.name, calls)
+			}
+		})
+	}
+}
+
+func TestPythonFromImportParserAllowsBackslashBeforeParenthesizedList(t *testing.T) {
+	content := "from frobnicate import \\\n(\n    compute as c,\n    helper,\n)\n\ndef run():\n    return c(1)\n"
+	names, forms := importedPythonNamesAndForms(content)
+	if got := names["c"]; !slices.Equal(got, []string{"frobnicate"}) {
+		t.Fatalf("names[c] = %#v, want [frobnicate]", got)
+	}
+	if got := forms["c"]["frobnicate"]; got != pythonFromImport {
+		t.Fatalf("forms[c][frobnicate] = %v, want from-import", got)
+	}
+	bindings := importedPythonBindings(content)["c"]
+	if len(bindings) != 1 || bindings[0].Module != "frobnicate" || bindings[0].Imported != "compute" {
+		t.Fatalf("bindings[c] = %#v, want frobnicate.compute", bindings)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "app.py", content)
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 || !strings.HasSuffix(calls[0].ToID, "frobnicate.c:function:compute") || calls[0].Resolution != "import_resolved" {
+		t.Fatalf("mixed import calls = %#v, want one import-resolved C edge", calls)
+	}
+}
+
+func TestPythonFromImportParserRejectsUnclosedMixedListAndRecovers(t *testing.T) {
+	content := `from broken import \
+(
+    thing,
+from frobnicate import compute as c
+
+def brokenRun():
+    return thing(1)
+
+def run():
+    return c(1)
+`
+	names, forms := importedPythonNamesAndForms(content)
+	if len(names["thing"]) != 0 || forms["thing"] != nil {
+		t.Fatalf("partial mixed import created thing binding: names=%#v forms=%#v", names, forms)
+	}
+	if got := names["c"]; !slices.Equal(got, []string{"frobnicate"}) {
+		t.Fatalf("later valid import names[c] = %#v, want [frobnicate]", got)
+	}
+	bindings := importedPythonBindings(content)
+	if len(bindings["thing"]) != 0 || len(bindings["c"]) != 1 || bindings["c"][0].Module != "frobnicate" || bindings["c"][0].Imported != "compute" {
+		t.Fatalf("bindings after mixed import recovery = %#v", bindings)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, repo, "broken.c", "int thing(int value) { return value; }\n")
+	writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+	writeFile(t, repo, "app.py", content)
+	if calls := callRelationsFrom(t, repo, "app.py:function:brokenRun"); len(calls) != 0 {
+		t.Fatalf("partial mixed import created FFI edge: %#v", calls)
+	}
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 || calls[0].ToID != externalID("symbol", "frobnicate.compute") || calls[0].Resolution != "import_external" {
+		t.Fatalf("later valid import calls = %#v, want one fail-closed external edge", calls)
+	}
+}
+
 func TestPythonDottedImportedModuleCallsResolveToLocalSymbols(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/acme_pkg/__init__.py", "")
@@ -1831,6 +2623,188 @@ func RunPipeline() int {
 	// The semantic side of the same repository is untouched.
 	if !hasSymbolNamed(snapshot.Symbols, "RunPipeline") {
 		t.Fatalf("Go symbol missing: %#v", snapshot.Symbols)
+	}
+}
+
+func TestCapabilityMatrixDeclaresTypeAndFlowRelations(t *testing.T) {
+	// Companion to TestCapabilityMatrixCoversEmittedRelations, which reads the
+	// golden fixtures. Those fixtures do not exercise annotated signatures or
+	// argument forwarding in every semantic language, so ten languages emitted
+	// USES_TYPE / PARAM_TYPE / DATA_FLOWS that `capabilities --json` declared
+	// they could not. AGENTS.md tells agents to feature-detect with that report
+	// before trusting a language, so an under-declaration makes them skip
+	// relations the provider does produce.
+	//
+	// This builds one repository whose files carry the constructs the generic
+	// type and data-flow passes read, and asserts the same invariant directly.
+	repo := t.TempDir()
+	writeFile(t, repo, "clj/core.cljc", `(ns fixture.core)
+
+(defrecord Point [x y])
+
+(defn add [a b] (+ a b))
+
+(defn make-point [x y] (Point. x y))
+
+(defn point-sum [^Point p] (add (:x p) (:y p)))
+`)
+	writeFile(t, repo, "ex/point.ex", `defmodule Fixture.Point do
+  def add(a, b) do
+    a + b
+  end
+
+  def sum(x, y) do
+    add(x, y)
+  end
+end
+`)
+	// The record is named `coord`, not `point`: USES_TYPE resolves signature
+	// identifiers against every type symbol in the repository by short name, so
+	// a record named `point` here was resolving the `point` in this file's R
+	// and Clojure signatures too, crediting those languages with a type edge
+	// that pointed at Erlang.
+	writeFile(t, repo, "erl/fix.erl", `-module(fix).
+-export([sum/1, add/2]).
+
+-record(coord, {x = 0, y = 0}).
+
+add(A, B) ->
+    A + B.
+
+sum(#coord{x = X, y = Y}) ->
+    add(X, Y).
+`)
+	writeFile(t, repo, "fs/Fix.fs", `module Fixture
+
+type Point = { X: int; Y: int }
+
+let add a b = a + b
+
+let sum (p: Point) = add p.X p.Y
+`)
+	writeFile(t, repo, "hs/Fix.hs", `module Fixture where
+
+data Point = Point
+  { px :: Int
+  , py :: Int
+  }
+
+add :: Int -> Int -> Int
+add a b = a + b
+
+pointSum :: Point -> Int
+pointSum p = add (px p) (py p)
+
+main :: IO ()
+main = print (pointSum (Point 1 2))
+`)
+	writeFile(t, repo, "jl/fix.jl", `struct Point
+    x::Int
+    y::Int
+end
+
+function add(a, b)
+    return a + b
+end
+
+function pointsum(p::Point)
+    return add(p.x, p.y)
+end
+`)
+	writeFile(t, repo, "lua/fix.lua", `local function add(a, b)
+  return a + b
+end
+
+local function total(x, y)
+  return add(x, y)
+end
+
+return total
+`)
+	writeFile(t, repo, "objc/Fix.m", `#import <Foundation/Foundation.h>
+
+static NSInteger addValues(NSInteger a, NSInteger b) {
+    return a + b;
+}
+
+static NSInteger total(NSInteger x, NSInteger y) {
+    return addValues(x, y);
+}
+`)
+	writeFile(t, repo, "perl/fix.pl", `use strict;
+use warnings;
+
+sub add {
+    my ($a, $b) = @_;
+    return $a + $b;
+}
+
+sub total {
+    my ($x, $y) = @_;
+    return add($x, $y);
+}
+
+1;
+`)
+	writeFile(t, repo, "r/fix.R", `add <- function(a, b) {
+  a + b
+}
+
+make_point <- function(x, y) {
+  structure(list(x = x, y = y), class = "point")
+}
+
+point_sum <- function(p) {
+  add(p$x, p$y)
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := Capabilities()
+	global := map[string]bool{}
+	for _, relation := range capabilities.HeuristicRelationTypes {
+		global[relation] = true
+	}
+	declared := map[string]map[string]bool{}
+	for language, relations := range capabilities.RelationSupportByLanguage {
+		set := make(map[string]bool, len(relations))
+		for _, relation := range relations {
+			set[relation] = true
+		}
+		declared[language] = set
+	}
+	languageByID := map[string]string{}
+	for _, symbol := range snapshot.Symbols {
+		languageByID[symbol.ID] = symbol.Language
+	}
+	seen := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		language := languageByID[relation.FromID]
+		if language == "" || global[relation.Type] || declared[language][relation.Type] {
+			continue
+		}
+		key := language + "\x00" + relation.Type
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		t.Errorf("%s emits %s but capabilities declares neither it per-language nor as a global heuristic", language, relation.Type)
+	}
+	// Guard against the assertion passing because nothing was extracted.
+	for _, language := range []string{"Clojure", "Elixir", "Erlang", "F#", "Haskell", "Julia", "Lua", "Objective-C", "Perl", "R"} {
+		found := false
+		for _, symbol := range snapshot.Symbols {
+			if symbol.Language == language {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("fixture produced no %s symbols", language)
+		}
 	}
 }
 
@@ -4012,6 +4986,908 @@ func TestParseArray(t *testing.T) {}
 	if !strings.Contains(tests[0].FromID, "alpha/parser_test.go") || !strings.Contains(tests[0].ToID, "alpha/parser.go") {
 		t.Fatalf("TESTS edge should stay within alpha: %#v", tests[0])
 	}
+}
+
+// A TESTS edge records a naming convention between a test and the unit it
+// covers, not a type reference, so the cross-language TYPE-sharing relation
+// must not gate it. That relation answers "may source in language A name a
+// type DECLARED in language B"; a harness routinely exercises an
+// implementation it can never name a type from — pytest over a C extension,
+// a shell script over a compiled binary, JS specs over a WASM module.
+// Filtering the subject candidates through it dropped those edges wholesale,
+// and because the C-family relation is directional it dropped them
+// asymmetrically: C names nothing, so a C test could not reach a non-C unit
+// however unambiguous the subject name.
+func TestTestsRelationCrossesLanguageBoundaries(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/frobnicate.c", `int frobnicate(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "tests/test_frobnicate.py", `def test_frobnicate():
+    assert frobnicate(1) == 2
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var tests []RelationRecord
+	for _, r := range snapshot.Relations {
+		if r.Type == "TESTS" {
+			tests = append(tests, r)
+		}
+	}
+	if len(tests) != 1 {
+		t.Fatalf("want the Python test to cover the C unit, got %#v", tests)
+	}
+	if !strings.Contains(tests[0].FromID, "tests/test_frobnicate.py") || !strings.Contains(tests[0].ToID, "src/frobnicate.c") {
+		t.Fatalf("unexpected TESTS edge: %#v", tests[0])
+	}
+}
+
+// callRelationsFrom returns the CALLS edges leaving `from` in the snapshot of
+// `repo`, so a test can assert on the target a call actually bound rather than
+// on the whole graph.
+func callRelationsFrom(t *testing.T, repo, from string) []RelationRecord {
+	t.Helper()
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" && strings.Contains(relation.FromID, from) {
+			calls = append(calls, relation)
+		}
+	}
+	return calls
+}
+
+// A receiver call bound by an explicit IMPORT must not be gated on the
+// cross-language type-sharing relation. That relation answers whether source in
+// one language may name a type DECLARED in another; an import whose module path
+// resolves to the callee's file is direct evidence the two files interoperate,
+// which outranks the language-pair heuristic. Python/C is deliberately absent
+// from the relation -- a Python caller never names a C struct -- but `import
+// frobnicate` beside a locally parsed `frobnicate.c` really does call its
+// exported functions, and the filter threw the whole edge away and replaced it
+// with an unresolved external target. The identical Python-to-Python fixture
+// resolved, so the language pair was the only difference.
+func TestImportedReceiverCallResolvesAcrossFFIBoundary(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `import frobnicate
+
+def run():
+    return frobnicate.compute(1)
+`)
+
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 {
+		t.Fatalf("want one call edge out of run, got %#v", calls)
+	}
+	if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("import-resolved call was not bound to the C unit: %#v", calls[0])
+	}
+	if calls[0].Resolution != "import_resolved" {
+		t.Fatalf("want import_resolved, got %q: %#v", calls[0].Resolution, calls[0])
+	}
+}
+
+func TestBareImportedCallResolvesUniqueFFITarget(t *testing.T) {
+	t.Run("module scope unique C target", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+compute(1)
+`)
+
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && lastSegment(relation.FromID) == "app.py" && strings.Contains(relation.ToID, "frobnicate.c:function:compute") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("module-scope bare Python import did not resolve to C: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+
+	t.Run("unique C target", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") || calls[0].Resolution != "import_resolved" {
+			t.Fatalf("bare Python import did not resolve to its unique C target: %#v", calls)
+		}
+	})
+
+	t.Run("semicolon import alias resolves original member", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "app.py", "from frobnicate import compute as c; c(1)\n")
+
+		calls := callRelationsFrom(t, repo, "app.py")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("semicolon import alias did not resolve original member: %#v", calls)
+		}
+		if calls[0].ToID == externalID("symbol", "frobnicate.c") {
+			t.Fatalf("semicolon import alias invented module member: %#v", calls[0])
+		}
+	})
+
+	t.Run("ambiguous foreign targets stay external", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.rb", `def compute(value)
+  value + 1
+end
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || calls[0].ToID != externalID("symbol", "frobnicate.compute") {
+			t.Fatalf("ambiguous bare FFI import must remain external: %#v", calls)
+		}
+	})
+
+	t.Run("explicit FFI import outranks unrelated same-language name", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "other.py", `def compute(value):
+    return value - 1
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("bare FFI import lost to unrelated Python name: %#v", calls)
+		}
+	})
+
+	t.Run("function-local import does not leak to sibling", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "othermod.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def local():
+    from othermod import compute
+    return compute(1)
+
+def sibling():
+    return compute(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "local", "app.py", "compute", "othermod.c") ||
+			!hasRelationBySymbolNameAndFile(snapshot, "CALLS", "sibling", "app.py", "compute", "frobnicate.c") {
+			t.Fatalf("lexical Python imports resolved to the wrong FFI targets: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+
+	t.Run("call before local import has no imported edge", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "app.py", `def run():
+    compute(1)
+    from frobnicate import compute
+`)
+		if calls := callRelationsFrom(t, repo, "app.py:function:run"); len(calls) != 0 {
+			t.Fatalf("call before import must not resolve through the later import: %#v", calls)
+		}
+	})
+
+	t.Run("incomplete scope disables raw FFI but retains imported external fallback", func(t *testing.T) {
+		deep := strings.Repeat("(", maxParseWalkDepth+10) + "0" + strings.Repeat(")", maxParseWalkDepth+10)
+		scopes := newPythonBareImportScopes("from lib import compute\nvalue = "+deep+"\n", nil)
+		if scopes.complete {
+			t.Fatal("deep scope walk unexpectedly completed")
+		}
+		from := SymbolRecord{ID: "app", Name: "run", Kind: "function", Language: "Python", FilePath: "app.py"}
+		rawC := SymbolRecord{ID: "c", Name: "compute", Kind: "function", Language: "C", FilePath: "lib.c"}
+		imports := map[string][]string{"compute": {"lib"}}
+		if targets := resolveCallTargetsWithRawImport("compute", from, nil, []SymbolRecord{rawC}, nil, nil, imports, false); len(targets) != 0 {
+			t.Fatalf("incomplete scope enabled raw Python-to-C FFI: %#v", targets)
+		}
+		external := importedExternalCallRelationsForName(from, "compute", imports["compute"])
+		if len(external) != 1 || external[0].ToID != externalID("symbol", "lib.compute") {
+			t.Fatalf("incomplete scope lost imported external fallback: %#v", external)
+		}
+	})
+
+	t.Run("incomplete scope preserves normal same-language imports", func(t *testing.T) {
+		from := SymbolRecord{ID: "app", Name: "run", Kind: "function", Language: "Python", FilePath: "app.py"}
+		localPython := SymbolRecord{ID: "py", Name: "compute", Kind: "function", Language: "Python", FilePath: "lib.py"}
+		targets := resolveCallTargetsWithRawImport("compute", from, []SymbolRecord{localPython}, nil, nil, nil, map[string][]string{"compute": {"lib"}}, false)
+		if len(targets) != 1 || targets[0].ID != localPython.ID || targets[0].Resolution != "import_resolved" {
+			t.Fatalf("incomplete scope lost normal same-language import: %#v", targets)
+		}
+	})
+
+	t.Run("malformed scope keeps function imports external and blocks raw C", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "lib.c", "int compute(int value) { return value + 1; }\n")
+		content := "from lib import compute\n\ndef run():\n    return compute(1)\n\nbroken = (\n"
+		if newPythonBareImportScopes(content, nil).complete {
+			t.Fatal("malformed scope unexpectedly completed")
+		}
+		writeFile(t, repo, "app.py", content)
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 || calls[0].ToID != externalID("symbol", "lib.compute") || calls[0].Resolution != "import_external" {
+			t.Fatalf("malformed function scope did not preserve imported external fallback: %#v", calls)
+		}
+	})
+
+	t.Run("malformed scope blocks raw C at top level", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "lib.c", "int compute(int value) { return value + 1; }\n")
+		content := "from lib import compute\n\ncompute(1)\n\nbroken = (\n"
+		if newPythonBareImportScopes(content, nil).complete {
+			t.Fatal("malformed scope unexpectedly completed")
+		}
+		writeFile(t, repo, "app.py", content)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && strings.Contains(relation.ToID, "lib.c:function:compute") {
+				t.Fatalf("malformed top-level scope enabled raw Python-to-C FFI: %#v", relation)
+			}
+		}
+	})
+
+	t.Run("sequential local imports retain both visible FFI targets", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "othermod.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", `def run():
+    from frobnicate import compute
+    compute(1)
+    from othermod import compute
+    compute(1)
+`)
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 2 || !strings.Contains(calls[0].ToID, ".c:function:compute") || !strings.Contains(calls[1].ToID, ".c:function:compute") || calls[0].ToID == calls[1].ToID {
+			t.Fatalf("sequential imports must retain each concrete FFI target: %#v", calls)
+		}
+	})
+
+	t.Run("nested global and nonlocal imports do not leak outward", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "othermod.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def global_child():
+    global compute
+    from othermod import compute
+
+def sibling():
+    return compute(1)
+
+def outer():
+    from frobnicate import compute
+    def child():
+        nonlocal compute
+        from othermod import compute
+    return compute(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "sibling", "app.py", "compute", "frobnicate.c") ||
+			!hasRelationBySymbolNameAndFile(snapshot, "CALLS", "outer", "app.py", "compute", "frobnicate.c") {
+			t.Fatalf("nested global/nonlocal imports leaked into outer callers: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+
+	t.Run("method skips class-local imports", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", "int compute(int value) { return value + 1; }\n")
+		writeFile(t, repo, "othermod.c", "int compute(int value) { return value - 1; }\n")
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+class Service:
+    from othermod import compute
+    def run(self):
+        return compute(1)
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "run", "app.py", "compute", "frobnicate.c") {
+			t.Fatalf("method inherited the class-local import instead of module binding: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	})
+
+	t.Run("parameter shadows imported binding", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(compute):
+    return compute(1)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if strings.Contains(call.ToID, "frobnicate.c:function:compute") || call.Resolution == "import_external" {
+				t.Fatalf("parameter-shadowed import resolved through the import: %#v", call)
+			}
+		}
+	})
+}
+
+func TestPythonBareImportFFIRespectsASTScopes(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def assignment():
+    compute = lambda value: value
+    return compute(1)
+
+def annotated():
+    compute: object = None
+    return compute(1)
+
+def augmented():
+    compute = 0
+    compute += 1
+    return compute(1)
+
+def deleted():
+    del compute
+    return compute(1)
+
+def destructuring():
+    value, compute = 1, lambda value: value
+    return compute(value)
+
+def loop(values):
+    for compute in values:
+        return compute(1)
+
+def with_as():
+    with open("x") as compute:
+        return compute(1)
+
+def except_as():
+    try:
+        raise RuntimeError()
+    except RuntimeError as compute:
+        return compute(1)
+
+def walrus():
+    if compute := (lambda value: value):
+        return compute(1)
+
+def comprehension_walrus(values):
+    return [compute(1) for value in values if (compute := (lambda value: value))]
+
+def subscript_target(obj):
+    obj[compute] = 1
+    return compute(1)
+
+def lambda_walrus():
+    return (lambda: (compute(1), (compute := (lambda value: value))))()
+
+def local_import():
+    from localmod import compute
+    return compute(1)
+
+def nested_def():
+    def compute(value):
+        return value
+    return compute(1)
+
+def nested_class():
+    class compute:
+        pass
+    return compute()
+
+def nested_callable():
+    def inner():
+        return compute(1)
+    return inner()
+
+def global_decl():
+    global compute
+    return compute(1)
+
+def nonlocal_outer():
+    compute = lambda value: value
+    def nonlocal_inner():
+        nonlocal compute
+        return compute(1)
+    return nonlocal_inner()
+
+def comprehension_bound(values):
+    return [compute(value) for compute in values]
+
+def comprehension_unbound(values):
+    return [compute(value) for value in values]
+
+def parameter(compute):
+    return compute(1)
+
+def lambda_parameter():
+    return (lambda compute: compute(1))(lambda value: value)
+
+def comp_iterable(values):
+    return [value for value in compute(values)]
+
+def class_base():
+    class Inner(compute(1)):
+        pass
+    return Inner
+
+def class_body():
+    class Inner:
+        compute(1)
+    return Inner
+
+def except_type():
+    try:
+        raise RuntimeError()
+    except compute():
+        return 1
+
+def plain_import():
+    import frobnicate.extra
+    return frobnicate()
+
+def local_import_child():
+    from localmod import compute
+    def child():
+        return compute(1)
+    return child()
+
+def valid():
+    return compute(1)
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// End-to-end coverage for a simple unshadowed function body remains in
+	// TestBareImportedCallResolvesUniqueFFITarget. This fixture isolates the AST
+	// eligibility decision, avoiding a broad change to Python call attribution.
+	content, err := os.ReadFile(filepath.Join(repo, "app.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes := newPythonBareImportScopes(string(content), snapshot.Symbols)
+	byName := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		if symbol.FilePath == "app.py" && symbol.Name != "compute" {
+			byName[symbol.Name] = symbol
+		}
+	}
+	for _, name := range []string{
+		"assignment", "annotated", "augmented", "deleted", "destructuring", "loop", "with_as", "except_as", "walrus", "comprehension_walrus", "nested_def", "nested_class", "nonlocal_outer", "nonlocal_inner", "comprehension_bound", "parameter", "lambda_parameter", "lambda_walrus",
+	} {
+		if modules := scopes.importModules(byName[name], "compute"); len(modules) > 0 {
+			t.Fatalf("%s shadowed the imported name but remained FFI-eligible through %q", name, modules)
+		}
+	}
+	if modules := scopes.importModules(byName["local_import"], "compute"); len(modules) != 1 || modules[0] != "localmod" {
+		t.Fatalf("function-local import did not replace the module binding: %q", modules)
+	}
+	// `except_type` has no `as` target, so its exception expression does not
+	// rebind the imported `compute` name.
+	for _, name := range []string{"inner", "global_decl", "comprehension_unbound", "comp_iterable", "class_base", "class_body", "subscript_target", "except_type", "valid"} {
+		if modules := scopes.importModules(byName[name], "compute"); len(modules) == 0 || modules[0] != "frobnicate" {
+			t.Fatalf("%s has an unshadowed imported call but got modules %q", name, modules)
+		}
+	}
+	if modules := scopes.importModules(byName["plain_import"], "frobnicate"); len(modules) != 1 || modules[0] != "frobnicate.extra" {
+		t.Fatalf("plain dotted import did not bind its root name: %q", modules)
+	}
+	if modules := scopes.importModules(byName["child"], "compute"); len(modules) != 1 || modules[0] != "localmod" {
+		t.Fatalf("nested callable did not inherit the function-local import: %q", modules)
+	}
+}
+
+// Import evidence outranks the language-pair heuristic only while it is
+// unambiguous. Module paths are matched by suffix, so one import can match
+// same-named callables in several languages at once; nothing then says which the
+// import bound, so the edge must be SUPPRESSED rather than fanned out or guessed
+// at. Where the type-sharing relation does resolve a candidate it still wins, so
+// a same-language module beside a foreign one keeps the same-language target
+// alone.
+func TestImportedReceiverCallSuppressesCrossLanguageAmbiguity(t *testing.T) {
+	t.Run("ambiguous across languages", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.rb", `def compute(value)
+  value + 1
+end
+`)
+		writeFile(t, repo, "app.py", `import frobnicate
+
+def run():
+    return frobnicate.compute(1)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("ambiguous cross-language import must not resolve to a local symbol: %#v", call)
+			}
+		}
+	})
+
+	t.Run("type-sharing candidate still wins", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.py", `def compute(value):
+    return value + 1
+`)
+		writeFile(t, repo, "app.py", `import frobnicate
+
+def run():
+    return frobnicate.compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "lib/frobnicate.py:function:compute") {
+			t.Fatalf("want the same-language module to win, got %#v", calls[0])
+		}
+	})
+}
+
+// The import tiers read an explicit import as evidence that OUTRANKS the
+// language-compatibility relation, so a name they bind wrongly becomes a
+// confident cross-language edge rather than a merely unresolved one. That makes
+// Python's scoping load-bearing here: a name the caller's own body binds -- a
+// parameter, an assignment target, a loop or context variable -- is that
+// binding at every call site in the body, so it is NOT the imported callable it
+// shares a name with and must not be bound to one. The guard is scoped to
+// callable bodies, because at module scope a `def` binds the very symbol a call
+// is meant to reach.
+func TestBareImportedCallIgnoresPythonLocalBinding(t *testing.T) {
+	const foreign = `int compute(int value) {
+	return value + 1;
+}
+`
+
+	t.Run("a parameter shadows the imported name", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(compute):
+    return compute(1)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("a parameter shadowing the import must not bind the foreign function: %#v", call)
+			}
+		}
+	})
+
+	t.Run("an assignment rebinds the imported name", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(callback):
+    compute = callback
+    return compute(1)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("a local rebinding must not bind the foreign function: %#v", call)
+			}
+		}
+	})
+
+	// The guard must cost nothing when the imported name is not the one bound:
+	// a body full of locals still calls the import it never rebinds.
+	t.Run("an unrelated local leaves the call alone", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    total = 0
+    for value in values:
+        total += compute(value)
+    return total
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("an unrelated local suppressed a real import-resolved call: %#v", calls[0])
+		}
+	})
+
+	// A `lambda`'s parameters bind in the lambda, not in the body around it, so
+	// an unrelated call of the same name elsewhere in that body still reaches
+	// the import. Getting this wrong is worse than the shadowing it guards
+	// against: resolveCallTargets declines a bound name before any tier runs,
+	// so a name wrongly reported as bound deletes a real edge outright.
+	t.Run("a lambda parameter does not shadow the enclosing body", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(source):
+    handler = lambda compute: compute(1)
+    return compute(source)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("a lambda parameter suppressed an unrelated import-resolved call: %#v", calls[0])
+		}
+	})
+
+	// Python 3 scopes a comprehension's variables to the comprehension, so they
+	// shadow nothing in the body that holds it either.
+	t.Run("a comprehension variable does not shadow the enclosing body", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    labels = [compute for compute in values]
+    return labels, compute(values)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("a comprehension variable suppressed an unrelated import-resolved call: %#v", calls[0])
+		}
+	})
+
+	// The other direction of the same rule: a lambda parameter still shadows
+	// the import for the calls inside that lambda.
+	t.Run("a lambda parameter still shadows inside the lambda", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run(values):
+    return sorted(values, key=lambda compute: compute(1))
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("a lambda parameter must not bind the foreign function: %#v", call)
+			}
+		}
+	})
+
+	// Module scope is not a shadowing scope: a `def` or an assignment there is
+	// the file's own symbol, so the file-level call scan must keep resolving
+	// through the same import evidence the per-symbol scan uses.
+	t.Run("module scope is not a shadowing scope", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", foreign)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+result = compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "file:app.py")
+		if len(calls) != 1 {
+			t.Fatalf("want one top-level call edge out of app.py, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+			t.Fatalf("module-scope import-resolved call was not bound to the C unit: %#v", calls[0])
+		}
+	})
+}
+
+// A BARE call bound by an explicit import carries the same evidence as the
+// module-qualified spelling and must be treated the same way. `import
+// frobnicate; frobnicate.compute(1)` resolves to a locally parsed frobnicate.c
+// (TestImportedReceiverCallResolvesAcrossFFIBoundary), but `from frobnicate
+// import compute; compute(1)` did not: the candidates were narrowed by the
+// language-compatibility relation BEFORE the import tier ran, so the C
+// declaration was gone before its module path was ever compared and the call
+// degraded to an unresolved external target. That relation answers whether
+// source in one language may name a type DECLARED in another; an import that
+// resolves to the callee's file is direct evidence of interop and outranks it.
+func TestBareImportedCallResolvesAcrossFFIBoundary(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+	calls := callRelationsFrom(t, repo, "app.py:function:run")
+	if len(calls) != 1 {
+		t.Fatalf("want one call edge out of run, got %#v", calls)
+	}
+	if !strings.Contains(calls[0].ToID, "frobnicate.c:function:compute") {
+		t.Fatalf("import-resolved bare call was not bound to the C unit: %#v", calls[0])
+	}
+	if calls[0].Resolution != "import_resolved" {
+		t.Fatalf("want import_resolved, got %q: %#v", calls[0].Resolution, calls[0])
+	}
+}
+
+// The import-name map that tier reads is built for a whole FILE, but Python
+// scopes an `import` inside a function to that function. The map therefore
+// offered `compute` to every other function in the file, and because an import
+// outranks the language-compatibility relation the result was not a weak edge
+// but a confident cross-language one:
+//
+//	Python/unrelated -> C/compute   res=import_resolved conf=0.86   WRONG
+//
+// A nested `def` is the other half of the rule and is asserted here too: it
+// really does see the import its enclosing function made, so confining the
+// import to its own function alone would delete that call instead.
+func TestBareImportedCallIgnoresImportLocalToAnotherFunction(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+	writeFile(t, repo, "app.py", `def uses_import():
+    from frobnicate import compute
+
+    def inner():
+        return compute(2)
+
+    return compute(1) + inner()
+
+
+def unrelated():
+    return compute(3)
+`)
+
+	if calls := callRelationsFrom(t, repo, "app.py:function:unrelated"); len(calls) != 0 {
+		t.Fatalf("a function-local import leaked to an unrelated function: %#v", calls)
+	}
+	// Still resolves: the importing function itself, and the nested def inside it.
+	for _, from := range []string{"app.py:function:uses_import", "app.py:function:inner"} {
+		calls := callRelationsFrom(t, repo, from)
+		found := false
+		for _, call := range calls {
+			if strings.Contains(call.ToID, "frobnicate.c:function:compute") && call.Resolution == "import_resolved" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s lost its import-resolved call to the C unit: %#v", from, calls)
+		}
+	}
+}
+
+// The bare-call import tier is the one place that reads PAST the language
+// filter, so it carries the same ambiguity rule as the qualified one: module
+// paths are matched by suffix, so a single import can match same-named
+// callables in several languages at once and nothing then says which it bound.
+// Two same-named declarations in different languages must therefore produce no
+// local edge rather than an arbitrary pick. Where the compatibility relation
+// does resolve a candidate it still wins outright, which is what leaves every
+// previously resolved call exactly as it was.
+func TestBareImportedCallSuppressesCrossLanguageAmbiguity(t *testing.T) {
+	t.Run("ambiguous across languages", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.rb", `def compute(value)
+  value + 1
+end
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		for _, call := range callRelationsFrom(t, repo, "app.py:function:run") {
+			if call.RelationScope != "external" {
+				t.Fatalf("ambiguous cross-language import must not resolve to a local symbol: %#v", call)
+			}
+		}
+	})
+
+	t.Run("type-sharing candidate still wins", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "frobnicate.c", `int compute(int value) {
+	return value + 1;
+}
+`)
+		writeFile(t, repo, "lib/frobnicate.py", `def compute(value):
+    return value + 1
+`)
+		writeFile(t, repo, "app.py", `from frobnicate import compute
+
+def run():
+    return compute(1)
+`)
+
+		calls := callRelationsFrom(t, repo, "app.py:function:run")
+		if len(calls) != 1 {
+			t.Fatalf("want one call edge out of run, got %#v", calls)
+		}
+		if !strings.Contains(calls[0].ToID, "lib/frobnicate.py:function:compute") {
+			t.Fatalf("want the same-language module to win, got %#v", calls[0])
+		}
+	})
 }
 
 // Regression for the jdx/mise report: a bare type name in a signature must
@@ -7137,6 +9013,34 @@ export function labelFromAssignedFactory(): string {
 export function labelFor(widget: Widget): string {
   return widget.label()
 }
+
+// ForeignStart exists only in Go. Its return annotation can name Widget, but
+// that must not manufacture a TypeScript CALLS edge from this constructor.
+export function foreignInitialChain(): string {
+  return new ForeignStart().next().label()
+}
+
+class Start {
+  first(): ForeignBridge {
+    return null as unknown as ForeignBridge
+  }
+}
+
+// ForeignBridge exists only in Go. It is an intermediate receiver in this
+// chain, so each return-hop lookup must honor the caller's language too.
+export function foreignIntermediateChain(): string {
+  return new Start().first().second().label()
+}
+`)
+	writeFile(t, repo, "foreign/bridge.go", `package foreign
+
+type ForeignStart struct{}
+
+func (ForeignStart) next() Widget { return Widget{} }
+
+type ForeignBridge struct{}
+
+func (ForeignBridge) second() Widget { return Widget{} }
 `)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
@@ -7191,11 +9095,45 @@ export function labelFor(widget: Widget): string {
 	if r, ok := inferred["labelFor->Widget.label"]; !ok || r.Confidence != 0.83 {
 		t.Fatalf("typed-parameter call not resolved (0.83): %#v", inferred)
 	}
+	for _, source := range []string{"foreignInitialChain", "foreignIntermediateChain"} {
+		if r, ok := inferred[source+"->Widget.label"]; ok {
+			t.Fatalf("%s fabricated a TypeScript call through a foreign Go receiver: %#v", source, r)
+		}
+	}
 	// other.mystery(): receiver type unknown -> no fabricated edge.
 	for key := range inferred {
 		if strings.Contains(key, "mystery") {
 			t.Fatalf("fabricated edge for unknown receiver: %s", key)
 		}
+	}
+}
+
+func TestMethodReturnChainTypesRejectsForeignReceiverHops(t *testing.T) {
+	from := SymbolRecord{Language: "TypeScript"}
+	start := SymbolRecord{ID: "ts:start", Language: "TypeScript", Kind: "class", Name: "Start", FilePath: "src.ts"}
+	foreignStart := SymbolRecord{ID: "go:foreign-start", Language: "Go", Kind: "type", Name: "ForeignStart", FilePath: "foreign/start.go"}
+	foreignBridge := SymbolRecord{ID: "go:foreign-bridge", Language: "Go", Kind: "type", Name: "ForeignBridge", FilePath: "foreign/bridge.go"}
+	symbols := map[string][]SymbolRecord{
+		"Start":         {start},
+		"ForeignStart":  {foreignStart},
+		"ForeignBridge": {foreignBridge},
+	}
+	methods := map[string]map[string]SymbolRecord{
+		start.ID:         {"first": {Name: "first", FilePath: "src.ts"}},
+		foreignStart.ID:  {"next": {Name: "next", FilePath: "foreign/start.go"}},
+		foreignBridge.ID: {"second": {Name: "second", FilePath: "foreign/bridge.go"}},
+	}
+	returns := map[string]map[string][]string{
+		"first":  {"src.ts": {"ForeignBridge"}},
+		"next":   {"foreign/start.go": {"Widget"}},
+		"second": {"foreign/bridge.go": {"Widget"}},
+	}
+
+	if got := methodReturnChainTypes(from, "ForeignStart", []string{"next"}, methods, symbols, returns); len(got) != 0 {
+		t.Fatalf("foreign initial receiver produced return types: %v", got)
+	}
+	if got := methodReturnChainTypes(from, "Start", []string{"first", "second"}, methods, symbols, returns); len(got) != 0 {
+		t.Fatalf("foreign intermediate receiver produced return types: %v", got)
 	}
 }
 
@@ -12549,6 +14487,272 @@ end
 		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
 			t.Fatalf("missing Julia CALLS %s->%s: %#v", want[0], want[1], relationsOfType(snapshot.Relations, "CALLS"))
 		}
+	}
+}
+
+func TestJuliaSameContainerMethodCallTargetsFailClosed(t *testing.T) {
+	from := SymbolRecord{ID: "caller", Kind: "method", Name: "caller", FilePath: "src/app.jl", Language: "Julia", ContainerID: "module-a", StartLine: 1, EndLine: 100}
+	target := SymbolRecord{ID: "target", Kind: "method", Name: "target", FilePath: from.FilePath, Language: from.Language, ContainerID: from.ContainerID, StartLine: 110, EndLine: 120}
+
+	tests := []struct {
+		name        string
+		candidates  []SymbolRecord
+		wantID      string
+		wantFound   bool
+		wantBlocked bool
+	}{
+		{name: "unique same-container target", candidates: []SymbolRecord{target}, wantID: target.ID, wantFound: true},
+		{name: "local binding declines fallback", candidates: []SymbolRecord{target}},
+		{name: "sibling module", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.ContainerID = "module-b"; return s }()}},
+		{name: "different file", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.FilePath = "src/other.jl"; return s }()}},
+		{name: "different language", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.Language = "Java"; return s }()}},
+		{name: "type target remains generic", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.Kind = "struct"; return s }()}},
+		{name: "ambiguous overloads", candidates: []SymbolRecord{target, func() SymbolRecord { s := target; s.ID = "target-overload"; return s }()}, wantFound: true},
+		{name: "local declaration blocks resolution", candidates: []SymbolRecord{func() SymbolRecord { s := target; s.Local = true; s.StartLine = 10; s.EndLine = 20; return s }()}, wantFound: true, wantBlocked: true},
+		{name: "nested callable disables fallback", candidates: []SymbolRecord{target, {ID: "inner", Kind: "method", Name: "inner", FilePath: from.FilePath, Language: from.Language, ContainerID: from.ContainerID, Local: true, StartLine: 10, EndLine: 20}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bindings := map[string]struct{}{}
+			if tt.name == "local binding declines fallback" {
+				bindings["target"] = struct{}{}
+			}
+			targets, found, blocked := resolveJuliaSameContainerMethodCallTargets("target", from, tt.candidates, bindings)
+			if found != tt.wantFound || blocked != tt.wantBlocked {
+				t.Fatalf("found, blocked = %v, %v; want %v, %v", found, blocked, tt.wantFound, tt.wantBlocked)
+			}
+			if tt.wantID == "" {
+				if len(targets) != 0 {
+					t.Fatalf("unsafe targets emitted: %#v", targets)
+				}
+				return
+			}
+			if len(targets) != 1 || targets[0].ID != tt.wantID {
+				t.Fatalf("targets = %#v, want only %q", targets, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestJuliaModuleCallResolutionRejectsLocalBindingShadows(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/bindings.jl", `
+module Bound
+helper() = 1
+plain(callback) = (helper = callback; helper())
+function looped(callbacks)
+    for helper in callbacks
+        helper()
+    end
+end
+function caught(callback)
+    try
+        callback()
+    catch helper
+        helper()
+    end
+end
+function lexical(callback)
+    let helper = callback
+        helper()
+    end
+end
+function destructured(callbacks)
+    local (helper::Function, other...) = callbacks
+    helper()
+end
+function closure(callback)
+    map([callback]) do helper
+        helper()
+    end
+end
+function generated(callbacks)
+    [helper() for helper in callbacks]
+end
+function multi_let(callback)
+    let unrelated = callback, helper = callback
+        helper()
+    end
+end
+function multiline_let()
+    let unrelated,
+        helper
+        helper()
+    end
+end
+function commented_let(callback)
+    let #= header comment =# helper = callback
+        helper()
+    end
+end
+function control()
+    unrelated = identity
+    helper()
+end
+function bare_let()
+    let
+        helper
+        helper()
+    end
+end
+function bare_catch()
+    try
+        error()
+    catch
+        helper
+        helper()
+    end
+end
+function inline_let()
+    let; helper; helper(); end
+end
+function inline_catch()
+    try
+    catch; helper; helper(); end
+end
+struct Widget end
+function constructor_control(callback)
+    Widget()
+    let Widget = callback
+        Widget()
+    end
+end
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := symbolByKindAndName(snapshot.Symbols, "method", "Bound.helper")
+	if helper.ID == "" {
+		t.Fatalf("missing Bound.helper: %#v", snapshot.Symbols)
+	}
+	for _, name := range []string{"plain", "looped", "caught", "lexical", "destructured", "closure", "generated", "multi_let", "multiline_let", "commented_let"} {
+		caller := symbolByKindAndName(snapshot.Symbols, "method", "Bound."+name)
+		if caller.ID == "" {
+			t.Fatalf("missing Bound.%s: %#v", name, snapshot.Symbols)
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && relation.FromID == caller.ID && relation.ToID == helper.ID {
+				t.Fatalf("local binding in Bound.%s resolved to module helper: %#v", name, relation)
+			}
+		}
+	}
+	for _, name := range []string{"control", "bare_let", "bare_catch", "inline_let", "inline_catch"} {
+		caller := symbolByKindAndName(snapshot.Symbols, "method", "Bound."+name)
+		callsHelper := false
+		for _, relation := range snapshot.Relations {
+			callsHelper = callsHelper || relation.Type == "CALLS" && relation.FromID == caller.ID && relation.ToID == helper.ID
+		}
+		if !callsHelper {
+			t.Fatalf("non-shadowing Bound.%s lost its call to Bound.helper: %#v", name, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+	widget := symbolByKindAndName(snapshot.Symbols, "struct", "Widget")
+	constructorControl := symbolByKindAndName(snapshot.Symbols, "method", "Bound.constructor_control")
+	if widget.ID == "" || constructorControl.ID == "" {
+		t.Fatalf("missing constructor-control symbols: %#v", snapshot.Symbols)
+	}
+	constructsWidget := false
+	for _, relation := range snapshot.Relations {
+		constructsWidget = constructsWidget || relation.Type == "CONSTRUCTS" && relation.FromID == constructorControl.ID && relation.ToID == widget.ID
+	}
+	if !constructsWidget {
+		t.Fatalf("local-binding veto removed existing constructor resolution: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+	}
+}
+
+func TestJuliaModuleCallResolutionIsContainerScoped(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/scopes.jl", `
+target() = 0
+
+module A
+shared(x::Int) = x
+shared(x::String) = x
+caller() = shared(1)
+end
+
+module B
+only() = 1
+end
+
+module C
+caller() = only()
+end
+
+module D; helper() = 1; function f(); helper(); end; end
+
+module E
+target(x) = x
+caller() = target(1)
+end
+
+module F
+struct Widget end
+Widget(x::Int) = Widget()
+caller() = Widget(1)
+end
+
+module G
+shadow() = 0
+function caller()
+    shadow() = 1
+end
+end
+
+module H
+helper() = 1
+function outer()
+    function inner()
+        helper()
+    end
+end
+end
+
+module I
+helper() = 1
+caller(helper) = helper()
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbol := func(kind, name string) SymbolRecord {
+		got := symbolByKindAndName(snapshot.Symbols, kind, name)
+		if got.ID == "" {
+			t.Fatalf("missing %s %s: %#v", kind, name, snapshot.Symbols)
+		}
+		return got
+	}
+	aCaller, cCaller := symbol("method", "A.caller"), symbol("method", "C.caller")
+	dHelper, dF := symbol("method", "D.helper"), symbol("method", "D.f")
+	eTarget, eCaller := symbol("method", "E.target"), symbol("method", "E.caller")
+	fWidget, fCaller := symbol("struct", "Widget"), symbol("method", "F.caller")
+	gCaller, hOuter := symbol("method", "G.caller"), symbol("method", "H.outer")
+	iCaller := symbol("method", "I.caller")
+
+	has := func(relationType string, from, to SymbolRecord) bool {
+		for _, relation := range snapshot.Relations {
+			if relation.Type == relationType && relation.FromID == from.ID && relation.ToID == to.ID {
+				return true
+			}
+		}
+		return false
+	}
+	for _, from := range []SymbolRecord{aCaller, cCaller, dHelper, gCaller, hOuter, iCaller} {
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "CALLS" && relation.FromID == from.ID {
+				t.Fatalf("unsafe Julia CALLS from %s: %#v", from.QualifiedName, relation)
+			}
+		}
+	}
+	if !has("CALLS", dF, dHelper) || !has("CALLS", eCaller, eTarget) {
+		t.Fatalf("missing container-scoped Julia CALLS: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !has("CONSTRUCTS", fCaller, fWidget) {
+		t.Fatalf("existing Julia constructor resolution changed: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
 	}
 }
 

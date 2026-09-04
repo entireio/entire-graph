@@ -209,6 +209,18 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		if oldPath == "" {
 			oldPath = path
 		}
+		// The status this file is REPORTED under, when that differs from the
+		// status the read plan below runs on. A one-sided symlink type change is
+		// READ as if it were an addition or a deletion, because only one side
+		// holds analyzable content, but the path itself was neither added nor
+		// deleted — it changed type — so the delta keeps the status Git gave it.
+		//
+		// It stays empty for every other entry on purpose. A later restatement
+		// — a rename across the supported/unsupported boundary — also rewrites
+		// file.Status, and there the NEW value is the one that must be reported:
+		// the range really did delete or add the only side the graph holds.
+		// Freezing Git's status for every entry reported those renames as "R".
+		var reportedStatus string
 		beforeInvalidPath := file.Status != "A" && !gitutil.IsCanonicalGitTreePath(oldPath)
 		afterInvalidPath := file.Status != "D" && !gitutil.IsCanonicalGitTreePath(path)
 		if beforeInvalidPath || afterInvalidPath {
@@ -222,6 +234,59 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			}
 			result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
 			continue
+		}
+
+		// A symbolic link is stored as a blob whose bytes are its target path,
+		// so it reaches the readers below indistinguishable from a one-line
+		// source file: `alias.py` holding "pkg/real.py" parses cleanly as
+		// Python and yields a phantom module entity, while `alias.go` holding
+		// "pkg/real.go" fails to parse and reports E_PARSE_ERROR against a file
+		// that is not source at all. Mode is the only signal that separates
+		// them, so classify here — alongside the gitlink handling below, which
+		// this mirrors — rather than reading content that cannot be analyzed.
+		beforeSymlink := file.Status != "A" && file.OldMode == gitutil.SymlinkMode
+		afterSymlink := file.Status != "D" && file.NewMode == gitutil.SymlinkMode
+		if beforeSymlink || afterSymlink {
+			warningPath := path
+			detail := "head version is a symbolic link, not file content"
+			if beforeSymlink && !afterSymlink {
+				warningPath = oldPath
+				detail = "base version is a symbolic link, not file content"
+			} else if beforeSymlink && afterSymlink {
+				detail = "base and head versions are symbolic links, not file content"
+			}
+			// A path can change TYPE between a regular file and a symbolic
+			// link, which Git reports as status `T` with one mode 100644 and the
+			// other 120000. Only the symlink side is unanalyzable; the other
+			// side is ordinary source whose symbols genuinely appear or
+			// disappear at this commit. Skipping BOTH sides discarded that:
+			// replacing a source file with a link reported no removals, and
+			// replacing a link with a source file reported no additions, so a
+			// symbol that really left the tree was invisible in the diff. Read
+			// the file side as the one-sided change it is and skip only the
+			// link side. `A` and `D` are excluded because they have only one
+			// side to begin with, and it is the symlink.
+			effect := "file skipped; the Git tree entry is a symbolic link, so its changes are not analyzed"
+			typeChange := beforeSymlink != afterSymlink && file.Status != "A" && file.Status != "D"
+			if typeChange {
+				effect = "symbolic-link side skipped; the file side is analyzed as a one-sided change"
+				reportedStatus = file.Status
+				if afterSymlink {
+					file.Status = "D"
+				} else {
+					file.Status = "A"
+				}
+			}
+			result.Warnings = append(result.Warnings, ProviderWarning{
+				Code:                 "W_UNSUPPORTED_FILE",
+				Severity:             "info",
+				FilePath:             warningPath,
+				EffectOnCompleteness: effect,
+				Detail:               detail,
+			})
+			if !typeChange {
+				continue
+			}
 		}
 
 		var before, after string
@@ -424,37 +489,114 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		// because symbols missing from the recovered set can surface as
 		// phantom removed/added. A validly-emptied file (ParseError false) is
 		// never suppressed or flagged, so its real removed changes stand.
-		afterParseFailed := afterStatus.ParseError && len(afterEntities) == 0
-		beforeParseFailed := beforeStatus.ParseError && len(beforeEntities) == 0
+		//
 		// A failed parse is this provider failing to READ the file, not evidence
 		// that the file is empty. The symbols are most likely still there, so
 		// reporting them as removed would state a deletion that did not happen —
 		// the phantom the suppression here exists to prevent, and a different
 		// situation from a side the graph does not index at all (above), where
 		// their absence is a fact rather than a blind spot.
+		//
+		// ParseStatus.Partial marks a status whose output is valid even when it
+		// is empty, so it is never a total failure however few entities came
+		// back. A depth-truncated walk (E_PARSE_DEPTH_EXCEEDED) is the case:
+		// the tree parsed and the walk stopped, so zero entities means "no
+		// declarations above the limit", not "no signal" — treating it as total
+		// would suppress the whole file's delta, losing for instance the
+		// module-scope change of a Python file whose only statement is a
+		// deeply parenthesized module-level assignment.
+		// A side that is both malformed AND depth-truncated (DepthExceeded set,
+		// Partial deliberately false — see the depthExceeded && root.HasError()
+		// case in parser.go) is a total failure regardless of how many entities
+		// it recovered before hitting either problem: those entities may be
+		// wrong, not merely an incomplete-but-trustworthy subset, so they must
+		// not be compared against the other side any more than a zero-entity
+		// failure would be. Without this, a shallow entity recovered before the
+		// combined failure fell through to the kept-diff path below with
+		// oneSidedSuppressed never set (that check reads Partial, which this
+		// case leaves false), reopening exactly the phantom
+		// removed/added-below-the-depth-limit class this status exists to
+		// prevent.
+		afterParseFailed := afterStatus.ParseError && !afterStatus.Partial && (len(afterEntities) == 0 || afterStatus.DepthExceeded)
+		beforeParseFailed := beforeStatus.ParseError && !beforeStatus.Partial && (len(beforeEntities) == 0 || beforeStatus.DepthExceeded)
 		if afterParseFailed || beforeParseFailed {
 			status, warnPath := afterStatus, path
 			if !afterParseFailed {
 				status, warnPath = beforeStatus, oldPath
 			}
-			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, true))
+			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, diffSuppressed))
 			continue
+		}
+		// A depth-truncated side that recovered ZERO entities is a valid
+		// partial result — the tree parsed — that nonetheless carries NO
+		// entity-level information: the walk stopped before it reached any
+		// declaration, so "this side declares nothing" is indistinguishable
+		// from "every declaration is hidden below the limit". Comparing it
+		// against a populated side made compareEntities emit every symbol on
+		// that side as removed (or added): the same phantom class the
+		// total-failure path above exists to prevent, reached through a
+		// WELL-FORMED file, and reconcileMoves can then promote those phantoms
+		// into cross-file MOVES. So the entity comparison is skipped for this
+		// file and only its module-scope change is reported, which is real —
+		// the bytes did change. The cost is under-reporting when that side
+		// genuinely stopped declaring anything; the warning below says so
+		// rather than claiming a complete diff.
+		//
+		// Three cases stay deliberately distinct:
+		//   truncated, zero entities  -> module-scope change only (here)
+		//   truncated, some entities  -> entity diff kept: fewer, but correct
+		//   not truncated, zero       -> entity diff kept: the removals are real
+		//
+		// Only an existing side can lack signal: on an add/delete the missing
+		// side parses no content, and its emptiness is the real change.
+		beforeNoEntitySignal := beforeOK && beforeStatus.Partial && len(beforeEntities) == 0
+		afterNoEntitySignal := afterOK && afterStatus.Partial && len(afterEntities) == 0
+		entitiesSkipped := beforeNoEntitySignal || afterNoEntitySignal
+		// A truncated side that DID recover entities (the case above is the
+		// zero-entity one) still cannot tell "unchanged, just below the walk
+		// limit" apart from "genuinely removed": both look like a key missing
+		// from that side's recovered set. A matched key present on BOTH sides
+		// carries no such ambiguity — it was extracted from both trees, so its
+		// signature/body comparison is exact — but a key found on only one
+		// side is exactly the shape a truncated side manufactures for every
+		// declaration hidden below the limit, real removal or not. Suppress
+		// one-sided results (including the rename reconciliation, which is
+		// built from those same one-sided sets) whenever either side is
+		// truncated; matched changes are unaffected.
+		//
+		// That ambiguity only exists when BOTH revisions exist: on an add or a
+		// delete, the missing side has no tree to hide anything in, so every
+		// entity recovered from the truncated existing side is unambiguously a
+		// real addition or removal, not a truncation artifact. Gating on
+		// beforeOK && afterOK keeps that case out of suppression instead of
+		// collapsing a real symbol-level add/delete into a synthetic
+		// module-scope change with none of its actual entities reported.
+		oneSidedSuppressed := beforeOK && afterOK && (beforeStatus.Partial || afterStatus.Partial)
+		if afterStatus.ParseError || beforeStatus.ParseError {
+			status, warnPath := afterStatus, path
+			// Warn about the side that lost the signal when one did, so the
+			// detail names the truncated file rather than the other revision.
+			if !afterStatus.ParseError || (entitiesSkipped && !afterNoEntitySignal) {
+				status, warnPath = beforeStatus, oldPath
+			}
+			outcome := diffKept
+			if entitiesSkipped {
+				outcome = diffEntitiesSkipped
+			}
+			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, outcome))
 		}
 		// A side with no parser holds nothing in the graph, so emptying it turns
 		// the comparison below into the removals or additions a snapshot of each
-		// side would show.
+		// side would show. It sits beside the missing-revision emptying rather
+		// than up with the truncation analysis because it is the same operation:
+		// normalizing what this side is known to contain. The truncation checks
+		// above are unaffected either way -- an unsupported side has no parser,
+		// so it carries no ParseStatus.Partial for them to read.
 		if beforeUnsupported {
 			beforeEntities = nil
 		}
 		if afterUnsupported {
 			afterEntities = nil
-		}
-		if afterStatus.ParseError || beforeStatus.ParseError {
-			status, warnPath := afterStatus, path
-			if !afterStatus.ParseError {
-				status, warnPath = beforeStatus, oldPath
-			}
-			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, false))
 		}
 		if !beforeOK {
 			beforeEntities = nil
@@ -463,7 +605,11 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			afterEntities = nil
 		}
 
-		changes, removed, added := compareEntities(beforeEntities, afterEntities)
+		var changes []EntityChange
+		var removed, added []Entity
+		if !entitiesSkipped {
+			changes, removed, added = compareEntities(beforeEntities, afterEntities, oneSidedSuppressed)
+		}
 		if len(changes) == 0 && len(removed) == 0 && len(added) == 0 {
 			// The file changed but no named symbol did: the edit lives at
 			// module scope (top-level statements, imports, comments). Surface
@@ -483,10 +629,14 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			}
 			changes = append(changes, mod)
 		}
+		deltaStatus := file.Status
+		if reportedStatus != "" {
+			deltaStatus = reportedStatus
+		}
 		deltas = append(deltas, &fileDelta{
 			path:     path,
 			oldPath:  file.OldPath,
-			status:   file.Status,
+			status:   deltaStatus,
 			language: language,
 			changes:  changes,
 			removed:  removed,
@@ -756,24 +906,54 @@ func diffFileReadWarning(path, detail string) ProviderWarning {
 	}
 }
 
+// diffParseOutcome names what the diff actually did with a file whose parse did
+// not fully succeed. It selects the warning's effect wording, which must state
+// what happened to THIS file rather than what usually happens to its code.
+type diffParseOutcome int
+
+const (
+	// diffKept: the parse degraded but the entity diff was still computed from
+	// what came back.
+	diffKept diffParseOutcome = iota
+	// diffEntitiesSkipped: one existing side was truncated to zero entities, so
+	// the entity comparison was skipped and only the file's module-scope change
+	// is reported (see AnalyzeGitRangeWithOptions).
+	diffEntitiesSkipped
+	// diffSuppressed: a total failure; the file contributes no delta at all.
+	diffSuppressed
+)
+
 // parseFailureWarning builds the warning emitted when a changed file fails to
 // parse on one side of the diff. It reuses the provider path's machine-readable
 // codes (parseStatus.ParseError → PartialFailure, see provider.go), and both
 // surfaces warn on any ParseError — but the effect wording is diff-specific:
 // the provider always emits its (possibly partial) output, while the diff path
-// suppresses the file's delta entirely on a total failure (suppressed == true)
-// and keeps a possibly-degraded diff on a partial recovery.
-func parseFailureWarning(path string, status ParseStatus, suppressed bool) ProviderWarning {
+// suppresses the file's delta entirely on a total failure, reports only the
+// module-scope change when a side was truncated to zero entities, and keeps a
+// possibly-degraded diff on any other partial recovery.
+func parseFailureWarning(path string, status ParseStatus, outcome diffParseOutcome) ProviderWarning {
 	code := status.Code
 	if code == "" {
 		code = "E_PARSE_ERROR"
 	}
 	var effect string
 	switch {
-	case suppressed && code == "E_PARSE_TIMEOUT":
+	case outcome == diffSuppressed && code == "E_PARSE_TIMEOUT":
 		effect = "file diff suppressed; changes omitted because parser time budget was exceeded"
-	case suppressed:
+	case outcome == diffSuppressed:
 		effect = "file diff suppressed; changes omitted because the file could not be parsed"
+	case outcome == diffEntitiesSkipped:
+		// The entity sets were never compared, so this file cannot produce
+		// phantom entity changes; what it can do is omit real ones.
+		effect = "entity comparison skipped; one side's parser walk was truncated before it reached any declaration, so only this file's module-scope change is reported and individual symbol changes are omitted"
+	case code == "E_PARSE_DEPTH_EXCEEDED":
+		// Never suppressed (ParseStatus.Partial), so the "syntax errors" wording
+		// below would be wrong on both counts: the file parsed, and what is
+		// missing is what the walk declined to reach, not what it misread.
+		// compareEntities drops one-sided (removed/added/renamed) results for
+		// this outcome, so what is omitted is a real change below the limit,
+		// not a phantom one.
+		effect = "diff kept, but declarations nested deeper than the parser walk limit were not compared on one side; only changes visible on both sides are reported, so an addition or removal below the limit is omitted"
 	default:
 		effect = "file parsed with syntax errors on one side; diff kept but may be incomplete or contain phantom changes"
 	}
@@ -933,7 +1113,7 @@ func AnalyzeCheckpoint(ctx context.Context, repo, checkpointID string) (Result, 
 // Removed and added entities that are not reconciled within the file (rename)
 // are emitted as plain removed/added changes.
 func Compare(before, after []Entity) []EntityChange {
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	for _, oldEntity := range removed {
 		changes = append(changes, removedChange(oldEntity))
 	}
@@ -948,7 +1128,15 @@ func Compare(before, after []Entity) []EntityChange {
 // resolved changes (signature/body changes and within-file renames) plus the
 // removed and added entities that were not reconciled, sorted deterministically
 // so callers can run a cross-file reconciliation pass over the leftovers.
-func compareEntities(before, after []Entity) (changes []EntityChange, removed, added []Entity) {
+// compareEntities matches before/after entities by key and reports what
+// changed. suppressOneSided drops removed, added, and renamed results — every
+// one of which is derived from a key present on only one side — while keeping
+// signature_changed/body_changed results, which require the key to be present
+// (and extracted) on BOTH sides and so cannot be manufactured by one side's
+// walk stopping early. Callers set it when either parsed tree was
+// depth-truncated: see AnalyzeGitRangeWithOptions for why a truncated side's
+// missing keys are not trustworthy evidence of an actual removal or addition.
+func compareEntities(before, after []Entity, suppressOneSided bool) (changes []EntityChange, removed, added []Entity) {
 	beforeByKey, afterByKey := keyedEntityMaps(before, after)
 
 	deleted := map[string]Entity{}
@@ -985,6 +1173,10 @@ func compareEntities(before, after []Entity) (changes []EntityChange, removed, a
 		if _, ok := beforeByKey[key]; !ok {
 			addedByKey[key] = newEntity
 		}
+	}
+
+	if suppressOneSided {
+		return changes, nil, nil
 	}
 
 	for oldKey, oldEntity := range deleted {
@@ -1112,10 +1304,17 @@ func (p diffIndexPolicy) admitFunc() func(string) bool {
 //	base no,  head no    dropped
 //
 // Rewriting to "D" and "A" needs no new emission code: both are ordinary
-// name-status inputs, and the loop above already derives its read plan from
+// raw-diff inputs, and the loop above already derives its read plan from
 // Status alone. The emitted FileChange.Status is then the graph's truth rather
 // than Git's — a rename out of the index IS a deletion of everything the index
 // held.
+//
+// A rewrite restates the status; it does not restate what the entry IS. The
+// surviving side's tree entry mode must therefore travel with it, because the
+// loop above classifies on mode: a rewritten entry that arrives with an empty
+// OldMode/NewMode reads as an ordinary blob, so an added or deleted symlink
+// would be parsed as source. Any field that decides how an entry is read has to
+// be carried here for the same reason.
 //
 // A copy (status "C") is the one entry that is never a comparison at all: its
 // source still exists, so the destination is purely an addition and must never
@@ -1143,7 +1342,7 @@ func admitChangedFiles(changed []gitutil.ChangedFile, base, head diffIndexPolicy
 			// otherwise: never a deletion of a file that still exists, and never
 			// a comparison against a source this change did not touch.
 			if inHead {
-				kept = append(kept, gitutil.ChangedFile{Status: "A", Path: file.Path})
+				kept = append(kept, gitutil.ChangedFile{Status: "A", Path: file.Path, NewMode: file.NewMode})
 			}
 			continue
 		}
@@ -1151,9 +1350,9 @@ func admitChangedFiles(changed []gitutil.ChangedFile, base, head diffIndexPolicy
 		case inBase && inHead:
 			kept = append(kept, file)
 		case inBase:
-			kept = append(kept, gitutil.ChangedFile{Status: "D", Path: oldPath})
+			kept = append(kept, gitutil.ChangedFile{Status: "D", Path: oldPath, OldMode: file.OldMode})
 		case inHead:
-			kept = append(kept, gitutil.ChangedFile{Status: "A", Path: file.Path})
+			kept = append(kept, gitutil.ChangedFile{Status: "A", Path: file.Path, NewMode: file.NewMode})
 		}
 	}
 	return kept

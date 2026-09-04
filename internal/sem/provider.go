@@ -92,7 +92,12 @@ var relationTypes = []string{
 var ooRelationSupport = map[string][]string{
 	"Java":       {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
 	"TypeScript": {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
-	"JavaScript": {"EXTENDS", "INHERITS", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
+	// JavaScript has no type annotations, but the USES_TYPE pass reads type
+	// names out of the signature TEXT, and a default argument that constructs a
+	// local class (`function draw(p = new Point())`) puts one there. The
+	// relation is reachable without an annotation syntax existing at all, which
+	// is why declaring it was missed.
+	"JavaScript": {"EXTENDS", "INHERITS", "USES_TYPE", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
 	"Kotlin":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "DATA_FLOWS"},
 	"C#":         {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
 	"PHP":        {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
@@ -105,7 +110,9 @@ var ooRelationSupport = map[string][]string{
 	// Ruby states member acquisition with `include`/`prepend`/`extend` in the
 	// class body, which the provider now reads; header inheritance
 	// (`class A < B`) is not parsed yet, so only INHERITS is advertised.
-	"Ruby": {"INHERITS", "DATA_FLOWS"},
+	// USES_TYPE for the same reason as JavaScript: `def draw(p = Point.new)`
+	// names a local class in the signature text.
+	"Ruby": {"INHERITS", "USES_TYPE", "DATA_FLOWS"},
 	// Languages below reach the generic type, field and data-flow passes the
 	// same way the listed ones do; they were simply never added here, so
 	// `capabilities --json` under-reported them. Each entry is what the
@@ -134,24 +141,44 @@ var ooRelationSupport = map[string][]string{
 	// foreign type.
 	"C": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	// C++ shares C's extraction path, so it reaches the same passes.
-	"C++":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	"Clojure":          {"USES_TYPE"},
-	"Dart":             {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "ASYNC_CALLS", "DATA_FLOWS"},
-	"Elixir":           {"DATA_FLOWS"},
-	"Erlang":           {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
-	"F#":               {"USES_TYPE", "PARAM_TYPE"},
-	"Groovy":           {"USES_TYPE", "PARAM_TYPE", "READS_FIELD", "DATA_FLOWS"},
-	"Haskell":          {"USES_TYPE", "PARAM_TYPE"},
-	"Julia":            {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
-	"Lua":              {"DATA_FLOWS"},
-	"OCaml":            {"USES_TYPE", "PARAM_TYPE"},
-	"Objective-C":      {"DATA_FLOWS"},
-	"Perl":             {"DATA_FLOWS"},
-	"R":                {"DATA_FLOWS"},
-	"SQL":              {"DATA_FLOWS"},
-	"Scala":            {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	"Swift":            {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	"Zig":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "DATA_FLOWS"},
+	"C++":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	"Clojure": {"USES_TYPE"},
+	// ClojureScript reads .cljs with the Clojure grammar and so reaches the same
+	// `^Point` type hint, but it was not a key of this map at all -- the
+	// language was advertised as structural-only.
+	"ClojureScript": {"USES_TYPE"},
+	"Dart":          {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Elixir":        {"DATA_FLOWS"},
+	"Erlang":        {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
+	"F#":            {"USES_TYPE", "PARAM_TYPE"},
+	"Groovy":        {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "DATA_FLOWS"},
+	"Haskell":       {"USES_TYPE", "PARAM_TYPE"},
+	"Julia":         {"USES_TYPE", "PARAM_TYPE", "DATA_FLOWS"},
+	"Lua":           {"DATA_FLOWS"},
+	"OCaml":         {"USES_TYPE", "PARAM_TYPE"},
+	// Objective-C compiles through the same C extraction path as C and C++, so a
+	// parameter or return type that names a type the repository defines reaches
+	// the same signature-type pass they do. Only the earlier probe hid it: it
+	// declared no type of its own, so nothing but DATA_FLOWS could fire however
+	// the file was written.
+	"Objective-C": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	"Perl":        {"DATA_FLOWS"},
+	"R":           {"DATA_FLOWS"},
+	"SQL":         {"DATA_FLOWS"},
+	"Scala":       {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	// Swift resolves a local constructor binding (`let q = Point()`) and then
+	// attributes BOTH directions through it: `q.x = a` is a WRITES_FIELD and
+	// `return q.x` is a READS_FIELD. What it does not resolve is a field reached
+	// through a PARAMETER -- `_ p: Point` is not a shape parameterVarTypes
+	// recognises -- and reading only through a parameter was what made
+	// READS_FIELD look unreachable rather than merely unexercised.
+	"Swift": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "DATA_FLOWS"},
+	// Zig extracts the struct but none of its fields as symbols, so no field
+	// symbol exists for a READS_FIELD edge to resolve onto however the body is
+	// written; the relation was declared and is unreachable. An over-declared
+	// relation fails an agent the same way an under-declared one does: it
+	// feature-detects, queries, and gets nothing back.
+	"Zig":              {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	"HCL":              {"CONFIGURES", "RESOURCE_DEPENDS_ON"},
 	"GraphQL":          {"HANDLES_GRAPHQL"},
 	"Protocol Buffers": {"HANDLES_GRPC"},
@@ -173,6 +200,7 @@ var schemaFeatures = []string{
 	"completeness_breakdown",
 	"language_versions",
 	"relation_evidence",
+	"relation_evidence_dropped",
 	"relation_resolution",
 	"relation_scope",
 	"relation_target_kind",
@@ -318,7 +346,12 @@ type SymbolRecord struct {
 	// Call resolution uses it to tell an overload set apart from genuinely
 	// ambiguous same-name definitions. Private, so the frozen schema and the
 	// compound-v1 IDs are unchanged.
-	bodyless       bool
+	bodyless bool
+	// cLinkage: this symbol is declared inside an `extern "C" { ... }` block
+	// (see Entity.cLinkage). candidateSharesDeclarations reads it to tell the
+	// C-linkage half of a dual-use header from the C++ half. Private, so the
+	// frozen schema and the compound-v1 IDs are unchanged.
+	cLinkage       bool
 	parameterNames []string
 	// parameterNamesKnown distinguishes an AST-confirmed empty parameter list
 	// from missing parser metadata. This stays private to preserve the frozen
@@ -344,6 +377,11 @@ type RelationRecord struct {
 	TargetKind    string     `json:"target_kind,omitempty"`
 	Evidence      []Evidence `json:"evidence,omitempty"`
 	WarningCodes  []string   `json:"warning_codes"`
+	// EvidenceDropped counts flows that justified this relation but did not fit
+	// in Evidence. EVIDENCE_TRUNCATED says the array is partial; this says by how
+	// much, so a record that lost one flow is distinguishable from one that lost
+	// ninety. Zero and absent mean the same thing: nothing was dropped.
+	EvidenceDropped int `json:"evidence_dropped,omitempty"`
 }
 
 // Evidence is a compact pointer to the source location that justifies a
@@ -975,23 +1013,71 @@ func dedupeSortedStrings(sorted []string) []string {
 	return out
 }
 
-// mergePartialFailures appends extra failures that are not already present
-// for the same code and file, so entity-phase and relation-phase reports for
-// one file collapse to a single record regardless of build path.
+// mergePartialFailures folds extra failures into failures, keeping ONE record
+// per code+file so entity-phase and relation-phase reports for one file collapse
+// to a single record regardless of build path — and so completeness counts that
+// file once, not twice.
+//
+// A duplicate is FOLDED, not dropped. The two phases share a code because they
+// describe the same condition, but they lose DIFFERENT things: the entity walk
+// drops declarations, the relation walk drops call classification. Dropping the
+// later record (the earlier behaviour here) made a file truncated or timed out in
+// both phases report only the entity-phase loss, understating what the snapshot
+// is missing. Identity fields — code, file, severity — always stay with the
+// record already present, so the folded record still dedupes and sorts as one.
 func mergePartialFailures(failures, extra []PartialFailure) []PartialFailure {
-	seen := make(map[string]bool, len(failures))
-	for _, failure := range failures {
-		seen[failure.Code+"\x00"+failure.FilePath] = true
+	if len(extra) == 0 {
+		return failures
+	}
+	merged := make([]PartialFailure, len(failures))
+	copy(merged, failures)
+	index := make(map[string]int, len(merged))
+	for i, failure := range merged {
+		key := partialFailureKey(failure)
+		if _, ok := index[key]; !ok {
+			index[key] = i
+		}
 	}
 	for _, failure := range extra {
-		key := failure.Code + "\x00" + failure.FilePath
-		if seen[key] {
+		key := partialFailureKey(failure)
+		if i, ok := index[key]; ok {
+			merged[i] = foldPartialFailure(merged[i], failure)
 			continue
 		}
-		seen[key] = true
-		failures = append(failures, failure)
+		index[key] = len(merged)
+		merged = append(merged, failure)
 	}
-	return failures
+	return merged
+}
+
+func partialFailureKey(failure PartialFailure) string {
+	return failure.Code + "\x00" + failure.FilePath
+}
+
+// foldPartialFailure combines a duplicate code+file record into the one already
+// reported: only the free-text fields grow, and only with text the existing
+// record does not already carry.
+func foldPartialFailure(existing, incoming PartialFailure) PartialFailure {
+	existing.EffectOnCompleteness = appendFailureClause(existing.EffectOnCompleteness, incoming.EffectOnCompleteness)
+	existing.Detail = appendFailureClause(existing.Detail, incoming.Detail)
+	return existing
+}
+
+// appendFailureClause joins a second phase's sentence onto a failure's free text.
+// Empty and already-covered text is skipped, which keeps repeated merges (the
+// cache-derived selective path can merge the same relation failures again)
+// idempotent instead of growing the string on every pass.
+func appendFailureClause(existing, incoming string) string {
+	switch {
+	case incoming == "":
+		return existing
+	case existing == "":
+		return incoming
+	case strings.Contains(existing, incoming):
+		return existing
+	default:
+		return existing + "; also: " + incoming
+	}
 }
 
 // StreamSnapshot emits a snapshot as a stream of records with bounded memory.
@@ -1149,6 +1235,12 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// collisions across realistic relation counts are negligible.
 	startPhase()
 	seenRelation := map[uint64]struct{}{}
+	// One digest per DATA_FLOWS edge, so a dropped duplicate can be compared
+	// against the record that was kept without retaining either record. Sits on
+	// the DATA_FLOWS subset of the map above, which is already held for every
+	// relation, so this adds no new memory class.
+	dataFlowEvidence := map[uint64]uint64{}
+	unmergedEvidenceEdges := 0
 	externalsByID := map[string]ExternalRecord{}
 	relationsByType := map[string]int{}
 	var emitErr error
@@ -1177,7 +1269,20 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		}
 		dedupKey := relationDedupKey(r)
 		if _, seen := seenRelation[dedupKey]; seen {
+			if r.Type == "DATA_FLOWS" {
+				// A duplicate carrying the same flows loses nothing. One carrying
+				// different flows is evidence this edge had a second producer that
+				// emission-site grouping could not see, and the record already
+				// written cannot be amended -- so count the edge and disclose it.
+				if kept, ok := dataFlowEvidence[dedupKey]; ok && kept != evidenceDigest(r.Evidence) {
+					unmergedEvidenceEdges++
+					delete(dataFlowEvidence, dedupKey) // count each edge once
+				}
+			}
 			return
+		}
+		if r.Type == "DATA_FLOWS" {
+			dataFlowEvidence[dedupKey] = evidenceDigest(r.Evidence)
 		}
 		seenRelation[dedupKey] = struct{}{}
 		for _, id := range []string{r.FromID, r.ToID} {
@@ -1222,7 +1327,8 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		// blown in the entity pass usually blows the relation-phase scope parse
 		// too): report one record per code+file, exactly as the cache-derived
 		// selective path does, so cache presence never changes the reported
-		// failure set.
+		// failure set. The single record carries BOTH phases' effect and detail
+		// text (mergePartialFailures folds duplicates) so neither loss is hidden.
 		failures = mergePartialFailures(failures, relationFailures)
 		if spec.emits("FILE_CHANGES_WITH") {
 			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, files) {
@@ -1255,6 +1361,9 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	warnings := sc.warnings
 	if warnings == nil {
 		warnings = []ProviderWarning{}
+	}
+	if unmergedEvidenceEdges > 0 {
+		warnings = append(warnings, unmergedDataFlowEvidenceWarning(unmergedEvidenceEdges))
 	}
 	if failures == nil {
 		failures = []PartialFailure{}
@@ -1460,6 +1569,40 @@ func useFastCFamilyParser(spec profileSpec, langSpec languageSpec) bool {
 		return false
 	}
 	return langSpec.language == "C" || langSpec.language == "C++"
+}
+
+// evidenceDigest fingerprints an evidence array so two records for one edge can
+// be compared without keeping either. Order matters: the array is canonically
+// ordered, so a reordering is a real difference.
+func evidenceDigest(evidence []Evidence) uint64 {
+	h := fnv.New64a()
+	for _, e := range evidence {
+		_, _ = h.Write([]byte(e.Kind))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(e.Detail))
+		_, _ = h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
+// unmergedDataFlowEvidenceWarning reports DATA_FLOWS edges that more than one
+// symbol justified. Evidence is grouped where flows are emitted, which sees one
+// `from` symbol at a time, so an edge produced from two symbols keeps the first
+// producer's flows. Merging them needs a boundary that sees every producer,
+// which on a write-through stream means buffering every DATA_FLOWS record to the
+// end of the pass and emitting them out of canonical order. The count is
+// disclosed instead, so a consumer can tell a thin evidence array from a
+// complete one.
+func unmergedDataFlowEvidenceWarning(edges int) ProviderWarning {
+	return ProviderWarning{
+		Code:                 "W_DATA_FLOW_EVIDENCE_UNMERGED",
+		Severity:             "info",
+		EffectOnCompleteness: "each DATA_FLOWS relation carries every flow found by the symbol that produced it; on these edges a second symbol justified the same edge and its flows were dropped, so the evidence array explains the edge from one side only. The affected edges are counted, not identified: each record had already been written when its second producer appeared, so none of them can be marked individually and a consumer cannot tell from a relation alone whether it is one of them",
+		Detail: fmt.Sprintf(
+			"%d DATA_FLOWS edge(s) were justified by more than one symbol, typically mutual recursion where one side forwards a parameter and the other returns a call; the relation, its confidence and its reason are unaffected. Independent of EVIDENCE_TRUNCATED: one edge can be both, neither supersedes the other, and this count includes edges that were also truncated",
+			edges,
+		),
+	}
 }
 
 // relationDedupKey hashes a relation's identity (from, to, type) to a compact
@@ -1739,6 +1882,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			sourceStartByte: entity.sourceStartByte,
 			sourceEndByte:   entity.sourceEndByte,
 			bodyless:        entity.bodyless,
+			cLinkage:        entity.cLinkage,
 		}
 		// Carried for every language: the parser marks parameterNamesKnown only
 		// when it actually read the names off the parse tree, so a grammar with
@@ -1904,7 +2048,216 @@ func nameCallMayTargetMethod(lang string) bool {
 	return implicitReceiverLanguage(lang) || lang == "Rust"
 }
 
+// resolveJuliaSameContainerMethodCallTargets is a conservative fallback for
+// module-scoped Julia definitions, which the parser represents as methods.
+// found distinguishes "no module candidate" from ambiguous overloads, while
+// blocked prevents a shadowed name from falling through to an external edge.
+func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, sameFile []SymbolRecord, localBindings map[string]struct{}) (targets []resolvedCallTarget, found, blocked bool) {
+	if from.Language != "Julia" || from.Kind != "method" || from.Local || from.ContainerID == "" {
+		return nil, false, false
+	}
+	if localBindings == nil {
+		return nil, false, false
+	}
+	parameters := symbolFlowParameterNames(from)
+	if !from.parameterNamesKnown {
+		// A short-form signature includes its RHS; stop at the first balanced
+		// argument list so calls on the RHS are not mistaken for parameters.
+		if open := strings.Index(from.Signature, "("); open >= 0 {
+			if close := matchingParen(from.Signature, open); close > open {
+				parameters = parameterNames(from.Signature[:close+1])
+			}
+		}
+	}
+	if parameters[name] {
+		return nil, true, true
+	}
+	if _, shadowed := localBindings[name]; shadowed {
+		// Decline only this additive Julia-method fallback. Existing generic
+		// targets and external resolution must retain their pre-PR behavior.
+		return nil, false, false
+	}
+	hasNestedCallable := false
+	for _, to := range sameFile {
+		if to.ID != from.ID && to.FilePath == from.FilePath && to.Local && callableTargetKind(to.Kind) &&
+			from.StartLine <= to.StartLine && to.EndLine <= from.EndLine {
+			hasNestedCallable = true
+		}
+		if to.ID == from.ID || to.FilePath != from.FilePath || to.Language != from.Language || to.Name != name ||
+			to.Kind != "method" || to.ContainerID != from.ContainerID || !localReachable(from, to) {
+			continue
+		}
+		found = true
+		if to.Local {
+			return nil, true, true
+		}
+		targets = append(targets, resolvedCallTarget{
+			SymbolRecord: to,
+			Confidence:   0.92,
+			Reason:       "direct Julia call expression resolved to same-container symbol",
+			Resolution:   "exact",
+			Scope:        "file",
+		})
+	}
+	if hasNestedCallable {
+		return nil, false, false
+	}
+	if len(targets) != 1 {
+		return nil, found, false
+	}
+	return targets, true, false
+}
+
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
+	return resolveCallTargetsWithRawImport(name, from, candidates, nil, nil, sameFile, importsByName, allowMethodTargets)
+}
+
+type pythonCallImportInputs struct {
+	rawCandidates       []SymbolRecord
+	rawImportModuleSets [][]string
+	imports             map[string][]string
+	genericAllowed      bool
+}
+
+func pythonCallImportBinding(name string, from SymbolRecord, language string, scopes *pythonBareImportScopes, symbolsByShortName map[string][]SymbolRecord, importsByName map[string][]string, importingPath string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) pythonCallImportInputs {
+	inputs := pythonCallImportInputs{rawCandidates: symbolsByShortName[name], imports: importsByName, genericAllowed: true}
+	if modules := importsByName[name]; len(modules) > 0 {
+		inputs.rawImportModuleSets = [][]string{modules}
+	}
+	if language != "Python" {
+		return inputs
+	}
+	if scopes != nil && scopes.complete {
+		inputs.rawImportModuleSets = scopes.genericImportModuleSets(from, name)
+		inputs.imports = importsWithName(importsByName, name, scopes.genericImportModules(from, name), importingPath, manifestImports, knownFiles, readContent)
+		inputs.genericAllowed = scopes.genericCallAllowed(from, name)
+	} else {
+		// An incomplete or unavailable AST cannot license raw cross-language
+		// widening. Keep the ordinary import map for filtered resolution.
+		inputs.rawCandidates = nil
+		inputs.rawImportModuleSets = nil
+	}
+	if len(inputs.rawImportModuleSets) == 0 {
+		inputs.rawCandidates = nil
+	}
+	return inputs
+}
+
+// importsWithName replaces one binding in the normal import map with the
+// modules visible at a particular Python call site. The normal map contains
+// tagged repository-local paths beside authored specifiers; rebuild those tags
+// for the selected scope bindings so ordinary same-language import resolution
+// retains its exact-file match without restoring hidden/rebound imports.
+func importsWithName(imports map[string][]string, name string, modules []string, importingPath string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) map[string][]string {
+	copy := make(map[string][]string, len(imports))
+	for key, value := range imports {
+		copy[key] = value
+	}
+	if len(modules) == 0 {
+		delete(copy, name)
+	} else {
+		resolved := append([]string(nil), modules...)
+		for _, module := range modules {
+			if path, ok := resolveImportSpecPath(importingPath, module, manifestImports, knownFiles, readContent); ok && path != "" {
+				resolved = append(resolved, resolvedImportPathPrefix+path)
+			}
+		}
+		copy[name] = uniqueStrings(resolved)
+	}
+	return copy
+}
+
+// resolvePythonAliasImportTargets keeps an AST-visible `from module import
+// member as local` binding tied to its original member name. Module-only
+// aliases intentionally return handled without a target: a module object is
+// not a bare callable and must not fall through to a same-spelled workspace
+// symbol or an invented `module.local` external edge.
+func resolvePythonAliasImportTargets(local string, from SymbolRecord, contexts []pythonImportContext, symbolsByShortName map[string][]SymbolRecord, importingPath string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) (targets []resolvedCallTarget, external []RelationRecord, handled bool) {
+	seen := map[string]bool{}
+	for _, context := range contexts {
+		if context.member == "" {
+			handled = true
+			continue
+		}
+		if context.member == local {
+			continue
+		}
+		handled = true
+		imports := importsWithName(nil, context.member, context.modules, importingPath, manifestImports, knownFiles, readContent)
+		candidates := sharedTypeCandidates(from, symbolsByShortName[context.member])
+		resolved := resolveImportedCallTargets(context.member, from, candidates, imports, false)
+		if len(resolved) == 0 {
+			resolved, _ = resolveUniqueRawImportedCallTarget(context.member, from, symbolsByShortName[context.member], [][]string{imports[context.member]}, false)
+		}
+		if len(resolved) == 0 {
+			external = append(external, importedExternalCallRelationsForName(from, context.member, context.modules)...)
+			continue
+		}
+		for _, target := range resolved {
+			if !seen[target.ID] {
+				seen[target.ID] = true
+				targets = append(targets, target)
+			}
+		}
+	}
+	return targets, external, handled
+}
+
+// pythonIncompleteAliasContexts is deliberately a fallback for malformed or
+// depth-limited ASTs only. It preserves the original imported member for an
+// external relation, but is never used to recover a local target: incomplete
+// scope analysis must remain fail-closed for local resolution.
+func pythonIncompleteAliasContexts(bindings map[string][]pythonImportBinding) map[string][]pythonImportContext {
+	contexts := map[string][]pythonImportContext{}
+	for local, entries := range bindings {
+		for _, binding := range entries {
+			if binding.Imported == local {
+				continue // ordinary `from module import local` keeps normal fallback
+			}
+			module := binding.Module
+			if binding.Imported != "" {
+				module = pythonFromImportModuleSpec(module, binding.Imported)
+			}
+			contexts[local] = appendPythonImportContext(contexts[local], pythonImportContext{modules: []string{module}, member: binding.Imported})
+		}
+	}
+	return contexts
+}
+
+func pythonAliasExternalCallRelations(from SymbolRecord, contexts []pythonImportContext) []RelationRecord {
+	var relations []RelationRecord
+	for _, context := range contexts {
+		if context.member != "" {
+			relations = append(relations, importedExternalCallRelationsForName(from, context.member, context.modules)...)
+		}
+	}
+	return relations
+}
+
+func unionResolvedCallTargets(groups ...[]resolvedCallTarget) []resolvedCallTarget {
+	seen := map[string]bool{}
+	var targets []resolvedCallTarget
+	for _, group := range groups {
+		for _, target := range group {
+			if !seen[target.ID] {
+				seen[target.ID] = true
+				targets = append(targets, target)
+			}
+		}
+	}
+	return targets
+}
+
+// resolveCallTargetsWithRawImport keeps the normal language-filtered candidate
+// set for every ordinary resolution tier. A bare imported call may additionally
+// retain the raw workspace candidates so an explicit, unique import path can
+// bind a local FFI target that the type-sharing policy deliberately excludes.
+func resolveCallTargetsWithRawImport(name string, from SymbolRecord, candidates, rawCandidates []SymbolRecord, rawImportModuleSets [][]string, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
+	// candidates arrive ALREADY filtered to languages the caller can name: every
+	// call site wraps its symbolsByShortName lookup in sharedTypeCandidates,
+	// because that is where the referring symbol is known. Re-filtering here
+	// would be a second application of an idempotent function and, worse, would
+	// look like the guard when the call sites are the guard.
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
 		// A bare `name()` call resolves to a function, not a class method (methods
@@ -1940,6 +2293,11 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	if imported := resolveImportedCallTargets(name, from, candidates, importsByName, allowMethodTargets); len(imported) > 0 {
 		return imported
+	}
+	if rawCandidates != nil {
+		if imported, bound := resolveUniqueRawImportedCallTarget(name, from, rawCandidates, rawImportModuleSets, allowMethodTargets); bound {
+			return imported
+		}
 	}
 
 	// Same-package resolution: in Go every file in a directory is the same
@@ -2057,6 +2415,44 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 		}
 	}
 	return nil
+}
+
+// resolveUniqueRawImportedCallTarget is the narrow FFI exception to the
+// language-filtered short-name index. The imported binding is authoritative
+// only when its module path names exactly one callable workspace target. A
+// missing or ambiguous raw match blocks same-package/global-name fallback for
+// this imported name, leaving the ordinary external edge in place instead of
+// guessing from an unrelated declaration with the same spelling.
+func resolveUniqueRawImportedCallTarget(name string, from SymbolRecord, candidates []SymbolRecord, moduleSets [][]string, allowMethodTargets bool) ([]resolvedCallTarget, bool) {
+	if len(moduleSets) == 0 {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	var targets []resolvedCallTarget
+	bound := false
+	for _, modules := range moduleSets {
+		var matched []SymbolRecord
+		for _, to := range candidates {
+			if to.ID == from.ID || to.Name != name || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+				continue
+			}
+			if importedNameMatchesFile(modules, from.FilePath, to.FilePath) {
+				matched = append(matched, to)
+			}
+		}
+		bound = true
+		if len(matched) == 1 && !seen[matched[0].ID] {
+			seen[matched[0].ID] = true
+			targets = append(targets, resolvedCallTarget{
+				SymbolRecord: matched[0],
+				Confidence:   0.84,
+				Reason:       "direct call expression resolved through imported module path",
+				Resolution:   "import_resolved",
+				Scope:        "module",
+			})
+		}
+	}
+	return targets, bound
 }
 
 // resolveJSNamespaceCallTargets resolves a namespace-qualified call against
@@ -2185,7 +2581,7 @@ func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []Symb
 	}
 	receiver := name[:strings.LastIndex(name, ".")]
 	var related []resolvedCallTarget
-	for _, to := range symbolsByShortName[terminal] {
+	for _, to := range sharedTypeCandidates(from, symbolsByShortName[terminal]) {
 		if to.ID == from.ID || to.FilePath == from.FilePath || !callableTargetKind(to.Kind) || to.Kind == "method" || !localReachable(from, to) {
 			continue
 		}
@@ -2593,6 +2989,22 @@ func jsScanPartialFailure(path string, err error) PartialFailure {
 	}
 }
 
+// jsScanDepthPartialFailure reports a relation-phase scope walk truncated at
+// maxParseWalkDepth. It reuses the entity phase's code so both phases describe
+// the same condition identically, and it is a warning rather than an error for
+// the same reason: the relations above the limit are emitted. Its effect and
+// detail text stand on their own because mergePartialFailures folds them into the
+// entity-phase record for the same file rather than discarding them.
+func jsScanDepthPartialFailure(path string) PartialFailure {
+	return PartialFailure{
+		Code:                 "E_PARSE_DEPTH_EXCEEDED",
+		Severity:             "warning",
+		FilePath:             path,
+		EffectOnCompleteness: "relation-phase scope walk truncated at the parser depth limit; calls nested deeper than that were not classified",
+		Detail:               fmt.Sprintf("AST nesting exceeded the %d-level walk limit during relation construction", maxParseWalkDepth),
+	}
+}
+
 func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelations(repoKey, files, recordsByFile, emit)
@@ -2858,7 +3270,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				for _, edge := range supertypesFromSignature(symbol.Language, symbol.Signature) {
 					sup, ok := firstTypeLikeNamed(symbolsByFile[symbol.FilePath], edge.Super)
 					if !ok || sup.ID == symbol.ID {
-						sup, ok = firstTypeLikeNamed(symbolsByShortName[edge.Super], edge.Super)
+						sup, ok = firstTypeLikeNamed(sharedTypeCandidates(symbol, symbolsByShortName[edge.Super]), edge.Super)
 					}
 					if !ok || sup.ID == symbol.ID {
 						continue
@@ -3119,6 +3531,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		// inventory-only `document` symbols (whose block is the whole file) and
 		// over data/markup languages, inventing cross-language call edges.
 		fileNeedsCallScan := needsCallScan && callExtractionLanguage(file.Language) && !skipFastCFamilyCallScan(spec, file.Language)
+		var pythonBareScopes *pythonBareImportScopes
+		var pythonIncompleteAliases map[string][]pythonImportContext
+		if fileNeedsCallScan && file.Language == "Python" {
+			pythonBareScopes = newPythonBareImportScopes(content, currentFileSymbols)
+			if !pythonBareScopes.complete {
+				pythonIncompleteAliases = pythonIncompleteAliasContexts(importedPythonBindings(content))
+			}
+		}
 		fileNeedsRouteScan := spec.emits("HANDLES_ROUTE") && routeScanLanguage(file.Language)
 		fileNeedsHTTPScan := spec.emits("HTTP_CALLS") && httpScanLanguage(file.Language)
 		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language)
@@ -3205,6 +3625,17 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				// call classification for the file.
 				recordFailure(jsScanPartialFailure(file.Path, jsScanErr))
 			}
+			if jsScan.depthTruncated && recordFailure != nil {
+				// A relation-phase walk stopped at the depth limit. Reported
+				// separately from jsScanErr because it is a PARTIAL result, not
+				// a failed parse: the scope state above the limit is real and
+				// still used below. Same code and severity as the entity phase,
+				// so one file truncated in both phases stays one record — but
+				// mergePartialFailures folds this record's effect and detail into
+				// it, because the loss described here (calls not classified) is
+				// not the entity phase's loss (declarations not extracted).
+				recordFailure(jsScanDepthPartialFailure(file.Path))
+			}
 			// Without namespaces there is nothing to map: every namespace-call
 			// consumer below is gated on jsNamespaceCalls entries, which require
 			// scanned namespaces, so skipping the per-symbol declaration matching
@@ -3227,7 +3658,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				return
 			}
 			block := symbolBlockFromLines(lines, from)
-			if file.Language == "JavaScript" || file.Language == "TypeScript" {
+			if file.Language == "JavaScript" || file.Language == "TypeScript" || file.Language == "Julia" {
 				if exact, ok := exactSymbolSource(content, from); ok {
 					block = exact
 				}
@@ -3290,8 +3721,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				callNames := callLikeIdentifiers(callBlock, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
+				var juliaLocalBindings map[string]struct{}
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
+					if len(callNames) > 0 && from.Kind == "method" && !from.Local && from.ContainerID != "" {
+						juliaLocalBindings = juliaLocalBindingNames(callBlock)
+					}
 				}
 				if file.Language == "Rust" {
 					for name := range rustTurbofishCallIdentifiers(callBlock) {
@@ -3409,6 +3844,29 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
+					inputs := pythonCallImportBinding(name, from, file.Language, pythonBareScopes, symbolsByShortName, callImportsByName, file.Path, manifestImports, knownFiles, readContent)
+					rawCandidates := inputs.rawCandidates
+					rawImportModuleSets := inputs.rawImportModuleSets
+					importsForCall := inputs.imports
+					var pythonAliasTargets []resolvedCallTarget
+					var pythonAliasExternal []RelationRecord
+					pythonGenericAllowed := inputs.genericAllowed
+					if file.Language == "Python" {
+						// The raw FFI exception is valid only for imports visible at an
+						// unshadowed AST call site in this callable. Ordinary filtered
+						// resolution keeps its established file-level map when scope
+						// analysis is incomplete; that incomplete view may only disable
+						// the raw cross-language exception, never ordinary imports.
+						if pythonBareScopes.complete {
+							pythonAliasTargets, pythonAliasExternal, _ = resolvePythonAliasImportTargets(name, from, pythonBareScopes.importContexts(from, name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
+						} else {
+							rawCandidates = nil
+							if contexts := pythonIncompleteAliases[name]; len(contexts) > 0 {
+								pythonAliasExternal = pythonAliasExternalCallRelations(from, contexts)
+								pythonGenericAllowed = false
+							}
+						}
+					}
 					// A container's block spans its members' definition lines, which
 					// look like calls (e.g. `def validate(self):`). Skip the names of
 					// direct children so a class is not credited with calling its own
@@ -3417,7 +3875,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						continue
 					}
 					var targets []resolvedCallTarget
-					if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
+					suppressExternal := false
+					if file.Language == "Python" && !pythonGenericAllowed {
+						suppressExternal = true
+					} else if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
 						// Same-file namespace members first, then members of a
 						// merged same-file value declaration, then the terminal-name
 						// fallback for namespaces reopened in another file. Shadowed
@@ -3429,7 +3890,21 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
 					} else {
-						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
+						targets = resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
+						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols, juliaLocalBindings)
+						genericSameContainerType := len(targets) == 1 && typeLikeKind(targets[0].Kind) &&
+							targets[0].FilePath == from.FilePath && targets[0].ContainerID == from.ContainerID
+						if blocked {
+							targets = nil
+							suppressExternal = true
+						} else if found && !genericSameContainerType {
+							targets = juliaTargets
+							suppressExternal = len(juliaTargets) == 0
+						}
+					}
+					normalTargets := targets
+					if file.Language == "Python" {
+						targets = unionResolvedCallTargets(normalTargets, pythonAliasTargets)
 					}
 					for _, to := range targets {
 						// A bare identifier passed as an argument may be a callback, but
@@ -3498,8 +3973,17 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							continue
 						}
 					}
-					if len(targets) == 0 {
-						for _, relation := range importedExternalCallRelationsForName(from, name, callImportsByName[name]) {
+					if file.Language == "Python" {
+						for _, relation := range pythonAliasExternal {
+							emit(relation)
+						}
+						if pythonGenericAllowed && len(normalTargets) == 0 && !suppressExternal {
+							for _, relation := range importedExternalCallRelationsForName(from, name, importsForCall[name]) {
+								emit(relation)
+							}
+						}
+					} else if len(targets) == 0 && !suppressExternal {
+						for _, relation := range importedExternalCallRelationsForName(from, name, importsForCall[name]) {
 							emit(relation)
 						}
 					}
@@ -3514,7 +3998,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
+					inputs := pythonCallImportBinding(name, from, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					var targets []resolvedCallTarget
+					if file.Language != "Python" || inputs.genericAllowed {
+						targets = resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), inputs.rawCandidates, inputs.rawImportModuleSets, currentFileSymbols, inputs.imports, false)
+					}
+					if file.Language == "Python" && pythonBareScopes != nil && pythonBareScopes.complete {
+						aliasTargets, _, _ := resolvePythonAliasImportTargets(name, from, pythonBareScopes.importContexts(from, name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
+						targets = unionResolvedCallTargets(targets, aliasTargets)
+					}
+					for _, to := range targets {
 						if typeLikeKind(to.Kind) {
 							continue // construction, not an async call
 						}
@@ -3541,11 +4034,42 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if needsDataFlow && callableSymbol {
+				// Several flows can describe one edge: `f(a, b, c)` forwards three
+				// caller parameters into the same callee, and relation identity is
+				// from+to+type, so all three land on one record. Collect every flow
+				// for an edge into its evidence array here rather than emitting
+				// competing records and letting the dedupe keep an arbitrary first
+				// one — that reported one real flow as if it were the only one.
+				// Grouping at emit keeps the streaming path's bounded memory (the
+				// map lives for one symbol) and needs no dedupe-side merge.
+				//
+				// The residual this cannot reach: an edge two symbols each
+				// justify (A forwards a parameter into B, B returns A()) is
+				// produced twice from different `from` symbols, and the dedupe
+				// keeps the first, unmarked. Merging those needs a boundary that
+				// sees every producer, which on the streaming path means buffering
+				// all DATA_FLOWS records to the end of the pass -- memory that
+				// grows with the edge count, and output reordered out of the
+				// canonical order this change exists to guarantee. It costs a few
+				// edges here (currently 4 of 5,240, all of them mutual recursion
+				// inside one file), so it is documented in the schema rather than
+				// paid for. Revisit if a corpus shows it is not rare.
+				edgeOrder := []string{}
+				flowsByEdge := map[string]*RelationRecord{}
 				for _, flow := range returnFlowCalls(block, symbolFlowParameterNames(from)) {
 					if flow.Name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName, true) {
+					inputs := pythonCallImportBinding(flow.Name, from, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					var targets []resolvedCallTarget
+					if file.Language != "Python" || inputs.genericAllowed {
+						targets = resolveCallTargetsWithRawImport(flow.Name, from, sharedTypeCandidates(from, symbolsByShortName[flow.Name]), inputs.rawCandidates, inputs.rawImportModuleSets, currentFileSymbols, inputs.imports, true)
+					}
+					if file.Language == "Python" && pythonBareScopes != nil && pythonBareScopes.complete {
+						aliasTargets, _, _ := resolvePythonAliasImportTargets(flow.Name, from, pythonBareScopes.importContexts(from, flow.Name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
+						targets = unionResolvedCallTargets(targets, aliasTargets)
+					}
+					for _, to := range targets {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}
@@ -3555,7 +4079,33 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							fromID, toID = from.ID, to.ID
 							confidenceCap = 0.7
 						}
-						emit(RelationRecord{
+						item := Evidence{
+							Kind:      flow.EvidenceKind,
+							FilePath:  from.FilePath,
+							StartLine: from.StartLine,
+							EndLine:   from.EndLine,
+							Detail:    flow.Detail,
+						}
+						edgeKey := fromID + "\x00" + toID
+						if existing, ok := flowsByEdge[edgeKey]; ok {
+							// Past the cap the array stops growing, so the record has to
+							// say so rather than read as an exhaustive list again.
+							//
+							// Assigned, not appended: this branch runs once per dropped
+							// flow, not once per edge, so appending would repeat the code
+							// as many times as the cap dropped. Anything that later needs
+							// to preserve other warning codes here has to append under a
+							// contains-check, not switch to a bare append.
+							if len(existing.Evidence) >= dataFlowEvidenceLimit {
+								existing.WarningCodes = []string{evidenceTruncatedWarning}
+								existing.EvidenceDropped++
+								continue
+							}
+							existing.Evidence = append(existing.Evidence, item)
+							continue
+						}
+						edgeOrder = append(edgeOrder, edgeKey)
+						flowsByEdge[edgeKey] = &RelationRecord{
 							RecordType:    "relation",
 							FromID:        fromID,
 							ToID:          toID,
@@ -3565,16 +4115,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							RelationScope: to.Scope,
 							Resolution:    to.Resolution,
 							TargetKind:    "symbol",
-							Evidence: []Evidence{{
-								Kind:      flow.EvidenceKind,
-								FilePath:  from.FilePath,
-								StartLine: from.StartLine,
-								EndLine:   from.EndLine,
-								Detail:    flow.Detail,
-							}},
-							WarningCodes: []string{},
-						})
+							Evidence:      []Evidence{item},
+							WarningCodes:  []string{},
+						}
 					}
+				}
+				// returnFlowCalls is totally ordered and resolveCallTargets is
+				// deterministic, so both the edge order and each evidence array are
+				// reproducible without re-sorting.
+				for _, edgeKey := range edgeOrder {
+					emit(*flowsByEdge[edgeKey])
 				}
 			}
 			if fileNeedsServiceScan {
@@ -3832,14 +4382,37 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				for _, name := range sortedKeysOf(topLevelNames) {
+					inputs := pythonCallImportBinding(name, fileSource, file.Language, pythonBareScopes, symbolsByShortName, importsByName, file.Path, manifestImports, knownFiles, readContent)
+					rawCandidates := inputs.rawCandidates
+					rawImportModuleSets := inputs.rawImportModuleSets
+					importsForCall := inputs.imports
+					var pythonAliasTargets []resolvedCallTarget
+					var pythonIncompleteAliasExternal []RelationRecord
+					pythonGenericAllowed := inputs.genericAllowed
+					if file.Language == "Python" {
+						if pythonBareScopes.complete {
+							pythonAliasTargets, _, _ = resolvePythonAliasImportTargets(name, fileSource, pythonBareScopes.importContexts(fileSource, name), symbolsByShortName, file.Path, manifestImports, knownFiles, readContent)
+						} else {
+							rawCandidates = nil
+							if contexts := pythonIncompleteAliases[name]; len(contexts) > 0 {
+								pythonIncompleteAliasExternal = pythonAliasExternalCallRelations(fileSource, contexts)
+								pythonGenericAllowed = false
+							}
+						}
+					}
 					var targets []resolvedCallTarget
-					if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
+					if file.Language == "Python" && !pythonGenericAllowed {
+						targets = nil
+					} else if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
 						// Same chain as the per-symbol namespace path above; the
 						// file-level pseudo-symbol has no self-call or member names
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else {
-						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false)
+						targets = resolveCallTargetsWithRawImport(name, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
+					}
+					if file.Language == "Python" {
+						targets = unionResolvedCallTargets(targets, pythonAliasTargets)
 					}
 					for _, to := range targets {
 						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
@@ -3866,6 +4439,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							}},
 							WarningCodes: []string{},
 						})
+					}
+					for _, relation := range pythonIncompleteAliasExternal {
+						emit(relation)
 					}
 				}
 			}
@@ -4189,7 +4765,7 @@ func buildMixinRelation(repoKey string, anchor SymbolRecord, edge rawSupertype, 
 		}
 	}
 	if targetKind == "external" {
-		for _, symbol := range symbolsByShortName[edge.Super] {
+		for _, symbol := range sharedTypeCandidates(anchor, symbolsByShortName[edge.Super]) {
 			if accepts(symbol) {
 				toID, targetKind, resolution, scope, confidence = symbol.ID, "symbol", "name_only", "module", minFloat(edge.Confidence, 0.85)
 				break
@@ -4338,7 +4914,7 @@ func buildTypeRelation(repoKey string, anchor SymbolRecord, super, relation stri
 	confidence := minFloat(baseConfidence, 0.8)
 	if sym, ok := firstTypeLikeNamed(sameFileSymbols, super); ok && sym.ID != anchor.ID {
 		toID, targetKind, resolution, scope, confidence = sym.ID, "symbol", "exact", "file", baseConfidence
-	} else if sym, ok := firstTypeLikeNamed(symbolsByShortName[super], super); ok && sym.ID != anchor.ID {
+	} else if sym, ok := firstTypeLikeNamed(sharedTypeCandidates(anchor, symbolsByShortName[super]), super); ok && sym.ID != anchor.ID {
 		toID, targetKind, resolution, scope, confidence = sym.ID, "symbol", "name_only", "module", minFloat(baseConfidence, 0.85)
 	}
 	return RelationRecord{
@@ -4395,7 +4971,7 @@ func typeScriptReceiverTypeResolvesElsewhere(typeName string, from SymbolRecord,
 	if len(importsByName[typeName]) > 0 {
 		return true
 	}
-	for _, candidate := range symbolsByShortName[typeName] {
+	for _, candidate := range sharedTypeCandidates(from, symbolsByShortName[typeName]) {
 		if !typeLikeKind(candidate.Kind) || candidate.FilePath != from.FilePath {
 			continue
 		}
@@ -4632,10 +5208,10 @@ func collectPackageVarTypes(content string) map[string]pkgQualType {
 // reference by the Go convention that a package's import alias equals its
 // directory basename (json.Encoder -> the Encoder in .../json/). Requires a
 // unique match so an ambiguous alias resolves to nothing rather than wrongly.
-func resolveQualifiedType(qt pkgQualType, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
+func resolveQualifiedType(from SymbolRecord, qt pkgQualType, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
 	var match SymbolRecord
 	found := 0
-	for _, cand := range symbolsByShortName[qt.typeName] {
+	for _, cand := range sharedTypeCandidates(from, symbolsByShortName[qt.typeName]) {
 		if !typeLikeKind(cand.Kind) {
 			continue
 		}
@@ -4808,7 +5384,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// the package's own file (perlSymbolFileMatchesType), which is how the
 		// fluent gate distinguishes a same-object chain from getter navigation.
 		hopResolvable := func(hop, pkgType string) bool {
-			for _, candidate := range symbolsByShortName[hop] {
+			for _, candidate := range sharedTypeCandidates(from, symbolsByShortName[hop]) {
 				if candidate.Language != "Perl" {
 					continue
 				}
@@ -5064,7 +5640,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	var relations []RelationRecord
 	methodResolved := map[string]bool{}
 	for _, call := range calls {
-		method, confidence, reason, resolution, scope, ok := receiverQualifiedMethodTarget(from, call, symbolsByShortName[call.Method], returnTypesBySymbolNameAndFile)
+		method, confidence, reason, resolution, scope, ok := receiverQualifiedMethodTarget(from, call, sharedTypeCandidates(from, symbolsByShortName[call.Method]), returnTypesBySymbolNameAndFile)
 		if !ok {
 			continue
 		}
@@ -5112,7 +5688,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if typeName == "" {
 				continue
 			}
-			target, ok := perlCallableForType(typeName, call.Method, symbolsByShortName[call.Method])
+			target, ok := perlCallableForType(typeName, call.Method, sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || target.ID == from.ID {
 				continue
 			}
@@ -5174,13 +5750,13 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 					confidence = 0.75
 					reason = "method call resolved via property-chain-typed local receiver"
 				}
-				sym, ok := typeLikeNamedWithMethod(symbolsByShortName[typeName], typeName, from.FilePath, call.Method, methodsByContainer, superContainerByID)
+				sym, ok := typeLikeNamedWithMethod(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath, call.Method, methodsByContainer, superContainerByID)
 				if !ok {
 					continue
 				}
 				targetID = sym.ID
 				receiverTypeKind = sym.Kind
-			} else if cls, ok := typeLikeNamedWithMethod(symbolsByShortName[call.Receiver], call.Receiver, from.FilePath, call.Method, methodsByContainer, superContainerByID); ok {
+			} else if cls, ok := typeLikeNamedWithMethod(sharedTypeCandidates(from, symbolsByShortName[call.Receiver]), call.Receiver, from.FilePath, call.Method, methodsByContainer, superContainerByID); ok {
 				// ClassName.method(): the receiver is itself a type name, not a
 				// variable, so this is a static (class-qualified) call and the
 				// target is that class's own method.
@@ -5193,7 +5769,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// convention resolveQualifiedType already encodes) so the method
 				// lookup below runs against the right declaration. For an interface
 				// that declaration's members are its method requirements.
-				sym, ok := resolveQualifiedType(qt, symbolsByShortName)
+				sym, ok := resolveQualifiedType(from, qt, symbolsByShortName)
 				if !ok {
 					continue
 				}
@@ -5205,7 +5781,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// Package-level var of a package-qualified type (alias.Type). Resolve
 				// the specific imported type so an ambiguous bare name (Encoder in
 				// both json and cbor) maps to the right one.
-				sym, ok := resolveQualifiedType(qt, symbolsByShortName)
+				sym, ok := resolveQualifiedType(from, qt, symbolsByShortName)
 				if !ok {
 					continue
 				}
@@ -5216,7 +5792,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// C# class-level member receiver: `Dependencies.Method(...)`
 				// where `Dependencies` is a typed property or field of the
 				// enclosing class (or a base class).
-				sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+				sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath)
 				if !ok {
 					continue
 				}
@@ -5244,7 +5820,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			// last-declared accessor (getter or setter), so resolve the setter
 			// explicitly and prefer it — otherwise the edge lands on the getter
 			// about half the time (declaration-order dependent).
-			if setter, setterInherited, found := dartSetterAccessor(targetID, call.Method, symbolsByShortName[call.Method], superContainerByID); found {
+			if setter, setterInherited, found := dartSetterAccessor(targetID, call.Method, sharedTypeCandidates(from, symbolsByShortName[call.Method]), superContainerByID); found {
 				method, inherited = setter, setterInherited
 			}
 		}
@@ -5263,7 +5839,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			// exactly one method in the workspace carries the name, resolve to
 			// that sole implementation — the same unique-name stance as the Go
 			// interface fallback.
-			method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+			method, ok = uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if ok {
 				confidence = minFloat(confidence, 0.7)
 				reason = "protocol-typed receiver call resolved to the unique implementing method"
@@ -5356,7 +5932,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				continue
 			}
 			unique := 0
-			for _, candidate := range symbolsByShortName[call.Method] {
+			for _, candidate := range sharedTypeCandidates(from, symbolsByShortName[call.Method]) {
 				if candidate.Language == from.Language && candidate.Kind == "method" && candidate.FilePath == from.FilePath {
 					unique++
 				}
@@ -5402,7 +5978,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if _, external := importedReceiverVars[call.Receiver]; external {
 			continue
 		}
-		m, ok := uniqueMethodByShortName(symbolsByShortName[call.Method])
+		m, ok := uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 		if !ok || m.ID == from.ID {
 			continue
 		}
@@ -5438,7 +6014,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if methodResolved[call.Receiver+"."+call.Method] {
 			continue
 		}
-		m, ok := uniqueMethodByShortName(symbolsByShortName[call.Method])
+		m, ok := uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 		if !ok || m.ID == from.ID || m.FilePath != from.FilePath {
 			continue
 		}
@@ -5468,7 +6044,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if methodResolved[call.Receiver+"."+call.Method] {
 				continue
 			}
-			target, ok := uniqueCallableByShortName(symbolsByShortName[call.Method], from.Language)
+			target, ok := uniqueCallableByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]), from.Language)
 			if !ok || target.ID == from.ID {
 				continue
 			}
@@ -5574,7 +6150,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 			var target SymbolRecord
 			resolved := false
-			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, from.FilePath); ok {
+			if sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[propType]), propType, from.FilePath); ok {
 				if method, _, ok := lookupMethodUpChain(sym.ID, chain.Method, methodsByContainer, superContainerByID); ok {
 					target, resolved = method, true
 				}
@@ -5647,7 +6223,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 			var target SymbolRecord
 			resolved := false
-			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, from.FilePath); ok {
+			if sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[propType]), propType, from.FilePath); ok {
 				if method, _, ok := lookupMethodUpChain(sym.ID, chain.Method, methodsByContainer, superContainerByID); ok {
 					target, resolved = method, true
 				}
@@ -5744,7 +6320,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if methodResolved[key] || swiftChainTails[key] {
 				continue
 			}
-			target, ok := swiftReceiverMethodByArgumentLabels(call, symbolsByShortName[call.Method])
+			target, ok := swiftReceiverMethodByArgumentLabels(call, sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || target.ID == from.ID {
 				continue
 			}
@@ -5889,7 +6465,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			confidence = 0.85
 			reason = "PHP parent:: call resolved to the superclass"
 		default:
-			cls, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[call.Class], call.Class, from.FilePath)
+			cls, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[call.Class]), call.Class, from.FilePath)
 			if !ok {
 				continue
 			}
@@ -5938,7 +6514,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if !ok {
 			continue
 		}
-		sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+		sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath)
 		if !ok {
 			continue
 		}
@@ -5988,7 +6564,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if typeName == "" {
 			continue
 		}
-		sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+		sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath)
 		if !ok {
 			continue
 		}
@@ -6053,7 +6629,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if !ok {
 				continue
 			}
-			receiverSym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[receiverType], receiverType, from.FilePath)
+			receiverSym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[receiverType]), receiverType, from.FilePath)
 			if !ok {
 				continue
 			}
@@ -6066,7 +6642,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if !ok {
 			continue
 		}
-		propSym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, propFile)
+		propSym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[propType]), propType, propFile)
 		if !ok {
 			continue
 		}
@@ -6120,7 +6696,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if methodResolved[call.Receiver+"."+call.Method] {
 				continue
 			}
-			method, ok := csharpUniqueExtensionMethod(symbolsByShortName[call.Method])
+			method, ok := csharpUniqueExtensionMethod(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || method.ID == from.ID {
 				continue
 			}
@@ -6151,7 +6727,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 	}
 	for _, call := range chainedCalls {
-		sym, ok := firstTypeLikeNamed(symbolsByShortName[call.TypeName], call.TypeName)
+		sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[call.TypeName]), call.TypeName)
 		if !ok {
 			continue
 		}
@@ -6168,7 +6744,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			// method in the workspace carries the name, resolve to that sole
 			// implementation — the same unique-name tier as the receiver-call
 			// fallback.
-			method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+			method, ok = uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			confidence = 0.7
 			reason = "interface method call resolved to the unique implementing method"
 			resolution = "name_only"
@@ -6212,7 +6788,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			returnTypes = returnTypesBySymbolNameAndDir[call.Factory][filepath.ToSlash(filepath.Dir(from.FilePath))]
 		}
 		if len(returnTypes) == 0 && from.Language == "Rust" {
-			method, ok := uniqueMethodByShortName(symbolsByShortName[call.Method])
+			method, ok := uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 			if !ok || method.ID == from.ID || method.Language != "Rust" {
 				continue
 			}
@@ -6242,7 +6818,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			continue
 		}
 		for _, typeName := range returnTypes {
-			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 			if !ok {
 				continue
 			}
@@ -6258,7 +6834,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// one method in the workspace carries the name, resolve to that
 				// sole implementation — the same unique-name tier as the
 				// receiver-call fallback.
-				method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+				method, ok = uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
 				confidence = 0.7
 				reason = "interface-typed return resolved to the unique implementing method"
 				resolution = "name_only"
@@ -6293,8 +6869,8 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 	}
 	for _, call := range chainedReturnCalls {
-		for _, typeName := range methodReturnChainTypes(call.TypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+		for _, typeName := range methodReturnChainTypes(from, call.TypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 			if !ok {
 				continue
 			}
@@ -6334,8 +6910,8 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 		intermediateMethods := call.Methods[:len(call.Methods)-1]
 		finalMethod := call.Methods[len(call.Methods)-1]
-		for _, typeName := range methodReturnChainTypes(call.TypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+		for _, typeName := range methodReturnChainTypes(from, call.TypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 			if !ok {
 				continue
 			}
@@ -6371,8 +6947,8 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	}
 	for _, call := range returnedChainCalls {
 		for _, factoryTypeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
-			for _, typeName := range methodReturnChainTypes(factoryTypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-				sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			for _, typeName := range methodReturnChainTypes(from, factoryTypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+				sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 				if !ok {
 					continue
 				}
@@ -6415,8 +6991,8 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		intermediateMethods := call.Methods[:len(call.Methods)-1]
 		finalMethod := call.Methods[len(call.Methods)-1]
 		for _, factoryTypeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
-			for _, typeName := range methodReturnChainTypes(factoryTypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
-				sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			for _, typeName := range methodReturnChainTypes(from, factoryTypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+				sym, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 				if !ok {
 					continue
 				}
@@ -6549,13 +7125,13 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 	}
 	sort.Strings(requirements)
 	if len(requirements) == 1 {
-		if _, unique := uniqueGoConcreteMethodByShortName(symbolsByShortName[ifaceMethod.Name]); !unique {
+		if _, unique := uniqueGoConcreteMethodByShortName(sharedTypeCandidates(ifaceMethod, symbolsByShortName[ifaceMethod.Name])); !unique {
 			return nil
 		}
 	}
 	byContainer := map[string]SymbolRecord{}
 	var order []string
-	for _, candidate := range symbolsByShortName[ifaceMethod.Name] {
+	for _, candidate := range sharedTypeCandidates(ifaceMethod, symbolsByShortName[ifaceMethod.Name]) {
 		if candidate.Language != "Go" || candidate.Kind != "method" || candidate.ContainerID == "" {
 			continue
 		}
@@ -6808,7 +7384,7 @@ func receiverDeepChainSuffixes(chained []typedMethodDeepChainCall, returned []re
 	return suffixes
 }
 
-func methodReturnChainTypes(typeName string, methodNames []string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
+func methodReturnChainTypes(from SymbolRecord, typeName string, methodNames []string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
 	if typeName == "" {
 		return nil
 	}
@@ -6820,7 +7396,7 @@ func methodReturnChainTypes(typeName string, methodNames []string, methodsByCont
 		var next []string
 		seen := map[string]bool{}
 		for _, currentType := range types {
-			for _, returnedType := range methodReturnTypes(currentType, methodName, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			for _, returnedType := range methodReturnTypes(from, currentType, methodName, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
 				if returnedType == "" || seen[returnedType] {
 					continue
 				}
@@ -6833,8 +7409,8 @@ func methodReturnChainTypes(typeName string, methodNames []string, methodsByCont
 	return types
 }
 
-func methodReturnTypes(typeName, methodName string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
-	typeSymbol, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+func methodReturnTypes(from SymbolRecord, typeName, methodName string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
+	typeSymbol, ok := firstTypeLikeNamed(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName)
 	if !ok {
 		return nil
 	}
@@ -6862,6 +7438,61 @@ func importedExternalCallRelationsForName(from SymbolRecord, name string, module
 	return relations
 }
 
+// importedReceiverCallTargets resolves `receiver.method(...)`, where `receiver`
+// is a name the file imports, against the WORKSPACE-WIDE short-name index.
+//
+// That index is keyed by name alone, so every lookup into it is cross-language
+// by construction, and elsewhere it is narrowed by sharedTypeCandidates. Here
+// that filter alone is the wrong guard. The language-compatibility relation
+// answers one question -- may source written in language A name a type DECLARED
+// in language B -- and this binding is not a type reference. It is an explicit
+// import whose module path resolves to the callee's FILE, which is direct
+// evidence that these two files interoperate. A Python module calling into a
+// locally built C extension is exactly the shape the relation refuses: Python/C
+// is deliberately absent from it because the dynamic language never names the C
+// struct, yet `import frobnicate` beside `frobnicate.c` really does call its
+// exported functions. Measured before this change the resolved edge was
+// discarded and replaced by an unresolved `external:symbol:frobnicate.compute`
+// target, even though the module path matched a parsed local file.
+//
+// Import evidence outranks the language-pair heuristic only while it is
+// unambiguous. Module paths are matched by suffix, so one import can match
+// same-named callables in several languages at once; nothing then says which of
+// them the import actually bound, and both emitting the fanout and picking a
+// winner invent an FFI edge. So the type-sharing candidates are still preferred
+// whenever they resolve anything -- leaving every previously resolved call,
+// same-language fanout included, exactly as it was -- and the unfiltered set is
+// consulted only when it names exactly one target.
+func importedReceiverCallTargets(from SymbolRecord, modules []string, candidates []SymbolRecord) []resolvedCallTarget {
+	var matched []SymbolRecord
+	for _, to := range candidates {
+		if to.ID == from.ID || to.Kind == "field" {
+			continue
+		}
+		if importedNameMatchesFile(modules, from.FilePath, to.FilePath) {
+			matched = append(matched, to)
+		}
+	}
+	resolved := sharedTypeCandidates(from, matched)
+	if len(resolved) == 0 {
+		if len(matched) != 1 {
+			return nil
+		}
+		resolved = matched
+	}
+	var targets []resolvedCallTarget
+	for _, to := range resolved {
+		targets = append(targets, resolvedCallTarget{
+			SymbolRecord: to,
+			Confidence:   0.84,
+			Reason:       "receiver call resolved through imported module path",
+			Resolution:   "import_resolved",
+			Scope:        "module",
+		})
+	}
+	return targets
+}
+
 func importedReceiverCallRelations(from SymbolRecord, block string, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
@@ -6869,21 +7500,7 @@ func importedReceiverCallRelations(from SymbolRecord, block string, importsByNam
 	var relations []RelationRecord
 	seen := map[string]bool{}
 	for _, call := range receiverCalls(block) {
-		var localTargets []resolvedCallTarget
-		for _, to := range symbolsByShortName[call.Method] {
-			if to.ID == from.ID || to.Kind == "field" {
-				continue
-			}
-			if importedNameMatchesFile(importsByName[call.Receiver], from.FilePath, to.FilePath) {
-				localTargets = append(localTargets, resolvedCallTarget{
-					SymbolRecord: to,
-					Confidence:   0.84,
-					Reason:       "receiver call resolved through imported module path",
-					Resolution:   "import_resolved",
-					Scope:        "module",
-				})
-			}
-		}
+		localTargets := importedReceiverCallTargets(from, importsByName[call.Receiver], symbolsByShortName[call.Method])
 		if len(localTargets) > 0 {
 			for _, target := range localTargets {
 				key := target.ID
@@ -9088,6 +9705,17 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 			if subject == "" {
 				continue
 			}
+			// The workspace short-name lookup is deliberately NOT filtered
+			// through sharedTypeCandidates. That relation answers whether
+			// source in one language may name a type DECLARED in another, and
+			// a TESTS edge names no type: it records the convention that
+			// `test_frobnicate` covers `frobnicate`. Harnesses cross language
+			// boundaries as a matter of course — pytest over a C extension, a
+			// shell script over a compiled binary, JS specs over a WASM module
+			// — so gating them on type interop dropped those edges wholesale,
+			// and asymmetrically at that, since the C-family relation is
+			// directional and C names nothing at all. Precision comes from
+			// resolveTestSubject's evidence order instead.
 			target, resolution, ok := resolveTestSubject(subject, symbol, symbolsByShortName[subject], resolvedImportsByFile[path])
 			if !ok {
 				continue
@@ -9366,9 +9994,26 @@ func typeNameOccursBare(signature, name string) bool {
 // resolution. An ambiguous name with no import evidence resolves to nothing —
 // picking the lexically-first same-name type poisons the graph with
 // cross-crate/cross-package edges.
+//
+// Candidates are restricted to languages that genuinely share type
+// declarations with the referring symbol (see languagesShareTypes). The
+// workspace short-name index is keyed by name alone, so without that filter a
+// workspace-unique name bound across any language boundary — an Erlang record
+// became the resolved parameter type of an R function that happened to reuse
+// the name. Filtering candidates rather than filtering emitted edges also
+// removes those impossible declarations from the ambiguity count, so a foreign
+// same-name declaration no longer suppresses the real, resolvable edge.
 func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecord, symbolsByShortName map[string][]SymbolRecord, importsByName, qualifiedImportsByName map[string][]string) (SymbolRecord, string, string, float64, bool) {
 	var candidates []SymbolRecord
-	for _, sym := range symbolsByShortName[name] {
+	// The language filter is sharedTypeCandidates' job and only its job. Repeating
+	// languagesShareTypes here re-asked the LANGUAGE-pair question about a list
+	// already filtered by candidateSharesDeclarations, which is the finer of the
+	// two: it answers per DECLARATION where a language pair cannot. The duplicate
+	// silently overrode the finer answer -- a `struct` declared `extern "C"` in a
+	// C++-labelled header passed the candidate filter and was then dropped again
+	// here, so `C/renderWidget -> C++/Widget` was missing while the CALLS edge to
+	// the function beside it resolved.
+	for _, sym := range sharedTypeCandidates(from, symbolsByShortName[name]) {
 		if sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind) {
 			candidates = append(candidates, sym)
 		}
@@ -9533,7 +10178,7 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 			// Nearest-package preference, not first-match: a module that declares
 			// one `SDConfig` per sibling package would otherwise attribute every
 			// field read to whichever package sorted first.
-			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath); ok {
+			if sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath); ok {
 				containerID = sym.ID
 				confidence = 0.85
 				if _, ok := paramTypes[access.Receiver]; ok {
@@ -10070,32 +10715,103 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	// exclusions below it are wider than a complete sweep's — so it is reported
 	// beside the file-limit warning rather than inferred from a short listing.
 	warnings = append(warnings, sweepWarnings...)
-	registry := newOversizeRegistry()
+	// One os.Root for the lifetime of this source makes the repository boundary
+	// structural. Joining a path onto repo and checking the result with os.Lstat
+	// bounds only the final component: an intermediate symlinked directory is
+	// followed, and filepath.Join normalizes a leading "../" into a path above the
+	// root before the check ever runs. The paths reaching these readers are not all
+	// listing output — jsLocalImportCandidates derives candidates from an import
+	// specifier written in a repository file, so "../../secret.env" arrives here as
+	// "../secret.env" — which is why the confinement cannot be left as a property of
+	// the callers.
+	//
+	// The root is opened once rather than per read: os.Root methods are
+	// goroutine-safe (provider_parallel.go drives these closures concurrently), and
+	// the per-file cost is unchanged because root.Lstat and root.Open are the same
+	// two syscalls, resolved relative to the root's descriptor.
+	//
+	// Containment is not all this changes. os.Root resolves every component inside
+	// the root, so a listed path that reached its file THROUGH a symlinked directory
+	// is now refused unless that link resolves within the repository: an
+	// intermediate link pointing outside is refused (the escape being closed), and
+	// so is an absolute link target even when it points back inside the repository,
+	// because os.Root will not rebase an absolute path onto itself. filepath.Join
+	// plus os.Lstat followed both, so both used to yield content. A relative link
+	// that resolves within the repository is still followed, and is the only one of
+	// the three that behaves as before.
+	//
+	// The listing can hold such a path: it comes from `git ls-files --cached`
+	// (gitutil.ListWorktreeFiles), so a directory tracked in the index but replaced
+	// on disk by a symlink still lists the files under it. Each one is now omitted
+	// from the snapshot with an error-severity E_FILE_READ partial failure
+	// (provider_parallel.go:119-125) where it previously contributed symbols and
+	// relations, which also drops the snapshot's completeness_level to "unsafe".
+	// filepath.WalkDir, the fallback listing, never descends a symlinked directory
+	// and so cannot produce the path at all.
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		if !errors.Is(err, fs.ErrPermission) {
+			return openedSource{}, err
+		}
+		// A rootless reader cannot prove repository identity across concurrent
+		// pathname replacement. Keep the source shape so this defensive branch
+		// reports per-file read failures, but make every content read fail closed.
+		// The listing preflight already refuses a persistently execute-only root;
+		// this branch covers permissions changing between listing and reading.
+		return openManuallyConfinedWorktreeSource(repo, paths, ignores, warnings, maxReadBytes), nil
+	}
+	// Taken once, from the descriptor os.OpenRoot just pinned, and consulted by
+	// every fallback read below. See pinnedRootIdentity.
+	pinned := pinnedRootIdentity(root)
+	registry := newOversizeRegistry(root, repo)
 	read := func(path string) (string, bool) {
-		full := filepath.Join(repo, filepath.FromSlash(path))
-		info, err := os.Lstat(full)
-		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		name := filepath.FromSlash(path)
+		// Lstat before Open keeps the previous refusal of a symlinked final
+		// component: Root.Lstat does not traverse the link, and Root.Open would not
+		// leave the root anyway. The paths os.Root additionally refuses — those
+		// resolved through a symlinked directory it cannot resolve within the root —
+		// are described above the root.
+		info, err := root.Lstat(name)
+		if err != nil {
+			// os.Root's own resolution refused this path outright — a symlink
+			// chain over its hardcoded 8-hop limit, or an intermediate
+			// symlink with an absolute target, are the two shapes that reach
+			// here despite resolving to a location inside the repository. See
+			// readFallback: it re-verifies containment on the DESTINATION, so
+			// a path that genuinely escapes is refused there exactly as it is
+			// refused here.
+			return readFallback(pinned, repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
+		}
+		if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return "", false
 		}
 		if maxReadBytes > 0 && info.Size() > maxReadBytes {
-			registry.note(path, full, info.Size())
+			registry.note(path, info.Size())
 			return "", false
 		}
-		content, err := os.ReadFile(full)
+		file, err := root.Open(name)
+		if err != nil {
+			return readFallback(pinned, repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
+		}
+		defer file.Close()
+		content, err := io.ReadAll(file)
 		if err != nil {
 			return "", false
 		}
 		return string(content), true
 	}
 	readPrefix := func(path string, limit int) (string, bool) {
-		full := filepath.Join(repo, filepath.FromSlash(path))
-		info, err := os.Lstat(full)
-		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		name := filepath.FromSlash(path)
+		info, err := root.Lstat(name)
+		if err != nil {
+			return readPrefixFallback(pinned, repo, path, limit)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return "", false
 		}
-		file, err := os.Open(full)
+		file, err := root.Open(name)
 		if err != nil {
-			return "", false
+			return readPrefixFallback(pinned, repo, path, limit)
 		}
 		defer file.Close()
 		buf := make([]byte, limit)
@@ -10111,8 +10827,228 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		readPrefix: readPrefix,
 		oversize:   registry.lookup,
 		ignores:    ignores,
-		warnings:   warnings,
+		// This field was nil while the working-tree reader held no handle. The root
+		// outlives every closure above, so the caller that closes the source is what
+		// releases it; every consumer already guards for a nil closer.
+		close:    root.Close,
+		warnings: warnings,
 	}, nil
+}
+
+// The fallback directory translation resolves the DIRECTORY portion of
+// repo/relPath through every symlink it contains — repo itself included, so a
+// repository reached through its own symlink does not make an in-repository
+// file look external. The final component stays unresolved so the caller can
+// still refuse a symlinked leaf, matching root.Lstat's own refusal.
+//
+// This exists because os.Root refuses two shapes of pointer that resolve to a
+// location inside the repository just as validly as any other: a symlink
+// chain longer than its hardcoded 8-hop limit (os.Root's rootMaxSymlinks;
+// filepath.EvalSymlinks allows 255, in line with __POSIX_SYMLOOP_MAX's more
+// common real-world value), and any symlink whose target is spelled as an
+// absolute path, which os.Root refuses outright because it has no root-
+// relative meaning to rebase onto — even when that absolute path names a real
+// location this repository already owns. Both are refused by os.Root's own
+// design, not by anything this package controls, so a path os.Root refuses is
+// re-verified here on its DESTINATION before being treated as genuinely
+// outside the repository: what determines whether a read leaks anything is
+// where it ends up, not how many hops it took or how a symlink spelled its
+// target.
+//
+// Resolution supplies only a repository-relative translation, never an open
+// authority. containedRealDir re-enters through an identity-checked os.Root,
+// so concurrent pathname changes either remain confined to that repository or
+// make the descriptor-relative open fail.
+// pinnedRootIdentity records WHICH directory a worktree source selected, so the
+// fallback readers can refuse to answer from a different one.
+//
+// os.OpenRoot gives the ordinary reads a descriptor that no later rename can
+// move. The fallback readers re-resolve the repository only to translate a
+// special absolute or long-chain alias into a repository-relative path. Before
+// reading, containedRealDir reopens that repository, compares the new descriptor
+// to this identity, and descends only through the confined handle. root.Stat(".")
+// is the only accepted source: a pathname FileInfo without a retained handle
+// cannot resist replacement or inode-reuse ABA and therefore fails closed.
+func pinnedRootIdentity(root *os.Root) fs.FileInfo {
+	if root == nil {
+		return nil
+	}
+	if info, err := root.Stat("."); err == nil {
+		return info
+	}
+	return nil
+}
+
+// containedRealDirPath resolves relPath's parent and translates it into a path
+// relative to the canonical repository. Neither returned name is a read
+// authority: containedRealDir must open and identity-check realRepo, then open
+// relDir through that confined descriptor.
+func containedRealDirPath(repo, dir string) (realRepo, relDir string, ok bool) {
+	realRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		return "", "", false
+	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", "", false
+	}
+	rel, err := filepath.Rel(realRepo, realDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", false
+	}
+	return realRepo, rel, true
+}
+
+// containedRealDir pins the directory holding relPath's final component and
+// returns a descriptor on it, so the caller opens the leaf RELATIVE to a handle
+// rather than by re-resolving a validated pathname.
+//
+// Validating a name and then opening that name are two resolutions of the same
+// string, and the filesystem can change between them. An in-repository directory
+// renamed and replaced with a symlink in that window made the open follow the
+// replacement outside the repository, with the containment check already passed
+// -- the check said one thing and the read did another. A descriptor cannot be
+// redirected that way: once opened it names an inode, and a later rename of the
+// path it came from leaves the handle where it was.
+//
+// The canonical path is used only to obtain a repository-relative directory
+// name. The repository itself is then opened and identity-checked by descriptor,
+// and the child is opened through that confined root. A concurrent swap can
+// select another in-repository object or make OpenRoot refuse, but it cannot
+// redirect the returned handle outside the repository this source pinned.
+//
+// The caller closes the returned root.
+func containedRealDir(pinned fs.FileInfo, repo, relPath string) (*os.Root, string, bool) {
+	return containedRealDirWithOpen(pinned, repo, relPath, (*os.Root).OpenRoot)
+}
+
+func containedRealDirWithOpen(
+	pinned fs.FileInfo,
+	repo, relPath string,
+	openDir func(*os.Root, string) (*os.Root, error),
+) (*os.Root, string, bool) {
+	dir, base := filepath.Split(filepath.Join(repo, filepath.FromSlash(relPath)))
+	if pinned == nil || base == "" || base == "." || base == ".." {
+		return nil, "", false
+	}
+	realRepo, relativeDir, ok := containedRealDirPath(repo, dir)
+	if !ok {
+		return nil, "", false
+	}
+	repoRoot, err := os.OpenRoot(realRepo)
+	if err != nil {
+		return nil, "", false
+	}
+	defer repoRoot.Close()
+	openedRepoInfo, err := repoRoot.Stat(".")
+	if err != nil || !os.SameFile(pinned, openedRepoInfo) {
+		return nil, "", false
+	}
+	dirRoot, err := openDir(repoRoot, relativeDir)
+	if err != nil {
+		return nil, "", false
+	}
+	return dirRoot, base, true
+}
+
+// openContainedRegularFile is the one place the fallback readers turn a
+// repository-relative path into an open file. Lstat and Open both go through the
+// pinned directory handle, so the leaf cannot be a symlink and no component
+// above it can be swapped between the check and the read.
+func openContainedRegularFile(pinned fs.FileInfo, repo, relPath string) (*os.File, fs.FileInfo, bool) {
+	dirRoot, base, ok := containedRealDir(pinned, repo, relPath)
+	if !ok {
+		return nil, nil, false
+	}
+	defer dirRoot.Close()
+	info, err := dirRoot.Lstat(base)
+	if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, nil, false
+	}
+	file, err := dirRoot.Open(base)
+	if err != nil {
+		return nil, nil, false
+	}
+	// The size that governs the caller's bound is the one belonging to the OPEN
+	// file, not to the earlier Lstat of the same name.
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, nil, false
+	}
+	return file, opened, true
+}
+
+// readFallback reads relPath the way os.Root would have, had it not refused
+// one of the two shapes the fallback-directory comment describes: it refuses a
+// symlinked or non-regular final component exactly as the root.Lstat check
+// above does, verifies containment on the resolved destination, and only then
+// reads.
+func readFallback(pinned fs.FileInfo, repo, relPath string, maxReadBytes int64, noteOversize func(int64)) (string, bool) {
+	file, info, ok := openContainedRegularFile(pinned, repo, relPath)
+	if !ok {
+		return "", false
+	}
+	defer file.Close()
+	if maxReadBytes > 0 && info.Size() > maxReadBytes {
+		if noteOversize != nil {
+			noteOversize(info.Size())
+		}
+		return "", false
+	}
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return "", false
+	}
+	// A file that grew between the size check and the read is refused rather than
+	// truncated: the bound is on what this reader may return, and half a file is
+	// not a smaller answer, it is a wrong one.
+	if maxReadBytes > 0 && int64(len(content)) > maxReadBytes {
+		if noteOversize != nil {
+			noteOversize(int64(len(content)))
+		}
+		return "", false
+	}
+	return string(content), true
+}
+
+// readPrefixFallback is readFallback's counterpart for a bounded prefix read.
+func readPrefixFallback(pinned fs.FileInfo, repo, relPath string, limit int) (string, bool) {
+	file, _, ok := openContainedRegularFile(pinned, repo, relPath)
+	if !ok {
+		return "", false
+	}
+	defer file.Close()
+	buf := make([]byte, limit)
+	n, err := io.ReadFull(file, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return "", false
+	}
+	return string(buf[:n]), true
+}
+
+// openManuallyConfinedWorktreeSource builds a refusal-only worktree source for
+// the defensive case where the repository root could not be held open. Without
+// that descriptor, pathname identity cannot be trusted across concurrent
+// replacement, so every content read fails closed.
+func openManuallyConfinedWorktreeSource(repo string, paths []string, ignores ignoreMatcher, warnings []ProviderWarning, maxReadBytes int64) openedSource {
+	var pinned fs.FileInfo
+	registry := newOversizeRegistry(nil, repo)
+	return openedSource{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			return readFallback(pinned, repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
+		},
+		readPrefix: func(path string, limit int) (string, bool) {
+			return readPrefixFallback(pinned, repo, path, limit)
+		},
+		oversize: registry.lookup,
+		ignores:  ignores,
+		// No root descriptor was ever opened, so there is nothing to close;
+		// every consumer already guards for a nil closer.
+		close:    nil,
+		warnings: warnings,
+	}
 }
 
 // fallbackOversizeRegistry remembers the HEAD-tree paths the bounded line-unsafe
@@ -10202,30 +11138,90 @@ func (r *fallbackOversizeRegistry) lookup(ctx context.Context, path string) (ove
 // streaming pass over a multi-gigabyte file to answer a question nobody asked
 // would trade the memory blow-up for an I/O one.
 type oversizeRegistry struct {
+	// root confines the deferred digest exactly as the reader that refused the file
+	// was confined. The registry holds repository-relative paths only: an absolute
+	// path resolved later would reintroduce the traversal the refusal just stopped,
+	// one call after the reader declined to read the same file.
+	//
+	// root is nil when the source that created this registry never opened one
+	// at all — see openManuallyConfinedWorktreeSource — in which case
+	// digestContained goes straight to digestFallback.
+	root *os.Root
+	// repo backs digestFallback the same way it backs readFallback: the path
+	// os.Root refused to resolve for the reader is re-verified here, on its
+	// destination, before the deferred digest reads it.
+	repo string
+	// pinned is the identity of the directory this registry's source selected.
+	// digestFallback re-resolves repo by name exactly as readFallback does, so it
+	// needs the same guard against that name being repointed mid-scan.
+	pinned  fs.FileInfo
 	mu      sync.Mutex
 	pending map[string]oversizePending
 	digests map[string]oversizeFile
 }
 
 type oversizePending struct {
-	full  string
 	bytes int64
 }
 
-func newOversizeRegistry() *oversizeRegistry {
+func newOversizeRegistry(root *os.Root, repo string) *oversizeRegistry {
 	return &oversizeRegistry{
+		root:    root,
+		repo:    repo,
+		pinned:  pinnedRootIdentity(root),
 		pending: map[string]oversizePending{},
 		digests: map[string]oversizeFile{},
 	}
 }
 
-func (r *oversizeRegistry) note(path, full string, size int64) {
+func (r *oversizeRegistry) note(path string, size int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, done := r.digests[path]; done {
 		return
 	}
-	r.pending[path] = oversizePending{full: full, bytes: size}
+	r.pending[path] = oversizePending{bytes: size}
+}
+
+// digestContained streams a refused file through the registry's root. It repeats
+// the reader's Lstat check so a symlinked final component is refused here too,
+// and streams rather than materializing because the file is over the read cap by
+// definition.
+//
+// A path os.Root itself refused to resolve — or a registry that never opened a
+// root at all — falls back to digestFallback, exactly as read/readPrefix do
+// through readFallback/readPrefixFallback: the destination is re-verified as
+// still inside the repository before the digest reads it.
+func (r *oversizeRegistry) digestContained(path string) (filedigest.Digest, error) {
+	if r.root == nil {
+		return r.digestFallback(path)
+	}
+	name := filepath.FromSlash(path)
+	info, err := r.root.Lstat(name)
+	if err != nil {
+		return r.digestFallback(path)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return filedigest.Digest{}, fs.ErrInvalid
+	}
+	file, err := r.root.Open(name)
+	if err != nil {
+		return r.digestFallback(path)
+	}
+	defer file.Close()
+	return filedigest.Stream(file)
+}
+
+// digestFallback streams a refused file's digest through the same containment
+// check readFallback applies, for the destination os.Root's own resolution
+// rules would not reach.
+func (r *oversizeRegistry) digestFallback(path string) (filedigest.Digest, error) {
+	file, _, ok := openContainedRegularFile(r.pinned, r.repo, path)
+	if !ok {
+		return filedigest.Digest{}, fs.ErrInvalid
+	}
+	defer file.Close()
+	return filedigest.Stream(file)
 }
 
 func (r *oversizeRegistry) lookup(path string) (oversizeFile, bool) {
@@ -10240,7 +11236,7 @@ func (r *oversizeRegistry) lookup(path string) (oversizeFile, bool) {
 		return oversizeFile{}, false
 	}
 	record := oversizeFile{Bytes: pending.bytes}
-	if digest, err := filedigest.File(pending.full); err == nil {
+	if digest, err := r.digestContained(path); err == nil {
 		record = oversizeFile{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}
 	}
 	r.mu.Lock()
@@ -10394,6 +11390,34 @@ type vendorIgnoreRules interface {
 func hasGitDirComponent(rel string) bool {
 	for _, component := range strings.Split(filepath.ToSlash(rel), "/") {
 		if component == ".git" {
+			return true
+		}
+	}
+	return false
+}
+
+// PathLandsInGitDir reports whether a repo-relative path RESOLVES into a git directory. It
+// answers hasGitDirComponent's question for a caller outside this package that is about to hand
+// the path to the KERNEL, rather than reading the name back out of a directory walk.
+//
+// Everything above about depth applies here unchanged — a nested checkout's `vendor/dep/.git` and
+// a linked worktree's `.git` pointer file are both git directories — and this deliberately reuses
+// that whole-component rule rather than inventing a second one.
+//
+// It differs in exactly one way, and the difference belongs to the filesystem rather than to
+// taste. hasGitDirComponent judges names the walker ENUMERATED, which are the names as they exist
+// on disk. This judges a name the caller RESOLVED — on the far end of a symlink chain whose text a
+// repository chose — and on the two platforms most development happens on, macOS and Windows, the
+// kernel matches that text case-insensitively: a committed `CLAUDE.md -> .GIT/config` opens
+// `.git/config`. An exact comparison is a bypass on precisely those platforms, so this folds.
+//
+// Folding where the filesystem does not can only refuse a path through a directory genuinely
+// named `.GIT`, which is not a git directory — and is not an instruction file's home either. The
+// trade therefore runs the safe way: it fails closed, and only on a spelling nothing legitimate
+// uses.
+func PathLandsInGitDir(rel string) bool {
+	for _, component := range strings.Split(filepath.ToSlash(rel), "/") {
+		if strings.EqualFold(component, ".git") {
 			return true
 		}
 	}
@@ -18764,11 +19788,17 @@ func scanPythonImports(content string) []string {
 			seen[module] = struct{}{}
 		}
 	}
-	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*(?:from\s+(\.*[A-Za-z0-9_\.]+)\s+import|import\s+([A-Za-z0-9_\.]+))`)) {
+	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`)) {
 		if strings.HasPrefix(module, ".") && strings.Trim(module, ".") == "" {
 			continue
 		}
 		add(module)
+	}
+	for _, statement := range pythonFromImportStatements(content) {
+		if strings.HasPrefix(statement.module, ".") && strings.Trim(statement.module, ".") == "" {
+			continue
+		}
+		add(statement.module)
 	}
 	runtimeImportCalls := []string{`importlib\s*\.\s*import_module`, `__import__`}
 	for _, match := range regexp.MustCompile(`(?m)^\s*import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
@@ -18782,12 +19812,12 @@ func scanPythonImports(content string) []string {
 			}
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*from\s+importlib\s+import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
-		if len(match) != 2 {
+	for _, statement := range pythonFromImportStatements(content) {
+		if statement.module != "importlib" {
 			continue
 		}
-		for _, imported := range strings.Split(match[1], ",") {
-			fields := strings.Fields(strings.TrimSpace(imported))
+		for _, imported := range statement.items {
+			fields := strings.Fields(imported)
 			if len(fields) == 1 && fields[0] == "import_module" {
 				runtimeImportCalls = append(runtimeImportCalls, regexp.QuoteMeta(fields[0]))
 			}
@@ -18811,15 +19841,12 @@ func scanPythonImports(content string) []string {
 			add(module)
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		module := strings.TrimSpace(match[1])
+	for _, statement := range pythonFromImportStatements(content) {
+		module := statement.module
 		if module == "" {
 			continue
 		}
-		for _, item := range strings.Split(match[2], ",") {
+		for _, item := range statement.items {
 			name, _ := parsePythonImportItem(item)
 			if name == "" || name == "*" {
 				continue
@@ -19447,6 +20474,197 @@ func importedPythonImportForms(content string) map[string]map[string]pythonImpor
 	return forms
 }
 
+type pythonFromImportStatement struct {
+	line   int
+	module string
+	items  []string
+}
+
+var pythonFromImportRE = regexp.MustCompile(`(?s)^from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)(.*)$`)
+
+// A relative import may put the import keyword directly after its leading
+// dots (`from .import name`). Keep this ahead of pythonFromImportRE, whose
+// module expression would otherwise greedily consume that keyword.
+var pythonRelativeFromImportRE = regexp.MustCompile(`(?s)^from(?:\s+|\.)(\.*)import(.*)$`)
+
+// pythonFromImportStatements parses the parenthesized and one-line forms of
+// `from module import item [, item ...]`. The ordinary import scanners share
+// it with the AST scope walker so multiline bindings cannot diverge between
+// call resolution, import records, and router discovery.
+func pythonFromImportStatements(content string) []pythonFromImportStatement {
+	lines := strings.Split(content, "\n")
+	var statements []pythonFromImportStatement
+	for line := 0; line < len(lines); line++ {
+		startLine := line
+		text := strings.TrimLeft(lines[line], " \t")
+		if strings.HasPrefix(strings.TrimSpace(text), "#") {
+			continue
+		}
+		module, rawItems, ok := pythonFromImportParts(text)
+		if !ok {
+			continue
+		}
+		continued, validContinuation := pythonImportContinuationLine(rawItems)
+		if !validContinuation {
+			continue
+		}
+		var joinedItems strings.Builder
+		joinedItems.WriteString(rawItems)
+		if strings.HasPrefix(strings.TrimSpace(rawItems), "(") {
+			depth := pythonImportParenDepthLine(rawItems)
+			cursor := line
+			for (depth > 0 || continued) && cursor+1 < len(lines) {
+				nextLine := lines[cursor+1]
+				if pythonImportContinuationStartsStatement(nextLine) || pythonImportContinuationHasNestedOpening(nextLine) {
+					validContinuation = false
+					break
+				}
+				cursor++
+				joinedItems.WriteByte('\n')
+				joinedItems.WriteString(nextLine)
+				depth += pythonImportParenDepthLine(nextLine)
+				continued, validContinuation = pythonImportContinuationLine(nextLine)
+				if !validContinuation {
+					break
+				}
+			}
+			if !validContinuation || depth != 0 || continued {
+				continue
+			}
+			line = cursor
+		} else if continued {
+			cursor := line
+			depth := 0
+			grouped := false
+			for (continued || depth > 0) && cursor+1 < len(lines) {
+				nextLine := lines[cursor+1]
+				groupStart := depth == 0 && !grouped && strings.HasPrefix(strings.TrimSpace(nextLine), "(")
+				if ((depth == 0 || continued) && pythonImportContinuationTargetEmpty(nextLine)) || pythonImportContinuationStartsStatement(nextLine) || (!groupStart && pythonImportContinuationHasNestedOpening(nextLine)) {
+					validContinuation = false
+					break
+				}
+				cursor++
+				joinedItems.WriteByte('\n')
+				joinedItems.WriteString(nextLine)
+				if groupStart {
+					grouped = true
+				}
+				depth += pythonImportParenDepthLine(nextLine)
+				continued, validContinuation = pythonImportContinuationLine(nextLine)
+				if !validContinuation {
+					break
+				}
+			}
+			if !validContinuation || continued || depth != 0 {
+				continue
+			}
+			line = cursor
+		}
+		items := pythonFromImportItems(joinedItems.String())
+		if len(items) > 0 {
+			statements = append(statements, pythonFromImportStatement{line: startLine, module: module, items: items})
+		}
+	}
+	return statements
+}
+
+func pythonFromImportParts(text string) (module, items string, ok bool) {
+	if matches := pythonRelativeFromImportRE.FindStringSubmatch(text); len(matches) == 3 {
+		dots := matches[1]
+		if strings.HasPrefix(text, "from.") {
+			dots = "." + dots
+		}
+		if dots != "" && (len(matches[2]) == 0 || !isPythonImportNameByte(matches[2][0])) {
+			if len(matches[2]) == 0 || strings.ContainsRune(" \t\r\n(*\\", rune(matches[2][0])) {
+				return dots, matches[2], true
+			}
+		}
+	}
+	matches := pythonFromImportRE.FindStringSubmatch(text)
+	if len(matches) != 3 {
+		return "", "", false
+	}
+	module = strings.TrimSpace(matches[1])
+	rest := strings.TrimLeft(matches[2], " \t\r\n")
+	if module == "" || !strings.HasPrefix(rest, "import") {
+		return "", "", false
+	}
+	after := len("import")
+	if after < len(rest) && isPythonImportNameByte(rest[after]) {
+		return "", "", false
+	}
+	return module, rest[after:], true
+}
+
+func isPythonImportNameByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b >= 0x80
+}
+
+func pythonImportParenDepthLine(line string) int {
+	line = strings.SplitN(line, "#", 2)[0]
+	return strings.Count(line, "(") - strings.Count(line, ")")
+}
+
+// pythonImportContinuationLine reports whether a physical import line
+// explicitly continues and whether its backslash placement is syntactically
+// valid. A backslash before a comment does not continue Python source.
+func pythonImportContinuationLine(line string) (continued, valid bool) {
+	code, _, hasComment := strings.Cut(line, "#")
+	slash := strings.LastIndex(code, "\\")
+	if slash < 0 {
+		return false, true
+	}
+	if strings.TrimSuffix(code[slash+1:], "\r") != "" {
+		return false, false
+	}
+	if hasComment {
+		return false, false
+	}
+	return true, true
+}
+
+func pythonImportContinuationTargetEmpty(line string) bool {
+	line = strings.TrimSpace(line)
+	return line == "" || strings.HasPrefix(line, "#")
+}
+
+func pythonImportContinuationStartsStatement(line string) bool {
+	line = strings.TrimSpace(line)
+	for _, keyword := range []string{"from", "import"} {
+		if strings.HasPrefix(line, keyword) && (len(line) == len(keyword) || line[len(keyword)] == ' ' || line[len(keyword)] == '\t' || line[len(keyword)] == '.') {
+			return true
+		}
+	}
+	return false
+}
+
+func pythonImportContinuationHasNestedOpening(line string) bool {
+	line = strings.SplitN(line, "#", 2)[0]
+	return strings.Contains(line, "(")
+}
+
+func pythonFromImportItems(items string) []string {
+	var uncommented []string
+	for _, line := range strings.Split(items, "\n") {
+		line = strings.SplitN(line, "#", 2)[0]
+		line = strings.TrimSuffix(strings.TrimSpace(line), "\\")
+		uncommented = append(uncommented, line)
+	}
+	items = strings.TrimSpace(strings.Join(uncommented, "\n"))
+	if strings.HasPrefix(items, "(") {
+		items = strings.TrimSpace(strings.TrimPrefix(items, "("))
+		items = strings.TrimSpace(strings.TrimSuffix(items, ")"))
+	}
+	var out []string
+	for _, item := range strings.Split(items, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 // importedPythonNamesAndForms is the single parser shared by importedPythonNames
 // and importedPythonImportForms, so the module strings and their recorded forms
 // can never drift apart.
@@ -19459,15 +20677,33 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 		}
 		forms[local][module] = form
 	}
+	fromByLine := map[int]pythonFromImportStatement{}
+	for _, statement := range pythonFromImportStatements(content) {
+		fromByLine[statement.line] = statement
+	}
 	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
-	fromRe := regexp.MustCompile(`^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+(.+)$`)
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for lineNumber, text := range strings.Split(content, "\n") {
+		if statement, ok := fromByLine[lineNumber]; ok {
+			for _, item := range statement.items {
+				name, alias := parsePythonImportItem(item)
+				if name == "" || name == "*" {
+					continue
+				}
+				local := alias
+				if local == "" {
+					local = name
+				}
+				importedModule := pythonFromImportModuleSpec(statement.module, name)
+				imports[local] = append(imports[local], importedModule)
+				recordForm(local, importedModule, pythonFromImport)
+			}
+			continue
+		}
+		line := strings.TrimSpace(text)
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(line); len(matches) == 2 {
+		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {
@@ -19484,24 +20720,18 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 			}
 			continue
 		}
-		if matches := fromRe.FindStringSubmatch(line); len(matches) == 3 {
-			module := matches[1]
-			for _, item := range strings.Split(matches[2], ",") {
-				name, alias := parsePythonImportItem(item)
-				if name == "" || name == "*" {
-					continue
-				}
-				local := alias
-				if local == "" {
-					local = name
-				}
-				importedModule := pythonFromImportModuleSpec(module, name)
-				imports[local] = append(imports[local], importedModule)
-				recordForm(local, importedModule, pythonFromImport)
-			}
-		}
 	}
 	return imports, forms
+}
+
+func pythonDirectImportStatement(line string) string {
+	end := len(line)
+	for _, terminator := range []byte{'#', ';'} {
+		if index := strings.IndexByte(line, terminator); index >= 0 && index < end {
+			end = index
+		}
+	}
+	return strings.TrimSpace(line[:end])
 }
 
 func parsePythonImportItem(item string) (name, alias string) {
@@ -19581,6 +20811,9 @@ func importModuleMatchesFile(module, importingPath, targetPath string) bool {
 		}
 	}
 	if strings.HasPrefix(module, ".") {
+		if strings.EqualFold(filepath.Ext(importingPath), ".py") && pythonRelativeModuleMatchesFile(module, importingPath, targetPath) {
+			return true
+		}
 		if dottedRelativeModuleStemMatchesFile(module, targetPath) {
 			return true
 		}
@@ -19605,6 +20838,23 @@ func importModuleMatchesFile(module, importingPath, targetPath string) bool {
 	module = strings.TrimSuffix(filepath.ToSlash(module), filepath.Ext(module))
 	target := strings.TrimSuffix(targetPath, filepath.Ext(targetPath))
 	return strings.HasSuffix(target, module) || strings.HasSuffix(target, "/"+module) || target == module
+}
+
+func pythonRelativeModuleMatchesFile(module, importingPath, targetPath string) bool {
+	level := 0
+	for level < len(module) && module[level] == '.' {
+		level++
+	}
+	if level == 0 || level == len(module) {
+		return false
+	}
+	dir := filepath.Dir(importingPath)
+	for i := 1; i < level; i++ {
+		dir = filepath.Dir(dir)
+	}
+	base := filepath.ToSlash(filepath.Join(dir, strings.ReplaceAll(module[level:], ".", "/")))
+	target := strings.TrimSuffix(filepath.ToSlash(targetPath), filepath.Ext(targetPath))
+	return target == base || strings.HasSuffix(target, "/"+base)
 }
 
 func dottedRelativeModuleStemMatchesFile(module, targetPath string) bool {
@@ -22456,15 +23706,31 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 			Imported: strings.TrimSpace(imported),
 		})
 	}
+	fromByLine := map[int]pythonFromImportStatement{}
+	for _, statement := range pythonFromImportStatements(content) {
+		fromByLine[statement.line] = statement
+	}
 	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
-	fromRe := regexp.MustCompile(`^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+(.+)$`)
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for lineNumber, text := range strings.Split(content, "\n") {
+		if statement, ok := fromByLine[lineNumber]; ok {
+			for _, item := range statement.items {
+				name, alias := parsePythonImportItem(item)
+				if name == "" || name == "*" {
+					continue
+				}
+				local := alias
+				if local == "" {
+					local = name
+				}
+				add(local, statement.module, name)
+			}
+			continue
+		}
+		line := strings.TrimSpace(text)
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(line); len(matches) == 2 {
+		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {
@@ -22477,20 +23743,6 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 				add(local, module, "")
 			}
 			continue
-		}
-		if matches := fromRe.FindStringSubmatch(line); len(matches) == 3 {
-			module := matches[1]
-			for _, item := range strings.Split(matches[2], ",") {
-				name, alias := parsePythonImportItem(item)
-				if name == "" || name == "*" {
-					continue
-				}
-				local := alias
-				if local == "" {
-					local = name
-				}
-				add(local, module, name)
-			}
 		}
 	}
 	return imports
@@ -23660,6 +24912,15 @@ func directTypeBodyLines(lines []string, symbol SymbolRecord, fileSymbols []Symb
 // otherwise-complete graph to "degraded". The parsed-file ratio and zero-symbol
 // guards in completenessLevel still catch a repo that is genuinely mostly
 // unparsed, and the skips remain visible in PartialFailures for transparency.
+// E_PARSE_DEPTH_EXCEEDED is deliberately NOT in this map. A depth-truncated walk
+// is a PARTIAL RESULT, not a skip: the graph did attempt the file, did parse it,
+// and did drop declarations it could not reach, so the graph really is
+// incomplete for that file and completeness must say so. The distinction that
+// earns a place in this map is whether the parser looked at the file at all —
+// E_FILE_TOO_LARGE and E_MINIFIED never open it, so there is no gap in
+// understanding to report. Excluding depth truncation as well would let a repo
+// whose files each carry a shallow symbol above deeply nested declarations
+// report "ok" while systematically missing those declarations.
 var intentionalSkipFailureCodes = map[string]bool{
 	"E_FILE_TOO_LARGE": true,
 	"E_MINIFIED":       true,
@@ -23703,6 +24964,17 @@ func completenessLevel(failures, files, parsedFiles, symbols int) string {
 	}
 }
 
+// dataFlowEvidenceLimit caps how many flows one DATA_FLOWS edge carries. A
+// forwarding call site rarely has more than a handful; the tail is long and
+// repetitive (a struct's fields interned one by one), so the cap bounds output
+// on the outliers. A truncated record is tagged evidenceTruncatedWarning.
+const dataFlowEvidenceLimit = 8
+
+// evidenceTruncatedWarning marks a relation whose evidence array was cut off at
+// a limit, so a consumer reading evidence to explain the edge knows the list is
+// partial rather than exhaustive.
+const evidenceTruncatedWarning = "EVIDENCE_TRUNCATED"
+
 func dedupeRelations(relations []RelationRecord) []RelationRecord {
 	seen := map[string]struct{}{}
 	out := make([]RelationRecord, 0, len(relations))
@@ -23738,7 +25010,57 @@ func externalID(kind, value string) string {
 	return "external:" + kind + ":" + value
 }
 
+// RepoKey is the exported form of the provider repo_key rule. It is the
+// symbol-ID namespace stamped into every record of a snapshot, and it is
+// derived from the repository ALONE so that any process holding the repo path
+// can reproduce it. Remote URLs use the provider's established compatibility
+// order: the last configured origin URL, then non-origin URLs in Git config
+// order. The first supported github.com URL yields gh/<owner>/<name>; a
+// repository with no such URL yields local/<basename>.
+//
+// It is a published contract, not an internal detail: `graph doctor --json`
+// reports it and TestRepoKeyContractGoldenVectors pins the vectors that
+// entire-brain asserts on its side. A consumer predicts it to check the seam
+// BEFORE paying for a snapshot, and to reject a snapshot built by a binary
+// whose rule has drifted from its own.
+//
+// IT IS A NAMESPACE, NOT A REPOSITORY IDENTITY, AND ONLY THE gh/ HALF IS
+// GLOBALLY UNIQUE. `local/<basename>` is derived from the directory name, so
+// every repository named `tools` with no supported GitHub remote — different
+// owners on gitlab, two unrelated checkouts — publishes the same key. Two
+// colliding snapshots are byte-distinguishable only by
+// `repo_root`, `commit` and `tree`. A consumer must therefore treat repo_key
+// as a necessary and not a sufficient identity test: `repo_key` mismatch
+// proves a foreign snapshot, `repo_key` match does not prove a native one.
+// TestRepoKeyLocalIsNotGloballyUnique pins that boundary.
+//
+// The discriminator every side already carries is the absolute repository
+// path. This provider hashes it into both persistent cache keys beside the
+// repo key (searchSnapshotKey, providerRecordsKey), which is why two colliding
+// repositories sharing a cache directory never share an entry even at an
+// identical tree — TestCollidingRepoKeysDoNotShareCacheEntries. `doctor --json`
+// reports `repo_root` beside `repo_key` for the same reason: it is what makes
+// the pair unique.
+func RepoKey(ctx context.Context, repo string) string {
+	return repoKey(ctx, repo)
+}
+
 func repoKey(ctx context.Context, repo string) string {
+	// Normalise the caller's SPELLING of the repository before deriving anything
+	// from it. The local/ half of the rule is the LAST PATH ELEMENT, so an
+	// unnormalised spelling degrades it into a namespace no checkout owns: "."
+	// yields local/., ".." yields local/.., "<repo>/." yields local/. again — one
+	// key shared by every repository on the machine, and never the key the
+	// snapshot itself will carry.
+	//
+	// Every in-process caller already passes the absolute path the provider
+	// derived (sourceContext, searchSnapshotKey, providerRecordsKey), for which
+	// this is a no-op. The exported RepoKey has no such guarantee: `graph doctor`
+	// publishes it for a repository resolved from ENTIRE_REPO_ROOT, --repo or the
+	// working directory, any of which may arrive relative. Normalising here rather
+	// than at that one call site keeps the published rule reproducible from a path
+	// alone, which is the whole contract.
+	repo = absoluteRepoPath(repo)
 	if gitMetadataSafeForSubprocessContext(ctx, repo) {
 		for _, remoteURL := range githubRemoteURLs(ctx, repo) {
 			if key, ok := githubRepoKey(remoteURL); ok {
@@ -23747,6 +25069,17 @@ func repoKey(ctx context.Context, repo string) string {
 		}
 	}
 	return "local/" + filepath.Base(repo)
+}
+
+// absoluteRepoPath is filepath.Abs with the caller's spelling kept as the
+// fallback: Abs fails only when the working directory cannot be read, and a
+// degraded key is a better outcome there than a panic or an empty one.
+func absoluteRepoPath(repo string) string {
+	absolute, err := filepath.Abs(repo)
+	if err != nil {
+		return repo
+	}
+	return absolute
 }
 
 func githubRemoteURLs(ctx context.Context, repo string) []string {

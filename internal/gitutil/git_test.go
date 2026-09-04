@@ -2902,3 +2902,57 @@ func TestFirstParentRejectsAnOptionShapedRevision(t *testing.T) {
 		t.Fatalf("FirstParent(\"HEAD\") = %v, want a resolved parent OID", err)
 	}
 }
+
+// TestChangedFilesReportsTreeEntryModes pins that ChangedFiles carries the base
+// and head tree entry modes. A symbolic link is stored as an ordinary blob
+// whose bytes are its target path, so mode is the only thing that tells a
+// content reader it is not source.
+func TestChangedFilesReportsTreeEntryModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checkouts do not preserve symlink tree entries")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "real.go"), []byte("package real\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "gone.go"), []byte("package gone\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	if err := os.Symlink("real.go", filepath.Join(repo, "alias.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(repo, "gone.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "real.go"), []byte("package real\n\nfunc Run() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "add symlink, delete file, edit file")
+	head := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	files, err := ChangedFiles(t.Context(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]ChangedFile{}
+	for _, file := range files {
+		byPath[file.Path] = file
+	}
+	if got := byPath["alias.go"]; got.NewMode != SymlinkMode || got.OldMode != "000000" || got.Status != "A" {
+		t.Fatalf("added symlink = %#v", got)
+	}
+	if got := byPath["gone.go"]; got.OldMode != "100644" || got.NewMode != "000000" || got.Status != "D" {
+		t.Fatalf("deleted file = %#v", got)
+	}
+	if got := byPath["real.go"]; got.OldMode != "100644" || got.NewMode != "100644" || got.Status != "M" {
+		t.Fatalf("edited file = %#v", got)
+	}
+}

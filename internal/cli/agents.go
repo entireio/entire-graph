@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 // agentGuide is the canonical, agent-agnostic operating guide for coding agents using the
@@ -78,6 +80,25 @@ const (
 	agentPointerBegin = "<!-- entire-graph:begin -->"
 	agentPointerEnd   = "<!-- entire-graph:end -->"
 )
+
+// maxInstructionFileBytes bounds AGENTS.md / CLAUDE.md, the only repository-authored files
+// init-agents reads. Their path is fixed but their SIZE is chosen by the repository, and the
+// command runs against clones the operator has not read, so the size is untrusted input like
+// any other. Every sibling repository read is already bounded — source files and diffs at
+// defaultMaxParseBytes, ignore files at maxIgnoreFileBytes, call-site snippets at
+// callSiteMaxFileBytes — and this one was not: it read to EOF and then kept the whole file
+// alive through validation, marker splitting, and the rendered replacement, so peak memory ran
+// to a multiple of the file. Measured on an otherwise empty repository, a 2 GiB AGENTS.md
+// drove init-agents to 6.5 GiB peak RSS.
+//
+// 4 MiB matches defaultMaxParseBytes, the ceiling the rest of the tool already applies to a
+// repository-authored text file, and is orders of magnitude above any real agent instruction
+// file (this repository's own is ~2 KiB).
+const maxInstructionFileBytes = 4 << 20
+
+// errContainedFileTooLarge reports that a contained read stopped at its limit. The caller owns
+// the message, because only it knows which file the limit was applied to and why.
+var errContainedFileTooLarge = errors.New("file is larger than the read limit")
 
 func runAgentGuide(opts Options, args []string) error {
 	fs := flag.NewFlagSet("agent-guide", flag.ContinueOnError)
@@ -155,6 +176,19 @@ func runInitAgents(opts Options, args []string) error {
 		return fmt.Errorf("init-agents: %w", err)
 	}
 
+	// The hard-link refusal is enforced on the WRITE, because an open handle is the only thing
+	// that can be asked about an inode. But the first write that can reach it is the one that
+	// creates or overwrites the guide, so a refusal raised there leaves a partial installation,
+	// and rollback cannot restore a guide it did not create. Ask the same question here, with the
+	// rest of the preflight, so a repository holding an unaccounted hard link fails before the
+	// first byte is written. The write-time guard stays: the preflight is not the enforcement, and
+	// a link swapped in afterwards is still refused by the write that finds it.
+	for _, name := range []string{guideName, agentsName, claudeName} {
+		if err := ensureNoSharedInode(repoRoot, name, guideName, agentsName, claudeName); err != nil {
+			return fmt.Errorf("init-agents: %w", err)
+		}
+	}
+
 	agentsInfo, err := inspectInstructionFile(repoRoot, agentsName, agentsPath)
 	if err != nil {
 		return fmt.Errorf("init-agents: %w", err)
@@ -191,6 +225,23 @@ func runInitAgents(opts Options, args []string) error {
 		claudeContent = renderPointerBlock(claudeSource, claudeBegin, claudeEnd, claudeBlock)
 	}
 
+	// The read bound accepts a file sitting exactly on the limit, but the managed
+	// block is APPENDED to it, so the rendered result can land past the bound the
+	// read enforces. Writing that would leave the repository holding an instruction
+	// file this command itself produced and will refuse on the next run, telling
+	// the user to shrink a file whose excess bytes are the block init-agents added.
+	// The bound therefore has to hold for what is WRITTEN, not only for what was
+	// read, and the refusal has to land here — every byte is computed and nothing
+	// has been created or modified yet.
+	if err := ensureRenderedInstructionFits(agentsPath, agentsSource, agentsContent); err != nil {
+		return fmt.Errorf("init-agents: %w", err)
+	}
+	if !sharedInstructions {
+		if err := ensureRenderedInstructionFits(claudePath, claudeSource, claudeContent); err != nil {
+			return fmt.Errorf("init-agents: %w", err)
+		}
+	}
+
 	guideResolvedName, guideInfo, err := resolvedManagedTarget(repoRoot, guideName, false)
 	if err != nil {
 		return fmt.Errorf("init-agents: %w", err)
@@ -220,7 +271,7 @@ func runInitAgents(opts Options, args []string) error {
 	if guideWasMissing {
 		guideCreated, err = writeNewContainedFile(repoRoot, guideName, []byte(agentGuide), 0o644)
 	} else {
-		err = writeContainedFile(repoRoot, guideName, []byte(agentGuide), 0o644)
+		err = writeContainedFile(repoRoot, guideName, []byte(agentGuide), 0o644, guideName, agentsName, claudeName)
 	}
 	if err != nil {
 		return rollback(err, guideCreated)
@@ -233,7 +284,7 @@ func runInitAgents(opts Options, args []string) error {
 	}
 	fmt.Fprintf(opts.Stdout, "wrote %s\n", guidePath)
 
-	if err := writeContainedFile(repoRoot, agentsName, agentsContent, 0o644); err != nil {
+	if err := writeContainedFile(repoRoot, agentsName, agentsContent, 0o644, guideName, agentsName, claudeName); err != nil {
 		return fmt.Errorf("init-agents: AGENTS.md: %w", err)
 	}
 	fmt.Fprintf(opts.Stdout, "updated %s\n", agentsPath)
@@ -257,7 +308,7 @@ func runInitAgents(opts Options, args []string) error {
 	if err == nil && os.SameFile(agentsInfo, claudeInfo) {
 		return nil
 	}
-	if err := writeContainedFile(repoRoot, claudeName, claudeContent, 0o644); err != nil {
+	if err := writeContainedFile(repoRoot, claudeName, claudeContent, 0o644, guideName, agentsName, claudeName); err != nil {
 		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
 	}
 	fmt.Fprintf(opts.Stdout, "updated %s\n", claudePath)
@@ -315,6 +366,21 @@ func ensureContainedInRepo(root *os.Root, name, path string, createsParents bool
 			)
 		}
 		return nil
+	case errors.Is(err, errGitDirManagedTarget):
+		return fmt.Errorf(
+			"%s: %w; init-agents installs instruction files, and none of them belongs in the "+
+				"git directory, so repoint or remove the link, then rerun init-agents",
+			path, err,
+		)
+	case errors.Is(err, errNonInstructionManagedTarget):
+		// Named before isRootEscape for the same reason the case above is: this refusal is
+		// raised by the resolver rather than by os.Root, so it carries no syscall errno and
+		// would otherwise be reported as a repository escape — sending the reader to hunt a
+		// link that leaves the root when the link never left it.
+		return fmt.Errorf(
+			"%s: %w, then rerun init-agents",
+			path, err,
+		)
 	case isRootEscape(err):
 		return fmt.Errorf(
 			"%s: refusing to write through a link that leaves the repository (%w); "+
@@ -523,7 +589,10 @@ func isRootEscape(err error) bool {
 	// kernel's answer as text rather than as a wrapped errno — so it reaches here looking
 	// syscall-free. It is a broken path, not an escape; saying otherwise would send the
 	// reader hunting a link that leaves when none does.
-	return !errors.Is(err, errUnresolvableAlias) &&
+	// errGitDirManagedTarget is likewise not an escape: it is raised for a link that stays
+	// comfortably inside the root and lands in `.git`. Classifying it as an escape would tell
+	// the reader the link leaves the repository when the whole point is that it does not.
+	return !errors.Is(err, errUnresolvableAlias) && !errors.Is(err, errGitDirManagedTarget) &&
 		!errors.Is(err, os.ErrClosed) && !errors.Is(err, os.ErrInvalid)
 }
 
@@ -634,7 +703,272 @@ func resolveContainedDirectoryName(root *os.Root, name string) (string, error) {
 	return resolveContainedNameWithOptions(root, name, true)
 }
 
+// resolveContainedNameWithOptions is resolveContainedLanding plus the one landing that
+// containment alone cannot refuse: a managed target that resolves INSIDE the repository's git
+// directory.
+//
+// os.Root keeps the write in the project root, and until now that was the whole argument — see
+// the os.OpenRoot comment in runInitAgents, which reasons that a link staying inside the
+// repository is safe to follow because the repository is where init-agents writes anyway. That
+// is true of repository CONTENT and false of `.git`, which is inside the root and is not content.
+// A hostile checkout that commits `CLAUDE.md -> .git/config` gets the managed block appended to
+// git's own config, and git then refuses to operate on the repository at all ("fatal: bad config
+// line N"); `.git/hooks/*` is the same primitive aimed somewhere worse. Nothing about the
+// documented alias needs it: docs/agents.md offers symlinks so AGENTS.md and CLAUDE.md can share
+// ONE INSTRUCTION FILE, and no instruction file lives in `.git`.
+//
+// It is also the boundary the rest of the tool already holds from the other side. The indexer
+// refuses to READ inside a git directory whatever its name or depth (hasGitDirComponent, which
+// this asks through sem.PathLandsInGitDir rather than restating); a writer that will not read
+// there must not write there either.
+//
+// This sits on the resolver rather than on the preflight because the preflight is not the
+// enforcement: ensureContainedInRepo is explicitly not atomic with the write, so a link swapped
+// in afterwards would pass a preflight-only check. Every stat, read and write of a managed target
+// resolves through here, so each one re-asks, and a link swapped between them is refused by the
+// operation that finds it.
 func resolveContainedNameWithOptions(root *os.Root, name string, allowMissingDirectory bool) (string, error) {
+	resolved, err := resolveContainedLanding(root, name, allowMissingDirectory)
+	if err != nil {
+		return "", err
+	}
+	if sem.PathLandsInGitDir(resolved) && gitDirSpellingReachesTheGitDir(root, resolved) {
+		return "", fmt.Errorf(
+			"%w: %s resolves to %s, inside the repository's git directory, where init-agents must never write",
+			errGitDirManagedTarget, name, filepath.ToSlash(resolved),
+		)
+	}
+	if administrative, inside := landsInGitAdministrativeDirectory(root, resolved); inside {
+		return "", fmt.Errorf(
+			"%w: %s resolves to %s, inside %s, which is this repository's git directory whatever it is named",
+			errGitDirManagedTarget, name, filepath.ToSlash(resolved), filepath.ToSlash(administrative),
+		)
+	}
+	// Directory resolutions are excluded because the landing they name is a directory, and the
+	// question below is about the FILE a managed instruction target is written into. The guide
+	// directory's own containment is settled by the refusals above.
+	if !allowMissingDirectory {
+		if err := refuseNonInstructionLanding(root, name, resolved); err != nil {
+			return "", err
+		}
+	}
+	return resolved, nil
+}
+
+// errGitDirManagedTarget marks a managed target whose resolution lands in the git directory.
+var errGitDirManagedTarget = errors.New("refusing to write into the git directory")
+
+// gitDirSpellingReachesTheGitDir confirms with THIS filesystem the question sem.PathLandsInGitDir
+// answers from the name alone.
+//
+// The fold is there because macOS and Windows resolve a repository-chosen link target
+// case-insensitively, so a committed `CLAUDE.md -> .GIT/config` opens `.git/config` and an exact
+// comparison would be a bypass on exactly the two platforms most development happens on. Where the
+// kernel does NOT fold, that reasoning describes nothing: `.GIT` is then an ordinary directory no
+// git command has ever used, and refusing a contained markdown landing inside it rejects a
+// legitimate alias — `AGENTS.md -> .GIT/rules.md` — for a spelling alone.
+//
+// So the fold is kept and then CHECKED. An exact `.git` component is the git directory whatever
+// the filesystem does. A case variant is one only when the two spellings open the same directory,
+// which is a question for the filesystem rather than for the text. Anything unanswerable keeps the
+// fold's answer, so this can only ever confirm a refusal the name rule already raised, never
+// withdraw one it could not decide.
+func gitDirSpellingReachesTheGitDir(root *os.Root, resolved string) bool {
+	components := splitPathComponents(resolved)
+	for i, component := range components {
+		if component == ".git" {
+			return true
+		}
+		if !strings.EqualFold(component, ".git") {
+			continue
+		}
+		spelled, spelledErr := root.Stat(filepath.Join(components[:i+1]...))
+		if spelledErr != nil {
+			// The variant names nothing that can be compared. On a folding filesystem it
+			// would name `.git` whenever `.git` exists, so this is either a case-sensitive
+			// filesystem with nothing there yet or an unreadable ancestry; neither is
+			// evidence, and the fold stands.
+			return true
+		}
+		exact, exactErr := root.Stat(filepath.Join(append(components[:i:i], ".git")...))
+		if exactErr != nil {
+			// There is no `.git` beside it for the variant to be an alias OF.
+			continue
+		}
+		if os.SameFile(spelled, exact) {
+			return true
+		}
+	}
+	return false
+}
+
+// landsInGitAdministrativeDirectory reports the git administrative directory a resolved landing is
+// inside, whatever that directory is NAMED, and whether it found one.
+//
+// sem.PathLandsInGitDir above answers a question about a NAME: it refuses a landing that spells a
+// `.git` component. That is the only shape it can see, and git does not require that shape. A
+// repository created with `git init --separate-git-dir=admin` keeps a `.git` POINTER FILE holding
+// `gitdir: <path>` and its real administrative directory somewhere else; a repository initialised
+// under GIT_DIR has no `.git` entry at all. In both, `git rev-parse --absolute-git-dir` names a
+// directory whose components spell nothing the name rule recognises, so every route the name rule
+// closes reopens. Measured on this branch before this check, in a `--separate-git-dir` repository
+// whose administrative directory is `admin/`: a committed `CLAUDE.md -> admin/config` exited 0 with
+// the managed block appended to git's real config, after which every git command failed with
+// "fatal: bad config line 9"; `.entire -> admin/refs/heads` wrote the guide into the real ref store
+// and git reported "ignoring broken ref refs/heads/graph-agent.md"; and `AGENTS.md ->
+// admin/hooks/pre-commit` appended to an executable hook.
+//
+// The question is put to the FILESYSTEM rather than to `git rev-parse`, and re-asked at every
+// resolution rather than answered once at startup. Both follow from the rule the rest of this file
+// already holds itself to: the preflight is not the enforcement, so a directory that becomes a git
+// directory between two operations must be refused by the operation that finds it, which a value
+// cached at startup cannot do. Asking git would also make the answer depend on a binary being
+// installed, on $GIT_DIR in this process's environment, and on the current working directory —
+// none of which describe the repository named by --repo.
+//
+// What is asked is git's own is_git_directory(): a HEAD, plus objects/ and refs/. The
+// commondir/gitdir alternative admits a linked worktree's administrative directory, which keeps
+// those two pointer files in place of its own object and ref stores.
+//
+// The `.git` pointer file's TEXT is deliberately not consulted. sem's gitDirExcluder — the READ
+// side of this same boundary, which already resolves separate-git-dir pointers — records why: the
+// pointer is attacker-controlled input, so git resolves it and then asks is_git_directory() of the
+// target anyway, and a `gitdir:` naming an ordinary directory is "fatal: not a git repository" to
+// git rather than a git directory. Once that structure test is applied, the pointer says nothing
+// this walk has not already asked: a landing inside the target has the target among its own
+// ancestors, and a target outside the repository is refused by os.Root before it gets here. Reading
+// the text without the structure test would only add a way for a repository to make an ordinary
+// directory of its own unwritable.
+func landsInGitAdministrativeDirectory(root *os.Root, resolved string) (string, bool) {
+	components := splitPathComponents(resolved)
+	for i := 1; i <= len(components); i++ {
+		prefix := filepath.Join(components[:i]...)
+		if prefix == "" || prefix == "." {
+			continue
+		}
+		if isGitAdministrativeDirectory(root, prefix) {
+			return prefix, true
+		}
+	}
+	return "", false
+}
+
+// isGitAdministrativeDirectory applies git's own is_git_directory() test to a repo-relative
+// directory: a HEAD, plus either the object and ref stores or the commondir/gitdir pointers a
+// linked worktree keeps instead of them.
+func isGitAdministrativeDirectory(root *os.Root, dir string) bool {
+	if info, err := root.Stat(filepath.Join(dir, "HEAD")); err != nil || info.IsDir() {
+		return false
+	}
+	objects, objectsErr := root.Stat(filepath.Join(dir, "objects"))
+	refs, refsErr := root.Stat(filepath.Join(dir, "refs"))
+	if objectsErr == nil && refsErr == nil && objects.IsDir() && refs.IsDir() {
+		return true
+	}
+	for _, pointer := range []string{"commondir", "gitdir"} {
+		if info, err := root.Stat(filepath.Join(dir, pointer)); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// errNonInstructionManagedTarget marks a managed target whose resolved landing is not an
+// agent-instruction file.
+var errNonInstructionManagedTarget = errors.New("refusing to write outside an agent-instruction file")
+
+// maxManagedLandingBytes bounds how much of a landing is read to recognise it. It bounds the READ,
+// not the file: an instruction file larger than this is recognised by its name like any other, and
+// only a landing whose name is unrecognised is read at all.
+const maxManagedLandingBytes = 4 << 20
+
+// agentInstructionFileNames are agent-instruction files that carry no markdown extension. Every
+// entry only ever ADMITS a landing, so the list being incomplete costs a refusal a user can work
+// around by renaming, never a corrupted file — which is the whole reason this is a list of what
+// may be written rather than a list of what may not.
+var agentInstructionFileNames = map[string]struct{}{
+	".cursorrules":   {},
+	".clinerules":    {},
+	".windsurfrules": {},
+	".goosehints":    {},
+}
+
+// agentGuideHeading is the guide's own first line, which is what identifies a file this command
+// previously wrote the guide into. Deriving it from the guide keeps the two from drifting apart.
+var agentGuideHeading = strings.SplitN(agentGuide, "\n", 2)[0]
+
+// isInstructionFileName reports whether a landing's base name is an agent-instruction file.
+//
+// Markdown is the test because markdown is what init-agents writes. The comparison folds case for
+// the same reason PathLandsInGitDir folds: macOS and Windows resolve these names
+// case-insensitively, so `README.MD` and `readme.md` are one file there.
+func isInstructionFileName(base string) bool {
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".md", ".markdown", ".mdown", ".mkd":
+		return true
+	}
+	_, known := agentInstructionFileNames[strings.ToLower(base)]
+	return known
+}
+
+// refuseNonInstructionLanding refuses a managed target that resolves onto an EXISTING file which is
+// not an agent-instruction file.
+//
+// The git-directory refusals above name one destination each. That is a denylist, and a denylist of
+// destinations cannot be finished: `CLAUDE.md -> Makefile`, `-> .github/workflows/ci.yml` and
+// `-> .envrc` were all measured on this branch appending the managed block to the victim's real
+// build, CI and environment files, exit 0 — and every build system, task runner and shell
+// initialisation file yet to be invented is another entry someone has to remember to add. The list
+// that CAN be finished is the list of things init-agents is for: docs/agents.md offers the alias so
+// that AGENTS.md and CLAUDE.md may share ONE INSTRUCTION FILE, so an alias that lands anywhere else
+// is not a use of the feature, and refusing it costs the documented case nothing.
+//
+// Three landings are deliberately not refused, and each is a case where there is nothing to
+// protect:
+//
+//   - A landing that DOES NOT EXIST. init-agents creates all of its targets, and the documented
+//     dangling alias (CLAUDE.md -> AGENTS.md before AGENTS.md exists) depends on it. Nothing is
+//     destroyed: the file this command creates holds this command's own markdown, mode 0644, and
+//     shows up untracked in `git status` — the harm this refusal exists for is the SILENT rewrite
+//     of a file that was already doing a job.
+//   - A landing that already carries this command's own output. A file init-agents wrote once must
+//     stay writable on the next run whatever it is named, or a first run would succeed and every
+//     later one fail.
+//   - A landing that is not a regular file, or cannot be stat'ed. Those are not this refusal's
+//     question; the operation that follows reports them for what they are.
+func refuseNonInstructionLanding(root *os.Root, name, resolved string) error {
+	if isInstructionFileName(filepath.Base(resolved)) {
+		return nil
+	}
+	info, err := root.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	if landingCarriesManagedContent(root, resolved) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: %s resolves to %s, which is not an agent-instruction file; init-agents installs its managed block only into instruction files, so alias it to one",
+		errNonInstructionManagedTarget, name, filepath.ToSlash(resolved),
+	)
+}
+
+// landingCarriesManagedContent reports whether a landing already holds output this command wrote:
+// the managed pointer block, or the guide's own heading.
+func landingCarriesManagedContent(root *os.Root, resolved string) bool {
+	file, err := root.Open(resolved)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, maxManagedLandingBytes))
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(content, []byte(agentPointerBegin)) || bytes.Contains(content, []byte(agentGuideHeading))
+}
+
+func resolveContainedLanding(root *os.Root, name string, allowMissingDirectory bool) (string, error) {
 	pending := splitPathComponents(name)
 	var resolved []string
 	requiresDirectory := false
@@ -1247,14 +1581,21 @@ func statContainedFile(root *os.Root, name string) (os.FileInfo, error) {
 	return statResolvedContained(root, resolved)
 }
 
-// readContainedFile is os.ReadFile confined to root.
+// readContainedFile is os.ReadFile confined to root and bounded by limit bytes.
 //
 // Reading through the root rather than through the absolute path is not redundant with the
 // preflight. ensureContainedInRepo is explicitly not atomic with what follows, so a link swapped
 // to an outside file after the preflight and restored before the write would otherwise have that
 // file's contents read in and then written back into the repository under the managed block. The
 // escape has to be refused at the read too, not only at the preflight and the write.
-func readContainedFile(root *os.Root, name string) ([]byte, error) {
+//
+// The limit is enforced on the read itself rather than on a preceding Stat, for the same
+// non-atomicity reason: a file that grows between the check and the read would defeat a
+// Stat-based gate, and a growing file is exactly the case the limit exists for. One byte past
+// the limit is requested so a file sitting exactly on it is still accepted, and anything larger
+// is refused rather than truncated — a truncated instruction file would be written back over the
+// user's own text, which is a far worse outcome than a refusal.
+func readContainedFile(root *os.Root, name string, limit int64) ([]byte, error) {
 	resolved, err := resolveContainedName(root, name)
 	if err != nil {
 		return nil, err
@@ -1264,18 +1605,46 @@ func readContainedFile(root *os.Root, name string) ([]byte, error) {
 		return nil, err
 	}
 	defer file.Close()
-	return io.ReadAll(file)
+	content, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > limit {
+		return nil, errContainedFileTooLarge
+	}
+	return content, nil
 }
 
 // writeContainedFile is os.WriteFile confined to root. The perm argument applies only when the
 // file is created, matching os.WriteFile, so an existing file keeps its mode.
-func writeContainedFile(root *os.Root, name string, content []byte, perm os.FileMode) error {
+func writeContainedFile(root *os.Root, name string, content []byte, perm os.FileMode, managed ...string) error {
 	resolved, err := resolveContainedName(root, name)
 	if err != nil {
 		return err
 	}
-	file, err := root.OpenFile(resolved, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	// O_TRUNC is deliberately NOT in this open, and the file is judged from the
+	// HANDLE rather than from the resolved name.
+	//
+	// Both follow from the same gap. resolveContainedName decides on a path, and
+	// the path is not the thing written: OpenFile re-resolves it, so a link
+	// swapped in between the two is followed (os.Root refuses a link that
+	// ESCAPES the root, atomically, but follows one that stays inside — and
+	// `.git` is inside). Judging the open handle removes the window, because the
+	// handle IS what the write lands on.
+	//
+	// And truncation is already the damage. Opening `.git/config` with O_TRUNC
+	// destroys it before any guard below can object, so the truncate happens
+	// only after the handle has been accepted.
+	file, err := root.OpenFile(resolved, os.O_WRONLY|os.O_CREATE, perm)
 	if err != nil {
+		return err
+	}
+	if err := refuseSharedInode(root, file, name, resolved, managed); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Truncate(0); err != nil {
+		_ = file.Close()
 		return err
 	}
 	_, writeErr := file.Write(content)
@@ -1284,6 +1653,112 @@ func writeContainedFile(root *os.Root, name string, content []byte, perm os.File
 		return writeErr
 	}
 	return closeErr
+}
+
+// refuseSharedInode rejects an open managed target that is a HARD link.
+//
+// Every other guard here reasons about a path, and a hard link has no path to
+// reason about. `ln .git/config CLAUDE.md` gives git's config a second name in
+// the working tree: it resolves to "CLAUDE.md", carries no `.git` component, and
+// Lstat reports an ordinary regular file, so PathLandsInGitDir cannot see it.
+// Writing the managed block through that name appends to git's own config —
+// exactly the corruption the git-directory refusal exists to prevent, reached by
+// a route it does not cover. Measured before this guard: `init-agents` exited 0
+// and `.git/config` was rewritten.
+//
+// The rule is link count rather than "is it inside .git", because the handle
+// cannot be asked where else its inode is named. That means it also refuses a
+// hard link to a harmless file. An instruction file with a second name is
+// vanishingly rare, sharing one is what the DOCUMENTED alias (a symlink) is for,
+// and the failure mode on the other side is silent corruption of the repository
+// — so this fails closed, on the same reasoning as the case-folded `.GIT`
+// refusal above.
+func refuseSharedInode(root *os.Root, file *os.File, name, resolved string, managed []string) error {
+	links, device, inode, identified := openFileIdentity(file)
+	if !identified || links <= 1 {
+		return nil
+	}
+	// A shared inode is only dangerous if one of its OTHER names is somewhere
+	// this command must not write. Hard-linking two managed instruction files
+	// together is documented and supported, so the question is not "is this
+	// file linked" but "is every one of its names a managed target".
+	//
+	// Counting is what answers that without being able to enumerate an inode's
+	// names: if as many managed targets share this inode as the inode has
+	// names, then all of its names are accounted for and all of them are ours.
+	// One unaccounted name means some other path — `.git/config`, a hook —
+	// reaches the same bytes, and the write must be refused.
+	accounted := uint64(0)
+	for _, candidate := range managed {
+		// The entry must be a HARD LINK to count, and a symlink is not one.
+		//
+		// Only real directory entries contribute to an inode's link count, so
+		// counting a symlink alias inflates `accounted` without inflating
+		// `links` and hands back exactly the permission this guard exists to
+		// withhold. Measured before this check: CLAUDE.md hard-linked to
+		// .git/config (2 names) plus AGENTS.md symlinked to CLAUDE.md counted 2
+		// managed names against 2 links, so init-agents exited 0 and rewrote
+		// git's config. Sharing one instruction file through a SYMLINK is the
+		// documented alias and stays supported; it simply is not evidence about
+		// who else holds a hard link.
+		linkInfo, lstatErr := root.Lstat(candidate)
+		if lstatErr != nil || linkInfo.Mode()&fs.ModeSymlink != 0 {
+			continue
+		}
+		candidateResolved, resolveErr := resolveContainedName(root, candidate)
+		if resolveErr != nil {
+			continue
+		}
+		// Opened rather than stat'd because identity is a handle question on
+		// Windows. The symlink check above already ran, so this opens a real
+		// directory entry.
+		candidateFile, openErr := root.Open(candidateResolved)
+		if openErr != nil {
+			continue
+		}
+		_, candidateDevice, candidateInode, candidateIdentified := openFileIdentity(candidateFile)
+		_ = candidateFile.Close()
+		if candidateIdentified && candidateDevice == device && candidateInode == inode {
+			accounted++
+		}
+	}
+	if accounted >= links {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: %s resolves to %s, which has %d names but only %d of them are managed instruction files; an unaccounted name may reach a file this command must never write, such as one in the git directory",
+		errSharedInodeManagedTarget, name, filepath.ToSlash(resolved), links, accounted,
+	)
+}
+
+// errSharedInodeManagedTarget marks a managed target that shares its inode with
+// another directory entry.
+var errSharedInodeManagedTarget = errors.New("refusing to write through a hard link")
+
+// ensureNoSharedInode is refuseSharedInode asked of a target that is not being written yet, so
+// that the refusal lands in the preflight rather than after the guide has already been created or
+// overwritten. It opens write-only because a pre-existing guide may deliberately be owner-write-
+// only: regeneration needs that permission, but preflight must not reject it merely because it
+// cannot be read. The open has neither create nor truncate flags, so it is non-mutating; the
+// write-time guard remains the race-safe enforcement point. A missing target has no inode to
+// share and is left for the write to create.
+func ensureNoSharedInode(root *os.Root, name string, managed ...string) error {
+	resolved, err := resolveContainedName(root, name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	file, err := root.OpenFile(resolved, os.O_WRONLY, 0)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+	return refuseSharedInode(root, file, name, resolved, managed)
 }
 
 // writeNewContainedFile is the create-only counterpart to writeContainedFile. The returned
@@ -1360,10 +1835,18 @@ func fileTypeName(mode os.FileMode) string {
 }
 
 func readAndValidateInstructionFile(root *os.Root, name, path string) ([]byte, int, int, error) {
-	content, err := readContainedFile(root, name)
+	content, err := readContainedFile(root, name, maxInstructionFileBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, -1, -1, nil
+		}
+		if errors.Is(err, errContainedFileTooLarge) {
+			return nil, -1, -1, fmt.Errorf(
+				"%s: file is larger than the %d-byte limit init-agents will read; "+
+					"an instruction file this size is not one this command can safely rewrite, "+
+					"so reduce it (or move its bulk into a file it imports) and rerun init-agents",
+				path, maxInstructionFileBytes,
+			)
 		}
 		return nil, -1, -1, fmt.Errorf("%s: read file: %w", path, err)
 	}
@@ -1372,6 +1855,22 @@ func readAndValidateInstructionFile(root *os.Root, name, path string) ([]byte, i
 		return nil, -1, -1, err
 	}
 	return content, begin, end, nil
+}
+
+// ensureRenderedInstructionFits keeps init-agents from writing an instruction file
+// it would refuse to read. It reports the source and rendered sizes because the
+// difference between them is the block this command adds, which is the part the
+// user cannot shrink.
+func ensureRenderedInstructionFits(path string, source, rendered []byte) error {
+	if len(rendered) <= maxInstructionFileBytes {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s: the file is %d bytes and the Entire Graph managed block would take it to %d, "+
+			"past the %d-byte limit init-agents will read back on its next run; "+
+			"reduce it (or move its bulk into a file it imports) and rerun init-agents",
+		path, len(source), len(rendered), maxInstructionFileBytes,
+	)
 }
 
 // validatePointerMarkers intentionally counts the raw marker tokens. Markers in examples,
