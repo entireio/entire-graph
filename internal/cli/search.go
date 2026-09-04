@@ -641,8 +641,10 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// own header cannot survive being re-classified from bytes alone.
 	quarantinedCluster, literalClusterForged := searchQuarantineLiteralCluster(response.LiteralCluster)
 	literalCluster := sem.RenderSearchLiteralCluster(quarantinedCluster)
-	// THE NOTICE IS DECIDED FROM THE BYTES THIS RENDERER ACTUALLY PRODUCED, so the sections are
-	// rendered into a buffer first and the disclosure is written in front of them.
+	// THE NOTICE IS DECIDED BY THE EXACT RENDERING PASS, without retaining that rendering. The
+	// dry pass follows the same diet and section decisions as the real pass and records only whether
+	// repository source that needed quarantine was selected. This keeps the notice exact while the
+	// real payload remains incremental even when the caller disables the context-byte limit.
 	//
 	// The notice says "some source lines quoted below", and the diet below means the response is
 	// not the payload: a ranked body past searchTextMaxFullBodies collapses to a locator and a
@@ -655,17 +657,12 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// sink test writeAgentSearch already applies (searchPayloadDisclosesItsQuarantine), asked here
 	// in the other direction.
 	//
-	// searchResultsCarryForgedRecords stays in front as the allocation-free pre-filter it is: only
-	// a response holding a record-shaped line at all pays for the produced-line set.
-	var rendered strings.Builder
-	if err := writeTextSearchSections(&rendered, response, literalCluster); err != nil {
+	// The dry pass does not build a produced-line set or retain repository bytes; it records one bit.
+	sectionForged, err := writeTextSearchSections(io.Discard, response, literalCluster)
+	if err != nil {
 		return err
 	}
-	forged := literalClusterForged
-	if !forged && searchResultsCarryForgedRecords(response.Results) {
-		forged = searchBodyCarriesQuarantinedLine(rendered.String(),
-			searchResponseQuarantinedLines(response.Results, nil))
-	}
+	forged := literalClusterForged || sectionForged
 	// Ahead of everything, including the closed-set warning: it is the only block that says the
 	// payload's own bytes may be lying about who wrote them, and a reader who has already acted on
 	// a forged line will not come back for it.
@@ -679,21 +676,22 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			return err
 		}
 	}
-	_, err := out.Write([]byte(rendered.String()))
+	_, err = writeTextSearchSections(out, response, literalCluster)
 	return err
 }
 
 // writeTextSearchSections renders everything below the two leading notices, into a writer the
 // caller supplies rather than straight to the terminal sink. The split exists so the forgery
-// disclosure — which has to come FIRST — can be decided by what these sections printed; the caller
-// escapes the result once, exactly as it escaped the incremental writes before.
-func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, literalCluster []byte) error {
+// disclosure — which has to come FIRST — can be decided by the same control flow that prints the
+// sections while the actual payload is still written incrementally.
+func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, literalCluster []byte) (bool, error) {
+	forged := false
 	// The closed-set warning precedes everything, including the map: it is the only block that
 	// changes what the patch has to CONTAIN, and a reader who has already written the edit will not
 	// come back for it.
 	if block := sem.RenderSearchClosedSet(response.ClosedSet); len(block) > 0 {
 		if _, err := out.Write(block); err != nil {
-			return err
+			return forged, err
 		}
 	}
 	// The map is printed before any body: it is what tells the reader whether the ranked
@@ -701,7 +699,7 @@ func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, respon
 	// file will not scroll back for it.
 	if block := sem.RenderSearchContainerMap(response.ContainerMap, false); len(block) > 0 {
 		if _, err := out.Write(block); err != nil {
-			return err
+			return forged, err
 		}
 	}
 	primary, related, docs, tests := partitionSearchSections(response.Results)
@@ -735,6 +733,7 @@ func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, respon
 	reanchorSlots := searchTextMaxFullBodies - searchTextOrdinaryBodyDemand(primary, demoteLowValue)
 	for _, result := range primary {
 		if demoteLowValue && searchLowValueBodyPath(result.FilePath) && !searchResultForcedByFlag(result) {
+			forged = forged || textSearchLocatorQuotesForgedBody(result)
 			writeTextSearchLocator(out, result)
 			continue
 		}
@@ -752,6 +751,7 @@ func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, respon
 		}
 		if full {
 			bodies++
+			forged = forged || textSearchResultQuotesForgedBody(result, true)
 			writeTextSearchResult(out, result, true)
 			continue
 		}
@@ -760,6 +760,7 @@ func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, respon
 		// silently neutralised the cap: on carbon-2752 all five hits still came back bodied. That
 		// re-check exists so the RANK TIER cannot throw away source the allocator paid for, and it is
 		// right for that job — but a cap the caller set is a decision, not an accident.
+		forged = forged || textSearchLocatorQuotesForgedBody(result)
 		writeTextSearchLocator(out, result)
 	}
 	// Contract context before the related and docs groups: it is about the hit the reader has
@@ -767,6 +768,7 @@ func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, respon
 	if len(tests) > 0 {
 		fmt.Fprintf(out, "%s\n", searchTextTestHeader)
 		for _, result := range tests {
+			forged = forged || textSearchResultQuotesForgedBody(result, true)
 			writeTextSearchResult(out, result, true)
 		}
 		// Directly under the body it qualifies: "this is what the code must do" and "these are the
@@ -774,7 +776,7 @@ func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, respon
 		// body above will not scroll for the second half.
 		if block := sem.RenderSearchCoverageNote(response.CoverageNote); len(block) > 0 {
 			if _, err := out.Write(block); err != nil {
-				return err
+				return forged, err
 			}
 		}
 	}
@@ -782,7 +784,7 @@ func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, respon
 	// command that proves it are one thought.
 	if block := sem.RenderSearchVerifyCommand(response.VerifyCommand); len(block) > 0 {
 		if _, err := out.Write(block); err != nil {
-			return err
+			return forged, err
 		}
 	}
 	if block := sem.RenderSearchFileOutline(response.FileOutlines); len(block) > 0 {
@@ -791,7 +793,7 @@ func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, respon
 	}
 	if len(literalCluster) > 0 {
 		if _, err := out.Write(literalCluster); err != nil {
-			return err
+			return forged, err
 		}
 	}
 	// The two reference blocks stay ADJACENT and both stay ahead of the related and docs
@@ -802,7 +804,7 @@ func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, respon
 	// patch must not break), while the declaration card is about identifiers inside its body.
 	if block := renderSignatureTypes(response.SignatureTypes); len(block) > 0 {
 		if _, err := out.Write(block); err != nil {
-			return err
+			return forged, err
 		}
 	}
 	writeTextSearchTypeCard(out, response.TypeCard)
@@ -821,10 +823,34 @@ func writeTextSearchSections(out interface{ Write([]byte) (int, error) }, respon
 	if len(docs) > 0 {
 		fmt.Fprintf(out, "%s\n", searchTextDocsHeader)
 		for _, result := range docs {
+			forged = forged || textSearchResultQuotesForgedBody(result, false)
 			writeTextSearchResult(out, result, false)
 		}
 	}
-	return nil
+	return forged, nil
+}
+
+func textSearchResultQuotesForgedBody(result sem.SearchResult, full bool) bool {
+	if !full && !searchResultCarriesCompleteBody(result) {
+		return false
+	}
+	if searchBodyCarriesRecordShape(result.Snippet) {
+		return true
+	}
+	for _, passage := range result.Passages {
+		if searchBodyCarriesRecordShape(passage.Snippet) {
+			return true
+		}
+	}
+	return false
+}
+
+func textSearchLocatorQuotesForgedBody(result sem.SearchResult) bool {
+	if searchResultDisplayName(result) != "" {
+		return false
+	}
+	_, _, window := sem.SearchLocatorWindow(result)
+	return searchBodyCarriesRecordShape(window)
 }
 
 // renderSignatureTypes prints the declarations of the types the top hit's own

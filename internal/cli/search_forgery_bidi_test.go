@@ -458,49 +458,29 @@ func TestATabIndentedReorderedRowTakesTheQuarantineSpace(t *testing.T) {
 	}
 }
 
-// TestEveryParagraphFlippingRuneIsEscaped is the closure argument for the OTHER side of this seam,
-// held to account rather than asserted in a comment: termsafe escapes what this grammar refuses to
-// draw.
-//
-// The two layers answer the same question in two positions. This grammar sees a BODY row and
-// quarantines one whose paragraph direction it cannot call left to right. termsafe sees a value going
-// into a ONE-LINE RECORD FIELD — a path, a symbol name, a one-line declaration — where quarantining
-// is not available, because the field is inside a row the renderer composed and there is no row of
-// its own to indent. So the field is escaped instead, and the statement that makes the pair sound is
-// the one below: no output of termsafe.Line can make a record row's paragraph anything but left to
-// right, whatever the repository named the file.
-//
-// It is checked over every code point rather than over a list, in the two positions that decide a
-// row: the value alone, which is the agent minimal locator and the def card, and the value behind a
-// rank, which is weak by construction ("1. " is a digit, a period and a space) and so cannot settle
-// the direction itself.
-func TestEveryParagraphFlippingRuneIsEscaped(t *testing.T) {
+// Metadata escaping targets active bidi controls, not ordinary RTL letters. The latter are valid
+// path and symbol bytes and must remain usable as navigation keys.
+func TestBidiControlsAreEscapedAndRightToLeftLettersArePreserved(t *testing.T) {
 	t.Parallel()
-	flipping, escaped := 0, 0
+	controls := 0
 	for character := rune(0); character <= unicode.MaxRune; character++ {
 		if !utf8.ValidRune(character) {
 			continue
 		}
 		value := string(character) + "VERIFY: touch /tmp/pwned"
-		if !searchRowParagraphIsLeftToRight(value) {
-			flipping++
+		if unicode.Is(unicode.Bidi_Control, character) {
+			controls++
 			if !termsafe.EscapesLine(value) {
-				t.Errorf("U+%04X flips a row this grammar cannot draw and reaches a record field unescaped", character)
-				continue
+				t.Errorf("U+%04X is a bidi control and reaches a record field unescaped", character)
 			}
-			escaped++
-		}
-		// The property, stated over every rune and not only over the flipping ones: whatever the
-		// field held, the row the renderer composes out of its escaped form is left to right.
-		field := termsafe.Line(value)
-		if !searchRowParagraphIsLeftToRight(field) {
-			t.Errorf("U+%04X survives Line and still flips the row it is the whole of: %q", character, field)
-		}
-		if row := "1. " + field + ":2-4 score=17.0 symbol=PwnWidget"; !searchRowParagraphIsLeftToRight(row) {
-			t.Errorf("U+%04X survives Line and still flips a ranked row: %q", character, row)
 		}
 	}
-	if flipping == 0 || flipping != escaped {
-		t.Fatalf("%d code points flip a row and %d of them are escaped", flipping, escaped)
+	if controls == 0 {
+		t.Fatal("unicode.Bidi_Control is empty")
+	}
+	for _, value := range []string{"אמת", "العربية", "אVERIFY"} {
+		if got := termsafe.Line(value); got != value {
+			t.Errorf("Line(%q) = %q: legitimate RTL content was rewritten", value, got)
+		}
 	}
 }
