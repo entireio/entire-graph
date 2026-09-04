@@ -96,20 +96,102 @@ func TestSearchVerifyMavenPicksTheReactorOnlyWhenThereIsOne(t *testing.T) {
 // TestSearchVerifySuiteGradleNamesTheProjectUnderAnAncestorWrapper pins the nested-build case: the
 // wrapper may sit above the build the manifest named, and `./gradlew test` from the wrapper's own
 // directory then tests whatever build is THERE — Gradle does not walk down to find a descendant.
+//
+// WHICH command replaces it is decided by the settings script, not by the directory layout. Gradle
+// locates the settings file by walking UP from its start directory and then KEEPS what it found only
+// if that file declares a project AT the start directory; when it does not, Gradle discards the
+// settings and runs the start directory as its own empty-settings build, where a sibling
+// `project(":core")` dependency is no longer there to resolve. So `-p lib test` is not "the root
+// build with a different default project" — for an ordinary multi-project layout it is either the
+// root build (when the root settings declares `lib`) or a different build entirely (when it does
+// not), and nothing in a `lib/build.gradle` says which. The documented spelling of a subproject task
+// is the project path run from the root, so an included project gets that, `-p` is kept for a
+// directory that is its OWN build root, and a directory nothing declares gets silence.
 func TestSearchVerifySuiteGradleNamesTheProjectUnderAnAncestorWrapper(t *testing.T) {
 	t.Parallel()
-	evidence := searchVerifyTestEvidence(map[string]string{
-		"gradlew":                           "",
-		"modules/core/build.gradle":         "",
-		"modules/core/src/main/java/A.java": "",
-	})
-	got := deriveSearchVerifySuiteCommand(
-		searchVerifySubject{sourcePath: "modules/core/src/main/java/A.java"}, &evidence)
-	if got == nil {
-		t.Fatal("expected a Gradle suite command, got silence")
-	}
-	if got.Command != "./gradlew -p modules/core test" {
-		t.Fatalf("command = %q, want %q", got.Command, "./gradlew -p modules/core test")
+	for _, testCase := range []struct {
+		name        string
+		files       map[string]string
+		wantCommand string
+	}{
+		{
+			name: "an included subproject is addressed by its project path",
+			files: map[string]string{
+				"gradlew":                           "",
+				"settings.gradle":                   "rootProject.name = 'app'\ninclude ':modules:core'\n",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "./gradlew :modules:core:test",
+		},
+		{
+			name: "the Kotlin DSL's parenthesised include declares it just as well",
+			files: map[string]string{
+				"gradlew":                           "",
+				"settings.gradle.kts":               "include(\n    \":modules:core\",\n)\n",
+				"modules/core/build.gradle.kts":     "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "./gradlew :modules:core:test",
+		},
+		{
+			name: "a directory carrying its own settings script is its own build, entered with -p",
+			files: map[string]string{
+				"gradlew":                           "",
+				"modules/core/settings.gradle":      "rootProject.name = 'core'\n",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "./gradlew -p modules/core test",
+		},
+		{
+			name: "a build.gradle no settings script declares gets silence",
+			files: map[string]string{
+				"gradlew":                           "",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "",
+		},
+		{
+			name: "a commented-out include does not declare the project",
+			files: map[string]string{
+				"gradlew":                           "",
+				"settings.gradle":                   "// include ':modules:core'\n",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "",
+		},
+		{
+			name: "a quoted path that is not an include argument does not declare the project",
+			files: map[string]string{
+				"gradlew":                           "",
+				"settings.gradle":                   "def includes = [':modules:core']\n",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			evidence := searchVerifyTestEvidence(testCase.files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "modules/core/src/main/java/A.java"}, &evidence)
+			if testCase.wantCommand == "" {
+				if got != nil {
+					t.Fatalf("command = %q, want silence", got.Command)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected a Gradle suite command, got silence")
+			}
+			if got.Command != testCase.wantCommand {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.wantCommand)
+			}
+		})
 	}
 }
 
@@ -117,11 +199,18 @@ func TestSearchVerifySuiteGradleNamesTheProjectUnderAnAncestorWrapper(t *testing
 // test` is not a portable spelling of "run this package's test script": a Yarn Plug'n'Play project
 // has no node_modules/.bin for npm's lifecycle to find, so the hard gate fails in exactly the tree
 // that said which manager to use.
+//
+// Proximity is the FIRST question and manager preference only the tie-break within one directory.
+// A lockfile is a fact about the directory that holds it, so the nearest one is the one that governs
+// the package being run; ordering the preference list ahead of the walk let a leaf's own lockfile
+// lose to a differently-preferred lockfile several directories above it, which advertises a manager
+// the leaf never declared.
 func TestSearchVerifySuiteNodeHonorsTheDeclaredPackageManager(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		name        string
 		files       map[string]string
+		source      string
 		wantCommand string
 	}{
 		{
@@ -131,6 +220,7 @@ func TestSearchVerifySuiteNodeHonorsTheDeclaredPackageManager(t *testing.T) {
 				"yarn.lock":    "",
 				"src/a.js":     "",
 			},
+			source:      "src/a.js",
 			wantCommand: "yarn test",
 		},
 		{
@@ -141,7 +231,31 @@ func TestSearchVerifySuiteNodeHonorsTheDeclaredPackageManager(t *testing.T) {
 				"packages/ui/package.json":  `{"scripts":{"test":"vitest"}}`,
 				"packages/ui/src/Button.js": "",
 			},
+			source:      "packages/ui/src/Button.js",
 			wantCommand: "cd packages/ui && pnpm test",
+		},
+		{
+			name: "a nearer npm lockfile beats a more-preferred pnpm lockfile further up",
+			files: map[string]string{
+				"pnpm-lock.yaml":                "",
+				"package.json":                  `{"scripts":{"test":"jest"}}`,
+				"packages/ui/package.json":      `{"scripts":{"test":"vitest"}}`,
+				"packages/ui/package-lock.json": "",
+				"packages/ui/src/Button.js":     "",
+			},
+			source:      "packages/ui/src/Button.js",
+			wantCommand: "cd packages/ui && npm test",
+		},
+		{
+			name: "two lockfiles in ONE directory still resolve by manager preference",
+			files: map[string]string{
+				"package.json":      `{"scripts":{"test":"jest"}}`,
+				"package-lock.json": "",
+				"pnpm-lock.yaml":    "",
+				"src/a.js":          "",
+			},
+			source:      "src/a.js",
+			wantCommand: "pnpm test",
 		},
 		{
 			name: "corepack packageManager field wins over an npm lockfile",
@@ -150,6 +264,7 @@ func TestSearchVerifySuiteNodeHonorsTheDeclaredPackageManager(t *testing.T) {
 				"package-lock.json": "",
 				"src/a.js":          "",
 			},
+			source:      "src/a.js",
 			wantCommand: "yarn test",
 		},
 		{
@@ -158,17 +273,15 @@ func TestSearchVerifySuiteNodeHonorsTheDeclaredPackageManager(t *testing.T) {
 				"package.json": `{"scripts":{"test":"jest"}}`,
 				"src/a.js":     "",
 			},
+			source:      "src/a.js",
 			wantCommand: "npm test",
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			evidence := searchVerifyTestEvidence(testCase.files)
-			source := "src/a.js"
-			if _, ok := testCase.files["packages/ui/src/Button.js"]; ok {
-				source = "packages/ui/src/Button.js"
-			}
-			got := deriveSearchVerifySuiteCommand(searchVerifySubject{sourcePath: source}, &evidence)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: testCase.source}, &evidence)
 			if got == nil {
 				t.Fatal("expected a Node suite command, got silence")
 			}
@@ -217,6 +330,24 @@ func TestSearchVerifyRubyRequiresADeclaredTestTaskAndAGemfile(t *testing.T) {
 				"lib/thing.rb": "",
 			},
 			wantCommand: "bundle exec rake test",
+		},
+		{
+			name: "a parenthesised task declaration does too",
+			files: map[string]string{
+				"Gemfile":      "source 'x'\n",
+				"Rakefile":     "desc 'run the tests'\ntask(:test => :compile) do\n  sh 'ruby -Itest'\nend\n",
+				"lib/thing.rb": "",
+			},
+			wantCommand: "bundle exec rake test",
+		},
+		{
+			name: "a parenthesised prerequisite still does not",
+			files: map[string]string{
+				"Gemfile":      "source 'x'\n",
+				"Rakefile":     "task(:default => :test)\n",
+				"lib/thing.rb": "",
+			},
+			wantCommand: "",
 		},
 		{
 			name: "Rake::TestTask declares it too",
@@ -289,5 +420,131 @@ func TestSearchVerifyStageSeparatorIgnoresQuotedAmpersands(t *testing.T) {
 	apostrophe := searchVerifyRunIn("it's&&here", "npm test")
 	if runner := searchVerifyRunner(apostrophe); runner != "npm" {
 		t.Fatalf("runner over %q = %q, want %q", apostrophe, runner, "npm")
+	}
+}
+
+// TestSearchVerifyRakefileDeclarationFormsAreRecognised pins BOTH directions of the Rakefile
+// predicate: the declaration syntaxes Rake actually accepts license `rake test`, and a file that
+// merely mentions the word still does not.
+//
+// The declaration check exists because substring-matching "test" emitted `rake test` for Rakefiles
+// that never define the task. The correction has the opposite failure mode: a pattern tight enough
+// to reject prose can also reject `task(:test)`, which is ordinary Rake and defines the task. Both
+// halves are load-bearing, so both are pinned here.
+func TestSearchVerifyRakefileDeclarationFormsAreRecognised(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		// --- declarations: every one of these defines a task rake will run ---
+		{name: "bare symbol", content: "task :test\n", want: true},
+		{name: "symbol with a block", content: "task :test do\n  sh 'ruby'\nend\n", want: true},
+		{name: "parenthesised symbol", content: "task(:test)\n", want: true},
+		{name: "parenthesised symbol with a block", content: "task(:test) do\n  sh 'ruby'\nend\n", want: true},
+		{name: "parenthesised with a space before the paren", content: "task (:test)\n", want: true},
+		{name: "hashrocket dependency", content: "task :test => :compile\n", want: true},
+		{name: "parenthesised hashrocket dependency", content: "task(:test => :compile)\n", want: true},
+		{name: "hashrocket dependency list", content: "task :test => [:compile, :lint]\n", want: true},
+		{name: "hash-argument dependency", content: "task test: :compile\n", want: true},
+		{name: "parenthesised hash-argument dependency", content: "task(test: :compile)\n", want: true},
+		{name: "hash-argument dependency list", content: "task test: %w[compile lint]\n", want: true},
+		{name: "double-quoted name", content: "task \"test\"\n", want: true},
+		{name: "single-quoted name", content: "task 'test' do\nend\n", want: true},
+		{name: "parenthesised quoted name", content: "task(\"test\")\n", want: true},
+		{name: "task arguments before the dependency", content: "task :test, [:pattern] => :compile do |t, args|\nend\n", want: true},
+		{name: "multitask", content: "multitask :test\n", want: true},
+		{name: "indented under a conditional", content: "if ENV['CI']\n  task(:test)\nend\n", want: true},
+		{name: "declared after a desc line", content: "desc 'run the tests'\ntask(:test)\n", want: true},
+		{name: "Rake::TestTask generator", content: "require 'rake/testtask'\nRake::TestTask.new(:test)\n", want: true},
+
+		// --- mentions: none of these defines a task named `test` ---
+		{name: "prerequisite of another task", content: "task default: %w[test rubocop]\n", want: false},
+		{name: "parenthesised prerequisite of another task", content: "task(:default => :test)\n", want: false},
+		{name: "comment mentioning the latest tests", content: "# run the latest tests with rake\ntask :lint\n", want: false},
+		{name: "comment containing a declaration", content: "# task(:test) was removed\ntask :lint\n", want: false},
+		{name: "prose using the word", content: "# the test suite lives elsewhere\n", want: false},
+		{name: "a differently named task with the prefix", content: "task(:test_all)\n", want: false},
+		{name: "a differently named symbol task", content: "task :testing\n", want: false},
+		{name: "a differently named quoted task", content: "task(\"testing\")\n", want: false},
+		{name: "a differently named hash-argument task", content: "task test_helper: :compile\n", want: false},
+		{name: "the word inside a shell line", content: "task :lint do\n  sh 'rake test'\nend\n", want: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := searchVerifyRakefileDefinesTest(testCase.content); got != testCase.want {
+				t.Fatalf("searchVerifyRakefileDefinesTest(%q) = %v, want %v", testCase.content, got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyRakeTestTaskGeneratorMustNameTheTestTask is the other half of the declaration
+// check.
+//
+// The `task` forms were tightened to a line-anchored declaration; the generator arm was left as a
+// bare substring search for "TestTask.new", so it licensed `rake test` on the two shapes that most
+// obviously do not declare it:
+//
+//   - a commented-out generator — `# Rake::TestTask.new` — which is the shape a Rakefile is left in
+//     when the task is retired, exactly the case the `task` half already rejects; and
+//   - a NAMED generator. Rake::TestTask#initialize takes the task name as its first argument and
+//     only DEFAULTS to :test, so `Rake::TestTask.new(:spec)` defines `spec` and nothing else. The
+//     emitted `rake test` then dies on "Don't know how to build task 'test'" — the hard-gate failure
+//     the declaration check exists to prevent.
+//
+// The rule is the same one the `task` half uses: line-anchored (so a comment, prose or a shell line
+// inside another task cannot license it), and the name must actually be `test` — either omitted, in
+// which case Rake's default applies, or written out as `:test` / `"test"` / the `test:` dependency
+// key.
+//
+// Not fixed here, and deliberately: a generator nested in `namespace :foo do` defines `foo:test` and
+// still matches, because separating it needs block tracking rather than a regex (issue #205). Line
+// anchoring admits leading whitespace precisely so that case behaves exactly as it did before.
+func TestSearchVerifyRakeTestTaskGeneratorMustNameTheTestTask(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		// --- generators that define `test` ---
+		{name: "bare generator takes Rake's default name", content: "require 'rake/testtask'\nRake::TestTask.new\n", want: true},
+		{name: "default name with a block", content: "Rake::TestTask.new do |t|\n  t.libs << 'test'\nend\n", want: true},
+		{name: "default name with a brace block", content: "Rake::TestTask.new { |t| t.verbose = true }\n", want: true},
+		{name: "default name with empty parentheses", content: "Rake::TestTask.new()\n", want: true},
+		{name: "empty parentheses and a block", content: "Rake::TestTask.new() do |t|\nend\n", want: true},
+		{name: "default name with a trailing comment", content: "Rake::TestTask.new # defines :test\n", want: true},
+		{name: "explicit symbol name", content: "Rake::TestTask.new(:test)\n", want: true},
+		{name: "explicit symbol name without parentheses", content: "Rake::TestTask.new :test\n", want: true},
+		{name: "explicit symbol name with a block", content: "Rake::TestTask.new(:test) do |t|\n  t.warning = false\nend\n", want: true},
+		{name: "explicit double-quoted name", content: "Rake::TestTask.new(\"test\")\n", want: true},
+		{name: "explicit single-quoted name", content: "Rake::TestTask.new('test') do |t|\nend\n", want: true},
+		{name: "hashrocket dependency form", content: "Rake::TestTask.new(:test => :compile)\n", want: true},
+		{name: "hash-argument dependency form", content: "Rake::TestTask.new(test: :compile)\n", want: true},
+		{name: "Minitest's generator", content: "require 'minitest/test_task'\nMinitest::TestTask.new(:test)\n", want: true},
+		{name: "unqualified after include Rake", content: "include Rake::DSL\nTestTask.new\n", want: true},
+		{name: "indented under a conditional", content: "if ENV['CI']\n  Rake::TestTask.new(:test)\nend\n", want: true},
+
+		// --- generators that define something else, or nothing at all ---
+		{name: "commented-out generator", content: "# Rake::TestTask.new\ntask :lint\n", want: false},
+		{name: "commented-out named generator", content: "  # Rake::TestTask.new(:test)\ntask :lint\n", want: false},
+		{name: "prose mentioning the generator", content: "# use Rake::TestTask.new to add one\n", want: false},
+		{name: "generator named spec", content: "require 'rake/testtask'\nRake::TestTask.new(:spec)\n", want: false},
+		{name: "generator named spec as a string", content: "Rake::TestTask.new(\"spec\")\n", want: false},
+		{name: "generator named integration with a block", content: "Rake::TestTask.new(:integration) do |t|\nend\n", want: false},
+		{name: "generator named with the test prefix", content: "Rake::TestTask.new(:test_all)\n", want: false},
+		{name: "generator named with a hash key that is not test", content: "Rake::TestTask.new(spec: :compile)\n", want: false},
+		{name: "generator named from a variable", content: "name = :spec\nRake::TestTask.new(name)\n", want: false},
+		{name: "a different generator entirely", content: "require 'rspec/core/rake_task'\nRSpec::Core::RakeTask.new(:spec)\n", want: false},
+		{name: "a generator inside a shell line", content: "task :lint do\n  sh 'ruby -e \"Rake::TestTask.new\"'\nend\n", want: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := searchVerifyRakefileDefinesTest(testCase.content); got != testCase.want {
+				t.Fatalf("searchVerifyRakefileDefinesTest(%q) = %v, want %v", testCase.content, got, testCase.want)
+			}
+		})
 	}
 }

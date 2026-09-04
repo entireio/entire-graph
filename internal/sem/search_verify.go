@@ -651,20 +651,232 @@ func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *
 	if !ok {
 		return nil
 	}
-	// The wrapper may live above the build this derivation is about. Running `./gradlew test` from
-	// the wrapper's own directory then tests whatever build sits THERE — an unrelated root build,
-	// or nothing at all, because Gradle does not discover a descendant build by walking down. The
-	// build the manifest named is the subject, so name it: `-p` points Gradle at that directory,
-	// which is correct both for an included subproject and for a standalone nested build.
-	command := "./gradlew test"
-	if wrapperDir != dir {
-		relative, inside := searchVerifyRelative(wrapperDir, dir)
-		if !inside {
-			return nil
-		}
-		command = "./gradlew -p " + shellQuotePath(relative) + " test"
+	if wrapperDir == dir {
+		return searchVerifySuiteCommand(wrapperDir, "./gradlew test", manifest+" + "+wrapperPath)
 	}
-	return searchVerifySuiteCommand(wrapperDir, command, manifest+" + "+wrapperPath)
+	// The wrapper lives above the build this derivation is about. Running `./gradlew test` from the
+	// wrapper's own directory would test whatever build sits THERE, because Gradle does not discover
+	// a descendant build by walking down — but WHICH command names this one is decided by the
+	// settings script, not by the directory layout.
+	//
+	// Gradle locates the settings file by walking UP from its start directory and then keeps what it
+	// found only if that file declares a project AT the start directory; otherwise it discards the
+	// settings and runs the start directory as its own empty-settings build. So `-p <dir> test` is
+	// NOT "the root build with a different default project": in an ordinary multi-project layout it
+	// is the root build when the root settings declares <dir>, and a different, sibling-less build
+	// when it does not — where `project(":core")` dependencies no longer resolve. A `build.gradle`
+	// sitting in a subdirectory says nothing about which of the two it is.
+	relative, inside := searchVerifyRelative(wrapperDir, dir)
+	if !inside {
+		return nil
+	}
+	if settingsPath, _, own := searchVerifyGradleSettings(dir, evidence); own {
+		// The directory carries its own settings script, so it IS a build root and that is the
+		// settings file Gradle finds first when started there. `-p` is the spelling for that.
+		return searchVerifySuiteCommand(
+			wrapperDir,
+			"./gradlew -p "+shellQuotePath(relative)+" test",
+			manifest+" + "+wrapperPath+" + "+settingsPath,
+		)
+	}
+	settingsPath, settings, found := searchVerifyGradleSettings(wrapperDir, evidence)
+	project := ":" + strings.ReplaceAll(relative, "/", ":")
+	if !found || !searchVerifyGradleSettingsIncludes(settings, project) {
+		// Nothing in the tree says this directory is a build Gradle can be pointed at, so there is
+		// no command to emit. Silence costs a lookup; a `-p` that quietly ran a different build
+		// would report a pass the edit never earned.
+		return nil
+	}
+	// An included subproject is addressed by its project path from the root of the build that
+	// declares it — the documented spelling, `gradle :subproject:taskName`.
+	return searchVerifySuiteCommand(
+		wrapperDir,
+		"./gradlew "+shellQuote(project+":test"),
+		manifest+" + "+wrapperPath+" + "+settingsPath,
+	)
+}
+
+// searchVerifyGradleSettings returns the settings script that makes a directory a Gradle build root,
+// with its content, or false when the directory is not one.
+func searchVerifyGradleSettings(dir string, evidence *searchVerifyEvidence) (string, string, bool) {
+	for _, name := range []string{"settings.gradle", "settings.gradle.kts"} {
+		candidate := searchVerifyJoin(dir, name)
+		if content, ok := evidence.file(candidate); ok {
+			return candidate, content, true
+		}
+	}
+	return "", "", false
+}
+
+// searchVerifyGradleSettingsIncludes reports whether a settings script declares the project path.
+//
+// It reads only LITERAL `include` arguments, in either DSL — `include ':a:b'`, `include(":a:b")`,
+// and the comma-separated and multi-line spellings of both. `includeBuild` composes a separate build
+// rather than declaring a project, and `includeFlat` names a sibling directory rather than a project
+// path, so neither answers this question; both are skipped along with any other identifier that
+// merely starts with `include`. A settings script that COMPUTES its includes reports false, and the
+// caller then emits nothing: this predicate exists to replace a guess, not to make a better one.
+func searchVerifyGradleSettingsIncludes(settings, project string) bool {
+	want := strings.TrimPrefix(project, ":")
+	if want == "" {
+		return false
+	}
+	for _, argument := range searchVerifyGradleIncludeArguments(settings) {
+		if strings.TrimPrefix(argument, ":") == want {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyGradleIncludeArguments returns every string literal passed to an `include` call.
+func searchVerifyGradleIncludeArguments(script string) []string {
+	script = searchVerifyStripScriptComments(script)
+	var arguments []string
+	for index := 0; index < len(script); {
+		offset := strings.Index(script[index:], "include")
+		if offset < 0 {
+			break
+		}
+		start := index + offset
+		index = start + len("include")
+		if start > 0 && searchVerifyScriptIdentifierByte(script[start-1]) {
+			continue
+		}
+		if index < len(script) && searchVerifyScriptIdentifierByte(script[index]) {
+			continue
+		}
+		found, width := searchVerifyGradleCallArguments(script[index:])
+		arguments = append(arguments, found...)
+		index += width
+	}
+	return arguments
+}
+
+// searchVerifyGradleCallArguments collects the string literals of one call's argument list and
+// reports how far it consumed. Groovy allows the parentheses to be dropped, so the list ends either
+// at the matching `)` or at the end of the line, extended while the line is continued.
+func searchVerifyGradleCallArguments(rest string) ([]string, int) {
+	var arguments []string
+	index := 0
+	for index < len(rest) && (rest[index] == ' ' || rest[index] == '\t') {
+		index++
+	}
+	parenthesised := index < len(rest) && rest[index] == '('
+	depth := 0
+	for index < len(rest) {
+		switch character := rest[index]; character {
+		case '(':
+			depth++
+			index++
+		case ')':
+			depth--
+			index++
+			if parenthesised && depth == 0 {
+				return arguments, index
+			}
+		case '\'', '"':
+			literal, width := searchVerifyScriptStringLiteral(rest[index:])
+			if width == 0 {
+				return arguments, index + 1
+			}
+			arguments = append(arguments, literal)
+			index += width
+		case '\n':
+			if parenthesised || depth > 0 {
+				index++
+				continue
+			}
+			continued := strings.TrimRight(rest[:index], " \t\r")
+			if strings.HasSuffix(continued, ",") || strings.HasSuffix(continued, "\\") {
+				index++
+				continue
+			}
+			return arguments, index
+		default:
+			index++
+		}
+	}
+	return arguments, index
+}
+
+// searchVerifyScriptStringLiteral reads one single- or double-quoted literal, returning its content
+// and its width, or a zero width when the quote is not closed on the line.
+func searchVerifyScriptStringLiteral(rest string) (string, int) {
+	quote := rest[0]
+	var literal strings.Builder
+	for index := 1; index < len(rest); index++ {
+		character := rest[index]
+		switch {
+		case character == '\\' && index+1 < len(rest):
+			index++
+			literal.WriteByte(rest[index])
+		case character == quote:
+			return literal.String(), index + 1
+		case character == '\n':
+			return "", 0
+		default:
+			literal.WriteByte(character)
+		}
+	}
+	return "", 0
+}
+
+// searchVerifyStripScriptComments removes `//` and `/* */` comments from a Groovy or Kotlin script,
+// leaving string literals and the line structure intact. A commented-out `include` is not an
+// include, and reading one as evidence would name a project that does not exist.
+func searchVerifyStripScriptComments(script string) string {
+	var out strings.Builder
+	out.Grow(len(script))
+	inBlock, inLine := false, false
+	var quote byte
+	for index := 0; index < len(script); index++ {
+		character := script[index]
+		switch {
+		case inBlock:
+			if character == '\n' {
+				out.WriteByte(character)
+			}
+			if character == '*' && index+1 < len(script) && script[index+1] == '/' {
+				inBlock = false
+				index++
+			}
+		case inLine:
+			if character == '\n' {
+				inLine = false
+				out.WriteByte(character)
+			}
+		case quote != 0:
+			out.WriteByte(character)
+			if character == '\\' && index+1 < len(script) {
+				index++
+				out.WriteByte(script[index])
+				continue
+			}
+			if character == quote {
+				quote = 0
+			}
+		case character == '\'' || character == '"':
+			quote = character
+			out.WriteByte(character)
+		case character == '/' && index+1 < len(script) && script[index+1] == '/':
+			inLine = true
+			index++
+		case character == '/' && index+1 < len(script) && script[index+1] == '*':
+			inBlock = true
+			index++
+		default:
+			out.WriteByte(character)
+		}
+	}
+	return out.String()
+}
+
+func searchVerifyScriptIdentifierByte(character byte) bool {
+	return character == '_' ||
+		(character >= 'a' && character <= 'z') ||
+		(character >= 'A' && character <= 'Z') ||
+		(character >= '0' && character <= '9')
 }
 
 func deriveSearchVerifySuiteNode(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
@@ -710,14 +922,44 @@ func searchVerifyNodePackageManager(
 			return command, "packageManager " + name
 		}
 	}
-	for _, candidate := range searchVerifyNodeLockfiles {
-		if _, lockPath, ok := searchVerifyAncestorFile(dir, candidate.lockfile, evidence); ok {
-			return candidate.command, lockPath
-		}
+	if command, lockPath := searchVerifyNodeLockfileManager(dir, evidence); command != "" {
+		return command, lockPath
 	}
 	// npm is the floor, and it is reported as no extra evidence: it is what this block always
 	// emitted, so a repository that declares nothing keeps the byte-identical command it had.
 	return "npm test", ""
+}
+
+// searchVerifyNodeLockfileManager finds the lockfile that governs a package: the NEAREST one,
+// resolving a directory that holds several by manager preference.
+//
+// Proximity has to be the first question. A lockfile is a fact about the directory that holds it, so
+// the one beside the manifest is the package's own statement and an ancestor's is only the
+// workspace's default. Asking preference first — walking the whole tree for pnpm before looking for
+// yarn anywhere — made a leaf's own `package-lock.json` lose to a `pnpm-lock.yaml` several
+// directories above it, and advertised a manager that leaf never declared.
+func searchVerifyNodeLockfileManager(dir string, evidence *searchVerifyEvidence) (string, string) {
+	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
+		// Within ONE directory there is no proximity to separate two lockfiles, so preference
+		// decides: a repository carrying both a pnpm and an npm lock is one that migrated, and the
+		// npm lock is the stale one.
+		for _, candidate := range searchVerifyNodeLockfiles {
+			lockPath := searchVerifyJoin(dir, candidate.lockfile)
+			if evidence.exists(lockPath) {
+				return candidate.command, lockPath
+			}
+		}
+		if dir == "" {
+			break
+		}
+		parent := path.Dir(dir)
+		if parent == "." || parent == "/" || parent == dir {
+			dir = ""
+			continue
+		}
+		dir = parent
+	}
+	return "", ""
 }
 
 // searchVerifyNodeManagers maps a `packageManager` name to the invocation that runs the package's
@@ -730,9 +972,10 @@ var searchVerifyNodeManagers = map[string]string{
 	"bun":  "bun run test",
 }
 
-// searchVerifyNodeLockfiles is the lockfile evidence, most specific first: npm's lockfile is listed
-// last because a repository that also carries a yarn or pnpm lock is one that migrated, and the
-// other manager's lock is the stale one.
+// searchVerifyNodeLockfiles orders the lockfile evidence for the tie-break WITHIN one directory,
+// most specific first: npm's lockfile is listed last because a directory that also carries a yarn or
+// pnpm lock is one that migrated, and the npm lock is the stale one. The order does not outrank
+// proximity — see searchVerifyNodeLockfileManager.
 var searchVerifyNodeLockfiles = []struct {
 	lockfile string
 	command  string
@@ -810,19 +1053,58 @@ func searchVerifyBundlePrefix(hasGemfile bool) string {
 // "Don't know how to build task 'test'" — a hard-gate command that cannot run, which is strictly
 // worse than the silence this block prefers.
 //
-// What licenses the command is a declaration: `task :test`, `task "test"`, `task test: :deps`, or
-// the Rake::TestTask generator, which defines `:test` by default.
+// What licenses the command is a declaration, in any of the shapes Rake accepts for one: `task
+// :test`, `task(:test)`, `task "test"`, the dependency forms `task :test => :deps` and `task test:
+// :deps` with or without parentheses, `multitask :test`, or the Rake::TestTask generator, which
+// defines `:test` by default. Rejecting a shape is not free either: a Rakefile that declares
+// `task(:test)` and gets declined loses a command that would have run.
 func searchVerifyRakefileDefinesTest(content string) bool {
-	if strings.Contains(content, "Rake::TestTask.new") || strings.Contains(content, "TestTask.new") {
-		return true
-	}
-	return searchVerifyRakeTestTaskPattern.MatchString(content)
+	return searchVerifyRakeTestTaskGeneratorPattern.MatchString(content) ||
+		searchVerifyRakeTestTaskPattern.MatchString(content)
 }
 
+// searchVerifyRakeTestTaskGeneratorPattern matches a Rake::TestTask / Minitest::TestTask generator
+// call that defines the task `test`, under the same discipline as the `task` forms above:
+// line-anchored, so a comment, prose or a shell line inside another task cannot license the command.
+//
+// Substring-matching "TestTask.new" did not. `# Rake::TestTask.new` — the shape a Rakefile is left
+// in when the task is retired — counted as a declaration, and so did a NAMED generator: the name is
+// TestTask#initialize's first argument and :test is only its DEFAULT, so `Rake::TestTask.new(:spec)`
+// defines `spec` and the emitted `rake test` dies on "Don't know how to build task 'test'".
+//
+// So the name has to be `test`, in one of the two ways a generator can say so. Either it is omitted
+// and Rake's default stands — the call ends the line, or carries only empty parentheses, a `do`/`{`
+// block or a trailing comment — or it is written out as the first argument, as `:test`, `"test"`,
+// `'test'`, or the `test:` / `:test =>` dependency key. Anything else is left alone rather than
+// guessed at: a name held in a variable, or an argument list broken across lines, declines and the
+// derivation stays silent, which is the direction this block already prefers to a command that
+// cannot run.
+//
+// The namespace prefix is optional and repeatable so that `Rake::TestTask`, `Minitest::TestTask` and
+// a bare `TestTask` after `include Rake::DSL` all match, while `RSpec::Core::RakeTask.new` and a
+// project's own `MyTestTask.new` — whose default name nothing here knows — do not.
+//
+// Leading whitespace is admitted, which leaves the `namespace :foo do` case of issue #205 behaving
+// exactly as it did: a generator nested in a namespace defines `foo:test` and still matches, because
+// separating it needs block tracking rather than a regex.
+var searchVerifyRakeTestTaskGeneratorPattern = regexp.MustCompile(
+	`(?m)^[ \t]*(?:[A-Za-z_]\w*::)*TestTask\.new` +
+		`(?:[ \t]*(?:\([ \t]*\))?[ \t]*(?:$|#|\{|do\b)` +
+		`|[ \t]*\(?[ \t]*(?::test\b|["']test["']|test[ \t]*:))`)
+
 // searchVerifyRakeTestTaskPattern matches a `test` task DECLARATION at the start of a line, so a
-// prerequisite list (`task default: %w[test]`) and prose cannot license the command.
+// prerequisite list (`task default: %w[test]`), a shell line inside another task (`sh 'rake test'`)
+// and prose cannot license the command.
+//
+// The name must follow `task` immediately, as the first argument, in one of the three ways Rake
+// names a task: the symbol `:test`, the string `"test"`/`'test'`, or the hash-key `test:` of the
+// `task test: :deps` dependency form. The separator admits `(` as well as whitespace, because
+// `task(:test)` is the same declaration written with parentheses — requiring whitespace there was
+// what declined valid Rakefiles. Nothing else is admitted: `:test\b` and the closing quote stop
+// `:testing` and `"test_all"`, and the hash-key form needs its colon straight after the word, so
+// `task test_helper: :compile` still does not match.
 var searchVerifyRakeTestTaskPattern = regexp.MustCompile(
-	`(?m)^[ \t]*task\s+(?::test\b|["']test["']|test\s*:)`)
+	`(?m)^[ \t]*(?:multi)?task[ \t(]+(?::test\b|["']test["']|test[ \t]*:)`)
 
 func deriveSearchVerifySuiteMake(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	content, ok := evidence.file(searchVerifyJoin(dir, "Makefile"))
@@ -1483,11 +1765,26 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 //
 // The cost is that output is buffered rather than streamed. `explain` reads its input to EOF before
 // it writes anything, so nothing downstream was streaming in the first place.
+//
+// Keeping the test's status is only half of it. `exit $r` alone reports ONLY the test's status, so
+// the converse error appears: a green test whose `explain` filter was missing, crashed, or could not
+// write its output exits 0 and the line claims a verification that never completed. `explain`'s own
+// status is therefore captured too, and the two are ordered:
+//
+//   - a nonzero TEST status always wins. That is the whole point of the capture, and a harness
+//     keying on `$?` must keep reading the same number the bare test would have produced.
+//   - a green test with a nonzero EXPLAIN status exits with explain's status. The run is
+//     inconclusive rather than passing, and nonzero is the safe direction for an inconclusive run.
+//
+// The two cases are told apart by a one-line stderr note rather than by the number, because the
+// numbers collide — a test and a filter both exit 1 — and the note is the only thing that can say
+// which stage produced it. It is written only when explain is the stage that failed.
 func composeSearchVerifyExplain(command, explain string) (composed string, overhead int) {
 	const (
 		prefix = "( o=$("
 		middle = " 2>&1); r=$?; printf '%s\\n' \"$o\" | "
-		suffix = "; exit $r )"
+		suffix = "; e=$?; [ \"$r\" -ne 0 ] && exit \"$r\"; " +
+			"[ \"$e\" -eq 0 ] || echo 'VERIFY: explain filter failed' >&2; exit \"$e\" )"
 	)
 	return prefix + command + middle + explain + suffix,
 		len(prefix) + len(middle) + len(suffix) + len(explain)
@@ -1830,8 +2127,38 @@ func searchVerifyRunnerMissing(command string, evidence *searchVerifyEvidence) b
 	case "bundle", "bundler":
 		lock, ok := evidence.file("Gemfile.lock")
 		return !ok || !strings.Contains(lock, inner)
-	case "npx", "pnpm", "yarn":
+	case "npx":
 		return !evidence.exists("node_modules/.bin/" + inner)
+	case "npm", "pnpm", "yarn":
+		// These three run the package's own SCRIPTS by default, and a script lives in package.json,
+		// not in node_modules/.bin. The suite tier emits exactly that — `yarn test`, `pnpm test`,
+		// `npm test` — so reading `test` as a binary demanded `node_modules/.bin/test`, a file no
+		// repository has, and gated every command the emitter produced for a yarn or pnpm tree. The
+		// manager resolving on PATH is the whole of the question; only `exec` asks one of them to
+		// launch a binary, and that is the only form worth looking through.
+		if !searchVerifyNodeExecsABinary(command, runner) {
+			return false
+		}
+		return !evidence.exists("node_modules/.bin/" + inner)
+	}
+	return false
+}
+
+// searchVerifyNodeExecsABinary reports whether a package-manager invocation is the `exec` form,
+// which runs a binary, rather than the script form, which runs a package.json entry.
+func searchVerifyNodeExecsABinary(command, runner string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	for index, field := range fields {
+		if field != runner {
+			continue
+		}
+		for _, candidate := range fields[index+1:] {
+			if strings.HasPrefix(candidate, "-") {
+				continue
+			}
+			return candidate == "exec"
+		}
+		return false
 	}
 	return false
 }

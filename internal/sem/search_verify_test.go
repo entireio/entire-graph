@@ -1020,11 +1020,22 @@ func TestSearchVerifySuiteFallback(t *testing.T) {
 			name: "gradle nested module uses the root wrapper and names its own project",
 			files: map[string]string{
 				"gradlew":                  "",
+				"settings.gradle":          "include ':lib'\n",
 				"lib/build.gradle":         "",
 				"lib/src/main/kotlin/A.kt": "",
 			},
 			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
-			wantCommand: "./gradlew -p lib test",
+			wantCommand: "./gradlew :lib:test",
+		},
+		{
+			name: "gradle nested module no settings script declares stays silent",
+			files: map[string]string{
+				"gradlew":                  "",
+				"lib/build.gradle":         "",
+				"lib/src/main/kotlin/A.kt": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
+			wantCommand: "",
 		},
 		{
 			name: "gradle nested wrapper runs from module directory",
@@ -1558,6 +1569,102 @@ func TestSearchVerifyExplainKeepsTheTestExitStatus(t *testing.T) {
 	}
 }
 
+// TestSearchVerifyExplainReportsAFailingExplainFilter pins the OTHER half of the composed line's
+// exit status: the half `exit $r` on its own gets wrong.
+//
+// Keeping the test's status means the wrapper reports only the test's status, so a green test whose
+// `explain` filter was missing, crashed, or could not write its output exits 0 — the line claims a
+// verification that never actually completed. That is the same class of error as the one the capture
+// was introduced to fix, pointed the other way.
+//
+// The ordering asserted here is: a nonzero TEST status always wins (a harness keying on `$?` must
+// keep reading the number the bare test produced), and a green test with a nonzero EXPLAIN status
+// exits with explain's status plus a stderr note naming the stage — the numbers collide, so only the
+// note can say which stage failed.
+//
+// As with the sibling above, the assertion is on a REAL execution in every POSIX-ish shell on the
+// machine, because the claim is about shell semantics rather than about a string.
+func TestSearchVerifyExplainReportsAFailingExplainFilter(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell semantics")
+	}
+	shells := []string{"sh"}
+	for _, candidate := range []string{"dash", "bash", "zsh"} {
+		if _, err := exec.LookPath(candidate); err == nil {
+			shells = append(shells, candidate)
+		}
+	}
+	const explainNote = "VERIFY: explain filter failed"
+	tests := []struct {
+		name     string
+		command  string
+		explain  string
+		wantExit int
+		wantNote bool
+	}{{
+		// The regression. A filter that cannot run at all is the common shape of this: a missing
+		// binary is exec's 127, and before the filter status was kept this exited 0.
+		name:     "missing filter on a green test",
+		command:  `sh -c 'echo the test output; exit 0'`,
+		explain:  "/nonexistent/explain",
+		wantExit: 127,
+		wantNote: true,
+	}, {
+		name:     "failing filter on a green test",
+		command:  `sh -c 'echo the test output; exit 0'`,
+		explain:  `sh -c 'cat >/dev/null; exit 3'`,
+		wantExit: 3,
+		wantNote: true,
+	}, {
+		// Precedence: the test's own status is the one a harness keys on, so it survives even when
+		// the filter failed as well, and the note is not written for a failure the test caused.
+		name:     "a failing test outranks a failing filter",
+		command:  `sh -c 'echo the test output; exit 7'`,
+		explain:  `sh -c 'cat >/dev/null; exit 3'`,
+		wantExit: 7,
+		wantNote: false,
+	}, {
+		name:     "a green run stays green and silent",
+		command:  `sh -c 'echo the test output; exit 0'`,
+		explain:  "cat",
+		wantExit: 0,
+		wantNote: false,
+	}}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			composed, overhead := composeSearchVerifyExplain(test.command, test.explain)
+			if overhead != len(composed)-len(test.command) {
+				t.Fatalf("overhead %d does not account for the whole wrapper (%d)",
+					overhead, len(composed)-len(test.command))
+			}
+			for _, shell := range shells {
+				t.Run(shell, func(t *testing.T) {
+					t.Parallel()
+					output, err := exec.Command(shell, "-c", composed).CombinedOutput()
+					exit := 0
+					if err != nil {
+						status, ok := err.(*exec.ExitError)
+						if !ok {
+							t.Fatalf("%s: %v (output %q)", shell, err, output)
+						}
+						exit = status.ExitCode()
+					}
+					if exit != test.wantExit {
+						t.Fatalf("%s: exit code = %d, want %d; command = %s output = %q",
+							shell, exit, test.wantExit, composed, output)
+					}
+					if got := strings.Contains(string(output), explainNote); got != test.wantNote {
+						t.Fatalf("%s: stderr note present = %v, want %v; output = %q",
+							shell, got, test.wantNote, output)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestSearchVerifyBuildCheckDoesNotExecuteRepositoryData is the build-check derivation's own
 // side-effect proof.
 //
@@ -1605,5 +1712,60 @@ func TestSearchVerifyBuildCheckDoesNotExecuteRepositoryData(t *testing.T) {
 	}
 	if runErr != nil {
 		t.Fatalf("command %q failed: %v\n%s", command.Command, runErr, output)
+	}
+}
+
+// TestSearchVerifyRunnerMissingReadsPackageManagerScriptsAsScripts is the follow-up to the lockfile
+// precedence fix.
+//
+// The Node suite tier used to emit `npm test` unconditionally; it now reads the repository's own
+// statement and emits `yarn test` or `pnpm test`. The look-through probe had not moved with it: it
+// took the word after `yarn` to be a BINARY and required `node_modules/.bin/test`, a file no
+// repository has, so every command the new emitter produced for a yarn or pnpm tree was annotated as
+// having an uninstalled runner — a false gate on a command that runs.
+//
+// The distinction is what the manager was asked to do. `npm`, `yarn` and `pnpm` run the package's
+// own SCRIPTS by default, and a script lives in package.json, not in node_modules/.bin; the manager
+// resolving on PATH is the whole of the question. Only their explicit binary-execution subcommand,
+// `exec`, launches something out of node_modules/.bin — as does `npx`, which is nothing else.
+func TestSearchVerifyRunnerMissingReadsPackageManagerScriptsAsScripts(t *testing.T) {
+	t.Parallel()
+	installed := map[string]string{"node_modules/.bin/jest": "#!/usr/bin/env node\n"}
+	for _, tc := range []struct {
+		name    string
+		command string
+		files   map[string]string
+		want    bool
+	}{
+		// --- scripts: answered by package.json, not by node_modules/.bin ---
+		{"yarn runs the test script", "yarn test", map[string]string{}, false},
+		{"pnpm runs the test script", "pnpm test", map[string]string{}, false},
+		{"npm runs the test script", "npm test", map[string]string{}, false},
+		{"yarn run spells it out", "yarn run test", map[string]string{}, false},
+		{"pnpm run spells it out", "pnpm run test", map[string]string{}, false},
+		{"bun runs the test script", "bun run test", map[string]string{}, false},
+		{"a workspace leaf still runs its script", "cd packages/core && pnpm test", map[string]string{}, false},
+
+		// --- binaries: the launcher does resolve one, so the look-through stands ---
+		{"pnpm exec finds the binary", "pnpm exec jest src/a.test.ts", installed, false},
+		{"pnpm exec has nothing to run", "pnpm exec jest src/a.test.ts", map[string]string{}, true},
+		{"yarn exec has nothing to run", "yarn exec jest src/a.test.ts", map[string]string{}, true},
+		{"npx is unchanged", "npx jest src/a.test.ts", map[string]string{}, true},
+
+		// --- and the manager itself still has to exist ---
+		{"the manager is not installed", "pnpm test", map[string]string{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var evidence searchVerifyEvidence
+			if tc.name == "the manager is not installed" {
+				evidence = searchVerifyTestEvidenceWithout(tc.files, "pnpm")
+			} else {
+				evidence = searchVerifyTestEvidenceWithout(tc.files)
+			}
+			if got := searchVerifyRunnerMissing(tc.command, &evidence); got != tc.want {
+				t.Fatalf("searchVerifyRunnerMissing(%q) = %v, want %v", tc.command, got, tc.want)
+			}
+		})
 	}
 }
