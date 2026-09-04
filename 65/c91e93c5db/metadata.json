@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "65c91e93c5db",
+  "strategy": "manual-commit",
+  "branch": "codex/trail165-review-fixes",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/65/c91e93c5db/0/metadata.json",
+      "transcript": "/65/c91e93c5db/0/full.jsonl",
+      "compact_transcript": "/65/c91e93c5db/0/transcript.jsonl",
+      "content_hash": "/65/c91e93c5db/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 136719,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2308864,
+    "output_tokens": 9389,
+    "api_call_count": 33
+  }
+}

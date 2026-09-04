@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "65c91e93c5db",
+  "session_id": "01a06ebe-7f26-7a13-a7d8-0730ac7916be",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-04T23:36:52.793692Z",
+  "branch": "codex/trail165-review-fixes",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 136719,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2308864,
+    "output_tokens": 9389,
+    "api_call_count": 33
+  },
+  "session_metrics": {
+    "turn_count": 1
+  }
+}
