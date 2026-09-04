@@ -16,7 +16,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bench.memory.benchmarks.common import cmm_client, entire_client, graphify_client
+from bench.memory.benchmarks.common import (
+    cmm_client,
+    entire_client,
+    graphify_client,
+    runmeta,
+)
 from bench.memory.benchmarks.common.cmm_client import CmmClient
 from bench.memory.benchmarks.common.entire_client import (
     EntireMemoryClient,
@@ -322,6 +327,116 @@ class CmmBinaryResolutionTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as ctx:
                     CmmClient()
         self.assertIn("CMM_BIN", str(ctx.exception))
+
+
+# The `## B9` rows that name an UPSTREAM harness file rather than one this kit
+# vendors. The kit reconstructs those by cloning upstream and applying
+# `patches/0001`-`0004` and `0006` (see UPSTREAM.md), so there is no file here to
+# hash and the recorded digest describes the reconstructed harness instead. Each
+# is skipped by NAME, and the skip is checked in both directions: if one of these
+# is ever vendored, the test fails asking for it to be dropped from this set.
+_UNVENDORED_MANIFEST_ROWS = frozenset({
+    "benchmarks/common/llm_client.py",
+    "benchmarks/common/mem0_client.py",
+    "benchmarks/common/metrics.py",
+    "benchmarks/common/utils.py",
+    "benchmarks/locomo/prompts.py",
+    "benchmarks/locomo/run.py",
+    "benchmarks/longmemeval/prompts.py",
+    "benchmarks/longmemeval/run.py",
+})
+
+_MD5_ROW = re.compile(r"^([0-9a-f]{32})\s\s+(\S+)$")
+
+
+def _fair_config_manifest() -> tuple[dict[str, str], str]:
+    """The `## B9` code-hash manifest, parsed rather than transcribed.
+
+    Returns the recorded ``{path: md5}`` map and the section text it came from,
+    so a newly added row is covered without this test being edited.
+    """
+    text = (_KIT / "FAIR-CONFIG.md").read_text(encoding="utf-8")
+    start = text.index("## B9.")
+    end = text.find("\n## ", start)
+    section = text[start:] if end < 0 else text[start:end]
+    recorded = {}
+    for line in section.splitlines():
+        match = _MD5_ROW.match(line.strip())
+        if match:
+            recorded[match.group(2)] = match.group(1)
+    return recorded, section
+
+
+class FairConfigCodeHashManifestTest(unittest.TestCase):
+    """`FAIR-CONFIG.md` publishes the md5 of every file that can change a number.
+
+    Nothing recomputed it, so an edit to a hashed file left the manifest quietly
+    describing the previous version -- the kit's own recurring failure: a
+    recorded fact that stops being true and says nothing about it. The digests
+    are checked against ``runmeta.code_hashes``, the function that WRITES the
+    map into run metadata, rather than against a second copy of the same list.
+    """
+
+    def setUp(self) -> None:
+        self.recorded, self.section = _fair_config_manifest()
+        self.computed = runmeta.code_hashes(_KIT / "benchmarks")
+
+    def test_the_manifest_was_actually_parsed(self) -> None:
+        """A regex that matched nothing would make every other check vacuous."""
+        self.assertGreater(len(self.recorded), 10, self.section[:400])
+        self.assertGreater(len(self.computed), 5)
+
+    def test_every_recorded_hash_matches_the_file_on_disk(self) -> None:
+        drifted = []
+        for path, digest in sorted(self.computed.items()):
+            if path not in self.recorded:
+                drifted.append(f"{path}: vendored but absent from the manifest")
+            elif self.recorded[path] != digest:
+                drifted.append(
+                    f"{path}: recorded {self.recorded[path]}, file hashes to {digest}"
+                )
+        self.assertEqual(
+            [],
+            drifted,
+            "FAIR-CONFIG.md section B9 no longer describes the files in this "
+            "kit. Regenerate it with runmeta.code_hashes() (the command is in "
+            "that section) rather than editing the digests by hand:\n"
+            + "\n".join(drifted),
+        )
+
+    def test_rows_skipped_as_unvendored_are_really_absent(self) -> None:
+        """The skip list must stay a statement about this repo, not a mute button."""
+        unexplained = sorted(
+            path
+            for path in self.recorded
+            if path not in self.computed and path not in _UNVENDORED_MANIFEST_ROWS
+        )
+        self.assertEqual(
+            [],
+            unexplained,
+            "these manifest rows name no file this kit hashes and are not listed "
+            "as upstream-only; either vendor the file or add it to "
+            "_UNVENDORED_MANIFEST_ROWS with a reason:\n" + "\n".join(unexplained),
+        )
+        now_vendored = sorted(_UNVENDORED_MANIFEST_ROWS & set(self.computed))
+        self.assertEqual(
+            [],
+            now_vendored,
+            "these are vendored now and are hashed like any other row; drop them "
+            "from _UNVENDORED_MANIFEST_ROWS:\n" + "\n".join(now_vendored),
+        )
+
+    def test_the_manifest_states_its_own_length(self) -> None:
+        """The prose counts the rows, so the count is a fact that can go stale too."""
+        stated = re.search(r"exact (\d+)-entry", self.section)
+        self.assertIsNotNone(stated, "section B9 no longer states its own entry count")
+        self.assertEqual(
+            int(stated.group(1)),
+            len(self.recorded),
+            "section B9 says it has {} entries and lists {}".format(
+                stated.group(1), len(self.recorded)
+            ),
+        )
 
 
 class UnvendoredBackendTest(unittest.TestCase):
