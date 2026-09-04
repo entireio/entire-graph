@@ -350,11 +350,17 @@ func describeEntities(entities []Entity) string {
 //	before: local/r:JavaScript:widget.js:method:Widget.handler
 //	after:  local/r:JavaScript:widget.js:method:Widget.handler#sig:4bae429b24ae5cb3
 //
-// The rule pinned here: in JS/TS a nested callable is emitted UNQUALIFIED, with
-// kind "function", Local, and contained by its lexically enclosing symbol. That
-// is not a new scheme — the `const handler = (a) => a` spelling of the same
-// construct already produces exactly that (variable_declarator never qualifies),
-// and the third case below pins the two spellings to the same shape.
+// The rule pinned here: in JS/TS a nested callable is qualified by the CALLABLE
+// that declares it rather than by the type — `Widget.render.handler`, kind
+// "function", Local, contained by `Widget.render`. The type scope is replaced,
+// not cleared: clearing it (emitting a bare `handler`) removes the only thing
+// telling two nested declarations apart, which is its own instability —
+// TestNestedCallableIDSurvivesAnUnrelatedClass pins that half.
+//
+// The `const handler = (a) => a` spelling is left exactly as it was: a
+// variable_declarator never consults the scope, so there was no type
+// qualification to replace. The third case pins that this change did not move
+// it.
 func TestJavaScriptNestedCallableIsNotAClassMember(t *testing.T) {
 	const noNested = "class Widget {\n" +
 		"  render(a) { return a }\n" +
@@ -389,7 +395,7 @@ func TestJavaScriptNestedCallableIsNotAClassMember(t *testing.T) {
 			"  }\n" +
 			"  handler(a) { return a + 1 }\n" +
 			"}\n",
-		wantNested: SymbolRecord{Kind: "function", Name: "handler", QualifiedName: "handler"},
+		wantNested: SymbolRecord{Kind: "function", Name: "handler", QualifiedName: "Widget.render.handler"},
 	}, {
 		name: "named function expression",
 		src: "class Widget {\n" +
@@ -398,9 +404,9 @@ func TestJavaScriptNestedCallableIsNotAClassMember(t *testing.T) {
 			"  }\n" +
 			"  handler(a) { return a + 1 }\n" +
 			"}\n",
-		wantNested: SymbolRecord{Kind: "function", Name: "handler", QualifiedName: "handler"},
+		wantNested: SymbolRecord{Kind: "function", Name: "handler", QualifiedName: "Widget.render.handler"},
 	}, {
-		// The already-correct spelling, pinned so the three cannot drift apart.
+		// The spelling this change does NOT touch, pinned so it cannot drift.
 		name: "arrow function bound to a const",
 		src: "class Widget {\n" +
 			"  render(a) {\n" +
@@ -422,7 +428,7 @@ func TestJavaScriptNestedCallableIsNotAClassMember(t *testing.T) {
 				switch symbol.QualifiedName {
 				case "Widget.handler":
 					members = append(members, symbol)
-				case "handler":
+				case testCase.wantNested.QualifiedName:
 					nested = append(nested, symbol)
 				}
 			}
@@ -439,10 +445,11 @@ func TestJavaScriptNestedCallableIsNotAClassMember(t *testing.T) {
 				t.Errorf("class member marked function-local: %#v", members[0])
 			}
 
-			// The nested callable survives as its own unqualified, function-local
-			// symbol contained by the method it is declared in.
+			// The nested callable survives as its own function-local symbol
+			// contained by the method it is declared in.
 			if len(nested) != 1 {
-				t.Fatalf("unqualified nested symbols = %d, want 1: %s", len(nested), symbolIDs(symbols))
+				t.Fatalf("nested symbols named %q = %d, want 1: %s",
+					testCase.wantNested.QualifiedName, len(nested), symbolIDs(symbols))
 			}
 			got := nested[0]
 			if got.Kind != testCase.wantNested.Kind || got.Name != testCase.wantNested.Name ||
@@ -457,6 +464,193 @@ func TestJavaScriptNestedCallableIsNotAClassMember(t *testing.T) {
 				t.Errorf("nested container = %q, want the enclosing method %q", got.ContainerID, want)
 			}
 		})
+	}
+}
+
+// The OTHER half of the same identity rule: a nested callable's compound-v1 ID
+// must not move when an unrelated class gains a same-named nested callable.
+//
+// Qualifying the nested `handler` under its enclosing class alone was the
+// original defect (it names a member the class does not have). Dropping the
+// qualification entirely is a second defect wearing the first one's clothes:
+// `helper` in `A.m` and `helper` in `B.m` then share the base ID
+// local/r:JavaScript:w.js:function:helper, so entitySymbols' disambiguation
+// fires for BOTH and the one that existed first moves
+//
+//	before: local/r:JavaScript:w.js:function:helper
+//	after:  local/r:JavaScript:w.js:function:helper#sig:80cfac553042146c
+//
+// on an edit to a class it has nothing to do with — and, because both share a
+// signature, the two are then told apart only by an `#2` ordinal that source
+// ORDER decides, so moving class B above class A swaps their IDs too.
+//
+// Qualifying under the enclosing CALLABLE keeps both properties at once:
+// `A.m.helper` is not a member of `A`, and it is not `B.m.helper`.
+func TestNestedCallableIDSurvivesAnUnrelatedClass(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		path       string
+		language   string
+		classA     string
+		classB     string
+		classBWith string
+		wantID     string
+	}{{
+		name:     "JavaScript",
+		path:     "w.js",
+		language: "JavaScript",
+		classA: "class A {\n" +
+			"  m(a) {\n" +
+			"    function helper(v) { return v }\n" +
+			"    return helper(a)\n" +
+			"  }\n" +
+			"}\n",
+		classB: "class B {\n  m(a) { return a }\n}\n",
+		classBWith: "class B {\n" +
+			"  m(a) {\n" +
+			"    function helper(v) { return v }\n" +
+			"    return helper(a)\n" +
+			"  }\n" +
+			"}\n",
+		wantID: "local/r:JavaScript:w.js:function:A.m.helper",
+	}, {
+		name:     "TypeScript",
+		path:     "w.ts",
+		language: "TypeScript",
+		classA: "class A {\n" +
+			"  m(a: number): number {\n" +
+			"    function helper(v: number): number { return v }\n" +
+			"    return helper(a)\n" +
+			"  }\n" +
+			"}\n",
+		classB: "class B {\n  m(a: number): number { return a }\n}\n",
+		classBWith: "class B {\n" +
+			"  m(a: number): number {\n" +
+			"    function helper(v: number): number { return v }\n" +
+			"    return helper(a)\n" +
+			"  }\n" +
+			"}\n",
+		wantID: "local/r:TypeScript:w.ts:function:A.m.helper",
+	}} {
+		t.Run(testCase.name, func(t *testing.T) {
+			idOfAHelper := func(t *testing.T, src string) string {
+				t.Helper()
+				entities, _, status := TreeSitterParser{}.ParseWithStatus(testCase.path, src)
+				if status.ParseError {
+					t.Fatalf("unexpected parse error: %s", status.Detail)
+				}
+				symbols := entitySymbols("local/r", testCase.path, testCase.language, entities)
+				var found []SymbolRecord
+				for _, symbol := range symbols {
+					if symbol.Name == "helper" && symbol.StartLine <= 4 {
+						found = append(found, symbol)
+					}
+				}
+				if len(found) != 1 {
+					t.Fatalf("helpers declared in A.m = %d, want 1: %s", len(found), symbolIDs(symbols))
+				}
+				if !found[0].Local {
+					t.Errorf("nested helper not marked function-local: %#v", found[0])
+				}
+				return found[0].ID
+			}
+
+			before := idOfAHelper(t, testCase.classA+testCase.classB)
+			// The edit: an unrelated class gains its own nested `helper`.
+			after := idOfAHelper(t, testCase.classA+testCase.classBWith)
+			if after != before {
+				t.Errorf("adding a nested helper to B.m moved A.m's helper: %s -> %s", before, after)
+			}
+			if before != testCase.wantID {
+				t.Errorf("helper ID = %s, want the callable-qualified %s", before, testCase.wantID)
+			}
+		})
+	}
+}
+
+// The qualification REPLACES a type scope; it does not invent one, and it does
+// not survive the next type. Three shapes pin that boundary, and each is the
+// only thing standing between the walk and an ID migration far wider than the
+// defect being fixed.
+func TestNestedCallableQualificationOnlyReplacesATypeScope(t *testing.T) {
+	symbolsFor := func(t *testing.T, src string) []SymbolRecord {
+		t.Helper()
+		entities, _, status := TreeSitterParser{}.ParseWithStatus("w.js", src)
+		if status.ParseError {
+			t.Fatalf("unexpected parse error: %s", status.Detail)
+		}
+		return entitySymbols("local/r", "w.js", "JavaScript", entities)
+	}
+
+	// A callable nested in a TOP-LEVEL function never carried a type scope, so
+	// there is nothing to replace and its published ID is what it always was.
+	// Qualifying it too would move every nested helper in every JS file that has
+	// no class in it — a far larger migration than this fix, and not this fix's
+	// to make.
+	const topLevel = "function outer(a) {\n" +
+		"  function inner(v) { return v }\n" +
+		"  return inner(a)\n" +
+		"}\n"
+	var innerSymbols []SymbolRecord
+	for _, symbol := range symbolsFor(t, topLevel) {
+		if symbol.Name == "inner" {
+			innerSymbols = append(innerSymbols, symbol)
+		}
+	}
+	if len(innerSymbols) != 1 {
+		t.Fatalf("symbols named inner = %d, want 1", len(innerSymbols))
+	}
+	if want := "local/r:JavaScript:w.js:function:inner"; innerSymbols[0].ID != want {
+		t.Errorf("callable nested in a top-level function = %s, want the unqualified %s",
+			innerSymbols[0].ID, want)
+	}
+
+	// An object literal's method IS declared with member syntax, so it keeps
+	// kind "method" — only the `function name(){}` forms are lexical bindings
+	// that lexicalCallableForm demotes back from entityFromNode's promotion.
+	const objectLiteral = "class A {\n" +
+		"  m() {\n" +
+		"    const o = { go() { return 1 } }\n" +
+		"    return o\n" +
+		"  }\n" +
+		"}\n"
+	var goSymbols []SymbolRecord
+	for _, symbol := range symbolsFor(t, objectLiteral) {
+		if symbol.Name == "go" {
+			goSymbols = append(goSymbols, symbol)
+		}
+	}
+	if len(goSymbols) != 1 {
+		t.Fatalf("symbols named go = %d, want 1", len(goSymbols))
+	}
+	if want := "local/r:JavaScript:w.js:method:A.m.go"; goSymbols[0].ID != want {
+		t.Errorf("object literal method = %s, want %s", goSymbols[0].ID, want)
+	}
+
+	// A TYPE declared in a callable body scopes its own members again, so the
+	// re-anchoring must not leak past it: `function f(){}` in that class's
+	// static block is a member of the class, not a lexical binding of whatever
+	// method the class happens to sit in. Without the reset it is emitted as
+	// `function C.f` instead of `method C.f`.
+	const nestedClass = "class A {\n" +
+		"  m() {\n" +
+		"    class C {\n" +
+		"      static { function f() { return 1 } }\n" +
+		"    }\n" +
+		"    return C\n" +
+		"  }\n" +
+		"}\n"
+	var fSymbols []SymbolRecord
+	for _, symbol := range symbolsFor(t, nestedClass) {
+		if symbol.Name == "f" {
+			fSymbols = append(fSymbols, symbol)
+		}
+	}
+	if len(fSymbols) != 1 {
+		t.Fatalf("symbols named f = %d, want 1", len(fSymbols))
+	}
+	if want := "local/r:JavaScript:w.js:method:C.f"; fSymbols[0].ID != want {
+		t.Errorf("member of a class declared in a method body = %s, want %s", fSymbols[0].ID, want)
 	}
 }
 

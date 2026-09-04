@@ -3858,13 +3858,19 @@ func minInt(a, b int) int {
 // as fully understood.
 func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) (depthExceeded bool) {
 	exceeded := false
-	walkEntitiesScoped(node, src, language, scope, false, 0, entities, &exceeded)
+	walkEntitiesScoped(node, src, language, scope, false, false, 0, entities, &exceeded)
 	return exceeded
 }
 
 // walkEntitiesScoped tracks whether the current node is inside a function body
 // (inFunc), so a callable defined there is marked Entity.Local — a nested/closure
 // def that call resolution must not name-match across scopes.
+//
+// scopeIsCallable says what `scope` NAMES: a type (false, the usual case) or the
+// enclosing CALLABLE (true, set only by the JS/TS re-anchoring below).
+// entityFromNode cannot tell the two apart — it treats any non-empty scope as a
+// type and promotes the callables under it to kind "method" — so this is what
+// tells a member of a type from a lexical binding of a function.
 //
 // depth is the current AST nesting level and is capped at maxParseWalkDepth: a
 // tree deeper than that truncates (setting *depthExceeded) instead of recursing
@@ -3873,7 +3879,7 @@ func walkEntities(node *sitter.Node, src []byte, language, scope string, entitie
 // one, because walkEntitiesScoped calls it and then descends into what it
 // returns; two independent budgets over the same root-to-leaf path would let the
 // two walkers amplify each other.
-func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, inFunc bool, depth int, entities *[]Entity, depthExceeded *bool) {
+func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, scopeIsCallable, inFunc bool, depth int, entities *[]Entity, depthExceeded *bool) {
 	if !validNode(node) {
 		return
 	}
@@ -3902,14 +3908,25 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		// inside a method body, so localReachable keeps them scoped to the
 		// declaration instead of name-colliding with real members.
 		for _, body := range initializerTypeBodies(node, depth, depthExceeded) {
-			walkEntitiesScoped(body, src, language, scope, true, depth+1, entities, depthExceeded)
+			walkEntitiesScoped(body, src, language, scope, scopeIsCallable, true, depth+1, entities, depthExceeded)
 		}
 		return
 	}
 	entity, ok := entityFromNode(node, src, language, scope)
 	childScope := scope
+	childScopeIsCallable := scopeIsCallable
 	childInFunc := inFunc
 	if ok {
+		// entityFromNode reads a non-empty scope as a TYPE and promotes a
+		// `function name(){}` under it to kind "method". When the scope names
+		// the enclosing callable instead (the re-anchoring below), that
+		// promotion is wrong: the declaration is a lexical binding of that
+		// callable, not member syntax, so it stays kind "function". A
+		// method_definition reached the same way — an object literal's method
+		// declared in a method body — IS member syntax and keeps "method".
+		if scopeIsCallable && entity.Kind == "method" && lexicalCallableForm(node) {
+			entity.Kind = "function"
+		}
 		setEntitySourceRange(&entity, node, language, src)
 		entity.cLinkage = declaredWithCLinkage(language, node, src)
 		if entity.Kind == "function" || entity.Kind == "method" {
@@ -3938,6 +3955,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		*entities = append(*entities, cFamilyTypedefAliasEntities(node, src, language, entity)...)
 		if scopesChildren(language, entity.Kind) {
 			childScope = entity.Name
+			childScopeIsCallable = false
 		}
 		if entity.Kind == "function" || entity.Kind == "method" {
 			// In R a callable is named by assignment (a binary_operator), and a
@@ -3951,23 +3969,42 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			if language != "R" || node.Type() != "binary_operator" {
 				childInFunc = true // descendants of this callable are function-local
 			}
-			// A callable declared inside another callable's BODY is a
-			// function-local binding, not a member of the enclosing class, so it
-			// must not inherit the type scope. `function handler(){}` inside
+			// A declaration inside another callable's BODY is a function-local
+			// binding, not a member of the enclosing class, so it must not
+			// inherit the TYPE scope. `function handler(){}` inside
 			// `Widget.render()` was qualified as the method `Widget.handler` —
 			// a symbol naming a member the class does not have, whose bare
 			// compound-v1 ID then collided with the real `Widget.handler` and
 			// pushed BOTH onto `#sig:`-suffixed IDs, so adding a callback in one
-			// method body silently re-identified an unrelated method. The `const
-			// handler = (a) => a` spelling of the same construct already emits an
-			// unqualified local `function` (the variable_declarator case never
-			// qualifies), so this only makes the `function` forms agree with it.
+			// method body silently re-identified an unrelated method.
+			//
+			// The type scope is REPLACED, not cleared. Clearing it drops the
+			// only component that told two nested declarations apart, so
+			// `helper` inside `A.m` and `helper` inside `B.m` would share one
+			// base ID and adding the second would move the first from a bare ID
+			// onto a `#sig:` one — the same instability under a different
+			// spelling, now fired by an edit to an unrelated class. Re-anchoring
+			// to the enclosing callable's own qualified name keeps them
+			// distinct (`A.m.helper` vs `B.m.helper`) and makes the container a
+			// symbol that actually declares them, while `Widget.handler` is left
+			// to the one real method. lexicalCallableForm then undoes
+			// entityFromNode's promotion to "method", which reads a non-empty
+			// scope as a type.
+			//
+			// Only a scope that EXISTS is replaced: at `scope == ""` (a callable
+			// nested in a top-level function) nothing qualified the declaration
+			// before this change and nothing does after, so no ID that predates
+			// it moves. The `const handler = (a) => a` spelling is likewise
+			// untouched — variable_declarator never consults the scope — so its
+			// bare, function-local shape is what it has always been.
+			//
 			// Scoped to JS/TS: other languages' nested callables (Java's
 			// anonymous-class members reached through initializerTypeBodies,
 			// Python's nested defs) rely on the type scope to stay
 			// container-qualified.
-			if functionLocalScopeResets(language) {
-				childScope = ""
+			if functionLocalScopeResets(language) && scope != "" {
+				childScope = entity.Name
+				childScopeIsCallable = true
 			}
 		}
 	}
@@ -3985,6 +4022,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	if node.Type() == "impl_item" {
 		if t := rustImplTypeName(node, src); t != "" {
 			childScope = t
+			childScopeIsCallable = false
 		}
 	}
 	// A Swift `extension Foo { ... }` block is likewise not a symbol itself
@@ -3993,10 +4031,11 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	if language == "Swift" && node.Type() == "class_declaration" && swiftExtensionDeclaration(node) {
 		if t := swiftExtensionTypeName(node, src); t != "" {
 			childScope = t
+			childScopeIsCallable = false
 		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, depth+1, entities, depthExceeded)
+		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childScopeIsCallable, childInFunc, depth+1, entities, depthExceeded)
 	}
 }
 
@@ -7711,9 +7750,9 @@ func isExportedTopLevelJSVariable(node *sitter.Node, language string) bool {
 	return validNode(root) && root.Type() == "program"
 }
 
-// functionLocalScopeResets reports whether entering a callable's body clears
-// the enclosing TYPE scope, so callables declared inside it are emitted as
-// unqualified function-local bindings rather than as members of that type.
+// functionLocalScopeResets reports whether entering a callable's body replaces
+// the enclosing TYPE scope with that callable, so declarations inside it are
+// emitted as function-local bindings of it rather than as members of the type.
 //
 // True only for JavaScript/TypeScript, where a nested `function name(){}` or
 // named function expression is a lexical binding of the enclosing function and
@@ -7723,6 +7762,29 @@ func isExportedTopLevelJSVariable(node *sitter.Node, language string) bool {
 // defs are qualified under their class today.
 func functionLocalScopeResets(language string) bool {
 	return language == "JavaScript" || language == "TypeScript"
+}
+
+// lexicalCallableForm reports whether a node is the `function name(){}`
+// spelling — a function declaration or a named function expression — rather
+// than `method_definition`, which is member syntax.
+//
+// It decides one thing: whether a callable qualified under an enclosing
+// CALLABLE keeps kind "function" (a lexical binding of it) or the "method"
+// entityFromNode gave it (an object literal's method, which is declared with
+// member syntax and stays a method of that literal). Callers gate it on
+// scopeIsCallable, which only the JS/TS re-anchoring sets, so the node types
+// here are read as JS/TS grammar node types and never as another grammar's
+// same-named node.
+func lexicalCallableForm(node *sitter.Node) bool {
+	if !validNode(node) {
+		return false
+	}
+	switch node.Type() {
+	case "function_declaration", "function_expression", "generator_function":
+		return true
+	default:
+		return false
+	}
 }
 
 func scopesChildren(language, kind string) bool {
