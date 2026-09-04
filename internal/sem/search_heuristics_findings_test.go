@@ -587,3 +587,45 @@ func TestSearchRepositoryFitsTheBudgetOnTheWidenedIntents(t *testing.T) {
 		t.Fatal("the requested expected-output artifact was demoted out of the primary list")
 	}
 }
+
+// The two halves of the artifact-request rule have to be about the SAME phrase. `expected output`
+// names an artifact and `update` edits one, but "update the parser because the expected output is
+// wrong" is a defect report whose edit target is the parser: the verb governs `the parser`, and
+// the artifact phrase is the evidence, not the request. Reading the two halves as mere
+// co-occurrence switched the fixture demotion off on exactly that sentence and let snapshots rank
+// above the implementation the caller explicitly asked for.
+func TestSearchFixturePriorRequiresTheEditVerbToGovernTheArtifact(t *testing.T) {
+	t.Parallel()
+	path := "tests/__snapshots__/render.ambr"
+	// The verb governs something else: an edit request for the implementation, with the artifact
+	// named only as the symptom. The demotion must stay ON.
+	for _, query := range []string{
+		"update the parser because the expected output is wrong",
+		"regenerate the token stream, the expected results disagree",
+		"rewrite the serializer since the expected output no longer matches",
+	} {
+		q := buildSearchQuery(query)
+		if searchFixtureArtifactRequest(q) {
+			t.Fatalf("%q was read as a request to edit the artifact", query)
+		}
+		if prior := searchFileClassPrior(q, path); prior != searchSecondaryClassPrior {
+			t.Fatalf("fixture prior on %q = %v, want %v", query, prior, searchSecondaryClassPrior)
+		}
+	}
+	// The verb governs the artifact phrase itself, across the modifiers a noun phrase may carry.
+	// The demotion must stay OFF, which is the half the rule exists for.
+	for _, query := range []string{
+		"update the expected output for the parser",
+		"regenerate all of the expected results for the renderer",
+		"rewrite the stale expected files after the format change",
+		"bless expected output",
+	} {
+		q := buildSearchQuery(query)
+		if !searchFixtureArtifactRequest(q) {
+			t.Fatalf("%q was not read as a request to edit the artifact", query)
+		}
+		if prior := searchFileClassPrior(q, path); prior != 1 {
+			t.Fatalf("fixture prior on %q = %v, want 1", query, prior)
+		}
+	}
+}

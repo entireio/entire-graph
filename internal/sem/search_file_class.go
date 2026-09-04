@@ -289,32 +289,68 @@ var searchArtifactEditVerbs = map[string]bool{
 	"sync": true, "resync": true, "replace": true, "replaced": true, "edit": true, "edited": true,
 }
 
+// Words that may sit between an edit verb and the artifact phrase it governs. They are the
+// closed-class fillers of a noun phrase — determiners, quantifiers, possessives, `of` — plus the
+// staleness adjectives an update request actually uses. The list is an ALLOW-list because its
+// failure direction has to be the safe one: an unlisted modifier only costs the request its
+// full-strength fixture prior, which is the demotion every other fixture query already gets,
+// whereas allowing an unlisted word through readmits the co-occurrence the two-part rule exists
+// to reject.
+var searchArtifactRequestModifiers = map[string]bool{
+	"a": true, "an": true, "the": true, "this": true, "that": true, "these": true, "those": true,
+	"all": true, "any": true, "both": true, "each": true, "every": true, "some": true, "of": true,
+	"my": true, "our": true, "its": true, "their": true, "please": true, "just": true,
+	"new": true, "old": true, "stale": true, "outdated": true, "broken": true, "failing": true,
+	"current": true, "existing": true, "remaining": true, "unchanged": true,
+}
+
 // searchFixtureArtifactRequest reports whether the query asks to EDIT an expected-output artifact,
 // which is the sense of "expected" the fixture intent terms deliberately cannot carry.
 //
 // It is a PHRASE, not a word: "expected" must directly modify an artifact noun ("update the
-// expected output for the parser"), and the query must also carry a verb that edits artifacts.
-// Both halves are required because either alone still matches the sentence the word was dropped
-// for: "expected output 42 but the parser returns 43" names the artifact and asks for nothing, and
+// expected output for the parser"), and an artifact-editing verb must GOVERN that phrase. Both
+// halves are required because either alone still matches the sentence the word was dropped for:
+// "expected output 42 but the parser returns 43" names the artifact and asks for nothing, and
 // "update the parser, it expected a flush" asks for an edit to something else entirely.
+//
+// Government, not co-occurrence. "update the parser because the expected output is wrong" carries
+// both halves and is still a defect report about the parser: the verb's object is `the parser` and
+// the artifact phrase is the evidence. Accepting it switched the fixture demotion off on one of
+// the most ordinary shapes a bug report has, and ranked snapshots above the implementation the
+// caller had just named as the thing to change.
 func searchFixtureArtifactRequest(q searchQuery) bool {
 	written := q.wordSequence
 	if len(written) == 0 {
 		written = searchQueryWordSequence(q.rawLower)
 	}
-	named := false
 	for index, word := range written {
-		if word == "expected" && index+1 < len(written) && searchExpectedArtifactNouns[written[index+1]] {
-			named = true
-			break
+		if word != "expected" || index+1 >= len(written) {
+			continue
+		}
+		if !searchExpectedArtifactNouns[written[index+1]] {
+			continue
+		}
+		if searchArtifactRequestGoverned(written, index) {
+			return true
 		}
 	}
-	if !named {
-		return false
-	}
-	for _, word := range written {
-		if searchArtifactEditVerbs[word] {
+	return false
+}
+
+// searchArtifactRequestGoverned reports whether an artifact-editing verb governs the phrase that
+// begins at `phrase`, rather than merely occurring somewhere in the same sentence.
+//
+// It walks LEFT from the phrase across the words that can legally stand inside the noun phrase the
+// verb would take as its object. The first word that is not one of those decides: an edit verb
+// means the phrase is that verb's object, and anything else — another noun, a conjunction, a
+// clause boundary — means the verb, if there is one, took a different object.
+func searchArtifactRequestGoverned(written []string, phrase int) bool {
+	for index := phrase - 1; index >= 0; index-- {
+		if searchArtifactEditVerbs[written[index]] {
 			return true
+		}
+		if !searchArtifactRequestModifiers[written[index]] {
+			return false
 		}
 	}
 	return false
