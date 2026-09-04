@@ -8845,7 +8845,7 @@ func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
 			// declarator child, so the type is everything before that node starts.
 			// A function-pointer target contributes an earlier parameter list of
 			// its own (`operator void(*)(int)()`), which must remain in the name.
-			text := cur.Content(src)
+			endByte := cur.EndByte()
 			cutAtParams := false
 			for i := 0; i < int(cur.ChildCount()); i++ {
 				child := cur.Child(i)
@@ -8854,11 +8854,12 @@ func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
 				}
 				params := lastDescendantOfType(child, "parameter_list")
 				if validNode(params) && params.StartByte() > cur.StartByte() {
-					text = string(src[cur.StartByte():params.StartByte()])
+					endByte = params.StartByte()
 					cutAtParams = true
 					break
 				}
 			}
+			text := nodeTextWithoutComments(cur, endByte, src)
 			if !cutAtParams {
 				if paren := strings.IndexByte(text, '('); paren >= 0 {
 					text = text[:paren]
@@ -9007,6 +9008,34 @@ func lastDescendantOfTypeAt(node *sitter.Node, nodeType string, depth int) *sitt
 		}
 	}
 	return found
+}
+
+// nodeTextWithoutComments returns node's source through endByte with comment
+// nodes blanked to whitespace. The tree identifies comments structurally, so
+// comment-looking text inside a literal remains part of the type expression.
+func nodeTextWithoutComments(node *sitter.Node, endByte uint32, src []byte) string {
+	if !validNode(node) || node.StartByte() >= endByte || int(endByte) > len(src) {
+		return ""
+	}
+	startByte := node.StartByte()
+	text := append([]byte(nil), src[startByte:endByte]...)
+	maskCommentDescendants(node, startByte, endByte, text, 0)
+	return string(text)
+}
+
+func maskCommentDescendants(node *sitter.Node, startByte, endByte uint32, text []byte, depth int) {
+	if !validNode(node) || depth >= maxParseWalkDepth || node.StartByte() >= endByte || node.EndByte() <= startByte {
+		return
+	}
+	if node.Type() == "comment" {
+		start := maxInt(0, int(node.StartByte()-startByte))
+		end := minInt(len(text), int(node.EndByte()-startByte))
+		maskBytes(text, start, end)
+		return
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		maskCommentDescendants(node.NamedChild(i), startByte, endByte, text, depth+1)
+	}
 }
 
 func goReceiverName(node *sitter.Node, src []byte) string {

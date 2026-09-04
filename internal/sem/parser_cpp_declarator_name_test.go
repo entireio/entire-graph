@@ -201,7 +201,7 @@ func TestCPlusPlusConversionOperatorKeepsAParenthesizedTarget(t *testing.T) {
 
 struct S {
   operator decltype(Value::v)() const { return 0; }
-  operator const char*() const { return ""; }
+  operator const /* symbol identity must ignore this comment */ char*() const { return ""; }
   operator void(*)(int)() const { return nullptr; }
   operator void(*)(double)() const { return nullptr; }
 };
