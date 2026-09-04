@@ -88,6 +88,8 @@ func TestJavaScriptDefaultExportExpressionArrowKeepsItsOwnRange(t *testing.T) {
 		"export default function (): Result | { ok: boolean } {\n  return build()\n}\n",
 		"export default function (): readonly { ok: boolean }[] {\n  return build()\n}\n",
 		"export default function (): () => { ok: boolean } {\n  return build()\n}\n",
+		"export default function (): [{ ok: boolean }] {\n  return build()\n}\n",
+		"export default function (): T extends U ? { ok: boolean } : { ok: false } {\n  return build()\n}\n",
 	} {
 		entities = javascriptDefaultExportEntities("helper.ts", annotated)
 		if len(entities) != 1 {
@@ -198,6 +200,8 @@ func TestTypeScriptAnnotatedBodyBrace(t *testing.T) {
 		{": Result | { ok: boolean } { body }", 27},
 		{": readonly { ok: boolean }[] { body }", 29},
 		{": () => { ok: boolean } { body }", 24},
+		{": [{ ok: boolean }] { body }", 20},
+		{": T extends U ? { ok: boolean } : { ok: false } { body }", 48},
 		{": Result", -1},
 		{": { ok: boolean }", -1},
 	} {

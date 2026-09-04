@@ -7262,8 +7262,8 @@ var typeScriptTypePositionKeywords = map[string]bool{
 // `(): Promise<{ ok: boolean }> { … }` — so taking the first `{` after the `:`
 // ended the entity at the TYPE's closing brace: every later edit to the real
 // body fell outside its range and its body hash. A brace opens a type when what
-// precedes it continues a type expression (`:`, `|`, `&`, `<`, `,`, `(`, `=>`,
-// or a type-position keyword); otherwise it opens the body.
+// precedes it continues a type expression (`:`, `|`, `&`, `<`, `,`, `(`, `[`,
+// `?`, `=>`, or a type-position keyword); otherwise it opens the body.
 func typeScriptAnnotatedBodyBrace(content string, cursor int) int {
 	for cursor < len(content) {
 		at := strings.IndexByte(content[cursor:], '{')
@@ -7294,7 +7294,10 @@ func typeScriptTypeContinues(content string, brace int) bool {
 		return false
 	}
 	switch content[index] {
-	case ':', '|', '&', '<', ',', '(':
+	case ':', '|', '&', '<', ',', '(', '[', '?':
+		// `[` opens a tuple type and `?` the true branch of a conditional type;
+		// both leave the type expression unfinished, so the brace after them is
+		// still part of it.
 		return true
 	case '>':
 		// `=>` continues a function type; a lone `>` closes a generic argument
