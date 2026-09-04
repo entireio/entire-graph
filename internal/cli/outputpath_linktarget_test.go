@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io/fs"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -130,5 +131,67 @@ func TestLinkTargetAnchorAgreesWithFilepathOnThisHost(t *testing.T) {
 			t.Fatalf("linkTargetAnchorOf(%q) = %s but filepath.IsAbs = %v",
 				target, linkTargetAnchorNames[got], want)
 		}
+	}
+}
+
+// TestUnconfinedRouteClassifiesWindowsNameSurrogates is the regression for the unconfined output
+// walk deciding what a component IS from its mode alone.
+//
+// Since Go 1.23, Windows reports every reparse point Go does not itself decode as ModeIrregular.
+// The two it does decode — IO_REPARSE_TAG_SYMLINK and IO_REPARSE_TAG_MOUNT_POINT — still arrive as
+// ModeSymlink; every other tag does not, and that remainder contains NAME SURROGATES the kernel
+// follows during path resolution: a WSL LX symlink, a junction whose tag this build cannot decode,
+// IO_REPARSE_TAG_GLOBAL_REPARSE. A ModeSymlink-only test read each of those as an ordinary
+// component, so the walk opened the ALIAS and then compared the object it received against the name
+// it had asked for — a comparison a redirect cannot survive — and refused a caller-owned `--report`
+// or `--record-baseline` path Windows resolves perfectly well.
+//
+// The predicate says "classify this", not "this is an alias": the tags that merely ANNOTATE a file
+// are ModeIrregular too, and the raw reparse tag is what separates them. The limit is the same one
+// stated at the top of this file — this proves the decision, not the kernel behaviour it models.
+func TestUnconfinedRouteClassifiesWindowsNameSurrogates(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name string
+		goos string
+		mode fs.FileMode
+		want bool
+	}{
+		{
+			name: "a Windows reparse point Go cannot decode is not an ordinary directory",
+			goos: "windows", mode: fs.ModeDir | fs.ModeIrregular, want: true,
+		},
+		{
+			name: "nor an ordinary file",
+			goos: "windows", mode: fs.ModeIrregular, want: true,
+		},
+		{
+			name: "a Windows symlink or junction is still one",
+			goos: "windows", mode: fs.ModeSymlink, want: true,
+		},
+		{
+			name: "an ordinary Windows directory is opened as one",
+			goos: "windows", mode: fs.ModeDir, want: false,
+		},
+		{
+			name: "a POSIX symlink is an alias",
+			goos: "linux", mode: fs.ModeSymlink, want: true,
+		},
+		{
+			name: "POSIX has no reparse points, so ModeIrregular is not an alias there",
+			goos: "linux", mode: fs.ModeIrregular, want: false,
+		},
+		{
+			name: "an ordinary POSIX file is opened as one",
+			goos: "darwin", mode: 0, want: false,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := unconfinedRouteAliasCandidate(testCase.goos, testCase.mode); got != testCase.want {
+				t.Fatalf("unconfinedRouteAliasCandidate(%q, %v) = %v, want %v",
+					testCase.goos, testCase.mode, got, testCase.want)
+			}
+		})
 	}
 }

@@ -1126,16 +1126,56 @@ func openUnconfinedOutputFile(
 		if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
 			return nil, statErr
 		}
-		// Windows reports a junction as a symbolic link too (a non-symlink reparse
-		// point is ModeIrregular and does not redirect path resolution), so this one
-		// test covers every alias the kernel follows on both families.
-		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		// A component that MIGHT redirect resolution, which on Windows the mode alone
+		// cannot decide (see unconfinedRouteAliasCandidate). What it actually is, is
+		// settled by the raw reparse tag below — the same question, asked the same
+		// way, as in the contained walker.
+		aliasCandidate := statErr == nil && unconfinedRouteAliasCandidate(runtime.GOOS, info.Mode())
+		var link string
+		if aliasCandidate && runtime.GOOS == "windows" {
+			rawTarget, kind, rawErr := windowsRawReparseTarget(directory.Name(), component, info)
+			if rawErr != nil {
+				return nil, fmt.Errorf(
+					"refusing to write %s: cannot inspect the raw Windows reparse target of %s: %w",
+					target.given, full, rawErr)
+			}
+			switch kind {
+			case windowsReparseOpaqueAlias:
+				// A NAME SURROGATE whose tag this code cannot decode. Windows follows it
+				// while resolving the path, to somewhere this walk cannot name, so its
+				// own chain would be neither expanded nor counted against the hop budget.
+				// There is nothing to resolve and nothing safe to assume.
+				return nil, fmt.Errorf(
+					"refusing to write %s: %s is a Windows reparse point of an unsupported kind "+
+						"that the kernel follows", target.given, full)
+			case windowsReparseInert:
+				if info.Mode()&os.ModeSymlink != 0 {
+					return nil, fmt.Errorf(
+						"refusing to write %s: cannot inspect the raw Windows reparse target of %s",
+						target.given, full)
+				}
+				// A tag that annotates the file rather than naming another entity —
+				// deduplication, WOF compression, a cloud placeholder. Windows resolves
+				// the path straight through it, so it is the ordinary component it looks
+				// like and the walk opens it as one.
+				aliasCandidate = false
+			case windowsReparseResolved:
+				// Read from the same reparse-buffer snapshot that was screened, so a
+				// malformed offset never reaches Readlink's unsafe parser and an in-place
+				// update cannot pair an unchecked target with this walk.
+				link = rawTarget
+			}
+		}
+		if aliasCandidate {
 			if rel, ok := containedInAnyRoot(confinements, full); ok {
 				return nil, traversedSymlinkError(rel, target.given)
 			}
-			link, readErr := directory.Readlink(component)
-			if readErr != nil {
-				return nil, readErr
+			if runtime.GOOS != "windows" {
+				readLink, readErr := directory.Readlink(component)
+				if readErr != nil {
+					return nil, readErr
+				}
+				link = readLink
 			}
 			hops++
 			anchor := linkTargetAnchorOf(link)
@@ -1208,6 +1248,35 @@ func openUnconfinedOutputFile(
 		}
 	}
 	return nil, fmt.Errorf("refusing to write %s: the path names no file", target.given)
+}
+
+// unconfinedRouteAliasCandidate reports whether one component of the unconfined route may redirect
+// pathname resolution, and therefore has to be CLASSIFIED before the walk may open it as an ordinary
+// component.
+//
+// The mode is not the answer on Windows, and taking it for one is what this exists to stop. Since Go
+// 1.23 Windows reports every reparse point Go does not itself decode as ModeIrregular — the two it
+// does decode, IO_REPARSE_TAG_SYMLINK and IO_REPARSE_TAG_MOUNT_POINT, still arrive as ModeSymlink,
+// and everything else does not. That "everything else" contains NAME SURROGATES the kernel follows
+// while resolving the path: an LX symlink written by WSL, a junction spelled with a tag this build
+// cannot decode, IO_REPARSE_TAG_GLOBAL_REPARSE. A ModeSymlink-only test called each of those an
+// ordinary component, so the walk opened the ALIAS and then compared the object it got against the
+// name it asked for — a comparison that cannot hold through a redirect — and refused a
+// caller-owned `--report` or `--record-baseline` path the kernel resolves perfectly well.
+//
+// It also contains tags that only ANNOTATE a file — deduplication, WOF compression, a cloud
+// placeholder — which Windows resolves straight through. Those must stay ordinary components, so
+// this predicate answers "classify it", not "it is an alias"; the raw tag decides which, exactly as
+// it does in the contained walker.
+//
+// The host family is a parameter rather than runtime.GOOS so the rule can be asserted from any
+// machine, which is the same reason linkTargetAnchorFor takes one: Windows is the only platform
+// where this distinction exists and it cannot execute on this repository's development hosts.
+func unconfinedRouteAliasCandidate(goos string, mode fs.FileMode) bool {
+	if mode&fs.ModeSymlink != 0 {
+		return true
+	}
+	return goos == "windows" && mode&fs.ModeIrregular != 0
 }
 
 // linkTargetAnchor says where pathname resolution restarts for one symbolic-link
