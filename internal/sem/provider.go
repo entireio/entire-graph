@@ -2545,11 +2545,26 @@ func fsharpBindingScopeStart(lines []string, index int, recursive bool) (int, in
 
 // fsharpLetInBodyColumn returns the column at which the body of an explicit
 // `let ... = ... in <body>` begins on this line, and whether the line writes
-// one. The FIRST `in` outside brackets after the first `=` outside brackets is
-// the one taken: everything before it belongs to an initializer -- this
-// binding's, or a nested `let ... in ...` inside it -- and everything after it
-// is governed by a binding, so a shadow that starts there can only be too late,
-// never too early.
+// one. The `in` taken is the one this binding's own initializer reaches, and
+// finding it needs a DEPTH count rather than a first-match: an initializer may
+// itself open bindings, and each of those consumes an `in` of its own before
+// this binding's arrives.
+//
+// Taking the first one instead read the wrong keyword whenever the initializer
+// nested a binding of its own. In `let Json = let x = 1 in Json.serialize x`
+// the only `in` on the line closes the INNER `let x`, so the whole line is
+// still the outer binding's initializer and `Json` is unavailable across all of
+// it; starting the shadow past that `in` moved it EARLIER than the binding and
+// pinned the call to the local value instead of the project module `Json`.
+// That is the fabricated-edge direction, not the narrow one. Counting `let`
+// and `use` opened after the first `=` and spending one per `in` gives the
+// outer binding its own keyword back: the line above now opens no body at all,
+// and `let a = let x = 1 in x in a + 1` takes the SECOND `in`, not the first.
+//
+// Everything before the `in` that is taken belongs to an initializer, and
+// everything after it is governed by this binding, so a shadow that starts
+// there can only be too late, never too early -- which is what the count
+// restores.
 //
 // A top-level `for` before the `in` means the `in` is a SEQUENCE iterator
 // (`let total = for x in xs do count x`), not the keyword that opens a binding
@@ -2558,10 +2573,16 @@ func fsharpBindingScopeStart(lines []string, index int, recursive bool) (int, in
 // same reason -- a `for` or a nested `let` written inside a comprehension,
 // sequence expression or parenthesised group is not this binding's body.
 //
+// A nested binding that spends no `in` -- a computation expression's `let!`,
+// which is closed by the line ending rather than by a keyword -- leaves the
+// count one too high and the line is declined. That is the narrow answer: a
+// missed shadow leaves the previous classification standing, while an invented
+// one moves a call to a different definition.
+//
 // The line reaching here has already been through both maskers, so an `in`
 // written inside a string or a comment is blanked and cannot be seen.
 func fsharpLetInBodyColumn(line string) (int, bool) {
-	depth, afterEquals := 0, false
+	depth, afterEquals, nested := 0, false, 0
 	for index := 0; index < len(line); {
 		if fsharpWordByte(line[index]) {
 			end := index
@@ -2572,9 +2593,16 @@ func fsharpLetInBodyColumn(line string) (int, bool) {
 				switch line[index:end] {
 				case "for":
 					return 0, false
+				case "let", "use":
+					if afterEquals {
+						nested++
+					}
 				case "in":
 					if afterEquals {
-						return end, true
+						if nested == 0 {
+							return end, true
+						}
+						nested--
 					}
 				}
 			}
@@ -2615,19 +2643,20 @@ var fsharpDestructuringBindingHeadPattern = regexp.MustCompile(`^[ \t]*(?:let|us
 // pattern is a TUPLE binds -- `let (Json, code) = parse s`, and the same
 // pattern written without its parentheses, `let Json, code = parse s`.
 //
-// The admitted set is closed by shape and checked component by component: the
-// pattern must be a single parenthesised group, or a top-level comma-separated
-// list, and EVERY name taken from it must be a plain identifier carrying at
-// most a type annotation. That is the identical rule fsharpParameterGroupBinders
-// already applies to a tuple in PARAMETER position, and it is reused verbatim
-// here, because a parameter and a `let` pattern are the same grammar
-// production: reading a tuple as binders in one and not the other was an
+// The pattern must be a single parenthesised group, or a top-level
+// comma-separated list; a parenthesised one is then read by the same
+// fsharpParameterGroupBinders that reads a group in PARAMETER position, and
+// admits exactly what that function admits -- names, tuples and their
+// nestings, `as`, and a union-case application (`let (Ok Json) = result`
+// binds `Json`). A parameter and a `let` pattern are the same grammar
+// production, so reading a shape as binders in one and not the other is an
 // inconsistency, not a safety margin.
 //
-// Every other pattern shape is declined, for refinement 4's reason -- a name
-// standing in a pattern position need not be a binder, and binding one that is
-// really a union case un-qualifies calls that legitimately name a module of
-// that name:
+// Shapes the group reader declines are declined here too, for refinement 4's
+// reason -- a name standing in a pattern position need not be a binder, and
+// binding one that is really a union case un-qualifies calls that legitimately
+// name a module of that name. Two more are declined by this function's own
+// region test, which requires a SINGLE group and so never reaches the reader:
 //
 //   - A RECORD pattern (`let { Result = Json } = r`). The name stands after a
 //     field's own `=`, which is a nested pattern position in the fullest sense:
@@ -2640,10 +2669,11 @@ var fsharpDestructuringBindingHeadPattern = regexp.MustCompile(`^[ \t]*(?:let|us
 //     Same nested pattern position, and the form is refutable by construction,
 //     so it is never a plain destructuring of a known shape.
 //   - A CONS pattern (`let head :: Json = xs`) -- refutable in the same way.
-//   - An `as` pattern (`let (a, b) as Json = pair`) and a union-case
-//     application (`let (Ok Json) = result`), whose binder is unambiguous but
-//     which are not tuples and are left for a change that can state its own
-//     evidence.
+//   - An `as` pattern written outside the group (`let (a, b) as Json = pair`),
+//     whose binder is unambiguous but whose region is a group followed by more
+//     text, which is also how an operator definition and an active pattern are
+//     told apart from a destructuring. Inside a group -- a parameter's
+//     `(pair as Json)` -- `as` IS read.
 //
 // A pattern spread over several lines is declined too: with no `=` on the line
 // there is no region to read, and the narrow answer keeps the previous
@@ -2704,13 +2734,14 @@ var fsharpParameterBinderPattern = regexp.MustCompile(`^[ \t]*([A-Za-z_][A-Za-z0
 // classified by the project's module declarations alone and the call was pinned
 // to an unrelated project module named `Json`.
 //
-// Only parameters written as a plain name are read, alone or inside parentheses
-// and tuples. A group in any other shape -- a union-case pattern (`(Some x)`),
-// an attribute, a list or record pattern -- is left unbound, because a name
-// standing there need not be a binding at all: `Some`, `None` and `Error` are
-// union CASES, and binding them would un-qualify calls that legitimately name a
-// module of that name. Missing a shadow leaves the previous answer; inventing
-// one changes a call's target, so the unknown shapes stay out.
+// Each whitespace-separated group is one parameter, and what a group binds is
+// fsharpPatternComponentBinders' answer: a name, a tuple and its nestings, an
+// `as` pattern, or the arguments of a union-case application. A list, record,
+// cons, or/and pattern is left unbound, because a name standing there need not
+// be a binding at all: `Some`, `None` and `Error` are union CASES, and binding
+// them would un-qualify calls that legitimately name a module of that name.
+// Missing a shadow leaves the previous answer; inventing one changes a call's
+// target, so the unmodelled shapes stay out.
 func fsharpFunctionParameterNames(line string) []string {
 	header := fsharpFunctionHeaderPattern.FindString(line)
 	if header == "" {
@@ -2817,21 +2848,174 @@ func fsharpJoinedFunctionHeader(lines []string, index int) string {
 }
 
 // fsharpParameterGroupBinders returns the names one parameter group binds. A
-// parenthesised group may be a tuple, whose parts each bind a name.
+// parenthesised group holds a PATTERN, which is read by fsharpPatternBinders;
+// an unparenthesised group is a bare parameter and binds only when it is a
+// plain name.
 func fsharpParameterGroupBinders(group string) []string {
-	if strings.HasPrefix(group, "(") && strings.HasSuffix(group, ")") {
-		var names []string
-		for _, part := range fsharpSplitTopLevel(group[1:len(group)-1], ',') {
-			if name := fsharpParameterBinderName(part); name != "" {
-				names = append(names, name)
-			}
-		}
-		return names
+	trimmed := strings.TrimSpace(group)
+	if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, ")") {
+		return fsharpPatternBinders(trimmed[1 : len(trimmed)-1])
 	}
-	if name := fsharpParameterBinderName(group); name != "" {
+	if name := fsharpParameterBinderName(trimmed); name != "" {
 		return []string{name}
 	}
 	return nil
+}
+
+// fsharpPatternBinders returns the names the CONTENTS of a parenthesised
+// pattern bind. A top-level comma makes it a tuple, and every component is a
+// pattern in its own right.
+func fsharpPatternBinders(pattern string) []string {
+	if components := fsharpSplitTopLevel(pattern, ','); len(components) > 1 {
+		var names []string
+		for _, component := range components {
+			names = append(names, fsharpPatternComponentBinders(component)...)
+		}
+		return names
+	}
+	return fsharpPatternComponentBinders(pattern)
+}
+
+// fsharpPatternComponentBinders returns the names one pattern component binds.
+// Only names, tuples and their parenthesised nestings were read before, so
+// every other shape bound nothing: `let run (Some Json) = Json.serialize x`
+// left `Json` unbound and the qualifier resolution pinned the call to an
+// unrelated project module named `Json` -- an edge into a definition the source
+// never wrote, in place of the value the pattern leaves in scope.
+//
+// Four shapes are ADMITTED, each because the name it yields cannot be anything
+// but a binder:
+//
+//   - A plain name, with at most a type annotation (`Json`, `Json: JsonConvert`).
+//     Only the name is taken; the annotation is a MENTION.
+//   - A parenthesised nesting (`(a, (b, Json))`). A tuple inside a tuple is
+//     still a tuple, and reading the outer one but not the inner was an
+//     omission rather than a margin.
+//   - An `as` pattern (`(p as Json)`). F# grammar admits only an identifier
+//     after `as`, and it always binds. The pattern to its LEFT is read as a
+//     component too, which declines a type test (`(:? Stream as Json)` binds
+//     `Json` and not the type `Stream`) without a rule of its own.
+//   - A union-case application (`(Some Json)`, `(Response (code, Json))`). The
+//     HEAD of an application in pattern position is a case, never a binder, so
+//     it is dropped and the arguments are read. This is the one shape a
+//     previous round declined that the PARAMETER position argues back: peeling
+//     a single-case union in the header (`let handle (Request Json) = ...`) is
+//     how F# code uses one, it is irrefutable, and it draws no warning.
+//
+// The shapes still declined are the ones where a name standing in the pattern
+// need not be a binder at all -- `Some`, `None` and `Error` are union CASES,
+// and binding one un-qualifies calls that legitimately name a module of that
+// name. A shadowed qualifier records bare and resolves unrestricted, so
+// inventing a binder does not merely lose a restriction, it binds whatever
+// same-name definition sits nearest:
+//
+//   - The WILDCARD `_`, alone or annotated, which binds nothing by definition.
+//   - A RECORD pattern (`{ Result = Json }`). The name stands after a field's
+//     own `=`, where `{ Result = Error }` matches the nullary case and binds
+//     nothing; the braces are shared with computation, object and
+//     anonymous-record expressions, and the field label may be dotted.
+//   - A LIST or ARRAY pattern (`[a; Json]`, `[| a; Json |]`) and a CONS
+//     pattern (`head :: Json`), refutable by construction and never the plain
+//     peeling of a known shape that the union-case form is.
+//   - An OR or AND pattern (`Some Json | Other Json`, `a & Json`), whose
+//     alternatives are cases as readily as binders.
+//   - Anything carrying a top-level `:` the plain-name reader did not consume,
+//     which is an annotation on a shape this function does not model, and
+//     `?optional`, which exists only on members -- a form this pass never sees,
+//     because it reads `let`/`use` headers alone.
+func fsharpPatternComponentBinders(component string) []string {
+	trimmed := strings.TrimSpace(component)
+	if trimmed == "" {
+		return nil
+	}
+	if name := fsharpParameterBinderName(trimmed); name != "" {
+		return []string{name}
+	}
+	if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, ")") {
+		return fsharpPatternBinders(trimmed[1 : len(trimmed)-1])
+	}
+	if left, bound, isAs := fsharpAsPatternSplit(trimmed); isAs {
+		return append(fsharpPatternComponentBinders(left), bound)
+	}
+	if fsharpPatternComponentDeclined(trimmed) {
+		return nil
+	}
+	// An application: the head is the union case being matched and every
+	// argument after it is a pattern.
+	arguments := fsharpSplitTopLevel(trimmed, ' ', '\t')
+	if len(arguments) < 2 {
+		return nil
+	}
+	var names []string
+	for _, argument := range arguments[1:] {
+		names = append(names, fsharpPatternComponentBinders(argument)...)
+	}
+	return names
+}
+
+// fsharpAsPatternSplit splits `<pattern> as <name>` at its LAST top-level `as`,
+// which is the one that binds outermost in `a as b as c`. The name it binds is
+// reported only when it is a plain identifier, so a line that merely writes the
+// word is not read as the keyword.
+func fsharpAsPatternSplit(component string) (string, string, bool) {
+	depth, keyword := 0, -1
+	for index := 0; index < len(component); {
+		if fsharpWordByte(component[index]) {
+			end := index
+			for end < len(component) && fsharpWordByte(component[end]) {
+				end++
+			}
+			if depth == 0 && component[index:end] == "as" {
+				keyword = index
+			}
+			index = end
+			continue
+		}
+		switch component[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+		index++
+	}
+	if keyword < 0 {
+		return "", "", false
+	}
+	bound := fsharpParameterBinderName(component[keyword+len("as"):])
+	if bound == "" {
+		return "", "", false
+	}
+	return component[:keyword], bound, true
+}
+
+// fsharpPatternComponentDeclined reports whether a component carries a
+// top-level token that puts it in one of the shapes this reader does not model
+// -- a list or record body, a cons, an or/and pattern, an annotation the
+// plain-name reader did not consume, or an optional parameter. Brackets are
+// counted, so the same token written inside a nested group is not read here.
+func fsharpPatternComponentDeclined(component string) bool {
+	if strings.HasPrefix(component, "[") || strings.HasPrefix(component, "{") {
+		return true
+	}
+	depth := 0
+	for index := 0; index < len(component); index++ {
+		switch component[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case ':', ';', '|', '&', '?':
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // fsharpParameterBinderName returns the name a parameter binds, or "" when it

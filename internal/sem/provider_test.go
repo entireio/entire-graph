@@ -21033,3 +21033,159 @@ let run (x: int) =
 		})
 	}
 }
+
+// fsharpSerializeCalleeFiles is fsharpSerializeCalleesOfRun without its
+// requirement that the CALLER be `run`. A line that writes two bindings makes
+// the innermost one the enclosing definition, so a fixture that has to nest a
+// `let ... in` inside an initializer cannot name its caller in advance; the
+// classification under test is which file's `serialize` the call reaches, and
+// that is the same answer either way.
+func fsharpSerializeCalleeFiles(t *testing.T, useSource string) []string {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Json.fs", `module Json
+
+let serialize (x: int) = x + 1
+`)
+	writeFile(t, repo, "src/Use.fs", useSource)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	var reached []string
+	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
+		if to, isSymbol := symbolsByID[relation.ToID]; isSymbol && to.Name == "serialize" {
+			reached = append(reached, filepath.Base(to.FilePath))
+		}
+	}
+	sort.Strings(reached)
+	return slices.Compact(reached)
+}
+
+func TestFSharpNestedLetInDoesNotOpenTheBodyOfTheBindingAroundIt(t *testing.T) {
+	// The `in` that opens a binding's body was found by taking the FIRST one
+	// outside brackets, and an initializer may open bindings of its own, each
+	// of which spends an `in` before this binding's arrives. In
+	// `let Json = let x = 1 in Json.serialize x` the only `in` closes the inner
+	// `let x`, so the whole line is still the outer initializer and `Json` is
+	// unavailable across all of it -- but the shadow was started past that `in`
+	// and the call was pinned to the local value instead of the project module
+	// `Json`. That is the fabricated-edge direction: EARLIER than the binding,
+	// which the first-match rule was supposed to make impossible.
+	t.Run("a nested `let ... in` opens no body for the binding around it", func(t *testing.T) {
+		got := fsharpSerializeCalleeFiles(t, `module Use
+
+let serialize (x: int) = x * 2
+
+let run (x: int) =
+    let Json = let y = x in Json.serialize(x)
+`)
+		if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("`Json.serialize` after a nested `let ... in` reached %v, want %v: the nested `in` closes the INNER binding, so the call is still inside the outer initializer and the qualifier names the project module", got, want)
+		}
+	})
+
+	for _, keyword := range []struct {
+		name, line, body string
+		opens            bool
+	}{
+		// The finding's line: one `in`, and it is the inner binding's.
+		{name: "a nested `let` spends the only `in`", line: "    let Json = let x = 1 in Json.serialize x"},
+		// `use ... in` binds and closes exactly as `let ... in` does.
+		{name: "a nested `use` spends the only `in`", line: "    let Json = use r = acquire x in Json.serialize x"},
+		// Two `in` on the line: the first is the inner binding's, the second
+		// is this one's, and the body starts past the SECOND.
+		{name: "the outer `in` after a nested one is still taken", line: "    let a = let x = 1 in x in a + 1", body: " a + 1", opens: true},
+		// The controls that already worked and must not move: no nested
+		// binding at all, and one written inside brackets, which never
+		// counted because its `in` is not top-level either.
+		{name: "no nested binding", line: "    let Json = box x in Json.serialize x", body: " Json.serialize x", opens: true},
+		{name: "a nested binding inside brackets", line: "    let Json = (let x = 1 in x) in Json.serialize x", body: " Json.serialize x", opens: true},
+	} {
+		t.Run(keyword.name, func(t *testing.T) {
+			column, opens := fsharpLetInBodyColumn(keyword.line)
+			if opens != keyword.opens {
+				t.Fatalf("`%s` opened a body: %v, want %v", keyword.line, opens, keyword.opens)
+			}
+			if !opens {
+				return
+			}
+			if body := keyword.line[column:]; body != keyword.body {
+				t.Errorf("`%s` opened its body at %q, want %q: each nested binding spends one `in` before this binding's own", keyword.line, body, keyword.body)
+			}
+		})
+	}
+}
+
+func TestFSharpQualifierShadowedByARicherParameterPattern(t *testing.T) {
+	// A parameter was read as a binder only when it was a plain name, a tuple
+	// of them, or an annotated one. Every other pattern F# admits in the
+	// header bound nothing, so `let run (Some Json) = Json.serialize x` left
+	// `Json` unbound and the qualifier resolution pinned the call to an
+	// unrelated project module named `Json` -- an edge into a definition the
+	// source never wrote, in place of the value the pattern leaves in scope.
+	for _, shadow := range []struct{ name, header string }{
+		// Peeling a union case in the header. For a single-case union --
+		// `type Payload = Payload of int` -- this is how F# code uses one: it
+		// is irrefutable and draws no warning, which is what separates it from
+		// the list and cons patterns below.
+		{"union-case application", "let run (Some Json) (x: int) = Json.serialize x"},
+		// A case whose payload is a tuple: the argument is a pattern in its
+		// own right and is read as one.
+		{"union case over a tuple", "let run (Response (code, Json)) (x: int) = Json.serialize x"},
+		// F# grammar admits only an identifier after `as`, and it always binds.
+		{"`as` pattern", "let run (pair as Json) (x: int) = Json.serialize x"},
+		// The pattern LEFT of `as` is read too, so a tuple inside one keeps
+		// its own binders.
+		{"a tuple bound through `as`", "let run ((a, Json) as pair) (x: int) = Json.serialize x"},
+		// A tuple inside a tuple is still a tuple; only the outer one was read.
+		{"tuple nested inside a tuple", "let run (a, (b, Json)) (x: int) = Json.serialize x"},
+		// The name after `as` may carry the group's type annotation, and the
+		// annotation is a MENTION: only the name in front of it binds.
+		{"an annotated `as` binder", "let run (pair as Json: JsonConvert) (x: int) = Json.serialize x"},
+	} {
+		t.Run(shadow.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+`+shadow.header+`
+`)
+			if want := []string{"Use.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `%s` reached %v, want %v: the pattern binds `Json`, so the qualifier names the parameter and not the project module", shadow.header, got, want)
+			}
+		})
+	}
+
+	// The opposite direction, which matters as much: a shadowed qualifier
+	// records bare and resolves UNRESTRICTED, so reading a binder where none is
+	// written binds whatever same-name definition sits nearest instead of the
+	// module the source named. These are the shapes where a name standing in
+	// the pattern need not be a binder at all.
+	for _, declined := range []struct{ name, why, header string }{
+		{"the head of an application is the case", "`Json payload` matches the union case `Json` and binds `payload`", "let run (Json payload) (x: int) = Json.serialize x"},
+		{"a type test names a type", "`:? Json` tests the TYPE `Json`; the pattern binds `payload`", "let run (:? Json as payload) (x: int) = Json.serialize x"},
+		{"a cons pattern", "refutable by construction, and its parts are a nested pattern position", "let run (head :: Json) (x: int) = Json.serialize x"},
+		{"an or pattern", "an alternative is as readily a nullary case as a binder", "let run (Some Json | Other Json) (x: int) = Json.serialize x"},
+		{"a record pattern", "the name stands after a field's own `=`, where `{ Result = Error }` binds nothing", "let run { Result = Json } (x: int) = Json.serialize x"},
+		{"a list pattern", "refutable by construction, so never a plain peeling of a known shape", "let run [a; Json] (x: int) = Json.serialize x"},
+		{"a list pattern inside parentheses", "the group holds a list body, whose `;`-separated parts are a nested pattern position and not a tuple", "let run ([a; Json; b]) (x: int) = Json.serialize x"},
+		{"an annotated wildcard", "`_` binds nothing and `Json` is the annotation, a MENTION", "let run (_: Json) (x: int) = Json.serialize x"},
+	} {
+		t.Run("declined: "+declined.name, func(t *testing.T) {
+			got := fsharpSerializeCalleesOfRun(t, `module Use
+
+let serialize (x: int) = x * 2
+
+`+declined.header+`
+`)
+			if want := []string{"Json.fs"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("`Json.serialize` under `%s` reached %v, want %v: %s, so nothing shadows the project module `Json`", declined.header, got, want, declined.why)
+			}
+		})
+	}
+}
