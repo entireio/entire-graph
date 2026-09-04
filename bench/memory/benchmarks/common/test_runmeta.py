@@ -94,7 +94,7 @@ class RedactArgvTest(unittest.TestCase):
             runmeta.redact_argv(
                 ["run.py", "--mem0-host", f"https://admin:{FAKE_PASSWORD}@mem0.local/v1"]
             ),
-            ["run.py", "--mem0-host", "https://<redacted>@mem0.local/v1"],
+            ["run.py", "--mem0-host", "https://<redacted>@mem0.local/<redacted>"],
         )
 
     def test_url_query_string_is_dropped(self) -> None:
@@ -103,7 +103,7 @@ class RedactArgvTest(unittest.TestCase):
             runmeta.redact_argv(
                 ["run.py", "--mem0-host", f"https://mem0.local/v1?token={FAKE_KEY}"]
             ),
-            ["run.py", "--mem0-host", "https://mem0.local/v1?<redacted>"],
+            ["run.py", "--mem0-host", "https://mem0.local/<redacted>?<redacted>"],
         )
 
     def test_url_fragment_is_dropped(self) -> None:
@@ -111,7 +111,7 @@ class RedactArgvTest(unittest.TestCase):
             runmeta.redact_argv(
                 ["run.py", "--mem0-host", f"https://mem0.local/v1#{FAKE_KEY}"]
             ),
-            ["run.py", "--mem0-host", "https://mem0.local/v1#<redacted>"],
+            ["run.py", "--mem0-host", "https://mem0.local/<redacted>#<redacted>"],
         )
 
     def test_url_password_containing_an_at_sign_leaks_no_suffix(self) -> None:
@@ -122,6 +122,23 @@ class RedactArgvTest(unittest.TestCase):
             ),
             ["run.py", "--mem0-host", "https://<redacted>@mem0.local/"],
         )
+
+    def test_url_path_segments_are_dropped(self) -> None:
+        """A path segment carries a webhook token as readily as a query does."""
+        self.assertEqual(
+            runmeta.redact_argv(
+                ["run.py", "--mem0-host", f"https://mem0.local/hooks/{FAKE_KEY}"]
+            ),
+            ["run.py", "--mem0-host", "https://mem0.local/<redacted>"],
+        )
+
+    def test_a_bare_host_keeps_its_location(self) -> None:
+        for url in ("http://localhost:18888", "https://mem0.local/"):
+            with self.subTest(url=url):
+                self.assertEqual(
+                    runmeta.redact_argv(["run.py", "--mem0-host", url]),
+                    ["run.py", "--mem0-host", url],
+                )
 
     def test_non_url_values_are_left_alone(self) -> None:
         argv = ["run.py", "--output-dir", "/results/locomo",
@@ -146,6 +163,7 @@ class RedactArgvTest(unittest.TestCase):
             "--mem0-host", f"https://mem0.local/?token={FAKE_KEY}",
             "--mem0-host", f"https://mem0.local/#{FAKE_KEY}",
             "--mem0-host", f"https://admin:pa@ss{FAKE_PASSWORD}@mem0.local/",
+            "--mem0-host", f"https://mem0.local/hooks/{FAKE_KEY}",
         ]
         rendered = " ".join(runmeta.redact_argv(argv))
         self.assertNotIn(FAKE_KEY, rendered)
@@ -219,6 +237,18 @@ class FairModeGuardTest(unittest.TestCase):
             self.assertEqual(
                 runmeta.asymmetry_report(), {"EG_DEEP": "1", "MEM0_DATE_INJECT": "1"}
             )
+
+    def test_a_secret_named_knob_is_fingerprinted_not_printed(self) -> None:
+        """The report is persisted AND interpolated into the exception text."""
+        env = {"FAIR_MODE": "1", "EG_API_KEY": FAKE_KEY}
+        with patch.dict("os.environ", env, clear=True):
+            report = runmeta.asymmetry_report()
+            with self.assertRaises(SystemExit) as raised:
+                runmeta.assert_fair_mode(None)
+        self.assertNotIn(FAKE_KEY, str(report))
+        self.assertNotIn(FAKE_KEY, str(raised.exception))
+        self.assertIn("EG_API_KEY", str(raised.exception))
+        self.assertTrue(report["EG_API_KEY"].startswith("sha256:"))
 
     def test_accepts_the_published_launcher_environment(self) -> None:
         """run_locomo.sh sets these on every fair run; none may trip the guard."""

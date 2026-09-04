@@ -129,11 +129,12 @@ _ARGV_SAFE_OPTS = _ARGV_SAFE_VALUE_OPTS | _ARGV_SAFE_TOGGLES | _ARGV_SECRET_OPTS
 def _scrub_value(value: str) -> str:
     """Keep a URL value's location; drop every component that can carry a secret.
 
-    Credentials ride in more than one place: userinfo (`https://user:pass@host`),
-    a query parameter (`?token=...`), and a fragment. Only scheme, host, port and
-    path are provenance, so the rest is dropped wholesale rather than
+    Credentials ride in every part of a URL but its location: userinfo
+    (`https://user:pass@host`), a path segment (`/hooks/<token>`), a query
+    parameter (`?token=...`), and a fragment. Only scheme, host and port are
+    provenance, so everything else is dropped wholesale rather than
     pattern-matched -- for the same reason the option filter is an allowlist.
-    Non-URL values (paths, model names) are returned unchanged.
+    Non-URL values (filesystem paths, model names) are returned unchanged.
     """
     try:
         parts = urlsplit(value)
@@ -148,7 +149,11 @@ def _scrub_value(value: str) -> str:
         # a value that does is malformed and stripping more of it is the safe
         # direction.
         netloc = _ARGV_REDACTED + "@" + netloc.rpartition("@")[2]
-    scrubbed = urlunsplit((scheme, netloc, path, "", ""))
+    scrubbed = urlunsplit((scheme, netloc, "", "", ""))
+    if path not in ("", "/"):
+        scrubbed += "/" + _ARGV_REDACTED
+    else:
+        scrubbed += path
     if query:
         scrubbed += "?" + _ARGV_REDACTED
     if fragment:
@@ -247,14 +252,28 @@ def git_state(root: Path | str | None = None) -> dict:
             "dirty": bool(_run("git", "status", "--porcelain"))}
 
 
+def _reported_value(name: str, value: str) -> str:
+    """Fingerprint a secret-named value, exactly as env_snapshot does.
+
+    This report is persisted in the artifact *and* interpolated into the
+    FAIR_MODE exception text, so a credential-bearing knob caught by the `EG_*`
+    catch-all (`EG_API_KEY`, say) would otherwise reach CI logs in cleartext.
+    """
+    return _fingerprint(value) if _SECRET_RE.search(name) else value
+
+
 def asymmetry_report() -> dict:
     """Which arm-asymmetric knobs are active right now."""
-    active = {k: os.environ[k] for k in ASYMMETRY_FLAGS if os.environ.get(k)}
+    active = {
+        k: _reported_value(k, os.environ[k])
+        for k in ASYMMETRY_FLAGS
+        if os.environ.get(k)
+    }
     for k, v in os.environ.items():
         if not v or k in active or k in SYMMETRIC_ARM_SETTINGS:
             continue
         if k.startswith(ASYMMETRIC_PREFIXES):
-            active[k] = v
+            active[k] = _reported_value(k, v)
     return dict(sorted(active.items()))
 
 
