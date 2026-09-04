@@ -18,6 +18,9 @@
 #
 # `resume` is accepted only for arms whose memory lives outside this process
 # (the Mem0 server arms). See the refusal below for why.
+#
+# `<arm>` is validated against the same backends the harness factory can build
+# (benchmarks/common/entire_client.py::make_memory_client). See the arm gate below.
 set -euo pipefail
 
 # Authentication is identity-only; API keys and static bearer tokens are not
@@ -42,6 +45,35 @@ export LLM_TIMEOUT="${LLM_TIMEOUT:-600}"
 ARM="$1"; RESUME="${2:-}"
 PN="full_${ARM}"
 
+# Admit exactly the arms the harness factory can construct. Anything else used
+# to be launched anyway and then died inside the harness -- an unvendored arm on
+# a RuntimeError from make_memory_client, a typo on an argparse `choices` error,
+# both after the environment checks above had already passed. Keep these two
+# lists in step with benchmarks/common/entire_client.py (_BUNDLED_BACKENDS and
+# _UNVENDORED_BACKENDS); ci/test_kit_launcher_and_patches.py fails on drift.
+BUNDLED_ARMS=" oss cloud entire graphify cmm bm25 "
+UNVENDORED_ARMS=" cognee graphiti letta supermemory "
+ADAPTER="benchmarks/common/${ARM}_client.py"
+
+if [[ "$BUNDLED_ARMS" != *" $ARM "* ]]; then
+  if [[ "$UNVENDORED_ARMS" != *" $ARM "* ]]; then
+    echo "REFUSING: unknown arm '$ARM'." >&2
+    echo "  Bundled arms:${BUNDLED_ARMS}" >&2
+    echo "  Optional arms (adapter not vendored here):${UNVENDORED_ARMS}" >&2
+    exit 5
+  fi
+  # The factory admits these only when the operator has supplied the module, so
+  # the launcher applies exactly that test rather than a name allowlist. They do
+  # NOT reach BUFFER_MISSING when absent -- they never construct at all, so
+  # refusing them as "in-process buffered" would state a false reason.
+  if [[ ! -f "$ADAPTER" ]]; then
+    echo "REFUSING: the '$ARM' arm requires ${ADAPTER}, which this reproduction" >&2
+    echo "  kit does not include. Supply that adapter module yourself, or choose" >&2
+    echo "  a bundled arm:${BUNDLED_ARMS}" >&2
+    exit 5
+  fi
+fi
+
 if pgrep -f -- "locomo.run --project-name ${PN} " > /dev/null 2>&1; then
   echo "REFUSING: ${PN} already running"; exit 3
 fi
@@ -59,7 +91,15 @@ if [[ -n "$RESUME" ]]; then
     echo "REFUSING: the second argument must be exactly 'resume' (got '$RESUME')" >&2
     exit 2
   fi
+  BUFFERED=""
   if [[ "$IN_PROCESS_BUFFERED_ARMS" == *" $ARM "* ]]; then
+    BUFFERED=1
+  elif [[ -f "$ADAPTER" ]] && grep -q 'BUFFER_MISSING' "$ADAPTER"; then
+    # A supplied adapter that guards an in-process buffer has the same defect;
+    # this is the check FAIR-CONFIG.md section 2 already prescribes for it.
+    BUFFERED=1
+  fi
+  if [[ -n "$BUFFERED" ]]; then
     echo "REFUSING: the '$ARM' arm buffers ingestion in-process and cannot resume." >&2
     echo "  A resumed run skips every add() and then fails with BUFFER_MISSING," >&2
     echo "  or would score a partial corpus as a complete run." >&2

@@ -13,11 +13,50 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from bench.memory.benchmarks.common import entire_client
+
 _KIT = Path(__file__).resolve().parents[1]
 _PATCHES = _KIT / "patches"
 _LAUNCHER = _KIT / "run_locomo.sh"
 
 _HUNK = re.compile(r"^@@ -(\d+),(\d+) \+(\d+),(\d+) @@")
+
+
+def _launcher_arms(variable: str) -> tuple[str, ...]:
+    """The arms named by a launcher list variable, e.g. ``BUNDLED_ARMS``."""
+    text = _LAUNCHER.read_text(encoding="utf-8")
+    match = re.search(rf'^{variable}="([^"]*)"$', text, re.M)
+    if match is None:
+        raise AssertionError(f"run_locomo.sh no longer defines {variable}")
+    return tuple(match.group(1).split())
+
+
+def _run_launcher(*args: str, adapters: dict[str, str] | None = None):
+    """Run the launcher in a throwaway harness checkout.
+
+    ``adapters`` writes ``benchmarks/common/<name>`` before launching, standing
+    in for an adapter module an operator has supplied to their own checkout.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        if adapters:
+            common = Path(tmp) / "benchmarks" / "common"
+            common.mkdir(parents=True)
+            for name, body in adapters.items():
+                (common / name).write_text(body, encoding="utf-8")
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": tmp,
+            "AZURE_AI_ENDPOINT": "https://example.invalid",
+            "BENCH_STATE_ROOT": os.path.join(tmp, "state"),
+        }
+        return subprocess.run(
+            ["bash", str(_LAUNCHER), *args],
+            cwd=tmp,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
 
 
 def _hunks(patch_text: str):
@@ -119,21 +158,7 @@ class LauncherResumeTest(unittest.TestCase):
     IN_PROCESS_BUFFERED = ("entire", "graphify", "cmm", "bm25")
 
     def _run(self, *args: str):
-        with tempfile.TemporaryDirectory() as tmp:
-            env = {
-                "PATH": os.environ.get("PATH", ""),
-                "HOME": tmp,
-                "AZURE_AI_ENDPOINT": "https://example.invalid",
-                "BENCH_STATE_ROOT": os.path.join(tmp, "state"),
-            }
-            return subprocess.run(
-                ["bash", str(_LAUNCHER), *args],
-                cwd=tmp,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+        return _run_launcher(*args)
 
     def test_resume_is_refused_for_in_process_buffered_arms(self) -> None:
         for arm in self.IN_PROCESS_BUFFERED:
@@ -157,6 +182,90 @@ class LauncherResumeTest(unittest.TestCase):
         proc = self._run("entire")
         self.assertNotIn("cannot resume", proc.stderr)
         self.assertNotEqual(4, proc.returncode)
+
+
+@unittest.skipIf(shutil.which("bash") is None, "bash is required")
+class LauncherArmAgreementTest(unittest.TestCase):
+    """The launcher must admit exactly the arms the harness can construct.
+
+    ``make_memory_client`` refuses cognee/graphiti/letta/supermemory with a
+    named RuntimeError because this kit vendors no adapter for them, yet the
+    launcher took any string at all -- so ``run_locomo.sh cognee`` passed every
+    check and died inside the harness instead. They do not belong in the
+    in-process-buffer refusal: absent an adapter they never construct, so they
+    never reach BUFFER_MISSING, and naming that as the reason would be false.
+    """
+
+    UNVENDORED = ("cognee", "graphiti", "letta", "supermemory")
+
+    def test_the_launcher_arm_lists_match_the_factory(self) -> None:
+        self.assertEqual(
+            list(entire_client._BUNDLED_BACKENDS),
+            list(_launcher_arms("BUNDLED_ARMS")),
+            "run_locomo.sh and make_memory_client disagree about which arms are "
+            "bundled; the launcher would accept an arm the factory refuses",
+        )
+        self.assertEqual(
+            sorted(entire_client._UNVENDORED_BACKENDS),
+            sorted(_launcher_arms("UNVENDORED_ARMS")),
+            "run_locomo.sh and make_memory_client disagree about which arms need "
+            "an adapter the operator must supply",
+        )
+
+    def test_the_launcher_admits_exactly_the_harness_backend_choices(self) -> None:
+        """``--backend`` is the third place this set is written down."""
+        post = _post_image(
+            (
+                _PATCHES
+                / "0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch"
+            ).read_text(encoding="utf-8")
+        )
+        match = re.search(r'--backend".*?choices=\[(.*?)\]', post, re.S)
+        self.assertIsNotNone(match, "patch 0003 no longer sets --backend choices")
+        self.assertEqual(
+            sorted(re.findall(r'"([^"]+)"', match.group(1))),
+            sorted(_launcher_arms("BUNDLED_ARMS") + _launcher_arms("UNVENDORED_ARMS")),
+        )
+
+    def test_an_unvendored_arm_is_refused_with_the_factorys_reason(self) -> None:
+        for arm in self.UNVENDORED:
+            for args in ((arm,), (arm, "resume")):
+                with self.subTest(args=args):
+                    proc = _run_launcher(*args)
+                    self.assertEqual(5, proc.returncode, proc.stderr)
+                    self.assertIn(f"benchmarks/common/{arm}_client.py", proc.stderr)
+                    self.assertNotIn("buffers ingestion in-process", proc.stderr)
+
+    def test_an_unknown_arm_is_refused_before_the_harness_starts(self) -> None:
+        proc = _run_launcher("mem0")
+        self.assertEqual(5, proc.returncode, proc.stderr)
+        self.assertIn("unknown arm", proc.stderr)
+
+    def test_a_supplied_adapter_module_is_accepted(self) -> None:
+        """The factory says "supply that adapter module yourself"; honour it."""
+        proc = _run_launcher(
+            "cognee", adapters={"cognee_client.py": "CogneeClient = object\n"}
+        )
+        self.assertNotEqual(5, proc.returncode, proc.stderr)
+        self.assertNotIn("REFUSING", proc.stderr)
+
+    def test_a_supplied_buffered_adapter_still_cannot_resume(self) -> None:
+        proc = _run_launcher(
+            "cognee",
+            "resume",
+            adapters={
+                "cognee_client.py": 'raise RuntimeError("BUFFER_MISSING: no buffer")\n'
+            },
+        )
+        self.assertEqual(4, proc.returncode, proc.stderr)
+        self.assertIn("cannot resume", proc.stderr)
+
+    def test_a_supplied_server_backed_adapter_can_resume(self) -> None:
+        proc = _run_launcher(
+            "cognee", "resume", adapters={"cognee_client.py": "CogneeClient = object\n"}
+        )
+        self.assertNotEqual(4, proc.returncode, proc.stderr)
+        self.assertNotIn("cannot resume", proc.stderr)
 
 
 if __name__ == "__main__":
