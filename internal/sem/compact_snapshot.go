@@ -10,6 +10,7 @@ import (
 	"fmt"
 	stdhash "hash"
 	"io"
+	"math"
 	"net/url"
 	"sort"
 	"strconv"
@@ -1241,6 +1242,13 @@ func compactSnapshotLineLimit(filesSeen int) int {
 	}
 	if filesSeen > files {
 		files = filesSeen
+	}
+	// A listing cap large enough to overflow the multiplication would produce a
+	// zero or negative bound, which readCompactSnapshotLine reads as "no bound" —
+	// turning an absurd configured value into the unbounded allocation this
+	// function exists to prevent. Saturate instead.
+	if files > math.MaxInt/compactSnapshotSummaryBytesPerFile {
+		return math.MaxInt
 	}
 	return compactSnapshotSummaryBytesPerFile * files
 }

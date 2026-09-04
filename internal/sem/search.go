@@ -1911,7 +1911,10 @@ func preselectSearchFiles(
 	if exactFullPreindex && !options.Worktree && !options.Deep && grepSafe {
 		matches, grepErr := gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
 		if grepErr == nil {
-			selection.files = bridgeRegistrationHandlerFiles(ctx, source, committedSearchFiles(source.paths, matches, q))
+			// This branch deliberately keeps every matched file rather than
+			// honouring MaxIndexedFiles (see above), so the bridge gets its own
+			// budget rather than a remainder of a cap this path does not apply.
+			selection.files = bridgeRegistrationHandlerFiles(ctx, source, committedSearchFiles(source.paths, matches, q), searchRegistrationBridgeMaxHandlers)
 			selection.sparseFiles = append([]string(nil), selection.files...)
 			selection.preselectionBackend = "git-tree-grep"
 			selection.preselectionPasses = 1
@@ -2154,7 +2157,9 @@ func preselectSearchFiles(
 		}
 		selection.preselectionPasses = 1
 	}
-	selection.files = bridgeRegistrationHandlerFiles(ctx, source, selection.files)
+	// An explicit MaxIndexedFiles is an exact compatibility limit, so the bridge
+	// spends only what preselection left unused.
+	selection.files = bridgeRegistrationHandlerFiles(ctx, source, selection.files, options.MaxIndexedFiles-len(selection.files))
 	selection.filesContentRead = contentReads
 	selection.preselectionBackend = "go-content"
 	selection.preselectionFilesExamined = len(scanPaths)
@@ -2175,9 +2180,10 @@ func preselectSearchFiles(
 }
 
 const (
-	// searchRegistrationBridgeMaxHandlers bounds how many distinct handlers one
-	// preselection will chase — and, since each one contributes at most its
-	// defining file, how many files the bridge may add.
+	// searchRegistrationBridgeMaxHandlers is the ceiling on how many distinct
+	// handlers one preselection will chase — and, since each one contributes at
+	// most its defining file, on how many files the bridge may add. The caller's
+	// unspent MaxIndexedFiles budget narrows it further.
 	// searchRegistrationBridgeMaxParses bounds how many candidate files it may
 	// parse to tell a definition from a call site, and
 	// searchRegistrationBridgeScanLimit how much of the corpus it may read.
@@ -2205,16 +2211,21 @@ const (
 //
 // It is deliberately cheap and rare. Nothing runs unless a selected file is a
 // commands/*.json carrying a "function" field, it adds at most one file per
-// handler and at most searchRegistrationBridgeMaxHandlers in all — so the
-// MaxIndexedFiles guard on cold selective indexing is exceeded by at most that
-// many files — and it stops as soon as every handler has been placed.
+// handler and never more than budget files, and it stops as soon as every
+// handler has been placed. budget is what the caller's MaxIndexedFiles has left
+// unspent: that limit is documented as an exact compatibility ceiling when set
+// explicitly, so a caller asking for a strict parsing ceiling must not be handed
+// more files than it asked for — even to complete an alias.
 //
 // A file is added only when it DEFINES the handler, which is checked by parsing
 // it. Accepting any file that merely applies the name would let call sites
 // consume the budget while the definition sits further down the path order, and
 // the handler symbol — the whole point of the bridge — would still be missing.
-func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, selected []string) []string {
-	if len(selected) == 0 || len(selected) >= len(source.paths) {
+func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, selected []string, budget int) []string {
+	if budget > searchRegistrationBridgeMaxHandlers {
+		budget = searchRegistrationBridgeMaxHandlers
+	}
+	if budget <= 0 || len(selected) == 0 || len(selected) >= len(source.paths) {
 		return selected
 	}
 	aliases := collectRegistrationAliases(selected, source.read)
@@ -2226,8 +2237,8 @@ func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, s
 		handlers = append(handlers, handler)
 	}
 	sort.Strings(handlers)
-	if len(handlers) > searchRegistrationBridgeMaxHandlers {
-		handlers = handlers[:searchRegistrationBridgeMaxHandlers]
+	if len(handlers) > budget {
+		handlers = handlers[:budget]
 	}
 	chosen := make(map[string]bool, len(selected))
 	for _, filePath := range selected {
@@ -2237,6 +2248,8 @@ func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, s
 	var added []string
 	examined, parsed := 0, 0
 	for _, filePath := range source.paths {
+		// len(added) cannot exceed len(handlers), which the budget already
+		// truncated, so the budget needs no second check here.
 		if len(placed) == len(handlers) || examined >= searchRegistrationBridgeScanLimit || parsed >= searchRegistrationBridgeMaxParses {
 			break
 		}

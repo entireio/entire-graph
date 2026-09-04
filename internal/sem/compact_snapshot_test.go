@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -732,5 +734,17 @@ func TestCompactSnapshotDecodesSummaryJustifiedByItsFileRecords(t *testing.T) {
 	}
 	if _, err := DecodeCompactSnapshot(bytes.NewReader(buffer.Bytes()), func(any) error { return nil }); err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+}
+
+// A configured listing cap large enough to overflow the bound's multiplication
+// must saturate, not wrap into a zero or negative "no bound".
+func TestCompactSnapshotLineLimitSaturates(t *testing.T) {
+	t.Setenv(maxSourceFilesEnv, strconv.Itoa(math.MaxInt/2))
+	if got := compactSnapshotLineLimit(0); got != math.MaxInt {
+		t.Fatalf("bound = %d, want %d", got, math.MaxInt)
+	}
+	if got := compactSnapshotLineLimit(math.MaxInt); got != math.MaxInt {
+		t.Fatalf("bound for an absurd artifact = %d, want %d", got, math.MaxInt)
 	}
 }

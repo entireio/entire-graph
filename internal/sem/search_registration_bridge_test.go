@@ -60,20 +60,27 @@ func TestBridgeRegistrationHandlerFilesIsInert(t *testing.T) {
 		},
 	}
 
-	got := bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"})
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"}, 4)
 	want := []string{"src/commands/substr.json", "src/t_string.go"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("bridged = %v, want %v", got, want)
 	}
 
 	// No registration table in the selection: nothing to bridge.
-	got = bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/other.go"})
+	got = bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/other.go"}, 4)
 	if fmt.Sprint(got) != fmt.Sprint([]string{"src/other.go"}) {
 		t.Fatalf("bridged without a command table = %v", got)
 	}
 
+	// No budget left: an explicit MaxIndexedFiles is an exact ceiling, so the
+	// bridge must add nothing rather than exceed it.
+	got = bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"}, 0)
+	if fmt.Sprint(got) != fmt.Sprint([]string{"src/commands/substr.json"}) {
+		t.Fatalf("bridged with no budget = %v", got)
+	}
+
 	// Already selected: no duplicate.
-	got = bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json", "src/t_string.go"})
+	got = bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json", "src/t_string.go"}, 4)
 	if fmt.Sprint(got) != fmt.Sprint([]string{"src/commands/substr.json", "src/t_string.go"}) {
 		t.Fatalf("bridged with the handler already selected = %v", got)
 	}
@@ -127,7 +134,7 @@ func TestBridgeRegistrationHandlerFilesPrefersTheDefinition(t *testing.T) {
 		},
 	}
 
-	got := bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"})
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"}, 4)
 	want := []string{"src/commands/substr.json", "src/t_string.go"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("bridged = %v, want %v", got, want)
@@ -146,5 +153,63 @@ func TestParsedSymbolNames(t *testing.T) {
 	}
 	if !calling["Caller"] {
 		t.Fatalf("caller's own definition missing: %v", calling)
+	}
+}
+
+// The bridge must never push a search past an explicit MaxIndexedFiles.
+func TestSearchBridgeRespectsExplicitIndexLimit(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "src/commands/substr.json", `{"function":"getrangeCommand","arity":4,"summary":"Returns a substring."}`)
+	write(t, repo, "src/t_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+	for index := 0; index < 40; index++ {
+		write(t, repo, fmt.Sprintf("src/filler%02d.go", index), fmt.Sprintf("package src\n\nfunc Filler%02d() {}\n", index))
+	}
+
+	response, err := SearchRepository(t.Context(), repo, "test-version", "substr", SearchOptions{
+		Profile:         ProfileSyntaxOnly,
+		TopK:            5,
+		MaxIndexedFiles: 1,
+		Worktree:        true,
+		DisableCache:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.FilesIndexed > 1 {
+		t.Fatalf("indexed %d files, want at most the requested 1", response.Stats.FilesIndexed)
+	}
+}
+
+// A budget smaller than the number of handlers admits that many files and no
+// more, deterministically.
+func TestBridgeRegistrationHandlerFilesHonoursAPartialBudget(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/append.json": `{"function":"appendCommand"}`,
+		"src/commands/substr.json": `{"function":"getrangeCommand"}`,
+		"src/t_append.go":          "package src\n\nfunc appendCommand() {}\n",
+		"src/t_string.go":          "package src\n\nfunc getrangeCommand() {}\n",
+	}
+	paths := []string{"src/commands/append.json", "src/commands/substr.json", "src/t_append.go", "src/t_string.go"}
+	source := sourceContext{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		},
+	}
+	selected := []string{"src/commands/append.json", "src/commands/substr.json"}
+
+	// Handlers are chased in sorted name order: appendCommand before
+	// getrangeCommand.
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, selected, 1)
+	want := []string{"src/commands/append.json", "src/commands/substr.json", "src/t_append.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged with budget 1 = %v, want %v", got, want)
+	}
+
+	got = bridgeRegistrationHandlerFiles(t.Context(), source, selected, 2)
+	want = []string{"src/commands/append.json", "src/commands/substr.json", "src/t_append.go", "src/t_string.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged with budget 2 = %v, want %v", got, want)
 	}
 }
