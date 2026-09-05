@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "f5025110e09a",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-05T16:05:53.222813Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0034-go-compiler-evidence-boundary.md",
+    "docs/implementation/graph-advantage/evidence/compiler-primitives-tests.txt",
+    "internal/compiler/compiler_test.go",
+    "internal/compiler/framing.go",
+    "internal/compiler/identity.go",
+    "internal/compiler/position.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "17b36f2ed1e5",
+  "checkpoint_transcript_start": 369,
+  "transcript_lines_at_start": 369,
+  "compact_transcript_start": 45,
+  "initial_attribution": {
+    "calculated_at": "2026-09-05T16:05:53.144561Z",
+    "agent_lines": 442,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 442,
+    "total_lines_changed": 442,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

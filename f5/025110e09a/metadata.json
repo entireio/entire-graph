@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "f5025110e09a",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0034-go-compiler-evidence-boundary.md",
+    "docs/implementation/graph-advantage/evidence/compiler-primitives-tests.txt",
+    "internal/compiler/compiler_test.go",
+    "internal/compiler/framing.go",
+    "internal/compiler/identity.go",
+    "internal/compiler/position.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f5/025110e09a/0/metadata.json",
+      "transcript": "/f5/025110e09a/0/full.jsonl",
+      "compact_transcript": "/f5/025110e09a/0/transcript.jsonl",
+      "content_hash": "/f5/025110e09a/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
