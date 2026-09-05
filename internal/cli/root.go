@@ -292,8 +292,13 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if err != nil {
 		return err
 	}
+	compilerOptions, err := flags.Compiler.options()
+	if err != nil {
+		return err
+	}
 	options := sem.ProviderSnapshotOptions{
-		ExtractionReuse:    flags.ExtractionReuse,
+		Compiler:           compilerOptions,
+		ExtractionReuse:    flags.ExtractionReuse && !flags.DisableCache,
 		ExtractionCacheDir: resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir),
 		NoNetwork:          flags.NoNetwork,
 		Worktree:           flags.Worktree,
@@ -404,7 +409,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// expensive re-index. It is deliberately bypassed for --worktree and, by
 	// returning above, for targeted queries.
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
-	useCache := !flags.DisableCache && !flags.Worktree && !scip && cacheDir != ""
+	useCache := compilerOptions == nil && !flags.ExtractionReuse && !flags.DisableCache && !flags.Worktree && !scip && cacheDir != ""
 	var commit, tree string
 	cacheContext := ctx
 	if useCache {
@@ -581,6 +586,7 @@ type commonFlags struct {
 }
 
 type providerFlags struct {
+	Compiler        compilerFlags
 	ExtractionReuse bool
 	Repo            string
 	Format          string
@@ -692,6 +698,12 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 				return flags, nil, errors.New("--include-file requires a value")
 			}
 			flags.IncludeFiles = append(flags.IncludeFiles, args[i])
+		case "--compiler", "--require-compiler", "--gopls", "--gopls-sha256", "--go-toolchain", "--compiler-launcher":
+			next, err := flags.Compiler.parse(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			i = next
 		case "--extraction-cache":
 			value, next, err := searchFlagValue(args, i)
 			if err != nil {
