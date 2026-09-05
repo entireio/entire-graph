@@ -1,0 +1,223 @@
+=== RUN   TestLiveCompilerDirectAndCandidate
+--- PASS: TestLiveCompilerDirectAndCandidate (3.66s)
+=== RUN   TestLiveCompilerMissingDependenciesAndCancellation
+--- PASS: TestLiveCompilerMissingDependenciesAndCancellation (0.15s)
+=== RUN   TestLiveCompilerWorkspaceAliases
+--- PASS: TestLiveCompilerWorkspaceAliases (1.32s)
+=== RUN   TestLiveCompilerTagsReplacementAndClosure
+--- PASS: TestLiveCompilerTagsReplacementAndClosure (4.19s)
+=== RUN   TestLiveCompilerSignatureAndWorkspaceInvalidation
+--- PASS: TestLiveCompilerSignatureAndWorkspaceInvalidation (2.90s)
+=== RUN   TestCapsuleConfinedAndMissingIdentity
+--- PASS: TestCapsuleConfinedAndMissingIdentity (0.00s)
+=== RUN   TestMapLocationExactAndConfined
+--- PASS: TestMapLocationExactAndConfined (0.00s)
+=== RUN   TestRPCRejectsServerEditsAndHandlesConfiguration
+--- PASS: TestRPCRejectsServerEditsAndHandlesConfiguration (0.00s)
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":2,"result":[]}
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":"1","result":[]}
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"private_source_payload"}}
+--- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies (0.00s)
+    --- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":2,"result":[]} (0.00s)
+    --- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":"1","result":[]} (0.00s)
+    --- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"private_source_payload"}} (0.00s)
+=== RUN   TestRPCCancellationBoundsUnresponsiveServer
+--- PASS: TestRPCCancellationBoundsUnresponsiveServer (0.10s)
+=== RUN   TestRPCConfigurationRetainsBuildTags
+--- PASS: TestRPCConfigurationRetainsBuildTags (0.00s)
+=== RUN   TestRPCSendsBoundedCancellationNotification
+--- PASS: TestRPCSendsBoundedCancellationNotification (0.00s)
+=== RUN   TestCompilerRejectsMalformedCapturedOperationIdentity
+--- PASS: TestCompilerRejectsMalformedCapturedOperationIdentity (0.00s)
+=== RUN   TestCompilerContextInvalidationAndEvidence
+--- PASS: TestCompilerContextInvalidationAndEvidence (0.00s)
+=== RUN   TestCompilerContextLengthPrefixAndOrdering
+--- PASS: TestCompilerContextLengthPrefixAndOrdering (0.00s)
+=== RUN   TestLiveCompilerProcessBoundary
+--- PASS: TestLiveCompilerProcessBoundary (0.14s)
+PASS
+ok  	github.com/entireio/entire-graph/internal/compiler	(cached)
+=== RUN   TestCapturedWorktreePolicyUsesCapturedExplicitBytes
+--- PASS: TestCapturedWorktreePolicyUsesCapturedExplicitBytes (0.38s)
+=== RUN   TestCapturedPolicyContentReaderDoesNotReread
+--- PASS: TestCapturedPolicyContentReaderDoesNotReread (0.00s)
+=== RUN   TestCapturedStoreConcurrentAcquisition
+--- PASS: TestCapturedStoreConcurrentAcquisition (0.00s)
+=== RUN   TestCapturedStoreFailureAndMutation
+--- PASS: TestCapturedStoreFailureAndMutation (0.00s)
+=== RUN   TestCapturedStoreSpillIntegrityAndEqualContentPaths
+--- PASS: TestCapturedStoreSpillIntegrityAndEqualContentPaths (0.00s)
+=== RUN   TestCapturedStoreCancellationAndClose
+--- PASS: TestCapturedStoreCancellationAndClose (0.00s)
+=== RUN   TestCompilerOverlayExactSiteReconciliation
+--- PASS: TestCompilerOverlayExactSiteReconciliation (0.02s)
+=== RUN   TestCompilerOverlayProjectionRefusalAndUnavailable
+--- PASS: TestCompilerOverlayProjectionRefusalAndUnavailable (0.03s)
+=== RUN   TestLiveCompilerSemanticMapping
+--- PASS: TestLiveCompilerSemanticMapping (1.30s)
+=== RUN   TestCompilerOverlayAmbiguousDirectAndClosureRemainUnconfirmed
+--- PASS: TestCompilerOverlayAmbiguousDirectAndClosureRemainUnconfirmed (0.02s)
+=== RUN   TestCompilerEnrichedViewDisputesOnlyExactEvidence
+--- PASS: TestCompilerEnrichedViewDisputesOnlyExactEvidence (0.00s)
+=== RUN   TestCompilerOverlayConversionsAreNotCalls
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/UserID
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/Alias
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/Slice
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/UserID#01
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/Invoke
+--- PASS: TestCompilerOverlayConversionsAreNotCalls (0.03s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/UserID (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/Alias (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/Slice (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/UserID#01 (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/Invoke (0.00s)
+=== RUN   TestLiveCompilerConversionsAreNotCalls
+--- PASS: TestLiveCompilerConversionsAreNotCalls (1.30s)
+=== RUN   TestExtractionReuseLanguageAndFailureEquivalence
+--- PASS: TestExtractionReuseLanguageAndFailureEquivalence (0.36s)
+=== RUN   TestExtractionConcurrentSameKeyAndNoFollow
+--- PASS: TestExtractionConcurrentSameKeyAndNoFollow (0.04s)
+=== RUN   TestExtractionDeterministicFailureAdmission
+--- PASS: TestExtractionDeterministicFailureAdmission (0.00s)
+=== RUN   TestExtractionReuseSnapshotFreshResolution
+--- PASS: TestExtractionReuseSnapshotFreshResolution (0.12s)
+=== RUN   TestExtractionReuseKeyIsolationAndCorruption
+--- PASS: TestExtractionReuseKeyIsolationAndCorruption (0.02s)
+=== RUN   TestExtractionReuseSearchCaptureMutation
+--- PASS: TestExtractionReuseSearchCaptureMutation (0.21s)
+=== RUN   TestExtractionReuseManifestDeleteIgnore
+--- PASS: TestExtractionReuseManifestDeleteIgnore (0.13s)
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/syntax-only
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/fast
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/full
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/syntax-only
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/fast
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/full
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/syntax-only
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/fast
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/full
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/syntax-only
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/fast
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/full
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/syntax-only
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/fast
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/full
+--- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles (0.07s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/syntax-only (0.01s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/fast (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/full (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/syntax-only (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/fast (0.01s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/full (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/syntax-only (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/fast (0.01s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/full (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/syntax-only (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/fast (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/full (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/syntax-only (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/fast (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/full (0.00s)
+=== RUN   TestExtractionRawImportsInvalidPresenceAndVersionRejected
+--- PASS: TestExtractionRawImportsInvalidPresenceAndVersionRejected (0.01s)
+=== RUN   TestExtractionQuotaOverrides
+--- PASS: TestExtractionQuotaOverrides (0.02s)
+=== RUN   TestExtractionQuotaIndependentOperations
+--- PASS: TestExtractionQuotaIndependentOperations (0.03s)
+=== RUN   TestExtractionAdmissionContentionAndNoFollow
+--- PASS: TestExtractionAdmissionContentionAndNoFollow (0.00s)
+=== RUN   TestExtractionQuotaSubprocesses
+--- PASS: TestExtractionQuotaSubprocesses (1.11s)
+=== RUN   TestExtractionAdmissionRemovesOnlyOwnedOrphanTemps
+--- PASS: TestExtractionAdmissionRemovesOnlyOwnedOrphanTemps (0.00s)
+=== RUN   TestExtractionEntityFieldChecklist
+--- PASS: TestExtractionEntityFieldChecklist (0.00s)
+=== RUN   TestExtractionSymbolFieldChecklist
+--- PASS: TestExtractionSymbolFieldChecklist (0.00s)
+=== RUN   TestExtractionRecordRoundTrip
+--- PASS: TestExtractionRecordRoundTrip (0.00s)
+=== RUN   TestExtractionRecordDetached
+--- PASS: TestExtractionRecordDetached (0.00s)
+=== RUN   TestCapturedExtractionMatchesParser
+=== RUN   TestCapturedExtractionMatchesParser/shared.go/syntax-only
+=== RUN   TestCapturedExtractionMatchesParser/shared.go/fast
+=== RUN   TestCapturedExtractionMatchesParser/shared.go/full
+=== RUN   TestCapturedExtractionMatchesParser/overload.ts/syntax-only
+=== RUN   TestCapturedExtractionMatchesParser/overload.ts/fast
+=== RUN   TestCapturedExtractionMatchesParser/overload.ts/full
+=== RUN   TestCapturedExtractionMatchesParser/closure.py/syntax-only
+=== RUN   TestCapturedExtractionMatchesParser/closure.py/fast
+=== RUN   TestCapturedExtractionMatchesParser/closure.py/full
+=== RUN   TestCapturedExtractionMatchesParser/linkage.hpp/syntax-only
+=== RUN   TestCapturedExtractionMatchesParser/linkage.hpp/fast
+=== RUN   TestCapturedExtractionMatchesParser/linkage.hpp/full
+=== RUN   TestCapturedExtractionMatchesParser/broken.go/syntax-only
+=== RUN   TestCapturedExtractionMatchesParser/broken.go/fast
+=== RUN   TestCapturedExtractionMatchesParser/broken.go/full
+--- PASS: TestCapturedExtractionMatchesParser (0.02s)
+    --- PASS: TestCapturedExtractionMatchesParser/shared.go/syntax-only (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/shared.go/fast (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/shared.go/full (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/overload.ts/syntax-only (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/overload.ts/fast (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/overload.ts/full (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/closure.py/syntax-only (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/closure.py/fast (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/closure.py/full (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/linkage.hpp/syntax-only (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/linkage.hpp/fast (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/linkage.hpp/full (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/broken.go/syntax-only (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/broken.go/fast (0.00s)
+    --- PASS: TestCapturedExtractionMatchesParser/broken.go/full (0.00s)
+=== RUN   TestCapturedSourceMutationSchedule
+--- PASS: TestCapturedSourceMutationSchedule (0.00s)
+=== RUN   TestOperationCaptureIdentityAndCoverage
+--- PASS: TestOperationCaptureIdentityAndCoverage (0.00s)
+=== RUN   TestOperationCaptureLateBackingErrorIsFatal
+--- PASS: TestOperationCaptureLateBackingErrorIsFatal (0.00s)
+=== RUN   TestOperationCaptureManifestBoundAndCancellation
+--- PASS: TestOperationCaptureManifestBoundAndCancellation (0.00s)
+=== RUN   TestOperationCaptureNativeAndDefault
+--- PASS: TestOperationCaptureNativeAndDefault (0.05s)
+=== RUN   TestCapturedSourceBorrowedMutationAndFreshOperation
+--- PASS: TestCapturedSourceBorrowedMutationAndFreshOperation (0.02s)
+=== RUN   TestLinuxSweepRootOpensAnOrdinaryNestedDirectory
+=== RUN   TestLinuxSweepRootOpensAnOrdinaryNestedDirectory/openat2_or_fallback
+=== RUN   TestLinuxSweepRootOpensAnOrdinaryNestedDirectory/mountinfo_fallback
+--- PASS: TestLinuxSweepRootOpensAnOrdinaryNestedDirectory (0.00s)
+    --- PASS: TestLinuxSweepRootOpensAnOrdinaryNestedDirectory/openat2_or_fallback (0.00s)
+    --- PASS: TestLinuxSweepRootOpensAnOrdinaryNestedDirectory/mountinfo_fallback (0.00s)
+=== RUN   TestLinuxSweepRootRefusesAMountBoundary
+=== RUN   TestLinuxSweepRootRefusesAMountBoundary/openat2_or_fallback
+=== RUN   TestLinuxSweepRootRefusesAMountBoundary/mountinfo_fallback
+--- PASS: TestLinuxSweepRootRefusesAMountBoundary (0.00s)
+    --- PASS: TestLinuxSweepRootRefusesAMountBoundary/openat2_or_fallback (0.00s)
+    --- PASS: TestLinuxSweepRootRefusesAMountBoundary/mountinfo_fallback (0.00s)
+=== RUN   TestLinuxSweepFallbackRefusesARenamedHeldRoot
+--- PASS: TestLinuxSweepFallbackRefusesARenamedHeldRoot (0.00s)
+=== RUN   TestLinuxSweepMountInventoryFailureIsFallbackUnsafe
+--- PASS: TestLinuxSweepMountInventoryFailureIsFallbackUnsafe (0.00s)
+=== RUN   TestLinuxOpenat2SeccompDenialSelectsOnlyTheGuardedFallback
+--- PASS: TestLinuxOpenat2SeccompDenialSelectsOnlyTheGuardedFallback (0.00s)
+=== RUN   TestLinuxOpenat2SeccompFallbackRetainsMountInventoryFailure
+--- PASS: TestLinuxOpenat2SeccompFallbackRetainsMountInventoryFailure (0.00s)
+PASS
+ok  	github.com/entireio/entire-graph/internal/sem	(cached)
+=== RUN   TestLiveAdvantageCombinationsAndNextQueryFreshness
+--- PASS: TestLiveAdvantageCombinationsAndNextQueryFreshness (6.77s)
+=== RUN   TestLiveReviewCompilerOrdinaryQueries
+    advantage_review_live_test.go:119: static direct callers=1; static transitive callers=1 (retained as observed coverage, not a missing-edge claim)
+--- PASS: TestLiveReviewCompilerOrdinaryQueries (5.18s)
+=== RUN   TestExtractionReuseCLIReachesSearch
+--- PASS: TestExtractionReuseCLIReachesSearch (0.04s)
+=== RUN   TestCompilerCLIExplicitFallback
+--- PASS: TestCompilerCLIExplicitFallback (0.03s)
+=== RUN   TestCompilerIndexEvidenceDoesNotEnterStaticCache
+--- PASS: TestCompilerIndexEvidenceDoesNotEnterStaticCache (0.18s)
+=== RUN   TestCompilerNoHitAndNativeHeader
+--- PASS: TestCompilerNoHitAndNativeHeader (0.04s)
+PASS
+ok  	github.com/entireio/entire-graph/internal/cli	13.308s

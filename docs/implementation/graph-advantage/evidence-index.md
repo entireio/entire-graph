@@ -1,8 +1,25 @@
 # Reproduction index
 
-Product source commit: `0038ef70ca5e829c150a977d8021ee9fe9c7103a`.
-[Final source manifest](evidence/final-source-freeze-v2.json) pins every source,
-script and fixture used by the final check. Earlier experiment manifests identify
+Implementation-first source commit: `88dd1dc95a996999ae4e456879b6dd86d8027f71`.
+
+Current correctness evidence: [source freeze](evidence/review-source-freeze.json),
+[repository log](evidence/review-mise-check.txt), [Linux source](evidence/review-linux-source.json),
+[Linux log](evidence/review-linux-correctness.txt), [ordinary query responses](evidence/review-linux-queries.json),
+and [combined feature responses](evidence/review-linux-combination.json).
+The [initial Linux failure](evidence/review-linux-correctness-initial.txt) used an
+older Git than the documented 2.36 minimum; [prerequisite upgrade](evidence/review-linux-git.json)
+records the correction. These are correctness runs, not comparative campaigns. Both passed; the
+[final result manifest](evidence/review-final-validation.json) binds their source,
+tools, logs and local binary. The VM is [verified deallocated](evidence/review-azure-final-state.json).
+
+Replay from that commit using `mise run check`; the retained correctness runners
+in `probes/run_review_checks.py` and `probes/run_review_linux.py` preserve logs and
+source identities. The Linux runner uses the existing task-owned validation VM
+and its explicit installed tool paths.
+
+Historical product source commit: `0038ef70ca5e829c150a977d8021ee9fe9c7103a`.
+[Earlier source manifest](evidence/final-source-freeze-v2.json) pins every source,
+script and fixture used by the earlier check. Earlier experiment manifests identify
 their own source/binary, rather than claiming they ran this later revision.
 
 | Evidence | Inputs/settings and replay |
@@ -20,4 +37,5 @@ their own source/binary, rather than claiming they ran this later revision.
 P4 summaries reproduce exactly without re-querying or tuning. Failed runs and
 corrected fixture assumptions remain in the evidence directory. Timing artifacts
 state warm-process/host-contention/byte-budget limits; none is a release advantage
-claim. Azure is [verified deallocated](evidence/azure-final-state.json).
+claim. The earlier Azure shutdown is [retained](evidence/azure-final-state.json); the
+implementation-first phase records its own final VM state.

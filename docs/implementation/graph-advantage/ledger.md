@@ -8,11 +8,11 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 Implementation and correctness take priority. Comparative measurement campaigns are deferred by the user's revised sequencing. Earlier results and failed gates remain retained; none establish the revised source's performance or quality.
 
-The review findings are addressed in code: type declarations no longer become compiler-confirmed calls; ordinary search and every impact depth consume the effective compiler relation view. Candidate implementation paths remain separate, including terminal covering tests. Final source freeze and immutable integration checks are pending.
+The review findings are addressed in code: type declarations no longer become compiler-confirmed calls; ordinary search and every impact depth consume the effective compiler relation view. Candidate implementation paths remain separate, including terminal covering tests. Source is frozen; immutable integration checks passed.
 
-- **Final implementation commit:** PENDING_ROOT_FINAL_COMMIT
-- **Required repository check:** PENDING_ROOT_FINAL_CHECK
-- **Pinned Linux correctness check:** PENDING_ROOT_LINUX_CHECK
+- **Final implementation commit:** 88dd1dc95a996999ae4e456879b6dd86d8027f71
+- **Required repository check:** Passed `mise run check` in 653.107 seconds with unchanged source; see `evidence/review-check-result.json`.
+- **Pinned Linux correctness check:** Passed at the same commit: 10 pinned live tests plus focused race suites; see `evidence/review-linux-result.json` and raw logs.
 - **Release status:** no workstream's complete release gate has passed; defaults remain unchanged.
 
 ## Authoritative task status
@@ -22,38 +22,43 @@ This table supersedes earlier checkpoint/status statements. “Complete” in th
 | Task | Implementation | Correctness evidence | Comparative evaluation | Release gate |
 |---|---|---|---|---|
 | P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Further corpus/scenario measurements deferred | Not passed: full fixed corpus/RSS matrix incomplete |
-| P1.2 pure extraction | Pending final policy-capture audit; explicit metadata, shared bounded capture, manifests and sticky errors implemented | Entity field checklist, malformed/overload/language round trips, reader mutation tests; final check pending | Deferred | Not passed |
-| P1.3 storage | Cross-process admission lock implemented; final orphan-temp cleanup pending; versioned keys, integrity, private atomic writes and bounded decode implemented | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; final check pending | Deferred | Not passed |
-| P1.4 entity integration | Pending final command/policy capture audit; ordered reuse and fresh IDs/aliases/resolution implemented | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; final check pending | Deferred | Not passed |
+| P1.2 pure extraction | Complete: explicit metadata, shared bounded source/policy capture, manifests and sticky errors | Entity field checklist, malformed/overload/language round trips, reader mutation tests; final immutable check passed | Deferred | Not passed |
+| P1.3 storage | Complete: cross-process admission, orphan cleanup, versioned keys, integrity, private atomic writes and bounded decode | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; final immutable check passed | Deferred | Not passed |
+| P1.4 entity integration | Complete: command/policy capture, ordered reuse and fresh IDs/aliases/resolution | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; final immutable check passed | Deferred | Not passed |
 | P1.5 relation inputs | Complete for measured raw-import family: Go/TypeScript/Python fast/full; explicit family presence | Exact relation parity and reuse tests; other families deliberately absent | Further profiling deferred; no new family selected by benchmark tuning | Not passed |
-| P1.6 diagnostics/gates | Complete diagnostics and rollback controls; final documentation update pending P1 audit | Separate parsed/reused/source/cache/phase telemetry; final check pending | Existing cold regression retained; further comparisons deferred | Not passed: performance target previously failed |
-| P2.1 feasibility | Complete: pinned gopls v0.20.0 and Linux Bubblewrap execution boundary | Existing positive no-egress/read-only/descendant cancellation checks; final Linux rerun pending | Hard-Go comparative quality deferred | Not passed |
-| P2.2 client/capture | Complete: bounded lifecycle, source capsule/context identity, mapping and cancellation | Protocol/UTF-16/malformed reply/context/process tests; final check pending | Deferred | Not passed |
-| P2.3 positive integration | Complete: direct declarations and separate implementation candidates; conversions excluded | New conversion/alias/generic fixtures and pinned live fixture; signature/workspace invalidation tests; final Linux rerun pending | Independent realistic quality evaluation deferred | Not passed |
-| P2.4 overlay/query contract | Complete: exact-site reconciliation, additive evidence, projection refusal; effective view in ordinary search and all impact depths | F1/F2 regressions, schema guards and new pinned ordinary-query fixture; final checks pending | Deferred | Not passed |
-| P2.5 invalidation/evaluation | Invalidation and evaluation interfaces complete; comparative task not completed | Source/dependency/configuration identity, fallback and signature/workspace regression fixtures; final checks pending | Frozen earlier synthetic outcomes retained; new studies deferred | Not passed: broad adjudicated quality evidence absent |
+| P1.6 diagnostics/gates | Complete: diagnostics, policy coverage and rollback controls | Separate parsed/reused/source/cache/phase telemetry; final immutable check passed | Existing cold regression retained; further comparisons deferred | Not passed: performance target previously failed |
+| P2.1 feasibility | Complete: pinned gopls v0.20.0 and Linux Bubblewrap execution boundary | Existing positive no-egress/read-only/descendant cancellation checks; final Linux race passed | Hard-Go comparative quality deferred | Not passed |
+| P2.2 client/capture | Complete: bounded lifecycle, source capsule/context identity, mapping and cancellation | Protocol/UTF-16/malformed reply/context/process tests; final immutable check passed | Deferred | Not passed |
+| P2.3 positive integration | Complete: direct declarations and separate implementation candidates; conversions excluded | New conversion/alias/generic fixtures and pinned live fixture; signature/workspace invalidation tests; final Linux race passed | Independent realistic quality evaluation deferred | Not passed |
+| P2.4 overlay/query contract | Complete: exact-site reconciliation, additive evidence, projection refusal; effective view in ordinary search and all impact depths | F1/F2 regressions, schema guards and new pinned ordinary-query fixture; Linux race passed; full immutable repository check passed | Deferred | Not passed |
+| P2.5 invalidation/evaluation | Invalidation and evaluation interfaces complete; comparative task not completed | Source/dependency/configuration identity, fallback and signature/workspace regression fixtures; Linux race passed; full immutable repository check passed | Frozen earlier synthetic outcomes retained; new studies deferred | Not passed: broad adjudicated quality evidence absent |
 | P3.1 policy/compatibility | Complete: documented relation directions/compositions and default depth compatibility | Go/TypeScript/Python chains, route/resource fixtures, default output tests | Adjudicated realistic changes deferred | Not passed |
 | P3.2 traversal | Complete: deterministic bounded adjacency/predecessor traversal | Cycle/diamond/shuffle/hub, cancellation and independent work-limit tests; focused race passed | Total-query cost/RSS evaluation deferred | Not passed |
 | P3.3 paths/tests | Complete: parallel evidence, representative alternatives, terminal tests and explicit partial counts | Reconstructed path proofs, confidence/evidence/output bounds; candidate terminal-test regression passed | Covering-test relevance study deferred | Not passed |
 | P3.4 CLI/output | Complete: depth N/all, filters, budgets, additive JSON and bounded text | Depth compatibility, invalid controls, truncation-notice byte bounds; focused race passed | Deferred | Not passed |
 | P3.5 compiler view | Complete: shared effective relations at every depth; candidate paths never become structural facts | Missing/disputed caller and callee fixture at depths 1/2/3/all; candidate separation; native records unchanged | Optional compiler quality ablation deferred | Not passed |
-| P3.6 validation/docs | Contract/stress fixtures and propagation limits complete; comparative task not completed | Independent source fixtures and bounded stress correctness; final check pending | Realistic precision/recall/coverage/latency/RSS study deferred | Not passed |
+| P3.6 validation/docs | Contract/stress fixtures and propagation limits complete; comparative task not completed | Independent source fixtures and bounded stress correctness; final immutable check passed | Realistic precision/recall/coverage/latency/RSS study deferred | Not passed |
 | P4.1 baseline | Development fixture/provenance and harness interfaces complete; adjudicated release baseline pending | Existing fresh GraphMark manifests and recorded outputs preserved | New collection/adjudication and split freeze deferred | Not passed |
-| P4.2 ranking core | Complete: deterministic bounded candidate-only PPR | Mass/dangling/cycle/invalid-weight/duplicate/hub/scope tests; final check pending | No quality inference from numerical correctness | Not passed |
-| P4.3 query integration | Complete: explicit experimental mode, scope/render/guidance constraints and deterministic fallback | Capture/freshness/exact-match tests; compiler view used consistently; final check pending | Deferred | Not passed |
+| P4.2 ranking core | Complete: deterministic bounded candidate-only PPR | Mass/dangling/cycle/invalid-weight/duplicate/hub/scope tests; final immutable check passed | No quality inference from numerical correctness | Not passed |
+| P4.3 query integration | Complete: explicit experimental mode, scope/render/guidance constraints and deterministic fallback | Capture/freshness/exact-match tests; compiler view used consistently; final immutable check passed | Deferred | Not passed |
 | P4.4 development ablations | Harness controls implemented; comparative task not completed | Current/uniform/weighted and expansion-control plumbing; correctness smoke checks only this phase | Existing zero-gain result retained; further ablations deferred | Not passed: no demonstrated winning configuration |
 | P4.5 held-out | Protocol and required harness interfaces available; study not completed | No held-out result claimed | Deferred; requires adjudicated disjoint set and frozen candidate | Not passed |
 | P4.6 downstream | Conditional protocol available; study not completed | Current remains default; no promotion | Deferred until retrieval gate and prospective power design | Not passed |
 
+P1 final focused race passed (49.124s); graph-requested regression passed (0.811s). Windows admission helper compiled successfully; this is compile-only evidence.
+
 ## Review changes and focused checks
 
+- `cb98dc25`: cross-process cache quota admission and orphan cleanup.
+- `88dd1dc9`: complete provider policy capture and explicit metadata checklist.
+- `c8179135`: bounded ranking input scans and topology coverage.
 - `a2e97f12`: F1 conversion/type-alias/generic target discrimination.
 - `9e22e871`: compiler signature/workspace invalidation correctness fixtures.
 - `57e000a1`: F2 impact relation integration and candidate terminal-test provenance.
 - `ffc8497a`: F2 ordinary search relation view and ablation controls.
 - `ab7ae182`: pinned Linux ordinary-query correctness fixture.
 
-For `57e000a1`, `go test ./internal/cli -run TestImpact -count=1` passed (3.092s); the same under race passed (4.464s). Semantic impact and graph-requested compiler reconciliation regression passed (1.118s); semantic impact race passed (2.599s). The new pinned ordinary-query test compiled and skipped on Darwin; positive Linux execution is explicitly pending, not inferred from that skip.
+For `57e000a1`, `go test ./internal/cli -run TestImpact -count=1` passed (3.092s); the same under race passed (4.464s). Semantic impact and graph-requested compiler reconciliation regression passed (1.118s); semantic impact race passed (2.599s). The new pinned ordinary-query test passed on Linux with the actual backend; raw responses are retained.
 
 The earlier `0038ef70` full `mise run check` passed in 626.23s, but does **not** verify these subsequent changes. Its logs, earlier schema-golden failure/correction and source freeze remain historical evidence. Final checks must identify the new immutable source commit.
 
@@ -70,7 +75,7 @@ No additional performance sweeps, retrieval benchmarks, holdout runs or agent ex
 
 Defaults remain `--extraction-cache off`, `--compiler off`, `--depth 2`, `--ranking current`. Compiler execution is supported only by the tested Linux launcher. Unsafe external dependency roots and unresolved dynamic targets produce explicit coverage limitations. Candidate evidence is not runtime invocation evidence.
 
-Raw relation reuse currently covers imports only; unsupported families are explicitly absent and recomputed. The 64 MiB capture bound covers retained source payload, not total process RSS. Capture manifests identify observed inputs with coverage limits; they do not describe an atomic worktree revision. Root/nested ignore and info-exclude reads now share the capture store; mutation/spill regressions and orphan-temp cleanup remain pending. Cross-process quota admission is locked. Git listing/global configuration and metadata probes retain explicit coverage limits.
+Raw relation reuse currently covers imports only; unsupported families are explicitly absent and recomputed. The 64 MiB capture bound covers retained source payload, not total process RSS. Capture manifests identify observed inputs with coverage limits; they do not describe an atomic worktree revision. Root/nested ignore and info-exclude reads now share the capture store; mutation/spill/overlap regressions and orphan-temp cleanup passed focused race. Cross-process quota admission is locked. Git listing/global configuration and metadata probes retain explicit coverage limits.
 
 Rollback uses those default flags. Disposable extraction records occupy their separate cache namespace; no migration is needed. Revert the reviewable implementation commits to remove the features. Persistent working-tree snapshot reuse remains disabled. Installation, MCP packaging, generated summaries and Brain remain out of scope.
 
@@ -89,3 +94,9 @@ Implementation sources are the plan, the user-authorized interim review, applica
 Official P2 references remain LSP 3.17, gopls navigation/settings and Go modules, recorded in the existing ADR/source manifests. Tool distribution/Azure provisioning is separate from runtime provider behavior. Runtime analysis does not fetch tools or dependencies.
 
 Fixtures derive from the plan and Entire's maintained behavior, with hand-derived expectations or pinned official compiler checks. New review fixtures cover type conversions/aliases/generic conversions, exact-site redirects and ordinary search/impact propagation. The terminal-test fixture combines P2-B candidate distinction with P3-B terminal test semantics. The pinned ordinary-query fixture uses a promoted method through an alias and records observed static coverage without assuming a static gap. No external product supplies expected answers.
+
+Final validation: source commit `88dd1dc9` passed the complete repository check
+and pinned Linux correctness. The initial Linux Git-version prerequisite failure
+is retained; the upgraded run passed without product changes. The validation VM
+is verified deallocated. Evidence-only commits after the source freeze do not
+change tested code. No comparative campaign ran and no merge was performed.

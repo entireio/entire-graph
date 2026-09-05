@@ -1,0 +1,10 @@
+{
+  "resource_group": "rg-entire-graph-advantage-20260905",
+  "vm": "graph-validation-linux",
+  "statuses": [
+    "ProvisioningState/succeeded",
+    "PowerState/deallocated"
+  ],
+  "retained": "task-owned disk and private evidence storage",
+  "verified_by": "az vm get-instance-view"
+}
