@@ -944,8 +944,8 @@ var (
 	simpleIdentifierRe       = regexp.MustCompile(`^\$?[A-Za-z_$][\w$]*$`)
 )
 
-func asyncCallNames(block string) []string {
-	stripped := stripCodeLiteralsAndComments(block)
+func asyncCallNames(body symbolBody) []string {
+	stripped := body.stripped
 	seen := map[string]struct{}{}
 	addMatches := func(re *regexp.Regexp) {
 		for _, match := range re.FindAllStringSubmatch(stripped, -1) {
@@ -960,8 +960,8 @@ func asyncCallNames(block string) []string {
 	return sortedStringSet(seen)
 }
 
-func returnFlowCallNames(block string) []string {
-	stripped := stripCodeLiteralsAndComments(block)
+func returnFlowCallNames(body symbolBody) []string {
+	stripped := body.stripped
 	seen := map[string]struct{}{}
 	for _, match := range returnCallRe.FindAllStringSubmatchIndex(stripped, -1) {
 		if len(match) < 4 || match[2] < 0 || match[3] < 0 {
@@ -1019,10 +1019,10 @@ type returnFlowCall struct {
 	Direction    string
 }
 
-func returnFlowCalls(block string, params map[string]bool) []returnFlowCall {
-	stripped := stripCodeLiteralsAndComments(block)
+func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
+	stripped := body.stripped
 	flows := map[string]returnFlowCall{}
-	for _, name := range returnFlowCallNames(block) {
+	for _, name := range returnFlowCallNames(body) {
 		flows[name+"\x00return_flow"] = returnFlowCall{
 			Name:         name,
 			Reason:       "callee return value flows into caller return value",
@@ -1107,22 +1107,30 @@ func returnFlowCalls(block string, params map[string]bool) []returnFlowCall {
 	for _, flow := range parameterPropertyAliasForwardingFlows(stripped, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range aliasForwardingFlows(stripped, params) {
+	// One alias map, read by the five scanners below. Each derived its own from
+	// the same stripped body and the same parameters, so a body was scanned for
+	// alias assignments five times. Behind the same guard those scanners apply,
+	// so a symbol with no parameters still costs no scan at all.
+	var aliases map[string]string
+	if len(params) > 0 {
+		aliases = parameterAliasMap(stripped, params)
+	}
+	for _, flow := range aliasForwardingFlows(stripped, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	for _, flow := range destructuredAliasForwardingFlows(stripped, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range objectFieldForwardingFlows(stripped, params) {
+	for _, flow := range objectFieldForwardingFlows(stripped, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range collectionElementForwardingFlows(stripped, params) {
+	for _, flow := range collectionElementForwardingFlows(stripped, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range callbackElementForwardingFlows(stripped, params) {
+	for _, flow := range callbackElementForwardingFlows(stripped, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range directLiteralForwardingFlows(stripped, params) {
+	for _, flow := range directLiteralForwardingFlows(stripped, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	out := make([]returnFlowCall, 0, len(flows))
@@ -1354,6 +1362,11 @@ func assignmentFlowEvents(block string) []assignmentFlowEvent {
 	return events
 }
 
+var (
+	destructuredAssignmentVariablesRe  = regexp.MustCompile(`[A-Za-z_$][\w$]*`)
+	destructuredAssignmentVariablesRe2 = regexp.MustCompile(`^[A-Za-z_$][\w$]*$`)
+)
+
 func destructuredAssignmentVariables(varList string) []string {
 	seen := map[string]struct{}{}
 	for _, part := range strings.Split(varList, ",") {
@@ -1362,13 +1375,13 @@ func destructuredAssignmentVariables(varList string) []string {
 			continue
 		}
 		if strings.ContainsAny(part, "{}[]=:") {
-			fields := regexp.MustCompile(`[A-Za-z_$][\w$]*`).FindAllString(part, -1)
+			fields := destructuredAssignmentVariablesRe.FindAllString(part, -1)
 			if len(fields) != 1 {
 				continue
 			}
 			part = fields[0]
 		}
-		if !regexp.MustCompile(`^[A-Za-z_$][\w$]*$`).MatchString(part) {
+		if !destructuredAssignmentVariablesRe2.MatchString(part) {
 			continue
 		}
 		seen[strings.TrimPrefix(part, "$")] = struct{}{}
@@ -1376,9 +1389,10 @@ func destructuredAssignmentVariables(varList string) []string {
 	return sortedStringSet(seen)
 }
 
+var branchAssignedReturnFlowsBranchRe = regexp.MustCompile(`(?s)\bif\s*\([^)]*\)\s*\{(.*?)\}\s*else\s*\{(.*?)\}.*?\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
+
 func branchAssignedReturnFlows(block string) []returnFlowCall {
-	branchRe := regexp.MustCompile(`(?s)\bif\s*\([^)]*\)\s*\{(.*?)\}\s*else\s*\{(.*?)\}.*?\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
-	matches := branchRe.FindAllStringSubmatch(block, -1)
+	matches := branchAssignedReturnFlowsBranchRe.FindAllStringSubmatch(block, -1)
 	if len(matches) == 0 {
 		return nil
 	}
@@ -1429,14 +1443,18 @@ func branchCallAssignments(block, variable string) []string {
 	return sortedStringSet(seen)
 }
 
+// flowCallSiteRe matches one unnested call site and its argument text. Nine of
+// the forwarding-flow scanners below read the same shape out of the same
+// stripped body, so they share one pattern rather than each compiling it.
+var flowCallSiteRe = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
+
 func argumentForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1476,10 +1494,9 @@ func parameterPropertyForwardingFlows(block string, params map[string]bool) []re
 	if len(params) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1515,12 +1532,18 @@ func parameterPropertyForwardingFlows(block string, params map[string]bool) []re
 	return flows
 }
 
+var (
+	forwardedParameterPropertyRe  = regexp.MustCompile(`^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$`)
+	forwardedParameterPropertyRe2 = regexp.MustCompile(`^([A-Za-z_$][\w$]*)\[\s*(?:"([^"]+)"|'([^']+)'|([0-9]+))\s*\]$`)
+	forwardedParameterPropertyRe3 = regexp.MustCompile(`^([A-Za-z_$][\w$]*)\[\s*\]$`)
+)
+
 func forwardedParameterProperty(arg string, params map[string]bool) (string, string, bool) {
 	arg = strings.TrimPrefix(strings.TrimSpace(arg), "$")
-	if match := regexp.MustCompile(`^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$`).FindStringSubmatch(arg); len(match) == 3 && params[match[1]] {
+	if match := forwardedParameterPropertyRe.FindStringSubmatch(arg); len(match) == 3 && params[match[1]] {
 		return match[1], "." + match[2], true
 	}
-	if match := regexp.MustCompile(`^([A-Za-z_$][\w$]*)\[\s*(?:"([^"]+)"|'([^']+)'|([0-9]+))\s*\]$`).FindStringSubmatch(arg); len(match) == 5 && params[match[1]] {
+	if match := forwardedParameterPropertyRe2.FindStringSubmatch(arg); len(match) == 5 && params[match[1]] {
 		key := match[2]
 		if key == "" {
 			key = match[3]
@@ -1530,19 +1553,20 @@ func forwardedParameterProperty(arg string, params map[string]bool) (string, str
 		}
 		return match[1], "[" + key + "]", true
 	}
-	if match := regexp.MustCompile(`^([A-Za-z_$][\w$]*)\[\s*\]$`).FindStringSubmatch(arg); len(match) == 2 && params[match[1]] {
+	if match := forwardedParameterPropertyRe3.FindStringSubmatch(arg); len(match) == 2 && params[match[1]] {
 		return match[1], "[]", true
 	}
 	return "", "", false
 }
+
+var parameterPropertyAliasForwardingFlowsAssignmentRe = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(\$?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:"[^"]*"|'[^']*'|[0-9]*)\s*\]))`)
 
 func parameterPropertyAliasForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
 	aliasToProperty := map[string]string{}
-	assignmentRe := regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(\$?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:"[^"]*"|'[^']*'|[0-9]*)\s*\]))`)
-	for _, match := range assignmentRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range parameterPropertyAliasForwardingFlowsAssignmentRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1556,10 +1580,9 @@ func parameterPropertyAliasForwardingFlows(block string, params map[string]bool)
 	if len(aliasToProperty) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1596,18 +1619,16 @@ func parameterPropertyAliasForwardingFlows(block string, params map[string]bool)
 	return flows
 }
 
-func aliasForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+func aliasForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
-	aliasToParam := parameterAliasMap(block, params)
-	if len(aliasToParam) == 0 {
+	if len(aliases) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1617,7 +1638,7 @@ func aliasForwardingFlows(block string, params map[string]bool) []returnFlowCall
 		}
 		for _, arg := range splitSimpleArguments(match[2]) {
 			alias := strings.TrimPrefix(strings.TrimSpace(arg), "$")
-			param := aliasToParam[alias]
+			param := aliases[alias]
 			if param == "" {
 				continue
 			}
@@ -1648,7 +1669,7 @@ func destructuredAliasForwardingFlows(block string, params map[string]bool) []re
 	if len(params) == 0 {
 		return nil
 	}
-	aliasToParam := map[string]string{}
+	aliases := map[string]string{}
 	for _, match := range destructuredParamAliasRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
@@ -1661,16 +1682,15 @@ func destructuredAliasForwardingFlows(block string, params map[string]bool) []re
 			if alias == "" || alias == param {
 				continue
 			}
-			aliasToParam[alias] = param
+			aliases[alias] = param
 		}
 	}
-	if len(aliasToParam) == 0 {
+	if len(aliases) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1680,7 +1700,7 @@ func destructuredAliasForwardingFlows(block string, params map[string]bool) []re
 		}
 		for _, arg := range splitSimpleArguments(match[2]) {
 			alias := strings.TrimPrefix(strings.TrimSpace(arg), "$")
-			param := aliasToParam[alias]
+			param := aliases[alias]
 			if param == "" {
 				continue
 			}
@@ -1718,7 +1738,7 @@ func destructuredObjectAliases(fields string) []string {
 			field = strings.TrimSpace(field[colon+1:])
 		}
 		field = strings.TrimSpace(strings.TrimPrefix(field, "..."))
-		if !regexp.MustCompile(`^[A-Za-z_$][\w$]*$`).MatchString(field) {
+		if !destructuredAssignmentVariablesRe2.MatchString(field) {
 			continue
 		}
 		seen[strings.TrimPrefix(field, "$")] = struct{}{}
@@ -1726,11 +1746,10 @@ func destructuredObjectAliases(fields string) []string {
 	return sortedStringSet(seen)
 }
 
-func objectFieldForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+func objectFieldForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
-	aliases := parameterAliasMap(block, params)
 	objectVars := localObjectVars(block)
 	fieldParamByObject := map[string]map[string]bool{}
 	for _, match := range objectFieldAssignRe.FindAllStringSubmatch(block, -1) {
@@ -1758,10 +1777,9 @@ func objectFieldForwardingFlows(block string, params map[string]bool) []returnFl
 	if len(fieldParamByObject) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1840,11 +1858,10 @@ func objectLiteralParamNames(fields string, params map[string]bool, aliases map[
 	return out
 }
 
-func collectionElementForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+func collectionElementForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
-	aliases := parameterAliasMap(block, params)
 	collectionVars := localCollectionVars(block)
 	paramByCollection := map[string]map[string]bool{}
 	for _, match := range collectionAddRe.FindAllStringSubmatch(block, -1) {
@@ -1886,10 +1903,9 @@ func collectionElementForwardingFlows(block string, params map[string]bool) []re
 	if len(paramByCollection) == 0 {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1948,11 +1964,10 @@ func collectionLiteralElementParams(block string, params map[string]bool, aliase
 	return out
 }
 
-func callbackElementForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+func callbackElementForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
-	aliases := parameterAliasMap(block, params)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
 	for _, match := range collectionCallbackRe.FindAllStringSubmatchIndex(block, -1) {
@@ -2020,9 +2035,8 @@ func callsWithArgument(block, argName string) []string {
 	if argName == "" {
 		return nil
 	}
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	seen := map[string]struct{}{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -2036,15 +2050,13 @@ func callsWithArgument(block, argName string) []string {
 	return sortedKeys(seen)
 }
 
-func directLiteralForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+func directLiteralForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
-	aliases := parameterAliasMap(block, params)
-	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -2500,10 +2512,11 @@ func kubernetesResourceConfigTargets(content string) []configTarget {
 	return targets
 }
 
+var kubernetesImageRefsRe = regexp.MustCompile(`(?im)^\s*image:\s*["']?([^"'\s#]+)`)
+
 func kubernetesImageRefs(content string) []string {
-	re := regexp.MustCompile(`(?im)^\s*image:\s*["']?([^"'\s#]+)`)
 	var refs []string
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesImageRefsRe.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			refs = append(refs, strings.TrimSpace(match[1]))
 		}
@@ -2511,11 +2524,12 @@ func kubernetesImageRefs(content string) []string {
 	return dedupeConfigValues(refs)
 }
 
+var kubernetesEnvVarRefsNameRe = regexp.MustCompile(`^\s*-\s*name:\s*["']?([A-Za-z_][A-Za-z0-9_]*)`)
+
 func kubernetesEnvVarRefs(content string) []string {
 	var refs []string
 	inEnv := false
 	envIndent := -1
-	nameRe := regexp.MustCompile(`^\s*-\s*name:\s*["']?([A-Za-z_][A-Za-z0-9_]*)`)
 	for _, line := range strings.Split(content, "\n") {
 		if yamlIgnoreLine(line) {
 			continue
@@ -2533,17 +2547,18 @@ func kubernetesEnvVarRefs(content string) []string {
 		if !inEnv {
 			continue
 		}
-		if match := nameRe.FindStringSubmatch(line); len(match) == 2 {
+		if match := kubernetesEnvVarRefsNameRe.FindStringSubmatch(line); len(match) == 2 {
 			refs = append(refs, match[1])
 		}
 	}
 	return dedupeConfigValues(refs)
 }
 
+var kubernetesPortRefsRe = regexp.MustCompile(`(?im)^\s*(?:-\s*)?(?:containerPort|targetPort|nodePort|port):\s*["']?([0-9]+)`)
+
 func kubernetesPortRefs(content string) []string {
-	re := regexp.MustCompile(`(?im)^\s*(?:-\s*)?(?:containerPort|targetPort|nodePort|port):\s*["']?([0-9]+)`)
 	var refs []string
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesPortRefsRe.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			refs = append(refs, strings.TrimSpace(match[1]))
 		}
@@ -2571,9 +2586,14 @@ func isKubernetesPath(path string) bool {
 	return strings.Contains(slash, "k8s/") || strings.Contains(slash, "kubernetes/") || strings.Contains(slash, "manifests/")
 }
 
+var (
+	looksLikeKubernetesManifestRe  = regexp.MustCompile(`(?m)^apiVersion:\s*`)
+	looksLikeKubernetesManifestRe2 = regexp.MustCompile(`(?m)^kind:\s*`)
+)
+
 func looksLikeKubernetesManifest(content string) bool {
-	return regexp.MustCompile(`(?m)^apiVersion:\s*`).MatchString(content) &&
-		regexp.MustCompile(`(?m)^kind:\s*`).MatchString(content)
+	return looksLikeKubernetesManifestRe.MatchString(content) &&
+		looksLikeKubernetesManifestRe2.MatchString(content)
 }
 
 // httpCall is an outbound HTTP client call to a (method, path).
@@ -2670,10 +2690,16 @@ func staticHTTPCallExpressionValue(expr string, constants map[string]string) (st
 	return route, false, ok
 }
 
+var (
+	normalizeRouteParamSyntaxRe  = regexp.MustCompile(`\[\.{0,3}([A-Za-z_][A-Za-z0-9_]*)\]`)
+	normalizeRouteParamSyntaxRe2 = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`)
+	normalizeRouteParamSyntaxRe3 = regexp.MustCompile(`<(?:(?:[A-Za-z_][A-Za-z0-9_]*):)?([A-Za-z_][A-Za-z0-9_]*)>`)
+)
+
 func normalizeRouteParamSyntax(path string) string {
-	path = regexp.MustCompile(`\[\.{0,3}([A-Za-z_][A-Za-z0-9_]*)\]`).ReplaceAllString(path, `{$1}`)
-	path = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`).ReplaceAllString(path, `{$1}`)
-	return regexp.MustCompile(`<(?:(?:[A-Za-z_][A-Za-z0-9_]*):)?([A-Za-z_][A-Za-z0-9_]*)>`).ReplaceAllString(path, `{$1}`)
+	path = normalizeRouteParamSyntaxRe.ReplaceAllString(path, `{$1}`)
+	path = normalizeRouteParamSyntaxRe2.ReplaceAllString(path, `{$1}`)
+	return normalizeRouteParamSyntaxRe3.ReplaceAllString(path, `{$1}`)
 }
 
 // httpPath reduces a URL literal to its path component. Absolute URLs return
@@ -2704,8 +2730,8 @@ var goReceiverRe = regexp.MustCompile(`^func\s*\(\s*([A-Za-z_]\w*)\s+\*?[A-Za-z_
 // fieldAccesses extracts distinct receiver.field accesses from a block,
 // classifying each as a write (followed by an assignment operator), an
 // address-of, or a read. Method calls (field followed by "(") are excluded.
-func fieldAccesses(block string) []fieldAccess {
-	stripped := stripCodeLiteralsAndComments(block)
+func fieldAccesses(body symbolBody) []fieldAccess {
+	stripped := body.stripped
 	var out []fieldAccess
 	seen := map[string]bool{}
 	for _, m := range fieldAccessRe.FindAllStringSubmatchIndex(stripped, -1) {
@@ -2792,8 +2818,8 @@ var receiverCallRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*(?:->|\.)\s*([A-Za
 // receiverCalls extracts distinct receiver.method() call sites from a code
 // block (literals and comments stripped). Leading `$` is dropped so PHP
 // receivers line up with variable names.
-func receiverCalls(block string) []receiverCall {
-	stripped := stripCodeLiteralsAndComments(block)
+func receiverCalls(body symbolBody) []receiverCall {
+	stripped := body.stripped
 	var out []receiverCall
 	seen := map[string]bool{}
 	for _, m := range receiverCallRe.FindAllStringSubmatchIndex(stripped, -1) {
@@ -2871,8 +2897,8 @@ var (
 	returnedMethodCallRe         = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
 )
 
-func chainedConstructorCalls(block string) []typedMethodCall {
-	stripped := stripCodeLiteralsAndComments(block)
+func chainedConstructorCalls(body symbolBody) []typedMethodCall {
+	stripped := body.stripped
 	var out []typedMethodCall
 	seen := map[string]bool{}
 	add := func(typeName, method, detail string) {
@@ -2892,8 +2918,8 @@ func chainedConstructorCalls(block string) []typedMethodCall {
 	return out
 }
 
-func returnedReceiverCalls(block string) []returnedMethodCall {
-	stripped := stripCodeLiteralsAndComments(block)
+func returnedReceiverCalls(body symbolBody) []returnedMethodCall {
+	stripped := body.stripped
 	var out []returnedMethodCall
 	seen := map[string]bool{}
 	for _, m := range returnedMethodCallRe.FindAllStringSubmatch(stripped, -1) {
@@ -2914,8 +2940,8 @@ func returnedReceiverCalls(block string) []returnedMethodCall {
 	return out
 }
 
-func chainedConstructorReturnCalls(block string) []typedMethodChainCall {
-	stripped := stripCodeLiteralsAndComments(block)
+func chainedConstructorReturnCalls(body symbolBody) []typedMethodChainCall {
+	stripped := body.stripped
 	var out []typedMethodChainCall
 	seen := map[string]bool{}
 	add := func(typeName, firstMethod, method, detail string) {
@@ -2939,8 +2965,8 @@ func chainedConstructorReturnCalls(block string) []typedMethodChainCall {
 	return out
 }
 
-func chainedConstructorDeepReturnCalls(block string) []typedMethodDeepChainCall {
-	stripped := stripCodeLiteralsAndComments(block)
+func chainedConstructorDeepReturnCalls(body symbolBody) []typedMethodDeepChainCall {
+	stripped := body.stripped
 	var out []typedMethodDeepChainCall
 	seen := map[string]bool{}
 	add := func(typeName string, methods []string, detail string) {
@@ -2969,8 +2995,8 @@ func chainedConstructorDeepReturnCalls(block string) []typedMethodDeepChainCall 
 	return out
 }
 
-func returnedReceiverChainCalls(block string) []returnedMethodChainCall {
-	stripped := stripCodeLiteralsAndComments(block)
+func returnedReceiverChainCalls(body symbolBody) []returnedMethodChainCall {
+	stripped := body.stripped
 	var out []returnedMethodChainCall
 	seen := map[string]bool{}
 	for _, m := range returnedMethodChainCallRe.FindAllStringSubmatch(stripped, -1) {
@@ -2991,8 +3017,8 @@ func returnedReceiverChainCalls(block string) []returnedMethodChainCall {
 	return out
 }
 
-func returnedReceiverDeepChainCalls(block string) []returnedMethodDeepChainCall {
-	stripped := stripCodeLiteralsAndComments(block)
+func returnedReceiverDeepChainCalls(body symbolBody) []returnedMethodDeepChainCall {
+	stripped := body.stripped
 	var out []returnedMethodDeepChainCall
 	seen := map[string]bool{}
 	for _, m := range returnedMethodDeepChainRe.FindAllStringSubmatch(stripped, -1) {
@@ -3087,8 +3113,8 @@ var (
 // assignments inside a block: `x = new Type(...)`, `x = Type(...)` (capitalized,
 // e.g. Python), and `x := Type{...}` / `&Type{...}` (Go). Capitalization keeps
 // the heuristic conservative; results feed type-inferred call resolution.
-func localVarTypes(block string) map[string]string {
-	stripped := stripCodeLiteralsAndComments(block)
+func localVarTypes(body symbolBody) map[string]string {
+	stripped := body.stripped
 	out := map[string]string{}
 	for _, m := range newAssignRe.FindAllStringSubmatch(stripped, -1) {
 		out[strings.TrimPrefix(m[1], "$")] = m[2]
@@ -3110,8 +3136,8 @@ func localVarTypes(block string) map[string]string {
 	return out
 }
 
-func factoryReturnVarTypes(block, filePath string, returnTypesBySymbolNameAndFile map[string]map[string][]string) map[string]string {
-	stripped := stripCodeLiteralsAndComments(block)
+func factoryReturnVarTypes(body symbolBody, filePath string, returnTypesBySymbolNameAndFile map[string]map[string][]string) map[string]string {
+	stripped := body.stripped
 	out := map[string]string{}
 	for _, m := range factoryReturnAssignRe.FindAllStringSubmatch(stripped, -1) {
 		if len(m) != 3 {
@@ -3131,6 +3157,12 @@ func factoryReturnVarTypes(block, filePath string, returnTypesBySymbolNameAndFil
 	return out
 }
 
+var (
+	parameterVarTypesColonParamRe     = regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\??\s*:\s*(?:&\s*)*(?:'[A-Za-z_]\w*\s+)?(?:mut\s+)?\??([A-Z][A-Za-z0-9_]*)\b`)
+	parameterVarTypesTypeFirstParamRe = regexp.MustCompile(`^\s*(?:(?:final|out|ref|in|params|this|scoped|readonly)\s+)*(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\s*\??\s+\$?([A-Za-z_][A-Za-z0-9_]*)\b`)
+	parameterVarTypesNameFirstParamRe = regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\s+(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\b`)
+)
+
 func parameterVarTypes(signature string) map[string]string {
 	out := map[string]string{}
 	start := strings.Index(signature, "(")
@@ -3142,27 +3174,24 @@ func parameterVarTypes(signature string) map[string]string {
 	// After `name:`, skip Rust reference / lifetime / mut prefixes (`&`, `&mut`,
 	// `&'a`) before the type, so `bytes: &mut Bytes` registers bytes -> Bytes.
 	// Harmless for the other colon-style languages (they have no such prefix).
-	colonParamRe := regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\??\s*:\s*(?:&\s*)*(?:'[A-Za-z_]\w*\s+)?(?:mut\s+)?\??([A-Z][A-Za-z0-9_]*)\b`)
 	// Leading modifiers cover Java (`final`) and C# parameter modifiers
 	// (`out`/`ref`/`in`/`params`/`this`/`scoped`/`readonly`); a trailing
 	// `?` on the type is C#'s nullable annotation (`out HttpConnectionPool?
 	// pool` must register pool -> HttpConnectionPool, not out -> ...).
-	typeFirstParamRe := regexp.MustCompile(`^\s*(?:(?:final|out|ref|in|params|this|scoped|readonly)\s+)*(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\s*\??\s+\$?([A-Za-z_][A-Za-z0-9_]*)\b`)
-	nameFirstParamRe := regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\s+(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\b`)
 	for _, param := range params {
 		param = strings.TrimSpace(strings.SplitN(param, "=", 2)[0])
 		if param == "" {
 			continue
 		}
-		if m := colonParamRe.FindStringSubmatch(param); len(m) == 3 {
+		if m := parameterVarTypesColonParamRe.FindStringSubmatch(param); len(m) == 3 {
 			out[m[1]] = m[2]
 			continue
 		}
-		if m := typeFirstParamRe.FindStringSubmatch(param); len(m) == 3 {
+		if m := parameterVarTypesTypeFirstParamRe.FindStringSubmatch(param); len(m) == 3 {
 			out[m[2]] = m[1]
 			continue
 		}
-		if m := nameFirstParamRe.FindStringSubmatch(param); len(m) == 3 {
+		if m := parameterVarTypesNameFirstParamRe.FindStringSubmatch(param); len(m) == 3 {
 			out[m[1]] = m[2]
 		}
 	}
@@ -3251,7 +3280,7 @@ var (
 // imports of the file. Package-qualified types are never captured as local
 // symbols, so this is how receiver-call resolution recognises a value of an
 // external type even when its bare type name was never resolved.
-func importedReceiverVarTypes(signature, block string, importsByName map[string][]string, goModule string) map[string]string {
+func importedReceiverVarTypes(signature string, body symbolBody, importsByName map[string][]string, goModule string) map[string]string {
 	out := map[string]string{}
 	add := func(matches [][]string) {
 		for _, m := range matches {
@@ -3277,7 +3306,7 @@ func importedReceiverVarTypes(signature, block string, importsByName map[string]
 			out[name] = pkg
 		}
 	}
-	stripped := stripCodeLiteralsAndComments(block)
+	stripped := body.stripped
 	add(qualifiedTypedDeclRe.FindAllStringSubmatch(signature, -1))
 	add(qualifiedTypedDeclRe.FindAllStringSubmatch(stripped, -1))
 	add(qualifiedAssignRe.FindAllStringSubmatch(stripped, -1))
@@ -3298,7 +3327,7 @@ func importedReceiverVarTypes(signature, block string, importsByName map[string]
 // its implementations share the method name. External (stdlib/third-party)
 // qualifiers are excluded — their methods are not local symbols, and
 // importedReceiverVarTypes already records them for suppression.
-func goInModuleQualifiedReceiverTypes(signature, block string, importsByName map[string][]string, goModule string) map[string]pkgQualType {
+func goInModuleQualifiedReceiverTypes(signature string, body symbolBody, importsByName map[string][]string, goModule string) map[string]pkgQualType {
 	out := map[string]pkgQualType{}
 	if goModule == "" {
 		return out
@@ -3322,7 +3351,7 @@ func goInModuleQualifiedReceiverTypes(signature, block string, importsByName map
 		}
 	}
 	add(signature)
-	add(stripCodeLiteralsAndComments(block))
+	add(body.stripped)
 	return out
 }
 
@@ -3516,8 +3545,8 @@ var goMultiAssignRe = regexp.MustCompile(`(?m)(?:^|;)[^\S\n]*(?:(?:if|for)\s+)?(
 // factory-assignment scan (factoryReturnVarTypes) matches only
 // single-variable, unqualified factories, so receivers like the `cmd` of
 // `cmd, flags, err := c.Find(args)` stayed untyped.
-func goMultiAssignReturnVarTypes(block string, from SymbolRecord, symbolsByShortName map[string][]SymbolRecord) map[string]string {
-	stripped := stripCodeLiteralsAndComments(block)
+func goMultiAssignReturnVarTypes(body symbolBody, from SymbolRecord, symbolsByShortName map[string][]SymbolRecord) map[string]string {
+	stripped := body.stripped
 	out := map[string]string{}
 	for _, m := range goMultiAssignRe.FindAllStringSubmatch(stripped, -1) {
 		if len(m) != 4 {
