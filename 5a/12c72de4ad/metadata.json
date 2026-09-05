@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "5a12c72de4ad",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0033-experimental-ranking-core.md",
+    "docs/implementation/graph-advantage/evidence/experimental-core-tests.txt",
+    "internal/sem/search_graphrank.go",
+    "internal/sem/search_graphrank_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5a/12c72de4ad/0/metadata.json",
+      "transcript": "/5a/12c72de4ad/0/full.jsonl",
+      "compact_transcript": "/5a/12c72de4ad/0/transcript.jsonl",
+      "content_hash": "/5a/12c72de4ad/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1521,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 158720,
+    "output_tokens": 344,
+    "api_call_count": 1
+  }
+}
