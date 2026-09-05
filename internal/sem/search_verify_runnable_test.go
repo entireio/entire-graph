@@ -959,9 +959,10 @@ func TestSearchVerifyNodeAncestorLockfileNeedsWorkspaceMembership(t *testing.T) 
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			files := map[string]string{
-				"package.json":                  testCase.rootPackage,
-				"yarn.lock":                     "__metadata:\n  version: 8\n",
-				testCase.leaf + "/package.json": `{"name":"leaf","devDependencies":{"jest":"^29.0.0"}}`,
+				"package.json": testCase.rootPackage,
+				"yarn.lock":    "__metadata:\n  version: 8\n",
+				testCase.leaf + "/package.json": `{"name":"leaf","scripts":{"test":"jest"},` +
+					`"devDependencies":{"jest":"^29.0.0"}}`,
 				testCase.leaf + "/src/index.js": "",
 			}
 			for name, content := range testCase.extraFiles {
@@ -1262,6 +1263,72 @@ func TestSearchVerifyRakeDefineTaskDeclaresTheTask(t *testing.T) {
 			}
 			if got == nil {
 				t.Fatalf("expected %q, got silence for %q", testCase.wantCommand, testCase.rakefile)
+			}
+			if got.Command != testCase.wantCommand {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.wantCommand)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyNodeSuiteNeedsATestScriptForTheManagerForm is the regression for the manager's
+// script form emitted for a manifest that has no script.
+//
+// `npm test`, `yarn test` and `pnpm test` all run the package's `test` SCRIPT. The suite tier reads
+// jest/vitest/mocha out of dependencies as the repository's statement of its runner, which is a
+// statement about a RUNNER — with no `scripts.test` the manager form answers "Missing script: test"
+// (npm, pnpm) or "Couldn't find a script named test" (yarn), a hard gate that cannot run. What the
+// dependency licenses is the runner's own invocation.
+//
+// A scripts.test that exists but names no known runner keeps the manager, and that case is pinned in
+// TestSearchVerifyTierLadderAnswersEveryEcosystem: `echo none` is weak verification, not an
+// unrunnable command, and this line is not about that trade.
+func TestSearchVerifyNodeSuiteNeedsATestScriptForTheManagerForm(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		manifest    string
+		wantCommand string
+	}{
+		{
+			name:        "no test script at all, under a yarn lockfile",
+			manifest:    `{"name":"leaf","devDependencies":{"jest":"^29.0.0"}}`,
+			wantCommand: "npx jest",
+		},
+		{
+			name:        "declared in dependencies rather than devDependencies",
+			manifest:    `{"name":"leaf","dependencies":{"vitest":"^1.0.0"}}`,
+			wantCommand: "npx vitest run",
+		},
+		{
+			name:        "an empty test script is no script",
+			manifest:    `{"name":"leaf","scripts":{"test":"  "},"devDependencies":{"mocha":"^10"}}`,
+			wantCommand: "npx mocha",
+		},
+		{
+			name:        "a real test script keeps the manager form",
+			manifest:    `{"name":"leaf","scripts":{"test":"jest"},"devDependencies":{"jest":"^29.0.0"}}`,
+			wantCommand: "yarn test",
+		},
+		{
+			name:        "a placeholder script still keeps the manager form",
+			manifest:    `{"name":"leaf","scripts":{"test":"echo none"},"devDependencies":{"jest":"^29.0.0"}}`,
+			wantCommand: "yarn test",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			files := map[string]string{
+				"package.json":           testCase.manifest,
+				"yarn.lock":              "__metadata:\n  version: 8\n",
+				"node_modules/.bin/jest": "",
+				"src/index.js":           "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "src/index.js"}, &evidence)
+			if got == nil {
+				t.Fatal("expected a Node suite command, got silence")
 			}
 			if got.Command != testCase.wantCommand {
 				t.Fatalf("command = %q, want %q", got.Command, testCase.wantCommand)

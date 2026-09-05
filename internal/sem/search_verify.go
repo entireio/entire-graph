@@ -1134,6 +1134,18 @@ func deriveSearchVerifySuiteNode(dir string, evidence *searchVerifyEvidence) *Se
 	if runner == "" {
 		return nil
 	}
+	if strings.TrimSpace(parsed.Scripts["test"]) == "" {
+		// `<manager> test` runs a SCRIPT, and this manifest has none: npm answers "Missing script:
+		// test", yarn "Couldn't find a script named test", pnpm the same. The dependency read above
+		// licenses a RUNNER, not a script, so the runner's own invocation is what real parity with
+		// the narrow tier looks like — the manager only decides how a script is run, and there is no
+		// script here for it to decide about.
+		//
+		// A scripts.test that EXISTS but names no known runner is a different case and keeps the
+		// manager: `echo none` is a poor verification, but it runs, and choosing between a weak
+		// command and a missing one is not this line's question.
+		return searchVerifySuiteCommand(dir, runner, manifest+" "+evidenceKind)
+	}
 	manager, managerEvidence := searchVerifyNodePackageManager(dir, parsed, evidence)
 	derived := manifest + " " + evidenceKind
 	if managerEvidence != "" {
