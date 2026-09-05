@@ -1345,6 +1345,11 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	if emitErr != nil {
 		return emitErr
 	}
+	// The relation pipeline can observe cancellation without emitting another
+	// record, so emitErr alone does not establish successful completion.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 
 	startPhase()
@@ -1386,6 +1391,11 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			CompletenessLevel: completenessLevel(completenessFailureCount(failures), len(files), parsedFileCount, symbolCount),
 		},
 		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
+	}
+	// Progress callbacks and the last external record can cancel as well.
+	// Never publish a success summary for a canceled snapshot.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := emit(summary); err != nil {
 		return err
