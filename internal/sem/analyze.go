@@ -185,13 +185,19 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	// metadata window run on workers while a reducer folds their deltas and
 	// warnings in the original file order. Windows stay sequential: priming is
 	// what makes the reads cheap, and it is defined over a run of files.
-	processChangedFile := func(i int, file gitutil.ChangedFile) changedFileScan {
+	processChangedFile := func(workerCtx context.Context, i int, file gitutil.ChangedFile) changedFileScan {
 		var scan changedFileScan
-		// Avoid starting more parse work after the budget expires. The reducer
-		// independently checks the deadline before accepting buffered results.
-		if overBudget() {
-			scan.stopped = true
-			return scan
+		// Avoid starting more parse work after the pipeline canceled this
+		// worker or the budget expired. The reducer independently checks the
+		// deadline before accepting buffered results; see workerStop for why
+		// neither check can move the truncated set.
+		abandon := func() (changedFileScan, bool) {
+			canceled, budget := workerStop(workerCtx, overBudget)
+			scan.err, scan.stopped = canceled, budget
+			return scan, canceled != nil || budget
+		}
+		if out, stop := abandon(); stop {
+			return out
 		}
 		path := file.Path
 		oldPath := file.OldPath
@@ -461,7 +467,17 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			}
 		}
 
+		// Both blob reads are done and the two tree-sitter parses below are the
+		// expensive half of this file, so re-ask before each one. Without this
+		// the worker runs a canceled or already-out-of-budget file to
+		// completion and the pipeline's deferred join waits for it.
+		if out, stop := abandon(); stop {
+			return out
+		}
 		beforeEntities, beforeLanguage, beforeStatus := parser.ParseWithStatus(oldPath, before)
+		if out, stop := abandon(); stop {
+			return out
+		}
 		afterEntities, afterLanguage, afterStatus := parser.ParseWithStatus(path, after)
 		// The head side names the file as it now is, and a rename can cross
 		// extensions: mod.js -> mod.ts is one file whose language changed with
@@ -601,6 +617,13 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 
 		var changes []EntityChange
 		var removed, added []Entity
+		// The entity comparison is the last expensive step in this file, and on
+		// a range that renames a lot of symbols it is the largest one: rename
+		// reconciliation scores removed against added pairwise. Ask once more
+		// before paying for it.
+		if out, stop := abandon(); stop {
+			return out
+		}
 		if !entitiesSkipped {
 			changes, removed, added = compareEntities(beforeEntities, afterEntities, oneSidedSuppressed)
 		}
@@ -682,8 +705,8 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			break
 		}
 		windowErr := runIndexedPipeline(ctx, end-start, defaultProviderWorkerCount(),
-			func(_ context.Context, j int) changedFileScan {
-				return processChangedFile(start+j, changed[start+j])
+			func(workerCtx context.Context, j int) changedFileScan {
+				return processChangedFile(workerCtx, start+j, changed[start+j])
 			},
 			func(j int, scan changedFileScan) error {
 				if scan.err != nil {
