@@ -927,23 +927,33 @@ func searchVerifyGradleCallArguments(rest string) ([]string, int) {
 	}
 	parenthesised := rest[index] == '('
 	depth := 0
+	// literal reports whether every argument seen so far IS a literal, rather than a subexpression
+	// one happens to sit in. `include(if (flag) ":app" else ":other")` and its Groovy ternary name
+	// ONE project, chosen at configuration time, and collecting both records one Gradle never
+	// included — `./gradlew :other:test` then fails with "Project 'other' not found in root
+	// project". Nothing in the text says which branch is taken, so an argument list that is not a
+	// plain sequence of literals declares nothing here.
+	literal := true
 	for index < len(rest) {
 		switch character := rest[index]; character {
 		case '(':
 			depth++
 			index++
+			if depth > 1 || !parenthesised {
+				literal = false
+			}
 		case ')':
 			depth--
 			index++
 			if parenthesised && depth == 0 {
-				return arguments, index
+				return searchVerifyGradleLiteralArguments(arguments, literal), index
 			}
 		case '\'', '"':
-			literal, width := searchVerifyScriptStringLiteral(rest[index:])
+			content, width := searchVerifyScriptStringLiteral(rest[index:])
 			if width == 0 {
-				return arguments, index + 1
+				return searchVerifyGradleLiteralArguments(arguments, literal), index + 1
 			}
-			arguments = append(arguments, literal)
+			arguments = append(arguments, content)
 			index += width
 		case ';':
 			// A command-expression argument list ends at the statement separator exactly as it ends
@@ -952,7 +962,7 @@ func searchVerifyGradleCallArguments(rest string) ([]string, int) {
 				index++
 				continue
 			}
-			return arguments, index
+			return searchVerifyGradleLiteralArguments(arguments, literal), index
 		case '\n':
 			if parenthesised || depth > 0 {
 				index++
@@ -963,12 +973,25 @@ func searchVerifyGradleCallArguments(rest string) ([]string, int) {
 				index++
 				continue
 			}
-			return arguments, index
+			return searchVerifyGradleLiteralArguments(arguments, literal), index
 		default:
+			if character != ' ' && character != '\t' && character != '\r' && character != ',' {
+				literal = false
+			}
 			index++
 		}
 	}
-	return arguments, index
+	return searchVerifyGradleLiteralArguments(arguments, literal), index
+}
+
+// searchVerifyGradleLiteralArguments passes the collected arguments through only when the list was a
+// plain sequence of literals. Declining costs a lookup; a project path read out of a branch that was
+// not taken costs a hard-gate command that cannot run.
+func searchVerifyGradleLiteralArguments(arguments []string, literal bool) []string {
+	if !literal {
+		return nil
+	}
+	return arguments
 }
 
 // searchVerifyScriptStringLiteral reads one string literal, returning its content and its width, or

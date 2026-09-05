@@ -1126,3 +1126,76 @@ func TestSearchVerifyGradleRemappedProjectIsNotThisDirectory(t *testing.T) {
 		})
 	}
 }
+
+// TestSearchVerifyGradleIncludeArgumentsMustBeLiterals is the regression for a project path read out
+// of a branch that was not taken.
+//
+// `include(if (flag) ":app" else ":other")` and its Groovy ternary name ONE project, decided at
+// configuration time. Collecting every literal inside the parentheses recorded both, and the one
+// Gradle did not include produced `./gradlew :other:test` — "Project 'other' not found in root
+// project". Nothing in the text says which branch is taken, so an argument list that is not a plain
+// sequence of literals declares nothing.
+func TestSearchVerifyGradleIncludeArgumentsMustBeLiterals(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		settings string
+		declares bool
+	}{
+		{
+			name:     "a Kotlin if-expression argument",
+			settings: "include(if (flag) \":app\" else \":other\")\n",
+		},
+		{
+			name:     "a Groovy ternary argument",
+			settings: "include(flag ? ':app' : ':other')\n",
+		},
+		{
+			name:     "a literal built by a call",
+			settings: "include(prefix(\":app\"))\n",
+		},
+		{
+			name:     "a plain list of literals still declares all of them",
+			settings: "include(\":app\", \":other\")\n",
+			declares: true,
+		},
+		{
+			name:     "the command-expression list too",
+			settings: "include ':app', ':other'\n",
+			declares: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			for _, project := range []string{":app", ":other"} {
+				if got := searchVerifyGradleSettingsIncludes(testCase.settings, project); got != testCase.declares {
+					t.Fatalf("declares(%s) = %v, want %v for %q",
+						project, got, testCase.declares, testCase.settings)
+				}
+			}
+			files := map[string]string{
+				"gradlew":                    "",
+				"settings.gradle":            testCase.settings,
+				"app/build.gradle":           "",
+				"other/build.gradle":         "",
+				"other/src/main/java/A.java": "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "other/src/main/java/A.java"}, &evidence)
+			if !testCase.declares {
+				if got != nil {
+					t.Fatalf("command = %q, want silence: %q names one project, and which one is "+
+						"decided when the script runs", got.Command, testCase.settings)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected the declared project's command, got silence")
+			}
+			if want := "./gradlew :other:test"; got.Command != want {
+				t.Fatalf("command = %q, want %q", got.Command, want)
+			}
+		})
+	}
+}
