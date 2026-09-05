@@ -1,0 +1,22 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "7b3d8cba88ad",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/review-phase-provenance.json",
+    "docs/implementation/graph-advantage/p4-review.md",
+    "docs/implementation/graph-advantage/usage.md",
+    "internal/sem/search_compiler_view_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/7b/3d8cba88ad/0/metadata.json",
+      "transcript": "/7b/3d8cba88ad/0/full.jsonl",
+      "compact_transcript": "/7b/3d8cba88ad/0/transcript.jsonl",
+      "content_hash": "/7b/3d8cba88ad/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
