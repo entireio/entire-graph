@@ -1,0 +1,1 @@
+ok  	github.com/entireio/entire-graph/internal/sem	1.834s

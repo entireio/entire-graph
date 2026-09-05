@@ -36,9 +36,18 @@ type extractedDeclaration struct {
 	SignatureTypesKnown bool
 }
 
-func extractCapturedSource(spec profileSpec, language languageSpec, source capturedSource) extractionRecord {
+// fileExtraction owns the freshly parsed entities. Default-off persistence does
+// not pay serialization/deep-copy costs; recordExtraction makes an independent
+// payload only when requested by storage or equivalence tests.
+type fileExtraction struct {
+	entities []Entity
+	language string
+	status   ParseStatus
+}
+
+func extractCapturedSource(spec profileSpec, language languageSpec, source capturedSource) fileExtraction {
 	entities, name, status := parseWithProfile(TreeSitterParser{}, spec, language, source.path, source.content)
-	return recordExtraction(entities, name, status)
+	return fileExtraction{entities: entities, language: name, status: status}
 }
 
 func recordExtraction(entities []Entity, language string, status ParseStatus) extractionRecord {

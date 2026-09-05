@@ -214,7 +214,7 @@ func processProviderFile(
 	}
 
 	extraction := extractCapturedSource(spec, langSpec, source)
-	entities, parsedLanguage, parseStatus := extraction.entities(), extraction.Language, extraction.Status
+	entities, parsedLanguage, parseStatus := extraction.entities, extraction.language, extraction.status
 	if parsedLanguage == "" {
 		result.failures = append(result.failures, PartialFailure{
 			Code:                 "E_UNSUPPORTED_LANGUAGE",
