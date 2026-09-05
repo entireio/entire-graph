@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "9c91d575e11c",
+  "strategy": "manual-commit",
+  "branch": "paulo-perf",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/path_mount_guard.go",
+    "internal/sem/path_mount_table_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/9c/91d575e11c/0/metadata.json",
+      "transcript": "/9c/91d575e11c/0/full.jsonl",
+      "compact_transcript": "/9c/91d575e11c/0/transcript.jsonl",
+      "content_hash": "/9c/91d575e11c/0/content_hash.txt",
+      "prompt": "/9c/91d575e11c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 13645,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1234816,
+    "output_tokens": 3023,
+    "api_call_count": 9
+  }
+}
