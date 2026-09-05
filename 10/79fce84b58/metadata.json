@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "1079fce84b58",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "docs/adr/0034-go-compiler-evidence-boundary.md",
+    "docs/implementation/graph-advantage/evidence/linux-gopls-feasibility.txt",
+    "docs/implementation/graph-advantage/probes/linux_gopls_probe.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/10/79fce84b58/0/metadata.json",
+      "transcript": "/10/79fce84b58/0/full.jsonl",
+      "compact_transcript": "/10/79fce84b58/0/transcript.jsonl",
+      "content_hash": "/10/79fce84b58/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 891,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 137984,
+    "output_tokens": 445,
+    "api_call_count": 1
+  }
+}
