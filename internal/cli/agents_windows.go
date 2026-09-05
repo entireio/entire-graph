@@ -33,14 +33,14 @@ func windowsLinkRequiresDirectory(info os.FileInfo) (bool, bool) {
 // would change the target Windows actually traverses. PrintName cannot restore
 // that information: it is informational, may be empty, and need not match the
 // substitute name the kernel resolves.
-func windowsRawReparseTarget(rootPath, name string, expected os.FileInfo) (string, bool, error) {
+func windowsRawReparseTarget(rootPath, name string, expected os.FileInfo) (string, windowsReparseKind, error) {
 	return windowsRawReparseTargetAtPath(filepath.Join(rootPath, name), expected)
 }
 
-func windowsRawReparseTargetAtPath(fullPath string, expected os.FileInfo) (string, bool, error) {
+func windowsRawReparseTargetAtPath(fullPath string, expected os.FileInfo) (string, windowsReparseKind, error) {
 	path, err := syscall.UTF16PtrFromString(fullPath)
 	if err != nil {
-		return "", false, err
+		return "", windowsReparseInert, err
 	}
 	handle, err := syscall.CreateFile(
 		path,
@@ -52,27 +52,27 @@ func windowsRawReparseTargetAtPath(fullPath string, expected os.FileInfo) (strin
 		0,
 	)
 	if err != nil {
-		return "", false, err
+		return "", windowsReparseInert, err
 	}
 	file := os.NewFile(uintptr(handle), fullPath)
 	if file == nil {
 		syscall.CloseHandle(handle)
-		return "", false, fmt.Errorf("open raw Windows reparse target: invalid handle")
+		return "", windowsReparseInert, fmt.Errorf("open raw Windows reparse target: invalid handle")
 	}
 	defer file.Close()
 	opened, err := file.Stat()
 	if err != nil {
-		return "", false, err
+		return "", windowsReparseInert, err
 	}
 	if !os.SameFile(expected, opened) {
-		return "", false, fmt.Errorf("Windows reparse point changed while its target was inspected")
+		return "", windowsReparseInert, fmt.Errorf("Windows reparse point changed while its target was inspected")
 	}
 	expectedData, expectedOK := expected.Sys().(*syscall.Win32FileAttributeData)
 	openedData, openedOK := opened.Sys().(*syscall.Win32FileAttributeData)
 	const relevantAttributes = syscall.FILE_ATTRIBUTE_DIRECTORY | syscall.FILE_ATTRIBUTE_REPARSE_POINT
 	if !expectedOK || !openedOK ||
 		expectedData.FileAttributes&relevantAttributes != openedData.FileAttributes&relevantAttributes {
-		return "", false, fmt.Errorf("Windows reparse point type changed while its target was inspected")
+		return "", windowsReparseInert, fmt.Errorf("Windows reparse point type changed while its target was inspected")
 	}
 
 	buffer := make([]byte, syscall.MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
@@ -87,14 +87,14 @@ func windowsRawReparseTargetAtPath(fullPath string, expected os.FileInfo) (strin
 		&returned,
 		nil,
 	); err != nil {
-		return "", false, err
+		return "", windowsReparseInert, err
 	}
 	if returned < 8 {
-		return "", false, fmt.Errorf("malformed Windows reparse buffer header")
+		return "", windowsReparseInert, fmt.Errorf("malformed Windows reparse buffer header")
 	}
 	total := 8 + int(binary.LittleEndian.Uint16(buffer[4:6]))
 	if total < 8 || total > int(returned) || total > len(buffer) {
-		return "", false, fmt.Errorf("malformed Windows reparse buffer length")
+		return "", windowsReparseInert, fmt.Errorf("malformed Windows reparse buffer length")
 	}
 
 	tag := binary.LittleEndian.Uint32(buffer[:4])
@@ -103,53 +103,61 @@ func windowsRawReparseTargetAtPath(fullPath string, expected os.FileInfo) (strin
 	switch tag {
 	case syscall.IO_REPARSE_TAG_SYMLINK:
 		if total < 20 {
-			return "", false, fmt.Errorf("malformed Windows symbolic-link reparse buffer")
+			return "", windowsReparseInert, fmt.Errorf("malformed Windows symbolic-link reparse buffer")
 		}
 		flags := binary.LittleEndian.Uint32(buffer[16:20])
 		if flags & ^uint32(windowsSymlinkFlagRelative) != 0 {
-			return "", false, fmt.Errorf("unsupported Windows symbolic-link flags %#x", flags)
+			return "", windowsReparseInert, fmt.Errorf("unsupported Windows symbolic-link flags %#x", flags)
 		}
 		relative = flags&windowsSymlinkFlagRelative != 0
 		pathBufferStart = 20
 	case windowsReparseTagMountPoint:
 		if total < 16 {
-			return "", false, fmt.Errorf("malformed Windows mount-point reparse buffer")
+			return "", windowsReparseInert, fmt.Errorf("malformed Windows mount-point reparse buffer")
 		}
 		pathBufferStart = 16
 	default:
-		return "", false, nil
+		// Not a tag whose substitute name this code can read. Whether the walk may step
+		// THROUGH it is decided by the tag itself, not by this function's inability to
+		// decode it: a name surrogate is followed by Windows and must not be mistaken for
+		// an ordinary component. See windowsReparseKindForTag.
+		return "", windowsReparseKindForTag(tag), nil
 	}
 
 	substituteOffset := int(binary.LittleEndian.Uint16(buffer[8:10]))
 	substituteLength := int(binary.LittleEndian.Uint16(buffer[10:12]))
 	substitute, ok := decodeWindowsReparseName(buffer, total, pathBufferStart, substituteOffset, substituteLength)
 	if !ok {
-		return "", false, fmt.Errorf("malformed Windows reparse substitute name")
+		return "", windowsReparseInert, fmt.Errorf("malformed Windows reparse substitute name")
 	}
+	// The volume the LINK itself sits on. A volume-GUID substitute name is only ever
+	// translated into this drive's spelling, and only when the filesystem says the two name
+	// one directory, so the translation can never move the target to another volume.
+	linkVolume := filepath.VolumeName(fullPath)
 	if relative {
 		if strings.Contains(substitute, "/") || windowsPathDisablesCleaning(substitute) {
-			return "", false, fmt.Errorf("%w: invalid relative Windows reparse target", errUnresolvableAlias)
+			return "", windowsReparseInert, fmt.Errorf("%w: invalid relative Windows reparse target", errUnresolvableAlias)
 		}
 		if len(substitute) > 0 && os.IsPathSeparator(substitute[0]) {
 			if len(substitute) > 1 && os.IsPathSeparator(substitute[1]) {
-				return "", false, fmt.Errorf("%w: invalid relative Windows reparse target", errUnresolvableAlias)
+				return "", windowsReparseInert, fmt.Errorf("%w: invalid relative Windows reparse target", errUnresolvableAlias)
 			}
-			normalized, ok := normalizeWindowsAbsoluteReparseTarget(substitute, true)
+			normalized, ok := normalizeWindowsAbsoluteReparseTarget(substitute, true, linkVolume)
 			if !ok {
-				return "", false, fmt.Errorf("%w: invalid rooted Windows reparse target", errUnresolvableAlias)
+				return "", windowsReparseInert, fmt.Errorf("%w: invalid rooted Windows reparse target", errUnresolvableAlias)
 			}
-			return normalized, true, nil
+			return normalized, windowsReparseResolved, nil
 		}
 		if filepath.IsAbs(substitute) || filepath.VolumeName(substitute) != "" {
-			return "", false, fmt.Errorf("%w: invalid relative Windows reparse target", errUnresolvableAlias)
+			return "", windowsReparseInert, fmt.Errorf("%w: invalid relative Windows reparse target", errUnresolvableAlias)
 		}
-		return substitute, true, nil
+		return substitute, windowsReparseResolved, nil
 	}
-	normalized, ok := normalizeWindowsAbsoluteReparseTarget(substitute, false)
+	normalized, ok := normalizeWindowsAbsoluteReparseTarget(substitute, false, linkVolume)
 	if !ok {
-		return "", false, fmt.Errorf("%w: unsupported Windows reparse target", errUnresolvableAlias)
+		return "", windowsReparseInert, fmt.Errorf("%w: unsupported Windows reparse target", errUnresolvableAlias)
 	}
-	return normalized, true, nil
+	return normalized, windowsReparseResolved, nil
 }
 
 func decodeWindowsReparseName(buffer []byte, total, pathBufferStart, offset, length int) (string, bool) {
@@ -186,12 +194,27 @@ func decodeWindowsReparseName(buffer []byte, total, pathBufferStart, offset, len
 // os.Root receives. Raw dot components, alternate separators, and trailing
 // dots/spaces can have different meanings in the NT namespace, so translating
 // any of them would risk authorizing a write the original link cannot perform.
-func normalizeWindowsAbsoluteReparseTarget(target string, allowRootRelative bool) (string, bool) {
+func normalizeWindowsAbsoluteReparseTarget(target string, allowRootRelative bool, linkVolume string) (string, bool) {
 	const ntPrefix = `\??\`
 	upper := strings.ToUpper(target)
 	switch {
 	case strings.HasPrefix(upper, ntPrefix+`UNC\`):
 		target = `\\` + target[len(ntPrefix+`UNC\`):]
+	case strings.HasPrefix(upper, ntPrefix+`VOLUME{`):
+		// A junction created against a volume rather than a drive letter. The refusal
+		// below would reject it for its SPELLING, which is the one thing repoRelativeName
+		// is written not to do — its comment says local device and volume-GUID spellings
+		// are "left to the identity check because they can name the same directory as an
+		// ordinary drive path", and that check could never be reached while this returned
+		// false first. So ask the filesystem instead: only when \\?\Volume{GUID}\ IS the
+		// root of the link's own drive is the target rewritten to that drive's spelling,
+		// and everything below then judges an ordinary path. A GUID naming any other
+		// volume, or one the kernel will not stat, is refused exactly as before.
+		mapped, ok := windowsVolumeGUIDTargetOnVolume(target, linkVolume)
+		if !ok {
+			return "", false
+		}
+		target = mapped
 	case strings.HasPrefix(upper, ntPrefix):
 		target = target[len(ntPrefix):]
 		if len(target) < 3 || target[1] != ':' || !os.IsPathSeparator(target[2]) {
@@ -215,4 +238,36 @@ func normalizeWindowsAbsoluteReparseTarget(target string, allowRootRelative bool
 		}
 	}
 	return target, true
+}
+
+// windowsVolumeGUIDTargetOnVolume rewrites a volume-GUID target into the ordinary drive spelling
+// of the SAME volume, and only when the filesystem says the two name one directory.
+//
+// The comparison is os.SameFile between the volume root the GUID opens and the root of the drive
+// the LINK itself sits on, which is the only volume a repository-relative name can be about. It is
+// a translation of one directory's name into another name for that same directory, proven rather
+// than assumed, and it grants nothing: the drive spelling it returns is re-validated by every
+// check below it and then resolved by os.Root like any other target.
+func windowsVolumeGUIDTargetOnVolume(target, linkVolume string) (string, bool) {
+	if linkVolume == "" || len(linkVolume) != 2 || linkVolume[1] != ':' {
+		return "", false
+	}
+	volumeRoot, suffix, ok := splitWindowsVolumeGUIDPath(target)
+	if !ok || suffix == "" {
+		// An empty suffix names the volume root itself, which is a directory and never a
+		// managed instruction file. Leaving it refused keeps that failure where it was.
+		return "", false
+	}
+	guidInfo, err := os.Stat(volumeRoot)
+	if err != nil {
+		return "", false
+	}
+	driveInfo, err := os.Stat(linkVolume + `\`)
+	if err != nil {
+		return "", false
+	}
+	if !os.SameFile(guidInfo, driveInfo) {
+		return "", false
+	}
+	return linkVolume + `\` + suffix, true
 }

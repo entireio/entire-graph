@@ -54,11 +54,17 @@ func TestNormalizeWindowsAbsoluteReparseTargetRejectsRawCleaning(t *testing.T) {
 		{name: "trailing dot", target: `\??\C:\repo\victim.md.`, ok: false},
 		{name: "trailing space", target: `\??\C:\repo\victim.md `, ok: false},
 		{name: "device namespace", target: `\??\GLOBALROOT\Device\HarddiskVolume1\victim.md`, ok: false},
+		// A volume-GUID target is no longer refused for its SPELLING, but it is still
+		// refused unless the filesystem says the GUID names the root of the link's own
+		// drive. No such volume exists here, so the refusal stands and the identity
+		// check is the only thing that could ever lift it.
+		{name: "volume GUID that names no volume", target: `\??\Volume{00000000-0000-0000-0000-000000000000}\repo\shared.md`, ok: false},
+		{name: "volume GUID naming the volume root itself", target: `\??\Volume{00000000-0000-0000-0000-000000000000}\`, ok: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := normalizeWindowsAbsoluteReparseTarget(tt.target, tt.allowRootRelative)
+			got, ok := normalizeWindowsAbsoluteReparseTarget(tt.target, tt.allowRootRelative, `C:`)
 			if ok != tt.ok || got != tt.want {
 				t.Fatalf("normalizeWindowsAbsoluteReparseTarget() = %q, %v; want %q, %v", got, ok, tt.want, tt.ok)
 			}
