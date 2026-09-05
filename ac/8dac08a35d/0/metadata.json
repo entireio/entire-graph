@@ -1,0 +1,49 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "ac8dac08a35d",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-05T16:13:20.728998Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0032-impact-path-policy.md",
+    "docs/implementation/graph-advantage/evidence/impact-source-tests.txt",
+    "internal/sem/impact_paths.go",
+    "internal/sem/impact_paths_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "17b36f2ed1e5",
+  "checkpoint_transcript_start": 424,
+  "transcript_lines_at_start": 424,
+  "compact_transcript_start": 53,
+  "token_usage": {
+    "input_tokens": 6002,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 664576,
+    "output_tokens": 3266,
+    "api_call_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-05T16:13:20.633703Z",
+    "agent_lines": 564,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 564,
+    "total_lines_changed": 564,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
