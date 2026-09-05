@@ -2,10 +2,10 @@ package sem
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -129,13 +129,11 @@ func TraverseImpactPaths(ctx context.Context, focus string, relations []Relation
 		}
 		evidence := append([]Evidence(nil), relation.Evidence...)
 		sort.Slice(evidence, func(i, j int) bool {
-			a, _ := json.Marshal(evidence[i])
-			b, _ := json.Marshal(evidence[j])
-			return string(a) < string(b)
+			return impactEvidenceKey(evidence[i]) < impactEvidenceKey(evidence[j])
 		})
 		step := ImpactPathStep{FromID: relation.FromID, ToID: relation.ToID, Relation: relation.Type, Direction: direction, Resolution: relation.Resolution, Confidence: relation.Confidence, Evidence: evidence}
-		key, _ := json.Marshal(step)
-		adjacency[from] = append(adjacency[from], impactArc{target: to, mode: mode, key: string(key), step: step})
+		key := impactStepKey(step)
+		adjacency[from] = append(adjacency[from], impactArc{target: to, mode: mode, key: key, step: step})
 	}
 	for id, arcs := range adjacency {
 		if err := ctx.Err(); err != nil {
@@ -157,7 +155,16 @@ func TraverseImpactPaths(ctx context.Context, focus string, relations []Relation
 	states := []impactPredecessor{{id: focus, mode: "dependency", parent: -1, strength: 1}}
 	seenNodes := map[string]bool{focus: true}
 	best := map[string][]ImpactEvidencePath{}
-	pathKey := func(path ImpactEvidencePath) string { data, _ := json.Marshal(path.Steps); return string(data) }
+	pathKey := func(path ImpactEvidencePath) string {
+		var key strings.Builder
+		for _, step := range path.Steps {
+			part := impactStepKey(step)
+			key.WriteString(strconv.Itoa(len(part)))
+			key.WriteByte(':')
+			key.WriteString(part)
+		}
+		return key.String()
+	}
 	better := func(a, b ImpactEvidencePath) bool {
 		if a.WeakestConfidence != b.WeakestConfidence {
 			return a.WeakestConfidence > b.WeakestConfidence
@@ -270,4 +277,28 @@ func TraverseImpactPaths(ctx context.Context, focus string, relations []Relation
 	report.AdmittedStates = len(states)
 	sort.Strings(report.StopReasons)
 	return report, nil
+}
+
+// Length prefixes retain byte-exact identities, including non-UTF-8 Git paths;
+// JSON replacement of invalid UTF-8 must not merge distinct evidence records.
+func impactIdentity(fields ...string) string {
+	var out strings.Builder
+	for _, field := range fields {
+		out.WriteString(strconv.Itoa(len(field)))
+		out.WriteByte(':')
+		out.WriteString(field)
+	}
+	return out.String()
+}
+
+func impactEvidenceKey(e Evidence) string {
+	return impactIdentity(e.Kind, e.FilePath, strconv.Itoa(e.StartLine), strconv.Itoa(e.EndLine), e.Detail)
+}
+
+func impactStepKey(step ImpactPathStep) string {
+	fields := []string{step.FromID, step.ToID, step.Relation, step.Direction, step.Resolution, strconv.FormatFloat(step.Confidence, 'g', -1, 64), strconv.Itoa(len(step.Evidence))}
+	for _, e := range step.Evidence {
+		fields = append(fields, impactEvidenceKey(e))
+	}
+	return impactIdentity(fields...)
 }

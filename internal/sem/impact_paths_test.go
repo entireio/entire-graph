@@ -184,3 +184,22 @@ func TestImpactPathsHighDegreeDeterministicBudget(t *testing.T) {
 		t.Fatal("budget result depends on input order")
 	}
 }
+
+func TestImpactPathsDistinctByteEvidence(t *testing.T) {
+	first := pathFixtureEdge("b", "a", "CALLS", 1)
+	second := first
+	first.Evidence = []Evidence{{Kind: "fixture", FilePath: "\xff.go"}}
+	second.Evidence = []Evidence{{Kind: "fixture", FilePath: "\xfe.go"}}
+	options := DefaultImpactPathOptions()
+	a, err := TraverseImpactPaths(t.Context(), "a", []RelationRecord{first, second}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := TraverseImpactPaths(t.Context(), "a", []RelationRecord{second, first}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(a, b) || len(a.Results) != 1 || len(a.Results[0].Paths) != 2 {
+		t.Fatal("distinct byte evidence collapsed or reordered")
+	}
+}
