@@ -1,0 +1,51 @@
+Pull from main, then implement the following task: Implement the four workstreams in:
+ /Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md
+
+Target repository:
+ /Users/thomi/Projects/entire-graph
+
+Read the plan fully, including the independent implementation handoff, implementation contracts, acceptance fixtures, and release gates. Treat it as the requirements document.
+
+Work in a fresh context. Do not consult competitor implementations, comparative documents, adjacent comparison evidence, or prior conversations. Use only the plan, Entire’s implementation and applicable repository instructions, and the official specifications listed in the plan. Record consulted sources and fixture origins.
+
+Before editing:
+1. Inspect repository status and applicable AGENTS.md instructions.
+2. Fetch current main and create an isolated codex/ worktree containing it, preserving existing user changes.
+3. Revalidate the plan’s code touchpoints against that checkout.
+4. Record the baseline commit and resolve required design decisions in short ADRs.
+
+Implement in reviewable stages:
+1. Safe content-addressed per-file extraction reuse.
+2. Optional Go compiler-backed resolution with explicit evidence and enforced no-egress.
+3. Deeper bounded impact traversal with evidence paths.
+4. Experimental query-seeded graph ranking and its evaluation.
+
+Start with P1.1 and the minimal P1.2 extraction/capture boundary, preserving behavior. Follow the plan’s dependencies and complete each workstream’s tests and gates before advancing its release status.
+
+Preserve existing defaults, stable IDs, additive schema compatibility, source freshness, partial-failure reporting, and no-egress guarantees. Do not re-enable persistent working-tree snapshot caching. Installation, MCP packaging, generated summaries, and Brain changes are out of scope.
+
+Create independent fixtures, run focused tests and required repository checks, and retain reproducible evaluation artifacts. Do not fabricate benchmark results or enable experimental features when evidence is insufficient. Report genuine blockers explicitly and continue independent work where possible.
+
+Keep a progress ledger mapping every plan task to its implementation, tests, evidence, and remaining work. Provide concise progress updates. Finish with a reviewable change summary, validation results, limitations, and rollback instructions.
+
+Commit and push, but not merge changes.
+
+---
+
+What are the steps to complete it?
+
+---
+
+I can’t open the ledger on the mobile app. Why did you stop the implementation?
+
+---
+
+You can boot Linux or Windows VM via the az CLI. Complete the plan.
+
+---
+
+Can’t you accelerate the work with sub agents?
+
+---
+
+Also monitor the progress against plan. Avoid falling into local optimization loops.
