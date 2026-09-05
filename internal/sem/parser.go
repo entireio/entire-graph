@@ -5073,6 +5073,26 @@ func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language,
 			bodyless:        true,
 			cPlusPlusOwners: cPlusPlusDeclarationOwners(node, src, scope),
 		})
+		entity := &out[len(out)-1]
+		// Read this member's own parameters, not the template constraint or
+		// a sibling declarator's parameter list. The return type is shared.
+		declarator := member.declarator
+		for validNode(declarator) && declarator.Type() != "function_declarator" {
+			next := declarator.ChildByFieldName("declarator")
+			if !descendsStrictly(declarator, next) {
+				break
+			}
+			declarator = next
+		}
+		if paramText, returnText, known := astSignatureTypeTexts(declarator, src); known {
+			entity.paramTypeText = paramText
+			entity.returnTypeText = returnText
+			if typ := node.ChildByFieldName("type"); validNode(typ) {
+				entity.returnTypeText = typ.Content(src)
+			}
+			entity.signatureTypesKnown = true
+		}
+		entity.parameterNames, entity.parameterNamesKnown = astParameterNames(declarator, src)
 	}
 	return out
 }

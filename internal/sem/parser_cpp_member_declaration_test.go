@@ -592,7 +592,7 @@ double run() { Ledger ledger; return ledger.Add(3.5); }
 	}
 }
 
-func TestCPlusPlusDeclarationOverloadIDsSurviveSignatureEdit(t *testing.T) {
+func TestCPlusPlusDeclarationOverloadIDsSurviveSiblingEdits(t *testing.T) {
 	t.Parallel()
 	ids := func(source string) []string {
 		entities, _ := TreeSitterParser{}.Parse("ledger.hpp", source)
@@ -609,8 +609,17 @@ func TestCPlusPlusDeclarationOverloadIDsSurviveSignatureEdit(t *testing.T) {
 	if len(before) != 2 || len(after) != 2 {
 		t.Fatalf("overload IDs before=%v after=%v, want two each", before, after)
 	}
-	if before[0] != after[0] || before[1] != after[1] {
-		t.Fatalf("signature edit retired declaration IDs: before=%v after=%v", before, after)
+	if before[1] != after[1] {
+		t.Fatalf("signature edit retired untouched sibling ID: before=%v after=%v", before, after)
+	}
+	lone := ids(`class Ledger { public: int Add(int); };`)
+	inserted := ids(`class Ledger { public: int Add(char); int Add(int); int Add(double); };`)
+	reordered := ids(`class Ledger { public: int Add(double); int Add(int); };`)
+	if len(lone) != 1 || len(inserted) != 3 || len(reordered) != 2 {
+		t.Fatal("missing declarations")
+	}
+	if lone[0] != before[0] || inserted[1] != before[0] || inserted[2] != before[1] || reordered[1] != before[0] || reordered[0] != before[1] {
+		t.Fatalf("insertion/reorder changed IDs: lone=%v before=%v inserted=%v reordered=%v", lone, before, inserted, reordered)
 	}
 }
 

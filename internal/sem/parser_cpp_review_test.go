@@ -5,6 +5,43 @@ import (
 	"testing"
 )
 
+func TestCPlusPlusConstrainedDeclarationTypeRelations(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "factory.hpp", `struct Input {};
+struct Product {};
+template<class T> constexpr bool Pred() { return true; }
+class Factory {
+public:
+ template<class T> requires (Pred<T>()) Product Make(Input value);
+};`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SymbolRecord{}
+	var method SymbolRecord
+	for _, s := range snapshot.Symbols {
+		byID[s.ID] = s
+		if s.Name == "Make" {
+			method = s
+		}
+	}
+	if !method.signatureTypesKnown || method.paramTypeText != "Input" || method.returnTypeText != "Product" {
+		t.Fatalf("missing AST types: %#v", method)
+	}
+	found := map[string]bool{}
+	for _, r := range snapshot.Relations {
+		if r.FromID == method.ID {
+			found[r.Type+":"+byID[r.ToID].Name] = true
+		}
+	}
+	for _, key := range []string{"PARAM_TYPE:Input", "RETURNS_TYPE:Product"} {
+		if !found[key] {
+			t.Errorf("missing %s: %v", key, found)
+		}
+	}
+}
+
 func TestCPlusPlusSharedDeclarationSpecifiers(t *testing.T) {
 	for _, specifier := range []string{"virtual", "static", "constexpr"} {
 		t.Run(specifier, func(t *testing.T) {
