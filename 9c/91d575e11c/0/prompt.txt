@@ -1,5 +1,1 @@
-Review Entire trail 164
-
----
-
 Implement a fix for the blocking issue, test it, then commit to the trail. Wait for Entire to review the changes and address all findings by fixing and resolving them. Keep the loop going until the trail has 0 findings and is mergable.
