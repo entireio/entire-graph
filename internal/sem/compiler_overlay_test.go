@@ -186,3 +186,118 @@ func TestCompilerEnrichedViewDisputesOnlyExactEvidence(t *testing.T) {
 		t.Fatal("partial evidence disputed static")
 	}
 }
+
+// These sources and expected targets are independently authored from review F1.
+// Fake responses use exact real-parser declaration tokens, not name guesses.
+func TestCompilerOverlayConversionsAreNotCalls(t *testing.T) {
+	body := `package p
+ type UserID int
+ type Alias = UserID
+ type Slice[T any] []T
+ func Invoke(x int) int { return x }
+ func Convert(x int, xs []int) {
+ _ = UserID(x)
+ _ = Alias(x)
+ _ = Slice[int](xs)
+ _ = (UserID)(x)
+ _ = Invoke(x)
+ }
+ `
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "a.go"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := BuildProviderSnapshotWithOptions(context.Background(), repo, "fixture", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{"a.go": body}
+	declarations, calls := compilerTokens(files, snapshot.Symbols)
+	if len(calls) != 5 {
+		t.Fatalf("calls=%#v", calls)
+	}
+	byName := map[string]compilerToken{}
+	for _, declaration := range declarations {
+		byName[declaration.name] = declaration
+	}
+	for _, call := range calls {
+		t.Run(call.name, func(t *testing.T) {
+			target, ok := byName[call.name]
+			if !ok {
+				t.Fatalf("missing declaration %q", call.name)
+			}
+			start, _ := compiler.PositionAt(body, target.start)
+			end, _ := compiler.PositionAt(body, target.end)
+			base := snapshot
+			base.Relations = []RelationRecord{{FromID: call.symbol, ToID: "unrelated-static-target", Type: "CALLS", Evidence: []Evidence{{FilePath: "a.go", StartLine: call.line}}}}
+			for _, implementation := range []bool{false, true} {
+				report := compiler.Report{Status: "complete", Backend: "fixture/fake", ContextID: compiler.ContentDigest("conversion-fixture"), Answers: []compiler.Answer{{Query: compiler.Query{Path: "a.go", Offset: call.start, Implementation: implementation}, Kind: "textDocument/definition", Targets: []compiler.Location{{URI: "file:///workspace/a.go", Range: compiler.Range{Start: start, End: end}}}}}}
+				if implementation {
+					report.Answers[0].Kind = "textDocument/implementation"
+				}
+				overlay := reconcileCompiler(&base, files, declarations, calls, report)
+				base.Header.Compiler = &overlay
+				if call.name == "Invoke" {
+					if len(overlay.Calls) != 1 {
+						t.Fatalf("callable lost: %#v", overlay)
+					}
+					continue
+				}
+				if len(overlay.Calls) != 0 || overlay.Report.Status != "complete" {
+					t.Fatalf("conversion promoted or coverage degraded: %#v", overlay)
+				}
+				if got := CompilerEnrichedRelations(base, true); !reflect.DeepEqual(got, base.Relations) {
+					t.Fatalf("conversion changed static evidence: %#v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestLiveCompilerConversionsAreNotCalls(t *testing.T) {
+	if os.Getenv("ENTIRE_GRAPH_COMPILER_LIVE") != "1" {
+		t.Skip("explicit isolated Linux integration")
+	}
+	repo := t.TempDir()
+	body := `package p
+ type UserID int
+ type Alias = UserID
+ type Slice[T any] []T
+ func Invoke(x int) int { return x }
+ func Convert(x int, xs []int) {
+ _ = UserID(x)
+ _ = Alias(x)
+ _ = Slice[int](xs)
+ _ = (UserID)(x)
+ _ = Invoke(x)
+ }
+ `
+	for name, content := range map[string]string{"go.mod": "module fixture.local/conversion\n\ngo 1.24\n", "a.go": body} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	options := ProviderSnapshotOptions{Worktree: true, Compiler: &CompilerOptions{Config: compiler.Config{ServerPath: "/opt/graph-tools/gopls", ServerSHA256: "2b4652d6ac42a22942f63735d9c7e44e9dfbc1dade5d4fd09c0d4eb8fa3539b1", ToolchainRoot: "/usr/local/go", BubblewrapPath: "/usr/bin/bwrap"}}}
+	snapshot, err := BuildProviderSnapshotWithOptions(context.Background(), repo, "fixture", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := snapshot.Header.Compiler
+	if overlay == nil || overlay.Report.Status != "complete" {
+		t.Fatalf("live coverage %#v", overlay)
+	}
+	var invoke string
+	for _, symbol := range snapshot.Symbols {
+		if symbol.Name == "Invoke" {
+			invoke = symbol.ID
+		}
+	}
+	if invoke == "" || len(overlay.Calls) != 1 || overlay.Calls[0].Evidence.TargetSymbolID != invoke || overlay.Calls[0].Evidence.Category != compiler.DirectDeclaration {
+		t.Fatalf("live conversions emitted call evidence %#v", overlay)
+	}
+	for _, relation := range CompilerEnrichedRelations(snapshot, true) {
+		if strings.HasPrefix(relation.Resolution, "compiler_") && relation.ToID != invoke {
+			t.Fatalf("conversion projected %#v", relation)
+		}
+	}
+}

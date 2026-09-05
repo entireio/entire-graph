@@ -70,3 +70,22 @@ view. A search response may expose a different manifest ID for its narrower
 selected ranking scope while retaining all observations; this is intentional.
 Only direct compiler-package callers without an operation manifest use the
 capsule-only identity fallback. A malformed provided ID is refused before launch.
+
+## Declaration-kind correction (interim review F1)
+
+Preserve AST declaration kind alongside exact token coordinates before mapping
+compiler responses into invocation evidence. Go type conversions use the same
+AST call-expression shape as function calls, so a definition/implementation
+response naming a type cannot confirm or dispute a CALLS edge. Recognized type
+responses produce `compiler_non_call_declaration` diagnostics and no call item;
+they do not make otherwise complete compiler coverage partial. Keep type tokens
+even when static extraction has no symbol for an alias. Callable declarations
+still require exact unique stable-symbol mapping. The alternative of interpreting
+every definition response as a call is disproved by interim review F1.
+
+`TestCompilerOverlayConversionsAreNotCalls` independently constructs named-type,
+alias, generic-type and parenthesized conversions alongside a real function
+invocation, with exact-site conflicting static facts. Its pinned Linux counterpart
+`TestLiveCompilerConversionsAreNotCalls` checks real gopls responses. Neither
+fixture is comparative evaluation; builtin/out-of-scope definitions retain the
+existing explicit fallback rather than inventing callable declarations.

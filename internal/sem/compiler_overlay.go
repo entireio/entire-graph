@@ -33,6 +33,7 @@ type compilerToken struct {
 	name             string
 	symbol           string
 	interfaceMethod  bool
+	declarationKind  string // AST declaration kind, independent of call-expression syntax.
 }
 
 func enrichCompilerSnapshot(ctx context.Context, snapshot *ProviderSnapshot, source sourceContext, options CompilerOptions) error {
@@ -97,7 +98,7 @@ func compilerTokens(files map[string]string, symbols []SymbolRecord) ([]compiler
 			continue
 		}
 		offset := func(pos token.Pos) int { return fset.PositionFor(pos, false).Offset }
-		mapped := func(ident *ast.Ident, iface bool) {
+		mapped := func(ident *ast.Ident, iface bool, kind string) {
 			if ident == nil {
 				return
 			}
@@ -112,20 +113,20 @@ func compilerTokens(files map[string]string, symbols []SymbolRecord) ([]compiler
 					id = symbol.ID
 				}
 			}
-			if id != "" {
-				declarations = append(declarations, compilerToken{name, start, end, fset.Position(ident.Pos()).Line, ident.Name, id, iface})
+			if id != "" || kind == "type" {
+				declarations = append(declarations, compilerToken{name, start, end, fset.Position(ident.Pos()).Line, ident.Name, id, iface, kind})
 			}
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch node := node.(type) {
 			case *ast.FuncDecl:
-				mapped(node.Name, false)
+				mapped(node.Name, false, "callable")
 			case *ast.TypeSpec:
-				mapped(node.Name, false)
+				mapped(node.Name, false, "type")
 				if iface, ok := node.Type.(*ast.InterfaceType); ok {
 					for _, field := range iface.Methods.List {
 						for _, name := range field.Names {
-							mapped(name, true)
+							mapped(name, true, "callable")
 						}
 					}
 				}
@@ -173,7 +174,7 @@ func compilerTokens(files map[string]string, symbols []SymbolRecord) ([]compiler
 					}
 				}
 				if caller != "" {
-					calls = append(calls, compilerToken{name, start, end, fset.Position(ident.Pos()).Line, ident.Name, caller, false})
+					calls = append(calls, compilerToken{name, start, end, fset.Position(ident.Pos()).Line, ident.Name, caller, false, ""})
 				}
 			}
 			return true
@@ -211,14 +212,27 @@ func reconcileCompiler(snapshot *ProviderSnapshot, files map[string]string, decl
 				continue
 			}
 			target := ""
+			declarationKind := ""
+			matches := 0
 			for _, declaration := range declarations {
 				if declaration.path == path && declaration.start == start && declaration.end == end {
-					if target != "" {
+					matches++
+					if matches > 1 {
 						target = ""
+						declarationKind = ""
 						break
 					}
 					target = declaration.symbol
+					declarationKind = declaration.declarationKind
 				}
+			}
+			// Go conversions also use ast.CallExpr. A definition pointing to a
+			// named type (including aliases and instantiated generic types) is
+			// not invocation evidence. Implementation queries at a type may also
+			// return other types; none may reconcile or replace a static call.
+			if declarationKind == "type" {
+				overlay.Report.Diagnostics = append(overlay.Report.Diagnostics, compiler.Diagnostic{Code: "compiler_non_call_declaration", Detail: path})
+				continue
 			}
 			if target == "" {
 				overlay.Report.Status = "partial"
