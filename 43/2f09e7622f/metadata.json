@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "432f09e7622f",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/review-summary.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/43/2f09e7622f/0/metadata.json",
+      "transcript": "/43/2f09e7622f/0/full.jsonl",
+      "compact_transcript": "/43/2f09e7622f/0/transcript.jsonl",
+      "content_hash": "/43/2f09e7622f/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 10043,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 778752,
+    "output_tokens": 2897,
+    "api_call_count": 9
+  }
+}
