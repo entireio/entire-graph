@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "15a234d03259",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/advantage_review_live_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/15/a234d03259/0/metadata.json",
+      "transcript": "/15/a234d03259/0/full.jsonl",
+      "compact_transcript": "/15/a234d03259/0/transcript.jsonl",
+      "content_hash": "/15/a234d03259/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 9171,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 450432,
+    "output_tokens": 1816,
+    "api_call_count": 5
+  }
+}
