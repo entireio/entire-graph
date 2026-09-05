@@ -6,7 +6,7 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
-The user has now authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation and correctness checks are complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is running on all three verified workers. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
+The user has now authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation and correctness checks are complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is paused for diagnosis; all three jobs are stopped. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
 
 The review findings are addressed in code: type declarations no longer become compiler-confirmed calls; ordinary search and every impact depth consume the effective compiler relation view. Candidate implementation paths remain separate, including terminal covering tests. Source is frozen; immutable integration checks passed.
 
@@ -21,12 +21,12 @@ This table supersedes earlier checkpoint/status statements. “Complete” in th
 
 | Task | Implementation | Correctness evidence | Comparative evaluation | Release gate |
 |---|---|---|---|---|
-| P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Fixed six-repository campaign prepared; baseline complete; paired campaign running | Not passed: full fixed corpus/RSS matrix incomplete |
-| P1.2 pure extraction | Complete: explicit metadata, shared bounded source/policy capture, manifests and sticky errors | Entity field checklist, malformed/overload/language round trips, reader mutation tests; final immutable check passed | Fixed corpus campaign running | Not passed |
-| P1.3 storage | Complete: cross-process admission, orphan cleanup, versioned keys, integrity, private atomic writes and bounded decode | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; final immutable check passed | Fixed corpus campaign running | Not passed |
-| P1.4 entity integration | Complete: command/policy capture, ordered reuse and fresh IDs/aliases/resolution | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; final immutable check passed | Fixed corpus campaign running | Not passed |
+| P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Fixed six-repository campaign prepared; baseline complete; paired campaign paused for diagnosis | Not passed: full fixed corpus/RSS matrix incomplete |
+| P1.2 pure extraction | Complete: explicit metadata, shared bounded source/policy capture, manifests and sticky errors | Entity field checklist, malformed/overload/language round trips, reader mutation tests; final immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
+| P1.3 storage | Complete: cross-process admission, orphan cleanup, versioned keys, integrity, private atomic writes and bounded decode | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; final immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
+| P1.4 entity integration | Complete: command/policy capture, ordered reuse and fresh IDs/aliases/resolution | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; final immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.5 relation inputs | Complete for measured raw-import family: Go/TypeScript/Python fast/full; explicit family presence | Exact relation parity and reuse tests; other families deliberately absent | Further profiling deferred; no new family selected by benchmark tuning | Not passed |
-| P1.6 diagnostics/gates | Complete: diagnostics, policy coverage and rollback controls | Separate parsed/reused/source/cache/phase telemetry; final immutable check passed | Existing cold regression retained; fixed corpus campaign running | Not passed: performance target previously failed |
+| P1.6 diagnostics/gates | Complete: diagnostics, policy coverage and rollback controls | Separate parsed/reused/source/cache/phase telemetry; final immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
 | P2.1 feasibility | Complete: pinned gopls v0.20.0 and Linux Bubblewrap execution boundary | Existing positive no-egress/read-only/descendant cancellation checks; final Linux race passed | Hard-Go comparative quality deferred | Not passed |
 | P2.2 client/capture | Complete: bounded lifecycle, source capsule/context identity, mapping and cancellation | Protocol/UTF-16/malformed reply/context/process tests; final immutable check passed | Deferred | Not passed |
 | P2.3 positive integration | Complete: direct declarations and separate implementation candidates; conversions excluded | New conversion/alias/generic fixtures and pinned live fixture; signature/workspace invalidation tests; final Linux race passed | Independent realistic quality evaluation deferred | Not passed |
@@ -130,3 +130,11 @@ and its other 474 cells are unrun. The two baseline-blocked strata retain
 960 unrun cells. Frozen binary, input and baseline hashes still match.
 No interim performance or quality conclusion is drawn. P4.1 remains pending;
 a previous ledger wording error is corrected without changing P4 status.
+
+User-directed diagnostic stop: all three services verified inactive on
+2026-09-05 at approximately 22:55 UTC; recurring continuation is PAUSED.
+Retained 116 measured requests (113 partial, 3 timeouts), 1,434 protocol-unrun
+cells, and 15,730 remaining planned cells. Interrupted in-flight requests
+are preserved separately and are not fabricated as completed observations.
+No further measurement is authorized by the old continuation; diagnose and
+correct the findings before defining a separately versioned evaluation.

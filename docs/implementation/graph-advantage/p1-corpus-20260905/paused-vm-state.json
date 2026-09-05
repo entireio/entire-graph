@@ -1,0 +1,20 @@
+[
+  {
+    "vm": "graph-validation-linux",
+    "state": [
+      "PowerState/deallocated"
+    ]
+  },
+  {
+    "vm": "graph-p1-worker-2",
+    "state": [
+      "PowerState/deallocated"
+    ]
+  },
+  {
+    "vm": "graph-p1-worker-3",
+    "state": [
+      "PowerState/deallocated"
+    ]
+  }
+]

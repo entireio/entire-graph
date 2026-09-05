@@ -1,5 +1,5 @@
 {
-  "phase": "paired_campaign_running",
+  "phase": "paused_for_diagnosis",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -20,101 +20,13 @@
   "hard_blocked_strata": 3,
   "as_of_utc": "2026-09-05T22:36:42.477258+00:00",
   "campaign_status_counts": {
-    "partial": 63,
+    "partial": 113,
     "timeout": 3,
     "unrun": 1434
   },
-  "measured_requests": 66,
+  "measured_requests": 116,
   "recorded_unrun_requests": 1434,
-  "workers_detail": [
-    {
-      "vm": "graph-validation-linux",
-      "statuses": {
-        "partial": 23,
-        "timeout": 3,
-        "unrun": 474
-      },
-      "progress": {
-        "stage": "campaign",
-        "observations": 500,
-        "last": {
-          "repository": "kubernetes-kubernetes",
-          "profile": "syntax-only",
-          "verb": "search",
-          "scenario": "cold",
-          "trial": 9,
-          "reuse": false,
-          "status": "partial"
-        },
-        "blocked": [
-          {
-            "repository": "kubernetes-kubernetes",
-            "profile": "syntax-only",
-            "verb": "snapshot",
-            "reason": "three consecutive failures; remaining planned observations unrun"
-          }
-        ]
-      },
-      "job_running": true
-    },
-    {
-      "vm": "graph-p1-worker-2",
-      "statuses": {
-        "unrun": 480,
-        "partial": 22
-      },
-      "progress": {
-        "stage": "campaign",
-        "observations": 502,
-        "last": {
-          "repository": "kubernetes-kubernetes",
-          "profile": "fast",
-          "verb": "search",
-          "scenario": "cold",
-          "trial": 10,
-          "reuse": true,
-          "status": "partial"
-        },
-        "blocked": [
-          {
-            "repository": "kubernetes-kubernetes",
-            "profile": "fast",
-            "verb": "snapshot",
-            "reason": "baseline hard-failure circuit breaker"
-          }
-        ]
-      },
-      "job_running": true
-    },
-    {
-      "vm": "graph-p1-worker-3",
-      "statuses": {
-        "unrun": 480,
-        "partial": 18
-      },
-      "progress": {
-        "stage": "campaign",
-        "observations": 498,
-        "last": {
-          "repository": "kubernetes-kubernetes",
-          "profile": "full",
-          "verb": "search",
-          "scenario": "cold",
-          "trial": 8,
-          "reuse": true,
-          "status": "partial"
-        },
-        "blocked": [
-          {
-            "repository": "kubernetes-kubernetes",
-            "profile": "full",
-            "verb": "snapshot",
-            "reason": "baseline hard-failure circuit breaker"
-          }
-        ]
-      },
-      "job_running": true
-    }
-  ],
-  "pending_planned_requests": 15780
+  "pending_planned_requests": 15730,
+  "heartbeat_status": "PAUSED",
+  "pause_reason": "Diagnose cache-on timeouts and partial-result validity before any further measurement"
 }

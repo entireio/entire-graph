@@ -1,0 +1,26 @@
+[
+  {
+    "vm": "graph-validation-linux",
+    "archive": "p1-20260905-paused-worker-1.tar.gz",
+    "output": [
+      "Enable succeeded: \n[stdout]\nc5a99e55997c372321ae9076fc457f670bfbc3035342de51ad0b2c43ca3db330  /opt/p1/paused-results.tar.gz\n\n[stderr]\n"
+    ],
+    "local_sha256": "c5a99e55997c372321ae9076fc457f670bfbc3035342de51ad0b2c43ca3db330"
+  },
+  {
+    "vm": "graph-p1-worker-2",
+    "archive": "p1-20260905-paused-worker-2.tar.gz",
+    "output": [
+      "Enable succeeded: \n[stdout]\n473ce460e920c110d4f16fa2b23d3706fe472bcf477ed0e2a492fe79d7f876b0  /opt/p1/paused-results.tar.gz\n\n[stderr]\n"
+    ],
+    "local_sha256": "473ce460e920c110d4f16fa2b23d3706fe472bcf477ed0e2a492fe79d7f876b0"
+  },
+  {
+    "vm": "graph-p1-worker-3",
+    "archive": "p1-20260905-paused-worker-3.tar.gz",
+    "output": [
+      "Enable succeeded: \n[stdout]\ned52f092ba1f9a595d56f7b8ed23aa5e72a43881abc523af705e02611228c905  /opt/p1/paused-results.tar.gz\n\n[stderr]\n"
+    ],
+    "local_sha256": "ed52f092ba1f9a595d56f7b8ed23aa5e72a43881abc523af705e02611228c905"
+  }
+]
