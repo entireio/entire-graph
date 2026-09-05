@@ -1635,6 +1635,89 @@ func TestSearchVerifyExplainReportsAFailingExplainFilter(t *testing.T) {
 	}
 }
 
+// TestSearchVerifyExplainContainsTheCallersFragment is the regression for the explain fragment
+// escaping the wrapper it is supposed to be a stage of.
+//
+// `explain` is a raw shell fragment from `--verify-explain`, and it was interpolated bare into the
+// wrapper's command list. `|` binds tighter than `;`, so a fragment ending in a control word did not
+// stay inside the pipeline: `--verify-explain 'cat; exit 0'` composed to
+//
+//	( o=$(<test> 2>&1); r=$?; printf '%s\n' "$o" | cat; exit 0; e=$?; [ "$r" -ne 0 ] && exit "$r"; … )
+//
+// where `exit 0` is a sibling of the pipeline, not part of it. It ended the WRAPPER — before `e=$?`,
+// and before the saved test status was ever consulted — so a test that exited 7 reported 0. That is
+// the exact false pass the capture exists to prevent, produced by a filter that looks like a filter.
+//
+// As with its siblings, the assertion is a REAL execution in every POSIX-ish shell on the machine:
+// the claim is about where a shell draws the boundary of a pipeline, not about a string.
+func TestSearchVerifyExplainContainsTheCallersFragment(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell semantics")
+	}
+	shells := []string{"sh"}
+	for _, candidate := range []string{"dash", "bash", "zsh"} {
+		if _, err := exec.LookPath(candidate); err == nil {
+			shells = append(shells, candidate)
+		}
+	}
+	for _, test := range []struct {
+		name     string
+		command  string
+		explain  string
+		wantExit int
+	}{{
+		// The report. `exit` is the reachable one: it is ordinary shell, and a caller writing a
+		// filter that swallows a status is writing something that reads as reasonable.
+		name:     "a filter that exits cannot end the wrapper",
+		command:  `sh -c 'echo the test output; exit 7'`,
+		explain:  "cat; exit 0",
+		wantExit: 7,
+	}, {
+		// `exec` replaces the shell rather than ending it, and reaches the same place: everything
+		// after the fragment — including the test-status check — is simply never executed.
+		name:     "a filter that execs cannot replace the wrapper",
+		command:  `sh -c 'echo the test output; exit 7'`,
+		explain:  "cat >/dev/null; exec true",
+		wantExit: 7,
+	}, {
+		// A green test with a fragment that exits nonzero must still report the FILTER's status, so
+		// the containment must not swallow the other direction either.
+		name:     "a filter that exits nonzero on a green test still reports its status",
+		command:  `sh -c 'echo the test output; exit 0'`,
+		explain:  "cat >/dev/null; exit 3",
+		wantExit: 3,
+	}} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			composed, overhead := composeSearchVerifyExplain(test.command, test.explain)
+			if overhead != len(composed)-len(test.command) {
+				t.Fatalf("overhead %d does not account for the whole wrapper (%d)",
+					overhead, len(composed)-len(test.command))
+			}
+			for _, shell := range shells {
+				t.Run(shell, func(t *testing.T) {
+					t.Parallel()
+					output, err := exec.Command(shell, "-c", composed).CombinedOutput()
+					exit := 0
+					if err != nil {
+						status, ok := err.(*exec.ExitError)
+						if !ok {
+							t.Fatalf("%s: %v (output %q)", shell, err, output)
+						}
+						exit = status.ExitCode()
+					}
+					if exit != test.wantExit {
+						t.Fatalf("%s: exit code = %d, want %d — the caller's explain fragment escaped "+
+							"the pipeline stage it is supposed to be; command = %s output = %q",
+							shell, exit, test.wantExit, composed, output)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestSearchVerifyBuildCheckDoesNotExecuteRepositoryData is the build-check derivation's own
 // side-effect proof.
 //
