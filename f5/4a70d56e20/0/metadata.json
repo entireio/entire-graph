@@ -1,0 +1,68 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "f54a70d56e20",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-05T19:27:05.137032Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence-index.md",
+    "docs/implementation/graph-advantage/evidence/review-azure-final-state.json",
+    "docs/implementation/graph-advantage/evidence/review-check-result.json",
+    "docs/implementation/graph-advantage/evidence/review-final-validation.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-combination-initial.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-combination.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-correctness-initial.txt",
+    "docs/implementation/graph-advantage/evidence/review-linux-correctness.txt",
+    "docs/implementation/graph-advantage/evidence/review-linux-git.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-queries-initial.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-queries.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-result.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-run-command-initial.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-run-command.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-source-initial.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-source.json",
+    "docs/implementation/graph-advantage/evidence/review-mise-check.txt",
+    "docs/implementation/graph-advantage/evidence/review-source-freeze.json",
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/review-summary.md"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "6e0d474d1bae",
+  "checkpoint_transcript_start": 2921,
+  "transcript_lines_at_start": 2921,
+  "compact_transcript_start": 351,
+  "token_usage": {
+    "input_tokens": 23712,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 3371264,
+    "output_tokens": 10507,
+    "api_call_count": 29
+  },
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-05T19:27:04.808554Z",
+    "agent_lines": 15699,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 15699,
+    "total_lines_changed": 15699,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "f54a70d56e20",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence-index.md",
+    "docs/implementation/graph-advantage/evidence/review-azure-final-state.json",
+    "docs/implementation/graph-advantage/evidence/review-check-result.json",
+    "docs/implementation/graph-advantage/evidence/review-final-validation.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-combination-initial.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-combination.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-correctness-initial.txt",
+    "docs/implementation/graph-advantage/evidence/review-linux-correctness.txt",
+    "docs/implementation/graph-advantage/evidence/review-linux-git.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-queries-initial.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-queries.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-result.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-run-command-initial.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-run-command.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-source-initial.json",
+    "docs/implementation/graph-advantage/evidence/review-linux-source.json",
+    "docs/implementation/graph-advantage/evidence/review-mise-check.txt",
+    "docs/implementation/graph-advantage/evidence/review-source-freeze.json",
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/review-summary.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f5/4a70d56e20/0/metadata.json",
+      "transcript": "/f5/4a70d56e20/0/full.jsonl",
+      "compact_transcript": "/f5/4a70d56e20/0/transcript.jsonl",
+      "content_hash": "/f5/4a70d56e20/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 23712,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 3371264,
+    "output_tokens": 10507,
+    "api_call_count": 29
+  }
+}
