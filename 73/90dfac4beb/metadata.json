@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "7390dfac4beb",
+  "strategy": "manual-commit",
+  "branch": "audit/lang-cpp-inclass-declarations",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/parser_cpp_review_test.go",
+    "internal/sem/provider.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/73/90dfac4beb/0/metadata.json",
+      "transcript": "/73/90dfac4beb/0/full.jsonl",
+      "compact_transcript": "/73/90dfac4beb/0/transcript.jsonl",
+      "content_hash": "/73/90dfac4beb/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12882,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2420480,
+    "output_tokens": 2089,
+    "api_call_count": 15
+  }
+}
