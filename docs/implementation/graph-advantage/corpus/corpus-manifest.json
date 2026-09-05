@@ -11,12 +11,25 @@
   "query": "trace request routing and graph traversal",
   "repositories": [
     {
+      "all_indexed_bytes": 404361,
+      "all_indexed_count": 92,
+      "branch_variant_commit": "b923efffebf8efee0ad7c4d751f8f05f2dae0f57",
       "commit": "ae6be7469132cf471ca099d8c7bda4010c4ff7b2",
-      "eligible_bytes": 404361,
-      "eligible_count": 92,
       "eligible_ruleset": "p1-source-v1",
       "id": "go-chi-chi",
       "kind": "repository",
+      "language_source_bytes": {
+        "go": 351745,
+        "py": 0,
+        "ts": 0,
+        "tsx": 0
+      },
+      "language_source_counts": {
+        "go": 84,
+        "py": 0,
+        "ts": 0,
+        "tsx": 0
+      },
       "license": {
         "path": "LICENSE",
         "sha256": "a2d51b7515acfaff2f7a88688650f2fc4fd99561383e72bba2305e3db59a1647"
@@ -35,75 +48,90 @@
           "reversible": "remove the exact appended marker line"
         },
         {
-          "append": "\n<!-- P1-CORPUS go-chi-chi edit-3 -->\n",
+          "append": "// P1-CORPUS go-chi-chi edit-3\n",
           "marker": "P1-CORPUS go-chi-chi edit-3",
-          "path": "CHANGELOG.md",
+          "path": "middleware/url_format.go",
           "reversible": "remove the exact appended marker line"
         },
         {
-          "append": "# P1-CORPUS go-chi-chi edit-4\n",
+          "append": "// P1-CORPUS go-chi-chi edit-4\n",
           "marker": "P1-CORPUS go-chi-chi edit-4",
-          "path": ".github/FUNDING.yml",
+          "path": "middleware/get_head.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS go-chi-chi edit-5\n",
           "marker": "P1-CORPUS go-chi-chi edit-5",
-          "path": "middleware/url_format.go",
+          "path": "middleware/route_headers.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS go-chi-chi edit-6\n",
           "marker": "P1-CORPUS go-chi-chi edit-6",
-          "path": "middleware/get_head.go",
+          "path": "middleware/logger.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS go-chi-chi edit-7\n",
           "marker": "P1-CORPUS go-chi-chi edit-7",
-          "path": "middleware/route_headers.go",
+          "path": "_examples/hello-world/main.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS go-chi-chi edit-8\n",
           "marker": "P1-CORPUS go-chi-chi edit-8",
-          "path": "middleware/logger.go",
+          "path": "_examples/graceful/main.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS go-chi-chi edit-9\n",
           "marker": "P1-CORPUS go-chi-chi edit-9",
-          "path": "_examples/hello-world/main.go",
+          "path": "middleware/strip_test.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS go-chi-chi edit-10\n",
           "marker": "P1-CORPUS go-chi-chi edit-10",
-          "path": "_examples/graceful/main.go",
+          "path": "middleware/compress_test.go",
           "reversible": "remove the exact appended marker line"
         }
       ],
+      "query": "find the middleware symbol or entrypoint in middleware/recoverer.go",
+      "raw_tracked_count": 105,
       "selected_paths": [
         "middleware/recoverer.go",
         "tree.go",
-        "CHANGELOG.md",
-        ".github/FUNDING.yml",
         "middleware/url_format.go",
         "middleware/get_head.go",
         "middleware/route_headers.go",
         "middleware/logger.go",
         "_examples/hello-world/main.go",
-        "_examples/graceful/main.go"
+        "_examples/graceful/main.go",
+        "middleware/strip_test.go",
+        "middleware/compress_test.go"
       ],
       "source": "https://github.com/go-chi/chi.git"
     },
     {
+      "all_indexed_bytes": 156310441,
+      "all_indexed_count": 19782,
+      "branch_variant_commit": "feba670a2bad0fb1032e812cb717f79d57088c7d",
       "commit": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
-      "eligible_bytes": 158427587,
-      "eligible_count": 20179,
       "eligible_ruleset": "p1-source-v1",
       "id": "kubernetes-kubernetes",
       "kind": "repository",
+      "language_source_bytes": {
+        "go": 130467473,
+        "py": 27634,
+        "ts": 0,
+        "tsx": 0
+      },
+      "language_source_counts": {
+        "go": 12824,
+        "py": 7,
+        "ts": 0,
+        "tsx": 0
+      },
       "license": {
         "path": "LICENSE",
         "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
@@ -134,63 +162,78 @@
           "reversible": "remove the exact appended marker line"
         },
         {
-          "append": "# P1-CORPUS kubernetes-kubernetes edit-5\n",
+          "append": "// P1-CORPUS kubernetes-kubernetes edit-5\n",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-5",
-          "path": "test/integration/scheduler_perf/event_handling/templates/podadd-pod-interpodaffinity.yaml",
+          "path": "staging/src/k8s.io/client-go/applyconfigurations/apps/v1beta1/statefulsetordinals.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS kubernetes-kubernetes edit-6\n",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-6",
-          "path": "staging/src/k8s.io/client-go/applyconfigurations/apps/v1beta1/statefulsetordinals.go",
+          "path": "pkg/apis/apps/v1beta2/defaults_test.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS kubernetes-kubernetes edit-7\n",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-7",
-          "path": "pkg/apis/apps/v1beta2/defaults_test.go",
+          "path": "staging/src/k8s.io/client-go/rest/url_utils.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS kubernetes-kubernetes edit-8\n",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-8",
-          "path": "staging/src/k8s.io/client-go/rest/url_utils.go",
+          "path": "staging/src/k8s.io/kubectl/pkg/cmd/create/create_cronjob_test.go",
           "reversible": "remove the exact appended marker line"
         },
         {
-          "append": "# P1-CORPUS kubernetes-kubernetes edit-9\n",
+          "append": "// P1-CORPUS kubernetes-kubernetes edit-9\n",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-9",
-          "path": "staging/src/k8s.io/api/testdata/v1.36.0/extensions.v1beta1.ReplicaSet.yaml",
+          "path": "staging/src/k8s.io/client-go/kubernetes/typed/admissionregistration/v1/admissionregistration_client.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS kubernetes-kubernetes edit-10\n",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-10",
-          "path": "staging/src/k8s.io/kubectl/pkg/cmd/create/create_cronjob_test.go",
+          "path": "test/integration/statefulset/statefulset_test.go",
           "reversible": "remove the exact appended marker line"
         }
       ],
+      "query": "find the Copyright symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
+      "raw_tracked_count": 31253,
       "selected_paths": [
         "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
         "pkg/scheduler/apis/config/latest/latest.go",
         "staging/src/k8s.io/client-go/applyconfigurations/flowcontrol/v1beta2/prioritylevelconfigurationspec.go",
         "test/e2e_node/util_machineinfo_unsupported.go",
-        "test/integration/scheduler_perf/event_handling/templates/podadd-pod-interpodaffinity.yaml",
         "staging/src/k8s.io/client-go/applyconfigurations/apps/v1beta1/statefulsetordinals.go",
         "pkg/apis/apps/v1beta2/defaults_test.go",
         "staging/src/k8s.io/client-go/rest/url_utils.go",
-        "staging/src/k8s.io/api/testdata/v1.36.0/extensions.v1beta1.ReplicaSet.yaml",
-        "staging/src/k8s.io/kubectl/pkg/cmd/create/create_cronjob_test.go"
+        "staging/src/k8s.io/kubectl/pkg/cmd/create/create_cronjob_test.go",
+        "staging/src/k8s.io/client-go/kubernetes/typed/admissionregistration/v1/admissionregistration_client.go",
+        "test/integration/statefulset/statefulset_test.go"
       ],
       "source": "https://github.com/kubernetes/kubernetes.git"
     },
     {
+      "all_indexed_bytes": 4236067,
+      "all_indexed_count": 487,
+      "branch_variant_commit": "0dbe1fa0ff6a35133edd5c38871faf5ed9f38453",
       "commit": "7a00236683c79000dbab0d92f6faf0b7fba39f59",
-      "eligible_bytes": 4358142,
-      "eligible_count": 544,
       "eligible_ruleset": "p1-source-v1",
       "id": "colinhacks-zod",
       "kind": "repository",
+      "language_source_bytes": {
+        "go": 0,
+        "py": 0,
+        "ts": 3306260,
+        "tsx": 0
+      },
+      "language_source_counts": {
+        "go": 0,
+        "py": 0,
+        "ts": 448,
+        "tsx": 0
+      },
       "license": {
         "path": "LICENSE",
         "sha256": "3f1189b28e3866e0d979968d466b78f813f76827cfdca1fbb124cc0a5c8841f8"
@@ -205,79 +248,94 @@
         {
           "append": "// P1-CORPUS colinhacks-zod edit-2\n",
           "marker": "P1-CORPUS colinhacks-zod edit-2",
-          "path": "packages/docs/app/api/search/route.ts",
+          "path": "packages/integration/fixtures/internal-types/index.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-3\n",
           "marker": "P1-CORPUS colinhacks-zod edit-3",
-          "path": "packages/integration/fixtures/internal-types/index.ts",
+          "path": "packages/bench/memory/prop-arrays.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-4\n",
           "marker": "P1-CORPUS colinhacks-zod edit-4",
-          "path": "packages/bench/memory/prop-arrays.ts",
+          "path": "packages/bench/compile-endswith.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-5\n",
           "marker": "P1-CORPUS colinhacks-zod edit-5",
-          "path": "packages/bench/compile-endswith.ts",
+          "path": "packages/bench/memory/leaks.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-6\n",
           "marker": "P1-CORPUS colinhacks-zod edit-6",
-          "path": ".configs/rollup.config.js",
+          "path": "packages/bench/compile-scaling.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-7\n",
           "marker": "P1-CORPUS colinhacks-zod edit-7",
-          "path": "packages/bench/memory/leaks.ts",
+          "path": "packages/zod/src/v4/classic/tests/properties.test.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-8\n",
           "marker": "P1-CORPUS colinhacks-zod edit-8",
-          "path": "packages/bench/compile-scaling.ts",
+          "path": "packages/zod/src/v3/tests/async-refinements.test.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-9\n",
           "marker": "P1-CORPUS colinhacks-zod edit-9",
-          "path": "packages/zod/src/v4/classic/tests/properties.test.ts",
+          "path": "packages/zod/src/v4/mini/tests/apply.test.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-10\n",
           "marker": "P1-CORPUS colinhacks-zod edit-10",
-          "path": "packages/zod/src/v3/tests/async-refinements.test.ts",
+          "path": "packages/zod/src/v4/classic/tests/index.test.ts",
           "reversible": "remove the exact appended marker line"
         }
       ],
+      "query": "find the expect symbol or entrypoint in packages/zod/src/v4/classic/tests/coalesce.test.ts",
+      "raw_tracked_count": 722,
       "selected_paths": [
         "packages/zod/src/v4/classic/tests/coalesce.test.ts",
-        "packages/docs/app/api/search/route.ts",
         "packages/integration/fixtures/internal-types/index.ts",
         "packages/bench/memory/prop-arrays.ts",
         "packages/bench/compile-endswith.ts",
-        ".configs/rollup.config.js",
         "packages/bench/memory/leaks.ts",
         "packages/bench/compile-scaling.ts",
         "packages/zod/src/v4/classic/tests/properties.test.ts",
-        "packages/zod/src/v3/tests/async-refinements.test.ts"
+        "packages/zod/src/v3/tests/async-refinements.test.ts",
+        "packages/zod/src/v4/mini/tests/apply.test.ts",
+        "packages/zod/src/v4/classic/tests/index.test.ts"
       ],
       "source": "https://github.com/colinhacks/zod.git"
     },
     {
+      "all_indexed_bytes": 483603,
+      "all_indexed_count": 58,
+      "branch_variant_commit": "8225dae4e882351509a868f1108fc95485bb684f",
       "commit": "dae7ef63b4df6eded86637f251fc4e3a06c3b479",
-      "eligible_bytes": 502274,
-      "eligible_count": 62,
       "eligible_ruleset": "p1-source-v1",
       "id": "psf-requests",
       "kind": "repository",
+      "language_source_bytes": {
+        "go": 0,
+        "py": 390104,
+        "ts": 0,
+        "tsx": 0
+      },
+      "language_source_counts": {
+        "go": 0,
+        "py": 35,
+        "ts": 0,
+        "tsx": 0
+      },
       "license": {
         "path": "LICENSE",
         "sha256": "09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b"
@@ -310,62 +368,77 @@
         {
           "append": "# P1-CORPUS psf-requests edit-5\n",
           "marker": "P1-CORPUS psf-requests edit-5",
-          "path": ".github/FUNDING.yml",
+          "path": "src/requests/_internal_utils.py",
           "reversible": "remove the exact appended marker line"
         },
         {
-          "append": "\n<!-- P1-CORPUS psf-requests edit-6 -->\n",
+          "append": "# P1-CORPUS psf-requests edit-6\n",
           "marker": "P1-CORPUS psf-requests edit-6",
-          "path": "tests/certs/expired/README.md",
+          "path": "src/requests/help.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-7\n",
           "marker": "P1-CORPUS psf-requests edit-7",
-          "path": ".github/workflows/lint.yml",
+          "path": "src/requests/_types.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-8\n",
           "marker": "P1-CORPUS psf-requests edit-8",
-          "path": "src/requests/_internal_utils.py",
+          "path": "tests/test_packages.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-9\n",
           "marker": "P1-CORPUS psf-requests edit-9",
-          "path": "src/requests/help.py",
+          "path": "tests/test_utils.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-10\n",
           "marker": "P1-CORPUS psf-requests edit-10",
-          "path": "src/requests/_types.py",
+          "path": "src/requests/api.py",
           "reversible": "remove the exact appended marker line"
         }
       ],
+      "query": "find the Requests symbol or entrypoint in tests/__init__.py",
+      "raw_tracked_count": 130,
       "selected_paths": [
         "tests/__init__.py",
         "tests/test_requests.py",
         "tests/testserver/server.py",
         "src/requests/models.py",
-        ".github/FUNDING.yml",
-        "tests/certs/expired/README.md",
-        ".github/workflows/lint.yml",
         "src/requests/_internal_utils.py",
         "src/requests/help.py",
-        "src/requests/_types.py"
+        "src/requests/_types.py",
+        "tests/test_packages.py",
+        "tests/test_utils.py",
+        "src/requests/api.py"
       ],
       "source": "https://github.com/psf/requests.git"
     },
     {
+      "all_indexed_bytes": 236437572,
+      "all_indexed_count": 650,
+      "branch_variant_commit": "a5398c7eacab089a384f1f2c706de57be47027e4",
       "commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
-      "eligible_bytes": 237107400,
-      "eligible_count": 718,
       "eligible_ruleset": "p1-source-v1",
-      "fixture_commit": "d6477655cafe01d9513b2d60b0eb4f146e6b3797",
+      "fixture_commit": "7883e58ab52ee340d69cad90d20c32e9b5d5fd7a",
       "id": "entire-graph-frozen-88dd1dc9",
       "kind": "repository",
+      "language_source_bytes": {
+        "go": 8993799,
+        "py": 198982,
+        "ts": 3125,
+        "tsx": 0
+      },
+      "language_source_counts": {
+        "go": 513,
+        "py": 16,
+        "ts": 9,
+        "tsx": 0
+      },
       "license": {
         "path": "LICENSE",
         "sha256": "7e763e0342febb10b46d5ea3d513c7d07a59dc09be3c508d01de899b6086fe25"
@@ -384,79 +457,95 @@
           "reversible": "remove the exact appended marker line"
         },
         {
-          "append": "# P1-CORPUS entire-graph-frozen-88dd1dc9 edit-3\n",
+          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-3\n",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-3",
-          "path": "docs/implementation/graph-advantage/probes/linux_gopls_probe.py",
+          "path": "internal/sem/ocaml_test.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS entire-graph-frozen-88dd1dc9 edit-4\n",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-4",
-          "path": "internal/sem/testdata/fixtures/formats-config/kustomization.yaml",
+          "path": "tools/ci-bench/windows-production/run_shard.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-5\n",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-5",
-          "path": "internal/sem/ocaml_test.go",
+          "path": "internal/sem/grammars/perl/binding.go",
           "reversible": "remove the exact appended marker line"
         },
         {
-          "append": "# P1-CORPUS entire-graph-frozen-88dd1dc9 edit-6\n",
+          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-6\n",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-6",
-          "path": "tools/ci-bench/windows-production/run_shard.py",
+          "path": "internal/sem/search_file_class_test.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-7\n",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-7",
-          "path": "internal/sem/grammars/perl/binding.go",
+          "path": "internal/sem/parser_depth_test.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-8\n",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-8",
-          "path": "internal/sem/search_file_class_test.go",
+          "path": "internal/sem/ignore_scope_test.go",
           "reversible": "remove the exact appended marker line"
         },
         {
-          "append": "\n<!-- P1-CORPUS entire-graph-frozen-88dd1dc9 edit-9 -->\n",
+          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-9\n",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-9",
-          "path": "docs/archive/2026-08-07-prose-memory-ranking-v53-design.md",
+          "path": "internal/sem/java.go",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-10\n",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-10",
-          "path": "internal/sem/parser_depth_test.go",
+          "path": "internal/sem/search_covertest.go",
           "reversible": "remove the exact appended marker line"
         }
       ],
+      "query": "find the testing symbol or entrypoint in internal/sem/search_format_version_test.go",
+      "raw_tracked_count": 918,
       "selected_paths": [
         "internal/sem/search_format_version_test.go",
         "internal/sem/analyze_indexpolicy_test.go",
-        "docs/implementation/graph-advantage/probes/linux_gopls_probe.py",
-        "internal/sem/testdata/fixtures/formats-config/kustomization.yaml",
         "internal/sem/ocaml_test.go",
         "tools/ci-bench/windows-production/run_shard.py",
         "internal/sem/grammars/perl/binding.go",
         "internal/sem/search_file_class_test.go",
-        "docs/archive/2026-08-07-prose-memory-ranking-v53-design.md",
-        "internal/sem/parser_depth_test.go"
+        "internal/sem/parser_depth_test.go",
+        "internal/sem/ignore_scope_test.go",
+        "internal/sem/java.go",
+        "internal/sem/search_covertest.go"
       ],
       "source": "git archive from approved Entire Graph checkout"
     },
     {
-      "commit": "0ca1a16d390d7c99e62b15aed1067800e16a987b",
-      "eligible_bytes": 134287,
+      "all_indexed_bytes": 134287,
+      "all_indexed_count": 2000,
+      "branch_variant_commit": "3017f9a8775169eba08b68e2d7aa9cea5fc87421",
+      "commit": "1ec52db1ac0320506624701907a8819ed90c9c9c",
       "generation": "2000 independent source files: Go 667, TypeScript 667, Python 666",
       "generation_seed": 20260905,
       "id": "synthetic-2000",
       "kind": "synthetic",
+      "language_source_bytes": {
+        "go": 44742,
+        "py": 39740,
+        "ts": 49805
+      },
+      "language_source_counts": {
+        "go": 667,
+        "py": 666,
+        "ts": 667
+      },
       "license": {
         "path": null,
         "sha256": null
       },
+      "query": "find the function_130 symbol or entrypoint in src/py/file-0130.py",
+      "raw_tracked_count": 2000,
       "selected_paths": [
         "src/py/file-0130.py",
         "src/go/file-0443.go",
@@ -468,15 +557,7 @@
         "src/py/file-0650.py",
         "src/go/file-0041.go",
         "src/ts/file-0042.ts"
-      ],
-      "source_counts": {
-        "by_extension": {
-          "go": 667,
-          "py": 666,
-          "ts": 667
-        },
-        "total": 2000
-      }
+      ]
     }
   ],
   "scenarios": [
@@ -497,8 +578,12 @@
       "operation": "apply all ten overlays and query"
     },
     {
-      "id": "rename-delete",
-      "operation": "rename selected_paths[0], delete selected_paths[1], query, then restore"
+      "id": "rename",
+      "operation": "rename selected_paths[0] to the same-extension *_p1 path, query, then restore"
+    },
+    {
+      "id": "delete",
+      "operation": "delete selected_paths[1], query, then restore"
     },
     {
       "id": "branch-switch",
@@ -521,9 +606,16 @@
       ".svn",
       "_output",
       "bazel-out",
+      "benchmark",
+      "benchmarks",
       "build",
       "coverage",
       "dist",
+      "doc",
+      "docs",
+      "documentation",
+      "evidence",
+      "examples",
       "gen",
       "generated",
       "node_modules",
