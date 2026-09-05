@@ -22,11 +22,6 @@ type providerFileResult struct {
 	failures              []PartialFailure
 }
 
-type providerFileJob struct {
-	index int
-	path  string
-}
-
 func defaultProviderWorkerCount() int {
 	return boundedProviderWorkerCount(runtime.GOMAXPROCS(0))
 }
@@ -271,19 +266,49 @@ func runProviderFilePipeline(
 	process func(context.Context, int, string) providerFileResult,
 	reduce func(providerFileResult) error,
 ) error {
-	if len(paths) == 0 {
+	return runIndexedPipeline(ctx, len(paths), workers,
+		func(workerCtx context.Context, index int) providerFileResult {
+			return process(workerCtx, index, paths[index])
+		},
+		func(_ int, result providerFileResult) error { return reduce(result) },
+	)
+}
+
+// runIndexedPipeline processes count items concurrently and reduces the results
+// in exact index order, so the work is parallel and the output is not. Both
+// parsing and analysis phases run on it; relations use bounded streaming below.
+//
+// Ordering is the whole contract. reduce sees index 0, then 1, and so on, no
+// matter which worker finishes first, so worker timing cannot reach the emitted
+// bytes. process must not touch anything reduce touches.
+//
+// The coordinator admits at most twice the worker count of results that have not
+// yet been reduced, which bounds what a slow reducer, or one item far behind its
+// neighbours, can leave buffered.
+func runIndexedPipeline[T any](
+	ctx context.Context,
+	count, workers int,
+	process func(ctx context.Context, index int) T,
+	reduce func(index int, result T) error,
+) error {
+	if count == 0 {
 		return ctx.Err()
 	}
 	if workers < 1 {
 		workers = 1
 	}
-	if workers > len(paths) {
-		workers = len(paths)
+	if workers > count {
+		workers = count
+	}
+
+	type indexed struct {
+		index  int
+		result T
 	}
 
 	workerCtx, cancel := context.WithCancel(ctx)
-	jobs := make(chan providerFileJob)
-	results := make(chan providerFileResult, workers)
+	jobs := make(chan int)
+	results := make(chan indexed, workers)
 	var workerGroup sync.WaitGroup
 	workerGroup.Add(workers)
 	for range workers {
@@ -293,13 +318,13 @@ func runProviderFilePipeline(
 				select {
 				case <-workerCtx.Done():
 					return
-				case job, ok := <-jobs:
+				case index, ok := <-jobs:
 					if !ok {
 						return
 					}
-					result := process(workerCtx, job.index, job.path)
+					out := indexed{index: index, result: process(workerCtx, index)}
 					select {
-					case results <- result:
+					case results <- out:
 					case <-workerCtx.Done():
 						return
 					}
@@ -315,13 +340,12 @@ func runProviderFilePipeline(
 
 	limit := 2 * workers
 	nextSubmit, nextReduce, outstanding := 0, 0, 0
-	pending := make(map[int]providerFileResult, limit)
-	for nextReduce < len(paths) {
-		var submit chan<- providerFileJob
-		var job providerFileJob
-		if nextSubmit < len(paths) && outstanding < limit {
+	pending := make(map[int]T, limit)
+	for nextReduce < count {
+		var submit chan<- int
+		job := nextSubmit
+		if nextSubmit < count && outstanding < limit {
 			submit = jobs
-			job = providerFileJob{index: nextSubmit, path: paths[nextSubmit]}
 		}
 		select {
 		case <-ctx.Done():
@@ -329,14 +353,14 @@ func runProviderFilePipeline(
 		case submit <- job:
 			nextSubmit++
 			outstanding++
-		case result := <-results:
-			pending[result.index] = result
+		case out := <-results:
+			pending[out.index] = out.result
 			for {
 				ordered, ok := pending[nextReduce]
 				if !ok {
 					break
 				}
-				if err := reduce(ordered); err != nil {
+				if err := reduce(nextReduce, ordered); err != nil {
 					return err
 				}
 				delete(pending, nextReduce)

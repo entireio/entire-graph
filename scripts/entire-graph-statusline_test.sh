@@ -185,7 +185,6 @@ cache_file() { # cache_file <session-id> <transcript> -> absolute path
 RUN_BIN=$BIN
 mkdir -p "$WORK/cache"
 
-# A repo whose files give the counterfactual something to measure.
 REPO=$WORK/repo
 mkdir -p "$REPO"
 i=0
@@ -193,6 +192,11 @@ while [ "$i" -lt 5 ]; do
 	awk 'BEGIN{ while (n++ < 200) printf "package main // filler line\n" }' >"$REPO/file$i.go"
 	i=$((i + 1))
 done
+
+# The savings model prices a graph call against the exploration calls of the SAME session, so a
+# fixture that wants a non-zero saving has to make exploration cost more per call than the graph
+# did — which is the situation the badge exists to report.
+BIG_EXPLORE=$(awk 'BEGIN{ while (n++ < 400) printf "x" }')
 
 # --- integration: a graph-first session ------------------------------------------------------
 T=$WORK/graphfirst.jsonl
@@ -204,9 +208,9 @@ T=$WORK/graphfirst.jsonl
 	tool_use Bash g3 '{"command":"entire graph impact --repo . --symbol Login"}'
 	tool_result g3 "{\\\"results\\\":[{\\\"file_path\\\":\\\"$REPO/file2.go\\\"}]}"
 	tool_use Read r1 '{"file_path":"/x/a.go"}'
-	tool_result r1 'aaaa'
+	tool_result r1 "$BIG_EXPLORE"
 	tool_use Grep gr1 '{"pattern":"Login"}'
-	tool_result gr1 'bbbb'
+	tool_result gr1 "$BIG_EXPLORE"
 	usage 100 2000 8000 400
 } >"$T"
 

@@ -5,8 +5,15 @@ go = { version = "1.26" }
 description = "Run gofmt"
 run = "gofmt -s -w ."
 
+# Test fixtures create real Git repositories and commit to them. Without the env
+# below they inherit the developer's global and system Git config, and anything
+# there that makes `git commit` wait -- commit.gpgsign against a hardware key is
+# the one that bites -- is paid once per fixture commit. Neutering both files
+# took the dependents tests from 27s to 0.3s locally. CI never noticed: its
+# runners have no user config to inherit.
 [tasks.test]
 description = "Run tests"
+env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null" }
 run = "go test -timeout 30m ./..."
 
 [tasks.vet]
@@ -15,6 +22,7 @@ run = "go vet ./..."
 
 [tasks."test:ci"]
 description = "Run tests with race detection"
+env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null" }
 run = "go test -race -timeout 30m ./..."
 
 [tasks."test:statusline"]

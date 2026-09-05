@@ -81,12 +81,13 @@ func rustTurbofishCallIdentifiers(block string) map[string]struct{} {
 	return out
 }
 
+var rustModulePathCallsRe = regexp.MustCompile(`\b([a-z_]\w*)\s*::\s*([A-Za-z_]\w*)\s*\(`)
+
 func rustModulePathCalls(block string) []rustPathCall {
 	stripped := stripCodeLiteralsAndComments(block)
 	var out []rustPathCall
 	seen := map[string]bool{}
-	re := regexp.MustCompile(`\b([a-z_]\w*)\s*::\s*([A-Za-z_]\w*)\s*\(`)
-	for _, m := range re.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range rustModulePathCallsRe.FindAllStringSubmatch(stripped, -1) {
 		if len(m) != 3 {
 			continue
 		}
