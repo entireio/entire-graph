@@ -1,0 +1,9 @@
+Review entire trail 165
+
+---
+
+Implement the changes, update the trail, then check if there are new findings.
+
+---
+
+Keep closing the findings until none are found anymore. Don't post comments into the discussions, address the findings directly instead.
