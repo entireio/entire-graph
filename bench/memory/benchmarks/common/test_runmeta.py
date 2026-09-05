@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import signal
 import subprocess
 import tempfile
 import time
@@ -200,6 +202,99 @@ class CodeHashesTest(unittest.TestCase):
         )
         self.assertNotEqual(base["dirty_digest"], resized["dirty_digest"])
         self.assertNotEqual(resized["dirty_digest"], small_edit["dirty_digest"])
+
+    @unittest.skipUnless(hasattr(signal, "SIGALRM"), "needs a POSIX alarm")
+    @unittest.skipUnless(os.path.exists("/dev/zero"), "needs a character device")
+    def test_an_untracked_device_symlink_is_never_read(self) -> None:
+        """A byte budget is no protection on its own: /dev/zero stats as size 0,
+        so it passes any budget and then reads forever. Capture must never open
+        what is not a regular file."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+
+            def git(*args):
+                subprocess.run(("git",) + args, cwd=root, capture_output=True, check=True)
+
+            git("init", "-q")
+            git("config", "user.email", "t@t")
+            git("config", "user.name", "t")
+            (root / "tracked.py").write_text("base\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-qm", "base")
+            os.symlink("/dev/zero", root / "zero_link")
+            self.assertEqual(os.stat(root / "zero_link").st_size, 0,
+                             "premise: the device stats as size 0, inside any budget")
+
+            def _expired(signum, frame):
+                raise TimeoutError("git_state did not return")
+
+            # The watchdog is the only way out of an unbounded read of a
+            # character device. _file_digest catches OSError and TimeoutError
+            # is one, so an unguarded read surfaces as a 15s call rather than
+            # as a raise -- assert the elapsed time too.
+            previous = signal.signal(signal.SIGALRM, _expired)
+            signal.alarm(15)
+            started = time.monotonic()
+            try:
+                state = runmeta.git_state(root)
+            except TimeoutError:
+                self.fail("git_state hung: an untracked device symlink was read")
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, previous)
+            elapsed = time.monotonic() - started
+
+            lines = runmeta._untracked_digest_lines(
+                str(root),
+                lambda *a: subprocess.run(a, cwd=root, capture_output=True,
+                                          text=True).stdout.strip(),
+            )
+
+        self.assertIn("dirty_digest", state)
+        self.assertLess(elapsed, 5.0,
+                        f"git_state spent {elapsed:.1f}s reading a character device")
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(
+            lines[0].startswith("zero_link\0symlink not-a-regular-file mode:"),
+            f"a device symlink was not recorded as non-regular: {lines[0]!r}",
+        )
+
+    def test_a_symlinked_untracked_file_is_followed_and_labelled(self) -> None:
+        """An untracked implementation file may legitimately be a symlink, so
+        its target is what ran -- but replacing a file with a link to identical
+        bytes must still move the digest."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            outside = Path(tempdir + "-target")
+            outside.mkdir()
+
+            def git(*args):
+                subprocess.run(("git",) + args, cwd=root, capture_output=True, check=True)
+
+            git("init", "-q")
+            git("config", "user.email", "t@t")
+            git("config", "user.name", "t")
+            (root / "tracked.py").write_text("base\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-qm", "base")
+
+            (root / "impl.py").write_text("variant one\n", encoding="utf-8")
+            plain = runmeta.git_state(root)
+            (root / "impl.py").unlink()
+            target = outside / "impl.py"
+            target.write_text("variant one\n", encoding="utf-8")
+            os.symlink(target, root / "impl.py")
+            linked = runmeta.git_state(root)
+            target.write_text("variant two\n", encoding="utf-8")
+            retargeted = runmeta.git_state(root)
+
+            for path in (target, outside):
+                path.unlink() if path.is_file() else path.rmdir()
+
+        self.assertNotEqual(plain["dirty_digest"], linked["dirty_digest"],
+                            "a file swapped for a link to identical bytes")
+        self.assertNotEqual(linked["dirty_digest"], retargeted["dirty_digest"],
+                            "the symlink target's contents were not read")
 
     def test_hashes_entra_helper_and_dependency_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

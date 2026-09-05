@@ -14,6 +14,7 @@ import os
 import sys
 import re
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -530,7 +531,7 @@ def code_hashes(root: Path | str | None = None) -> dict:
 # digests identically to it. Reading those bodies is what closes that, but
 # reading them unbounded is its own hazard: a bench checkout routinely carries
 # a large untracked build artifact (78MB of `entire-graph-linux-amd64` in one
-# observed tree) and capture() runs at four metadata sites. So budget it —
+# observed tree) and capture() runs at four metadata sites. So budget it --
 # hash smallest-first, which covers the most files for a fixed number of bytes
 # and puts one oversized artifact last rather than first, and record anything
 # past the budget by size instead of dropping it, so the digest stays a total
@@ -540,10 +541,17 @@ _UNTRACKED_MAX_BYTES = 32 << 20  # 32 MiB
 
 
 def _untracked_digest_lines(root: str, run) -> list[str]:
-    """`name\\0<content digest | over-budget size:N>` for each untracked file.
+    """`name\\0<content digest | over-budget size:N | why not>` per untracked file.
 
     `--exclude-standard` keeps the set identical to the one `git status
     --porcelain` reports, so ignored build output never enters the budget.
+
+    Only regular files are ever opened. A byte budget is no protection on its
+    own: an untracked symlink to a character device stats as size 0, so it
+    passes any budget and then reads forever. A symlink is followed -- an
+    untracked implementation file may legitimately be one, and its target is
+    what ran -- but only to a regular file, and it is labelled so that swapping
+    a file for a link to identical bytes still moves the digest.
     """
     listing = run("git", "ls-files", "--others", "--exclude-standard",
                   "--full-name", "-z", "--", ":/")
@@ -553,26 +561,39 @@ def _untracked_digest_lines(root: str, run) -> list[str]:
     top = run("git", "rev-parse", "--show-toplevel")
     if not top:
         return []
-    sized = []
+    lines, candidates = [], []
     for name in names:
+        path = os.path.join(top, name)
         try:
-            sized.append((os.stat(os.path.join(top, name)).st_size, name))
+            entry = os.lstat(path)
+            linked = stat.S_ISLNK(entry.st_mode)
+            target = os.stat(path) if linked else entry
         except OSError:
-            sized.append((-1, name))
-    lines, budget, hashed = [], _UNTRACKED_MAX_BYTES, 0
-    for size, name in sorted(sized):
-        if size < 0:
+            # Also the dangling-symlink and symlink-loop case.
             lines.append(f"{name}\0unreadable")
-        elif hashed < _UNTRACKED_MAX_FILES and size <= budget:
+            continue
+        label = "symlink " if linked else ""
+        if not stat.S_ISREG(target.st_mode):
+            # Never opened. The mode still separates one non-regular entry from
+            # another, and from the regular file it may have replaced.
+            lines.append(f"{name}\0{label}not-a-regular-file mode:{target.st_mode:#o}")
+            continue
+        candidates.append((target.st_size, name, path, label))
+    budget, hashed = _UNTRACKED_MAX_BYTES, 0
+    for size, name, path, label in sorted(candidates):
+        if hashed < _UNTRACKED_MAX_FILES and size <= budget:
             budget -= size
             hashed += 1
             # _file_digest caches on (device, inode, size, mtime_ns), so the
             # four capture() sites in one run re-stat rather than re-read.
-            lines.append(f"{name}\0{_file_digest(os.path.join(top, name))}")
+            # Residual: a regular file replaced by a device between this stat
+            # and that open would still be read; closing it needs O_NONBLOCK
+            # plus an fstat, which no non-adversarial checkout needs.
+            lines.append(f"{name}\0{label}{_file_digest(path)}")
         else:
             # Size still separates most edits to a file this large, and the
             # marker keeps the artifact honest that its bytes were not read.
-            lines.append(f"{name}\0over-budget size:{size}")
+            lines.append(f"{name}\0{label}over-budget size:{size}")
     lines.sort()
     return lines
 
