@@ -1,0 +1,46 @@
+{
+  "binary_sha256": "640f15267da19c52bac73032b942149fa99a56beea676823ca06754f11955793",
+  "manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+  "input_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+  "compiler": "off",
+  "ranking": "current",
+  "runner_sha256": "a54dde8a676a46f45715c6bcf4841ce0e87cd998eb7d766386052f6c5ddf1d3a",
+  "scenario_sha256": "6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75",
+  "assignment": [
+    {
+      "repository": "kubernetes-kubernetes",
+      "profile": "syntax-only"
+    },
+    {
+      "repository": "entire-graph-frozen-88dd1dc9",
+      "profile": "full"
+    },
+    {
+      "repository": "colinhacks-zod",
+      "profile": "fast"
+    },
+    {
+      "repository": "psf-requests",
+      "profile": "syntax-only"
+    },
+    {
+      "repository": "synthetic-2000",
+      "profile": "full"
+    },
+    {
+      "repository": "go-chi-chi",
+      "profile": "fast"
+    }
+  ],
+  "stage": "baseline",
+  "uname": [
+    "Linux",
+    "graph-validation-linux",
+    "6.8.0-1064-azure",
+    "#72~22.04.1-Ubuntu SMP Wed Jul 22 23:39:45 UTC 2026",
+    "x86_64"
+  ],
+  "page_cache": "ordered whole-file prime before each request; no disk-cold claim",
+  "rss": "Linux wait4 whole child including verification; harness overhead included",
+  "trials": 30
+}

@@ -26,6 +26,7 @@ def baseline_row(
     total_ns: int | None = 100,
     status: str = "ok",
     partial_failures_count: int = 0,
+    partial_failures: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     row: dict[str, object] = {
         "repository": repository,
@@ -38,6 +39,8 @@ def baseline_row(
         "status": status,
         "partial_failures_count": partial_failures_count,
     }
+    if partial_failures is not None:
+        row["partial_failures"] = partial_failures
     if parse_ns is not None or total_ns is not None:
         row["phase_ns"] = {}
         if parse_ns is not None:
@@ -107,7 +110,7 @@ class FinalizeBaselineTest(unittest.TestCase):
             root = Path(directory)
             workers: list[Path] = []
             workers.append(write_worker(root / "worker-a", [{"repository": "repo-a", "profile": "fast"}], [baseline_row("repo-a", "fast", "snapshot", trial) for trial in range(3)]))
-            workers.append(write_worker(root / "worker-b", [{"repository": "repo-b", "profile": "fast"}], [baseline_row("repo-b", "fast", "snapshot", trial, status="partial", partial_failures_count=1) for trial in range(3)]))
+            workers.append(write_worker(root / "worker-b", [{"repository": "repo-b", "profile": "fast"}], [baseline_row("repo-b", "fast", "snapshot", trial, status="partial", partial_failures_count=1, partial_failures=[{"code": "E_PARSE_ERROR", "severity": "warning", "effect_on_semantic_completeness": "partial"}]) for trial in range(3)]))
             blocked = [{"repository": "repo-c", "profile": "full", "verb": "snapshot", "reason": "three hard failures"}]
             workers.append(write_worker(root / "worker-c", [{"repository": "repo-c", "profile": "full"}], [], blocked=blocked))
 
@@ -116,6 +119,7 @@ class FinalizeBaselineTest(unittest.TestCase):
         profiles = {(entry["repository"], entry["verb"]): entry for entry in result["baseline_phase_profiles"]}
         self.assertFalse(profiles[("repo-b", "snapshot")]["eligible"])
         self.assertIn("status=partial", profiles[("repo-b", "snapshot")]["baseline_observation_issues"])
+        self.assertEqual(profiles[("repo-b", "snapshot")]["partial_reasons"]["reasons"][0]["code"], "E_PARSE_ERROR")
         self.assertFalse(profiles[("repo-c", "snapshot")]["eligible"])
         self.assertIn("blocked stratum", profiles[("repo-c", "snapshot")]["baseline_observation_issues"])
         self.assertTrue(result["blocked_strata"])

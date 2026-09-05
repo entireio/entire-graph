@@ -1,0 +1,1357 @@
+{
+  "baseline_phase_profiles": [
+    {
+      "baseline_observation_issues": [
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "fast",
+      "reason_code": "baseline_incomplete",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "full",
+      "reason_code": "baseline_incomplete",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "syntax-only",
+      "reason_code": "baseline_incomplete",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": true,
+      "expected_repetitions": 3,
+      "extraction_share": 0.24333583344628856,
+      "median_phaseParse_ns": 2138543407.0,
+      "median_total_ns": 8788444253.0,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "phaseParse_ns": [
+        2133948743.0,
+        2145801024.0,
+        2138543407.0
+      ],
+      "profile": "fast",
+      "reason_code": "below_parse_majority_threshold",
+      "repository": "entire-graph-frozen-88dd1dc9",
+      "scenario": "one-edit",
+      "threshold": 0.5,
+      "total_ns": [
+        9015041988.0,
+        8771991735.0,
+        8788444253.0
+      ],
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 15,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 15,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "full",
+      "reason_code": "baseline_incomplete",
+      "repository": "entire-graph-frozen-88dd1dc9",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": true,
+      "expected_repetitions": 3,
+      "extraction_share": 0.8737326733051574,
+      "median_phaseParse_ns": 2183134756.0,
+      "median_total_ns": 2498630099.0,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": true,
+      "phaseParse_ns": [
+        2184316418.0,
+        2183134756.0,
+        2126459870.0
+      ],
+      "profile": "syntax-only",
+      "repository": "entire-graph-frozen-88dd1dc9",
+      "scenario": "one-edit",
+      "threshold": 0.5,
+      "total_ns": [
+        2508342768.0,
+        2498630099.0,
+        2441211595.0
+      ],
+      "verb": "snapshot"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": true,
+      "expected_repetitions": 3,
+      "extraction_share": 0.24996125194154836,
+      "median_phaseParse_ns": 88411693.0,
+      "median_total_ns": 353701593.0,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "phaseParse_ns": [
+        88411693.0,
+        89996405.0,
+        85136939.0
+      ],
+      "profile": "fast",
+      "reason_code": "below_parse_majority_threshold",
+      "repository": "go-chi-chi",
+      "scenario": "one-edit",
+      "threshold": 0.5,
+      "total_ns": [
+        353701593.0,
+        350924903.0,
+        363934878.0
+      ],
+      "verb": "snapshot"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": true,
+      "expected_repetitions": 3,
+      "extraction_share": 0.0883954970677153,
+      "median_phaseParse_ns": 97228696.0,
+      "median_total_ns": 1099928155.0,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "phaseParse_ns": [
+        104020818.0,
+        97228696.0,
+        88728674.0
+      ],
+      "profile": "full",
+      "reason_code": "below_parse_majority_threshold",
+      "repository": "go-chi-chi",
+      "scenario": "one-edit",
+      "threshold": 0.5,
+      "total_ns": [
+        1099928155.0,
+        1089662262.0,
+        1116246613.0
+      ],
+      "verb": "snapshot"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": true,
+      "expected_repetitions": 3,
+      "extraction_share": 0.6755789337858927,
+      "median_phaseParse_ns": 91770741.0,
+      "median_total_ns": 135840146.0,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": true,
+      "phaseParse_ns": [
+        91436873.0,
+        94608257.0,
+        91770741.0
+      ],
+      "profile": "syntax-only",
+      "repository": "go-chi-chi",
+      "scenario": "one-edit",
+      "threshold": 0.5,
+      "total_ns": [
+        135840146.0,
+        138512977.0,
+        133428631.0
+      ],
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "blocked stratum",
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=timeout"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "profile": "fast",
+      "reason_code": "baseline_incomplete",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "blocked stratum",
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=timeout"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "profile": "full",
+      "reason_code": "baseline_incomplete",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 582,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_FILE_TOO_LARGE",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "rows": 3,
+            "severity": "warning"
+          },
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 93,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "syntax-only",
+      "reason_code": "baseline_incomplete",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": true,
+      "expected_repetitions": 3,
+      "extraction_share": 0.13873722457631307,
+      "median_phaseParse_ns": 121510285.0,
+      "median_total_ns": 875830444.0,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "phaseParse_ns": [
+        121097991.0,
+        123664168.0,
+        121510285.0
+      ],
+      "profile": "fast",
+      "reason_code": "below_parse_majority_threshold",
+      "repository": "psf-requests",
+      "scenario": "one-edit",
+      "threshold": 0.5,
+      "total_ns": [
+        887073109.0,
+        875830444.0,
+        869736695.0
+      ],
+      "verb": "snapshot"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": true,
+      "expected_repetitions": 3,
+      "extraction_share": 0.06399213062123427,
+      "median_phaseParse_ns": 122043196.0,
+      "median_total_ns": 1907159440.0,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "phaseParse_ns": [
+        125802076.0,
+        122043196.0,
+        116338893.0
+      ],
+      "profile": "full",
+      "reason_code": "below_parse_majority_threshold",
+      "repository": "psf-requests",
+      "scenario": "one-edit",
+      "threshold": 0.5,
+      "total_ns": [
+        1907210995.0,
+        1899785995.0,
+        1907159440.0
+      ],
+      "verb": "snapshot"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": true,
+      "expected_repetitions": 3,
+      "extraction_share": 0.6850011801006665,
+      "median_phaseParse_ns": 111628254.0,
+      "median_total_ns": 162960674.0,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": true,
+      "phaseParse_ns": [
+        111670925.0,
+        107468274.0,
+        111628254.0
+      ],
+      "profile": "syntax-only",
+      "repository": "psf-requests",
+      "scenario": "one-edit",
+      "threshold": 0.5,
+      "total_ns": [
+        164772012.0,
+        158093772.0,
+        162960674.0
+      ],
+      "verb": "snapshot"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": true,
+      "expected_repetitions": 3,
+      "extraction_share": 0.133929866603016,
+      "median_phaseParse_ns": 85515591.0,
+      "median_total_ns": 638510238.0,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "phaseParse_ns": [
+        85370529.0,
+        85515591.0,
+        86737115.0
+      ],
+      "profile": "fast",
+      "reason_code": "below_parse_majority_threshold",
+      "repository": "synthetic-2000",
+      "scenario": "one-edit",
+      "threshold": 0.5,
+      "total_ns": [
+        640246681.0,
+        635569173.0,
+        638510238.0
+      ],
+      "verb": "snapshot"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": true,
+      "expected_repetitions": 3,
+      "extraction_share": 0.0890251702200342,
+      "median_phaseParse_ns": 76577491.0,
+      "median_total_ns": 860177979.0,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "phaseParse_ns": [
+        76577491.0,
+        75725845.0,
+        81075309.0
+      ],
+      "profile": "full",
+      "reason_code": "below_parse_majority_threshold",
+      "repository": "synthetic-2000",
+      "scenario": "one-edit",
+      "threshold": 0.5,
+      "total_ns": [
+        860177979.0,
+        855385588.0,
+        867861127.0
+      ],
+      "verb": "snapshot"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": true,
+      "expected_repetitions": 3,
+      "extraction_share": 0.41333949108488743,
+      "median_phaseParse_ns": 86026592.0,
+      "median_total_ns": 208125751.0,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "phaseParse_ns": [
+        86026592.0,
+        87503770.0,
+        85054508.0
+      ],
+      "profile": "syntax-only",
+      "reason_code": "below_parse_majority_threshold",
+      "repository": "synthetic-2000",
+      "scenario": "one-edit",
+      "threshold": 0.5,
+      "total_ns": [
+        208125751.0,
+        219145321.0,
+        205121507.0
+      ],
+      "verb": "snapshot"
+    }
+  ],
+  "baseline_repetitions": 3,
+  "binary_sha256": "640f15267da19c52bac73032b942149fa99a56beea676823ca06754f11955793",
+  "blocked_strata": [
+    {
+      "profile": "fast",
+      "reason": "three consecutive failures; remaining planned observations unrun",
+      "repository": "kubernetes-kubernetes",
+      "verb": "snapshot"
+    },
+    {
+      "profile": "full",
+      "reason": "three consecutive failures; remaining planned observations unrun",
+      "repository": "kubernetes-kubernetes",
+      "verb": "snapshot"
+    }
+  ],
+  "compiler": "off",
+  "counts": {
+    "blocked_strata": 2,
+    "missing_baselines": 2,
+    "parse_dominated": 3,
+    "partial_baselines": 11,
+    "search_phase_unavailable": 18,
+    "search_profiles": 18,
+    "snapshot_eligible": 11,
+    "snapshot_profiles": 18,
+    "workers": 3
+  },
+  "format_version": 1,
+  "input_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+  "issues": [
+    "colinhacks-zod/fast/snapshot baseline is ineligible",
+    "colinhacks-zod/full/snapshot baseline is ineligible",
+    "colinhacks-zod/syntax-only/snapshot baseline is ineligible",
+    "entire-graph-frozen-88dd1dc9/full/snapshot baseline is ineligible",
+    "kubernetes-kubernetes/fast/snapshot baseline is ineligible",
+    "kubernetes-kubernetes/full/snapshot baseline is ineligible",
+    "kubernetes-kubernetes/syntax-only/snapshot baseline is ineligible"
+  ],
+  "missing_baselines": [
+    {
+      "baseline_observation_issues": [
+        "blocked stratum",
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=timeout"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "profile": "fast",
+      "reason_code": "baseline_incomplete",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "blocked stratum",
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=timeout"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "profile": "full",
+      "reason_code": "baseline_incomplete",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    }
+  ],
+  "parse_dominated_groups": [
+    {
+      "profile": "syntax-only",
+      "repository": "entire-graph-frozen-88dd1dc9",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "profile": "syntax-only",
+      "repository": "go-chi-chi",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "profile": "syntax-only",
+      "repository": "psf-requests",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    }
+  ],
+  "partial_baselines": [
+    {
+      "baseline_observation_issues": [
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "fast",
+      "reason_code": "baseline_incomplete",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "full",
+      "reason_code": "baseline_incomplete",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "syntax-only",
+      "reason_code": "baseline_incomplete",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 15,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 15,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "full",
+      "reason_code": "baseline_incomplete",
+      "repository": "entire-graph-frozen-88dd1dc9",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "missing or invalid phaseParse_ns",
+        "missing or invalid total_ns",
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "baseline_phase",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 582,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_FILE_TOO_LARGE",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "rows": 3,
+            "severity": "warning"
+          },
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 93,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "syntax-only",
+      "reason_code": "baseline_incomplete",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "snapshot"
+    },
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "fast",
+      "reason_code": "search_phase_unavailable",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "full",
+      "reason_code": "search_phase_unavailable",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "syntax-only",
+      "reason_code": "search_phase_unavailable",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 33,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_MINIFIED",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "rows": 12,
+            "severity": "warning"
+          },
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 21,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "fast",
+      "reason_code": "search_phase_unavailable",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 33,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_MINIFIED",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "rows": 12,
+            "severity": "warning"
+          },
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 21,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "full",
+      "reason_code": "search_phase_unavailable",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 33,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_MINIFIED",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "rows": 12,
+            "severity": "warning"
+          },
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 21,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "syntax-only",
+      "reason_code": "search_phase_unavailable",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "search"
+    }
+  ],
+  "phase_rule": {
+    "denominator": "median(total_ns)",
+    "inclusive": true,
+    "name": "phaseParse_share",
+    "numerator": "median(phaseParse_ns)",
+    "scope": "snapshot only",
+    "threshold": 0.5
+  },
+  "protocol": "p1-corpus-20260905",
+  "ranking": "current",
+  "search_phase_profiles": [
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "fast",
+      "reason_code": "search_phase_unavailable",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "full",
+      "reason_code": "search_phase_unavailable",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 12,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 12,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "syntax-only",
+      "reason_code": "search_phase_unavailable",
+      "repository": "colinhacks-zod",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "fast",
+      "reason_code": "search_phase_unavailable",
+      "repository": "entire-graph-frozen-88dd1dc9",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "full",
+      "reason_code": "search_phase_unavailable",
+      "repository": "entire-graph-frozen-88dd1dc9",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "syntax-only",
+      "reason_code": "search_phase_unavailable",
+      "repository": "entire-graph-frozen-88dd1dc9",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "fast",
+      "reason_code": "search_phase_unavailable",
+      "repository": "go-chi-chi",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "full",
+      "reason_code": "search_phase_unavailable",
+      "repository": "go-chi-chi",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "syntax-only",
+      "reason_code": "search_phase_unavailable",
+      "repository": "go-chi-chi",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 33,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_MINIFIED",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "rows": 12,
+            "severity": "warning"
+          },
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 21,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "fast",
+      "reason_code": "search_phase_unavailable",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 33,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_MINIFIED",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "rows": 12,
+            "severity": "warning"
+          },
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 21,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "full",
+      "reason_code": "search_phase_unavailable",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_observation_issues": [
+        "status=partial"
+      ],
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "partial_reasons": {
+        "failure_count": 33,
+        "partial_rows": 3,
+        "reasons": [
+          {
+            "code": "E_MINIFIED",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "rows": 12,
+            "severity": "warning"
+          },
+          {
+            "code": "E_PARSE_ERROR",
+            "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+            "rows": 21,
+            "severity": "warning"
+          }
+        ]
+      },
+      "profile": "syntax-only",
+      "reason_code": "search_phase_unavailable",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "fast",
+      "reason_code": "search_phase_unavailable",
+      "repository": "psf-requests",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "full",
+      "reason_code": "search_phase_unavailable",
+      "repository": "psf-requests",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "syntax-only",
+      "reason_code": "search_phase_unavailable",
+      "repository": "psf-requests",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "fast",
+      "reason_code": "search_phase_unavailable",
+      "repository": "synthetic-2000",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "full",
+      "reason_code": "search_phase_unavailable",
+      "repository": "synthetic-2000",
+      "scenario": "one-edit",
+      "verb": "search"
+    },
+    {
+      "baseline_scenario": "baseline",
+      "eligible": false,
+      "expected_repetitions": 3,
+      "parse_classification": "unavailable",
+      "parse_dominated": false,
+      "profile": "syntax-only",
+      "reason_code": "search_phase_unavailable",
+      "repository": "synthetic-2000",
+      "scenario": "one-edit",
+      "verb": "search"
+    }
+  ],
+  "source_workers": [
+    {
+      "assignment": [
+        [
+          "colinhacks-zod",
+          "fast"
+        ],
+        [
+          "entire-graph-frozen-88dd1dc9",
+          "full"
+        ],
+        [
+          "go-chi-chi",
+          "fast"
+        ],
+        [
+          "kubernetes-kubernetes",
+          "syntax-only"
+        ],
+        [
+          "psf-requests",
+          "syntax-only"
+        ],
+        [
+          "synthetic-2000",
+          "full"
+        ]
+      ],
+      "blocked_strata": [],
+      "manifest": "/Users/thomi/Projects/entire-graph-advantage/docs/implementation/graph-advantage/p1-corpus-20260905/baseline-raw/worker-1/baseline-manifest.json",
+      "manifest_sha256": "e8fdab425d377a235fef0d8ca133e54027c7cbc0caff12597eb9291bc15431fb",
+      "observations": "/Users/thomi/Projects/entire-graph-advantage/docs/implementation/graph-advantage/p1-corpus-20260905/baseline-raw/worker-1/baseline.ndjson",
+      "observations_sha256": "32b13c8c13c78365e56ae3026d596d66110bb763c67be79dcc327593b50bb4d7"
+    },
+    {
+      "assignment": [
+        [
+          "colinhacks-zod",
+          "full"
+        ],
+        [
+          "entire-graph-frozen-88dd1dc9",
+          "syntax-only"
+        ],
+        [
+          "go-chi-chi",
+          "full"
+        ],
+        [
+          "kubernetes-kubernetes",
+          "fast"
+        ],
+        [
+          "psf-requests",
+          "fast"
+        ],
+        [
+          "synthetic-2000",
+          "syntax-only"
+        ]
+      ],
+      "blocked_strata": [
+        {
+          "profile": "fast",
+          "reason": "three consecutive failures; remaining planned observations unrun",
+          "repository": "kubernetes-kubernetes",
+          "verb": "snapshot"
+        }
+      ],
+      "manifest": "/Users/thomi/Projects/entire-graph-advantage/docs/implementation/graph-advantage/p1-corpus-20260905/baseline-raw/worker-2/baseline-manifest.json",
+      "manifest_sha256": "5dd805aa1b1ee93c378a6bc33152361b3c3207b7648b6df690c740880bbdb0a4",
+      "observations": "/Users/thomi/Projects/entire-graph-advantage/docs/implementation/graph-advantage/p1-corpus-20260905/baseline-raw/worker-2/baseline.ndjson",
+      "observations_sha256": "562fc93672394764a1435ceb3cd27a300a5aca9842404f45cc3eb1418d80d759"
+    },
+    {
+      "assignment": [
+        [
+          "colinhacks-zod",
+          "syntax-only"
+        ],
+        [
+          "entire-graph-frozen-88dd1dc9",
+          "fast"
+        ],
+        [
+          "go-chi-chi",
+          "syntax-only"
+        ],
+        [
+          "kubernetes-kubernetes",
+          "full"
+        ],
+        [
+          "psf-requests",
+          "full"
+        ],
+        [
+          "synthetic-2000",
+          "fast"
+        ]
+      ],
+      "blocked_strata": [
+        {
+          "profile": "full",
+          "reason": "three consecutive failures; remaining planned observations unrun",
+          "repository": "kubernetes-kubernetes",
+          "verb": "snapshot"
+        }
+      ],
+      "manifest": "/Users/thomi/Projects/entire-graph-advantage/docs/implementation/graph-advantage/p1-corpus-20260905/baseline-raw/worker-3/baseline-manifest.json",
+      "manifest_sha256": "64bf74087e84970b038dbbdd531f31440fffb2427ef683590817b8bda05bb102",
+      "observations": "/Users/thomi/Projects/entire-graph-advantage/docs/implementation/graph-advantage/p1-corpus-20260905/baseline-raw/worker-3/baseline.ndjson",
+      "observations_sha256": "020682bb386d1f7d21f4bc2617d53fb07adb0bd48824a7e103dc11fc4ef30e9f"
+    }
+  ],
+  "stage": "baseline-finalized",
+  "status": "evidence_incomplete"
+}
