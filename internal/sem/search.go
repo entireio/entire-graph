@@ -52,6 +52,7 @@ const (
 type SearchOptions struct {
 	// rankingEvaluationUniform is a test-only ablation, never exposed by the CLI.
 	rankingEvaluationUniform bool
+	rankingEvaluationCapture bool
 	Ranking                  string
 	Compiler                 *CompilerOptions
 	ExtractionReuse          bool
@@ -83,6 +84,9 @@ type SearchOptions struct {
 	// deliberately unexported and nil in production.
 	afterPreindexLoad    func()
 	afterSourceSelection func()
+	// afterSnapshotBuild injects deterministic compiler evidence in contract tests.
+	// It is nil in production and runs before any relation-based query stage.
+	afterSnapshotBuild func(*ProviderSnapshot)
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -743,7 +747,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		return SearchResponse{}, errors.New("ranking must be current or experimental-graph")
 	}
 	baseSnapshotOptions := ProviderSnapshotOptions{
-		captureInputs:      options.Ranking == "experimental-graph",
+		captureInputs:      (options.Ranking == "experimental-graph" || options.rankingEvaluationCapture),
 		Compiler:           options.Compiler,
 		ExtractionReuse:    options.ExtractionReuse,
 		ExtractionCacheDir: options.CacheDir,
@@ -754,7 +758,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		MaxParseBytes:      options.MaxParseBytes,
 		Profile:            options.Profile,
 	}
-	searchCacheDisabled := options.DisableCache || options.ExtractionReuse || options.Compiler != nil || options.Ranking == "experimental-graph"
+	searchCacheDisabled := options.DisableCache || options.ExtractionReuse || options.Compiler != nil || (options.Ranking == "experimental-graph" || options.rankingEvaluationCapture)
 	if !options.Worktree && !searchCacheDisabled && options.CacheDir != "" {
 		capturedOptions, captureErr := CaptureProviderCachePolicy(repo, baseSnapshotOptions)
 		if captureErr != nil {
@@ -775,7 +779,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			}
 		}
 	}
-	if options.ExtractionReuse || options.Compiler != nil || options.Ranking == "experimental-graph" {
+	if options.ExtractionReuse || options.Compiler != nil || (options.Ranking == "experimental-graph" || options.rankingEvaluationCapture) {
 		captured, captureErr := prepareSource(ctx, repo, baseSnapshotOptions)
 		if captureErr != nil {
 			return SearchResponse{}, captureErr
@@ -950,6 +954,16 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if selection.commit != "" && !searchSnapshotMatchesSelection(snapshot, selection) {
 		return SearchResponse{}, errors.New("repository identity or HEAD changed during search; retry against a stable repository")
 	}
+	if options.afterSnapshotBuild != nil {
+		options.afterSnapshotBuild(&snapshot)
+	}
+	// One operation-local view drives every relation-based query stage. Native
+	// snapshot facts remain unchanged and implementation candidates cannot become
+	// caller boosts, expanded calls, or ranking transitions.
+	queryRelations := snapshot.Relations
+	if snapshot.Header.Compiler != nil {
+		queryRelations = CompilerEnrichedRelations(snapshot, false)
+	}
 	queryStarted := time.Now()
 	useHead := !options.Worktree && snapshot.Header.Commit != ""
 	var read contentReader
@@ -1117,11 +1131,11 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		PreselectLatencyMS:        preselectLatency.Milliseconds(),
 	}
 	scoreSearchCandidates(candidates, q, fileDF, maxInt(1, len(selectedFiles)))
-	callerBoosts := searchGraphCallerBoosts(snapshot.Relations, symbolsByID)
+	callerBoosts := searchGraphCallerBoosts(queryRelations, symbolsByID)
 	stats.CallerBoostedCandidates += applySearchCallerBoosts(candidates, callerBoosts)
 	sortSearchCandidates(candidates)
 
-	graphCandidates := expandGraphCandidates(candidates, q, snapshot.Relations, symbolsByID, callerBoosts, read, fileLanguages, options)
+	graphCandidates := expandGraphCandidates(candidates, q, queryRelations, symbolsByID, callerBoosts, read, fileLanguages, options)
 	stats.GraphCandidates = len(graphCandidates)
 	stats.CallerBoostedCandidates += countSearchCandidatesWithSignal(graphCandidates, "graph:callers")
 	candidates = append(candidates, graphCandidates...)
@@ -1169,7 +1183,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// search_boilerplate.go.
 	applySearchBoilerplatePrior(candidates, q)
 	if options.Ranking == "experimental-graph" {
-		diagnostics, rankErr := rerankSearchCandidatesWithPolicy(ctx, candidates, CompilerEnrichedRelations(snapshot, false), options.Deep, options.rankingEvaluationUniform)
+		diagnostics, rankErr := rerankSearchCandidatesWithPolicy(ctx, candidates, queryRelations, options.Deep, options.rankingEvaluationUniform)
 		if rankErr != nil {
 			return SearchResponse{}, rankErr
 		}
@@ -1344,7 +1358,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if options.CalleeHop {
 		hopCache := newSearchRelatedFileCache(read, searchRelatedCandidateLimit)
 		sites := selectSearchCalleeHopSites(
-			results, q, snapshot.Relations, symbolsByID, symbolsByFile, hopCache,
+			results, q, queryRelations, symbolsByID, symbolsByFile, hopCache,
 			searchCalleeHopRanks(results), searchCalleeHopSiteLimit,
 		)
 		// Bodies follow the other levers rather than inventing a third policy; see
@@ -1389,7 +1403,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	results = assignSearchSections(results, q)
 	if anchors := searchRelatedAnchors(results, symbolsByID, symbolsByFile, searchEnclosureHeadRanks); len(anchors) > 0 {
 		sites := selectSearchRelatedSites(
-			results, anchors, q, snapshot.Relations, symbolsByID, symbolsByFile, read, searchRelatedSiteLimit,
+			results, anchors, q, queryRelations, symbolsByID, symbolsByFile, read, searchRelatedSiteLimit,
 		)
 		results, stats.RelatedSites = mergeSearchRelatedSites(results, sites, read, options.MaxContextBytes)
 	}
@@ -1411,7 +1425,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	var coverageNote *SearchCoverageNote
 	if anchors := searchTypeCardAnchor(results, symbolsByID, symbolsByFile, searchEnclosureHeadRanks); len(anchors) > 0 {
 		context := buildSearchContractContext(
-			results, anchors, q, snapshot.Relations, symbolsByID, symbolsByFile, read,
+			results, anchors, q, queryRelations, symbolsByID, symbolsByFile, read,
 			options.IncludeTypeCard,
 		)
 		results, typeCard, coverageNote, stats.CoveringTests, stats.TypeCardEntries =
@@ -1421,7 +1435,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if options.IncludeSignatureTypes {
 		if anchors := searchRelatedAnchors(results, symbolsByID, symbolsByFile, 1); len(anchors) == 1 {
 			block := searchSignatureTypeSurface(
-				anchors[0], symbolsByID, symbolsByFile, snapshot.Relations, searchSignatureTypeLimit,
+				anchors[0], symbolsByID, symbolsByFile, queryRelations, searchSignatureTypeLimit,
 			)
 			results, signatureTypes = fundSearchSignatureTypes(results, block, searchEnclosureHeadRanks)
 		}
@@ -1955,7 +1969,7 @@ func preselectSearchFiles(
 		// A resolved commit is what says "this is a Git repository", so a needle the posting lists
 		// cannot price can be answered exactly by one `git grep`. An empty treeish means the working
 		// tree, which is what a worktree search indexes; a HEAD search must grep the commit itself.
-		gitGrepUsable: source.commit != "" && (!options.Worktree || (!options.ExtractionReuse && options.Compiler == nil && options.Ranking != "experimental-graph")),
+		gitGrepUsable: source.commit != "" && (!options.Worktree || (!options.ExtractionReuse && options.Compiler == nil && options.Ranking != "experimental-graph" && !options.rankingEvaluationCapture)),
 	}
 	if !options.Worktree {
 		selection.gitGrepTreeish = source.commit
@@ -2000,7 +2014,7 @@ func preselectSearchFiles(
 	matcher := newSearchTermMatcher(q.terms)
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
-	if !options.ExtractionReuse && options.Compiler == nil && options.Ranking != "experimental-graph" && shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
+	if !options.ExtractionReuse && options.Compiler == nil && options.Ranking != "experimental-graph" && !options.rankingEvaluationCapture && shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
 		matches, grepErr := gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
 		tracked, trackedErr := gitutil.ListIndexFiles(ctx, source.absRepo)
 		if grepErr == nil && trackedErr == nil {
