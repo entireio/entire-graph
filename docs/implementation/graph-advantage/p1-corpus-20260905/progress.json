@@ -1,5 +1,5 @@
 {
-  "phase": "paired_campaign_launching",
+  "phase": "paired_campaign_running",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
