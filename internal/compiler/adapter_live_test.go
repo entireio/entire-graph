@@ -145,3 +145,38 @@ func TestLiveCompilerTagsReplacementAndClosure(t *testing.T) {
 		t.Fatalf("escaped replacement %#v", escaped)
 	}
 }
+
+// Independently authored P2-C invalidation fixtures. The caller's bytes and
+// query token remain fixed while a transitive input changes.
+func TestLiveCompilerSignatureAndWorkspaceInvalidation(t *testing.T) {
+	config := liveConfig(t)
+	files := map[string]string{
+		"go.work":        "go 1.24\nuse (\n ./app\n ./library\n)\n",
+		"app/go.mod":     "module fixture.local/app\n\ngo 1.24\n",
+		"library/go.mod": "module fixture.local/library\n\ngo 1.24\n",
+		"library/lib.go": "package library\nfunc Target(x int) {}\n",
+		"app/app.go":     "package app\nimport \"fixture.local/library\"\nfunc Caller() { library.Target(1) }\n",
+	}
+	query := Query{Path: "app/app.go", Offset: strings.Index(files["app/app.go"], "Target(1)")}
+	before := Analyze(context.Background(), config, files, []Query{query})
+	if before.Status != "complete" || len(before.Answers) != 1 {
+		t.Fatalf("baseline %#v", before)
+	}
+	files["library/lib.go"] = "package library\nfunc Target(x int64) {}\n"
+	after := Analyze(context.Background(), config, files, []Query{query})
+	if after.Status != "complete" || len(after.Answers) != 1 || len(after.Answers[0].Targets) != 1 || after.ContextID == before.ContextID {
+		t.Fatalf("signature edit not rebound %#v", after)
+	}
+	path, start, _, err := MapLocation(files, after.Answers[0].Targets[0])
+	if err != nil || path != "library/lib.go" || start != strings.Index(files[path], "Target") {
+		t.Fatalf("signature target %s:%d %v", path, start, err)
+	}
+	files["go.work"] = "go 1.24\nuse ./app\n"
+	excluded := Analyze(context.Background(), config, files, []Query{query})
+	if excluded.Status != "unavailable" || len(excluded.Answers) != 0 || excluded.ContextID == after.ContextID {
+		t.Fatalf("excluded dependency reused old overlay %#v", excluded)
+	}
+	if len(excluded.Diagnostics) == 0 || excluded.Diagnostics[0].Code != "compiler_dependency_unavailable" {
+		t.Fatalf("missing explicit workspace fallback %#v", excluded)
+	}
+}
