@@ -12353,7 +12353,10 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		if err != nil {
 			return openedSource{}, err
 		}
-		paths, err := gitutil.ListFiles(ctx, repo, committedRevision)
+		// Regular files only. A tracked symlink is a blob whose content is its
+		// target path, so listing one as source hands that path to a parser as
+		// if it were code; the worktree branch below already refuses them.
+		paths, err := gitutil.ListRegularFiles(ctx, repo, committedRevision)
 		if err != nil {
 			return openedSource{}, err
 		}
@@ -18192,15 +18195,40 @@ func worktreeSourceFilesWithLister(
 	// deleted and can list a symlink or a gitlink directory; the snapshot reads
 	// only regular files, and the gitlink entries are exactly what the excluder
 	// must examine for a `.git` pointer.
+	// The index decides what a tracked entry IS, because lstat cannot. With
+	// core.symlinks=false Git writes a mode-120000 entry to disk as an ordinary
+	// file holding the link target, so lstat calls it regular and the worktree
+	// listing would admit a symlink the committed listing excludes by mode --
+	// the same divergence, reappearing from the other side. A failure here is
+	// not fatal: the lstat classification below still applies, which is the
+	// behaviour that existed before this consultation.
+	indexNonRegular, indexErr := gitutil.IndexNonRegularPaths(ctx, repo)
+	if indexErr != nil {
+		indexNonRegular = nil
+	}
+	// The index alone cannot tell a materialized symlink from a replaced one.
+	// Both leave mode 120000 in the index with an ordinary file on disk: the
+	// first because core.symlinks=false writes the link target as file content,
+	// the second because the user deleted the link and wrote a real file there.
+	// Only the second holds different bytes than the index entry, and only the
+	// second is source a worktree query is supposed to show -- vetoing both made
+	// an uncommitted replacement invisible until it was staged, which is the one
+	// thing a worktree listing promises not to do.
+	indexReplaced := gitutil.IndexReplacedNonRegularPaths(ctx, repo, indexNonRegular)
 	kinds := make([]listedPathKind, len(listed))
 	var listedDirs []string
 	for index, entry := range listed {
 		info, statErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(entry)))
+		_, nonRegularInIndex := indexNonRegular[filepath.ToSlash(entry)]
+		_, replacedInWorktree := indexReplaced[filepath.ToSlash(entry)]
 		switch {
 		case statErr != nil:
 		case info.IsDir():
 			kinds[index] = listedPathDir
 			listedDirs = append(listedDirs, entry)
+		case nonRegularInIndex && !replacedInWorktree:
+			// Tracked as a symlink or gitlink and untouched since; not source,
+			// whatever it looks like on this filesystem.
 		case info.Mode()&fs.ModeSymlink == 0 && info.Mode().IsRegular():
 			kinds[index] = listedPathRegular
 		}

@@ -158,8 +158,380 @@ func FindCommitWithCheckpoint(ctx context.Context, repo, checkpointID string) (s
 	return commit, nil
 }
 
+// validateTreeish rejects a revision that cannot be passed to git as one.
+//
+// It refuses an empty string and an embedded NUL, and deliberately does NOT
+// refuse a leading '-'. A dash-prefixed ref is valid and resolvable -- `git
+// update-ref refs/heads/-evil` then `ls-tree --end-of-options -evil` lists that
+// tree -- so rejecting the shape would trade real refs for a risk
+// --end-of-options already removes. That is the trade this repository has made
+// wrongly before.
+func validateTreeish(rev string) error {
+	if rev == "" {
+		return errors.New("treeish is empty")
+	}
+	if strings.ContainsRune(rev, 0) {
+		return fmt.Errorf("invalid treeish %q: contains a NUL byte", rev)
+	}
+	return nil
+}
+
+// IndexNonRegularPaths returns the worktree paths whose INDEX mode is not a
+// regular file, keyed by slash-separated repo-relative path.
+//
+// lstat is not sufficient to answer this. With core.symlinks=false -- the
+// default wherever the filesystem cannot make symlinks, which is common on
+// Windows -- Git materializes a tracked mode-120000 entry as an ordinary file
+// whose contents are the link target. lstat then reports a regular file, and a
+// worktree listing that trusts it admits a symlink as source while the
+// committed listing excludes it by mode, so one repository yields two different
+// graphs on the same commit.
+//
+// Untracked paths have no index entry and are absent from the result, so a
+// caller still judges those by lstat alone.
+func IndexNonRegularPaths(ctx context.Context, repo string) (map[string]struct{}, error) {
+	// Streamed through the same fixed count and byte bounds every other listing
+	// uses. Reading the index with run() buffered all of stdout and then
+	// strings.Split copied it again, so a repository near the 256 MiB raw-output
+	// limit the sibling listings enforce needed several more full-size copies
+	// here -- and could exhaust memory before any output was consumed -- while
+	// bypassing the bound that exists to stop exactly that.
+	paths := map[string]struct{}{}
+	err := visitBoundedWorktreePathOutput(
+		newCmd(ctx, repo, "git", "ls-files", "-s", "-z"),
+		func(entry string) bool {
+			if entry == "" {
+				return true
+			}
+			// "<mode> SP <object> SP <stage> TAB <path>"
+			meta, path, found := strings.Cut(entry, "\t")
+			if !found || path == "" {
+				return true
+			}
+			mode, _, found := strings.Cut(meta, " ")
+			if !found || isRegularTreeMode(mode) {
+				return true
+			}
+			paths[path] = struct{}{}
+			return true
+		})
+	if err != nil {
+		return nil, err
+	}
+	return paths, nil
+}
+
+// maxSymlinkTargetBytes bounds what may be read as a symlink target. A target is a
+// PATH, and every platform this runs on caps a path far below this; the bound exists
+// because a mode-120000 index entry is not required by Git to hold one.
+const maxSymlinkTargetBytes = 4096
+
+// IndexReplacedNonRegularPaths returns the paths whose index entry is NOT a
+// regular file but whose worktree file no longer holds what that entry says,
+// keyed by slash-separated repo-relative path.
+//
+// It separates two states the index reports identically. With
+// core.symlinks=false Git writes a mode-120000 entry to disk as an ordinary file
+// containing the LINK TARGET, and that file is not an edit -- it is the symlink,
+// spelled the only way the filesystem allows. A user who deletes the link and
+// writes a real file in its place produces the same index mode and the same
+// lstat verdict, but different bytes.
+//
+// Content is what separates them, not modification status: Git reports the
+// materialized file as a typechange whenever core.symlinks is not persisted in
+// the repository's own config, so diff-files calls both cases modified and
+// cannot tell them apart.
+//
+// Only paths given in nonRegular are examined, so the cost is bounded by the
+// number of tracked symlinks and gitlinks rather than by the size of the tree.
+func IndexReplacedNonRegularPaths(ctx context.Context, repo string, nonRegular map[string]struct{}) map[string]struct{} {
+	replaced := map[string]struct{}{}
+	if len(nonRegular) == 0 {
+		return replaced
+	}
+	// Only entries that are a REGULAR file on disk can have been substituted, and
+	// their on-disk size is the first half of the comparison. Collected before any
+	// subprocess runs, so the batch below asks about the smallest possible set.
+	sizeOnDisk := map[string]int64{}
+	for path := range nonRegular {
+		onDisk, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(path)))
+		if err != nil || !onDisk.Mode().IsRegular() {
+			// Still a link (or gone): nothing was substituted for it.
+			continue
+		}
+		sizeOnDisk[path] = onDisk.Size()
+	}
+	if len(sizeOnDisk) == 0 {
+		return replaced
+	}
+	// TWO subprocesses for the whole repository, not two per entry. A checkout
+	// under core.symlinks=false materializes EVERY tracked symlink as a regular
+	// file, so a per-entry `cat-file` pair meant hundreds of thousands of
+	// processes on a large repository and a worktree query that never returned.
+	// A path holding a NEWLINE cannot ride the line-delimited batch: it would
+	// split into several requests and shift every later response onto the wrong
+	// path, which admits an untouched symlink as source or hides a replacement.
+	// Such paths are legal and vanishingly rare, so they are asked about one at
+	// a time rather than forcing a Git version this tool does not require.
+	var batchable, individual []string
+	for _, path := range sortedKeys(sizeOnDisk) {
+		if strings.ContainsRune(path, '\n') {
+			individual = append(individual, path)
+			continue
+		}
+		batchable = append(batchable, path)
+	}
+	sizes := catFileBatchCheckSizes(ctx, repo, batchable)
+	for _, path := range individual {
+		sized, err := run(ctx, repo, "git", "cat-file", "-s", indexObjectSpec(path))
+		if err != nil {
+			continue
+		}
+		if size, convErr := strconv.ParseInt(strings.TrimSpace(sized), 10, 64); convErr == nil {
+			sizes[path] = size
+		}
+	}
+	var needContent []string
+	for path, onDisk := range sizeOnDisk {
+		blobBytes, known := sizes[path]
+		if !known {
+			// No stage-0 entry. An UNMERGED path has stages 1-3 and no stage 0,
+			// so there is no single index blob to compare against -- and the
+			// worktree file sitting there is the merge's own resolution, which a
+			// worktree query exists to show.
+			replaced[path] = struct{}{}
+			continue
+		}
+		if blobBytes > maxSymlinkTargetBytes || onDisk != blobBytes {
+			// Too large to be a link target, or a different length than the
+			// entry: either way the file on disk is not that entry materialized.
+			replaced[path] = struct{}{}
+			continue
+		}
+		needContent = append(needContent, path)
+	}
+	if len(needContent) == 0 {
+		return replaced
+	}
+	sort.Strings(needContent)
+	var batchContent, individualContent []string
+	for _, path := range needContent {
+		if strings.ContainsRune(path, '\n') {
+			individualContent = append(individualContent, path)
+			continue
+		}
+		batchContent = append(batchContent, path)
+	}
+	contents := catFileBatchContents(ctx, repo, batchContent)
+	for _, path := range individualContent {
+		blob, err := run(ctx, repo, "git", "cat-file", "blob", indexObjectSpec(path))
+		if err != nil {
+			continue
+		}
+		contents[path] = blob
+	}
+	for _, path := range needContent {
+		indexed, known := contents[path]
+		if !known {
+			continue
+		}
+		// One byte MORE than the blob. A bounded read of exactly the indexed
+		// length returns only a prefix if the file grew after the Lstat above,
+		// and a replacement whose first bytes happen to match the link target
+		// then read as untouched -- hidden by the very bound that makes the
+		// read safe. The extra byte is still bounded, and its presence is
+		// itself the answer: a longer file is a different file.
+		current, err := readFileAtMost(filepath.Join(repo, filepath.FromSlash(path)), len(indexed)+1)
+		if err != nil {
+			continue
+		}
+		if string(current) != indexed {
+			replaced[path] = struct{}{}
+		}
+	}
+	return replaced
+}
+
+// catFileBatchCheckSizes returns the stage-0 index blob size for each path, in ONE
+// subprocess. Paths Git cannot resolve are absent from the result rather than
+// reported as an error: an unmerged path legitimately has no stage 0.
+func catFileBatchCheckSizes(ctx context.Context, repo string, paths []string) map[string]int64 {
+	sizes := map[string]int64{}
+	var stdin bytes.Buffer
+	for _, path := range paths {
+		stdin.WriteString(indexObjectSpec(path))
+		stdin.WriteByte('\n')
+	}
+	// Line-delimited, and callers must pass only paths WITHOUT a newline. The
+	// NUL-delimited form would carry any path, but `cat-file -z` arrived in Git
+	// 2.38 and this tool supports 2.36 (README), where it fails outright and
+	// every materialized symlink is then misclassified as replaced. Splitting
+	// the rare newline-bearing path off costs one subprocess each and keeps the
+	// floor.
+	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch-check=%(objectsize)")
+	cmd.Stdin = &stdin
+	out, err := cmd.Output()
+	if err != nil {
+		return sizes
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	for i, line := range lines {
+		if i >= len(paths) {
+			break
+		}
+		size, convErr := strconv.ParseInt(strings.TrimSpace(line), 10, 64)
+		if convErr != nil {
+			// "<spec> missing" for an unresolvable entry; leave it absent.
+			continue
+		}
+		sizes[paths[i]] = size
+	}
+	return sizes
+}
+
+// catFileBatchContents returns the stage-0 index blob contents for each path, in ONE
+// subprocess. Callers must already have bounded the set: every path here was sized at
+// or below maxSymlinkTargetBytes.
+func catFileBatchContents(ctx context.Context, repo string, paths []string) map[string]string {
+	contents := map[string]string{}
+	var stdin bytes.Buffer
+	for _, path := range paths {
+		stdin.WriteString(indexObjectSpec(path))
+		stdin.WriteByte('\n')
+	}
+	// Line-delimited for the reason given on catFileBatchCheckSizes; callers
+	// pass only newline-free paths. The RESPONSE is length-prefixed and read by
+	// that length, so blob CONTENT holding a newline is already safe.
+	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch=%(objectsize)")
+	cmd.Stdin = &stdin
+	out, err := cmd.Output()
+	if err != nil {
+		return contents
+	}
+	rest := out
+	for _, path := range paths {
+		newline := bytes.IndexByte(rest, '\n')
+		if newline < 0 {
+			break
+		}
+		size, convErr := strconv.ParseInt(strings.TrimSpace(string(rest[:newline])), 10, 64)
+		rest = rest[newline+1:]
+		if convErr != nil || size < 0 || int64(len(rest)) < size+1 {
+			break
+		}
+		contents[path] = string(rest[:size])
+		rest = rest[size+1:] // trailing LF Git appends after each blob
+	}
+	return contents
+}
+
+// indexObjectSpec names a path's stage-0 index entry unambiguously.
+//
+// A bare ":"+path is ambiguous: Git reads a leading "0:".."3:" as a STAGE, so a
+// file legitimately named `0:link.go` addresses another entry entirely, or none.
+// The "./" form cannot be read as a stage number.
+func indexObjectSpec(path string) string {
+	return ":./" + path
+}
+
+// readFileAtMost reads at most limit bytes, so a file that grew between the size
+// check and the read cannot widen the allocation.
+func readFileAtMost(name string, limit int) ([]byte, error) {
+	file, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	buffer := make([]byte, limit)
+	read, err := io.ReadFull(file, buffer)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return buffer[:read], nil
+}
+
+func sortedKeys(m map[string]int64) []string {
+	out := make([]string, 0, len(m))
+	for key := range m {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ListRegularFiles lists the REGULAR files in a committed tree, excluding
+// symlinks and gitlinks.
+//
+// ListFiles cannot answer this, and not because it forgot a filter: it passes
+// --name-only, and a symlink is a blob, so no object-type test separates the
+// two. Only the mode does. A tracked symlink listed as a source file has its
+// TARGET PATH read as the blob's content and handed to a parser, so
+// `ln -s real.go link.go` makes a committed snapshot carry a file record whose
+// bytes are the string "real.go".
+//
+// The working-tree listing already refuses non-regular entries (see openSource's
+// worktree branch, which tests fs.ModeSymlink and IsRegular). This is the
+// committed-tree counterpart, so one repository stops giving two different
+// answers depending on --worktree.
+//
+// ListFiles is deliberately left alone: its other caller enumerates paths for
+// git log co-change, where a symlink costs nothing.
+func ListRegularFiles(ctx context.Context, repo, rev string) ([]string, error) {
+	if err := validateTreeish(rev); err != nil {
+		return nil, err
+	}
+	// --end-of-options so the revision can only be read as a revision. Git
+	// parses options anywhere ahead of it otherwise, and an option-shaped token
+	// such as "--help" would be obeyed rather than resolved -- yielding an empty
+	// listing at exit 0, which reads downstream as "this tree has no files".
+	out, err := run(ctx, repo, "git", "ls-tree", "-r", "-z", "--end-of-options", rev)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, entry := range strings.Split(out, "\x00") {
+		if entry == "" {
+			continue
+		}
+		// "<mode> SP <type> SP <object> TAB <path>". -z means the path is raw,
+		// never quoted, and a TAB cannot appear in the fields before it.
+		meta, path, found := strings.Cut(entry, "\t")
+		if !found || path == "" {
+			continue
+		}
+		mode, _, found := strings.Cut(meta, " ")
+		if !found {
+			continue
+		}
+		if !isRegularTreeMode(mode) {
+			continue
+		}
+		files = append(files, path)
+	}
+	return files, nil
+}
+
+// isRegularTreeMode reports whether a `git ls-tree` mode is a regular file:
+// 100644 or 100755. It excludes 120000 (symlink), 160000 (gitlink/submodule)
+// and 040000 (tree), testing the file-type bits rather than listing the two
+// permission spellings, so an unexpected mode is refused rather than admitted.
+func isRegularTreeMode(mode string) bool {
+	parsed, err := strconv.ParseUint(mode, 8, 32)
+	if err != nil {
+		return false
+	}
+	const (
+		typeMask = 0o170000
+		regular  = 0o100000
+	)
+	return parsed&typeMask == regular
+}
+
 func ListFiles(ctx context.Context, repo, rev string) ([]string, error) {
-	out, err := run(ctx, repo, "git", "ls-tree", "-r", "-z", "--name-only", rev)
+	if err := validateTreeish(rev); err != nil {
+		return nil, err
+	}
+	out, err := run(ctx, repo, "git", "ls-tree", "-r", "-z", "--name-only", "--end-of-options", rev)
 	if err != nil {
 		return nil, err
 	}

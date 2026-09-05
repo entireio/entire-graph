@@ -2903,6 +2903,79 @@ func TestFirstParentRejectsAnOptionShapedRevision(t *testing.T) {
 	}
 }
 
+// TestIndexReplacedNonRegularPathsHandlesAStageLikeName pins the index object spec.
+//
+// Git reads a leading "0:".."3:" as a STAGE, so addressing an entry as ":"+path made a
+// file legitimately named `0:link.go` resolve to another entry or to none. The lookup
+// then failed and the symlink was reported REPLACED, which puts it into the worktree
+// listing to be parsed as ordinary source -- the exact confusion the index consultation
+// exists to prevent. The "./" form cannot be read as a stage number.
+func TestIndexReplacedNonRegularPathsHandlesAStageLikeName(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", ".")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	if err := os.WriteFile(filepath.Join(repo, "real.go"), []byte("package p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.go", filepath.Join(repo, "0:link.go")); err != nil {
+		t.Skipf("this filesystem cannot create symlinks: %v", err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-qm", "seed")
+
+	nonRegular, err := IndexNonRegularPaths(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := nonRegular["0:link.go"]; !ok {
+		t.Fatalf("a symlink named like a stage was not seen as non-regular: %v", nonRegular)
+	}
+	if _, wrong := IndexReplacedNonRegularPaths(context.Background(), repo, nonRegular)["0:link.go"]; wrong {
+		t.Fatal("an untouched symlink named like a stage was reported as replaced")
+	}
+}
+
+// TestIndexReplacedNonRegularPathsHandlesANewlineInAPath pins the batch delimiter.
+//
+// A Git pathname may hold any byte except NUL and '/', so a tracked path containing a
+// NEWLINE split into several requests under the line-delimited batch protocol and shifted
+// every later response onto the wrong path. The consequences run both ways: an untouched
+// materialized symlink can be admitted as source, and a real replacement can be hidden.
+// NUL is the one byte a pathname cannot contain.
+func TestIndexReplacedNonRegularPathsHandlesANewlineInAPath(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", ".")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	if err := os.WriteFile(filepath.Join(repo, "real.go"), []byte("package p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.go", filepath.Join(repo, "we\nird.go")); err != nil {
+		t.Skipf("this filesystem cannot create that link: %v", err)
+	}
+	if err := os.Symlink("real.go", filepath.Join(repo, "link.go")); err != nil {
+		t.Skipf("this filesystem cannot create symlinks: %v", err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-qm", "seed")
+
+	nonRegular, err := IndexNonRegularPaths(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := nonRegular["we\nird.go"]; !ok {
+		t.Fatalf("a symlink whose path holds a newline was not listed: %q", nonRegular)
+	}
+	// Nothing was touched, so nothing may be reported replaced. A desynchronized
+	// batch shows up here as a false positive on whichever path took the answer.
+	if replaced := IndexReplacedNonRegularPaths(context.Background(), repo, nonRegular); len(replaced) != 0 {
+		t.Fatalf("untouched symlinks reported as replaced: %q", replaced)
+	}
+}
+
 // TestChangedFilesReportsTreeEntryModes pins that ChangedFiles carries the base
 // and head tree entry modes. A symbolic link is stored as an ordinary blob
 // whose bytes are its target path, so mode is the only thing that tells a
