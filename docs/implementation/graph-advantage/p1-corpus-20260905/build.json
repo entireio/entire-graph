@@ -5,9 +5,11 @@
   "binary_blob": "p1-20260905-evaluator",
   "source_archive_blob": "p1-20260905-source.tar.gz",
   "source_archive_sha256": "5ed58ea34aaa3027d921f25d6ab566fb06a5469ab84df6f4f70ec995a7516e14",
-  "source_file_hash_manifest_sha256": "4408c46be0bc6ca7f618939445dedcec90a2793e0d45b705b1ac767baafbbeda",
+  "source_file_hash_manifest": "docs/implementation/graph-advantage/p1-corpus-20260905/source-files.sha256",
+  "source_file_hash_manifest_sha256": "71135392245b264e1bc42babaebdc815d9b70a6957e00350e422659c4dc927e1",
   "source_file_count": 697,
   "code_commit_at_build": "bba7734b32cec697d912fed78b807493089d26a0",
+  "frozen_source_commit": "e4d700f80e3888ea5d4dc919a1af30a86f4282e5",
   "source_tree_scope": [
     "internal",
     "cmd",
