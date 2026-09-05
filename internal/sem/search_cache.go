@@ -675,7 +675,7 @@ func selectiveSearchSnapshotFromFull(
 			return ProviderSnapshot{}, err
 		}
 		finalizeSelectiveOrdering(&selective, nil, nil, budgetHit)
-		failures := filterSearchPartialFailures(full.Header.PartialFailures, retainedFileSet(selective.Files))
+		failures := filterSearchPartialFailures(full.Header.PartialFailures, selectiveFailureFiles(allowedFiles, selective.Files, budgetHit))
 		if budgetHit {
 			failures = append(failures, analysisBudgetFailure(options.MaxDuration))
 		}
@@ -821,7 +821,7 @@ func selectiveSearchSnapshotFromFull(
 	finalizeSelectiveOrdering(&selective, externalsByID, externalOrder, budgetHit)
 
 	warnings := sc.warnings
-	failures := filterSearchPartialFailures(full.Header.PartialFailures, retainedFileSet(selective.Files))
+	failures := filterSearchPartialFailures(full.Header.PartialFailures, selectiveFailureFiles(allowedFiles, selective.Files, budgetHit))
 	failures = mergePartialFailures(failures, relationFailures)
 	if budgetHit {
 		// The marker both tells the caller the view is partial and makes the
@@ -961,6 +961,33 @@ func selectiveRelationWorkers(options ProviderSnapshotOptions) int {
 		return 1
 	}
 	return defaultProviderWorkerCount()
+}
+
+// selectiveFailureFiles decides which of the full build's per-file partial
+// failures a selective derivation reports.
+//
+// On a complete derivation the answer is the SELECTION, not the retained file
+// records. Two of the codes a full build emits carry no FileRecord at all --
+// E_UNSUPPORTED_LANGUAGE ("no parser is available") and E_FILE_READ ("file
+// listed but content was unavailable") are both appended with result.file left
+// nil -- so filtering by the retained records dropped exactly the failures that
+// describe a file the snapshot does not otherwise mention. The same query
+// answered from a warm cache then came back clean where a cold build reported a
+// machine-readable omission, and cache presence is the one thing this path must
+// not change. Every other selected file that produced a record is retained
+// whole on this path, so widening to the selection cannot admit a failure for a
+// file the answer is silent about for any other reason.
+//
+// A TRUNCATED derivation keeps the retained set. Once the gate has tripped the
+// filter stopped deciding files, so the selection no longer says what the
+// answer covers; reporting per-file outcomes for files it never walked would
+// dress an unreached file as an inspected one. The single
+// E_ANALYSIS_BUDGET_EXCEEDED marker is what accounts for those.
+func selectiveFailureFiles(allowedFiles map[string]bool, retained []FileRecord, budgetHit bool) map[string]bool {
+	if budgetHit {
+		return retainedFileSet(retained)
+	}
+	return allowedFiles
 }
 
 func filterSearchPartialFailures(failures []PartialFailure, allowedFiles map[string]bool) []PartialFailure {
