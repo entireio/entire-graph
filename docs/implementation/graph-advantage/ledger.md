@@ -6,7 +6,7 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
-The user has now authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation and correctness checks are complete; all three workers verified binary/input identities and baseline requests are running. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
+The user has now authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation and correctness checks are complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is launching. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
 
 The review findings are addressed in code: type declarations no longer become compiler-confirmed calls; ordinary search and every impact depth consume the effective compiler relation view. Candidate implementation paths remain separate, including terminal covering tests. Source is frozen; immutable integration checks passed.
 
@@ -21,7 +21,7 @@ This table supersedes earlier checkpoint/status statements. “Complete” in th
 
 | Task | Implementation | Correctness evidence | Comparative evaluation | Release gate |
 |---|---|---|---|---|
-| P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Fixed six-repository campaign prepared; baseline running | Not passed: full fixed corpus/RSS matrix incomplete |
+| P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Fixed six-repository campaign prepared; baseline complete; paired campaign launching | Not passed: full fixed corpus/RSS matrix incomplete |
 | P1.2 pure extraction | Complete: explicit metadata, shared bounded source/policy capture, manifests and sticky errors | Entity field checklist, malformed/overload/language round trips, reader mutation tests; final immutable check passed | Fixed corpus campaign pending | Not passed |
 | P1.3 storage | Complete: cross-process admission, orphan cleanup, versioned keys, integrity, private atomic writes and bounded decode | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; final immutable check passed | Fixed corpus campaign pending | Not passed |
 | P1.4 entity integration | Complete: command/policy capture, ordered reuse and fresh IDs/aliases/resolution | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; final immutable check passed | Fixed corpus campaign pending | Not passed |
@@ -38,7 +38,7 @@ This table supersedes earlier checkpoint/status statements. “Complete” in th
 | P3.4 CLI/output | Complete: depth N/all, filters, budgets, additive JSON and bounded text | Depth compatibility, invalid controls, truncation-notice byte bounds; focused race passed | Deferred | Not passed |
 | P3.5 compiler view | Complete: shared effective relations at every depth; candidate paths never become structural facts | Missing/disputed caller and callee fixture at depths 1/2/3/all; candidate separation; native records unchanged | Optional compiler quality ablation deferred | Not passed |
 | P3.6 validation/docs | Contract/stress fixtures and propagation limits complete; comparative task not completed | Independent source fixtures and bounded stress correctness; final immutable check passed | Realistic precision/recall/coverage/latency/RSS study deferred | Not passed |
-| P4.1 baseline | Development fixture/provenance and harness interfaces complete; adjudicated release baseline running | Existing fresh GraphMark manifests and recorded outputs preserved | New collection/adjudication and split freeze deferred | Not passed |
+| P4.1 baseline | Development fixture/provenance and harness interfaces complete; adjudicated release baseline complete; paired campaign launching | Existing fresh GraphMark manifests and recorded outputs preserved | New collection/adjudication and split freeze deferred | Not passed |
 | P4.2 ranking core | Complete: deterministic bounded candidate-only PPR | Mass/dangling/cycle/invalid-weight/duplicate/hub/scope tests; final immutable check passed | No quality inference from numerical correctness | Not passed |
 | P4.3 query integration | Complete: explicit experimental mode, scope/render/guidance constraints and deterministic fallback | Capture/freshness/exact-match tests; compiler view used consistently; final immutable check passed | Deferred | Not passed |
 | P4.4 development ablations | Harness controls implemented; comparative task not completed | Current/uniform/weighted and expansion-control plumbing; correctness smoke checks only this phase | Existing zero-gain result retained; further ablations deferred | Not passed: no demonstrated winning configuration |
@@ -114,3 +114,10 @@ the protocol worker monitors the baseline. The full repository check runs
 against commit `039d213b`; `p1-corpus-20260905/correctness.json` records its
 exit status and source-hash stability when finished. No gate pass is claimed
 from an in-progress check or campaign.
+
+P1 baseline freeze: `2840a152`, authoritative `frozen-baseline.json`.
+Kubernetes fast/full snapshots each timed out three times at120seconds;
+the protocol blocks those two strata and preserves960 planned unrun cells.
+The remaining16,320 paired requests retain the original settings. Full
+`mise run check` passed at039d213b in1126.765seconds with source hashes unchanged;
+see `p1-corpus-20260905/correctness.json`. No release gate has passed.

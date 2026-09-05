@@ -1,5 +1,5 @@
 {
-  "phase": "baseline_running",
+  "phase": "paired_campaign_launching",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -7,8 +7,17 @@
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
   "harness_source_commit": "e4d700f80e3888ea5d4dc919a1af30a86f4282e5",
   "heartbeat": "monitor-p1-corpus-campaign",
-  "correctness": "mise run check in progress; see correctness.json when written",
+  "correctness": "mise run check passed at039d213b in1126.765s; source unchanged",
   "release_gate": "not passed",
   "defaults": "unchanged; experimental features off",
-  "transport": "AppleDouble sidecars removed before verified fixture digests; clean archive retained"
+  "transport": "AppleDouble sidecars removed before verified fixture digests; clean archive retained",
+  "baseline_completed_requests": 108,
+  "baseline_status_counts": {
+    "ok": 69,
+    "partial": 33,
+    "timeout": 6
+  },
+  "hard_blocked_strata": 2,
+  "planned_unrun_requests": 960,
+  "remaining_planned_requests": 16320
 }
