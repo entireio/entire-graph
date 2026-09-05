@@ -736,9 +736,8 @@ func searchVerifyGradleSettingsIncludes(settings, project string) bool {
 // ordinary text as well as a call: `println("include ':modules:core'")` contains it, and reading
 // that as a declaration names a project the settings file never declares — the emitted
 // `./gradlew :modules:core:test` then cannot run. Comments are removed first and STRING LITERALS
-// are stepped over whole, so only an `include` in code position starts a call. (A Groovy/Kotlin
-// triple-quoted block is still read as code between its delimiters; that is the pre-existing limit
-// of this scanner, not something the quoting skip introduces.)
+// are stepped over whole — including Groovy/Kotlin triple-quoted blocks, which span newlines — so
+// only an `include` in code position starts a call.
 func searchVerifyGradleIncludeArguments(script string) []string {
 	script = searchVerifyStripScriptComments(script)
 	var arguments []string
@@ -854,10 +853,32 @@ func searchVerifyGradleCallArguments(rest string) ([]string, int) {
 	return arguments, index
 }
 
-// searchVerifyScriptStringLiteral reads one single- or double-quoted literal, returning its content
-// and its width, or a zero width when the quote is not closed on the line.
+// searchVerifyScriptStringLiteral reads one string literal, returning its content and its width, or
+// a zero width when it is not closed.
+//
+// TRIPLE-quoted blocks are read whole, across newlines, which the single-quote form cannot do. Both
+// DSLs spell a multi-line string that way, and an ordinary one-line literal terminates at the
+// newline, so a block like
+//
+//	val example = """
+//	    include(":lib")
+//	"""
+//
+// left its body in code position and `include(":lib")` was read as a declaration — `./gradlew
+// :lib:test` for a project the settings script never declares. Reading the block whole also makes
+// `include(""":lib""")` work, because the delimiter is stripped and the content is the argument.
 func searchVerifyScriptStringLiteral(rest string) (string, int) {
 	quote := rest[0]
+	if len(rest) >= 3 && rest[1] == quote && rest[2] == quote {
+		delimiter := rest[:3]
+		end := strings.Index(rest[3:], delimiter)
+		if end < 0 {
+			// Unterminated: report nothing so the caller steps past a single byte rather than
+			// swallowing the rest of the file.
+			return "", 0
+		}
+		return rest[3 : 3+end], 3 + end + len(delimiter)
+	}
 	var literal strings.Builder
 	for index := 1; index < len(rest); index++ {
 		character := rest[index]

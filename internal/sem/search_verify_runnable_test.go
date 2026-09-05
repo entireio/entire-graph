@@ -965,3 +965,72 @@ func TestSearchVerifyNodeAncestorLockfileNeedsWorkspaceMembership(t *testing.T) 
 		})
 	}
 }
+
+// TestSearchVerifyGradleTripleQuotedBlockIsNotCode is the regression for a multi-line string read as
+// code by the settings scanner.
+//
+// Both DSLs spell a multi-line string with a triple delimiter, and an ordinary one-line literal
+// terminates at the newline — so the body of such a block sat in code position and an `include` in
+// it was read as a declaration. `./gradlew :lib:test` was then advertised for a project the settings
+// script never declares, which Gradle answers with "Project 'lib' not found in root project".
+//
+// The single-LINE spelling was already declined, for a different reason: the scanner consumed
+// `"include("` as an ordinary literal, so the identifier never reached code position. It is kept
+// below so both spellings are pinned to the same answer rather than agreeing by accident.
+func TestSearchVerifyGradleTripleQuotedBlockIsNotCode(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		settings string
+	}{
+		{
+			name:     "the multi-line Kotlin spelling",
+			settings: "include(\":app\")\nval example = \"\"\"\ninclude(\":lib\")\n\"\"\"\n",
+		},
+		{
+			name:     "the multi-line Groovy spelling",
+			settings: "include ':app'\ndef example = '''\ninclude ':lib'\n'''\n",
+		},
+		{
+			name:     "the single-line spelling it must agree with",
+			settings: "include(\":app\")\nval example = \"\"\"include(\":lib\")\"\"\"\n",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if searchVerifyGradleSettingsIncludes(testCase.settings, ":lib") {
+				t.Fatalf("settings declare :lib, but the only mention of it is inside a string: %q",
+					testCase.settings)
+			}
+			// The include outside the block is still read, so the block is skipped rather than the
+			// scan being abandoned at it.
+			if !searchVerifyGradleSettingsIncludes(testCase.settings, ":app") {
+				t.Fatalf("the settings script no longer declares :app: %q", testCase.settings)
+			}
+			files := map[string]string{
+				"gradlew":                  "",
+				"settings.gradle":          testCase.settings,
+				"app/build.gradle":         "",
+				"lib/build.gradle":         "",
+				"lib/src/main/java/A.java": "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "lib/src/main/java/A.java"}, &evidence)
+			if got != nil {
+				t.Fatalf("command = %q, want silence: :lib appears only inside a string literal",
+					got.Command)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyGradleTripleQuotedIncludeArgumentIsRead pins the other half: a triple-quoted
+// literal PASSED to include is an ordinary argument once its delimiter is stripped.
+func TestSearchVerifyGradleTripleQuotedIncludeArgumentIsRead(t *testing.T) {
+	t.Parallel()
+	settings := "include(\"\"\":lib\"\"\")\n"
+	if !searchVerifyGradleSettingsIncludes(settings, ":lib") {
+		t.Fatalf("settings %q declare :lib and the scanner did not read it", settings)
+	}
+}
