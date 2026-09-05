@@ -18,7 +18,7 @@ func captureOpenedSource(ctx context.Context, opened openedSource, counters ...*
 	originalRead, originalOver, originalClose := opened.read, opened.oversize, opened.close
 	var mu sync.Mutex
 	overs := map[string]oversizeFile{}
-	store := newCapturedStore(ctx, func(path string) (string, bool) {
+	read := func(path string) (string, bool) {
 		content, ok := originalRead(path)
 		if ok && len(counters) > 0 && counters[0] != nil {
 			counters[0].sourceBytes.Add(int64(len(content)))
@@ -34,7 +34,22 @@ func captureOpenedSource(ctx context.Context, opened openedSource, counters ...*
 			}
 		}
 		return content, ok
-	}, -1)
+	}
+	store := opened.capture
+	if store == nil {
+		store = newCapturedStore(ctx, read, -1)
+	} else {
+		store.read = read
+		// Policy was acquired during enumeration, before the source counter was
+		// attached. Account those observations once rather than charging rereads.
+		if len(counters) > 0 && counters[0] != nil {
+			for _, entry := range store.entries {
+				if entry.ok {
+					counters[0].sourceBytes.Add(entry.size)
+				}
+			}
+		}
+	}
 	opened.capture = store
 	opened.read = func(path string) (string, bool) {
 		source, ok, err := store.acquire(path)

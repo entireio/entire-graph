@@ -12460,7 +12460,42 @@ type openedSource struct {
 // snapshot cannot parse it anyway), and is instead recorded in the oversize
 // registry from a streamed digest. Listings are capped at
 // sourceOptions.maxFiles, with a W_FILE_LIMIT warning when that truncates.
-func openSource(ctx context.Context, repo, committedRevision string, options sourceOptions) (openedSource, error) {
+func openSource(ctx context.Context, repo, committedRevision string, options sourceOptions) (result openedSource, resultErr error) {
+	var policyCapture *capturedStore
+	if options.capture {
+		policyCapture = newCapturedStore(ctx, nil, -1)
+		if options.cachePolicy != nil {
+			policy := *options.cachePolicy
+			policy.operationCapture = policyCapture
+			options.cachePolicy = &policy
+			if committedRevision == "" {
+				inputs := append([]capturedIgnoreFile{policy.graphIgnore}, policy.ignoreFiles...)
+				inputs = append(inputs, policy.includeFiles...)
+				for _, input := range inputs {
+					if _, _, err := capturePolicyRead(policyCapture, repo, input.path, func() (string, bool, error) { return string(input.content), input.present, nil }); err != nil {
+						_ = policyCapture.close()
+						return openedSource{}, err
+					}
+				}
+			}
+		}
+		defer func() {
+			if resultErr != nil {
+				_ = policyCapture.close()
+				return
+			}
+			result.capture = policyCapture
+			originalClose := result.close
+			result.close = func() error {
+				err := policyCapture.close()
+				if originalClose != nil {
+					err = errors.Join(err, originalClose())
+				}
+				return err
+			}
+		}()
+	}
+
 	maxReadBytes := int64(options.maxReadBytes)
 	if committedRevision != "" {
 		var ignores ignoreMatcher
@@ -18843,7 +18878,7 @@ func worktreeVendorIgnoreRules(repo string, base ignoreMatcher, listed []string)
 	}
 	defer root.Close()
 	for _, candidate := range candidates {
-		content, present, err := readWorktreeNestedIgnore(root, repo, candidate)
+		content, present, err := capturePolicyRead(base.capture, repo, candidate, func() (string, bool, error) { return readWorktreeNestedIgnore(root, repo, candidate) })
 		if err != nil {
 			return nil, err
 		}
@@ -18913,7 +18948,7 @@ func loadHeadNestedIgnoreRules(
 
 	budget := newIgnoreRuleBudget(policyBase)
 	rootMatcher := ignoreMatcher{}
-	rootContent, present, err := readCommittedIgnoreFile(reader, requested[0], labels[0], false)
+	rootContent, present, err := capturePolicyRead(policyBase.capture, repo, labels[0], func() (string, bool, error) { return readCommittedIgnoreFile(reader, requested[0], labels[0], false) })
 	if err != nil {
 		return nil, err
 	}
@@ -18925,7 +18960,9 @@ func loadHeadNestedIgnoreRules(
 	}
 	rules := newNestedIgnoreRulesWithBudget(rootMatcher, budget)
 	for index, candidate := range candidates {
-		content, present, err := readCommittedIgnoreFile(reader, requested[index+1], candidate, true)
+		content, present, err := capturePolicyRead(policyBase.capture, repo, candidate, func() (string, bool, error) {
+			return readCommittedIgnoreFile(reader, requested[index+1], candidate, true)
+		})
 		if err != nil {
 			return nil, err
 		}

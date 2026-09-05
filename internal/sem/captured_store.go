@@ -34,6 +34,7 @@ type capturedStore struct {
 }
 
 type captureEntry struct {
+	policy  bool
 	ready   chan struct{}
 	source  capturedSource
 	ok      bool
@@ -50,7 +51,11 @@ func newCapturedStore(ctx context.Context, read contentReader, memoryLimit int64
 	return &capturedStore{ctx: ctx, cancel: cancel, read: read, limit: memoryLimit, entries: make(map[string]*captureEntry), closeDone: make(chan struct{})}
 }
 
-func (store *capturedStore) acquire(path string) (sourceResult capturedSource, available bool, resultErr error) {
+func (store *capturedStore) acquire(path string) (capturedSource, bool, error) {
+	return store.acquireFrom(path, store.read)
+}
+
+func (store *capturedStore) acquireFrom(path string, read contentReader) (sourceResult capturedSource, available bool, resultErr error) {
 	defer func() {
 		if resultErr != nil {
 			store.mu.Lock()
@@ -78,7 +83,7 @@ func (store *capturedStore) acquire(path string) (sourceResult capturedSource, a
 	store.mu.Unlock()
 	defer store.active.Done()
 	if !exists {
-		store.capture(path, entry)
+		store.capture(path, entry, read)
 	}
 	select {
 	case <-store.ctx.Done():
@@ -111,14 +116,14 @@ func (store *capturedStore) acquire(path string) (sourceResult capturedSource, a
 	return source, true, nil
 }
 
-func (store *capturedStore) capture(path string, entry *captureEntry) {
+func (store *capturedStore) capture(path string, entry *captureEntry, read contentReader) {
 	defer func() {
 		if entry.err != nil {
 			entry.source.content = ""
 		}
 		close(entry.ready)
 	}()
-	content, ok := store.read(path)
+	content, ok := read(path)
 	if err := store.ctx.Err(); err != nil {
 		entry.err = err
 		return

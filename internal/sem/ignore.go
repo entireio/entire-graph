@@ -18,6 +18,8 @@ import (
 )
 
 type ignoreMatcher struct {
+	capture         *capturedStore
+	captureRepo     string
 	rules           []ignoreRule
 	parsedRuleCount int
 }
@@ -379,6 +381,9 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 
 func loadWorktreeIgnoreMatcherWithPolicy(repo string, ignoreFiles, includeFiles []string, policy *capturedIgnorePolicy) (ignoreMatcher, error) {
 	var matcher ignoreMatcher
+	if policy != nil {
+		matcher.capture, matcher.captureRepo = policy.operationCapture, repo
+	}
 	if err := matcher.loadOptional(filepath.Join(repo, ".gitignore"), false); err != nil {
 		return ignoreMatcher{}, err
 	}
@@ -608,37 +613,47 @@ func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
 }
 
 func (m *ignoreMatcher) loadOptionalSameVolume(base, file string, includeMode bool) error {
+	content, present, err := capturePolicyRead(m.capture, m.captureRepo, file, func() (string, bool, error) { return readOptionalSameVolume(base, file, includeMode) })
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	if err := m.loadContent(content, includeMode); err != nil {
+		return fmt.Errorf("read %s %q: %w", ignoreFileLabel(includeMode), file, err)
+	}
+	return nil
+}
+func readOptionalSameVolume(base, file string, includeMode bool) (string, bool, error) {
 	label := ignoreFileLabel(includeMode)
 	opened, resolved, err := openSameVolumePath(base, file)
 	if isMissingPathError(err) {
-		return nil
+		return "", false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("read %s %q: %w", label, file, err)
+		return "", false, fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	defer opened.Close()
 	info, err := opened.Stat()
 	if err != nil {
-		return fmt.Errorf("read %s %q: %w", label, file, err)
+		return "", false, fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	regular, err := openedFileIsRegular(opened, info)
 	if err != nil {
-		return fmt.Errorf("read %s %q: %w", label, file, err)
+		return "", false, fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	if !regular {
-		return fmt.Errorf("%s %q is not a regular file", label, file)
+		return "", false, fmt.Errorf("%s %q is not a regular file", label, file)
 	}
 	if info.Size() > maxIgnoreFileBytes {
-		return fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, maxIgnoreFileBytes)
+		return "", false, fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, maxIgnoreFileBytes)
 	}
 	content, err := readOpenedBoundedRegularFile(opened, info, resolved, label, maxIgnoreFileBytes)
 	if err != nil {
-		return err
+		return "", false, err
 	}
-	if err := m.loadContent(string(content), includeMode); err != nil {
-		return fmt.Errorf("read %s %q: %w", label, file, err)
-	}
-	return nil
+	return string(content), true, nil
 }
 
 func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
@@ -647,14 +662,17 @@ func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
 
 func (m *ignoreMatcher) loadPath(file string, includeMode, required bool) error {
 	label := ignoreFileLabel(includeMode)
-	content, present, err := readBoundedRegularFile(file, label, required, maxIgnoreFileBytes)
+	content, present, err := capturePolicyRead(m.capture, m.captureRepo, file, func() (string, bool, error) {
+		bytes, present, err := readBoundedRegularFile(file, label, required, maxIgnoreFileBytes)
+		return string(bytes), present, err
+	})
 	if err != nil {
 		return err
 	}
 	if !present {
 		return nil
 	}
-	if err := m.loadReader(bytes.NewReader(content), includeMode); err != nil {
+	if err := m.loadReader(strings.NewReader(content), includeMode); err != nil {
 		return fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	return nil
@@ -1084,7 +1102,7 @@ func (s *nestedIgnoreStack) enter(dir string) error {
 		s.root = root
 	}
 	candidate := path.Join(dir, ".gitignore")
-	content, present, err := readWorktreeNestedIgnore(s.root, s.repo, candidate)
+	content, present, err := capturePolicyRead(s.base.capture, s.repo, candidate, func() (string, bool, error) { return readWorktreeNestedIgnore(s.root, s.repo, candidate) })
 	if err != nil {
 		return err
 	}
