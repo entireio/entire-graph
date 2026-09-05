@@ -722,3 +722,51 @@ func TestDropContainedResultsKeepsContainedCodeRegions(t *testing.T) {
 		t.Fatalf("containment kept the wrong window: %#v", kept[0])
 	}
 }
+
+// An `=` that BINDS AN ASSOCIATED TYPE is not a body. Rust writes its iterator-returning trait
+// signatures as `fn items(&self) -> impl Iterator<Item = u8>;` — no body anywhere on the line —
+// and reading that `=` as an expression body let the whole class of Rust trait declarations escape
+// the reference-declaration prior and rank beside the implementations that can hold the bug.
+func TestSearchExpressionBodyIgnoresAssociatedTypeBindings(t *testing.T) {
+	t.Parallel()
+
+	declarations := []string{
+		"fn items(&self) -> impl Iterator<Item = u8>;",
+		"fn keys(&self) -> impl Iterator<Item = &'a str>;",
+		"    async fn stream(&self) -> impl Stream<Item = Result<Bytes>> + Send;",
+		"fn pairs(&self) -> Box<dyn Iterator<Item = (K, V)>>;",
+	}
+	for _, snippet := range declarations {
+		if searchExpressionBodiedCallable(snippet) {
+			t.Errorf("associated-type binding read as an expression body: %s", snippet)
+		}
+	}
+
+	// The bodies this rule exists to protect must still read as implementations, including the
+	// ones whose signature carries a generic type argument of its own.
+	bodies := []string{
+		"fun f() = expr",
+		"public int F() => x;",
+		"fun f(): List<Int> = listOf()",
+		"fun less(a: Int, b: Int) = a < b",
+		"def f: Int = 42",
+		// A method NAMED `<` puts a lone `<` ahead of the parameter list. The group never
+		// balances, or balances only across a parenthesis, so it is not a type-argument group.
+		"def <(that: A): Boolean = x > y",
+		"public static bool operator <(A a, B b) => a.X < b.X;",
+	}
+	for _, snippet := range bodies {
+		if !searchExpressionBodiedCallable(snippet) {
+			t.Errorf("expression body read as a declaration: %s", snippet)
+		}
+	}
+
+	// End to end: the Rust trait signature now earns the reference-declaration prior.
+	rust := SearchResult{
+		Kind: "method", Snippet: declarations[0],
+		SymbolStartLine: 41, SymbolEndLine: 41, SnippetStartLine: 41, SnippetEndLine: 41,
+	}
+	if !searchReferenceDeclaration(rust) {
+		t.Errorf("bodyless Rust trait signature %q was not recognised as a declaration", declarations[0])
+	}
+}

@@ -634,6 +634,12 @@ func searchExpressionBodiedCallable(body string) bool {
 	// parameter list, so requiring one closed group costs it nothing — `const f = (x: number) => x`
 	// is still caught by the `=>` after that group. A callable written without parentheses at all
 	// (Scala's `def f: Int = 42`) has no group to wait for and is scanned whole.
+	//
+	// TYPE-ARGUMENT GROUPS exclude the third `=` that is not a body: the one that BINDS AN
+	// ASSOCIATED TYPE. Rust writes `fn items(&self) -> impl Iterator<Item = u8>;` — a trait
+	// signature with no body at all — and that `=` stands outside every parenthesised group and
+	// after the parameter list closed, so neither depth nor position sees it.
+	typeArgs := searchTypeArgumentMask(body)
 	depth := 0
 	closedGroup := !strings.ContainsRune(body, '(')
 	for index := 0; index < len(body); index++ {
@@ -665,6 +671,9 @@ func searchExpressionBodiedCallable(body string) bool {
 			index++
 			continue
 		}
+		if typeArgs[index] {
+			continue
+		}
 		rest := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(body[index+1:]), ";"))
 		switch rest {
 		case "", "0", "delete", "default":
@@ -673,6 +682,53 @@ func searchExpressionBodiedCallable(body string) bool {
 		return true
 	}
 	return false
+}
+
+// searchTypeArgumentMask marks the byte offsets of `body` that lie inside a TYPE-ARGUMENT GROUP:
+// a balanced `<`...`>` pair opened at parenthesis depth zero, AFTER the callable's parameter list
+// has closed.
+//
+// The mask exists so an `=` that BINDS AN ASSOCIATED TYPE is not read as an expression body.
+// `fn items(&self) -> impl Iterator<Item = u8>;` is a Rust trait signature carrying no body at all,
+// and every such declaration escaped the reference-declaration prior while that `=` counted.
+//
+// "After the parameter list" is what keeps a method NAMED `<` out. Scala's
+// `def <(that: A): Boolean = x > y` and C#'s `operator <(A a, B b) => a.X < b.X` write a lone `<`
+// BEFORE the parameters, where a later `>` in the body would otherwise close a bogus group
+// straddling the whole signature and swallow the real body `=`. A group that opens before the
+// first `(` is therefore never a type-argument group — which costs the mask nothing, because a
+// generic parameter list written there (`template <class T = int> void reset();`) is already
+// excluded by the position rule in the caller.
+func searchTypeArgumentMask(body string) []bool {
+	mask := make([]bool, len(body))
+	var open []int
+	depth := 0
+	closedGroup := !strings.ContainsRune(body, '(')
+	for index := 0; index < len(body); index++ {
+		switch body[index] {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+				closedGroup = closedGroup || depth == 0
+			}
+		case '<':
+			if depth == 0 && closedGroup {
+				open = append(open, index)
+			}
+		case '>':
+			if depth > 0 || len(open) == 0 {
+				continue
+			}
+			start := open[len(open)-1]
+			open = open[:len(open)-1]
+			for offset := start; offset <= index; offset++ {
+				mask[offset] = true
+			}
+		}
+	}
+	return mask
 }
 
 func applySearchFileClassPrior(candidates []searchCandidate, q searchQuery) {
