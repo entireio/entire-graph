@@ -1175,9 +1175,18 @@ func searchVerifyNodeWorkspacePatterns(raw json.RawMessage) ([]string, bool) {
 
 // searchVerifyNodeWorkspaceMatches matches one workspaces glob against a package path, segment by
 // segment. `**` spans any number of segments; everything else is `path.Match` within one segment, so
-// `packages/*` reaches `packages/api` and not `packages/api/plugin`. A pattern `path.Match` rejects
-// as malformed matches, keeping the permissive direction this check is built on.
+// `packages/*` reaches `packages/api` and not `packages/api/plugin`.
+//
+// A pattern this cannot express MATCHES, which is what keeps the check on its permissive side. Yarn
+// globs its workspaces with micromatch, whose language is larger than `path.Match`'s: brace
+// expansion (`{packages,tools}/*`) and the extglob groups are ordinary characters here, so a covered
+// package would silently fail to match and be handed `npm test` — the one outcome a Plug'n'Play
+// project cannot run. Not answering is the honest result for a pattern in a language this does not
+// read, and not answering means leaving the command as it was.
 func searchVerifyNodeWorkspaceMatches(pattern string, segments []string) bool {
+	if searchVerifyNodeWorkspacePatternIsUnreadable(pattern) {
+		return true
+	}
 	patternSegments := strings.Split(pattern, "/")
 	for len(patternSegments) > 0 {
 		if patternSegments[0] == "**" {
@@ -1205,6 +1214,22 @@ func searchVerifyNodeWorkspaceMatches(pattern string, segments []string) bool {
 		patternSegments, segments = patternSegments[1:], segments[1:]
 	}
 	return len(segments) == 0
+}
+
+// searchVerifyNodeWorkspacePatternIsUnreadable reports whether a workspaces glob uses micromatch
+// syntax `path.Match` would read as literal text: brace expansion, and the extglob groups
+// `?(`, `*(`, `+(`, `@(` and `!(`. Both would match nothing here and be mistaken for a package the
+// workspace does not declare.
+func searchVerifyNodeWorkspacePatternIsUnreadable(pattern string) bool {
+	if strings.ContainsAny(pattern, "{}") {
+		return true
+	}
+	for _, opener := range []string{"?(", "*(", "+(", "@(", "!("} {
+		if strings.Contains(pattern, opener) {
+			return true
+		}
+	}
+	return false
 }
 
 func deriveSearchVerifySuiteComposer(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {

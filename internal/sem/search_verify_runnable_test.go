@@ -941,6 +941,20 @@ func TestSearchVerifyNodeAncestorLockfileNeedsWorkspaceMembership(t *testing.T) 
 			leaf:        "tools/scratch",
 			wantCommand: "cd tools/scratch && yarn test",
 		},
+		{
+			// Yarn globs with micromatch, so brace expansion is a valid pattern that path.Match
+			// reads as literal text. A pattern this cannot express must not be read as a decline.
+			name:        "brace expansion is not answered, so the manager is kept",
+			rootPackage: `{"name":"root","workspaces":["{packages,tools}/*"]}`,
+			leaf:        "tools/scratch",
+			wantCommand: "cd tools/scratch && yarn test",
+		},
+		{
+			name:        "an extglob group is not answered either",
+			rootPackage: `{"name":"root","workspaces":["+(packages|tools)/*"]}`,
+			leaf:        "tools/scratch",
+			wantCommand: "cd tools/scratch && yarn test",
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
