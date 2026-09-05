@@ -460,3 +460,22 @@ func TestImpactPathsRepeatedEvidenceOutputBound(t *testing.T) {
 		t.Fatalf("repeated evidence is not bounded: bytes=%d report=%+v err=%v", len(encoded), report, err)
 	}
 }
+
+// Candidate provenance survives a terminal-test semantic mode. TESTS marks the
+// caller terminal, but must never upgrade its possible dispatch into a fact.
+func TestImpactPathsCandidateCoveringTestRemainsCandidate(t *testing.T) {
+	relations := []RelationRecord{
+		pathFixtureEdge("test", "focus", "X-entire-graph:COMPILER_IMPLEMENTATION_CANDIDATE", 0),
+		pathFixtureEdge("test", "other", "TESTS", 1),
+		pathFixtureEdge("unrelated", "test", "CALLS", 1),
+	}
+	options := DefaultImpactPathOptions()
+	options.Depth = 0
+	report, err := TraverseImpactPaths(t.Context(), "focus", relations, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Results) != 1 || report.Results[0].ID != "test" || report.Results[0].Paths[0].Category != "compiler_candidate" {
+		t.Fatalf("terminal test erased candidate provenance: %+v", report)
+	}
+}

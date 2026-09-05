@@ -181,37 +181,9 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	}
 	indexLatency := time.Since(indexStarted)
 	queryStarted := time.Now()
-	legacyFlags := flags
-	if flags.Depth == 0 || flags.Depth > 2 {
-		legacyFlags.Depth = 2
-	}
-	response := buildImpactResponseFromReader(snapshot, legacyFlags, readSource)
-	response.Depth = flags.Depth
-	response.Compiler = snapshot.Header.Compiler
-	annotateImpactCallSites(&response, readSource)
-	if (flags.Depth == 0 || flags.Depth > 2) && response.Focus != nil && !response.DisambiguationRequired {
-		pathOptions := flags.PathOptions
-		pathOptions.GraphPartial = len(snapshot.Header.PartialFailures) > 0 || (snapshot.Header.Stats.CompletenessLevel != "ok" && snapshot.Header.Stats.CompletenessLevel != "")
-		relations := sem.CompilerEnrichedRelations(snapshot, true)
-		if flags.ExcludeTests {
-			excluded := map[string]bool{}
-			for _, symbol := range snapshot.Symbols {
-				if isConventionalTestPath(symbol.FilePath) {
-					excluded[symbol.ID] = true
-				}
-			}
-			relations = nil
-			for _, relation := range sem.CompilerEnrichedRelations(snapshot, true) {
-				if !excluded[relation.FromID] && !excluded[relation.ToID] {
-					relations = append(relations, relation)
-				}
-			}
-		}
-		report, pathErr := sem.TraverseImpactPaths(ctx, response.Focus.ID, relations, pathOptions)
-		if pathErr != nil {
-			return pathErr
-		}
-		response.Traversal = &report
+	response, err := buildImpactOperationResponse(ctx, snapshot, flags, readSource)
+	if err != nil {
+		return err
 	}
 
 	if operation != nil {
@@ -256,6 +228,49 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	default:
 		return fmt.Errorf("impact --format must be text or json, got %q", flags.Format)
 	}
+}
+
+// buildImpactOperationResponse uses one derivative relation view for every
+// impact section and traversal depth. Native records stay untouched, and the
+// candidate extension is deliberately outside the legacy confirmed-call family.
+func buildImpactOperationResponse(ctx context.Context, snapshot sem.ProviderSnapshot, flags impactFlags, readSource lineReader) (impactResponse, error) {
+	if snapshot.Header.Compiler != nil {
+		snapshot.Relations = sem.CompilerEnrichedRelations(snapshot, true)
+	}
+	legacyFlags := flags
+	if flags.Depth == 0 || flags.Depth > 2 {
+		legacyFlags.Depth = 2
+	}
+	response := buildImpactResponseFromReader(snapshot, legacyFlags, readSource)
+	response.Depth = flags.Depth
+	response.Compiler = snapshot.Header.Compiler
+	annotateImpactCallSites(&response, readSource)
+	if (flags.Depth == 0 || flags.Depth > 2) && response.Focus != nil && !response.DisambiguationRequired {
+		pathOptions := flags.PathOptions
+		pathOptions.GraphPartial = len(snapshot.Header.PartialFailures) > 0 || (snapshot.Header.Stats.CompletenessLevel != "ok" && snapshot.Header.Stats.CompletenessLevel != "")
+		relations := snapshot.Relations
+		if flags.ExcludeTests {
+			excluded := map[string]bool{}
+			for _, symbol := range snapshot.Symbols {
+				if isConventionalTestPath(symbol.FilePath) {
+					excluded[symbol.ID] = true
+				}
+			}
+			relations = nil
+			for _, relation := range snapshot.Relations {
+				if !excluded[relation.FromID] && !excluded[relation.ToID] {
+					relations = append(relations, relation)
+				}
+			}
+		}
+		report, pathErr := sem.TraverseImpactPaths(ctx, response.Focus.ID, relations, pathOptions)
+		if pathErr != nil {
+			return response, pathErr
+		}
+		response.Traversal = &report
+	}
+
+	return response, nil
 }
 
 func parseImpactFlags(args []string) (impactFlags, error) {
