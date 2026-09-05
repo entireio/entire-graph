@@ -230,3 +230,53 @@ func TestExplainStillBoundsWhatAnUntrustedBuildCanMakeItRemember(t *testing.T) {
 		t.Fatalf("scanned = %d, want it to saturate at %d", scanned, explainMaxScannedNames)
 	}
 }
+
+// One over-long line used to end the scan for good. bufio.Scanner returns ErrTooLong and then never
+// scans again, so a linker dump or a bundled source map quoted inside one error threw away every
+// diagnostic AFTER it — the echo still showed the agent those lines, and this command silently
+// resolved nothing from them.
+func TestExplainKeepsScanningPastAnOverLongLine(t *testing.T) {
+	t.Parallel()
+	build := "./a.go:1:1: undefined: Alpha\n" +
+		strings.Repeat("x", explainMaxLineBytes+1024) + "\n" +
+		"./b.go:2:2: undefined: Beta\n"
+	candidates, scanned, err := explainCandidates(strings.NewReader(build), 8)
+	if err != nil {
+		t.Fatalf("err = %v, want nil: an over-long line is not a read failure", err)
+	}
+	names := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		names = append(names, candidate.Name)
+	}
+	if len(names) != 2 || names[0] != "Alpha" || names[1] != "Beta" {
+		t.Fatalf("names = %v, want [Alpha Beta]: the diagnostic after the over-long line was dropped", names)
+	}
+	if scanned != 2 {
+		t.Fatalf("scanned = %d, want 2", scanned)
+	}
+	// The file context of the line AFTER the long one has to survive too, not just the name.
+	if candidates[1].File != "b.go" {
+		t.Fatalf("Beta resolved with file %q, want b.go", candidates[1].File)
+	}
+}
+
+// The other half of that: reading past the long line must not smuggle the long line's own bytes into
+// the next one, and must not scan more of it than the cap allows.
+func TestExplainTruncatesAnOverLongLineRatherThanJoiningIt(t *testing.T) {
+	t.Parallel()
+	// A name planted PAST the cap on one line is out of scope by design; the same name on the next
+	// line is not, and the two must not be confused for each other.
+	build := strings.Repeat("x", explainMaxLineBytes) + " undefined: PastTheCap\n" +
+		"./c.go:3:3: undefined: Gamma\n"
+	candidates, _, err := explainCandidates(strings.NewReader(build), 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].Name != "Gamma" {
+		t.Fatalf("candidates = %+v, want only Gamma: text past the per-line cap is not scanned, "+
+			"and the next line must still be", candidates)
+	}
+	if candidates[0].File != "c.go" {
+		t.Fatalf("Gamma resolved with file %q, want c.go: the long line's bytes leaked into it", candidates[0].File)
+	}
+}

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -68,6 +69,16 @@ const (
 	// explainCandidates). The bound exists to keep the BUILD from choosing how much is remembered,
 	// and the caller's own --max-symbols is not the build.
 	explainMaxScannedNames = 1024
+
+	// explainReadBufferBytes is how much of the stream is held at once. Lines are read out of this
+	// buffer a slice at a time, so it is the working set, not a limit on line length.
+	explainReadBufferBytes = 64 * 1024
+
+	// explainMaxLineBytes is how much of ONE line is examined for symbol names. Past it the rest of
+	// that line is discarded and reading continues on the NEXT one — see explainReadLine for why
+	// "continues" is the whole point. An error line naming a symbol is short; four megabytes of it
+	// is a dump, and no compiler puts the name it wants you to see after four megabytes of noise.
+	explainMaxLineBytes = 4 * 1024 * 1024
 )
 
 // explainErrorPatterns are the ways compilers and test runners name a symbol they cannot resolve.
@@ -229,16 +240,17 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 		source = io.TeeReader(opts.Stdin, echo)
 	}
 	candidates, scanned, scanErr := explainCandidates(source, flags.MaxSymbols)
-	// Drain whatever the scan did not reach before deciding anything. A line longer than the scanner's
-	// token limit stops the scan, and with the echo riding on the same reader that would silently
-	// truncate the agent's own output — the one failure this command must never cause.
+	// Drain anything the scan did not reach before deciding anything. The scan now runs to end of
+	// input on its own, so on the ordinary path this copies nothing — it stays because the echo rides
+	// this same reader, and truncating the agent's own output is the one failure this command must
+	// never cause. It is the belt to the scan's braces, not the mechanism.
 	if _, err := io.Copy(io.Discard, source); err != nil {
 		return fmt.Errorf("reading build output from stdin: %w", err)
 	}
 	if err := echo.finish(); err != nil {
 		return err
 	}
-	if scanErr != nil && !errors.Is(scanErr, bufio.ErrTooLong) {
+	if scanErr != nil {
 		return fmt.Errorf("reading build output from stdin: %w", scanErr)
 	}
 	if len(candidates) == 0 {
@@ -367,10 +379,12 @@ func explainCandidates(input io.Reader, limit int) ([]explainCandidate, int, err
 	seen := map[string]bool{}
 	var candidates []explainCandidate
 	scanned := 0
-	scanner := bufio.NewScanner(input)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
+	reader := bufio.NewReaderSize(input, explainReadBufferBytes)
+	buffer := make([]byte, 0, explainReadBufferBytes)
+	for {
+		var readErr error
+		buffer, readErr = explainReadLine(buffer[:0], reader, explainMaxLineBytes)
+		line := string(buffer)
 		var file, owner string
 		context := false
 		for _, pattern := range explainErrorPatterns {
@@ -405,8 +419,43 @@ func explainCandidates(input io.Reader, limit int) ([]explainCandidate, int, err
 				candidates = append(candidates, explainCandidate{Name: name, File: file, Owner: owner})
 			}
 		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return candidates, scanned, nil
+			}
+			return candidates, scanned, readErr
+		}
 	}
-	return candidates, scanned, scanner.Err()
+}
+
+// explainReadLine appends the next line, without its terminator, to dst — reading at most limit
+// bytes of it and DISCARDING the rest of an over-long one so the read continues on the line after.
+//
+// bufio.Scanner cannot do that. It returns ErrTooLong on a token past its buffer and then refuses to
+// scan again, permanently, so ONE oversized line silently threw away every diagnostic that came
+// after it: a linker dump, a bundled source map quoted inside a TypeScript error, a test printing a
+// large diff on one line. The names in the errors that followed were never looked at. Tolerating
+// ErrTooLong at the call site kept the command from failing, but the scan was already over.
+//
+// Memory stays bounded the same way it did: ReadSlice never allocates past the reader's own buffer,
+// and this keeps at most `limit` bytes of any single line — the ceiling bufio.Scanner was configured
+// with — regardless of how long the line actually is.
+func explainReadLine(dst []byte, reader *bufio.Reader, limit int) ([]byte, error) {
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		// ReadSlice's chunk is only valid until the next read, so copy before looping.
+		if room := limit - len(dst); room > 0 {
+			if len(chunk) > room {
+				chunk = chunk[:room]
+			}
+			dst = append(dst, chunk...)
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			// Still inside the SAME line. Keep going so the next call starts on the next one.
+			continue
+		}
+		return bytes.TrimRight(dst, "\r\n"), err
+	}
 }
 
 // explainFirstMatch returns the first capture any of the patterns finds on the line, or "".
