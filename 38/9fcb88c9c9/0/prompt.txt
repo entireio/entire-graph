@@ -1,0 +1,9 @@
+Implement a fix for the blocking issue, test it, then commit to the trail. Wait for Entire to review the changes and address all findings by fixing and resolving them. Keep the loop going until the trail has 0 findings and is mergable.
+
+---
+
+Entire flagged the following risk: “Large performance branch that parallelizes the core relation/parse/dependents phases (provider.go +751) feeding the Entire Brain wire output, introducing worker pools with new shared-state locking on the primary NDJSON path — a missed race or ordering divergence would nondeterministically corrupt downstream output; breadth spans common-language parsers and an all-platform mount-guard security fix. Mitigated by ordered reducers, added determinism/cancellation tests, and no schema/no-egress/CGO changes.”
+
+---
+
+Ok, do that
