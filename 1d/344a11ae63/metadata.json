@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "1d344a11ae63",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/pause-workers.json",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/paused-raw/manifest.json",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/paused-raw/worker-1.tar.gz",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/paused-raw/worker-2.tar.gz",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/paused-raw/worker-3.tar.gz",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/paused-vm-state.json",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/progress.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/1d/344a11ae63/0/metadata.json",
+      "transcript": "/1d/344a11ae63/0/full.jsonl",
+      "compact_transcript": "/1d/344a11ae63/0/transcript.jsonl",
+      "content_hash": "/1d/344a11ae63/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 42340,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2908160,
+    "output_tokens": 6185,
+    "api_call_count": 26
+  }
+}
