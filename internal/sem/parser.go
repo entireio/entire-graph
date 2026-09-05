@@ -327,6 +327,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "OCaml" && strings.EqualFold(filepath.Ext(path), ".mli") {
 		parseSrc = []byte(maskOCamlInterfaceSyntax(content))
 	}
+	if spec.language == "F#" {
+		parseSrc = []byte(maskFSharpUnsupportedSyntax(content))
+	}
 	if spec.language == "YAML" {
 		parseSrc = []byte(maskYAMLUnsupportedSyntax(content))
 	}
@@ -1193,6 +1196,235 @@ func maskOCamlInterfaceSyntax(content string) string {
 // StreamView<List<int>>` parses as an ERROR node and the class symbol is lost
 // (its factory constructor gets recovered as a bare function instead).
 var dartClassModifierPattern = regexp.MustCompile(`\b(final|base|interface|sealed|mixin)(\s+)(class\b)`)
+
+// fsharpStringOpener locates an F# string-literal opener: the run of
+// interpolation sigils (`$`), the offset of a verbatim `@` (-1 when absent),
+// and the offset and DELIMITER WIDTH of the opening quote -- 1 or 3, which is
+// not the same as the run of quotes standing there (see fsharpOpenerQuotes).
+type fsharpStringOpener struct {
+	sigils int
+	at     int
+	quote  int
+	quotes int
+}
+
+// readFSharpStringOpener reads a string-literal opener at i -- `"`, `@"`,
+// `"""`, `$"`, `$"""`, `$@"`, `@$"`, `$$"""` -- and reports whether one is
+// there. A `$` or `@` not followed by a quote run (the `$|>` custom operator,
+// the `@` list-append operator, an `@identifier`) opens nothing.
+func readFSharpStringOpener(src []byte, i int) (fsharpStringOpener, bool) {
+	open := fsharpStringOpener{at: -1}
+	j := i
+	for j < len(src) {
+		if src[j] == '$' {
+			open.sigils++
+			j++
+			continue
+		}
+		if src[j] == '@' && open.at < 0 {
+			open.at = j
+			j++
+			continue
+		}
+		break
+	}
+	if j >= len(src) || src[j] != '"' {
+		return fsharpStringOpener{}, false
+	}
+	open.quote = j
+	open.quotes = fsharpOpenerQuotes(runLength(src, j, '"'), open.at >= 0)
+	return open, true
+}
+
+// fsharpOpenerQuotes converts the run of quotes standing at a literal opener
+// into the width of the delimiter F# actually reads there. The run is NOT the
+// width: F# takes `"""` as the triple-quoted opener and every shorter run as a
+// one-quote opener, so `""` is an EMPTY string -- an opener and its own
+// terminator -- and never a two-quote delimiter. A verbatim `@` is read first
+// and wins over the raw form, so the leading `""` of `@"""a"" b"` is an
+// ESCAPED quote inside a one-quote literal, exactly as the call-side masker
+// already reads it.
+//
+// Carrying the raw run through as the delimiter sent fsharpStringEnd hunting
+// for a closing run that is not there: `""` scanned on to the NEXT quote in the
+// file (past newlines -- an ordinary string body is not stopped by one) and
+// `@"""a"" b"` ran to EOF. The outer scan then resumed inside, or past, every
+// literal in between, so an `$@"..."` after one of them was never masked,
+// tree-sitter misparsed the binding that held it, and the definition -- with
+// every CALLS edge into it -- was demoted or lost.
+func fsharpOpenerQuotes(run int, verbatim bool) int {
+	if run >= 3 && !verbatim {
+		return 3
+	}
+	return 1
+}
+
+// fsharpStringEnd returns the offset just past the literal opened by open, so
+// the scan resumes on real code instead of re-reading the body. A raw string
+// ends at the next quote run of at least the opening width; a verbatim string
+// escapes only `""` and takes backslash literally; an ordinary or interpolated
+// string escapes with a backslash. An unterminated literal ends at EOF.
+func fsharpStringEnd(src []byte, open fsharpStringOpener) int {
+	body := open.quote + open.quotes
+	if open.quotes >= 3 {
+		return indexOfQuoteRun(src, body, open.quotes)
+	}
+	if open.at >= 0 {
+		for k := body; k < len(src); k++ {
+			if src[k] != '"' {
+				continue
+			}
+			if k+1 < len(src) && src[k+1] == '"' {
+				k++
+				continue
+			}
+			return k + 1
+		}
+		return len(src)
+	}
+	for k := body; k < len(src); k++ {
+		switch src[k] {
+		case '\\':
+			k++
+		case '"':
+			return k + 1
+		}
+	}
+	return len(src)
+}
+
+// fsharpHoleEscapeInBody reports whether a literal body spells a doubled brace,
+// the escape for a literal `{`/`}` inside an interpolated string.
+func fsharpHoleEscapeInBody(src []byte, start, end int) bool {
+	if end > len(src) {
+		end = len(src)
+	}
+	for k := start; k+1 < end; k++ {
+		if (src[k] == '{' && src[k+1] == '{') || (src[k] == '}' && src[k+1] == '}') {
+			return true
+		}
+	}
+	return false
+}
+
+// fsharpInterpolationNeedsMasking reports whether the vendored
+// ionide/tree-sitter-fsharp grammar can parse this interpolated literal. It
+// knows exactly two forms: `$"..."` (format_string, holes parsed) and
+// `$"""..."""` (format_triple_quoted_string, body opaque). Everything else
+// misparses:
+//
+//   - `$@"..."` / `@$"..."` (interpolated verbatim) has no rule at all, so the
+//     stray `$` reads as an infix operator and the whole binding degrades to an
+//     infix_expression;
+//   - `$$"""..."""` (doubled sigil, F# 8 raw interpolation) leaves one `$` over
+//     as that same infix operator;
+//   - `$"...{{...}}..."` defeats the format_string scanner outright -- the
+//     doubled brace is not a hole and not literal text to it -- and the parse
+//     fails all the way up to a root ERROR.
+//
+// Only single- and triple-quoted openers are considered. fsharpOpenerQuotes
+// has already normalised open.quotes to one of those two widths, so the width
+// guard turns away only a zero-value opener that was never read.
+func fsharpInterpolationNeedsMasking(src []byte, open fsharpStringOpener, end int) bool {
+	if open.sigils == 0 || (open.quotes != 1 && open.quotes != 3) {
+		return false
+	}
+	if open.at >= 0 || open.sigils >= 2 {
+		return true
+	}
+	return open.quotes == 1 && fsharpHoleEscapeInBody(src, open.quote+1, end)
+}
+
+// maskFSharpUnsupportedSyntax blanks the interpolation sigils on the F# string
+// literals the vendored grammar cannot parse, rewriting each to the plain,
+// verbatim, or raw literal of the same shape -- which the grammar does parse --
+// so the enclosing declaration keeps its tree.
+//
+// The damage is not confined to the literal. `let f x = $@"...{x}..."` parsed
+// its binding as a value_declaration_left, so f was extracted as kind
+// `variable` instead of `function`; `let f x = $"...{{x}}..."` failed to the
+// root and cost the file every symbol in it, module included. A definition that
+// is demoted or missing cannot be a call target either, so every CALLS edge
+// into it disappeared with it, and a module whose end line was truncated
+// mis-scoped the rest of the file.
+//
+// Only the sigils are touched: the body stays byte-identical, so any
+// declaration a hole contains still parses, and the mask is byte-length- and
+// newline-preserving because entity names and signatures are sliced out of the
+// unmasked source at these offsets. Comments and char literals are stepped over
+// so a `$"` inside them cannot open a phantom literal.
+//
+// This is the ENTITY side. The call scanners work on the unmasked source and
+// model interpolation themselves (see the F# maskers in call_scanners.go), so
+// they are unaffected.
+func maskFSharpUnsupportedSyntax(content string) string {
+	src := []byte(content)
+	for i := 0; i < len(src); i++ {
+		switch src[i] {
+		case '/':
+			if i+1 < len(src) && src[i+1] == '/' {
+				for i < len(src) && src[i] != '\n' {
+					i++
+				}
+			}
+		case '(':
+			if i+1 < len(src) && src[i+1] == '*' {
+				i = fsharpBlockCommentEnd(src, i) - 1
+			}
+		case '\'':
+			// `'a` type variables and `x'` identifiers are not literals, so
+			// only the one char literal that could desynchronize the quote
+			// scan is stepped over.
+			if i+2 < len(src) && src[i+1] == '"' && src[i+2] == '\'' {
+				i += 2
+			}
+		case '"', '@', '$':
+			open, ok := readFSharpStringOpener(src, i)
+			if !ok {
+				continue
+			}
+			end := fsharpStringEnd(src, open)
+			if fsharpInterpolationNeedsMasking(src, open, end) {
+				for p := i; p < open.quote; p++ {
+					src[p] = ' '
+				}
+				// A verbatim body escapes `""` and takes backslash literally,
+				// so it stays a verbatim literal: the `@` moves to sit against
+				// the quote (`@$"` as well as `$@"`), which is length-
+				// preserving. Dropping it would reread `\` as an escape and
+				// break on the ordinary `$@"C:\path"`.
+				if open.at >= 0 && open.quotes == 1 {
+					src[open.quote-1] = '@'
+				}
+			}
+			i = end - 1
+		}
+	}
+	return string(src)
+}
+
+// fsharpBlockCommentEnd returns the offset just past the nested `(* ... *)`
+// comment opening at i, or EOF if it is unterminated.
+func fsharpBlockCommentEnd(src []byte, i int) int {
+	depth := 0
+	for k := i; k+1 < len(src); {
+		if src[k] == '(' && src[k+1] == '*' {
+			depth++
+			k += 2
+			continue
+		}
+		if src[k] == '*' && src[k+1] == ')' {
+			depth--
+			k += 2
+			if depth <= 0 {
+				return k
+			}
+			continue
+		}
+		k++
+	}
+	return len(src)
+}
 
 // maskDartUnsupportedSyntax blanks Dart 3 class modifiers the grammar cannot
 // parse, preserving byte length so node offsets keep pointing into the
@@ -2569,7 +2801,7 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 				}
 				text = replacePatternSameLength(text, cPlusPlusAnonymousEnumPattern, "enum cxx_enum")
 				text = replacePatternSameLength(text, cPlusPlusExplicitOperatorCallPattern, "call(")
-				text = replacePatternSameLength(text, cPlusPlusConversionOperatorDeclPattern, "convert()")
+				text = maskCPlusPlusConversionOperatorDecl(text)
 				lines[i] = maskCPlusPlusAnnotationMacros(text) + newline
 			}
 		}
@@ -3022,6 +3254,37 @@ func maskCPlusPlusMemberOperatorCall(text string) string {
 	})
 }
 
+// maskCPlusPlusConversionOperatorDecl rewrites `operator T()` to a plain identifier
+// followed by `()`, keeping the IDENTIFIER the same width as the operator's own name.
+//
+// Width parity matters twice here. The whole match keeps its width, as every mask in
+// this file does, so offsets around it are unchanged. But the identifier has to keep
+// its width too: a symbol's name is sliced from the UNMASKED content at the node's
+// byte range, so a shorter stand-in read the wrong bytes back. `convert` is seven
+// characters and `operator int` is twelve, which is exactly why that member came out
+// named `operato` -- the first seven bytes of the real name -- and why every plain-target
+// conversion operator in a repository collapsed onto that one symbol.
+//
+// The padding is '_' rather than a space so the stand-in stays a single identifier
+// token; a space would end it and change what tree-sitter parses.
+func maskCPlusPlusConversionOperatorDecl(text string) string {
+	return cPlusPlusConversionOperatorDeclPattern.ReplaceAllStringFunc(text, func(match string) string {
+		paren := strings.IndexByte(match, '(')
+		if paren < 0 {
+			return match
+		}
+		name := strings.TrimRight(match[:paren], " \t")
+		if len(name) == 0 {
+			return match
+		}
+		stand := "convert"
+		if len(stand) > len(name) {
+			stand = stand[:len(name)]
+		}
+		return stand + strings.Repeat("_", len(name)-len(stand)) + match[len(name):]
+	})
+}
+
 func maskCPlusPlusOperatorCall(text string) string {
 	return cPlusPlusOperatorCallPattern.ReplaceAllStringFunc(text, func(match string) string {
 		if strings.HasPrefix(match, "::") {
@@ -3144,9 +3407,14 @@ func Supported(path string) bool {
 	return ok
 }
 
+var (
+	looksLikeFluxKustomizationManifestRe  = regexp.MustCompile(`(?m)^apiVersion:\s*kustomize\.toolkit\.fluxcd\.io/`)
+	looksLikeFluxKustomizationManifestRe2 = regexp.MustCompile(`(?m)^kind:\s*Kustomization\s*$`)
+)
+
 func looksLikeFluxKustomizationManifest(content string) bool {
-	return regexp.MustCompile(`(?m)^apiVersion:\s*kustomize\.toolkit\.fluxcd\.io/`).MatchString(content) &&
-		regexp.MustCompile(`(?m)^kind:\s*Kustomization\s*$`).MatchString(content)
+	return looksLikeFluxKustomizationManifestRe.MatchString(content) &&
+		looksLikeFluxKustomizationManifestRe2.MatchString(content)
 }
 
 // objcSelectorName returns the first selector segment of an Objective-C
@@ -3186,13 +3454,20 @@ func maskObjectiveCUnsupportedSyntax(content string) string {
 	return strings.Join(lines, "")
 }
 
+var (
+	looksLikeObjectiveCRe  = regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`)
+	looksLikeObjectiveCRe2 = regexp.MustCompile(`(?m)^\s*#import\s+[<"]`)
+)
+
 func looksLikeObjectiveC(content string) bool {
-	return regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`).MatchString(content) ||
-		regexp.MustCompile(`(?m)^\s*#import\s+[<"]`).MatchString(content)
+	return looksLikeObjectiveCRe.MatchString(content) ||
+		looksLikeObjectiveCRe2.MatchString(content)
 }
 
+var looksLikeCPlusPlusHeaderRe = regexp.MustCompile(`(?m)^\s*(namespace|template\s*<|class\s+\w|struct\s+\w+\s*:|using\s+\w+\s*=|(?:inline\s+)?auto\s+\w+\s*\()`)
+
 func looksLikeCPlusPlusHeader(content string) bool {
-	return regexp.MustCompile(`(?m)^\s*(namespace|template\s*<|class\s+\w|struct\s+\w+\s*:|using\s+\w+\s*=|(?:inline\s+)?auto\s+\w+\s*\()`).MatchString(content) ||
+	return looksLikeCPlusPlusHeaderRe.MatchString(content) ||
 		strings.Contains(content, "std::") ||
 		strings.Contains(content, "extern \"C\"") ||
 		strings.Contains(content, "::")
@@ -3339,16 +3614,17 @@ func kustomizeEntities(content string) []Entity {
 	return yamlKeyEntities(content, "kustomize")
 }
 
+var yamlKeyEntitiesKeyRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
+
 func yamlKeyEntities(content, prefix string) []Entity {
 	lines := strings.Split(content, "\n")
-	keyRe := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
 	var entities []Entity
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		match := keyRe.FindStringSubmatch(trimmed)
+		match := yamlKeyEntitiesKeyRe.FindStringSubmatch(trimmed)
 		if match == nil {
 			continue
 		}
@@ -3358,13 +3634,14 @@ func yamlKeyEntities(content, prefix string) []Entity {
 	return entities
 }
 
+var jsonLikeEntitiesKeyRe = regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
+
 func jsonLikeEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	keyRe := regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
-		match := keyRe.FindStringSubmatch(line)
+		match := jsonLikeEntitiesKeyRe.FindStringSubmatch(line)
 		if match == nil || seen[match[1]] {
 			continue
 		}
@@ -3374,18 +3651,21 @@ func jsonLikeEntities(content string) []Entity {
 	return entities
 }
 
+var (
+	tomlEntitiesSectionRe = regexp.MustCompile(`^\s*\[+\s*([A-Za-z0-9_.-]+)\s*\]+`)
+	tomlEntitiesKeyRe     = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
+)
+
 func tomlEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	sectionRe := regexp.MustCompile(`^\s*\[+\s*([A-Za-z0-9_.-]+)\s*\]+`)
-	keyRe := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
 		name := ""
 		kind := "section"
-		if match := sectionRe.FindStringSubmatch(line); match != nil {
+		if match := tomlEntitiesSectionRe.FindStringSubmatch(line); match != nil {
 			name = match[1]
-		} else if match := keyRe.FindStringSubmatch(line); match != nil {
+		} else if match := tomlEntitiesKeyRe.FindStringSubmatch(line); match != nil {
 			name = match[1]
 			kind = "setting"
 		}
@@ -3398,13 +3678,14 @@ func tomlEntities(content string) []Entity {
 	return entities
 }
 
+var xmlEntitiesTagRe = regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
+
 func xmlEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	tagRe := regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
-		match := tagRe.FindStringSubmatch(line)
+		match := xmlEntitiesTagRe.FindStringSubmatch(line)
 		if match == nil || strings.HasPrefix(match[1], "?") || seen[match[1]] {
 			continue
 		}
@@ -3414,15 +3695,16 @@ func xmlEntities(content string) []Entity {
 	return entities
 }
 
+var makeEntitiesTargetRe = regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
+
 func makeEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	targetRe := regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
 	var entities []Entity
 	for i, line := range lines {
 		if strings.HasPrefix(line, "\t") || strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
-		match := targetRe.FindStringSubmatch(line)
+		match := makeEntitiesTargetRe.FindStringSubmatch(line)
 		if match == nil || strings.Contains(match[1], "=") {
 			continue
 		}
@@ -3431,19 +3713,22 @@ func makeEntities(content string) []Entity {
 	return entities
 }
 
+var (
+	markdownEntitiesHeadingRe = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+	markdownEntitiesFenceRe   = regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
+)
+
 func markdownEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	headingRe := regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
-	fenceRe := regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
 	var entities []Entity
 	fenceIndex := 0
 	for i, line := range lines {
-		if match := headingRe.FindStringSubmatch(line); match != nil {
+		if match := markdownEntitiesHeadingRe.FindStringSubmatch(line); match != nil {
 			name := strings.TrimSpace(strings.Trim(match[2], "#"))
 			entities = append(entities, simpleFallbackEntity("section", slugName(name), "markdown heading "+name, i+1, i+1, strings.TrimSpace(line)))
 			continue
 		}
-		if match := fenceRe.FindStringSubmatch(line); match != nil {
+		if match := markdownEntitiesFenceRe.FindStringSubmatch(line); match != nil {
 			fenceIndex++
 			lang := match[1]
 			if lang == "" {
@@ -3456,15 +3741,16 @@ func markdownEntities(content string) []Entity {
 	return entities
 }
 
+var htmlEntitiesIdRe = regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
+
 func htmlEntities(path, content string) []Entity {
 	lines := strings.Split(content, "\n")
-	idRe := regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
 	var entities []Entity
 	seen := map[string]bool{}
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	entities = append(entities, simpleFallbackEntity("document", base, "html document "+base, 1, maxInt(1, len(lines)), base))
 	for i, line := range lines {
-		for _, match := range idRe.FindAllStringSubmatch(line, -1) {
+		for _, match := range htmlEntitiesIdRe.FindAllStringSubmatch(line, -1) {
 			name := slugName(match[1])
 			if name == "" || seen[name] {
 				continue
@@ -3476,12 +3762,13 @@ func htmlEntities(path, content string) []Entity {
 	return entities
 }
 
+var cssEntitiesSelectorRe = regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
+
 func cssEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	selectorRe := regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
 	var entities []Entity
 	for i, line := range lines {
-		match := selectorRe.FindStringSubmatch(line)
+		match := cssEntitiesSelectorRe.FindStringSubmatch(line)
 		if match == nil {
 			continue
 		}
@@ -3830,10 +4117,12 @@ func simpleFallbackEntity(kind, name, signature string, startLine, endLine int, 
 	}
 }
 
+var slugNameRe = regexp.MustCompile(`[^A-Za-z0-9_.:/-]+`)
+
 func slugName(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.Trim(name, `"'`)
-	name = regexp.MustCompile(`[^A-Za-z0-9_.:/-]+`).ReplaceAllString(name, "-")
+	name = slugNameRe.ReplaceAllString(name, "-")
 	name = strings.Trim(name, "-")
 	return name
 }
@@ -3903,6 +4192,27 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		// declaration instead of name-colliding with real members.
 		for _, body := range initializerTypeBodies(node, depth, depthExceeded) {
 			walkEntitiesScoped(body, src, language, scope, true, depth+1, entities, depthExceeded)
+		}
+		// A C/C++ member can also DEFINE its type inline:
+		// `struct Inner { int value; } inner;`. Before members were extracted
+		// the walk fell through the declaration and reached that definition, so
+		// `Inner` had a symbol; now that the declaration stops here, the type
+		// would vanish along with it. Descend into the definition itself, at the
+		// same scope and the same inFunc — the path the walk already took — so
+		// the type keeps its symbol and gains its own members.
+		for _, definition := range cFamilyInlineTypeDefinitions(node, language) {
+			walkEntitiesScoped(definition, src, language, scope, inFunc, depth+1, entities, depthExceeded)
+		}
+		// An ANONYMOUS aggregate with a named instance --
+		// `union { int i; float f; } value;` -- declares no type symbol, so the
+		// loop above skips it and its members had no symbol at all: `i` and `f`
+		// simply vanished. Filing them under the enclosing type would be wrong,
+		// which is why that loop refuses them -- but the INSTANCE is where they
+		// are reached from (`packet.value.i`), so its scope is where they belong.
+		for _, body := range cFamilyAnonymousAggregateBodies(node, language) {
+			for _, instance := range fieldDeclNames(node, src) {
+				walkEntitiesScoped(body, src, language, qualify(scope, instance), inFunc, depth+1, entities, depthExceeded)
+			}
 		}
 		return
 	}
@@ -4280,9 +4590,6 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 	if scope == "" {
 		return nil, false
 	}
-	if node.Type() == "field_declaration" && (language == "C" || language == "C++") {
-		return nil, false
-	}
 	switch node.Type() {
 	case "field_declaration", // Go/Rust/Java/C#/C/C++ struct & class fields
 		"public_field_definition", "field_definition", // TS/JS class fields
@@ -4335,9 +4642,36 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 	end := int(node.EndPoint().Row) + 1
 	out := make([]Entity, 0, len(names))
 	for _, name := range names {
-		signature := name
+		// The declarator carries the pointer, reference and array part, and the
+		// type field carries only the base type, so a signature built from the
+		// NAME and the type alone rendered `char *data` and `char data`
+		// identically as "data char". Two different fields then had the same
+		// signature and the same hash, and entity diff/impact reported a change
+		// between them as a generic module edit -- a silent miss, since nothing
+		// about the output looked wrong.
+		spelling := name
+		if shape := fieldDeclaratorShape(node, src, name); shape != "" {
+			spelling = shape
+		}
+		// A bit-field's WIDTH is part of what the member is: `unsigned ready : 1`
+		// and `unsigned ready : 2` are different fields, and the width hangs off a
+		// bitfield_clause beside the name rather than on the declarator, so without
+		// it both rendered "ready unsigned" and hashed the same -- the same silent
+		// diff miss the declarator shape above exists to close.
+		width := fieldBitfieldWidth(node, src, name)
+		spelling += width
+		signature := spelling
 		if typeText != "" {
-			signature = name + " " + typeText
+			signature = spelling + " " + typeText
+		}
+		// The declared type is the base type plus whatever the declarator adds,
+		// so `char *data` is a `char *` and `char data` is a `char`. Hashing the
+		// base type alone gave both the same body hash, which is the other half
+		// of the same miss: the signature said they differed while the hash said
+		// they did not.
+		declaredType := typeText
+		if spelling != name {
+			declaredType = strings.TrimSpace(typeText + " " + strings.Replace(spelling, name, "", 1))
 		}
 		out = append(out, Entity{
 			Kind:        "field",
@@ -4345,7 +4679,7 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 			Signature:   signature,
 			StartLine:   start,
 			EndLine:     end,
-			BodyHash:    hash(typeText),
+			BodyHash:    hash(declaredType),
 			Fingerprint: hash(normalize(signature)),
 		})
 	}
@@ -4356,6 +4690,63 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 // across languages: field_identifier (Go/Rust/C++), variable_declarator (Java)
 // or variable_declaration>variable_declarator (C#), and property_identifier /
 // name field (TypeScript, C# properties).
+// fieldBitfieldWidth returns a member's bit-field clause -- ": 1" for
+// `unsigned ready : 1` -- or "" when the member is not a bit-field.
+//
+// The clause is a SIBLING of the name rather than part of the declarator, so the
+// declarator shape never carries it, and a width is part of what the member is:
+// two fields differing only in width are two different fields.
+func fieldBitfieldWidth(node *sitter.Node, src []byte, name string) string {
+	named := false
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "field_identifier":
+			named = strings.TrimSpace(child.Content(src)) == name
+		case "pointer_declarator", "array_declarator", "reference_declarator",
+			"parenthesized_declarator", "function_declarator":
+			// A bit-field's name may be wrapped: `unsigned (ready) : 1` puts it
+			// under a parenthesized_declarator, so matching only a direct
+			// field_identifier never saw the name and dropped the width -- the
+			// same silent diff miss the width was added to close.
+			named = cFamilyMemberDeclaratorName(child, src) == name
+		case "bitfield_clause":
+			if named {
+				return " " + strings.TrimSpace(child.Content(src))
+			}
+		}
+	}
+	return ""
+}
+
+// fieldDeclaratorShape returns the declarator text for one named C/C++ member --
+// "*data" for `char *data`, "name[32]" for `char name[32]`, "(*handler)(int)"
+// for a function-pointer member -- or "" when the member is declared without a
+// declarator of its own.
+//
+// It exists so a field's signature records the part of its type that the
+// grammar hangs off the declarator rather than the type field. Without it a
+// pointer, reference, array or function-pointer change leaves the signature
+// byte-identical.
+func fieldDeclaratorShape(node *sitter.Node, src []byte, name string) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "pointer_declarator", "array_declarator", "reference_declarator",
+			"parenthesized_declarator", "function_declarator":
+			if cFamilyMemberDeclaratorName(child, src) != name {
+				continue
+			}
+			shape := strings.TrimSpace(child.Content(src))
+			if shape == name {
+				return ""
+			}
+			return shape
+		}
+	}
+	return ""
+}
+
 func fieldDeclNames(node *sitter.Node, src []byte) []string {
 	switch node.Type() {
 	case "public_field_definition", "field_definition", "property_signature", "property_declaration":
@@ -4381,6 +4772,21 @@ func fieldDeclNames(node *sitter.Node, src []byte) []string {
 		switch child.Type() {
 		case "field_identifier":
 			names = append(names, child.Content(src))
+		case "pointer_declarator", "array_declarator", "reference_declarator",
+			"parenthesized_declarator", "function_declarator":
+			// C/C++ members whose declarator carries the pointer, reference,
+			// array or parenthesis part (`char *name;`, `int &ref;`,
+			// `Widget &&item;`, `char name[32];`, `int (value);`,
+			// `int (*handler)(int);`). The name sits under the declarator chain
+			// rather than beside the type. Redundant parentheses are legal
+			// around any declarator, so `parenthesized_declarator` is a shape
+			// the declaration itself can carry, not only one reached through a
+			// pointer or a function declarator. A plain function declarator
+			// names nothing here: `int Add(int);` in a class body is a method
+			// declaration, not data, and is left to the entity walk.
+			if name := cFamilyMemberDeclaratorName(child, src); name != "" {
+				names = append(names, name)
+			}
 		case "variable_declarator":
 			if name := variableDeclaratorName(child, src); name != "" {
 				names = append(names, name)
@@ -4396,6 +4802,138 @@ func fieldDeclNames(node *sitter.Node, src []byte) []string {
 		}
 	}
 	return names
+}
+
+// cPlusPlusInitialisedMemberName returns the member name when a
+// function_definition node is really an in-class data member with an
+// initialiser. tree-sitter-cpp reads the `= 0` of `int total_ = 0;` as a
+// pure_virtual_clause and the whole declaration as a function definition.
+//
+// What separates the two is the DECLARATOR, not the presence of a
+// function_declarator anywhere below: `int (*cb)(int) = 0;` is a
+// function-pointer member and `virtual int *Get() = 0;` is a pure virtual, and
+// both contain one. So the declarator is walked with the same unwrapper the
+// member pass uses, which names a function-pointer declarator and refuses a
+// plain function declarator. A bare field_identifier — `int total_ = 0;` —
+// needs no unwrapping and is taken directly.
+func cPlusPlusInitialisedMemberName(node *sitter.Node, src []byte) string {
+	if !validNode(firstNamedChildOfType(node, "pure_virtual_clause")) {
+		return ""
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		switch child := node.NamedChild(i); child.Type() {
+		case "field_identifier":
+			return strings.TrimSpace(child.Content(src))
+		case "pointer_declarator", "array_declarator", "reference_declarator",
+			"parenthesized_declarator", "function_declarator":
+			return cFamilyMemberDeclaratorName(child, src)
+		}
+	}
+	return ""
+}
+
+// cFamilyMemberDeclaratorName unwraps the pointer/reference/array declarator
+// chain of a C-family data member down to the declared name, stopping at a
+// function declarator: `int (*handler)(int)` is a function-pointer member and
+// names `handler`, but `int Add(int)` is a method declaration and names nothing
+// here.
+//
+// The walk is bounded by the parse tree, not by a step budget. Every step moves
+// to a node whose byte range is strictly inside the current one, and a parse
+// tree is finite, so the loop terminates on any input; a fixed budget would
+// instead drop a member whose declarator merely nests deeper than the number
+// picked (`int ********deep;` is eight nested pointer_declarators). The
+// containment check is what makes that guarantee explicit: a step that fails to
+// narrow the range is not progress, and gives up rather than spinning.
+func cFamilyMemberDeclaratorName(node *sitter.Node, src []byte) string {
+	for validNode(node) {
+		var next *sitter.Node
+		switch node.Type() {
+		case "field_identifier", "identifier":
+			return strings.TrimSpace(node.Content(src))
+		case "pointer_declarator", "array_declarator", "parenthesized_declarator", "reference_declarator":
+			next = node.ChildByFieldName("declarator")
+			if !validNode(next) {
+				next = firstChildDeclarator(node)
+			}
+		case "function_declarator":
+			// A function-pointer member: the name is inside the parens. A plain
+			// function declarator is a method declaration and names nothing.
+			//
+			// Parentheses alone do not make it data. C++ lets a method name be
+			// parenthesized -- `virtual int (Run)() = 0;` -- and that shape
+			// reaches an identifier inside parens exactly like a function
+			// pointer does, so accepting every parenthesized inner declarator
+			// reclassified those methods as fields and removed the callable
+			// from method and call-resolution output entirely. What makes it a
+			// pointer-to-function is the POINTER: `(*callback)(int)` wraps a
+			// pointer_declarator, `(Run)()` wraps the bare name.
+			inner := node.ChildByFieldName("declarator")
+			if !validNode(inner) || inner.Type() != "parenthesized_declarator" {
+				return ""
+			}
+			if !parenthesizedDeclaratorIsIndirect(inner) {
+				return ""
+			}
+			next = inner
+		default:
+			return ""
+		}
+		if !descendsStrictly(node, next) {
+			return ""
+		}
+		node = next
+	}
+	return ""
+}
+
+// parenthesizedDeclaratorIsIndirect reports whether a parenthesized declarator
+// wraps a pointer or reference, which is what separates a function-pointer
+// member (`void (*callback)(int)`) from a method whose name merely carries
+// parentheses (`virtual int (Run)() = 0`). Both reach an identifier inside
+// parens; only the first declares data.
+func parenthesizedDeclaratorIsIndirect(node *sitter.Node) bool {
+	if !validNode(node) {
+		return false
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		switch node.NamedChild(i).Type() {
+		case "pointer_declarator", "reference_declarator":
+			return true
+		}
+	}
+	return false
+}
+
+// firstChildDeclarator returns the declarator a wrapping declarator encloses,
+// for the shapes tree-sitter-c/cpp leave unlabelled: `parenthesized_declarator`
+// and `reference_declarator` hold their inner declarator as a plain child, with
+// no `declarator` field to ask for.
+//
+// Only a DIRECT child counts. Reaching for the first field_identifier anywhere
+// below instead steps over a nested function_declarator, and with it the rule
+// that a plain function declarator names no data: `virtual int &Get() = 0;`
+// would name `Get` and file a pure virtual method as a data member.
+func firstChildDeclarator(node *sitter.Node) *sitter.Node {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		switch child := node.NamedChild(i); child.Type() {
+		case "field_identifier", "identifier",
+			"pointer_declarator", "array_declarator", "reference_declarator",
+			"parenthesized_declarator", "function_declarator":
+			return child
+		}
+	}
+	return nil
+}
+
+// descendsStrictly reports whether next is a strictly smaller span than node,
+// which is what guarantees an unbounded declarator walk terminates.
+func descendsStrictly(node, next *sitter.Node) bool {
+	if !validNode(next) {
+		return false
+	}
+	return next.StartByte() >= node.StartByte() && next.EndByte() <= node.EndByte() &&
+		(next.StartByte() > node.StartByte() || next.EndByte() < node.EndByte())
 }
 
 func variableDeclaratorName(node *sitter.Node, src []byte) string {
@@ -4903,20 +5441,39 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		if pythonOverloadStub(node, src) {
 			return Entity{}, false
 		}
+		// tree-sitter-cpp parses an in-class data member with an initialiser
+		// (`int total_ = 0;`) as a function_definition whose "body" is a
+		// pure_virtual_clause — `= 0` is the pure-virtual marker, and the
+		// grammar cannot tell the two apart. Extracted as-is it produced a
+		// METHOD named after a data member, with the member's declaration as
+		// its signature, which then joined the class's method inventory and
+		// competed for receiver call resolution.
+		if language == "C++" && scope != "" {
+			if member := cPlusPlusInitialisedMemberName(node, src); member != "" {
+				return Entity{
+					Kind:        "field",
+					Name:        qualify(scope, member),
+					Signature:   signatureFromNode(node, src),
+					StartLine:   int(node.StartPoint().Row) + 1,
+					EndLine:     int(node.EndPoint().Row) + 1,
+					BodyHash:    hash(normalize(node.Content(src))),
+					Fingerprint: hash(normalize(signatureFromNode(node, src))),
+				}, true
+			}
+		}
 		kind = "function"
 		name = nodeName(node, src)
-		if language == "Objective-C" || language == "C" {
-			// A C function routinely returns a typedef'd type
+		if language == "Objective-C" || language == "C" || language == "C++" {
+			// A C-family function routinely returns a named type
 			// (`CURLcode curl_easy_perform(...)`, `static NSString * Escape(...)`
-			// in a .m file), whose type_identifier is the first name node in
-			// pre-order, so nodeName would misname the function after its
-			// return type. Take the identifier from the declarator field
-			// instead. Gated to C and Objective-C so C++ extraction (qualified
-			// names, destructors) is unchanged.
-			if declarator := node.ChildByFieldName("declarator"); validNode(declarator) {
-				if id := firstDescendantOfType(declarator, "identifier"); validNode(id) {
-					name = strings.TrimSpace(id.Content(src))
-				}
+			// in a .m file, `std::string Config::name() const`), whose
+			// type_identifier is the first name node in pre-order, so nodeName
+			// would misname the function after its return type — collapsing
+			// every `std::string`-returning function in a repo onto the single
+			// name `string`. Take the declared name from the declarator field
+			// instead.
+			if declared := cFamilyDeclaratorName(node, src); declared != "" {
+				name = declared
 			}
 		}
 		if scope != "" {
@@ -7353,6 +7910,8 @@ func javascriptVariableDeclaratorEnd(content string, valueStart int) int {
 	return len(content)
 }
 
+var javascriptAssignmentMethodEntitiesRe = regexp.MustCompile(`\s*\.\s*`)
+
 func javascriptAssignmentMethodEntities(content string) []Entity {
 	matches := jsAssignmentMethodPattern.FindAllStringSubmatchIndex(content, -1)
 	entities := make([]Entity, 0, len(matches))
@@ -7360,7 +7919,7 @@ func javascriptAssignmentMethodEntities(content string) []Entity {
 		if len(match) < 4 {
 			continue
 		}
-		name := strings.Join(regexp.MustCompile(`\s*\.\s*`).Split(strings.TrimSpace(content[match[2]:match[3]]), -1), ".")
+		name := strings.Join(javascriptAssignmentMethodEntitiesRe.Split(strings.TrimSpace(content[match[2]:match[3]]), -1), ".")
 		if name == "" || strings.HasPrefix(name, "module.exports.") || strings.HasPrefix(name, "exports.") {
 			// Export alias properties are useful exports, but not object/prototype
 			// method declarations with a stable receiver.
@@ -7881,6 +8440,68 @@ func initializerTypeBodies(node *sitter.Node, depth int, depthExceeded *bool) []
 	return out
 }
 
+// cFamilyAnonymousAggregateBodies returns the bodies of the ANONYMOUS aggregates a
+// C/C++ member declaration defines inline: the `{ int i; float f; }` of
+// `union { int i; float f; } value;`.
+//
+// cFamilyInlineTypeDefinitions deliberately refuses these, because an anonymous
+// aggregate declares no type symbol and its members are not members of the
+// enclosing type. They are members of the INSTANCE, which is what the caller
+// scopes them to; without that they had no symbol anywhere.
+func cFamilyAnonymousAggregateBodies(node *sitter.Node, language string) []*sitter.Node {
+	if language != "C" && language != "C++" {
+		return nil
+	}
+	if node.Type() != "field_declaration" {
+		return nil
+	}
+	var out []*sitter.Node
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "struct_specifier", "union_specifier", "enum_specifier", "class_specifier":
+		default:
+			continue
+		}
+		body := child.ChildByFieldName("body")
+		if validNode(body) && !validNode(child.ChildByFieldName("name")) {
+			out = append(out, body)
+		}
+	}
+	return out
+}
+
+// cFamilyInlineTypeDefinitions returns the type definitions written inline in a
+// C/C++ member declaration (`struct Inner { int value; } inner;`), which the
+// member pass would otherwise swallow along with the member.
+//
+// Only a definition — it must have a body, so `struct Node *next;` names no new
+// type — and only a NAMED one. An anonymous aggregate (`union { int i; float
+// f; } u;`) declares no type symbol at all, and walking its body would file `i`
+// and `f` as members of the enclosing type, which is not where they are reached
+// from.
+func cFamilyInlineTypeDefinitions(node *sitter.Node, language string) []*sitter.Node {
+	if language != "C" && language != "C++" {
+		return nil
+	}
+	if node.Type() != "field_declaration" {
+		return nil
+	}
+	var out []*sitter.Node
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "struct_specifier", "union_specifier", "enum_specifier", "class_specifier":
+		default:
+			continue
+		}
+		if validNode(child.ChildByFieldName("body")) && validNode(child.ChildByFieldName("name")) {
+			out = append(out, child)
+		}
+	}
+	return out
+}
+
 // rAssignmentEntity extracts an R definition from an assignment. The r-lib
 // grammar represents `name <- function(args) ...` as a binary_operator with
 // lhs/operator/rhs fields; `=`, `<<-`, and the right-assign forms
@@ -8323,6 +8944,176 @@ func firstNamedChildOfType(node *sitter.Node, nodeType string) *sitter.Node {
 	return nil
 }
 
+// cFamilyDeclaratorName returns the name a C/C++/Objective-C function
+// definition declares, read from its `declarator` field rather than from the
+// first name node in pre-order. Pre-order finds the RETURN TYPE whenever the
+// return type is a named type, so `std::string Config::name() const` was
+// extracted as a symbol called `string` — and every other std::string-returning
+// function in the repository collapsed onto that same name.
+//
+// Pointer, array and function declarators nest their target under the same
+// `declarator` field, so the name is found by walking that chain; a reference
+// declarator nests its target as a plain child instead, so the walk drops to
+// firstDeclaratorChild there. C++ adds name shapes C does not have: a member
+// definition names its method with `field_identifier`, an out-of-line
+// definition names it with `qualified_identifier` (`Config::name`) or
+// `destructor_name` (`~Config`), and an overload names it with `operator_name`
+// (`operator new`) or `operator_cast` (`operator const char*`). The bare name
+// is what is kept, matching the pre-existing extraction of primitive-returning
+// members. Anything this walk does not model falls back to the historical
+// pre-order identifier search so no declarator shape loses a name it had.
+func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
+	declarator := node.ChildByFieldName("declarator")
+	if !validNode(declarator) {
+		return ""
+	}
+	for cur := declarator; validNode(cur); {
+		switch cur.Type() {
+		case "identifier", "field_identifier":
+			return strings.TrimSpace(cur.Content(src))
+		case "operator_name":
+			// An overloaded operator declares its name with `operator_name`
+			// (`void *operator new(size_t n)`, `operator delete[]`), whose
+			// operator token is anonymous, so the node holds no identifier at
+			// all. Without this case the walk drops out to the pre-order
+			// identifier search below, which steps straight past the
+			// identifier-free operator_name into the parameter list and names
+			// the function after its FIRST PARAMETER — `operator new` became
+			// `n`, `operator delete` became `p`. The whole spelling is the
+			// name, exactly as C++ writes it, with the optional whitespace C++
+			// allows between its tokens folded out.
+			return canonicalOperatorName(cur.Content(src))
+		case "operator_cast":
+			// A conversion operator (`operator const char*() const`) is named
+			// for the type it converts to, and carries no identifier either;
+			// previously it produced no name at all. Its text runs up to the
+			// (always present) parameter list, so cutting at the first `(`
+			// keeps `operator const char*` and drops `() const`.
+			// Cut at the parameter list STRUCTURALLY. The target type can
+			// contain parentheses of its own -- `operator decltype(value)()
+			// const` and `operator void(*)()` are both valid -- so the first
+			// '(' is not reliably the parameter list. Cutting there produced
+			// `operator decltype` and `operator void`, collapsing unrelated
+			// conversions onto one name and one symbol ID.
+			//
+			// The operator's parameter list is the LAST parameter list under its
+			// declarator child, so the type is everything before that node starts.
+			// A function-pointer target contributes an earlier parameter list of
+			// its own (`operator void(*)(int)()`), which must remain in the name.
+			endByte := cur.EndByte()
+			cutAtParams := false
+			for i := 0; i < int(cur.ChildCount()); i++ {
+				child := cur.Child(i)
+				if !validNode(child) || !strings.HasSuffix(child.Type(), "declarator") {
+					continue
+				}
+				params := lastDescendantOfType(child, "parameter_list")
+				if validNode(params) && params.StartByte() > cur.StartByte() {
+					endByte = params.StartByte()
+					cutAtParams = true
+					break
+				}
+			}
+			text := nodeTextWithoutComments(cur, endByte, src)
+			if !cutAtParams {
+				if paren := strings.IndexByte(text, '('); paren >= 0 {
+					text = text[:paren]
+				}
+			}
+			if name := canonicalOperatorName(text); name != "" {
+				return name
+			}
+		case "qualified_identifier", "template_function":
+			if named := cur.ChildByFieldName("name"); validNode(named) {
+				cur = named
+				continue
+			}
+		case "destructor_name":
+			if id := firstDescendantOfType(cur, "identifier"); validNode(id) {
+				return strings.TrimSpace(id.Content(src))
+			}
+		}
+		next := cur.ChildByFieldName("declarator")
+		if !validNode(next) {
+			// A `reference_declarator` (`Cell &at(int i)`) hangs the declarator
+			// it wraps off an UNNAMED child instead of a `declarator` field, so
+			// a field-only walk stops at the `&`. The fallback below then reads
+			// the first identifier under it, which for a member function is the
+			// first parameter (the method's own name is a `field_identifier`,
+			// which that search skips): `Cell &at(int i)` was named `i`.
+			next = firstDeclaratorChild(cur)
+		}
+		if !validNode(next) {
+			break
+		}
+		cur = next
+	}
+	if id := firstDescendantOfType(declarator, "identifier"); validNode(id) {
+		return strings.TrimSpace(id.Content(src))
+	}
+	return ""
+}
+
+// firstDeclaratorChild returns the declarator a C-family declarator wraps when
+// the grammar attaches it as a plain child rather than under a `declarator`
+// field, as tree-sitter-cpp does for `reference_declarator` and
+// `abstract_reference_declarator`.
+func firstDeclaratorChild(node *sitter.Node) *sitter.Node {
+	if !validNode(node) {
+		return nil
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if validNode(child) && strings.HasSuffix(child.Type(), "declarator") {
+			return child
+		}
+	}
+	return nil
+}
+
+// canonicalOperatorName folds an operator's name down to one spelling. C++
+// permits whitespace between every token of the name, so `operator const char*`,
+// `operator const char *` and `operator  const  char  *` all name the SAME
+// conversion, and `operator new[]`, `operator new []` the same allocation
+// function. The name feeds compound-v1 symbol identity, so carrying the
+// author's spacing into it gives one function a new ID after a whitespace-only
+// edit and gives two files that spell one operator differently two entities for
+// one function.
+//
+// Runs of whitespace collapse to a single space first, then every space that
+// touches a non-identifier byte is dropped. The surviving spaces are exactly
+// those separating two identifier tokens -- `const char`, `unsigned long`,
+// `operator new` -- where dropping the space would fuse two distinct tokens
+// into one and make genuinely different operators collide. Bytes >= 0x80 count
+// as identifier bytes so a UTF-8 identifier is never split or joined.
+func canonicalOperatorName(text string) string {
+	collapsed := normalize(text)
+	var b strings.Builder
+	b.Grow(len(collapsed))
+	for i := 0; i < len(collapsed); i++ {
+		c := collapsed[i]
+		if c == ' ' && i > 0 && i+1 < len(collapsed) &&
+			(!operatorNameWordByte(collapsed[i-1]) || !operatorNameWordByte(collapsed[i+1])) {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// operatorNameWordByte reports whether c can be part of an identifier token, so
+// that a space beside it is load-bearing rather than decoration.
+func operatorNameWordByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '_', c >= 0x80:
+		return true
+	default:
+		return false
+	}
+}
+
 // firstDescendantOfType returns the first node of nodeType in a pre-order
 // descent of node's subtree.
 //
@@ -8349,6 +9140,57 @@ func firstDescendantOfTypeAt(node *sitter.Node, nodeType string, depth int) *sit
 		}
 	}
 	return nil
+}
+
+// lastDescendantOfType returns the last node of nodeType in source order.
+// Conversion operators use it to distinguish parameter lists embedded in a
+// function-pointer target type from the operator's own final parameter list.
+func lastDescendantOfType(node *sitter.Node, nodeType string) *sitter.Node {
+	return lastDescendantOfTypeAt(node, nodeType, 0)
+}
+
+func lastDescendantOfTypeAt(node *sitter.Node, nodeType string, depth int) *sitter.Node {
+	if !validNode(node) || depth >= maxParseWalkDepth {
+		return nil
+	}
+	var found *sitter.Node
+	if node.Type() == nodeType {
+		found = node
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if candidate := lastDescendantOfTypeAt(node.NamedChild(i), nodeType, depth+1); validNode(candidate) {
+			found = candidate
+		}
+	}
+	return found
+}
+
+// nodeTextWithoutComments returns node's source through endByte with comment
+// nodes blanked to whitespace. The tree identifies comments structurally, so
+// comment-looking text inside a literal remains part of the type expression.
+func nodeTextWithoutComments(node *sitter.Node, endByte uint32, src []byte) string {
+	if !validNode(node) || node.StartByte() >= endByte || int(endByte) > len(src) {
+		return ""
+	}
+	startByte := node.StartByte()
+	text := append([]byte(nil), src[startByte:endByte]...)
+	maskCommentDescendants(node, startByte, endByte, text, 0)
+	return string(text)
+}
+
+func maskCommentDescendants(node *sitter.Node, startByte, endByte uint32, text []byte, depth int) {
+	if !validNode(node) || depth >= maxParseWalkDepth || node.StartByte() >= endByte || node.EndByte() <= startByte {
+		return
+	}
+	if node.Type() == "comment" {
+		start := maxInt(0, int(node.StartByte()-startByte))
+		end := minInt(len(text), int(node.EndByte()-startByte))
+		maskBytes(text, start, end)
+		return
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		maskCommentDescendants(node.NamedChild(i), startByte, endByte, text, depth+1)
+	}
 }
 
 func goReceiverName(node *sitter.Node, src []byte) string {
