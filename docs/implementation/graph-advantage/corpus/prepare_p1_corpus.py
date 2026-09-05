@@ -209,8 +209,8 @@ def repo_record(repo_id: str, repo: Path, source: str, commit: str) -> dict:
     for idx, path in enumerate(selected):
         overlays.append({
             "path": path, "marker": f"P1-CORPUS {repo_id} edit-{idx + 1}",
-            "append": comment_for(path, f"P1-CORPUS {repo_id} edit-{idx + 1}"),
-            "reversible": "remove the exact appended marker line",
+            "edit": "insert the exact marker inside the first function body",
+            "reversible": "restore the recorded fixture commit",
         })
     return {
         "id": repo_id, "kind": "repository", "source": source, "commit": commit,

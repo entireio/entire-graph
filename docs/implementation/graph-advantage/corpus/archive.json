@@ -1,0 +1,15 @@
+{
+  "archive": "/tmp/p1-corpus-20260905.tar.gz",
+  "sha256": "8535cf154377876bdb93dedc1b80487bb4f63a9db239f2eb4094d4df5d49f107",
+  "bytes": 159752930,
+  "repository_ids": [
+    "go-chi-chi",
+    "kubernetes-kubernetes",
+    "colinhacks-zod",
+    "psf-requests",
+    "entire-graph-frozen-88dd1dc9",
+    "synthetic-2000"
+  ],
+  "symlink_policy": "preserved; every target resolves within corpus root",
+  "tracked_files_included": true
+}

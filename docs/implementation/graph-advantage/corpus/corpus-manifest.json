@@ -13,7 +13,7 @@
     {
       "all_indexed_bytes": 404361,
       "all_indexed_count": 92,
-      "branch_variant_commit": "5b66f547c14d32de20a085bf1697321c4d03f977",
+      "branch_variant_commit": "2ad5bd63d533b579a597bbf477e16b2de716e8ff",
       "commit": "ae6be7469132cf471ca099d8c7bda4010c4ff7b2",
       "eligible_ruleset": "p1-source-v1",
       "id": "go-chi-chi",
@@ -36,64 +36,64 @@
       },
       "overlays": [
         {
-          "append": "// P1-CORPUS go-chi-chi edit-1\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS go-chi-chi edit-1",
           "path": "middleware/recoverer.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS go-chi-chi edit-2\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS go-chi-chi edit-2",
           "path": "tree.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS go-chi-chi edit-3\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS go-chi-chi edit-3",
           "path": "middleware/url_format.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS go-chi-chi edit-4\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS go-chi-chi edit-4",
           "path": "middleware/get_head.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS go-chi-chi edit-5\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS go-chi-chi edit-5",
           "path": "middleware/route_headers.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS go-chi-chi edit-6\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS go-chi-chi edit-6",
           "path": "middleware/logger.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS go-chi-chi edit-7\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS go-chi-chi edit-7",
           "path": "_examples/hello-world/main.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS go-chi-chi edit-8\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS go-chi-chi edit-8",
           "path": "_examples/graceful/main.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS go-chi-chi edit-9\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS go-chi-chi edit-9",
           "path": "middleware/strip_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS go-chi-chi edit-10\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS go-chi-chi edit-10",
           "path": "middleware/compress_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         }
       ],
       "query": "find the recoverer symbol or entrypoint in middleware/recoverer.go",
@@ -115,7 +115,7 @@
     {
       "all_indexed_bytes": 156310441,
       "all_indexed_count": 19782,
-      "branch_variant_commit": "b3b321846441ea22bb11eb391ea39095026c7b76",
+      "branch_variant_commit": "331746d37d69cc9502f87ca6c33c427588d785e7",
       "commit": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
       "eligible_ruleset": "p1-source-v1",
       "id": "kubernetes-kubernetes",
@@ -138,64 +138,64 @@
       },
       "overlays": [
         {
-          "append": "// P1-CORPUS kubernetes-kubernetes edit-1\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-1",
           "path": "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS kubernetes-kubernetes edit-2\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-2",
           "path": "pkg/scheduler/apis/config/latest/latest.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS kubernetes-kubernetes edit-3\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-3",
           "path": "staging/src/k8s.io/client-go/applyconfigurations/flowcontrol/v1beta2/prioritylevelconfigurationspec.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS kubernetes-kubernetes edit-4\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-4",
           "path": "test/e2e_node/util_machineinfo_unsupported.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS kubernetes-kubernetes edit-5\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-5",
           "path": "staging/src/k8s.io/client-go/applyconfigurations/apps/v1beta1/statefulsetordinals.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS kubernetes-kubernetes edit-6\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-6",
           "path": "pkg/apis/apps/v1beta2/defaults_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS kubernetes-kubernetes edit-7\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-7",
           "path": "staging/src/k8s.io/client-go/rest/url_utils.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS kubernetes-kubernetes edit-8\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-8",
           "path": "staging/src/k8s.io/kubectl/pkg/cmd/create/create_cronjob_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS kubernetes-kubernetes edit-9\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-9",
           "path": "staging/src/k8s.io/client-go/kubernetes/typed/admissionregistration/v1/admissionregistration_client.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS kubernetes-kubernetes edit-10\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS kubernetes-kubernetes edit-10",
           "path": "test/integration/statefulset/statefulset_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         }
       ],
       "query": "find the values symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
@@ -217,7 +217,7 @@
     {
       "all_indexed_bytes": 4236067,
       "all_indexed_count": 487,
-      "branch_variant_commit": "d0dfbec27ce45615588cfc51749bc59a9bcdb216",
+      "branch_variant_commit": "681744047adb5b9450183d215a2886fe6575d2cd",
       "commit": "7a00236683c79000dbab0d92f6faf0b7fba39f59",
       "eligible_ruleset": "p1-source-v1",
       "id": "colinhacks-zod",
@@ -240,64 +240,64 @@
       },
       "overlays": [
         {
-          "append": "// P1-CORPUS colinhacks-zod edit-1\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS colinhacks-zod edit-1",
           "path": "packages/bench/memory/leaks.ts",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS colinhacks-zod edit-2\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS colinhacks-zod edit-2",
           "path": "packages/bench/compile-scaling.ts",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS colinhacks-zod edit-3\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS colinhacks-zod edit-3",
           "path": "packages/zod/src/v4/classic/tests/properties.test.ts",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS colinhacks-zod edit-4\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS colinhacks-zod edit-4",
           "path": "packages/zod/src/v4/classic/tests/index.test.ts",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS colinhacks-zod edit-5\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS colinhacks-zod edit-5",
           "path": "packages/zod/src/v4/core/tests/treeshake.test.ts",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS colinhacks-zod edit-6\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS colinhacks-zod edit-6",
           "path": "scripts/fail-on-console.ts",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS colinhacks-zod edit-7\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS colinhacks-zod edit-7",
           "path": "scripts/enable-compile.ts",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS colinhacks-zod edit-8\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS colinhacks-zod edit-8",
           "path": "packages/bench/memory/harness.ts",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS colinhacks-zod edit-9\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS colinhacks-zod edit-9",
           "path": "packages/zod/src/v4/locales/ja.ts",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS colinhacks-zod edit-10\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS colinhacks-zod edit-10",
           "path": "packages/zod/src/v4/locales/kn.ts",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         }
       ],
       "query": "find the leaks symbol or entrypoint in packages/bench/memory/leaks.ts",
@@ -319,7 +319,7 @@
     {
       "all_indexed_bytes": 483603,
       "all_indexed_count": 58,
-      "branch_variant_commit": "dd6cff13179e72f322bb2dfae517e2e0e6ca240d",
+      "branch_variant_commit": "e31b48aaa0dbeae6e1df7fd401a0126ef5bbfa66",
       "commit": "dae7ef63b4df6eded86637f251fc4e3a06c3b479",
       "eligible_ruleset": "p1-source-v1",
       "id": "psf-requests",
@@ -342,64 +342,64 @@
       },
       "overlays": [
         {
-          "append": "# P1-CORPUS psf-requests edit-1\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS psf-requests edit-1",
           "path": "tests/test_requests.py",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "# P1-CORPUS psf-requests edit-2\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS psf-requests edit-2",
           "path": "tests/testserver/server.py",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "# P1-CORPUS psf-requests edit-3\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS psf-requests edit-3",
           "path": "src/requests/models.py",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "# P1-CORPUS psf-requests edit-4\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS psf-requests edit-4",
           "path": "src/requests/_internal_utils.py",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "# P1-CORPUS psf-requests edit-5\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS psf-requests edit-5",
           "path": "src/requests/help.py",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "# P1-CORPUS psf-requests edit-6\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS psf-requests edit-6",
           "path": "src/requests/_types.py",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "# P1-CORPUS psf-requests edit-7\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS psf-requests edit-7",
           "path": "tests/test_packages.py",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "# P1-CORPUS psf-requests edit-8\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS psf-requests edit-8",
           "path": "tests/test_utils.py",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "# P1-CORPUS psf-requests edit-9\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS psf-requests edit-9",
           "path": "src/requests/api.py",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "# P1-CORPUS psf-requests edit-10\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS psf-requests edit-10",
           "path": "src/requests/status_codes.py",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         }
       ],
       "query": "find the requests symbol or entrypoint in tests/test_requests.py",
@@ -421,10 +421,10 @@
     {
       "all_indexed_bytes": 236437572,
       "all_indexed_count": 650,
-      "branch_variant_commit": "f172b8c151ce5aa953121b6ef5b1350736a68df3",
+      "branch_variant_commit": "69c5a0af68e27726b5b2920ff2f0e577fe630621",
       "commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
       "eligible_ruleset": "p1-source-v1",
-      "fixture_commit": "4b7f1fbc76654fc87d55678c92c55171c52397a4",
+      "fixture_commit": "a3fff853542936041c7bb0906eb9606e8b5035c5",
       "id": "entire-graph-frozen-88dd1dc9",
       "kind": "repository",
       "language_source_bytes": {
@@ -445,64 +445,64 @@
       },
       "overlays": [
         {
-          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-1\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-1",
           "path": "internal/sem/search_format_version_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-2\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-2",
           "path": "internal/sem/analyze_indexpolicy_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-3\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-3",
           "path": "internal/sem/ocaml_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "# P1-CORPUS entire-graph-frozen-88dd1dc9 edit-4\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-4",
           "path": "tools/ci-bench/windows-production/run_shard.py",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-5\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-5",
           "path": "internal/sem/grammars/perl/binding.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-6\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-6",
           "path": "internal/sem/search_file_class_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-7\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-7",
           "path": "internal/sem/parser_depth_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-8\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-8",
           "path": "internal/sem/ignore_scope_test.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-9\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-9",
           "path": "internal/sem/java.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         },
         {
-          "append": "// P1-CORPUS entire-graph-frozen-88dd1dc9 edit-10\n",
+          "edit": "insert the exact marker inside the first function body",
           "marker": "P1-CORPUS entire-graph-frozen-88dd1dc9 edit-10",
           "path": "internal/sem/search_covertest.go",
-          "reversible": "remove the exact appended marker line"
+          "reversible": "restore the recorded fixture commit"
         }
       ],
       "query": "find the search symbol or entrypoint in internal/sem/search_format_version_test.go",
@@ -524,8 +524,8 @@
     {
       "all_indexed_bytes": 134287,
       "all_indexed_count": 2000,
-      "branch_variant_commit": "0084c61e826066ca988f409c3d69441940d9cf19",
-      "commit": "f28bd87f55c8ecd6bdd626386f327a5f060f93c2",
+      "branch_variant_commit": "708a2345874c79273c44c04630cb29f8d57e57c1",
+      "commit": "81f46e02a98c446090e89d313cad073ea67d2f31",
       "generation": "2000 independent source files: Go 667, TypeScript 667, Python 666",
       "generation_seed": 20260905,
       "id": "synthetic-2000",
