@@ -13,7 +13,7 @@
     {
       "all_indexed_bytes": 404361,
       "all_indexed_count": 92,
-      "branch_variant_commit": "195d749d57672d8448881c726c8dda16b3d480d2",
+      "branch_variant_commit": "5b66f547c14d32de20a085bf1697321c4d03f977",
       "commit": "ae6be7469132cf471ca099d8c7bda4010c4ff7b2",
       "eligible_ruleset": "p1-source-v1",
       "id": "go-chi-chi",
@@ -115,7 +115,7 @@
     {
       "all_indexed_bytes": 156310441,
       "all_indexed_count": 19782,
-      "branch_variant_commit": "c48aae3e47865f94917448e6c692a93da7b92d68",
+      "branch_variant_commit": "b3b321846441ea22bb11eb391ea39095026c7b76",
       "commit": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
       "eligible_ruleset": "p1-source-v1",
       "id": "kubernetes-kubernetes",
@@ -217,7 +217,7 @@
     {
       "all_indexed_bytes": 4236067,
       "all_indexed_count": 487,
-      "branch_variant_commit": "27cb6f5e2b8af241b05473d316a6b9a2448ba7a1",
+      "branch_variant_commit": "d0dfbec27ce45615588cfc51749bc59a9bcdb216",
       "commit": "7a00236683c79000dbab0d92f6faf0b7fba39f59",
       "eligible_ruleset": "p1-source-v1",
       "id": "colinhacks-zod",
@@ -242,84 +242,84 @@
         {
           "append": "// P1-CORPUS colinhacks-zod edit-1\n",
           "marker": "P1-CORPUS colinhacks-zod edit-1",
-          "path": "packages/zod/src/v4/classic/tests/coalesce.test.ts",
+          "path": "packages/bench/memory/leaks.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-2\n",
           "marker": "P1-CORPUS colinhacks-zod edit-2",
-          "path": "packages/integration/fixtures/internal-types/index.ts",
+          "path": "packages/bench/compile-scaling.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-3\n",
           "marker": "P1-CORPUS colinhacks-zod edit-3",
-          "path": "packages/bench/memory/prop-arrays.ts",
+          "path": "packages/zod/src/v4/classic/tests/properties.test.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-4\n",
           "marker": "P1-CORPUS colinhacks-zod edit-4",
-          "path": "packages/bench/compile-endswith.ts",
+          "path": "packages/zod/src/v4/classic/tests/index.test.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-5\n",
           "marker": "P1-CORPUS colinhacks-zod edit-5",
-          "path": "packages/bench/memory/leaks.ts",
+          "path": "packages/zod/src/v4/core/tests/treeshake.test.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-6\n",
           "marker": "P1-CORPUS colinhacks-zod edit-6",
-          "path": "packages/bench/compile-scaling.ts",
+          "path": "scripts/fail-on-console.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-7\n",
           "marker": "P1-CORPUS colinhacks-zod edit-7",
-          "path": "packages/zod/src/v4/classic/tests/properties.test.ts",
+          "path": "scripts/enable-compile.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-8\n",
           "marker": "P1-CORPUS colinhacks-zod edit-8",
-          "path": "packages/zod/src/v3/tests/async-refinements.test.ts",
+          "path": "packages/bench/memory/harness.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-9\n",
           "marker": "P1-CORPUS colinhacks-zod edit-9",
-          "path": "packages/zod/src/v4/mini/tests/apply.test.ts",
+          "path": "packages/zod/src/v4/locales/ja.ts",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "// P1-CORPUS colinhacks-zod edit-10\n",
           "marker": "P1-CORPUS colinhacks-zod edit-10",
-          "path": "packages/zod/src/v4/classic/tests/index.test.ts",
+          "path": "packages/zod/src/v4/locales/kn.ts",
           "reversible": "remove the exact appended marker line"
         }
       ],
-      "query": "find the coalesce symbol or entrypoint in packages/zod/src/v4/classic/tests/coalesce.test.ts",
+      "query": "find the leaks symbol or entrypoint in packages/bench/memory/leaks.ts",
       "raw_tracked_count": 722,
       "selected_paths": [
-        "packages/zod/src/v4/classic/tests/coalesce.test.ts",
-        "packages/integration/fixtures/internal-types/index.ts",
-        "packages/bench/memory/prop-arrays.ts",
-        "packages/bench/compile-endswith.ts",
         "packages/bench/memory/leaks.ts",
         "packages/bench/compile-scaling.ts",
         "packages/zod/src/v4/classic/tests/properties.test.ts",
-        "packages/zod/src/v3/tests/async-refinements.test.ts",
-        "packages/zod/src/v4/mini/tests/apply.test.ts",
-        "packages/zod/src/v4/classic/tests/index.test.ts"
+        "packages/zod/src/v4/classic/tests/index.test.ts",
+        "packages/zod/src/v4/core/tests/treeshake.test.ts",
+        "scripts/fail-on-console.ts",
+        "scripts/enable-compile.ts",
+        "packages/bench/memory/harness.ts",
+        "packages/zod/src/v4/locales/ja.ts",
+        "packages/zod/src/v4/locales/kn.ts"
       ],
       "source": "https://github.com/colinhacks/zod.git"
     },
     {
       "all_indexed_bytes": 483603,
       "all_indexed_count": 58,
-      "branch_variant_commit": "52286d7c6d60e4fa85d9cb415d08efeda92e334d",
+      "branch_variant_commit": "dd6cff13179e72f322bb2dfae517e2e0e6ca240d",
       "commit": "dae7ef63b4df6eded86637f251fc4e3a06c3b479",
       "eligible_ruleset": "p1-source-v1",
       "id": "psf-requests",
@@ -344,68 +344,67 @@
         {
           "append": "# P1-CORPUS psf-requests edit-1\n",
           "marker": "P1-CORPUS psf-requests edit-1",
-          "path": "tests/__init__.py",
+          "path": "tests/test_requests.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-2\n",
           "marker": "P1-CORPUS psf-requests edit-2",
-          "path": "tests/test_requests.py",
+          "path": "tests/testserver/server.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-3\n",
           "marker": "P1-CORPUS psf-requests edit-3",
-          "path": "tests/testserver/server.py",
+          "path": "src/requests/models.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-4\n",
           "marker": "P1-CORPUS psf-requests edit-4",
-          "path": "src/requests/models.py",
+          "path": "src/requests/_internal_utils.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-5\n",
           "marker": "P1-CORPUS psf-requests edit-5",
-          "path": "src/requests/_internal_utils.py",
+          "path": "src/requests/help.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-6\n",
           "marker": "P1-CORPUS psf-requests edit-6",
-          "path": "src/requests/help.py",
+          "path": "src/requests/_types.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-7\n",
           "marker": "P1-CORPUS psf-requests edit-7",
-          "path": "src/requests/_types.py",
+          "path": "tests/test_packages.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-8\n",
           "marker": "P1-CORPUS psf-requests edit-8",
-          "path": "tests/test_packages.py",
+          "path": "tests/test_utils.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-9\n",
           "marker": "P1-CORPUS psf-requests edit-9",
-          "path": "tests/test_utils.py",
+          "path": "src/requests/api.py",
           "reversible": "remove the exact appended marker line"
         },
         {
           "append": "# P1-CORPUS psf-requests edit-10\n",
           "marker": "P1-CORPUS psf-requests edit-10",
-          "path": "src/requests/api.py",
+          "path": "src/requests/status_codes.py",
           "reversible": "remove the exact appended marker line"
         }
       ],
-      "query": "find the Requests symbol or entrypoint in tests/__init__.py",
+      "query": "find the requests symbol or entrypoint in tests/test_requests.py",
       "raw_tracked_count": 130,
       "selected_paths": [
-        "tests/__init__.py",
         "tests/test_requests.py",
         "tests/testserver/server.py",
         "src/requests/models.py",
@@ -414,17 +413,18 @@
         "src/requests/_types.py",
         "tests/test_packages.py",
         "tests/test_utils.py",
-        "src/requests/api.py"
+        "src/requests/api.py",
+        "src/requests/status_codes.py"
       ],
       "source": "https://github.com/psf/requests.git"
     },
     {
       "all_indexed_bytes": 236437572,
       "all_indexed_count": 650,
-      "branch_variant_commit": "8335708449b47ea2e11f9983d12d14853088b36f",
+      "branch_variant_commit": "f172b8c151ce5aa953121b6ef5b1350736a68df3",
       "commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
       "eligible_ruleset": "p1-source-v1",
-      "fixture_commit": "b48327ef95b32f7733b40e0b9b9764008d6eb28f",
+      "fixture_commit": "4b7f1fbc76654fc87d55678c92c55171c52397a4",
       "id": "entire-graph-frozen-88dd1dc9",
       "kind": "repository",
       "language_source_bytes": {
@@ -524,8 +524,8 @@
     {
       "all_indexed_bytes": 134287,
       "all_indexed_count": 2000,
-      "branch_variant_commit": "c2513ff960ebd8826a179586d4b6744fe3e76d76",
-      "commit": "31fdfc115aba51b8fd496a87a402f49dd53596c3",
+      "branch_variant_commit": "0084c61e826066ca988f409c3d69441940d9cf19",
+      "commit": "f28bd87f55c8ecd6bdd626386f327a5f060f93c2",
       "generation": "2000 independent source files: Go 667, TypeScript 667, Python 666",
       "generation_seed": 20260905,
       "id": "synthetic-2000",
