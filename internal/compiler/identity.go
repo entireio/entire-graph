@@ -1,6 +1,5 @@
-// Package compiler holds optional source-bound compiler evidence primitives.
-// It does not launch processes. A tested Linux isolation boundary is required
-// before a live adapter can be admitted.
+// Package compiler implements optional source-bound compiler evidence through
+// a bounded stdio client and the tested Linux network-denying process boundary.
 package compiler
 
 import (
@@ -105,19 +104,19 @@ const (
 )
 
 type Site struct {
-	Path      string
-	Digest    string
-	StartByte int
-	EndByte   int
+	Path      string `json:"path"`
+	Digest    string `json:"digest"`
+	StartByte int    `json:"start_byte"`
+	EndByte   int    `json:"end_byte"`
 }
 type Evidence struct {
-	ContextID      string
-	BackendVersion string
-	Category       TargetCategory
-	QueryKind      string
-	Caller         Site
-	Target         Site
-	TargetSymbolID string
+	ContextID      string         `json:"context_id"`
+	BackendVersion string         `json:"backend_version"`
+	Category       TargetCategory `json:"category"`
+	QueryKind      string         `json:"query_kind"`
+	Caller         Site           `json:"caller"`
+	Target         Site           `json:"target"`
+	TargetSymbolID string         `json:"target_symbol_id"`
 }
 
 // ValidateEvidence validates input binding only. A semantic adapter must also
