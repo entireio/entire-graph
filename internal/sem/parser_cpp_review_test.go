@@ -90,3 +90,48 @@ func TestCPlusPlusDefinitionUsesASTNameAndNamespace(t *testing.T) {
 		})
 	}
 }
+
+func TestCPlusPlusInheritedDefinitionKeepsConfidence(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "base.hpp", `class Base { public: int Fetch(); };
+class Derived : public Base {};`)
+	writeFile(t, repo, "base.cpp", "#include \"base.hpp\"\nint Base::Fetch() { return 1; }")
+	writeFile(t, repo, "main.cpp", "#include \"base.hpp\"\nint run() { Derived d; return d.Fetch(); }")
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SymbolRecord{}
+	byName := map[string][]SymbolRecord{}
+	var from, base, derived, declaration SymbolRecord
+	for _, s := range snapshot.Symbols {
+		byID[s.ID] = s
+		byName[s.Name] = append(byName[s.Name], s)
+		switch s.Name {
+		case "run":
+			from = s
+		case "Base":
+			base = s
+		case "Derived":
+			derived = s
+		case "Fetch":
+			if s.bodyless {
+				declaration = s
+			}
+		}
+	}
+	// Exercise receiver resolution with a known inheritance map. C++ base
+	// extraction is separate from the redirection behavior under test.
+	relations := receiverCallRelations(from, "int run() { Derived d; return d.Fetch(); }",
+		map[string]map[string]SymbolRecord{base.ID: {"Fetch": declaration}},
+		map[string]string{derived.ID: base.ID}, nil, byName, nil, nil, nil, "", nil, nil, nil, nil, nil, swiftFileTypes{})
+	for _, r := range relations {
+		if r.Type == "CALLS" && byID[r.FromID].Name == "run" && byID[r.ToID].Name == "Fetch" {
+			if byID[r.ToID].FilePath != "base.cpp" || r.Confidence > 0.82 || !strings.Contains(r.Reason, "inherited") {
+				t.Fatalf("lost inherited resolution metadata: %#v target=%#v", r, byID[r.ToID])
+			}
+			return
+		}
+	}
+	t.Fatal("missing inherited call")
+}

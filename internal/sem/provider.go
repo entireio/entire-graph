@@ -7501,7 +7501,6 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			// edge there: leaving it on the declaration hides the implementation
 			// from its own callers and from impact.
 			method = definition
-			inherited = false
 		}
 		if inherited {
 			// Resolved on a base class, not the receiver's own type. Still a real
