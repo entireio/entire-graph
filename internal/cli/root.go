@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
@@ -30,14 +33,220 @@ type Options struct {
 	Stdin io.Reader
 }
 
+// SignalError reports that Execute stopped because it received a signal
+// asking the process to terminate (SIGINT/SIGTERM), rather than because the
+// command itself failed.
+//
+// signal.NotifyContext turns the signal into an ordinary context.Canceled,
+// indistinguishable from any other cancellation once it reaches Run's
+// return value — so without this, main's generic "print the error, exit 1"
+// path reported an operator's Ctrl-C the same way it reports a real command
+// failure, regressing the exit statuses (130 for SIGINT, 143 for SIGTERM) a
+// program with no signal handling at all would have had for free, and that
+// shells and supervisors already know how to interpret. Callers that care
+// can use errors.As to recover the signal and choose the conventional
+// 128+signal status instead.
+type SignalError struct {
+	Signal os.Signal
+	Err    error
+}
+
+func (e *SignalError) Error() string { return e.Err.Error() }
+func (e *SignalError) Unwrap() error { return e.Err }
+
+// Execute is the process entry point. It runs the command under a context that
+// is actually cancellable, which the provider path depends on: every phase of
+// the indexer polls ctx.Err() (see internal/sem/provider.go), so under the
+// previous context.Background() those checks could never fire and an
+// interrupted index could only be stopped by killing the process mid-write.
+//
+// The first SIGINT/SIGTERM cancels the context and restores the default signal
+// handler, so a second one still kills the process immediately. Without that
+// restore, installing a handler would make a runaway index HARDER to stop than
+// before, which is the opposite of the point.
+//
+// Signal delivery is handled with signal.Notify rather than
+// signal.NotifyContext specifically so the received signal itself survives
+// past cancellation, for SignalError below — NotifyContext's context carries
+// no record of which signal (or that one at all, versus a caller-driven
+// cancellation) caused Done to close. The signal race itself lives in
+// runUnderSignals, split out so it is testable without going through real
+// command dispatch.
 func Execute(version string, args []string) error {
-	return Run(context.Background(), Options{
-		Version: version,
-		Env:     EnvFromOS(),
-		Stdout:  os.Stdout,
-		Stderr:  os.Stderr,
-		Stdin:   os.Stdin,
-	}, args)
+	return runUnderSignals(func(ctx context.Context) error {
+		return Run(ctx, Options{
+			Version: version,
+			Env:     EnvFromOS(),
+			Stdout:  os.Stdout,
+			Stderr:  os.Stderr,
+			Stdin:   os.Stdin,
+		}, args)
+	})
+}
+
+// runUnderSignals runs run under a context canceled by the first
+// SIGINT/SIGTERM this process receives, and wraps a non-nil result in a
+// *SignalError when that signal is what stopped it.
+func runUnderSignals(run func(context.Context) error) error {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// caughtCh, not a plain variable: it is written from this goroutine and
+	// read from the one running run after it returns, and a channel handoff
+	// is what makes that safe without a separate lock. The send
+	// happens-before cancel() in program order, and cancel() closing
+	// ctx.Done() happens-before run observes it, so if run returned BECAUSE
+	// of this signal, the send below is already complete by the time the
+	// non-blocking receive after run runs.
+	caughtCh := make(chan os.Signal, 1)
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case sig := <-sigCh:
+			handleFirstSignal(sig, caughtCh, cancel, func() { signal.Stop(sigCh) })
+		case <-stopWatch:
+		}
+	}()
+
+	err := run(ctx)
+
+	var caught os.Signal
+	select {
+	case caught = <-caughtCh:
+	default:
+	}
+	if caught != nil {
+		if err == nil {
+			return &SignalError{Signal: caught, Err: context.Canceled}
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return &SignalError{Signal: caught, Err: err}
+		}
+		// A signal racing with an independent failure must not replace the
+		// real exit status with the conventional 130/143 cancellation codes.
+		return err
+	}
+	return err
+}
+
+// handleFirstSignal runs once, when the first SIGINT/SIGTERM is received.
+//
+// stop restores the default disposition and is called FIRST, before the handoff
+// and before cancellation. While signal.Notify is still registered the runtime
+// keeps routing signals into sigCh, and sigCh has a one-slot buffer that nobody
+// reads again -- so every signal arriving before stop returns is BUFFERED, not
+// delivered to the process. That is a second Ctrl-C on a stuck run being
+// swallowed instead of killing it. Restoring first shrinks that window to the
+// signal package's own bookkeeping; leaving it until last widened it by the
+// handoff plus cancel(), and cancel() is not free: it walks and closes every
+// child context, running each of their cancellation paths, while the terminal
+// looks unresponsive.
+//
+// The window cannot be closed entirely from here -- a signal delivered between
+// the receive and stop's effect still lands in the buffer -- so this is a
+// narrowing, not an elimination. The ordering is what is testable and what is
+// asserted.
+func handleFirstSignal(sig os.Signal, caughtCh chan<- os.Signal, cancel context.CancelFunc, stop func()) {
+	stop()
+	caughtCh <- sig
+	cancel()
+}
+
+const writeBytesChunkSize = 64 * 1024
+
+// contextChunkWriter wraps w so each Write honors ctx cancellation. Large
+// writes are chunked the same way writeBytesWithContext does, so a blocked
+// stdout pipe cannot prevent SIGINT/SIGTERM from stopping the command.
+//
+// The write itself runs on a goroutine because a write to a full pipe blocks in
+// the kernel and no context can interrupt it. Abandoning that goroutine is the
+// only way to return on cancellation, which forces two rules on this type:
+//
+//   - The goroutine must never hold the CALLER's buffer. io.Writer forbids
+//     retaining p past Write's return, and the callers here reuse theirs
+//     between calls (json.Encoder keeps one encodeState buffer; io.MultiWriter
+//     hands the same slice to every sink). An abandoned goroutine reading p
+//     while the caller refills it is a data race that writes torn records.
+//     Each chunk is therefore copied into a buffer this writer owns.
+//   - At most one goroutine may ever be abandoned per writer. Once the context
+//     is done the loop below returns at its first check without starting
+//     another, so a permanently blocked sink strands one goroutine and one
+//     scratch buffer for the rest of the process, not one per Write.
+type contextChunkWriter struct {
+	ctx context.Context
+	w   io.Writer
+	// scratch is the buffer handed to the write goroutine. Only one write is
+	// ever in flight per writer, so it is reused across chunks; on abandonment
+	// it is released rather than reused, because the goroutine that outlived
+	// the Write still owns it.
+	scratch []byte
+}
+
+func (cw *contextChunkWriter) Write(b []byte) (int, error) {
+	written := 0
+	for len(b) > 0 {
+		if err := cw.ctx.Err(); err != nil {
+			if written == 0 {
+				return 0, err
+			}
+			return written, err
+		}
+		n := writeBytesChunkSize
+		if n > len(b) {
+			n = len(b)
+		}
+		if cap(cw.scratch) < n {
+			cw.scratch = make([]byte, writeBytesChunkSize)
+		}
+		chunk := cw.scratch[:n]
+		copy(chunk, b[:n])
+		type writeResult struct {
+			n   int
+			err error
+		}
+		done := make(chan writeResult, 1)
+		go func() {
+			wrote, err := cw.w.Write(chunk)
+			done <- writeResult{wrote, err}
+		}()
+		select {
+		case <-cw.ctx.Done():
+			// The goroutine is still inside cw.w.Write and still owns chunk.
+			// Drop this writer's claim on the backing array so nothing can
+			// reuse it underneath that write.
+			cw.scratch = nil
+			return written, cw.ctx.Err()
+		case res := <-done:
+			if res.err != nil {
+				return written, res.err
+			}
+			if res.n == 0 {
+				return written, io.ErrShortWrite
+			}
+			written += res.n
+			b = b[res.n:]
+		}
+	}
+	return written, nil
+}
+
+// Unwrap exposes the sink underneath so callers that need the CONCRETE writer
+// still find it through the wrapper. isTerminal type-asserts *os.File to decide
+// `index`'s output format and whether to draw a progress bar; without this,
+// wrapping stdout would silently turn a terminal into a pipe.
+func (cw *contextChunkWriter) Unwrap() io.Writer { return cw.w }
+
+// writeBytesWithContext writes b to w in chunks, returning ctx.Err() as soon as
+// the context is canceled. A cache hit can be megabytes; a plain Write would
+// ignore SIGINT until the whole buffer is flushed.
+func writeBytesWithContext(ctx context.Context, w io.Writer, b []byte) error {
+	_, err := (&contextChunkWriter{ctx: ctx, w: w}).Write(b)
+	return err
 }
 
 func Run(ctx context.Context, opts Options, args []string) error {
@@ -50,6 +259,23 @@ func Run(ctx context.Context, opts Options, args []string) error {
 	if opts.Stderr == nil {
 		opts.Stderr = io.Discard
 	}
+
+	// Every command's output goes through the cancellable writer, not just the
+	// ones that stream a graph. Execute trades the first SIGINT's "terminate the
+	// process" for "cancel this context", and that trade is only honest if every
+	// path HAS an observation point: a command that writes straight to a pipe
+	// whose reader has stalled parks inside write(2), where no cancellation can
+	// reach it, and the operator who already pressed Ctrl-C has to press it
+	// again — strictly worse than the no-handler behavior this replaced. Wrapping
+	// once here covers the paths with no long-running work of their own (help,
+	// capabilities, version, agent-guide, init-agents, snapshot-query, doctor)
+	// and the diagnostics on stderr (progress events, partial-snapshot warnings)
+	// without threading a context through each of them. The streaming commands
+	// below wrap again for their own sinks; a second wrapper only re-chunks
+	// bytes that are already 64 KiB or smaller, and its ctx check is the same
+	// check.
+	opts.Stdout = &contextChunkWriter{ctx: ctx, w: opts.Stdout}
+	opts.Stderr = &contextChunkWriter{ctx: ctx, w: opts.Stderr}
 
 	if len(args) == 0 {
 		printHelp(opts.Stdout)
@@ -284,6 +510,18 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if scip && flags.Progress {
 		return errors.New("--format scip cannot be combined with --progress; stderr is reserved for the JSON omission note")
 	}
+	if (compact || scip) && flags.MaxSeconds > 0 {
+		// Both of these artifacts are DEFINED to be a complete snapshot, and
+		// neither has a record that can carry E_ANALYSIS_BUDGET_EXCEEDED forward.
+		// LoadCompactSnapshot and snapshot-query accept whatever compact prefix
+		// they are handed; a SCIP Index is a single binary protobuf message whose
+		// only truncation signal is a stderr note that does not travel with the
+		// file. Either way a truncated artifact turns every symbol that was never
+		// reached into a confident negative answer for every later consumer. The
+		// NDJSON stream can say "partial"; these formats cannot, so the
+		// combination is refused rather than written.
+		return fmt.Errorf("--format %s requires a complete snapshot and cannot be combined with --max-seconds; use --format ndjson (which reports E_ANALYSIS_BUDGET_EXCEEDED when truncated), or --max-seconds 0", flags.Format)
+	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {
 		return err
@@ -298,6 +536,9 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		IgnoreFiles:  flags.IgnoreFiles,
 		IncludeFiles: flags.IncludeFiles,
 		Profile:      profile,
+	}
+	if flags.MaxSeconds > 0 {
+		options.MaxDuration = time.Duration(flags.MaxSeconds) * time.Second
 	}
 	if flags.Progress {
 		options.Progress = func(event sem.ProgressEvent) {
@@ -339,7 +580,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		encoder.SetEscapeHTML(false) // match json.Marshal used elsewhere (no < escaping)
 		return encoder.Encode
 	}
-	encodeRecord := newRecordEncoder(opts.Stdout)
+	encodeRecord := newRecordEncoder(&contextChunkWriter{ctx: ctx, w: opts.Stdout})
 	if scipEncoder != nil {
 		// The version is read inside the snapshot build, through the reader that
 		// is already validated, bounded and pinned to this snapshot's revision.
@@ -391,6 +632,9 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			return err
 		}
 		warnIfPartial(opts.Stderr, flags.Worktree, summary)
+		if budgetTruncated(summary) {
+			fmt.Fprintln(opts.Stderr, "graph: index stopped at the --max-seconds budget; the matched edges are partial")
+		}
 		fmt.Fprintf(opts.Stderr, "graph: %d edge(s) matched (--to=%q --from=%q --relation=%s)\n",
 			matched, flags.To, flags.From, strings.Join(flags.Relation, ","))
 		return nil
@@ -448,7 +692,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			// C1 rule existed — or by any build that predates it — would stream the
 			// repository's raw control straight to the terminal on every hit. Escaping
 			// is idempotent, so a clean entry passes through unchanged.
-			if _, err := termsafe.NewJSONWriter(opts.Stdout).Write(records); err != nil {
+			if err := writeBytesWithContext(ctx, termsafe.NewJSONWriter(opts.Stdout), records); err != nil {
 				return err
 			}
 			warnIfPartial(opts.Stderr, flags.Worktree, cachedSummary)
@@ -460,7 +704,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// a successful run without a second pass over the graph.
 	var recordBuf bytes.Buffer
 	if recordsCache != nil {
-		encodeRecord = newRecordEncoder(io.MultiWriter(opts.Stdout, &recordBuf))
+		encodeRecord = newRecordEncoder(io.MultiWriter(&contextChunkWriter{ctx: ctx, w: opts.Stdout}, &recordBuf))
 	}
 	if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
 		capture(record)
@@ -478,11 +722,34 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	} else {
 		warnIfPartial(opts.Stderr, flags.Worktree, summary)
 	}
+	if budgetTruncated(summary) {
+		// A budget-truncated graph must never become the cached answer for this
+		// tree: the cache key deliberately does not include the budget, so a
+		// stored truncation would be served to every later caller as if it were
+		// the complete index.
+		fmt.Fprintln(opts.Stderr, "graph: index stopped at the --max-seconds budget; result is partial and was not cached")
+		recordsCache = nil
+	}
 	if recordsCache != nil {
 		// Best effort: a failed cache write never fails the command.
 		_ = recordsCache.Store(recordBuf.Bytes(), summary, snapshotHeader)
 	}
 	return nil
+}
+
+// budgetTruncated reports whether a snapshot stopped at its wall-clock ceiling
+// rather than finishing. Such a result is valid to print but must not be
+// persisted or treated as a complete index.
+func budgetTruncated(s *sem.SnapshotSummary) bool {
+	if s == nil {
+		return false
+	}
+	for _, failure := range s.PartialFailures {
+		if failure.Code == sem.AnalysisBudgetExceededCode {
+			return true
+		}
+	}
+	return false
 }
 
 func scipOmissionNoteWithSummary(note sem.SCIPOmissionNote, summary *sem.SnapshotSummary) sem.SCIPOmissionNote {
@@ -567,7 +834,15 @@ func includeRecord(mode string, record any) bool {
 // command stops cleanly at the limit and emits the partial result plus
 // machine-readable W_ANALYSIS_BUDGET_EXCEEDED warnings. --max-seconds 0
 // disables the budget.
-const defaultMaxSeconds = 120
+const defaultMaxSeconds int64 = 120
+
+// maxSecondsCeiling is the largest --max-seconds value that still fits in a
+// time.Duration once multiplied by time.Second (~292 years). strconv.Atoi
+// happily accepts every int64, but seconds*time.Second above this wraps to a
+// NEGATIVE duration: context.WithDeadline would then fire in the past, and the
+// provider commands' "MaxDuration > 0" test would be false, silently disabling
+// the very ceiling the operator asked for.
+const maxSecondsCeiling = int64(math.MaxInt64) / int64(time.Second)
 
 type commonFlags struct {
 	Repo     string
@@ -575,7 +850,7 @@ type commonFlags struct {
 	Progress bool
 	// MaxSeconds is the overall analysis budget in seconds; -1 means the flag
 	// was not given (commands apply their default), 0 means unlimited.
-	MaxSeconds int
+	MaxSeconds int64
 }
 
 type providerFlags struct {
@@ -587,6 +862,13 @@ type providerFlags struct {
 	Progress     bool
 	IgnoreFiles  []string
 	IncludeFiles []string
+	// MaxSeconds is the wall-clock ceiling for the index build in seconds.
+	// -1 means the flag was not given, 0 means unlimited. Unlike diff/commit
+	// these commands do NOT apply defaultMaxSeconds when the flag is absent:
+	// a full index of a large repository legitimately runs for minutes, and
+	// silently truncating one by default would turn a slow index into a wrong
+	// one. The ceiling is opt-in.
+	MaxSeconds int64
 	// Targeted edge filters (edges mode). When any is set the command emits only
 	// the matching relation records (plus header/summary) instead of the whole
 	// graph, so "callers of X" is a tiny reply rather than a 50MB dump that the
@@ -648,8 +930,19 @@ func parseProfile(value string) (sem.Profile, error) {
 	}
 }
 
+func parseMaxSecondsValue(raw string) (int64, error) {
+	seconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || seconds < 0 {
+		return 0, fmt.Errorf("--max-seconds requires a non-negative integer, got %q", raw)
+	}
+	if seconds > maxSecondsCeiling {
+		return 0, fmt.Errorf("--max-seconds must be at most %d (larger values overflow time.Duration and disable the ceiling), got %q", maxSecondsCeiling, raw)
+	}
+	return seconds, nil
+}
+
 func parseProviderFlags(args []string) (providerFlags, []string, error) {
-	flags := providerFlags{Format: "ndjson"}
+	flags := providerFlags{Format: "ndjson", MaxSeconds: -1}
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -671,6 +964,16 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 				return flags, nil, errors.New("--profile requires a value")
 			}
 			flags.Profile = args[i]
+		case "--max-seconds":
+			i++
+			if i >= len(args) {
+				return flags, nil, errors.New("--max-seconds requires a value")
+			}
+			seconds, err := parseMaxSecondsValue(args[i])
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.MaxSeconds = seconds
 		case "--no-network":
 			flags.NoNetwork = true
 		case "--worktree":
@@ -741,9 +1044,9 @@ func parseCommonFlags(args []string) (commonFlags, []string, error) {
 			if i >= len(args) {
 				return flags, nil, errors.New("--max-seconds requires a value")
 			}
-			seconds, err := strconv.Atoi(args[i])
-			if err != nil || seconds < 0 {
-				return flags, nil, fmt.Errorf("--max-seconds requires a non-negative integer, got %q", args[i])
+			seconds, err := parseMaxSecondsValue(args[i])
+			if err != nil {
+				return flags, nil, err
 			}
 			flags.MaxSeconds = seconds
 		case "--repo":
@@ -813,7 +1116,7 @@ func runCheckpoint(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	return printResult(opts.Stdout, result, flags.JSON, opts.Version)
+	return printResult(ctx, opts.Stdout, result, flags.JSON, opts.Version)
 }
 
 func runAnalyze(ctx context.Context, opts Options, args []string) error {
@@ -1137,7 +1440,7 @@ func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string,
 	if err != nil {
 		return err
 	}
-	return printResult(opts.Stdout, result, flags.JSON, opts.Version)
+	return printResult(ctx, opts.Stdout, result, flags.JSON, opts.Version)
 }
 
 // diffProgressLine renders one --progress event for stderr.
@@ -1161,20 +1464,46 @@ func diffProgressLine(event sem.AnalyzeProgressEvent) string {
 	return line
 }
 
-func printResult(out io.Writer, result sem.Result, asJSON bool, producerVersion string) error {
+func printResult(ctx context.Context, out io.Writer, result sem.Result, asJSON bool, producerVersion string) error {
 	// ProducerVersion is set here, the one place a Result is rendered, rather
 	// than at each of the two callers — it needs the CLI's build-time version
 	// (Options.Version), which the sem package that builds the rest of the
 	// Result has no access to.
 	result.ProducerVersion = producerVersion
+	// The context wrapper can stop mid-stream, and sem.WriteText has no error
+	// return at all, so both render paths need somewhere for a write failure to
+	// land. Without it a canceled or broken stdout produced truncated output and
+	// a nil error, which the process then reports as exit status 0 -- a partial
+	// answer indistinguishable from a complete one.
+	sink := &errCapturingWriter{w: &contextChunkWriter{ctx: ctx, w: out}}
 	if asJSON {
 		encoded, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(termsafe.NewJSONWriter(out), string(encoded))
-		return nil
+		fmt.Fprintln(termsafe.NewJSONWriter(sink), string(encoded))
+		return sink.err
 	}
-	sem.WriteText(out, result)
-	return nil
+	sem.WriteText(sink, result)
+	return sink.err
+}
+
+// errCapturingWriter keeps the first write error for a sink whose caller
+// discards it (fmt.Fprintln) or has no way to report it (sem.WriteText).
+// Subsequent writes are dropped rather than re-attempted, so one failure does
+// not turn into a burst of them against an already-broken stdout.
+type errCapturingWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (ew *errCapturingWriter) Write(b []byte) (int, error) {
+	if ew.err != nil {
+		return 0, ew.err
+	}
+	n, err := ew.w.Write(b)
+	if err != nil {
+		ew.err = err
+	}
+	return n, err
 }

@@ -168,7 +168,7 @@ func TestJavascriptExportedVariableEntityLines(t *testing.T) {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			entities := javascriptExportedVariableEntities(testCase.source)
+			entities := javascriptExportedVariableEntities(testCase.source, nil)
 			got := make(map[string]int, len(entities))
 			for _, entity := range entities {
 				if entity.StartLine != entity.EndLine {

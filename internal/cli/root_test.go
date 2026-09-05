@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1342,6 +1344,14 @@ func TestMaxSecondsFlagValidation(t *testing.T) {
 	}
 	if err := run("checkpoint", "some-id", "--max-seconds", "10"); err == nil || !strings.Contains(err.Error(), "--max-seconds") {
 		t.Fatalf("checkpoint must reject --max-seconds, got %v", err)
+	}
+	// Values above math.MaxInt32 must parse on every GOARCH: the ceiling is
+	// int64/time.Duration-sized, not 32-bit int-sized.
+	aboveMaxInt32 := strconv.FormatInt(int64(math.MaxInt32)+1, 10)
+	if seconds, err := parseMaxSecondsValue(aboveMaxInt32); err != nil {
+		t.Fatalf("parseMaxSecondsValue(%s) must succeed on 64-bit builds, got %v", aboveMaxInt32, err)
+	} else if seconds != int64(math.MaxInt32)+1 {
+		t.Fatalf("parseMaxSecondsValue(%s) = %d, want %d", aboveMaxInt32, seconds, int64(math.MaxInt32)+1)
 	}
 }
 

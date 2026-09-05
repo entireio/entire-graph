@@ -5,8 +5,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"syscall"
 
 	"github.com/entireio/entire-graph/internal/cli"
 	"github.com/entireio/entire-graph/internal/termsafe"
@@ -15,7 +17,8 @@ import (
 var version = "dev"
 
 func main() {
-	if err := cli.Execute(version, os.Args[1:]); err != nil {
+	err := cli.Execute(version, os.Args[1:])
+	if err != nil {
 		// Escape by VALUE, not by wrapping os.Stderr. Error text is not
 		// tool-authored - it carries pathnames from `git diff -z`, Git's own
 		// stderr, and the argv gitutil's run() echoes back, and a Git pathname
@@ -44,6 +47,26 @@ func main() {
 		// one-line report that is honest about its breaks beats a multi-line
 		// one a repository can append to.
 		fmt.Fprintln(os.Stderr, termsafe.Line(err.Error()))
-		os.Exit(1)
 	}
+	os.Exit(exitCode(err))
+}
+
+// exitCode maps Execute's result to a process exit status. A *cli.SignalError
+// means the operator asked the process to stop (Ctrl-C, SIGTERM) rather than
+// the command itself failing, so it gets the conventional 128+signal status
+// (130 for SIGINT, 143 for SIGTERM) shells and supervisors already know how
+// to interpret, instead of the generic failure status every other error
+// gets — which would otherwise misreport operator cancellation as a command
+// failure.
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var sigErr *cli.SignalError
+	if errors.As(err, &sigErr) {
+		if sig, ok := sigErr.Signal.(syscall.Signal); ok {
+			return 128 + int(sig)
+		}
+	}
+	return 1
 }

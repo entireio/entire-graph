@@ -446,6 +446,7 @@ var providerFlagDocs = []flagDoc{
 	{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
 	{name: "--ignore-file", arg: "path", desc: "Extra gitignore-style exclude rules (repeatable)"},
 	{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
+	{name: "--max-seconds", arg: "n", def: "0", desc: "Ceiling on the parse+relation phases (source listing runs before it); 0 = unlimited. On expiry the stream is truncated, reports E_ANALYSIS_BUDGET_EXCEEDED, and is not cached"},
 }
 
 // snapshotFlagDocs extend the bulk provider flags with complete-snapshot formats.
@@ -457,6 +458,7 @@ var snapshotFlagDocs = []flagDoc{
 	{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
 	{name: "--ignore-file", arg: "path", desc: "Extra gitignore-style exclude rules (repeatable)"},
 	{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
+	{name: "--max-seconds", arg: "n", def: "0", desc: "Ceiling on the parse+relation phases (source listing runs before it); 0 = unlimited. On expiry the stream is truncated, reports E_ANALYSIS_BUDGET_EXCEEDED, and is not cached. Not valid with --format compact-ndjson"},
 }
 
 // commonFlagDocs are shared by the commit/diff/analyze change-analysis commands.

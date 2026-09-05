@@ -291,6 +291,73 @@ type PartialFailure struct {
 	Detail               string `json:"detail,omitempty"`
 }
 
+// AnalysisBudgetExceededCode marks a snapshot that stopped at the OPT-IN
+// wall-clock ceiling ProviderSnapshotOptions.MaxDuration instead of running to
+// completion. It is a truncation, not a parse failure: the records emitted
+// before the deadline are valid, everything after it is missing, and callers
+// must treat the graph as incomplete — in particular they must not persist it
+// as a complete snapshot.
+//
+// A deadline that came from the CALLER's own context never carries this code:
+// classifyStop (streamSnapshotWithWorkerCount, deriveSelectiveSnapshot) sets
+// the truncation flag only when MaxDuration > 0 and returns anything else as an
+// error, because a caller that never asked for truncation must not be handed a
+// silently incomplete snapshot with a nil error.
+const AnalysisBudgetExceededCode = "E_ANALYSIS_BUDGET_EXCEEDED"
+
+// analysisBudgetFailure reports a snapshot truncated by its wall-clock ceiling.
+// It carries no FilePath because the ceiling is a whole-run property: the
+// deadline can land in the middle of the relation phase, where the missing work
+// is spread across every file, so naming one file would misattribute the gap.
+//
+// The detail reports the CONFIGURED budget and nothing measured. It used to
+// carry time.Since(started) rounded to milliseconds, which made the record a
+// function of how fast the machine ran: three `snapshot --max-seconds 1` runs
+// over this repository agreed on the first 8,053,472 bytes and then published
+// "stopped after 1.248s" / "1.229s" / "1.211s" — three digests for one
+// truncation. A record that moves run to run cannot be diffed, content-addressed
+// or reproduced by a reviewer, and byte-identical output is this change's own
+// verification method. Elapsed time belongs where the schema already keeps it:
+// the *_latency_ms fields on the response envelope, which consumers know to
+// normalise. The sibling budget report, budgetSkippedFileWarning (analyze.go),
+// already reports counts and the configured budget for the same reason.
+func analysisBudgetFailure(budget time.Duration) PartialFailure {
+	detail := "the wall-clock budget expired"
+	if budget > 0 {
+		detail = fmt.Sprintf("the %s wall-clock budget expired", budget)
+	}
+	return PartialFailure{
+		Code:                 AnalysisBudgetExceededCode,
+		Severity:             "warning",
+		EffectOnCompleteness: "snapshot truncated at the wall-clock budget; files and relations after the deadline are missing",
+		Detail:               detail,
+	}
+}
+
+// SnapshotTruncated reports whether a snapshot stopped at its wall-clock
+// ceiling instead of completing. Such a result is valid to print, but it must
+// never be persisted as the answer for a tree: every cache key here is derived
+// from the tree and the options that SHAPE the graph, and a budget only
+// TRUNCATES it, so a stored truncation would be handed to every later caller --
+// including callers that passed no budget at all -- as the complete index.
+// Both cache writers (StoreProviderRecords and writeSearchSnapshot) enforce
+// this, so a new call site cannot reintroduce the hole by forgetting to check.
+func SnapshotTruncated(summary *SnapshotSummary) bool {
+	if summary == nil {
+		return false
+	}
+	return partialFailuresTruncated(summary.PartialFailures)
+}
+
+func partialFailuresTruncated(failures []PartialFailure) bool {
+	for _, failure := range failures {
+		if failure.Code == AnalysisBudgetExceededCode {
+			return true
+		}
+	}
+	return false
+}
+
 type FileRecord struct {
 	RecordType string `json:"record_type"`
 	ID         string `json:"id"`
@@ -423,6 +490,18 @@ type ProviderSnapshot struct {
 }
 
 type ProviderSnapshotOptions struct {
+	// nowFn is an in-package seam for the wall-clock the budget is measured
+	// against. It is unexported, so no embedder can set it and it is not part
+	// of any cache key; nil means time.Now, which is what every real caller
+	// gets. It exists because a budget cannot be tested by racing the platform
+	// clock: time.Now's resolution is nanoseconds on Linux and macOS but as
+	// coarse as a system tick on Windows, so a sub-tick budget reads as
+	// "not expired yet" there no matter how the check is written. Tests that
+	// need a budget that is expired BY CONSTRUCTION supply a clock instead of
+	// a tiny duration. Same idea as jsScanParseTimeout, threaded through the
+	// options rather than a package global so it is safe under t.Parallel.
+	nowFn func() time.Time
+
 	NoNetwork    bool
 	Worktree     bool
 	IgnoreFiles  []string
@@ -445,6 +524,28 @@ type ProviderSnapshotOptions struct {
 	// inventory, imports, shallow local calls, boundaries, IaC, no evidence), or
 	// syntax-only (file/symbol inventory and structure only). Empty means full.
 	Profile Profile
+	// MaxDuration is the wall-clock ceiling for the PARSE AND RELATION phases
+	// of one snapshot. Zero (the default) means no ceiling, which is the
+	// historical behavior. When it is set those phases stop at the deadline and
+	// the stream is still finished normally: the records produced so far, an
+	// E_ANALYSIS_BUDGET_EXCEEDED partial failure, and a summary.
+	//
+	// It is NOT a whole-process ceiling. Source preparation (the git listing
+	// and plumbing in prepareSource) runs before the clock starts and is not
+	// interruptible by it, so a run can exceed MaxDuration by however long
+	// listing takes.
+	//
+	// Truncation is strictly opt-in. A deadline that comes from the CALLER's
+	// context instead of this field is NOT swallowed: it is returned as
+	// context.DeadlineExceeded, exactly as before, because a caller that did
+	// not ask for a partial graph must never be handed one with a nil error.
+	// context.Canceled (Ctrl-C, an aborted parent) likewise still returns an
+	// error.
+	//
+	// MaxDuration is deliberately not part of any cache key -- a budget does
+	// not shape the graph, it truncates it -- so a truncated snapshot is never
+	// persisted; both cache writers reject one (see SnapshotTruncated).
+	MaxDuration time.Duration
 	// ProjectVersion, when non-nil, receives the project's own declared version
 	// as read from the root manifest.
 	//
@@ -955,11 +1056,13 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 	snapshot.Header.PartialFailures = summary.PartialFailures
 	snapshot.Header.Stats = summary.Stats
 	snapshot.Header.Completeness = summary.Completeness
-	sort.Slice(snapshot.Relations, func(i, j int) bool {
-		left := snapshot.Relations[i].Type + snapshot.Relations[i].FromID + snapshot.Relations[i].ToID
-		right := snapshot.Relations[j].Type + snapshot.Relations[j].FromID + snapshot.Relations[j].ToID
-		return left < right
-	})
+	if !SnapshotTruncated(&summary) {
+		sort.Slice(snapshot.Relations, func(i, j int) bool {
+			left := snapshot.Relations[i].Type + snapshot.Relations[i].FromID + snapshot.Relations[i].ToID
+			right := snapshot.Relations[j].Type + snapshot.Relations[j].FromID + snapshot.Relations[j].ToID
+			return left < right
+		})
+	}
 	return snapshot, nil
 }
 
@@ -972,9 +1075,18 @@ var registrationFunctionPattern = regexp.MustCompile(`"function"\s*:\s*"([A-Za-z
 // The command verb (the file's basename without .json) never appears in the
 // handler body, so it is indexed as a searchable alias of the handler symbol.
 // Only paths matching commands/*.json are touched; no generic scan is performed.
-func collectRegistrationAliases(paths []string, read contentReader) map[string][]string {
+// collectRegistrationAliases scans a large inventory once, so its own loop
+// needs the stop predicate too: the gated reader passed to it only refuses
+// reads once the budget is gone, and a refused read merely `continue`s, so
+// without this check the loop still walked every remaining path (and the
+// final sort/dedupe pass still ran over whatever had accumulated) rather than
+// stopping where the budget actually expired.
+func collectRegistrationAliases(stop func() bool, paths []string, read contentReader) map[string][]string {
 	aliasesByHandler := map[string][]string{}
 	for _, p := range paths {
+		if stop != nil && stop() {
+			break
+		}
 		slash := filepath.ToSlash(p)
 		if !strings.HasSuffix(slash, ".json") {
 			continue
@@ -996,7 +1108,13 @@ func collectRegistrationAliases(paths []string, read contentReader) map[string][
 		aliasesByHandler[handler] = append(aliasesByHandler[handler], alias)
 	}
 	for handler, aliases := range aliasesByHandler {
+		if stop != nil && stop() {
+			break
+		}
 		sort.Strings(aliases)
+		if stop != nil && stop() {
+			break
+		}
 		aliasesByHandler[handler] = dedupeSortedStrings(aliases)
 	}
 	return aliasesByHandler
@@ -1104,9 +1222,85 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 // public provider always uses defaultProviderWorkerCount.
 func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, workers int, emit func(record any) error) error {
 	started := time.Now()
+
+	// An opt-in wall-clock budget must parse files serially so the retained
+	// prefix is a function of path order alone. Parallel workers finish
+	// different prefixes depending on scheduling and cache warmth, which
+	// regresses the provider's determinism contract for truncated snapshots.
+	if options.MaxDuration > 0 && workers > 1 {
+		workers = 1
+	}
+
+	// Source preparation (the git listing and plumbing) runs on the caller's
+	// context and OUTSIDE the budget clock: a partially-listed source has no
+	// reportable shape, so there is nothing to truncate it to. MaxDuration is
+	// therefore a parse-and-relation ceiling, not a whole-process one, and it
+	// is documented that way on the option and on the --max-seconds flag help.
 	sc, err := prepareSource(ctx, repo, options)
 	if err != nil {
 		return err
+	}
+
+	// Wall-clock ceiling over the parse and relation phases. A deadline on the
+	// work context is the single mechanism: the file pipeline already stops on
+	// ctx.Done and the relation phase already polls shouldStop, so one deadline
+	// bounds both without a second clock to keep in sync.
+	//
+	// Expiry of an OPT-IN budget is a truncation, not a failure: budgetHit turns
+	// into an E_ANALYSIS_BUDGET_EXCEEDED partial failure and the stream is
+	// finished normally, the way E_FILE_TOO_LARGE reports a file the provider
+	// chose not to parse. The retained prefix under MaxDuration is a function
+	// of stable path order (the file pipeline runs serially when a budget is
+	// set); callers that need a reproducible boundary must still not rely on
+	// wall-clock truncation alone because the exact cut point moves with
+	// machine speed.
+	// Everything else is returned as an error -- a
+	// cancellation, and also a deadline that came from the CALLER's own context
+	// rather than from MaxDuration. A caller that never asked for truncation
+	// must not receive a silently incomplete snapshot with a nil error: it would
+	// persist that snapshot (records_cache.go, search_cache.go) under a
+	// budget-independent tree key, and every later unbudgeted query would be
+	// served the gap as if it were the complete index.
+	workCtx := ctx
+	var budgetDeadline time.Time
+	if options.MaxDuration > 0 {
+		var cancelBudget context.CancelFunc
+		budgetDeadline = options.now().Add(options.MaxDuration)
+		workCtx, cancelBudget = context.WithDeadline(ctx, budgetDeadline)
+		defer cancelBudget()
+	}
+	// Observe the budget against the clock, not only against the context's
+	// timer: ctx.Err() flips one timer granularity after the deadline actually
+	// passed (~15.6 ms on Windows), and every poll below would spend that
+	// window working on a budget that is already gone. See budgetGate.
+	gate := newBudgetGate(workCtx, budgetDeadline, options.now)
+	budgetHit := false
+	// classifyStop splits a stop reason into "our budget expired, truncate and
+	// finish" and "return this to the caller". ctx.Err() != nil means the
+	// caller's own context is what expired, so the deadline is not ours to
+	// swallow.
+	classifyStop := func(err error) error {
+		if err == nil {
+			return nil
+		}
+		if isOptInBudgetExceeded(ctx, gate, budgetDeadline, options.MaxDuration, err) {
+			budgetHit = true
+			return nil
+		}
+		return err
+	}
+	// noteStop classifies the work context's current state.
+	noteStop := func() error { return classifyStop(gate.err()) }
+	// callerStop returns only when the caller's own context is done. Finalization
+	// runs after the relation phase has already classified budget expiry into
+	// budgetHit; re-polling the gate there would mark an otherwise complete
+	// snapshot truncated because slow stdout or progress callbacks ran past
+	// MaxDuration after the relation phase finished.
+	callerStop := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return nil
 	}
 	if sc.close != nil {
 		defer sc.close()
@@ -1171,14 +1365,29 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// Command verbs bound to handlers through registration tables
 	// (commands/<name>.json) never appear in the handler body; index them once as
 	// searchable aliases so they can be attached to the handler symbol below.
-	aliasesByHandler := collectRegistrationAliases(sc.paths, sc.read)
+	//
+	// The alias scan reads whole files, so it gets the budgeted reader (see
+	// budgetGate.reader) rather than sc.read: on a repository with many or
+	// large command manifests the pass used to run to completion before the
+	// first budget check existed. The reader bounds it to one in-flight read,
+	// and the explicit classification below turns that expiry into the same
+	// truncation every later phase reports, rather than leaving it for the
+	// pipeline's timer to notice.
+	budgetedRead := gate.reader(sc.read)
+	aliasesByHandler := collectRegistrationAliases(gate.expired, sc.paths, budgetedRead)
+	if err := noteStop(); err != nil {
+		return err
+	}
 
 	// Phase 1: workers independently read, classify, and parse files. Only this
 	// reducer mutates graph indexes or calls emit, and it consumes the original
 	// path order, so worker timing cannot change snapshot bytes.
-	err = runProviderFilePipeline(ctx, sc.paths, workers,
+	// gate.err rather than workCtx alone: a clock-triggered expiry is true
+	// before the context's deadline timer fires, and reducing one more result
+	// means emitting a whole file's symbol list into the caller's sink.
+	err = runProviderFilePipeline(workCtx, gate.err, sc.paths, workers,
 		func(workerCtx context.Context, index int, path string) providerFileResult {
-			return processProviderFile(workerCtx, sc, spec, maxParseBytes, index, path)
+			return processProviderFile(workerCtx, gate, sc, spec, maxParseBytes, index, path)
 		},
 		func(result providerFileResult) error {
 			failures = append(failures, result.failures...)
@@ -1226,140 +1435,161 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		},
 	)
 	if err != nil {
-		return err
+		// The pipeline surfaces the work context's error verbatim, so a budget
+		// expiry arrives here as context.DeadlineExceeded. Truncate rather than
+		// discard: every file already reduced has been emitted. A deadline that
+		// is not ours is still a failure.
+		if stopErr := classifyStop(err); stopErr != nil {
+			return stopErr
+		}
 	}
 	emitProgress(BuildPhaseParse, len(sc.paths), symbolCount, relationCount)
 
-	// Phase 2: resolve relations from indexes, re-reading content per file.
-	// Relation dedup uses compact 64-bit hashed keys rather than the full
-	// from+to+type string, so the set's memory is ~one machine word per unique
-	// relation instead of a ~100-byte key. The set is bounded by the unique
-	// relation count (== the relations reported in the summary). FNV-1a/64
-	// collisions across realistic relation counts are negligible.
-	startPhase()
-	seenRelation := map[uint64]struct{}{}
-	// One digest per DATA_FLOWS edge, so a dropped duplicate can be compared
-	// against the record that was kept without retaining either record. Sits on
-	// the DATA_FLOWS subset of the map above, which is already held for every
-	// relation, so this adds no new memory class.
+	externalsByID := map[string]ExternalRecord{}
+	var externalOrder []string
+	relationsByType := map[string]int{}
 	dataFlowEvidence := map[uint64]uint64{}
 	unmergedEvidenceEdges := 0
-	externalsByID := map[string]ExternalRecord{}
-	relationsByType := map[string]int{}
-	var emitErr error
-	emitRelation := func(r RelationRecord, symbolsByID map[string]SymbolRecord, filesByID map[string]FileRecord) {
-		if emitErr != nil {
-			return
-		}
-		if err := ctx.Err(); err != nil {
-			emitErr = err
-			return
-		}
-		// Profile filter: emit only relation families the profile includes; in
-		// shallow call resolution, keep only high-precision call-like relations; drop
-		// evidence when the profile omits it.
-		if !spec.emits(r.Type) {
-			return
-		}
-		if spec.callResolution == "shallow" && !shallowRelationRetained(r.Type, r.Resolution) {
-			return
-		}
-		if !spec.includeEvidence {
-			r.Evidence = nil
-		}
-		if r.WarningCodes == nil {
-			r.WarningCodes = []string{}
-		}
-		dedupKey := relationDedupKey(r)
-		if _, seen := seenRelation[dedupKey]; seen {
+	if !budgetHit {
+		// Phase 2: resolve relations from indexes, re-reading content per file.
+		// Relation dedup uses compact 64-bit hashed keys rather than the full
+		// from+to+type string, so the set's memory is ~one machine word per unique
+		// relation instead of a ~100-byte key. The set is bounded by the unique
+		// relation count (== the relations reported in the summary). FNV-1a/64
+		// collisions across realistic relation counts are negligible.
+		startPhase()
+		seenRelation := map[uint64]struct{}{}
+		var emitErr error
+		emitRelation := func(r RelationRecord, symbolsByID map[string]SymbolRecord, filesByID map[string]FileRecord) {
+			if emitErr != nil || budgetHit {
+				return
+			}
+			if err := noteStop(); err != nil {
+				emitErr = err
+				return
+			}
+			if budgetHit {
+				return
+			}
+			// Profile filter: emit only relation families the profile includes; in
+			// shallow call resolution, keep only high-precision call-like relations; drop
+			// evidence when the profile omits it.
+			if !spec.emits(r.Type) {
+				return
+			}
+			if spec.callResolution == "shallow" && !shallowRelationRetained(r.Type, r.Resolution) {
+				return
+			}
+			if !spec.includeEvidence {
+				r.Evidence = nil
+			}
+			if r.WarningCodes == nil {
+				r.WarningCodes = []string{}
+			}
+			dedupKey := relationDedupKey(r)
+			if _, seen := seenRelation[dedupKey]; seen {
+				if r.Type == "DATA_FLOWS" {
+					if kept, ok := dataFlowEvidence[dedupKey]; ok && kept != evidenceDigest(r.Evidence) {
+						unmergedEvidenceEdges++
+						delete(dataFlowEvidence, dedupKey)
+					}
+				}
+				return
+			}
 			if r.Type == "DATA_FLOWS" {
-				// A duplicate carrying the same flows loses nothing. One carrying
-				// different flows is evidence this edge had a second producer that
-				// emission-site grouping could not see, and the record already
-				// written cannot be amended -- so count the edge and disclose it.
-				if kept, ok := dataFlowEvidence[dedupKey]; ok && kept != evidenceDigest(r.Evidence) {
-					unmergedEvidenceEdges++
-					delete(dataFlowEvidence, dedupKey) // count each edge once
+				dataFlowEvidence[dedupKey] = evidenceDigest(r.Evidence)
+			}
+			seenRelation[dedupKey] = struct{}{}
+			for _, id := range []string{r.FromID, r.ToID} {
+				if strings.HasPrefix(id, "external:") {
+					if _, exists := externalsByID[id]; !exists {
+						externalOrder = append(externalOrder, id)
+					}
+					mergeExternalRecord(externalsByID, externalRecordFor(r, id, symbolsByID, filesByID))
 				}
 			}
-			return
-		}
-		if r.Type == "DATA_FLOWS" {
-			dataFlowEvidence[dedupKey] = evidenceDigest(r.Evidence)
-		}
-		seenRelation[dedupKey] = struct{}{}
-		for _, id := range []string{r.FromID, r.ToID} {
-			if strings.HasPrefix(id, "external:") {
-				mergeExternalRecord(externalsByID, externalRecordFor(r, id, symbolsByID, filesByID))
+			relationsByType[r.Type]++
+			relationCount++
+			if relationCount%relationProgressEvery == 0 {
+				emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 			}
+			emitErr = emit(r)
 		}
-		relationsByType[r.Type]++
-		relationCount++
-		if relationCount%relationProgressEvery == 0 {
-			emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
+		relationsShouldStop := func() bool { return emitErr != nil || budgetHit || gate.expired() }
+		if options.ProjectVersion != nil && !relationsShouldStop() {
+			// Read through the snapshot's own content reader: metadata already
+			// validated, bounded by MaxParseBytes, non-regular files refused, and
+			// pinned to this snapshot's revision rather than to a HEAD that can move
+			// underneath it. Above the profile branch so a syntax-only export, which
+			// resolves no relations, still reports a version.
+			//
+			// Gated on both counts, because this sits inside the phase --max-seconds
+			// advertises that it bounds. Unguarded, an expiry landing just before
+			// this line still read and parsed up to three maximum-sized manifests
+			// before anything noticed, so the ceiling did not hold where it was
+			// claimed. budgetedRead stops mid-lookup for the same reason: checking
+			// only on entry leaves the same window one manifest wide.
+			options.ProjectVersion(ScipProjectVersion(ManifestReader(budgetedRead)))
 		}
-		emitErr = emit(r)
-	}
-	if options.ProjectVersion != nil {
-		// Read through the snapshot's own content reader: metadata already
-		// validated, bounded by MaxParseBytes, non-regular files refused, and
-		// pinned to this snapshot's revision rather than to a HEAD that can move
-		// underneath it. Above the profile branch so a syntax-only export, which
-		// resolves no relations, still reports a version.
-		options.ProjectVersion(ScipProjectVersion(ManifestReader(sc.read)))
-	}
-	if spec.name == ProfileSyntaxOnly {
-		emitStructuralRelationsCompact(sc.key, files, structuralByFile, func(r RelationRecord) {
-			emitRelation(r, nil, nil)
-		})
-	} else {
-		var symbolsByID map[string]SymbolRecord
-		var filesByID map[string]FileRecord
-		if spec.includeEvidence {
-			symbolsByID, filesByID = recordIndexes(files, recordsByFile)
-		}
-		var relationFailures []PartialFailure
-		forEachRelation(ctx, sc.key, files, recordsByFile, sc.read, precomputedImports, spec, workers, func() bool {
-			return emitErr != nil || ctx.Err() != nil
-		}, func(r RelationRecord) {
-			emitRelation(r, symbolsByID, filesByID)
-		}, func(failure PartialFailure) {
-			relationFailures = append(relationFailures, failure)
-		})
-		// A file can fail in both phases with the same code (a parse budget
-		// blown in the entity pass usually blows the relation-phase scope parse
-		// too): report one record per code+file, exactly as the cache-derived
-		// selective path does, so cache presence never changes the reported
-		// failure set. The single record carries BOTH phases' effect and detail
-		// text (mergePartialFailures folds duplicates) so neither loss is hidden.
-		failures = mergePartialFailures(failures, relationFailures)
-		if spec.emits("FILE_CHANGES_WITH") {
-			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, files) {
-				if emitErr != nil || ctx.Err() != nil {
-					break
-				}
+		if spec.name == ProfileSyntaxOnly {
+			emitStructuralRelationsCompact(sc.key, files, structuralByFile, relationsShouldStop, func(r RelationRecord) {
+				emitRelation(r, nil, nil)
+			})
+		} else {
+			var symbolsByID map[string]SymbolRecord
+			var filesByID map[string]FileRecord
+			if spec.includeEvidence {
+				symbolsByID, filesByID = recordIndexes(files, recordsByFile, relationsShouldStop)
+			}
+			var relationFailures []PartialFailure
+			forEachRelation(workCtx, sc.key, files, recordsByFile, budgetedRead, precomputedImports, spec, workers, relationsShouldStop, func(r RelationRecord) {
 				emitRelation(r, symbolsByID, filesByID)
+			}, func(failure PartialFailure) {
+				relationFailures = append(relationFailures, failure)
+			})
+			// A file can fail in both phases with the same code (a parse budget
+			// blown in the entity pass usually blows the relation-phase scope parse
+			// too): report one record per code+file, exactly as the cache-derived
+			// selective path does, so cache presence never changes the reported
+			// failure set.
+			failures = mergePartialFailures(failures, relationFailures)
+			// Check the budget BEFORE calling fileChangesWithRelations, not after:
+			// the call runs a `git log` subprocess over the last 256 commits and
+			// returns a fully materialised slice, so entering it once the deadline
+			// has passed charges the entire co-change subprocess to the overshoot.
+			// The subprocess also runs under workCtx now, so a budget that expires
+			// while git is running kills git instead of waiting for it.
+			if spec.emits("FILE_CHANGES_WITH") && !relationsShouldStop() {
+				for _, r := range fileChangesWithRelations(workCtx, sc.absRepo, sc.commit, sc.key, files) {
+					if relationsShouldStop() {
+						break
+					}
+					emitRelation(r, symbolsByID, filesByID)
+				}
 			}
 		}
-	}
-	if emitErr != nil {
-		return emitErr
-	}
-	// The relation pipeline can observe cancellation without emitting another
-	// record, so emitErr alone does not establish successful completion.
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+		if emitErr != nil {
+			return emitErr
+		}
+		// forEachRelation's shouldStop and the structural path both return without
+		// a reason, so classify the work context once here: budget expiry marks the
+		// snapshot truncated, a caller cancellation is returned. The parallel
+		// relation pipeline can also observe cancellation without emitting another
+		// record, so emitErr alone does not establish successful completion --
+		// noteStop covers that case because gate.err() reports the work context,
+		// which is derived from the caller's.
+		if err := noteStop(); err != nil {
+			return err
+		}
+	} // !budgetHit
 	emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 
 	startPhase()
-	externalIDs := make([]string, 0, len(externalsByID))
-	for id := range externalsByID {
-		externalIDs = append(externalIDs, id)
-	}
-	sort.Strings(externalIDs)
+	externalIDs := orderedExternalIDs(externalsByID, externalOrder, budgetHit)
 	for _, id := range externalIDs {
-		if err := ctx.Err(); err != nil {
+		// Externals are already resolved in memory; only a caller cancellation
+		// stops emitting them once the relation phase has finished.
+		if err := callerStop(); err != nil {
 			return err
 		}
 		if err := emit(externalsByID[id]); err != nil {
@@ -1376,6 +1606,9 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	if failures == nil {
 		failures = []PartialFailure{}
 	}
+	if budgetHit {
+		failures = append(failures, analysisBudgetFailure(options.MaxDuration))
+	}
 	summary := SnapshotSummary{
 		RecordType:      "summary",
 		Languages:       sortedKeys(languageSet),
@@ -1388,7 +1621,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			Symbols:           symbolCount,
 			Relations:         relationCount,
 			PartialFailures:   len(failures),
-			CompletenessLevel: completenessLevel(completenessFailureCount(failures), len(files), parsedFileCount, symbolCount),
+			CompletenessLevel: completenessLevel(failures, len(files), parsedFileCount, symbolCount),
 		},
 		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
 	}
@@ -1404,11 +1637,14 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	return nil
 }
 
-func parseWithProfile(parser TreeSitterParser, spec profileSpec, langSpec languageSpec, path, content string) ([]Entity, string, ParseStatus) {
+func parseWithProfile(ctx context.Context, parser TreeSitterParser, spec profileSpec, langSpec languageSpec, path, content string) ([]Entity, string, ParseStatus) {
 	if useFastCFamilyParser(spec, langSpec) {
-		return fastCFamilyEntities(path, content, langSpec.language), langSpec.language, ParseStatus{}
+		// The fast C/C++ parser bypasses tree-sitter entirely, so it needs the
+		// caller's stop predicate handed to it directly -- ParseWithStatusCtx,
+		// which derives one from ctx, is never reached on this path.
+		return fastCFamilyEntities(path, content, langSpec.language, ctxStop(ctx)), langSpec.language, ParseStatus{}
 	}
-	return parser.ParseWithStatus(path, content)
+	return parser.ParseWithStatusCtx(ctx, path, content)
 }
 
 func sourceLineCount(content string) int {
@@ -1912,7 +2148,16 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 	return symbols
 }
 
-func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbols []SymbolRecord) []SymbolRecord {
+// syntheticBoundarySymbols returns the derived route/tool/workflow boundary
+// symbols for a file, plus whether the wall-clock budget expired before it
+// finished. The tool-handler loop below rescans content once per already-
+// parsed symbol, so it is polled every budgetPollStride symbols like the other
+// whole-corpus loops in this package (see parser.go); a file with an unusually
+// large symbol count is the only way this pass takes long enough for the
+// budget to matter. On truncation the caller must drop the file atomically —
+// a partial synthetic list appended to a complete entity list would read as a
+// complete file that simply has no boundary symbols.
+func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbols []SymbolRecord, stop func() bool) ([]SymbolRecord, bool) {
 	var symbols []SymbolRecord
 	lines := strings.Split(content, "\n")
 	if route := webRouteBoundary(path); route != "" {
@@ -1935,7 +2180,10 @@ func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbo
 			sourceEndByte:   source.sourceEndByte,
 		})
 	}
-	for _, source := range fileSymbols {
+	for i, source := range fileSymbols {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return nil, true
+		}
 		block := symbolBlockFromLines(lines, source)
 		if exact, ok := exactSymbolSource(content, source); ok {
 			block = exact
@@ -1981,7 +2229,7 @@ func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbo
 			sourceEndByte:   source.sourceEndByte,
 		})
 	}
-	return symbols
+	return symbols, false
 }
 
 type routeSource struct {
@@ -4072,7 +4320,7 @@ func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []Symb
 // cross-file candidate actually reopens the receiver's namespace before
 // emitting an edge. Files without namespaces — or whose scope parse fails —
 // yield "" for every symbol; each file is read and scanned at most once.
-func jsCrossFileNamespaceLookup(readContent contentReader, recordsByFile map[string][]SymbolRecord) func(SymbolRecord) string {
+func jsCrossFileNamespaceLookup(ctx context.Context, readContent contentReader, recordsByFile map[string][]SymbolRecord) func(SymbolRecord) string {
 	// The relation phase resolves files across workers, so the memo is shared.
 	// The lock is held across the scan rather than only across the map access:
 	// this fires for TypeScript namespaces alone, which is rare enough that
@@ -4088,7 +4336,7 @@ func jsCrossFileNamespaceLookup(readContent contentReader, recordsByFile map[str
 		byID, ok := cache[symbol.FilePath]
 		if !ok {
 			if content, okRead := readContent(symbol.FilePath); okRead {
-				if scan, err := newJSScanState(symbol.FilePath, content); err == nil && len(scan.namespaces) > 0 {
+				if scan, err := newJSScanState(ctx, symbol.FilePath, content); err == nil && len(scan.namespaces) > 0 {
 					byID = jsNamespaceBySymbolID(content, recordsByFile[symbol.FilePath], scan.namespaces)
 				}
 			}
@@ -4327,9 +4575,9 @@ func sameFileOverloadSet(candidates []SymbolRecord) ([]SymbolRecord, bool) {
 // buildRelations collects every relation, deduplicates (first occurrence wins,
 // in emission order), and sorts for stable output. Used by the in-memory
 // snapshot path; the streaming path uses forEachRelation directly.
-func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func buildRelations(ctx context.Context, repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	var relations []RelationRecord
-	forEachRelation(context.Background(), repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), defaultProviderWorkerCount(), nil, func(r RelationRecord) {
+	forEachRelation(ctx, repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), defaultProviderWorkerCount(), nil, func(r RelationRecord) {
 		relations = append(relations, r)
 	}, nil)
 	relations = dedupeRelations(relations)
@@ -4373,9 +4621,15 @@ func retainedSymbolsForProfile(records []SymbolRecord, spec profileSpec) []Symbo
 	return out
 }
 
-func emitStructuralRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, emit func(RelationRecord)) {
+func emitStructuralRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, shouldStop func() bool, emit func(RelationRecord)) {
 	for _, file := range files {
+		if shouldStop != nil && shouldStop() {
+			return
+		}
 		for _, symbol := range recordsByFile[file.Path] {
+			if shouldStop != nil && shouldStop() {
+				return
+			}
 			emit(RelationRecord{
 				RecordType:    "relation",
 				FromID:        fileID(repoKey, symbol.FilePath),
@@ -4406,9 +4660,20 @@ func emitStructuralRelations(repoKey string, files []FileRecord, recordsByFile m
 	}
 }
 
-func emitStructuralRelationsCompact(repoKey string, files []FileRecord, recordsByFile map[string][]structuralSymbol, emit func(RelationRecord)) {
+// emitStructuralRelationsCompact streams the syntax-only relation set. It takes
+// shouldStop because the emit sink returning early is not enough: without a stop
+// predicate the producer keeps walking every remaining file and symbol after the
+// wall-clock budget has expired, so the advertised ceiling is overshot by the
+// whole remainder of an O(symbol-count) pass.
+func emitStructuralRelationsCompact(repoKey string, files []FileRecord, recordsByFile map[string][]structuralSymbol, shouldStop func() bool, emit func(RelationRecord)) {
 	for _, file := range files {
+		if shouldStop != nil && shouldStop() {
+			return
+		}
 		for _, symbol := range recordsByFile[file.Path] {
+			if shouldStop != nil && shouldStop() {
+				return
+			}
 			emit(RelationRecord{
 				RecordType:    "relation",
 				FromID:        fileID(repoKey, symbol.FilePath),
@@ -4461,11 +4726,8 @@ func jsScanPartialFailure(path string, err error) PartialFailure {
 }
 
 // jsScanDepthPartialFailure reports a relation-phase scope walk truncated at
-// maxParseWalkDepth. It reuses the entity phase's code so both phases describe
-// the same condition identically, and it is a warning rather than an error for
-// the same reason: the relations above the limit are emitted. Its effect and
-// detail text stand on their own because mergePartialFailures folds them into the
-// entity-phase record for the same file rather than discarding them.
+// maxParseWalkDepth. It shares the entity phase's code so duplicate failures
+// merge into one complete diagnostic.
 func jsScanDepthPartialFailure(path string) PartialFailure {
 	return PartialFailure{
 		Code:                 "E_PARSE_DEPTH_EXCEEDED",
@@ -4474,6 +4736,31 @@ func jsScanDepthPartialFailure(path string) PartialFailure {
 		EffectOnCompleteness: "relation-phase scope walk truncated at the parser depth limit; calls nested deeper than that were not classified",
 		Detail:               fmt.Sprintf("AST nesting exceeded the %d-level walk limit during relation construction", maxParseWalkDepth),
 	}
+}
+
+func buildGraphQLOperationRootAliases(files []FileRecord, recordsByFile map[string][]SymbolRecord, shouldStop func() bool) map[string]string {
+	graphqlOperationRootAliases := map[string]string{}
+	for _, file := range files {
+		if shouldStop != nil && shouldStop() {
+			return graphqlOperationRootAliases
+		}
+		for _, symbol := range recordsByFile[file.Path] {
+			if shouldStop != nil && shouldStop() {
+				return graphqlOperationRootAliases
+			}
+			if symbol.Kind != "graphql_schema_field" {
+				continue
+			}
+			rootName := graphqlRootNameFromSignature(symbol)
+			if rootName == "" || !graphqlOperationRoot(rootName) {
+				continue
+			}
+			if typeName, _, ok := strings.Cut(symbol.QualifiedName, "."); ok {
+				graphqlOperationRootAliases[strings.ToLower(typeName)] = rootName
+			}
+		}
+	}
+	return graphqlOperationRootAliases
 }
 
 // fileRelationScan is one file's share of the relation phase: what its scan
@@ -4507,8 +4794,14 @@ type httpCallEntry struct {
 var errRelationScanStopped = errors.New("relation scan stopped")
 
 func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, workers int, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
+	// Nothing above the file loop used to consult shouldStop, so entering this
+	// function with an already-expired budget still bought three whole-repository
+	// index passes plus partialTypeCanonicalIDs before the first guard could run.
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if spec.name == ProfileSyntaxOnly {
-		emitStructuralRelations(repoKey, files, recordsByFile, emit)
+		emitStructuralRelations(repoKey, files, recordsByFile, shouldStop, emit)
 		return
 	}
 	needsTool := spec.emits("HANDLES_TOOL")
@@ -4548,45 +4841,36 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	httpCallsByRoute := map[string][]RelationRecord{}
 	graphqlSchemaFields := map[string][]SymbolRecord{}
 	graphqlResolvers := map[string][]SymbolRecord{}
-	graphqlOperationRootAliases := map[string]string{}
-	for _, file := range files {
-		for _, symbol := range recordsByFile[file.Path] {
-			if symbol.Kind != "graphql_schema_field" {
-				continue
-			}
-			rootName := graphqlRootNameFromSignature(symbol)
-			if rootName == "" || !graphqlOperationRoot(rootName) {
-				continue
-			}
-			if typeName, _, ok := strings.Cut(symbol.QualifiedName, "."); ok {
-				graphqlOperationRootAliases[strings.ToLower(typeName)] = rootName
-			}
-		}
+	graphqlOperationRootAliases := buildGraphQLOperationRootAliases(files, recordsByFile, shouldStop)
+	if shouldStop != nil && shouldStop() {
+		return
 	}
-	// Cross-file container index: entitySymbols links a member to its container
-	// only within one file, but some containers span files — a Go receiver type
-	// commonly lives in a different file of the same package than its methods
-	// (C# partial classes and reopened Ruby classes behave the same) — leaving
-	// such members with an empty ContainerID and therefore invisible to
-	// receiver-typed call resolution. Resolve those containers from the
-	// member's qualified-name prefix against the workspace's type-like symbols.
 	crossFileContainers := needsCallScan || needsReceiverCalls || needsFields || needsOverrides
 	// Cross-file namespace membership is only consulted by the JS/TS
 	// merged-declaration fallback (rare), and the lookup memoizes per file, so
 	// building the closure up front costs nothing for repositories without
 	// TypeScript namespaces.
-	foreignJSNamespaceOf := jsCrossFileNamespaceLookup(readContent, recordsByFile)
+	foreignJSNamespaceOf := jsCrossFileNamespaceLookup(ctx, readContent, recordsByFile)
 	typeLikeByShortName := map[string][]SymbolRecord{}
 	if crossFileContainers {
 		for _, file := range files {
-			for _, symbol := range recordsByFile[file.Path] {
+			if shouldStop != nil && shouldStop() {
+				return
+			}
+			for si, symbol := range recordsByFile[file.Path] {
+				if si%budgetPollStride == 0 && shouldStop != nil && shouldStop() {
+					return
+				}
 				if typeLikeKind(symbol.Kind) {
 					typeLikeByShortName[symbol.Name] = append(typeLikeByShortName[symbol.Name], symbol)
 				}
 			}
 		}
 	}
-	partialContainerCanonical, partialContainerFile := partialTypeCanonicalIDs(files, recordsByFile)
+	if shouldStop != nil && shouldStop() {
+		return
+	}
+	partialContainerCanonical, partialContainerFile := partialTypeCanonicalIDs(shouldStop, files, recordsByFile)
 	// Iterate files in their (stable) slice order, not the recordsByFile map, so
 	// structural relations stream deterministically.
 	for _, file := range files {
@@ -4809,7 +5093,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 			handledRoutes[r.Route] = struct{}{}
 		}
-		for _, r := range djangoRouteRelations(files, recordsByFile, readContent) {
+		for _, r := range djangoRouteRelations(files, recordsByFile, readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -4866,7 +5150,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			handledRoutes[r.Route] = struct{}{}
 		}
 	}
-	manifestImports := buildManifestImportResolver(files, readContent)
+	manifestImports := buildManifestImportResolver(files, readContent, shouldStop)
 
 	// pythonModuleExists reports whether the repo contains a Python file that the
 	// strict dotted-module matcher resolves `module` to (the module's own source
@@ -5065,7 +5349,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		var pythonBareScopes *pythonBareImportScopes
 		var pythonIncompleteAliases map[string][]pythonImportContext
 		if fileNeedsCallScan && file.Language == "Python" {
-			pythonBareScopes = newPythonBareImportScopes(content, currentFileSymbols)
+			pythonBareScopes = newPythonBareImportScopes(ctx, content, currentFileSymbols)
 			if !pythonBareScopes.complete {
 				pythonIncompleteAliases = pythonIncompleteAliasContexts(importedPythonBindings(content))
 			}
@@ -5159,7 +5443,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			// call sites for the whole file; every JS/TS scope decision below
 			// shares this state instead of re-deriving it per symbol.
 			var jsScanErr error
-			jsScan, jsScanErr = newJSScanState(file.Path, content)
+			jsScan, jsScanErr = newJSScanState(ctx, file.Path, content)
 			if jsScanErr != nil && recordFailure != nil {
 				// Surface the degraded relation pass the same way entity-phase
 				// parse failures are surfaced, so a timed-out or failed scope
@@ -5275,7 +5559,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
 					if len(callNames) > 0 && from.Kind == "method" && !from.Local && from.ContainerID != "" {
-						juliaLocalBindings = juliaLocalBindingNames(callBlock)
+						juliaLocalBindings = juliaLocalBindingNames(ctx, callBlock)
 					}
 				}
 				if file.Language == "Rust" {
@@ -6169,86 +6453,119 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 	}
 
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if needsOverrides {
-		for _, r := range overrideRelations(inheritanceEdges, methodsByContainer) {
+		for _, r := range overrideRelations(inheritanceEdges, methodsByContainer, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("HANDLES_ROUTE") {
-		for _, r := range crossFileExpressRouterRelations(files, recordsByFile, readContent, knownFiles) {
+		for _, r := range crossFileExpressRouterRelations(files, recordsByFile, readContent, knownFiles, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r.Relation)
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 		}
-		for _, r := range pythonIncludeRouterRelations(files, recordsByFile, readContent, knownFiles) {
+		if shouldStop != nil && shouldStop() {
+			return
+		}
+		for _, r := range pythonIncludeRouterRelations(files, recordsByFile, readContent, knownFiles, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r.Relation)
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("CALLS") {
-		for _, r := range routeBridgeRelations(routeHandlers, httpCallsByRoute) {
+		for _, r := range routeBridgeRelations(shouldStop, routeHandlers, httpCallsByRoute) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
-		for _, r := range graphqlSchemaResolverRelations(graphqlSchemaFields, graphqlResolvers) {
+		if shouldStop != nil && shouldStop() {
+			return
+		}
+		for _, r := range graphqlSchemaResolverRelations(shouldStop, graphqlSchemaFields, graphqlResolvers) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("USES_TYPE") {
-		for _, r := range usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile) {
+		for _, r := range usesTypeRelations(shouldStop, recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("PARAM_TYPE") || spec.emits("RETURNS_TYPE") {
-		for _, r := range signatureTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile, spec) {
+		for _, r := range signatureTypeRelations(shouldStop, recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile, spec) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("TESTS") {
-		for _, r := range testRelations(recordsByFile, symbolsByShortName, resolvedImportsByFile) {
+		for _, r := range testRelations(shouldStop, recordsByFile, symbolsByShortName, resolvedImportsByFile) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("RESOURCE_DEPENDS_ON") {
-		for _, r := range resourceDependsOnRelations(recordsByRelationSupport(recordsByFile, "RESOURCE_DEPENDS_ON"), readContent) {
+		for _, r := range resourceDependsOnRelations(recordsByRelationSupport(recordsByFile, "RESOURCE_DEPENDS_ON"), readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("CONFIGURES") {
-		for _, r := range configuresRelations(recordsByRelationSupport(recordsByFile, "CONFIGURES"), readContent) {
+		for _, r := range configuresRelations(recordsByRelationSupport(recordsByFile, "CONFIGURES"), readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
 	}
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if spec.emits("SIMILAR_TO") {
-		for _, r := range similarityRelations(recordsByFile, readContent) {
+		for _, r := range similarityRelations(recordsByFile, readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -6257,7 +6574,16 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	}
 }
 
-func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRoute map[string][]RelationRecord) []RelationRecord {
+// routeBridgeRelations pairs every HTTP client call on a route with every
+// handler of that route, so one high-cardinality route costs calls x handlers
+// records. It takes the stop predicate rather than relying on the caller's
+// guard between stages, because that guard cannot run until the whole product
+// has already been materialized. stop is nil on the unbudgeted path, so the
+// loops carry no check at all there.
+func routeBridgeRelations(stop func() bool, routeHandlers map[string][]SymbolRecord, httpCallsByRoute map[string][]RelationRecord) []RelationRecord {
+	if stopped(stop) {
+		return nil
+	}
 	var routes []string
 	for route := range httpCallsByRoute {
 		if len(routeHandlers[route]) > 0 {
@@ -6267,6 +6593,9 @@ func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRo
 	sort.Strings(routes)
 	var relations []RelationRecord
 	for _, route := range routes {
+		if stopped(stop) {
+			return relations
+		}
 		handlers := append([]SymbolRecord(nil), routeHandlers[route]...)
 		sort.Slice(handlers, func(i, j int) bool {
 			return handlers[i].ID < handlers[j].ID
@@ -6279,7 +6608,13 @@ func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRo
 			return calls[i].FromID < calls[j].FromID
 		})
 		for _, call := range calls {
+			if stopped(stop) {
+				return relations
+			}
 			for _, handler := range handlers {
+				if stopped(stop) {
+					return relations
+				}
 				if call.FromID == handler.ID {
 					continue
 				}
@@ -6307,7 +6642,13 @@ func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRo
 	return relations
 }
 
-func graphqlSchemaResolverRelations(schemaFields, resolvers map[string][]SymbolRecord) []RelationRecord {
+// graphqlSchemaResolverRelations is the same fields-by-resolvers product shape
+// as routeBridgeRelations and takes the predicate for the same reason: the
+// caller's guard between stages cannot run until the whole product exists.
+func graphqlSchemaResolverRelations(stop func() bool, schemaFields, resolvers map[string][]SymbolRecord) []RelationRecord {
+	if stopped(stop) {
+		return nil
+	}
 	var endpoints []string
 	for endpoint := range schemaFields {
 		if len(resolvers[endpoint]) > 0 {
@@ -6317,12 +6658,21 @@ func graphqlSchemaResolverRelations(schemaFields, resolvers map[string][]SymbolR
 	sort.Strings(endpoints)
 	var relations []RelationRecord
 	for _, endpoint := range endpoints {
+		if stopped(stop) {
+			return relations
+		}
 		fields := append([]SymbolRecord(nil), schemaFields[endpoint]...)
 		sort.Slice(fields, func(i, j int) bool { return fields[i].ID < fields[j].ID })
 		targets := append([]SymbolRecord(nil), resolvers[endpoint]...)
 		sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
 		for _, field := range fields {
+			if stopped(stop) {
+				return relations
+			}
 			for _, resolver := range targets {
+				if stopped(stop) {
+					return relations
+				}
 				if field.ID == resolver.ID {
 					continue
 				}
@@ -6512,11 +6862,17 @@ func buildMixinRelation(repoKey string, anchor SymbolRecord, edge rawSupertype, 
 // two different types (different namespaces, different assemblies) and must
 // stay separate. The second return value gives each canonical part's file, so
 // callers can scope a cross-file CONTAINS edge correctly.
-func partialTypeCanonicalIDs(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]string, map[string]string) {
+func partialTypeCanonicalIDs(stop func() bool, files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]string, map[string]string) {
 	canonicalByKey := map[string]SymbolRecord{}
 	var parts []SymbolRecord
 	for _, file := range files {
-		for _, symbol := range recordsByFile[file.Path] {
+		if stop != nil && stop() {
+			return nil, nil
+		}
+		for si, symbol := range recordsByFile[file.Path] {
+			if si%budgetPollStride == 0 && stop != nil && stop() {
+				return nil, nil
+			}
 			if !typeLikeKind(symbol.Kind) || !declaresPartialType(symbol) {
 				continue
 			}
@@ -6534,7 +6890,10 @@ func partialTypeCanonicalIDs(files []FileRecord, recordsByFile map[string][]Symb
 	}
 	canonical := make(map[string]string, len(parts))
 	canonicalFile := make(map[string]string, len(canonicalByKey))
-	for _, symbol := range parts {
+	for pi, symbol := range parts {
+		if pi%budgetPollStride == 0 && stop != nil && stop() {
+			return nil, nil
+		}
 		key := symbol.Language + "\x00" + symbol.Kind + "\x00" + symbol.QualifiedName
 		anchor := canonicalByKey[key]
 		canonical[symbol.ID] = anchor.ID
@@ -9295,20 +9654,48 @@ func importedExternalSymbolName(module, member string) string {
 // resource or module block that references another block (e.g. aws_vpc.main.id,
 // module.network.id) emits RESOURCE_DEPENDS_ON to that block. Block symbols are
 // indexed by their referenceable name (the form used inside expressions).
-func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+// resourceDependsOnRelations and its per-format producers below all take stop,
+// checked at the top of each producer's outer per-path (or, for the O(resources²)
+// selector matchers, per-source) loop. Each producer materializes a complete
+// slice with no interruption otherwise, so on a large full-profile snapshot a
+// deadline expiring mid-producer used to go unnoticed until the NEXT producer's
+// entry, charging the whole remainder of whichever one was running to the
+// overshoot.
+func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
-	relations = append(relations, hclResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, dockerfileResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesNamedResourceReferenceRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesSelectorResourceRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesSelectorExpressionResourceRelations(recordsByFile, readContent)...)
-	relations = append(relations, kustomizeResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, composeResourceDependsOnRelations(recordsByFile, readContent)...)
+	relations = append(relations, hclResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, dockerfileResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesNamedResourceReferenceRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesSelectorResourceRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesSelectorExpressionResourceRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kustomizeResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, composeResourceDependsOnRelations(recordsByFile, readContent, stop)...)
 	return relations
 }
 
-func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	index := map[string]SymbolRecord{}
 	for _, symbols := range recordsByFile {
 		for _, symbol := range symbols {
@@ -9329,6 +9716,9 @@ func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, read
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -9371,9 +9761,12 @@ func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, read
 	return relations
 }
 
-func dockerfileResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func dockerfileResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -9444,9 +9837,12 @@ func dockerCopyFromStages(content string) []string {
 	return out
 }
 
-func kubernetesResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -10488,10 +10884,13 @@ func kubernetesServiceMeshName(value string) string {
 	return strings.TrimSpace(name)
 }
 
-func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	resources := map[string]SymbolRecord{}
 	var sources []SymbolRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return nil
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -10514,6 +10913,9 @@ func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]Symbol
 	var relations []RelationRecord
 	emitted := map[string]bool{}
 	for _, source := range sources {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(source.FilePath)
 		if !ok {
 			continue
@@ -10574,9 +10976,12 @@ type yamlPathFrame struct {
 	key    string
 }
 
-func kubernetesSelectorResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesSelectorResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var resources []kubernetesResourceInfo
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return nil
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -10606,6 +11011,9 @@ func kubernetesSelectorResourceRelations(recordsByFile map[string][]SymbolRecord
 	}
 	var relations []RelationRecord
 	for _, source := range resources {
+		if stopped(stop) {
+			return relations
+		}
 		if len(source.Selector) == 0 {
 			continue
 		}
@@ -10757,9 +11165,12 @@ type kubernetesSelectorExpression struct {
 	Values   []string
 }
 
-func kubernetesSelectorExpressionResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesSelectorExpressionResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var resources []kubernetesResourceInfo
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return nil
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -10790,6 +11201,9 @@ func kubernetesSelectorExpressionResourceRelations(recordsByFile map[string][]Sy
 	}
 	var relations []RelationRecord
 	for _, source := range resources {
+		if stopped(stop) {
+			return relations
+		}
 		if len(source.SelectorExpressions) == 0 {
 			continue
 		}
@@ -10970,9 +11384,12 @@ func stringInSlice(value string, values []string) bool {
 	return false
 }
 
-func kustomizeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kustomizeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -11039,9 +11456,12 @@ func kustomizeFileReferences(content string) []string {
 	return dedupeStrings(refs)
 }
 
-func composeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func composeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		if !yamlDockerComposePath(path) {
 			continue
 		}
@@ -11452,7 +11872,17 @@ func lookupHCLReference(index map[string]SymbolRecord, ref string) (SymbolRecord
 // naming convention (TestFoo -> Foo, test_foo -> foo, FooTest -> Foo). The
 // subject must resolve to a non-test function/method/type symbol. This is a
 // high-precision convention match, not call-graph analysis.
-func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
+// testRelations materializes its whole result slice before returning, so a
+// between-stage budget check in the caller cannot interrupt it — the same gap
+// usesTypeRelations' doc describes. resolveTestSubject can itself scan a large
+// same-name candidate set per call (a common test-subject name in a big
+// repository resolves against every symbol sharing it), making the pass
+// quadratic in the worst case rather than the single linear pass over symbols
+// this loop otherwise is. stop is threaded into both the outer loops and
+// resolveTestSubject's own candidate scan so a run past the wall-clock budget
+// is interrupted where the cost actually accrues, not just at the
+// already-too-late edges of this function.
+func testRelations(stop func() bool, recordsByFile map[string][]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -11461,7 +11891,13 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stop != nil && stop() {
+			return relations
+		}
 		for _, symbol := range recordsByFile[path] {
+			if stop != nil && stop() {
+				return relations
+			}
 			if symbol.Kind != "function" && symbol.Kind != "method" {
 				continue
 			}
@@ -11469,18 +11905,7 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 			if subject == "" {
 				continue
 			}
-			// The workspace short-name lookup is deliberately NOT filtered
-			// through sharedTypeCandidates. That relation answers whether
-			// source in one language may name a type DECLARED in another, and
-			// a TESTS edge names no type: it records the convention that
-			// `test_frobnicate` covers `frobnicate`. Harnesses cross language
-			// boundaries as a matter of course — pytest over a C extension, a
-			// shell script over a compiled binary, JS specs over a WASM module
-			// — so gating them on type interop dropped those edges wholesale,
-			// and asymmetrically at that, since the C-family relation is
-			// directional and C names nothing at all. Precision comes from
-			// resolveTestSubject's evidence order instead.
-			target, resolution, ok := resolveTestSubject(subject, symbol, symbolsByShortName[subject], resolvedImportsByFile[path])
+			target, resolution, ok := resolveTestSubject(stop, subject, symbol, symbolsByShortName[subject], resolvedImportsByFile[path])
 			if !ok {
 				continue
 			}
@@ -11515,9 +11940,12 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 // import evidence resolves to nothing rather than to whichever same-name
 // symbol sorts first, which produced cross-crate TESTS edges to unrelated
 // units in Cargo workspaces.
-func resolveTestSubject(subject string, test SymbolRecord, candidates []SymbolRecord, importsByName map[string][]string) (SymbolRecord, string, bool) {
+func resolveTestSubject(stop func() bool, subject string, test SymbolRecord, candidates []SymbolRecord, importsByName map[string][]string) (SymbolRecord, string, bool) {
 	var eligible []SymbolRecord
 	for _, symbol := range candidates {
+		if stop != nil && stop() {
+			return SymbolRecord{}, "", false
+		}
 		if symbol.ID == test.ID || isTestName(symbol.Name) {
 			continue
 		}
@@ -11561,7 +11989,15 @@ func resolveTestSubject(subject string, test SymbolRecord, candidates []SymbolRe
 // symbols means primitives and library types (which have no local symbol) are
 // naturally excluded, keeping the edges high-precision without per-language
 // signature grammar.
-func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
+// usesTypeRelations resolves every identifier in every function signature
+// against the declarations visible to it. resolveTypeReference scans the whole
+// same-file symbol slice per reference (firstTypeLikeNamed), so the pass costs
+// symbols x references x symbols-in-file: it is QUADRATIC in symbols per file,
+// not the single linear pass the other producers are. Measured on one 16k-symbol
+// TypeScript file it charged 5.2 s to an already-expired budget, so it takes the
+// stop predicate rather than relying on the caller's guard between stages, which
+// cannot run until the whole slice has been materialized.
+func usesTypeRelations(stop func() bool, recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -11570,7 +12006,13 @@ func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, s
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stop != nil && stop() {
+			return relations
+		}
 		for _, symbol := range recordsByFile[path] {
+			if stop != nil && stop() {
+				return relations
+			}
 			if symbol.Kind != "function" && symbol.Kind != "method" || symbol.Signature == "" {
 				continue
 			}
@@ -11618,7 +12060,10 @@ func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, s
 	return relations
 }
 
-func signatureTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string, spec profileSpec) []RelationRecord {
+// signatureTypeRelations shares resolveTypeReference with usesTypeRelations and
+// is quadratic in symbols per file for the same reason, so it takes the stop
+// predicate too.
+func signatureTypeRelations(stop func() bool, recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string, spec profileSpec) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -11627,7 +12072,13 @@ func signatureTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFi
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stop != nil && stop() {
+			return relations
+		}
 		for _, symbol := range recordsByFile[path] {
+			if stop != nil && stop() {
+				return relations
+			}
 			if symbol.Kind != "function" && symbol.Kind != "method" || symbol.Signature == "" {
 				continue
 			}
@@ -11822,7 +12273,7 @@ func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecor
 	return SymbolRecord{}, "", "", 0, false
 }
 
-func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -11831,6 +12282,9 @@ func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent co
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -12001,9 +12455,18 @@ func fieldAccessRelations(from SymbolRecord, body symbolBody, fieldsByContainer 
 // resolved supertype overrides it. It only fires when both the supertype and
 // its methods are known local symbols, so external base classes never produce
 // guessed overrides.
-func overrideRelations(relations []RelationRecord, methodsByContainer map[string]map[string]SymbolRecord) []RelationRecord {
+// overrideRelations is polled every budgetPollStride inheritance edges, like
+// the other bounded scans in this package: the caller's shouldStop check
+// above only ran BEFORE this call, so a large class hierarchy -- many
+// EXTENDS/IMPLEMENTS edges, each sorting its subtype's whole method set --
+// kept consuming CPU and memory past MaxDuration until the entire slice was
+// materialized and returned.
+func overrideRelations(relations []RelationRecord, methodsByContainer map[string]map[string]SymbolRecord, stop func() bool) []RelationRecord {
 	var overrides []RelationRecord
-	for _, relation := range relations {
+	for i, relation := range relations {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return overrides
+		}
 		if relation.Type != "EXTENDS" && relation.Type != "IMPLEMENTS" {
 			continue
 		}
@@ -12198,15 +12661,32 @@ func minFloat(a, b float64) float64 {
 	return b
 }
 
-// recordIndexes builds id lookups for file and symbol records.
-func recordIndexes(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]SymbolRecord, map[string]FileRecord) {
+// recordIndexes builds id lookups for file and symbol records. stop is polled
+// every budgetPollStride symbols (mirroring parser.go's cadence): this whole-
+// corpus pass runs BEFORE relation generation even starts, so on a large
+// full-profile snapshot a deadline expiring here previously went unnoticed
+// until relationsShouldStop was next consulted in forEachRelation, charging
+// the entire indexing pass to the overshoot. A stopped pass returns whatever
+// it has indexed so far — every downstream lookup (boundarySourceLocation,
+// externalRecordFor) already treats a missing id as "no evidence available"
+// rather than an error, so a partial index only degrades evidence richness,
+// never correctness.
+func recordIndexes(files []FileRecord, recordsByFile map[string][]SymbolRecord, stop func() bool) (map[string]SymbolRecord, map[string]FileRecord) {
 	filesByID := make(map[string]FileRecord, len(files))
-	for _, file := range files {
+	for i, file := range files {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return map[string]SymbolRecord{}, filesByID
+		}
 		filesByID[file.ID] = file
 	}
 	symbolsByID := map[string]SymbolRecord{}
+	count := 0
 	for _, records := range recordsByFile {
 		for _, symbol := range records {
+			if count%budgetPollStride == 0 && stopped(stop) {
+				return symbolsByID, filesByID
+			}
+			count++
 			symbolsByID[symbol.ID] = symbol
 		}
 	}
@@ -12239,6 +12719,41 @@ func mergeExternalRecord(seen map[string]ExternalRecord, record ExternalRecord) 
 		return
 	}
 	seen[record.ID] = record
+}
+
+// orderedExternalIDs decides what order externalsByID's records are emitted
+// in: alphabetical when the derivation ran to completion (budgetHit ==
+// false), or the deterministic first-seen scan order (externalOrder,
+// maintained by the caller's emitRelation alongside externalsByID) when it
+// was budget-truncated.
+//
+// The complete path sorts because emission order is otherwise whatever a Go
+// map iteration gives, which varies run to run for the identical input --
+// sorting is cheap here because a completed build already paid the full
+// relation-phase cost with no time pressure left to protect.
+//
+// The truncated path must NOT sort: sort.Strings is O(n log n) over however
+// many distinct external IDs the relation phase accumulated before the gate
+// tripped -- on a 500-function nested fixture that phase alone produced
+// 385,137 relations, so a comparably large external set is not implausible
+// -- and running it unconditionally after budget expiry was classified
+// blows the wall-clock ceiling the rest of the derivation had just finished
+// enforcing. Falling back to plain map iteration there instead of to
+// externalOrder would trade that bug for another: it would make even a
+// truncated build's Externals order vary run to run for the identical tree,
+// regressing the provider's determinism contract independent of caching.
+// externalOrder is deterministic for the same input at O(1) extra cost per
+// relation, so the truncated case loses nothing switching to it.
+func orderedExternalIDs(externalsByID map[string]ExternalRecord, externalOrder []string, budgetHit bool) []string {
+	if budgetHit {
+		return externalOrder
+	}
+	ids := make([]string, 0, len(externalsByID))
+	for id := range externalsByID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 type boundarySource struct {
@@ -19139,8 +19654,11 @@ func isManifestImportFile(path string) bool {
 	return false
 }
 
-func buildManifestImportResolver(files []FileRecord, readContent contentReader) manifestImportResolver {
+func buildManifestImportResolver(files []FileRecord, readContent contentReader, stop func() bool) manifestImportResolver {
 	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonSourceRoots: []string{"src"}, pythonModules: map[string]string{}, pythonNamespaces: map[string]bool{}, jvmTypes: map[string]string{}, jvmTypeEvidence: map[string]string{}, csharpNamespaces: map[string]string{}, csharpEvidence: map[string]string{}, csharpAmbiguous: map[string]bool{}, phpTypes: map[string]string{}, phpTypeEvidence: map[string]string{}, phpTypeAmbiguous: map[string]bool{}, rustModules: map[string]string{}, rustAliases: map[string]string{}, rustCrateNames: map[string]bool{}}
+	if stopped(stop) {
+		return resolver
+	}
 	if content, ok := readContent("go.mod"); ok {
 		resolver.goModule = parseGoModulePath(content)
 	}
@@ -19149,7 +19667,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		resolver.jsPackageExports = parsePackageJSONTargets(content, "exports")
 		resolver.jsPackageImports = parsePackageJSONTargets(content, "imports")
 	}
-	for _, file := range files {
+	for i, file := range files {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		path := filepath.ToSlash(file.Path)
 		if path == "package.json" || filepath.Base(path) != "package.json" {
 			continue
@@ -19223,7 +19744,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	resolver.jvmPackagePrefixes = normalizeJVMPackagePrefixes(resolver.jvmPackagePrefixes)
-	for _, file := range files {
+	for i, file := range files {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		if !strings.EqualFold(filepath.Ext(file.Path), ".csproj") {
 			continue
 		}
@@ -19241,7 +19765,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	var csharpPaths []string
 	var phpPaths []string
 	var rustPaths []string
-	for _, file := range files {
+	// Path-only classification: no readContent call anywhere in this loop, so
+	// nothing in it was ever gated by the caller's budgeted reader. On a
+	// repository-wide file list this pass alone can outlast an already-expired
+	// deadline before the very first gated read below ever runs.
+	for i, file := range files {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		if strings.EqualFold(filepath.Ext(file.Path), ".go") {
 			goPaths = append(goPaths, filepath.ToSlash(file.Path))
 		}
@@ -19277,8 +19808,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 		return goPaths[i] < goPaths[j]
 	})
+	if stopped(stop) {
+		return resolver
+	}
 	if resolver.goModule != "" {
-		for _, path := range goPaths {
+		for i, path := range goPaths {
+			if i%budgetPollStride == 0 && stopped(stop) {
+				return resolver
+			}
 			dir := filepath.ToSlash(filepath.Dir(path))
 			importPath := resolver.goModule
 			if dir != "." {
@@ -19290,7 +19827,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(jsPaths)
-	for _, path := range jsPaths {
+	for i, path := range jsPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		key := strings.TrimSuffix(path, filepath.Ext(path))
 		if _, exists := resolver.jsModuleFiles[key]; !exists {
 			resolver.jsModuleFiles[key] = path
@@ -19310,7 +19850,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	for _, path := range pyPaths {
 		pyFileSet[path] = true
 	}
-	for _, path := range pyPaths {
+	for i, path := range pyPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		for _, key := range pythonModuleKeysForPath(path, resolver.pythonSourceRoots, pyFileSet) {
 			if _, exists := resolver.pythonModules[key.Module]; !exists {
 				resolver.pythonModules[key.Module] = path
@@ -19329,7 +19872,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(jvmPaths)
-	for _, path := range jvmPaths {
+	for i, path := range jvmPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -19345,7 +19891,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(csharpPaths)
-	for _, path := range csharpPaths {
+	for i, path := range csharpPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -19363,7 +19912,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(phpPaths)
-	for _, path := range phpPaths {
+	for i, path := range phpPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -19383,7 +19935,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	}
 	// Build per-crate src roots from every Cargo.toml [package] (Cargo workspaces
 	// put crates under <crate>/src/, not ./src/). Longest dir first for nearest-match.
-	for _, cp := range cargoPaths {
+	for i, cp := range cargoPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(cp)
 		if !ok {
 			continue
@@ -19411,14 +19966,20 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	}
 	rustPaths = uniqueStrings(rustPaths)
 	sort.Strings(rustPaths)
-	for _, path := range rustPaths {
+	for i, path := range rustPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		for _, module := range resolver.rustModuleKeysForPath(path) {
 			if _, exists := resolver.rustModules[module]; !exists {
 				resolver.rustModules[module] = path
 			}
 		}
 	}
-	for _, path := range rustPaths {
+	for i, path := range rustPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -23508,7 +24069,7 @@ func resolveRouteHandlerSymbol(handlers map[string]SymbolRecord, expr string) (S
 	return SymbolRecord{}, false
 }
 
-func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {
+func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []expressRouteRelation {
 	knownFiles := map[string]bool{}
 	for _, file := range files {
 		knownFiles[file.Path] = true
@@ -23591,6 +24152,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		})
 	}
 	for _, file := range files {
+		if stopped(stop) {
+			break
+		}
 		if !strings.EqualFold(filepath.Ext(file.Path), ".py") {
 			continue
 		}
@@ -23600,6 +24164,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		}
 		if !includedTargets[file.Path] {
 			for _, registration := range djangoRouteRegistrations(content) {
+				if stopped(stop) {
+					break
+				}
 				symbols := symbolsByFileAndName
 				if registration.AllowTypeHandler {
 					symbols = typeSymbolsByFileAndName
@@ -23612,6 +24179,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 			}
 		}
 		for _, mount := range djangoIncludeMounts(content) {
+			if stopped(stop) {
+				break
+			}
 			targetFile, ok := djangoResolveIncludeTarget(file.Path, mount, importsByFile[file.Path], moduleFiles, knownFiles)
 			if !ok {
 				continue
@@ -23621,6 +24191,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 				continue
 			}
 			for _, registration := range djangoRouteRegistrations(targetContent) {
+				if stopped(stop) {
+					break
+				}
 				symbols := symbolsByFileAndName
 				if registration.AllowTypeHandler {
 					symbols = typeSymbolsByFileAndName
@@ -25385,7 +25958,7 @@ func splitJavaScriptMember(value string) (string, string) {
 	return strings.TrimSpace(before), strings.TrimSpace(after)
 }
 
-func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool) []expressRouteRelation {
+func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool, stop func() bool) []expressRouteRelation {
 	routesByFile := map[string][]jsRouterRoute{}
 	pluginRoutesByFile := map[string]map[string][]jsRouterRoute{}
 	mountsByFile := map[string][]jsRouterMount{}
@@ -25394,6 +25967,15 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 	defaultExportsByFile := map[string]string{}
 	symbolsByFileAndName := map[string]map[string]SymbolRecord{}
 	for _, file := range files {
+		// A file this loop has not reached yet is simply absent from every
+		// *ByFile map below, which the join loop already treats the same as
+		// readContent failing for it (a plain lookup miss, skipped). Stopping
+		// mid-scan and joining only what was gathered is therefore as safe as
+		// a normal partial read failure -- no relation is ever built from a
+		// half-populated file's data.
+		if stopped(stop) {
+			break
+		}
 		if !jsLikeExtension(filepath.Ext(file.Path)) {
 			continue
 		}
@@ -25428,13 +26010,22 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 	var relations []expressRouteRelation
 	seen := map[string]bool{}
 	for _, file := range files {
+		if stopped(stop) {
+			break
+		}
 		for _, mount := range mountsByFile[file.Path] {
+			if stopped(stop) {
+				break
+			}
 			targetLocal, targetMember := splitJavaScriptMember(mount.Target)
 			localReceiver := targetLocal
 			if targetMember != "" {
 				localReceiver = targetMember
 			}
 			for _, route := range routesByFile[file.Path] {
+				if stopped(stop) {
+					break
+				}
 				if route.Receiver != localReceiver || route.Handler == "" {
 					continue
 				}
@@ -25473,6 +26064,9 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 				})
 			}
 			for _, binding := range importBindingsByFile[file.Path][targetLocal] {
+				if stopped(stop) {
+					break
+				}
 				routeFile, ok := resolveLocalImport(file.Path, binding.Module, knownFiles)
 				if !ok || routeFile == file.Path {
 					continue
@@ -25490,6 +26084,9 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 					routeReceiver = targetLocal
 				}
 				for _, route := range routesByFile[routeFile] {
+					if stopped(stop) {
+						break
+					}
 					if route.Receiver != routeReceiver || route.Handler == "" {
 						continue
 					}
@@ -25530,8 +26127,14 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 			}
 		}
 		for _, mount := range pluginMountsByFile[file.Path] {
+			if stopped(stop) {
+				break
+			}
 			targetLocal, targetMember := splitJavaScriptMember(mount.Target)
 			for _, binding := range importBindingsByFile[file.Path][targetLocal] {
+				if stopped(stop) {
+					break
+				}
 				routeFile, ok := resolveLocalImport(file.Path, binding.Module, knownFiles)
 				if !ok || routeFile == file.Path {
 					continue
@@ -25549,6 +26152,9 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 					pluginName = targetLocal
 				}
 				for _, route := range pluginRoutesByFile[routeFile][pluginName] {
+					if stopped(stop) {
+						break
+					}
 					if route.Handler == "" {
 						continue
 					}
@@ -25635,11 +26241,17 @@ func javascriptDefaultExportName(content string) string {
 	return ""
 }
 
-func pythonIncludeRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool) []expressRouteRelation {
+func pythonIncludeRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool, stop func() bool) []expressRouteRelation {
 	routesByFile := map[string][]pythonRouterRoute{}
 	mountsByFile := map[string][]pythonRouterMount{}
 	importsByFile := map[string]map[string][]pythonImportBinding{}
 	for _, file := range files {
+		// See crossFileExpressRouterRelations: a file this scan has not
+		// reached is absent from every *ByFile map, which the join loop
+		// below already treats like a plain readContent miss.
+		if stopped(stop) {
+			break
+		}
 		if !strings.EqualFold(filepath.Ext(file.Path), ".py") {
 			continue
 		}
@@ -25654,12 +26266,24 @@ func pythonIncludeRouterRelations(files []FileRecord, recordsByFile map[string][
 	var relations []expressRouteRelation
 	seen := map[string]bool{}
 	for _, file := range files {
+		if stopped(stop) {
+			break
+		}
 		if len(mountsByFile[file.Path]) == 0 {
 			continue
 		}
 		for _, mount := range mountsByFile[file.Path] {
+			if stopped(stop) {
+				break
+			}
 			for _, target := range pythonRouterTargetFiles(file.Path, mount.Target, importsByFile[file.Path], knownFiles) {
+				if stopped(stop) {
+					break
+				}
 				for _, route := range routesByFile[target.File] {
+					if stopped(stop) {
+						break
+					}
 					if route.Receiver != target.Receiver {
 						continue
 					}
@@ -27122,8 +27746,24 @@ func completenessFailureCount(failures []PartialFailure) int {
 	return n
 }
 
-func completenessLevel(failures, files, parsedFiles, symbols int) string {
-	switch {
+// completenessLevel takes the failure RECORDS rather than a count so that the
+// one failure whose meaning is not "n gaps in an otherwise known scope" --
+// E_ANALYSIS_BUDGET_EXCEEDED -- can be read for what it is. Every other code
+// describes a bounded, enumerated gap inside a scope the provider fully
+// discovered; a wall-clock truncation instead means an UNKNOWN and unbounded
+// suffix of the repository was never reached, so neither the "files == 0" arm
+// (which reads an empty graph as a genuinely empty repository) nor the
+// failures-per-file ratio arms describe it.
+func completenessLevel(failures []PartialFailure, files, parsedFiles, symbols int) string {
+	if partialFailuresTruncated(failures) {
+		// "unsafe" is the only honest level: the caller cannot tell an empty
+		// truncation from an empty repository, nor a 1%-retained prefix from a
+		// 99% one, and the missing symbols would otherwise read as confident
+		// negatives. This is the same reason a truncated snapshot is refused by
+		// both cache writers (see ErrTruncatedSnapshotNotCacheable).
+		return "unsafe"
+	}
+	switch failureCount := completenessFailureCount(failures); {
 	case files == 0:
 		// Genuinely empty repo/scope — nothing to parse, so "ok" (not "unsafe":
 		// there is no missing coverage to warn about).
@@ -27137,9 +27777,9 @@ func completenessLevel(failures, files, parsedFiles, symbols int) string {
 		// Files were parsed but zero symbols came out — the graph is empty and
 		// unusable even though no hard parse failure occurred.
 		return "degraded"
-	case failures == 0:
+	case failureCount == 0:
 		return "ok"
-	case failures*4 > files:
+	case failureCount*4 > files:
 		return "unsafe"
 	default:
 		return "degraded"

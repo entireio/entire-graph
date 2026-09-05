@@ -239,7 +239,57 @@ func (TreeSitterParser) Parse(path, content string) ([]Entity, string) {
 	return entities, language
 }
 
+// ParseWithStatus parses without a cancellation deadline of its own. It is the
+// entry point for callers that are not under a wall-clock budget.
 func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string, ParseStatus) {
+	return TreeSitterParser{}.ParseWithStatusCtx(context.Background(), path, content)
+}
+
+// ctxStop returns a cheap "has this context finished?" predicate, or nil when
+// the context can never finish. A nil predicate is what the unbudgeted path
+// gets: the walk then carries no per-node check at all, so a build with no
+// deadline does exactly the work — and produces exactly the bytes — it did
+// before deadlines existed.
+func ctxStop(ctx context.Context) func() bool {
+	done := ctx.Done()
+	if done == nil {
+		return nil
+	}
+	return func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+// stopped reports whether a stop predicate exists and has fired. A nil
+// predicate is the unbudgeted path and always answers false, so every guard
+// built on this is inert -- not merely cheap -- when the caller set no deadline.
+func stopped(stop func() bool) bool {
+	return stop != nil && stop()
+}
+
+// parseStoppedStatus describes a parse abandoned because the caller's budget
+// expired. It reuses the E_PARSE_TIMEOUT code that a tree-sitter parse stopped
+// by the same context already reports; the detail says which half stopped.
+func parseStoppedStatus(ctx context.Context, where string) ParseStatus {
+	return ParseStatus{
+		ParseError: true,
+		Code:       "E_PARSE_TIMEOUT",
+		Detail:     fmt.Sprintf("%s stopped by caller: %v", where, ctx.Err()),
+	}
+}
+
+// ParseWithStatusCtx is ParseWithStatus under a caller deadline. Both halves of
+// the per-file cost observe ctx: the tree-sitter parse (whose 5s internal cap is
+// now derived from ctx rather than from context.Background, so an expiring budget
+// sets the C parser's cancellation flag) and the entity walk, which is the far
+// larger term — it is superlinear in nesting depth and, before ctx reached it,
+// could run for minutes on one pathological file with nothing able to stop it.
+func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content string) ([]Entity, string, ParseStatus) {
 	spec, ok := languageForContent(path, content)
 	if !ok {
 		return nil, "", ParseStatus{}
@@ -270,16 +320,58 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "SQL" {
 		spec.grammar = pgsql.GetLanguage()
 	}
+	// The stop predicate is built HERE, above the three return paths that never
+	// reach tree-sitter, not below them: the dedicated Groovy parser, every
+	// grammar-less fallback parser and YAML's entity extraction each returned
+	// straight out of this function with nothing able to stop them, so a budget
+	// that expired inside one of them waited for the whole file -- and
+	// processProviderFile discards that file anyway once ctx has expired, so all
+	// of it was overshoot spent on a result nobody keeps. stop is nil whenever
+	// the caller set no deadline, so the unbudgeted path carries no check at all.
+	stop := ctxStop(ctx)
 	if spec.language == "Groovy" {
 		// Groovy uses a dedicated structural parser (see groovy.go): the best
 		// available tree-sitter-groovy grammar fails on fundamental syntax —
 		// quoted method names, casts, slashy strings — leaving 1,400+ parse
 		// errors on real repos, so it is not consulted at all.
-		entities, status := groovyEntities(content)
+		//
+		// It is also superlinear: every entity's body hash joins the lines it
+		// spans, and nested classes each span the rest of the file, so one
+		// 12k-class file cost 21.0s against a 500ms budget. The scanner takes
+		// the predicate; this checks the outcome, so a scan cut short is a
+		// dropped file rather than a silently short symbol list.
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "groovy parse")
+		}
+		entities, status := groovyEntities(content, stop)
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "groovy parse")
+		}
 		return entities, spec.language, status
 	}
 	if spec.grammar == nil {
-		return fallbackEntities(path, content, spec.language), spec.language, ParseStatus{}
+		// Every grammar-less fallback (Dockerfile, JSON, TOML, XML, Make,
+		// Markdown, HTML, CSS, GraphQL, Vue/Svelte and the inventory default)
+		// is a single linear pass, so the residual here is bounded by the
+		// file-size cap rather than superlinear -- but it observed nothing at
+		// all, and the file is discarded on expiry regardless.
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "fallback parse")
+		}
+		entities := fallbackEntities(path, content, spec.language, stop)
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "fallback parse")
+		}
+		return entities, spec.language, ParseStatus{}
+	}
+	// Source masking is language-specific work in its own right, and it sat
+	// between the predicate above and the budgeted parse context below, so
+	// nothing observed the budget across it. Rust's mask is the extreme case:
+	// it runs up to eight tree-sitter unwrap passes of its own. Guard the
+	// stage on entry and hand the mask the context, so no later stage can be
+	// reached unbudgeted.
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "source masking")
 	}
 	src := []byte(content)
 	parseSrc := src
@@ -341,12 +433,15 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		}
 	}
 	if spec.language == "Rust" {
-		parseSrc = []byte(maskRustUnsupportedSyntax(content))
+		parseSrc = []byte(maskRustUnsupportedSyntax(ctx, content))
 	}
 	if flowJS {
 		parseSrc = []byte(maskFlowJavaScriptUnsupportedSyntax(content))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "source masking")
+	}
+	parseCtx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
 	defer cancel()
 	// Own the parser and tree explicitly and free their native (cgo) memory on
 	// return. sitter.ParseCtx leaves the C parser and tree to be reclaimed by Go
@@ -357,7 +452,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(spec.grammar)
-	tree, err := parser.ParseCtx(ctx, nil, parseSrc)
+	tree, err := parser.ParseCtx(parseCtx, nil, parseSrc)
 	if tree != nil {
 		defer tree.Close()
 	}
@@ -370,25 +465,48 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		code := "E_PARSE_ERROR"
 		if err != nil {
 			detail = err.Error()
-			if ctx.Err() != nil {
+			if parseCtx.Err() != nil {
 				code = "E_PARSE_TIMEOUT"
 				detail = fmt.Sprintf("tree-sitter parse exceeded %s", treeSitterParseTimeout)
+				if ctx.Err() != nil {
+					// The caller's budget stopped the parse, not the 5s cap.
+					detail = fmt.Sprintf("tree-sitter parse stopped by caller: %v", ctx.Err())
+				}
 			}
 		}
 		return nil, spec.language, ParseStatus{ParseError: true, Code: code, Detail: detail}
 	}
 	if spec.language == "YAML" {
+		// YAML's entities come from its own line scanner, not from the walk, so
+		// the walk's predicate never covered it either.
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "yaml entity extraction")
+		}
 		status := ParseStatus{}
 		if root.HasError() {
 			status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetail(root, src)}
 		}
-		return yamlEntities(path, content), spec.language, status
+		return yamlEntities(path, content, stop), spec.language, status
 	}
 
 	var entities []Entity
-	depthExceeded := walkEntities(root, entitySrc, spec.language, "", &entities)
+	depthExceeded := walkEntities(ctx, root, entitySrc, spec.language, "", stop, &entities)
+	// walkEntities returns early when the budget expires, but everything below
+	// it -- the language-specific supplemental extractors, the binding collapse,
+	// the offset fixup and the final sort -- used to run regardless, and one of
+	// those passes is superlinear in match count. processProviderFile then drops
+	// the whole file because ctx expired, so every bit of it was overshoot spent
+	// on a result nobody keeps. Bail out at each pass boundary instead. stop is
+	// nil whenever the caller has no deadline, so an unbudgeted parse does
+	// exactly the work, and emits exactly the bytes, it did before.
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity walk")
+	}
 	if spec.language == "C++" {
 		entities = appendMissingEntities(entities, cPlusPlusTypeAliasEntities(content)...)
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
 	}
 	if spec.language == "C" || spec.language == "C++" {
 		// The C mask blanks `#define` lines before tree-sitter, so macro names (opcodes,
@@ -396,14 +514,23 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		// nothing. Recover them from the UNMASKED content so `symbols`/`def <MACRO>` resolve.
 		entities = appendMissingEntities(entities, cMacroEntities(content)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
+	}
 	if spec.language == "Kotlin" {
 		entities = append(entities, kotlinPrimaryConstructorFieldEntities(content)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
+	}
 	if spec.language == "JavaScript" || spec.language == "TypeScript" {
-		entities = appendMissingEntities(entities, javascriptExportedVariableEntities(content)...)
+		entities = appendMissingEntities(entities, javascriptExportedVariableEntities(content, stop)...)
 		entities = appendMissingEntities(entities, javascriptAssignmentMethodEntities(content)...)
 		entities = appendMissingEntities(entities, javascriptDefaultExportEntities(path, content)...)
 		entities = append(entities, graphqlResolverEntities(path, content)...)
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
 	}
 	if spec.language == "SQL" {
 		// Run the regex fallback extractors on comment-stripped source so that
@@ -413,11 +540,17 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		entities = append(entities, postgresFunctionEntities(regexSrc)...)
 		entities = append(entities, postgresPolicyEntities(regexSrc)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
+	}
 	if spec.language == "Lua" {
 		// tree-sitter-lua can recover from large annotated files with incomplete
 		// top-level function coverage. Supplement it with the canonical Lua
 		// declaration forms so exported table functions stay discoverable.
 		entities = appendMissingEntities(entities, luaFunctionEntities(content)...)
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
 	}
 	if spec.language == "Objective-C" {
 		// Large Objective-C implementation files with blocks/macros can leave
@@ -425,12 +558,18 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		// only brace-backed implementation methods; header prototypes end in ';'.
 		entities = appendMissingEntities(entities, objectiveCMethodEntities(content)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity reconciliation")
+	}
 	// A name binding and the function expression that initialises it are ONE entity. The
 	// tree-sitter walk classifies such a declarator by its VALUE while the regex recovery
 	// passes above classify it by its DECLARATOR, so both can emit a record with the same
 	// qualified name for the same source location. Collapse them onto the function record
 	// (real span, real signature) LAST, after every pass has contributed.
 	entities = collapseFunctionValueBindings(entities)
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity reconciliation")
+	}
 	if entityLineOffset > 0 {
 		for index := range entities {
 			entities[index].StartLine -= entityLineOffset
@@ -445,6 +584,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 				entities[index].sourceEndByte = 0
 			}
 		}
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity sort")
 	}
 	sort.Slice(entities, func(i, j int) bool {
 		if entities[i].StartLine == entities[j].StartLine {
@@ -726,14 +868,14 @@ var rustItemWrapperMacroName = regexp.MustCompile(`^cfg_[A-Za-z0-9_]*$`)
 // all. The macro name, `!`, and wrapping braces are blanked with same-length
 // whitespace so the contents parse at identical byte offsets. Wrappers nest
 // (`cfg_net! { cfg_io! { ... } }`), so unwrapping iterates to a fixed point.
-func maskRustUnsupportedSyntax(content string) string {
+func maskRustUnsupportedSyntax(ctx context.Context, content string) string {
 	if !rustItemWrapperMacroHint.MatchString(content) {
 		return content
 	}
 	src := []byte(content)
 	const maxUnwrapDepth = 8
 	for i := 0; i < maxUnwrapDepth; i++ {
-		if !unwrapRustItemWrapperMacros(src) {
+		if !unwrapRustItemWrapperMacros(ctx, src) {
 			break
 		}
 	}
@@ -742,13 +884,19 @@ func maskRustUnsupportedSyntax(content string) string {
 
 // unwrapRustItemWrapperMacros blanks one layer of item-position cfg_*! macro
 // wrappers in src in place and reports whether anything changed.
-func unwrapRustItemWrapperMacros(src []byte) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+func unwrapRustItemWrapperMacros(ctx context.Context, src []byte) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	// The cap is a bound on top of the caller's context, not a fresh budget
+	// rooted at context.Background: each unwrap pass is a full parse, and
+	// maskRustUnsupportedSyntax runs up to eight of them.
+	parseCtx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
 	defer cancel()
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(rust.GetLanguage())
-	tree, err := parser.ParseCtx(ctx, nil, src)
+	tree, err := parser.ParseCtx(parseCtx, nil, src)
 	if tree != nil {
 		defer tree.Close()
 	}
@@ -760,6 +908,23 @@ func unwrapRustItemWrapperMacros(src []byte) bool {
 		return false
 	}
 	changed := false
+	// The walk is the unbudgeted half of an unwrap pass. ParseCtx above stops on
+	// ctx, but the recursive traversal of the tree it produced polled nothing,
+	// so a deadline that expired after the parse still paid for a COMPLETE
+	// traversal before the next iteration of maskRustUnsupportedSyntax could
+	// notice -- and there are up to maxUnwrapDepth iterations. Poll every
+	// rustUnwrapPollStride nodes: often enough that the residual is a few
+	// hundred nodes, rare enough that an unbudgeted parse does not pay a
+	// context read per node.
+	//
+	// Abandoning the walk mid-tree leaves src partially unwrapped, which is
+	// harmless: the caller checks the stop predicate immediately after masking
+	// and discards the parse, so a partially masked source is never parsed for
+	// entities.
+	visited := 0
+	stop := false
+	// It is also depth-bounded: this pass runs before the guarded entity walk
+	// and therefore needs its own protection against pathological nesting.
 	// depth is capped at maxParseWalkDepth. This pass runs BEFORE the guarded
 	// entity walk (it rewrites the source that walk is then given), on its own
 	// tree, so nothing downstream can protect it: a Rust file that merely
@@ -781,6 +946,13 @@ func unwrapRustItemWrapperMacros(src []byte) bool {
 			return
 		}
 		for i := 0; i < int(node.NamedChildCount()); i++ {
+			visited++
+			if visited%rustUnwrapPollStride == 0 && ctx.Err() != nil {
+				stop = true
+			}
+			if stop {
+				return
+			}
 			child := node.NamedChild(i)
 			if child == nil || child.IsNull() {
 				continue
@@ -795,6 +967,10 @@ func unwrapRustItemWrapperMacros(src []byte) bool {
 	walk(root, 0)
 	return changed
 }
+
+// rustUnwrapPollStride is how often the unwrap walk checks the caller's
+// context, in visited nodes. It matches the stride the JS scope walk uses.
+const rustUnwrapPollStride = 512
 
 // unwrapRustItemWrapperMacro blanks a single cfg_*! wrapper when the
 // invocation sits at item position (file, module, impl, or trait scope — not
@@ -3521,32 +3697,42 @@ func inventoryLanguageForSuffix(base string) (languageSpec, bool) {
 	return languageSpec{}, false
 }
 
-func fallbackEntities(path, content, language string) []Entity {
+// fallbackEntities dispatches to a per-format extractor for files with no
+// tree-sitter grammar. Every extractor below that scans line-by-line polls
+// stop every budgetPollStride lines, mirroring the cadence search_cache.go
+// uses for its own per-record loops: a maximum-sized Markdown, HTML, XML or
+// JSON file is exactly the case a wall-clock budget expiring mid-file needs
+// to interrupt, since the caller discards the whole result once ctx expires
+// regardless of how much of the file this pass already walked.
+func fallbackEntities(path, content, language string, stop func() bool) []Entity {
 	switch language {
 	case "Dockerfile":
-		return dockerfileEntities(content)
+		return dockerfileEntities(content, stop)
 	case "Kustomize":
-		return kustomizeEntities(content)
+		return kustomizeEntities(content, stop)
 	case "JSON", "JSON5":
-		return jsonLikeEntities(content)
+		return jsonLikeEntities(content, stop)
 	case "TOML":
-		return tomlEntities(content)
+		return tomlEntities(content, stop)
 	case "XML":
-		return xmlEntities(content)
+		return xmlEntities(content, stop)
 	case "Make":
-		return makeEntities(content)
+		return makeEntities(content, stop)
 	case "Markdown":
-		return markdownEntities(content)
+		return markdownEntities(content, stop)
 	case "HTML":
-		return htmlEntities(path, content)
+		return htmlEntities(path, content, stop)
 	case "CSS":
-		return cssEntities(content)
+		return cssEntities(content, stop)
 	case "GraphQL":
 		entities := inventoryEntities(path, content, language)
+		if stopped(stop) {
+			return entities
+		}
 		entities = append(entities, graphqlSchemaEntities(content)...)
 		return entities
 	case "Vue", "Svelte":
-		return componentEntities(path, content, language)
+		return componentEntities(path, content, language, stop)
 	default:
 		return inventoryEntities(path, content, language)
 	}
@@ -3566,11 +3752,14 @@ func inventoryEntities(path, content, language string) []Entity {
 	return []Entity{simpleFallbackEntity(kind, base, signature, 1, maxInt(1, len(lines)), content)}
 }
 
-func dockerfileEntities(content string) []Entity {
+func dockerfileEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	stageIndex := 0
 	for index, line := range lines {
+		if index%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -3610,16 +3799,19 @@ func dockerfileEntities(content string) []Entity {
 	return entities
 }
 
-func kustomizeEntities(content string) []Entity {
-	return yamlKeyEntities(content, "kustomize")
+func kustomizeEntities(content string, stop func() bool) []Entity {
+	return yamlKeyEntities(content, "kustomize", stop)
 }
 
 var yamlKeyEntitiesKeyRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
 
-func yamlKeyEntities(content, prefix string) []Entity {
+func yamlKeyEntities(content, prefix string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -3636,11 +3828,14 @@ func yamlKeyEntities(content, prefix string) []Entity {
 
 var jsonLikeEntitiesKeyRe = regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
 
-func jsonLikeEntities(content string) []Entity {
+func jsonLikeEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		match := jsonLikeEntitiesKeyRe.FindStringSubmatch(line)
 		if match == nil || seen[match[1]] {
 			continue
@@ -3656,11 +3851,14 @@ var (
 	tomlEntitiesKeyRe     = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
 )
 
-func tomlEntities(content string) []Entity {
+func tomlEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		name := ""
 		kind := "section"
 		if match := tomlEntitiesSectionRe.FindStringSubmatch(line); match != nil {
@@ -3680,11 +3878,14 @@ func tomlEntities(content string) []Entity {
 
 var xmlEntitiesTagRe = regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
 
-func xmlEntities(content string) []Entity {
+func xmlEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		match := xmlEntitiesTagRe.FindStringSubmatch(line)
 		if match == nil || strings.HasPrefix(match[1], "?") || seen[match[1]] {
 			continue
@@ -3697,10 +3898,13 @@ func xmlEntities(content string) []Entity {
 
 var makeEntitiesTargetRe = regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
 
-func makeEntities(content string) []Entity {
+func makeEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		if strings.HasPrefix(line, "\t") || strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
@@ -3718,11 +3922,14 @@ var (
 	markdownEntitiesFenceRe   = regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
 )
 
-func markdownEntities(content string) []Entity {
+func markdownEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	fenceIndex := 0
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		if match := markdownEntitiesHeadingRe.FindStringSubmatch(line); match != nil {
 			name := strings.TrimSpace(strings.Trim(match[2], "#"))
 			entities = append(entities, simpleFallbackEntity("section", slugName(name), "markdown heading "+name, i+1, i+1, strings.TrimSpace(line)))
@@ -3743,13 +3950,16 @@ func markdownEntities(content string) []Entity {
 
 var htmlEntitiesIdRe = regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
 
-func htmlEntities(path, content string) []Entity {
+func htmlEntities(path, content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	seen := map[string]bool{}
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	entities = append(entities, simpleFallbackEntity("document", base, "html document "+base, 1, maxInt(1, len(lines)), base))
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		for _, match := range htmlEntitiesIdRe.FindAllStringSubmatch(line, -1) {
 			name := slugName(match[1])
 			if name == "" || seen[name] {
@@ -3764,10 +3974,13 @@ func htmlEntities(path, content string) []Entity {
 
 var cssEntitiesSelectorRe = regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
 
-func cssEntities(content string) []Entity {
+func cssEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		match := cssEntitiesSelectorRe.FindStringSubmatch(line)
 		if match == nil {
 			continue
@@ -3778,12 +3991,12 @@ func cssEntities(content string) []Entity {
 	return entities
 }
 
-func componentEntities(path, content, language string) []Entity {
+func componentEntities(path, content, language string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	entities := []Entity{simpleFallbackEntity("component", base, language+" component "+base, 1, maxInt(1, len(lines)), base)}
 	if language == "Vue" {
-		entities = append(entities, htmlEntities(path, content)...)
+		entities = append(entities, htmlEntities(path, content, stop)...)
 	}
 	return entities
 }
@@ -3907,15 +4120,24 @@ func cFamilyTypedefAliasEntities(node *sitter.Node, src []byte, language string,
 	return aliases
 }
 
-func fastCFamilyEntities(path, content, language string) []Entity {
+// fastCFamilyEntities is the ProfileFast C/C++ parser. It never reaches
+// tree-sitter, so the walk's stop predicate never covered it, yet its two line
+// loops each call a forward statement/brace scan that runs to end-of-file on a
+// declaration that never terminates -- quadratic in file length, in plain Go,
+// with nothing able to stop it. It takes the same predicate the walk takes; nil
+// (no caller deadline) leaves both loops exactly as they were.
+func fastCFamilyEntities(path, content, language string, stop func() bool) []Entity {
 	_ = path
 	_ = language
 	stripped := stripCodeLiteralsAndComments(content)
 	lines := strings.Split(stripped, "\n")
 	originalLines := strings.Split(content, "\n")
 	var entities []Entity
-	entities = append(entities, fastCFamilyTypeEntities(lines, originalLines)...)
-	entities = append(entities, fastCFamilyFunctionEntities(lines, originalLines)...)
+	entities = append(entities, fastCFamilyTypeEntities(lines, originalLines, stop)...)
+	if stopped(stop) {
+		return entities
+	}
+	entities = append(entities, fastCFamilyFunctionEntities(lines, originalLines, stop)...)
 	sort.Slice(entities, func(i, j int) bool {
 		if entities[i].StartLine == entities[j].StartLine {
 			if entities[i].Kind == entities[j].Kind {
@@ -3928,11 +4150,14 @@ func fastCFamilyEntities(path, content, language string) []Entity {
 	return entities
 }
 
-func fastCFamilyTypeEntities(lines, originalLines []string) []Entity {
+func fastCFamilyTypeEntities(lines, originalLines []string, stop func() bool) []Entity {
 	var entities []Entity
 	seen := map[string]bool{}
 	depth := 0
 	for i := 0; i < len(lines); i++ {
+		if stopped(stop) {
+			return entities
+		}
 		trimmed := strings.TrimSpace(lines[i])
 		if depth != 0 || trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			depth += braceDelta(lines[i])
@@ -3949,13 +4174,13 @@ func fastCFamilyTypeEntities(lines, originalLines []string) []Entity {
 				continue
 			}
 			seen[key] = true
-			end := fastCFamilyStatementEnd(lines, i)
+			end := fastCFamilyStatementEnd(lines, i, stop)
 			entities = append(entities, fastCFamilyEntity(kind, name, i+1, end, originalLines))
 		}
 		if !strings.HasPrefix(trimmed, "typedef ") {
 			continue
 		}
-		end := fastCFamilyStatementEnd(lines, i)
+		end := fastCFamilyStatementEnd(lines, i, stop)
 		statement := strings.TrimSpace(strings.Join(lines[i:end], " "))
 		statement = strings.TrimSuffix(statement, ";")
 		if match := cFamilyTypedefNameRe.FindStringSubmatch(statement); match != nil {
@@ -3975,12 +4200,15 @@ func fastCFamilyTypeEntities(lines, originalLines []string) []Entity {
 	return entities
 }
 
-func fastCFamilyFunctionEntities(lines, originalLines []string) []Entity {
+func fastCFamilyFunctionEntities(lines, originalLines []string, stop func() bool) []Entity {
 	var entities []Entity
 	depth := 0
 	pendingStart := -1
 	pending := ""
 	for i := 0; i < len(lines); i++ {
+		if stopped(stop) {
+			return entities
+		}
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 		if depth != 0 {
@@ -4007,7 +4235,7 @@ func fastCFamilyFunctionEntities(lines, originalLines []string) []Entity {
 				signature = strings.TrimSpace(strings.TrimSuffix(signature, braceText))
 			}
 			if name := fastCFamilyFunctionName(signature); name != "" {
-				end := fastCFamilyBraceEnd(lines, i)
+				end := fastCFamilyBraceEnd(lines, i, stop)
 				entities = append(entities, fastCFamilyEntity("function", name, pendingStart+1, end, originalLines))
 				i = end - 1
 				pending = ""
@@ -4044,9 +4272,19 @@ func fastCFamilyFunctionName(signature string) string {
 	return name
 }
 
-func fastCFamilyStatementEnd(lines []string, start int) int {
+// fastCFamilyStatementEnd scans forward from start for the end of a single
+// declaration. An unterminated declaration (never closed by `;` or `}`) makes
+// this run to EOF, and every call site invokes it once per candidate line, so
+// a single malformed file made the pair quadratic in file length with nothing
+// able to stop it; stop is the same walk-level predicate the outer loops
+// already poll, threaded down so a deadline expiring mid-scan takes effect
+// here too rather than only between whole top-level declarations.
+func fastCFamilyStatementEnd(lines []string, start int, stop func() bool) int {
 	depth := 0
 	for i := start; i < len(lines); i++ {
+		if stopped(stop) {
+			return i + 1
+		}
 		depth += braceDelta(lines[i])
 		if strings.Contains(lines[i], ";") && depth <= 0 {
 			return i + 1
@@ -4058,9 +4296,15 @@ func fastCFamilyStatementEnd(lines []string, start int) int {
 	return start + 1
 }
 
-func fastCFamilyBraceEnd(lines []string, start int) int {
+// fastCFamilyBraceEnd is fastCFamilyStatementEnd's sibling for a function
+// body: it scans forward for the matching closing brace and is exposed to the
+// same unbounded-scan risk on an unterminated body.
+func fastCFamilyBraceEnd(lines []string, start int, stop func() bool) int {
 	depth := 0
 	for i := start; i < len(lines); i++ {
+		if stopped(stop) {
+			return i + 1
+		}
 		depth += braceDelta(lines[i])
 		if depth <= 0 && i > start {
 			return i + 1
@@ -4145,9 +4389,9 @@ func minInt(a, b int) int {
 // walk was truncated at maxParseWalkDepth, which the caller turns into an
 // E_PARSE_DEPTH_EXCEEDED status so a truncated file is never silently reported
 // as fully understood.
-func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) (depthExceeded bool) {
+func walkEntities(ctx context.Context, node *sitter.Node, src []byte, language, scope string, stop func() bool, entities *[]Entity) (depthExceeded bool) {
 	exceeded := false
-	walkEntitiesScoped(node, src, language, scope, false, 0, entities, &exceeded)
+	walkEntitiesScoped(ctx, node, src, language, scope, false, stop, 0, entities, &exceeded)
 	return exceeded
 }
 
@@ -4155,14 +4399,15 @@ func walkEntities(node *sitter.Node, src []byte, language, scope string, entitie
 // (inFunc), so a callable defined there is marked Entity.Local — a nested/closure
 // def that call resolution must not name-match across scopes.
 //
-// depth is the current AST nesting level and is capped at maxParseWalkDepth: a
-// tree deeper than that truncates (setting *depthExceeded) instead of recursing
-// on until the goroutine stack is exhausted, which is a fatal process abort.
-// initializerTypeBodies below shares this counter rather than starting a fresh
-// one, because walkEntitiesScoped calls it and then descends into what it
-// returns; two independent budgets over the same root-to-leaf path would let the
-// two walkers amplify each other.
-func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, inFunc bool, depth int, entities *[]Entity, depthExceeded *bool) {
+// depth is capped at maxParseWalkDepth while stop enforces the caller's
+// wall-clock budget.
+func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, language, scope string, inFunc bool, stop func() bool, depth int, entities *[]Entity, depthExceeded *bool) {
+	// One non-blocking channel probe per node is what makes a wall-clock budget
+	// able to interrupt this walk. stop is nil unless the caller is actually
+	// under a deadline, so the default path pays nothing.
+	if stop != nil && stop() {
+		return
+	}
 	if !validNode(node) {
 		return
 	}
@@ -4191,7 +4436,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		// inside a method body, so localReachable keeps them scoped to the
 		// declaration instead of name-colliding with real members.
 		for _, body := range initializerTypeBodies(node, depth, depthExceeded) {
-			walkEntitiesScoped(body, src, language, scope, true, depth+1, entities, depthExceeded)
+			walkEntitiesScoped(ctx, body, src, language, scope, true, stop, depth+1, entities, depthExceeded)
 		}
 		// A C/C++ member can also DEFINE its type inline:
 		// `struct Inner { int value; } inner;`. Before members were extracted
@@ -4201,7 +4446,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		// same scope and the same inFunc — the path the walk already took — so
 		// the type keeps its symbol and gains its own members.
 		for _, definition := range cFamilyInlineTypeDefinitions(node, language) {
-			walkEntitiesScoped(definition, src, language, scope, inFunc, depth+1, entities, depthExceeded)
+			walkEntitiesScoped(ctx, definition, src, language, scope, inFunc, stop, depth+1, entities, depthExceeded)
 		}
 		// An ANONYMOUS aggregate with a named instance --
 		// `union { int i; float f; } value;` -- declares no type symbol, so the
@@ -4211,17 +4456,17 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		// are reached from (`packet.value.i`), so its scope is where they belong.
 		for _, body := range cFamilyAnonymousAggregateBodies(node, language) {
 			for _, instance := range fieldDeclNames(node, src) {
-				walkEntitiesScoped(body, src, language, qualify(scope, instance), inFunc, depth+1, entities, depthExceeded)
+				walkEntitiesScoped(ctx, body, src, language, qualify(scope, instance), inFunc, stop, depth+1, entities, depthExceeded)
 			}
 		}
 		return
 	}
-	entity, ok := entityFromNode(node, src, language, scope)
+	entity, ok := entityFromNode(ctx, node, src, language, scope)
 	childScope := scope
 	childInFunc := inFunc
 	if ok {
 		setEntitySourceRange(&entity, node, language, src)
-		entity.cLinkage = declaredWithCLinkage(language, node, src)
+		entity.cLinkage = declaredWithCLinkage(ctx, language, node, src)
 		if entity.Kind == "function" || entity.Kind == "method" {
 			if language == "JavaScript" || language == "TypeScript" {
 				entity.parameterNames = jsEntityParameterNames(node, src)
@@ -4288,7 +4533,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, depth+1, entities, depthExceeded)
+		walkEntitiesScoped(ctx, node.NamedChild(i), src, language, childScope, childInFunc, stop, depth+1, entities, depthExceeded)
 	}
 }
 
@@ -5126,7 +5371,7 @@ func pythonOverloadStub(node *sitter.Node, src []byte) bool {
 	return false
 }
 
-func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Entity, bool) {
+func entityFromNode(ctx context.Context, node *sitter.Node, src []byte, language, scope string) (Entity, bool) {
 	var kind string
 	var name string
 	// bodyless: this declaration declares a callable without defining it (see
@@ -7654,10 +7899,19 @@ var luaFunctionLinePattern = regexp.MustCompile(`(?m)^[ \t]*(?:local[ \t]+)?func
 var luaBlockTokenPattern = regexp.MustCompile(`\b(function|if|for|while|repeat|do|end|until)\b`)
 var objectiveCMethodNamePattern = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)`)
 
-func javascriptExportedVariableEntities(content string) []Entity {
+// javascriptExportedVariableEntities is superlinear in match count: it counts
+// the newlines in content[:match] once per match, so a file of N exports costs
+// O(N * len(content)). That is why it takes a stop predicate -- it is the one
+// supplemental pass whose own runtime can dwarf the budget (2m32s on a 5.7 MB
+// file of 40k exports), so a guard at the pass boundary alone would not bound
+// the overshoot. stop is nil for callers with no deadline.
+func javascriptExportedVariableEntities(content string, stop func() bool) []Entity {
 	matches := jsExportedVariablePattern.FindAllStringSubmatchIndex(content, -1)
 	entities := make([]Entity, 0, len(matches))
 	for _, match := range matches {
+		if stopped(stop) {
+			return entities
+		}
 		if len(match) < 4 {
 			continue
 		}
@@ -9158,7 +9412,7 @@ func validNode(node *sitter.Node) bool {
 // distinction; candidateSharesDeclarations is its only consumer.
 //
 // `extern "C++"` is deliberately not matched: it says the opposite.
-func declaredWithCLinkage(language string, node *sitter.Node, src []byte) bool {
+func declaredWithCLinkage(ctx context.Context, language string, node *sitter.Node, src []byte) bool {
 	switch language {
 	case "C", "C++", "Objective-C", "Objective-C++":
 	default:
@@ -9168,13 +9422,13 @@ func declaredWithCLinkage(language string, node *sitter.Node, src []byte) bool {
 	if !validNode(linkage) || linkageSpecificationName(linkage, src) != "C" {
 		return false
 	}
-	if !cLinkageCompatibleDeclaration(node, src) {
+	if !cLinkageCompatibleDeclaration(ctx, node, src) {
 		return false
 	}
 	for parent := node.Parent(); validNode(parent) && parent != linkage; parent = parent.Parent() {
 		// A C-linkage spelling does not make declarations nested in a C++ class
 		// or namespace visible to a C translation unit.
-		if cxxLinkageForbiddenAncestor(parent, src) {
+		if cxxLinkageForbiddenAncestor(ctx, parent, src) {
 			return false
 		}
 	}
@@ -9201,12 +9455,12 @@ func linkageSpecificationName(node *sitter.Node, src []byte) string {
 	return strings.Trim(value.Content(src), `"`)
 }
 
-func cxxLinkageForbiddenAncestor(node *sitter.Node, src []byte) bool {
+func cxxLinkageForbiddenAncestor(ctx context.Context, node *sitter.Node, src []byte) bool {
 	switch node.Type() {
 	case "namespace_definition", "class_specifier", "class_declaration":
 		return true
 	case "struct_specifier", "union_specifier":
-		return cxxAggregateMembers(node, src)
+		return cxxAggregateMembers(ctx, node, src)
 	default:
 		return false
 	}
@@ -9216,14 +9470,14 @@ func cxxLinkageForbiddenAncestor(node *sitter.Node, src []byte) bool {
 // still places syntactically inside a linkage_specification but that a C source
 // cannot declare or name. Plain C aggregates, unscoped enums, typedefs and
 // ordinary functions intentionally remain eligible.
-func cLinkageCompatibleDeclaration(node *sitter.Node, src []byte) bool {
+func cLinkageCompatibleDeclaration(ctx context.Context, node *sitter.Node, src []byte) bool {
 	switch node.Type() {
 	case "class_specifier", "class_declaration", "alias_declaration", "using_declaration":
 		return false
 	case "enum_specifier", "enum_declaration":
 		return !cxxScopedEnum(node, src)
 	case "struct_specifier", "union_specifier":
-		return !cxxAggregateMembers(node, src)
+		return !cxxAggregateMembers(ctx, node, src)
 	}
 	return true
 }
@@ -9233,7 +9487,7 @@ func cxxScopedEnum(node *sitter.Node, src []byte) bool {
 	return len(fields) >= 2 && fields[0] == "enum" && (fields[1] == "class" || fields[1] == "struct")
 }
 
-func cxxAggregateMembers(node *sitter.Node, src []byte) bool {
+func cxxAggregateMembers(ctx context.Context, node *sitter.Node, src []byte) bool {
 	// Tree-sitter C is a compact, more complete compatibility oracle for an
 	// aggregate than maintaining a growing list of C++-only member forms. This
 	// is reached only after finding `extern "C"` ancestry, so its parser cost is
@@ -9241,7 +9495,7 @@ func cxxAggregateMembers(node *sitter.Node, src []byte) bool {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(c.GetLanguage())
-	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	ctx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
 	defer cancel()
 	tree, err := parser.ParseCtx(ctx, nil, append([]byte(node.Content(src)), ';', '\n'))
 	if tree == nil {
