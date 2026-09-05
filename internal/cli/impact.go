@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +26,9 @@ const (
 // neighbors snapshot/caching machinery, so the shared flags carry the same
 // semantics (--head vs worktree, --profile, --cache-dir, --exclude-tests).
 type impactFlags struct {
+	Compiler        compilerFlags
+	ExtractionReuse bool
+	PathOptions     sem.ImpactPathOptions
 	Repo            string
 	Symbol          string
 	File            string
@@ -79,21 +84,24 @@ type impactSection struct {
 }
 
 type impactResponse struct {
-	FormatVersion      int    `json:"format_version"`
-	RepoRoot           string `json:"repo_root"`
-	Commit             string `json:"commit,omitempty"`
-	Tree               string `json:"tree,omitempty"`
-	Profile            string `json:"profile"`
-	Query              string `json:"query"`
-	File               string `json:"file,omitempty"`
-	Line               int    `json:"line,omitempty"`
-	Depth              int    `json:"depth"`
-	IndexCacheHit      bool   `json:"index_cache_hit"`
-	IndexCacheDisabled bool   `json:"index_cache_disabled,omitempty"`
-	IndexLatencyMS     int64  `json:"index_latency_ms"`
-	QueryLatencyMS     int64  `json:"query_latency_ms"`
-	TotalLatencyMS     int64  `json:"total_latency_ms"`
-	FocusMatchesTotal  int    `json:"focus_matches_total"`
+	OperationInputs    *sem.OperationInputManifest `json:"operation_inputs,omitempty"`
+	Compiler           *sem.CompilerOverlay        `json:"compiler,omitempty"`
+	Traversal          *sem.ImpactPathReport       `json:"traversal,omitempty"`
+	FormatVersion      int                         `json:"format_version"`
+	RepoRoot           string                      `json:"repo_root"`
+	Commit             string                      `json:"commit,omitempty"`
+	Tree               string                      `json:"tree,omitempty"`
+	Profile            string                      `json:"profile"`
+	Query              string                      `json:"query"`
+	File               string                      `json:"file,omitempty"`
+	Line               int                         `json:"line,omitempty"`
+	Depth              int                         `json:"depth"`
+	IndexCacheHit      bool                        `json:"index_cache_hit"`
+	IndexCacheDisabled bool                        `json:"index_cache_disabled,omitempty"`
+	IndexLatencyMS     int64                       `json:"index_latency_ms"`
+	QueryLatencyMS     int64                       `json:"query_latency_ms"`
+	TotalLatencyMS     int64                       `json:"total_latency_ms"`
+	FocusMatchesTotal  int                         `json:"focus_matches_total"`
 	// See neighborResponse for what these three report; impact resolves its focus through the same
 	// shared resolver, so it answers a misspelled or ambiguous query the same way.
 	FuzzyMatch     bool   `json:"fuzzy_match,omitempty"`
@@ -137,24 +145,82 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	totalStarted := time.Now()
 	indexStarted := totalStarted
-	snapshot, cacheHit, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
-		NoNetwork:    true,
-		Worktree:     flags.Worktree,
-		IgnoreFiles:  flags.IgnoreFile,
-		IncludeFiles: flags.IncludeFile,
-		Profile:      profile,
-	}, cacheDir, flags.DisableCache)
+	compilerOptions, err := flags.Compiler.options()
 	if err != nil {
 		return err
 	}
-	readSource, closeSource := openSnapshotLineReaderOrDegrade(ctx, snapshot, flags.Worktree, opts.Stderr)
-	if closeSource != nil {
-		defer closeSource()
+	snapshotOptions := sem.ProviderSnapshotOptions{NoNetwork: true, Worktree: flags.Worktree, IgnoreFiles: flags.IgnoreFile, IncludeFiles: flags.IncludeFile, Profile: profile, Compiler: compilerOptions, ExtractionReuse: flags.ExtractionReuse && !flags.DisableCache, ExtractionCacheDir: cacheDir}
+	var operation *sem.ProviderOperation
+	if flags.Depth == 0 || flags.Depth > 2 || compilerOptions != nil || flags.ExtractionReuse {
+		operation, err = sem.OpenProviderOperation(ctx, repo, snapshotOptions)
+		if err != nil {
+			return err
+		}
+		defer operation.Close()
+		snapshotOptions = operation.Options(snapshotOptions)
+	}
+	snapshot, cacheHit, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, snapshotOptions, cacheDir, flags.DisableCache || operation != nil)
+	if err != nil {
+		return err
+	}
+	var readSource lineReader
+	if operation != nil {
+		readSource = func(path string) ([]string, bool) {
+			content, ok := operation.Read(path)
+			if !ok {
+				return nil, false
+			}
+			return strings.Split(content, "\n"), true
+		}
+	} else {
+		var closeSource func() error
+		readSource, closeSource = openSnapshotLineReaderOrDegrade(ctx, snapshot, flags.Worktree, opts.Stderr)
+		if closeSource != nil {
+			defer closeSource()
+		}
 	}
 	indexLatency := time.Since(indexStarted)
 	queryStarted := time.Now()
-	response := buildImpactResponseFromReader(snapshot, flags, readSource)
+	legacyFlags := flags
+	if flags.Depth == 0 || flags.Depth > 2 {
+		legacyFlags.Depth = 2
+	}
+	response := buildImpactResponseFromReader(snapshot, legacyFlags, readSource)
+	response.Depth = flags.Depth
+	response.Compiler = snapshot.Header.Compiler
 	annotateImpactCallSites(&response, readSource)
+	if (flags.Depth == 0 || flags.Depth > 2) && response.Focus != nil && !response.DisambiguationRequired {
+		pathOptions := flags.PathOptions
+		pathOptions.GraphPartial = len(snapshot.Header.PartialFailures) > 0 || (snapshot.Header.Stats.CompletenessLevel != "ok" && snapshot.Header.Stats.CompletenessLevel != "")
+		relations := sem.CompilerEnrichedRelations(snapshot, true)
+		if flags.ExcludeTests {
+			excluded := map[string]bool{}
+			for _, symbol := range snapshot.Symbols {
+				if isConventionalTestPath(symbol.FilePath) {
+					excluded[symbol.ID] = true
+				}
+			}
+			relations = nil
+			for _, relation := range sem.CompilerEnrichedRelations(snapshot, true) {
+				if !excluded[relation.FromID] && !excluded[relation.ToID] {
+					relations = append(relations, relation)
+				}
+			}
+		}
+		report, pathErr := sem.TraverseImpactPaths(ctx, response.Focus.ID, relations, pathOptions)
+		if pathErr != nil {
+			return pathErr
+		}
+		response.Traversal = &report
+	}
+
+	if operation != nil {
+		response.OperationInputs, err = operation.Finish()
+		if err != nil {
+			return err
+		}
+	}
+
 	// The verdict is computed once, on the finished response, so the text marker and the JSON fields
 	// can never disagree about whether this answer was worth reading.
 	if reason := impactDegenerateReason(response); reason != "" {
@@ -162,7 +228,7 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	}
 	queryLatency := time.Since(queryStarted)
 	response.IndexCacheHit = cacheHit
-	response.IndexCacheDisabled = cacheDir == "" || flags.DisableCache
+	response.IndexCacheDisabled = cacheDir == "" || flags.DisableCache || operation != nil
 	response.IndexLatencyMS = indexLatency.Milliseconds()
 	response.QueryLatencyMS = queryLatency.Milliseconds()
 	response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
@@ -172,6 +238,20 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(response)
 	case "text":
+		if response.Traversal != nil {
+			return writeDeepImpact(opts.Stdout, response, snapshot.Symbols, flags.MaxContextBytes)
+		}
+		if response.Compiler != nil {
+			status := fmt.Sprintf("Compiler: %s; use --format json for evidence and diagnostics\n", response.Compiler.Report.Status)
+			if len(status) >= flags.MaxContextBytes && flags.MaxContextBytes > 0 {
+				_, err := io.WriteString(opts.Stdout, status[:flags.MaxContextBytes])
+				return err
+			}
+			if _, err := io.WriteString(opts.Stdout, status); err != nil {
+				return err
+			}
+			return writeImpactBounded(opts.Stdout, response, flags.MaxContextBytes-len(status))
+		}
 		return writeImpactBounded(opts.Stdout, response, flags.MaxContextBytes)
 	default:
 		return fmt.Errorf("impact --format must be text or json, got %q", flags.Format)
@@ -179,9 +259,11 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 }
 
 func parseImpactFlags(args []string) (impactFlags, error) {
+	pathControls := false
 	flags := impactFlags{
 		Format: "text", Profile: "full", Depth: 2,
-		Limit: defaultImpactSectionLimit, Worktree: true,
+		PathOptions: sem.DefaultImpactPathOptions(),
+		Limit:       defaultImpactSectionLimit, Worktree: true,
 		MaxContextBytes: defaultImpactContextBytes,
 	}
 	for index := 0; index < len(args); index++ {
@@ -236,12 +318,76 @@ func parseImpactFlags(args []string) (impactFlags, error) {
 				return flags, valueErr
 			}
 			flags.Profile = item
-		case "--depth":
-			parsed, next, parseErr := searchPositiveIntFlag(args, index)
-			if parseErr != nil {
-				return flags, parseErr
+		case "--compiler", "--require-compiler", "--gopls", "--gopls-sha256", "--go-toolchain", "--compiler-launcher":
+			next, err := flags.Compiler.parse(args, index)
+			if err != nil {
+				return flags, err
 			}
-			flags.Depth, index = parsed, next
+			index = next
+		case "--extraction-cache":
+			item, err := value()
+			if err != nil {
+				return flags, err
+			}
+			if item != "on" && item != "off" {
+				return flags, errors.New("--extraction-cache must be off or on")
+			}
+			flags.ExtractionReuse = item == "on"
+		case "--depth":
+			item, err := value()
+			if err != nil {
+				return flags, err
+			}
+			if item == "all" {
+				flags.Depth = 0
+			} else {
+				depth, err := strconv.Atoi(item)
+				if err != nil || depth < 1 {
+					return flags, errors.New("impact --depth must be a positive integer or all")
+				}
+				flags.Depth = depth
+			}
+		case "--max-nodes", "--max-edges", "--max-frontier", "--max-paths", "--max-path-steps", "--max-input-edges", "--max-evidence-bytes":
+			pathControls = true
+			parsed, next, err := searchPositiveIntFlag(args, index)
+			if err != nil {
+				return flags, err
+			}
+			index = next
+			switch arg {
+			case "--max-input-edges":
+				flags.PathOptions.MaxInputEdges = parsed
+			case "--max-evidence-bytes":
+				flags.PathOptions.MaxEvidenceBytes = parsed
+			case "--max-nodes":
+				flags.PathOptions.MaxNodes = parsed
+			case "--max-edges":
+				flags.PathOptions.MaxEdges = parsed
+			case "--max-frontier":
+				flags.PathOptions.MaxFrontier = parsed
+			case "--max-paths":
+				flags.PathOptions.MaxPaths = parsed
+			case "--max-path-steps":
+				flags.PathOptions.MaxOutputSteps = parsed
+			}
+		case "--min-confidence":
+			pathControls = true
+			item, err := value()
+			if err != nil {
+				return flags, err
+			}
+			confidence, err := strconv.ParseFloat(item, 64)
+			if err != nil || confidence < 0 || confidence > 1 || math.IsNaN(confidence) || math.IsInf(confidence, 0) {
+				return flags, errors.New("--min-confidence must be between 0 and 1")
+			}
+			flags.PathOptions.MinConfidence = confidence
+		case "--relations":
+			pathControls = true
+			item, err := value()
+			if err != nil {
+				return flags, err
+			}
+			flags.PathOptions.Relations = strings.Split(item, ",")
 		case "--limit":
 			parsed, next, parseErr := searchPositiveIntFlag(args, index)
 			if parseErr != nil {
@@ -287,8 +433,15 @@ func parseImpactFlags(args []string) (impactFlags, error) {
 	if strings.TrimSpace(flags.Symbol) == "" {
 		return flags, errors.New("impact requires --symbol")
 	}
-	if flags.Depth != 1 && flags.Depth != 2 {
-		return flags, errors.New("impact --depth must be 1 or 2")
+	if flags.PathOptions.MaxPaths > 16 {
+		return flags, errors.New("--max-paths must not exceed 16")
+	}
+	if pathControls && flags.Depth > 0 && flags.Depth <= 2 {
+		return flags, errors.New("impact traversal filters and work budgets require --depth greater than 2 or all")
+	}
+	flags.PathOptions.Depth = flags.Depth
+	if _, err := sem.TraverseImpactPaths(context.Background(), "validation", nil, flags.PathOptions); err != nil {
+		return flags, err
 	}
 	return flags, nil
 }
