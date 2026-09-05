@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // `entire graph verify` — an ADJUDICATED verdict, not test output
@@ -48,6 +50,11 @@ const (
 	verifyCompiledTimeout    = 900 * time.Second
 	verifyInterpretedTimeout = 300 * time.Second
 )
+
+// verifyBaselineFormatVersion is the on-disk shape this build writes AND the only shape it will
+// adjudicate. A baseline is compared field-by-field against ids the current run produced, so a file
+// this build cannot claim to understand must be refused rather than half-read.
+const verifyBaselineFormatVersion = 1
 
 // verifyBaseline is the on-disk pre-edit record. The format is deliberately boring — a status per id
 // plus provenance — because its only consumer is the diff below and its only job is to still be
@@ -132,7 +139,9 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	if runErr != nil {
 		// A command that could not be LAUNCHED is a different failure from a command that ran and
 		// reported. Saying which is the difference between "fix your invocation" and "fix your code".
-		return fmt.Errorf("verify could not run the test command: %w", runErr)
+		// runVerifyCommands has already said which, so the message is returned as written rather than
+		// re-labelled as a test failure — a setup command that exited nonzero is not a test result.
+		return runErr
 	}
 	results, parser, parsed := parseVerifyOutput(output)
 
@@ -143,10 +152,14 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateVerifyBaseline(baseline, flags.PreEditBaseline, repo, flags.Test, parser, parsed); err != nil {
+		return err
+	}
 	_, writeErr := opts.Stdout.Write(renderVerifyVerdict(
 		verifyVerdictInput{
 			baseline: baseline, current: results, parser: parser, parsed: parsed,
 			exitCode: exitCode, maxBytes: flags.MaxBytes,
+			unattributed: verifyUnattributedFailures(parser, output),
 		}))
 	return writeErr
 }
@@ -161,15 +174,29 @@ func runVerifyCommands(ctx context.Context, repo string, flags verifyFlags) (str
 	}
 	if flags.Setup != "" {
 		setupCtx, cancel := context.WithTimeout(ctx, timeout)
-		_, _, err := runVerifyShell(setupCtx, repo, flags.Setup)
+		_, setupExit, err := runVerifyShell(setupCtx, repo, flags.Setup)
 		cancel()
 		if err != nil {
-			return "", 0, fmt.Errorf("setup command failed to launch: %w", err)
+			return "", 0, fmt.Errorf("verify could not launch the setup command: %w", err)
+		}
+		// runVerifyShell reports a command that RAN and failed as (exit != 0, nil error), so the exit
+		// code is the only evidence setup succeeded. Discarding it lets a failed install or build fall
+		// through to the test command, and the results of a tree whose dependencies were never built
+		// then get adjudicated as if setup had worked — a verdict about the wrong tree. Refuse instead:
+		// a verification tool reporting success on a run that actually failed is the severe outcome.
+		if setupExit != 0 {
+			return "", setupExit, fmt.Errorf(
+				"verify setup command exited %d, so the test command was not run: the tree it would "+
+					"have adjudicated was never prepared", setupExit)
 		}
 	}
 	testCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return runVerifyShell(testCtx, repo, flags.Test)
+	output, exitCode, err := runVerifyShell(testCtx, repo, flags.Test)
+	if err != nil {
+		return "", 0, fmt.Errorf("verify could not run the test command: %w", err)
+	}
+	return output, exitCode, nil
 }
 
 // verifyCompiledCommand reports whether a command belongs to an ecosystem that builds before it tests,
@@ -218,9 +245,9 @@ func writeVerifyBaseline(
 	results verifyResults, parser string, parsed bool, exitCode int,
 ) error {
 	baseline := verifyBaseline{
-		FormatVersion: 1,
+		FormatVersion: verifyBaselineFormatVersion,
 		RecordedAt:    time.Now().UTC().Format(time.RFC3339),
-		Repo:          repo,
+		Repo:          verifyRecordedRepo(repo),
 		TestCommand:   flags.Test,
 		Parser:        parser,
 		ExitCode:      exitCode,
@@ -269,6 +296,142 @@ func readVerifyBaseline(path string) (verifyBaseline, error) {
 	return baseline, nil
 }
 
+// validateVerifyBaseline refuses a baseline that does not describe THIS run.
+//
+// The verdict below is a field-by-field diff of two id sets, and nothing in that diff can tell that
+// the two sets came from different repositories, different test commands or different runners. A
+// baseline recorded elsewhere therefore produces an authoritative-looking PASS or REGRESSION that is
+// about nothing at all: every id the other suite reported reads as a disappeared test, and every id
+// this one reports reads as brand new. Refusing is the only honest answer, and it is refused loudly
+// because the failure mode this verb exists to prevent is a confident verdict on a run that did not
+// happen the way the verdict assumes.
+func validateVerifyBaseline(
+	baseline verifyBaseline, path, repo, testCommand, parser string, parsed bool,
+) error {
+	if baseline.FormatVersion != verifyBaselineFormatVersion {
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s has format_version %d, this build writes %d: re-record it",
+			path, baseline.FormatVersion, verifyBaselineFormatVersion)
+	}
+	if !filepath.IsAbs(baseline.Repo) {
+		// Written by a build that stored the --repo spelling verbatim. The checkout it names cannot
+		// be recovered from the spelling alone, so the only choice is which way to be wrong; this one
+		// is loud and costs a re-record. See verifySameRepo.
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s recorded its repository as %q, a relative spelling written "+
+				"by an older build: the checkout it named cannot be identified now, so no delta "+
+				"between repositories can be trusted. Re-record it", path, baseline.Repo)
+	}
+	if !verifySameRepo(baseline.Repo, repo) {
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s was recorded in repository %q but this run is in %q: "+
+				"a delta between two repositories is not a delta", path, baseline.Repo, repo)
+	}
+	if baseline.TestCommand != testCommand {
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s recorded test command %q but this run ran %q: "+
+				"the two id sets are not comparable", path, baseline.TestCommand, testCommand)
+	}
+	// Parser is checked only when BOTH sides parsed. An exit-code-only baseline is a legitimate,
+	// self-describing degradation that renderVerifyVerdict already handles as coarse mode.
+	if parsed && baseline.Parser != "exit-code-only" && baseline.Parser != parser {
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s was parsed by %q but this run was parsed by %q: "+
+				"ids from two runners do not name the same tests", path, baseline.Parser, parser)
+	}
+	return nil
+}
+
+// verifyRecordedRepo canonicalizes the --repo value for the BASELINE, at record time, which is the
+// only moment a relative spelling still means what the caller meant by it.
+//
+// resolveRepo returns the caller's argument verbatim, so `--repo .` reaches the baseline as ".", and
+// a "." on disk is a path relative to whatever directory the NEXT invocation happens to run in. That
+// broke the workflow both ways: adjudicating the same repository from anywhere else was refused as
+// "a different repository", and — the expensive half — a baseline recorded with `--repo .` in one
+// checkout compared EQUAL to `--repo .` in another, because "." is "." wherever each ran, so a
+// verdict was rendered about a repository the baseline never described.
+//
+// Only the recorded side can be fixed here. The current side is resolved against the working
+// directory of the invocation that is asking, which is where it belongs.
+func verifyRecordedRepo(repo string) string {
+	absolute, err := filepath.Abs(repo)
+	if err != nil {
+		// Abs fails only when the working directory cannot be read. Storing the caller's spelling is
+		// then no worse than what was stored before, and refusing to record at all would be worse.
+		return repo
+	}
+	return filepath.Clean(absolute)
+}
+
+// verifySameRepo compares two --repo values as locations rather than as strings, so recording with
+// `--repo .` and adjudicating with `--repo /abs/path` is not reported as a different repository.
+// resolveRepo returns the caller's argument verbatim, which is what makes this necessary; the
+// recorded side arrives already canonicalized (verifyRecordedRepo), so the resolution below applies
+// to the current invocation's own spelling.
+//
+// IDENTITY, NOT SPELLING. Cleaned absolute paths agree only when the two invocations reached the
+// repository by the same ROUTE, and a directory has more than one: a symlinked checkout, a bind
+// mount, `/tmp` against its real `/private/tmp` on macOS, a case-variant spelling on a
+// case-insensitive filesystem. Every one of those is the same repository and compares unequal as a
+// string, and each one was refused as "a delta between two repositories". So the paths are stat'd
+// and compared with os.SameFile, which is the filesystem's own answer (device plus inode; file index
+// on Windows) rather than a guess about how paths spell out.
+//
+// WHAT A RELATIVE RECORDED SPELLING GETS. Nothing: it is refused outright, before the equality below.
+// Only baselines this build wrote are canonical (verifyRecordedRepo), and a baseline from an older
+// build carries a spelling whose anchor — the directory that invocation ran in — was never recorded.
+// It cannot be upgraded, and accepting it on string equality is the false accept the canonicalization
+// closed. See the refusal itself for why resolving both sides is not the remedy it looks like.
+//
+// WHAT THE FALLBACK GUARANTEES. When either side cannot be stat'd — the recorded checkout has since
+// been moved or deleted, or the process cannot traverse to it — there is no identity to compare and
+// the cleaned-string comparison above stands alone. That is exactly the previous behavior, and its
+// two directions are not symmetric: it can still REFUSE a repository that is genuinely the same one
+// under a different spelling (a false refusal, which costs a re-record and is loud), and it cannot
+// ACCEPT two different repositories, because the recorded side was canonicalized at record time and
+// two distinct checkouts do not clean to one path. Neither branch re-opens the false accept the
+// canonicalization closed.
+//
+// What identity does NOT claim: it is a fact about the directories AS THEY ARE NOW, not about their
+// contents. The same checkout with different code in it is still the same repository here — that is
+// the question this predicate is asked, and the baseline's other fields cover the rest.
+func verifySameRepo(recorded, current string) bool {
+	if !filepath.IsAbs(recorded) {
+		// A LEGACY BASELINE, written before the record-time canonicalization above existed, stored
+		// the caller's spelling verbatim — `--repo .` reached the file as ".". Nothing here can turn
+		// that back into a location: "." is resolved against the working directory of whichever
+		// invocation is asking, so resolving BOTH sides (the remedy that suggests itself) resolves
+		// them against the SAME directory and answers "same repository" for every pair of checkouts
+		// that both spelled it ".". That is precisely the false accept the canonicalization closed,
+		// re-entered through the early string equality below.
+		//
+		// So such a baseline is REFUSED rather than upgraded. There is no record of where it was
+		// recorded, and no evidence anywhere on this machine that could supply one; the only honest
+		// readings are "unknown" and "guess". Refusing costs a re-record and says so, which is the
+		// loud direction — the same trade the unstattable fallback below already takes.
+		return false
+	}
+	if recorded == current {
+		return true
+	}
+	recordedAbs, recordedErr := filepath.Abs(recorded)
+	currentAbs, currentErr := filepath.Abs(current)
+	if recordedErr != nil || currentErr != nil {
+		return false
+	}
+	recordedAbs, currentAbs = filepath.Clean(recordedAbs), filepath.Clean(currentAbs)
+	if recordedAbs == currentAbs {
+		return true
+	}
+	recordedInfo, recordedStatErr := os.Stat(recordedAbs)
+	currentInfo, currentStatErr := os.Stat(currentAbs)
+	if recordedStatErr != nil || currentStatErr != nil {
+		return false
+	}
+	return os.SameFile(recordedInfo, currentInfo)
+}
+
 func verifyCountByStatus(results verifyResults) (passed, failed int) {
 	for _, status := range results {
 		if status == verifyStatusPass {
@@ -287,6 +450,10 @@ type verifyVerdictInput struct {
 	parsed   bool
 	exitCode int
 	maxBytes int
+	// unattributed is the targets the runner reported as failed while naming no test — a package it
+	// could not build or set up. See verifyUnattributedFailures: these are the failures the exit code
+	// cannot distinguish from an ordinary test failure and the result set structurally cannot hold.
+	unattributed []string
 }
 
 // renderVerifyVerdict is the whole output contract: a delta, a verdict, and nothing else.
@@ -326,9 +493,34 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 			stillFailing = append(stillFailing, id)
 		}
 	}
+	// A DISAPPEARED test is the one class the loop above structurally cannot see, because it iterates
+	// only ids the CURRENT run reported. An aborted, crashed or truncated run therefore drops every
+	// baseline id it never reached, and each of those absences reads as "nothing changed" — which is
+	// the single most misleading thing a regression delta can say. Classify them explicitly.
+	var notRun []string
+	for id := range input.baseline.Results {
+		if _, present := input.current[id]; !present {
+			notRun = append(notRun, id)
+		}
+	}
 	sort.Strings(newlyPassing)
 	sort.Strings(newlyFailing)
 	sort.Strings(stillFailing)
+	sort.Strings(notRun)
+
+	// An UNEXPLAINED nonzero exit is a run that failed for a reason the per-test output does not
+	// contain: a collection error, a configuration error, a build failure, a signal. Once any output
+	// parsed, that exit code was the only remaining evidence the run was whole, and ignoring it let a
+	// suite that printed one newly passing test and then died be adjudicated "PASS — verification is
+	// complete". A nonzero exit is EXPLAINED only when the parsed results themselves carry a failure.
+	// The converse hole is just as expensive, and it is the one this rule opened: a single reported
+	// failure was then taken to explain ANY nonzero exit, so a run that failed a test AND died —
+	// interrupted, segfaulted, OOM-killed, or stopped by a collection or build error — was still
+	// adjudicated as merely a test failure. A failure explains an exit code only when that code is one
+	// the RUNNER uses to say "a test failed"; see verifyExitCodeMeansTestFailure.
+	unexplainedExit := input.exitCode != 0 &&
+		!(verifyResultsHaveFailure(input.current) &&
+			verifyExitCodeMeansTestFailure(input.parser, input.exitCode))
 
 	if len(newlyPassing) > 0 {
 		verifyWriteList(&buffer, "NEWLY PASSING", newlyPassing)
@@ -340,11 +532,36 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 		verifyWriteList(&buffer,
 			"PRE-EXISTING FAILURES (also failing before your edit; not caused by your change)", stillFailing)
 	}
+	if len(notRun) > 0 {
+		verifyWriteList(&buffer,
+			"NOT RUN (in the baseline, absent from this run: aborted, filtered, renamed or deleted)", notRun)
+	}
+	if len(input.unattributed) > 0 {
+		verifyWriteList(&buffer,
+			"NOT BUILT (the runner could not build or set up these targets, so their tests never ran)",
+			input.unattributed)
+	}
+
+	incomplete := verifyIncompleteReason(input, notRun, unexplainedExit)
 
 	switch {
 	case len(newlyFailing) > 0:
-		fmt.Fprintf(&buffer, "VERDICT: REGRESSION in %d test%s: %s\n",
+		// The regression and the incompleteness are BOTH true, and the switch used to report only the
+		// first. That mattered more than it looks: the NOT RUN list is printed above, but the
+		// unexplained-exit condition has no list of its own — its only carrier is the verdict line —
+		// so a crashed run that happened to report one new failure lost every trace of the crash. And
+		// verifyTruncateOutput keeps the VERDICT line and drops the lists, so under a tight byte cap
+		// even the NOT RUN evidence goes. A REGRESSION verdict is more actionable than an INCOMPLETE
+		// one (it carries the ids), so the ids are kept and the incompleteness is carried alongside
+		// them rather than replacing them.
+		fmt.Fprintf(&buffer, "VERDICT: REGRESSION in %d test%s: %s",
 			len(newlyFailing), pluralSuffix(len(newlyFailing)), verifyJoinIDs(newlyFailing))
+		if incomplete != "" {
+			fmt.Fprintf(&buffer, " — AND INCOMPLETE: %s Verification is NOT complete.", incomplete)
+		}
+		buffer.WriteString("\n")
+	case incomplete != "":
+		fmt.Fprintf(&buffer, "VERDICT: INCOMPLETE — %s Verification is NOT complete.\n", incomplete)
 	case len(newlyPassing) > 0:
 		// The second sentence is a statement about the DELTA, not an instruction: a zero-regression,
 		// at-least-one-fix delta is by construction a complete verification of the change. See the
@@ -355,6 +572,142 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 		buffer.WriteString("VERDICT: NO EFFECT — the target tests behave exactly as before your edit.\n")
 	}
 	return verifyTruncateOutput(buffer.String(), input.maxBytes)
+}
+
+// verifyIncompleteReason states every way THIS run failed to cover what it claimed to cover, or "" when
+// it covered all of it. It is one function rather than three switch arms because incompleteness is not
+// mutually exclusive with anything: a run can lose baseline tests, skip a target it could not build,
+// AND die — and it is not mutually exclusive with a REGRESSION either, which is the precedence bug the
+// caller above documents.
+func verifyIncompleteReason(input verifyVerdictInput, notRun []string, unexplainedExit bool) string {
+	var clauses []string
+	if len(notRun) > 0 {
+		clauses = append(clauses, fmt.Sprintf(
+			"%d baseline test%s did not report in this run, so no claim about regressions can be made.",
+			len(notRun), pluralSuffix(len(notRun))))
+	}
+	if len(input.unattributed) > 0 {
+		// The exit code cannot carry this and the result set cannot hold it: go test spends exit 1 on a
+		// build failure exactly as it does on a failing test, so any reported failure — including a
+		// pre-existing one — made this look explained. See verifyUnattributedFailures.
+		clauses = append(clauses, fmt.Sprintf(
+			"%s could not build or set up %d target%s (%s), whose tests therefore never ran and cannot "+
+				"have reported.",
+			input.parser, len(input.unattributed), pluralSuffix(len(input.unattributed)),
+			verifyJoinIDs(input.unattributed)))
+	}
+	switch {
+	case unexplainedExit && verifyResultsHaveFailure(input.current):
+		clauses = append(clauses, fmt.Sprintf(
+			"the runner %s, which is not how %s reports a test failure, so the run ALSO came apart for "+
+				"a reason its per-test output does not name (a crash, a signal, a collection or a build "+
+				"error).",
+			verifyExitDescription(input.exitCode), input.parser))
+	case unexplainedExit:
+		clauses = append(clauses, fmt.Sprintf(
+			"the runner %s while every test it reported passed, so it failed for a reason its per-test "+
+				"output does not name.", verifyExitDescription(input.exitCode)))
+	}
+	return strings.Join(clauses, " ")
+}
+
+// verifyTestFailureExitCodes is each runner's own code for "a test the run reported did not pass",
+// and nothing else. Every other code these runners emit means the run itself came apart — pytest 2
+// interrupted, 3 internal error, 4 usage error, 5 nothing collected; cargo's harness failing at 101
+// while cargo itself exits 1 when it could not even build; a PHP fatal at 255 — and none of them is
+// explained by a test the run happened to report failing before it died.
+//
+// GO TEST IS THE COUNTEREXAMPLE, and listing {1} does NOT make it safe on its own. Measured on Go
+// 1.26.5, the go command spends exit 1 on every way a run can fail — a failing test, a build failure,
+// a setup failure, a vet failure, an unknown flag, a missing package — so 1 is simultaneously "the
+// code go test uses for a test failure" (which is what this table is for) and "the code go test uses
+// for a run that never happened". No exit code can tell them apart, so the OUTPUT is read instead:
+// see verifyUnattributedFailures, which is what actually closes that half.
+//
+// A runner that grades its own outcomes needs every code it grades WITH. PHPUnit is the one here
+// that splits them: an assertion failure exits 1 (FAILURE_EXIT) and a test that raised exits 2
+// (EXCEPTION_EXIT, checked last so it wins when a run has both). Both are per-test verdicts the
+// report names in its numbered block and the parser records as non-passes, so both explain the exit.
+// Measured on PHPUnit 9.6.36, 10.5.64, 11.5.56, 12.5.34 and 13.3.2: assertion failure 1, raised 2.
+//
+// An unlisted runner keeps the old rule (any ordinary nonzero is plausible), because refusing a code
+// nobody has documented would be a guess in the loud direction about a runner this build does not
+// otherwise know. Where a runner IS listed the set is deliberately narrow: a false INCOMPLETE costs
+// the caller one investigation, while a false PASS is the failure class this whole verb exists to
+// prevent.
+//
+// RSPEC IS DELIBERATELY UNLISTED, and that is a statement about RSpec rather than an omission. Its
+// failure exit code is CONFIGURABLE — `--failure-exit-code N` on the command line, and
+// `config.failure_exit_code = N` in spec_helper.rb — so "the code RSpec uses for a test failure" is
+// not a property of RSpec at all; it is a property of the project. Neither source is visible here:
+// the configuration lives in a Ruby file this verb never reads, and even the flag can arrive through
+// `.rspec`, `SPEC_OPTS` or a rake task rather than the recorded command. Listing {1} therefore
+// adjudicated every suite that set the option INCOMPLETE however complete it was, which is the same
+// false negative PHPUnit's missing 2 produced. Reading the flag out of the command string would fix
+// only the spelling that happens to be on the command line and would still be wrong for the
+// configured majority — a narrower guess is still a guess. The permissive rule is the honest answer
+// for a runner whose grading codes this build cannot know.
+// JEST IS UNLISTED FOR THE SAME REASON, and it is the stronger case of the two because the option is
+// documented rather than idiomatic. `testFailureExitCode` is a first-class Jest setting — measured on
+// Jest 29.7.0, a failing suite exits 1 by default, 2 under `--testFailureExitCode=2`, 7 under
+// `module.exports = { testFailureExitCode: 7 }` in jest.config.js, and 5 under a `"jest"` key in
+// package.json. Two of those four sources are files this verb never opens, and the package.json one is
+// where the majority of Jest projects keep their configuration, so "the code Jest uses for a test
+// failure" is a property of the project rather than of Jest. `vitest` shares the parser and the entry.
+//
+// Unlisting does not reopen the crash hole it might look like it does: verifyExitCodeMeansTestFailure
+// refuses every code at or above 128 whether the runner is listed or not, so a segfault, an OOM kill
+// and a timeout are still adjudicated INCOMPLETE. What unlisting gives up is only the ordinary codes
+// 1-127 that some runner spends on something other than a test verdict — exactly the exposure RSpec
+// already accepts, for exactly the same reason.
+var verifyTestFailureExitCodes = map[string][]int{
+	"pytest":     {1},
+	"cargo test": {101},
+	"go test":    {1},
+	"phpunit":    {1, 2},
+	"minitest":   {1},
+	"surefire":   {1},
+	"ctest":      {8},
+}
+
+// verifyExitCodeMeansTestFailure reports whether exitCode is one the named runner uses to report a
+// test failure — the only kind of nonzero exit a reported failure can explain.
+func verifyExitCodeMeansTestFailure(parser string, exitCode int) bool {
+	if exitCode < 0 || exitCode >= 128 {
+		// No exit status at all (killed before it could exit), or the shell's 128+N for a child that
+		// died of a signal. A segfault, an OOM kill and a timeout are not test results whatever the
+		// suite printed on its way down.
+		return false
+	}
+	codes, known := verifyTestFailureExitCodes[parser]
+	if !known {
+		return true
+	}
+	for _, code := range codes {
+		if code == exitCode {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyExitDescription names what the process did, so a status that is not a code does not get
+// printed as one.
+func verifyExitDescription(exitCode int) string {
+	if exitCode < 0 {
+		return "was killed without an exit status"
+	}
+	return fmt.Sprintf("exited %d", exitCode)
+}
+
+// verifyResultsHaveFailure reports whether the parsed results themselves explain a nonzero exit.
+func verifyResultsHaveFailure(results verifyResults) bool {
+	for _, status := range results {
+		if status != verifyStatusPass {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyWriteList prints one class, capped, with the remainder counted rather than dropped.
@@ -370,6 +723,28 @@ func verifyJoinIDs(ids []string) string {
 		fmt.Sprintf(", … and %d more", len(ids)-verifyMaxListedIDs)
 }
 
+// verifyCutToBudget is the last resort: a hard cut to maxBytes on a rune boundary, ending in an
+// ellipsis when one fits. Nothing structural survives here, which is the point — this is only reached
+// when the budget cannot hold even the "VERDICT: " clause, and a caller who set a budget that small has
+// asked for bytes rather than for a verdict.
+func verifyCutToBudget(text string, maxBytes int) string {
+	const ellipsis = "…\n"
+	budget := maxBytes
+	if maxBytes > len(ellipsis) {
+		budget = maxBytes - len(ellipsis)
+	} else {
+		return ""
+	}
+	cut := text
+	if len(cut) > budget {
+		cut = cut[:budget]
+		for len(cut) > 0 && !utf8.ValidString(cut) {
+			cut = cut[:len(cut)-1]
+		}
+	}
+	return cut + ellipsis
+}
+
 // verifyTruncateOutput enforces the byte cap from the END, so the VERDICT line — the last line and the
 // only one that must survive — is never the part that is cut. A verdict without its lists is still a
 // verdict; lists without a verdict are evidence, which is what this verb refuses to return.
@@ -380,13 +755,35 @@ func verifyTruncateOutput(rendered string, maxBytes int) []byte {
 	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
 	verdict := lines[len(lines)-1] + "\n"
 	if len(verdict) > maxBytes {
-		// Even the verdict is too wide, which happens only when its own id list is long. The COUNT is the
+		// Even the verdict is too wide, which happens when its own id list is long. The COUNT is the
 		// information and the ids are the bonus, so the list yields — word by word from the end, never the
 		// "VERDICT: …" clause itself — rather than the cap yielding. A verdict that overruns the caller's
 		// byte budget is the same failure as returning output.
-		head := verdict
-		if colon := strings.LastIndex(verdict, ": "); colon > 0 {
-			head = verdict[:colon+2]
+		//
+		// The split point is the last ": " WHOSE HEAD STILL FITS, not simply the last one. A verdict line
+		// carries more than one clause now — a regression can be reported together with the run's
+		// incompleteness, which introduces a second ": " — and taking the last unconditionally made the
+		// retained head everything up to that colon, ids included. That head is not bounded by anything,
+		// so the function returned it whole: measured, a 40-id regression carrying an incompleteness
+		// clause returned 1254 bytes under a 100-byte cap, and under a 400-byte one. Walking the colons
+		// from the end keeps the most specific clause that fits and falls back to the broadest that does.
+		head := ""
+		for tail := len(verdict); ; {
+			colon := strings.LastIndex(verdict[:tail], ": ")
+			if colon <= 0 {
+				break
+			}
+			if candidate := verdict[:colon+2]; len(candidate)+len(" …\n") <= maxBytes {
+				head = candidate
+				break
+			}
+			tail = colon
+		}
+		if head == "" {
+			// Not even "VERDICT: " and an ellipsis fit in the budget the caller set. There is no clause
+			// left to preserve, so the cap wins: overrunning it would trade a contract the caller can rely
+			// on for a fragment they cannot.
+			return []byte(verifyCutToBudget(verdict, maxBytes))
 		}
 		ids := strings.TrimSuffix(strings.TrimPrefix(verdict, head), "\n")
 		for _, part := range strings.Split(ids, ", ") {

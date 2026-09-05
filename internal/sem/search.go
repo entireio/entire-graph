@@ -1414,14 +1414,15 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// Compose here, in the emitted string, rather than asking the agent to compose. `explain`
 		// passes the build output through before appending declarations, so this stays a superset of
 		// what the bare command printed — the agent loses nothing by running the longer line.
-		suffix := " 2>&1 | " + options.VerifyExplainCommand
-		verifyCommand.Command += suffix
-		// The suffix is caller-configured FIXED overhead, not content the ranking produced, so it is
+		composed, overhead := composeSearchVerifyExplain(
+			verifyCommand.Command, options.VerifyExplainCommand)
+		verifyCommand.Command = composed
+		// The wrapper is caller-configured FIXED overhead, not content the ranking produced, so it is
 		// added to the block's allowance rather than charged against it. Without this the composed
 		// command overflows the 320-byte cap and search_blocks fails the whole response — measured:
 		// "search verify command exceeds its allowance: 373 > 320", which returned ZERO-BYTE payloads
 		// on 7 of 17 sessions before it was caught.
-		stats.VerifyExplainSuffixBytes = len(suffix)
+		stats.VerifyExplainSuffixBytes = overhead
 	}
 	if verifyCommand != nil {
 		stats.VerifyCommandBytes = searchVerifyCommandCost(verifyCommand)

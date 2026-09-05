@@ -1320,6 +1320,65 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 	return []byte(rendered + searchVerifyContractNote)
 }
 
+// composeSearchVerifyExplain pipes a derived VERIFY command through the caller's `explain` filter
+// WITHOUT letting the filter decide the line's exit status.
+//
+// `<test> 2>&1 | <explain>` is a pipeline, and a pipeline's exit status in every POSIX shell is the
+// status of its LAST command. `explain` succeeds at explaining a failure, so the composed line exits
+// 0 on a failing test and any agent or harness that keys on the exit status reads a failed
+// verification as a passing one. That is the severe direction of the error: a verification tool
+// reporting success on a run that actually failed.
+//
+// `set -o pipefail` is NOT the fix here. The emitted line is run by whatever shell the caller has,
+// and the only shell this binary itself invokes is `sh -c` (see runVerifyShell). On Debian-family
+// systems /bin/sh is dash, where `set -o pipefail` is not merely absent but fatal:
+//
+//	$ dash -c 'set -o pipefail; echo REACHED'
+//	dash: 1: set: Illegal option -o pipefail   (exit 2, REACHED never prints)
+//
+// So the status is captured explicitly instead, in pure POSIX: run the test in a command
+// substitution, keep its `$?`, feed the captured output to `explain`, and exit with the status that
+// was kept. The whole thing is wrapped in a subshell so the trailing `exit` ends the wrapper and not
+// an interactive shell the agent pasted it into, and so the subshell's own status IS the test's.
+//
+// The cost is that output is buffered rather than streamed. `explain` reads its input to EOF before
+// it writes anything, so nothing downstream was streaming in the first place.
+//
+// Keeping the test's status is only half of it. `exit $r` alone reports ONLY the test's status, so
+// the converse error appears: a green test whose `explain` filter was missing, crashed, or could not
+// write its output exits 0 and the line claims a verification that never completed. `explain`'s own
+// status is therefore captured too, and the two are ordered:
+//
+//   - a nonzero TEST status always wins. That is the whole point of the capture, and a harness
+//     keying on `$?` must keep reading the same number the bare test would have produced.
+//   - a green test with a nonzero EXPLAIN status exits with explain's status. The run is
+//     inconclusive rather than passing, and nonzero is the safe direction for an inconclusive run.
+//
+// The two cases are told apart by a one-line stderr note rather than by the number, because the
+// numbers collide — a test and a filter both exit 1 — and the note is the only thing that can say
+// which stage produced it. It is written only when explain is the stage that failed.
+//
+// THE EXPLAIN FRAGMENT IS PARENTHESIZED, and that is load-bearing rather than cosmetic. `explain` is
+// a raw shell fragment the caller supplies (`--verify-explain`), and interpolating it bare left it
+// sharing the wrapper's own command list: `|` binds tighter than `;`, so `--verify-explain 'cat;
+// exit 0'` composed to `… | cat; exit 0; e=$?; …` — the pipeline ran, and then `exit 0` ended the
+// WRAPPER, before `e=$?` and before the `[ "$r" -ne 0 ] && exit "$r"` that is the whole point of the
+// capture. Measured in sh and dash: a test exiting 7 reported 0, which is precisely the false pass
+// the status capture exists to prevent, reachable from an ordinary-looking filter. A subshell rather
+// than a `{ }` group, because a subshell contains `exit` and `exec` wherever it appears and needs no
+// terminating `;` before its closing token. It costs nothing: the pipeline's status is still its last
+// stage's, and the last stage is now the subshell, whose status is the fragment's.
+func composeSearchVerifyExplain(command, explain string) (composed string, overhead int) {
+	const (
+		prefix = "( o=$("
+		middle = " 2>&1); r=$?; printf '%s\\n' \"$o\" | ( "
+		suffix = " ); e=$?; [ \"$r\" -ne 0 ] && exit \"$r\"; " +
+			"[ \"$e\" -eq 0 ] || echo 'VERIFY: explain filter failed' >&2; exit \"$e\" )"
+	)
+	return prefix + command + middle + explain + suffix,
+		len(prefix) + len(middle) + len(suffix) + len(explain)
+}
+
 // filePathToSlash normalizes a repository path for the string handling above. Repository paths are
 // already slash-separated everywhere in this package; this states it at the boundary.
 func filePathToSlash(filePath string) string {
