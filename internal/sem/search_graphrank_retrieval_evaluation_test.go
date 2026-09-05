@@ -2,8 +2,11 @@ package sem
 
 import (
 	"encoding/json"
+	"github.com/entireio/entire-graph/internal/compiler"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,6 +17,36 @@ func TestGraphRankRetrievalAblations(t *testing.T) {
 	root, output := os.Getenv("ENTIRE_GRAPH_RANK_CORPUS"), os.Getenv("ENTIRE_GRAPH_RANK_RETRIEVAL_RESULTS")
 	if root == "" || output == "" {
 		t.Skip("explicit GraphMark corpus and result path required")
+	}
+	arms := []string{"current", "current-expansion", "uniform", "weighted"}
+	if selected := os.Getenv("ENTIRE_GRAPH_RANK_ARMS"); selected != "" {
+		arms = strings.Split(selected, ",")
+	}
+	repetitions := 10
+	if value := os.Getenv("ENTIRE_GRAPH_RANK_REPETITIONS"); value != "" {
+		var err error
+		repetitions, err = strconv.Atoi(value)
+		if err != nil || repetitions < 1 || repetitions > 1000 {
+			t.Fatal("repetitions must be 1..1000")
+		}
+	}
+	var backend *CompilerOptions
+	if raw := os.Getenv("ENTIRE_GRAPH_RANK_COMPILER_CONFIG"); raw != "" {
+		var config compiler.Config
+		if err := json.Unmarshal([]byte(raw), &config); err != nil {
+			t.Fatal(err)
+		}
+		backend = &CompilerOptions{Config: config, Require: true}
+	}
+	seen := map[string]bool{}
+	for _, arm := range arms {
+		if seen[arm] {
+			t.Fatalf("duplicate arm %q", arm)
+		}
+		seen[arm] = true
+		if _, err := graphRankingEvaluationOptions(arm, backend); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var tasks []struct {
 		ID         string            `json:"id"`
@@ -46,15 +79,13 @@ func TestGraphRankRetrievalAblations(t *testing.T) {
 			}
 		}
 		verify()
-		for repetition := 0; repetition < 10; repetition++ {
+		for repetition := 0; repetition < repetitions; repetition++ {
 			// Rotate order across all three arms rather than favoring a fixed position.
-			arms := []string{"current", "uniform", "weighted"}
 			for step := 0; step < len(arms); step++ {
 				arm := arms[(step+repetition)%len(arms)]
-				options := SearchOptions{Worktree: true, Profile: ProfileFull, TopK: 8, MaxContextBytes: 4096, DisableCache: true}
-				if arm != "current" {
-					options.Ranking = "experimental-graph"
-					options.rankingEvaluationUniform = arm == "uniform"
+				options, err := graphRankingEvaluationOptions(arm, backend)
+				if err != nil {
+					t.Fatal(err)
 				}
 				started := time.Now()
 				response, err := SearchRepository(t.Context(), repo, "development-ablation", task.Query, options)

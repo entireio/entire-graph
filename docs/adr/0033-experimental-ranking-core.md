@@ -44,3 +44,12 @@ unexported test-only option. It changes no CLI mode or default. The unchanged
 six-repository development set produced 180 additional observations with equal
 recall/coverage in current, uniform and weighted arms; no weight selection or
 release promotion followed. Full evidence is retained in GraphMark.
+
+Implementation-first review follow-up: keep all settings frozen and defer new
+comparative runs. The retrieval harness must accept explicit current,
+current-expansion (identity control while expansion is unchanged), uniform,
+weighted, and weighted-compiler arms. All arms use captured input handling;
+compiler requires explicit pinned configuration. Repetitions and selected arms
+are explicit harness inputs. Smoke tests validate mode selection and one-query
+plumbing only, without scoring quality or collecting performance observations.
+No arm is a public default or authorization to launch a holdout/agent campaign.
