@@ -1865,6 +1865,24 @@ func (s *nestedIgnoreStack) close() error {
 	return s.root.Close()
 }
 
+// ensureRoot opens the confined resolver every filesystem access this stack
+// makes goes through, once per stack. os.Root resolves each component inside the
+// repository, so a directory replaced by a symlink between the moment the walk
+// classified it and the moment it is opened cannot take the read outside the
+// checkout — which is the whole reason validation and enumeration have to name
+// the same object rather than the same path.
+func (s *nestedIgnoreStack) ensureRoot() error {
+	if s.root != nil {
+		return nil
+	}
+	root, err := os.OpenRoot(s.repo)
+	if err != nil {
+		return fmt.Errorf("open repository for nested ignore files: %w", err)
+	}
+	s.root = root
+	return nil
+}
+
 // directoryReadable distinguishes an unreadable directory from an unreadable
 // .gitignore inside a readable directory after enter reports fs.ErrPermission.
 // The former cannot contribute source and is disclosed by the walk warning;
@@ -1935,12 +1953,8 @@ func (s *nestedIgnoreStack) enterCharged(ledger *repoIgnoreLedger, dir string) (
 		// ignore/include files that must keep overriding it.
 		return true, nil
 	}
-	if s.root == nil {
-		root, err := os.OpenRoot(s.repo)
-		if err != nil {
-			return false, fmt.Errorf("open repository for nested ignore files: %w", err)
-		}
-		s.root = root
+	if err := s.ensureRoot(); err != nil {
+		return false, err
 	}
 	candidate := path.Join(dir, ".gitignore")
 	full := filepath.Join(s.repo, filepath.FromSlash(candidate))
@@ -2201,8 +2215,17 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		}
 		sub.levels = append(sub.levels, level)
 	}
-	root := filepath.Join(s.repo, filepath.FromSlash(dir))
-	walkPrunedBounded(ledger, root, func(current string, entry fs.DirEntry, err error) error {
+	// The pruned tree is read through sub's OWN confined root, opened before the
+	// walk rather than lazily by the first nested-ignore lookup inside it: the
+	// walk's very first act is to enumerate a directory, and it must not do that
+	// by path.
+	if err := sub.ensureRoot(); err != nil {
+		ledger.noteUnreadable(dir)
+		ledger.noteCountIncomplete()
+		return
+	}
+	pruneRoot := filepath.Join(s.repo, filepath.FromSlash(dir))
+	walkPrunedBounded(ledger, sub.root, s.repo, pruneRoot, func(current string, entry fs.DirEntry, err error) error {
 		// Budget first, before anything is stat'd or matched, so the bound holds
 		// for the walk's own cost and not merely for what it reports. SkipAll ends
 		// this tree; the ledger keeps the exhausted budget, so a repository cannot
@@ -2359,13 +2382,54 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 // cap truncates. Only a directory larger than the remaining budget takes
 // filesystem order for its prefix, and that report already says the count is
 // incomplete AND stops naming paths from there on (readDirBounded).
-func walkPrunedBounded(ledger *repoIgnoreLedger, root string, fn fs.WalkDirFunc) {
-	info, err := os.Lstat(root)
+func walkPrunedBounded(ledger *repoIgnoreLedger, root *os.Root, repo, dir string, fn fs.WalkDirFunc) {
+	// Through the held root, not through the path. os.Root resolves every
+	// component inside the repository, so this walk cannot be steered outside the
+	// checkout by a directory swapped for a symlink after the outer walk decided
+	// it was a directory -- and, unlike an Lstat-then-Open pair, the object
+	// validated here is the object read below.
+	info, err := rootLstatWithin(root, repo, dir)
 	var entry fs.DirEntry
 	if err == nil {
 		entry = fs.FileInfoToDirEntry(info)
 	}
-	_ = walkPrunedBoundedNode(ledger, root, entry, err, fn)
+	_ = walkPrunedBoundedNode(ledger, root, repo, dir, entry, err, fn)
+}
+
+// rootLstatWithin and rootOpenWithin resolve an absolute path inside repo
+// through the confined root. A path that is not under repo is refused rather
+// than resolved, so neither can be handed something the caller derived wrongly.
+func rootRelativeWithin(repo, full string) (string, error) {
+	rel, err := filepath.Rel(repo, full)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q is outside the repository", full)
+	}
+	return rel, nil
+}
+
+func rootLstatWithin(root *os.Root, repo, full string) (os.FileInfo, error) {
+	if root == nil {
+		return nil, fmt.Errorf("stat %q: no confined repository handle", full)
+	}
+	rel, err := rootRelativeWithin(repo, full)
+	if err != nil {
+		return nil, err
+	}
+	return root.Lstat(rel)
+}
+
+func rootOpenWithin(root *os.Root, repo, full string) (*os.File, error) {
+	if root == nil {
+		return nil, fmt.Errorf("open %q: no confined repository handle", full)
+	}
+	rel, err := rootRelativeWithin(repo, full)
+	if err != nil {
+		return nil, err
+	}
+	return root.Open(rel)
 }
 
 // walkPrunedBoundedNode visits one node and, for a directory, its children.
@@ -2373,7 +2437,14 @@ func walkPrunedBounded(ledger *repoIgnoreLedger, root string, fn fs.WalkDirFunc)
 // anything else it skips the rest of the containing directory; SkipAll and any
 // other error stop the walk. That is filepath.WalkDir's contract, kept because
 // the callback this serves was written against it.
-func walkPrunedBoundedNode(ledger *repoIgnoreLedger, current string, entry fs.DirEntry, statErr error, fn fs.WalkDirFunc) error {
+func walkPrunedBoundedNode(
+	ledger *repoIgnoreLedger,
+	root *os.Root,
+	repo, current string,
+	entry fs.DirEntry,
+	statErr error,
+	fn fs.WalkDirFunc,
+) error {
 	if err := fn(current, entry, statErr); err != nil {
 		if errors.Is(err, filepath.SkipDir) {
 			if entry != nil && entry.IsDir() {
@@ -2386,7 +2457,7 @@ func walkPrunedBoundedNode(ledger *repoIgnoreLedger, current string, entry fs.Di
 	if statErr != nil || entry == nil || !entry.IsDir() {
 		return nil
 	}
-	entries, err := readDirBounded(ledger, current)
+	entries, err := readDirBounded(ledger, root, repo, current)
 	if err != nil {
 		// filepath.WalkDir reports a directory whose listing failed to fn a second
 		// time, with the error, and the callback here turns that into the
@@ -2401,7 +2472,8 @@ func walkPrunedBoundedNode(ledger *repoIgnoreLedger, current string, entry fs.Di
 		return nil
 	}
 	for _, child := range entries {
-		if err := walkPrunedBoundedNode(ledger, filepath.Join(current, child.Name()), child, nil, fn); err != nil {
+		next := filepath.Join(current, child.Name())
+		if err := walkPrunedBoundedNode(ledger, root, repo, next, child, nil, fn); err != nil {
 			if errors.Is(err, filepath.SkipDir) {
 				return nil
 			}
@@ -2435,9 +2507,15 @@ func walkPrunedBoundedNode(ledger *repoIgnoreLedger, current string, entry fs.Di
 // Nothing is hidden by that: SampleTruncated marks the withheld names, and the
 // shortfall raised for the incomplete count points at --format json, where
 // repo_ignored carries the full report — see withRepoIgnorePartialFailures.
-func readDirBounded(ledger *repoIgnoreLedger, dir string) ([]fs.DirEntry, error) {
+func readDirBounded(ledger *repoIgnoreLedger, root *os.Root, repo, dir string) ([]fs.DirEntry, error) {
 	remaining := ledger.remainingExclusionWalk()
-	handle, err := os.Open(dir)
+	// The confined open, for the reason directoryReadable already gives for its
+	// own probe: a plain os.Open re-resolves a path the walk classified earlier,
+	// so an ignored directory replaced by a symlink in between was FOLLOWED, and
+	// this walk names what it enumerates -- the filenames of an outside directory
+	// would be emitted through repo_ignored.sample[].path as though the
+	// repository's own rules had removed them.
+	handle, err := rootOpenWithin(root, repo, dir)
 	if err != nil {
 		return nil, err
 	}
