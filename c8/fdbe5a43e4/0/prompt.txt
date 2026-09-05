@@ -1,0 +1,110 @@
+Pull from main, then implement the following task: Implement the four workstreams in:
+ /Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md
+
+Target repository:
+ /Users/thomi/Projects/entire-graph
+
+Read the plan fully, including the independent implementation handoff, implementation contracts, acceptance fixtures, and release gates. Treat it as the requirements document.
+
+Work in a fresh context. Do not consult competitor implementations, comparative documents, adjacent comparison evidence, or prior conversations. Use only the plan, Entire’s implementation and applicable repository instructions, and the official specifications listed in the plan. Record consulted sources and fixture origins.
+
+Before editing:
+1. Inspect repository status and applicable AGENTS.md instructions.
+2. Fetch current main and create an isolated codex/ worktree containing it, preserving existing user changes.
+3. Revalidate the plan’s code touchpoints against that checkout.
+4. Record the baseline commit and resolve required design decisions in short ADRs.
+
+Implement in reviewable stages:
+1. Safe content-addressed per-file extraction reuse.
+2. Optional Go compiler-backed resolution with explicit evidence and enforced no-egress.
+3. Deeper bounded impact traversal with evidence paths.
+4. Experimental query-seeded graph ranking and its evaluation.
+
+Start with P1.1 and the minimal P1.2 extraction/capture boundary, preserving behavior. Follow the plan’s dependencies and complete each workstream’s tests and gates before advancing its release status.
+
+Preserve existing defaults, stable IDs, additive schema compatibility, source freshness, partial-failure reporting, and no-egress guarantees. Do not re-enable persistent working-tree snapshot caching. Installation, MCP packaging, generated summaries, and Brain changes are out of scope.
+
+Create independent fixtures, run focused tests and required repository checks, and retain reproducible evaluation artifacts. Do not fabricate benchmark results or enable experimental features when evidence is insufficient. Report genuine blockers explicitly and continue independent work where possible.
+
+Keep a progress ledger mapping every plan task to its implementation, tests, evidence, and remaining work. Provide concise progress updates. Finish with a reviewable change summary, validation results, limitations, and rollback instructions.
+
+Commit and push, but not merge changes.
+
+---
+
+What are the steps to complete it?
+
+---
+
+I can’t open the ledger on the mobile app. Why did you stop the implementation?
+
+---
+
+You can boot Linux or Windows VM via the az CLI. Complete the plan.
+
+---
+
+Can’t you accelerate the work with sub agents?
+
+---
+
+Also monitor the progress against plan. Avoid falling into local optimization loops.
+
+---
+
+Prioritize completing the implementation before running further benchmarks.
+
+Continue on codex/graph-advantage against:
+ /Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md
+
+Read the interim review:
+ /Users/thomi/Projects/entire-plan/graph-advantage-progress-review-2026-09-05.md
+
+These instructions change sequencing, not the correctness or release requirements.
+
+1. Address the review findings first.
+   - Distinguish Go type conversions from function/method invocations. A definition response pointing to a type must not become a compiler-confirmed CALLS edge or incorrectly dispute static evidence. Add regression tests.
+   - Apply the compiler-enriched relation view consistently to compiler-enabled search and impact, including caller boosts, candidate expansion, and depth-one/two impact. Preserve compiler-off behavior and keep implementation candidates separate from confirmed calls.
+
+2. Complete the remaining implementation across all four workstreams.
+   - P1: operation-wide captured inputs, complete extraction metadata, bounded persistent reuse, planned file-local relation-input reuse, invalidation, diagnostics, and participating command integration.
+   - P2: source/configuration-bound compiler evidence, safe execution, precise mapping/reconciliation, explicit coverage/fallback, and consistent query integration.
+   - P3: the planned relation policies, deeper bounded traversal, valid evidence paths, candidate separation, covering tests, and complete output/truncation contracts.
+   - P4: the planned experimental ranking integration, constraints, deterministic budgets/fallback, diagnostics, and evaluation modes needed for the later ablations.
+
+Use the plan’s task IDs and acceptance fixtures to identify unfinished work. Do not treat an isolated algorithm, opt-in flag, or passing unit test as completion of an end-to-end feature.
+
+3. Continue correctness verification throughout.
+   Run unit, integration, regression, race, schema-compatibility, source-freshness, no-egress, and bounded-resource tests as appropriate. Positive pinned compiler tests are correctness checks and should continue. Run required repository checks on an immutable integration commit.
+
+4. Defer comparative evaluation until implementation is complete.
+   Do not run additional performance sweeps, retrieval-quality benchmarks, held-out studies, or agent experiments now. Preserve existing results and failed gates. Implement necessary harness interfaces and smoke-test their plumbing, but do not launch measurement campaigns or tune against observed benchmark outcomes.
+
+5. Reconcile the progress ledger.
+   Replace stale status statements with one authoritative task-by-task view. Separate:
+   - Implementation complete
+   - Correctness verified
+   - Comparative evaluation deferred
+   - Release gate not passed
+
+Keep experimental features default-off. Completing implementation does not authorize default enablement or performance/quality claims.
+
+Work autonomously through the remaining implementation in reviewable commits. Report concrete blockers, continue independent work where possible, and avoid expanding scope into installation, MCP packaging, generated summaries, or Brain changes.
+
+Finish this phase with:
+- A task-by-task implementation completion report.
+- Correctness checks tied to the final commit.
+- Any remaining functional limitations.
+- A proposed benchmark sequence for the next
+
+---
+
+What are the P1 workloads?
+
+---
+
+Which repos would you run this on?
+
+---
+
+Ok, the list is fine. Can you do the work in subagents on a cheaper model?
