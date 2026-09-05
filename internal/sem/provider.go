@@ -267,12 +267,13 @@ type LanguageCompleteness struct {
 }
 
 type ProviderStats struct {
-	Files             int    `json:"files"`
-	ParsedFiles       int    `json:"parsed_files"`
-	Symbols           int    `json:"symbols"`
-	Relations         int    `json:"relations"`
-	PartialFailures   int    `json:"partial_failures"`
-	CompletenessLevel string `json:"completeness_level"`
+	Extraction        *ExtractionStats `json:"extraction,omitempty"`
+	Files             int              `json:"files"`
+	ParsedFiles       int              `json:"parsed_files"`
+	Symbols           int              `json:"symbols"`
+	Relations         int              `json:"relations"`
+	PartialFailures   int              `json:"partial_failures"`
+	CompletenessLevel string           `json:"completeness_level"`
 }
 
 type ProviderWarning struct {
@@ -423,6 +424,12 @@ type ProviderSnapshot struct {
 }
 
 type ProviderSnapshotOptions struct {
+	// ExtractionReuse is experimental, default off. It caches only file-local
+	// extraction payloads; working-tree snapshots remain uncached.
+	ExtractionReuse    bool
+	ExtractionCacheDir string
+	captured           *sourceContext
+
 	NoNetwork    bool
 	Worktree     bool
 	IgnoreFiles  []string
@@ -863,6 +870,7 @@ type oversizeReader func(path string) (oversizeFile, bool)
 // the file list, a per-file content reader, and git-state warnings. It holds no
 // file content itself.
 type sourceContext struct {
+	extraction *extractionCache
 	absRepo    string
 	key        string
 	commit     string
@@ -1383,6 +1391,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		Warnings:        warnings,
 		PartialFailures: failures,
 		Stats: ProviderStats{
+			Extraction:        sc.extraction.stats(),
 			Files:             len(files),
 			ParsedFiles:       parsedFileCount,
 			Symbols:           symbolCount,
@@ -1648,6 +1657,24 @@ type SnapshotSummary struct {
 // prepareSource resolves repository identity, lists the source files, and
 // builds a per-file content reader without loading any content.
 func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOptions) (sourceContext, error) {
+	if options.captured != nil {
+		borrowed := *options.captured
+		borrowed.close = nil
+		if len(options.OnlyFiles) > 0 {
+			allowed := make(map[string]bool, len(options.OnlyFiles))
+			for _, path := range options.OnlyFiles {
+				allowed[filepath.ToSlash(filepath.Clean(path))] = true
+			}
+			borrowed.paths = nil
+			for _, path := range options.captured.paths {
+				if allowed[path] {
+					borrowed.paths = append(borrowed.paths, path)
+				}
+			}
+		}
+		return borrowed, nil
+	}
+
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
 		return sourceContext{}, err
@@ -1677,6 +1704,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		cachePolicy:  options.cachePolicy,
 		maxReadBytes: resolveMaxParseBytes(options.MaxParseBytes),
 		maxFiles:     options.MaxFiles,
+		capture:      options.ExtractionReuse,
 	})
 	if err != nil {
 		return sourceContext{}, err
@@ -1704,6 +1732,13 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		}
 	}
 
+	var extraction *extractionCache
+	if options.ExtractionReuse {
+		extraction = &extractionCache{directory: options.ExtractionCacheDir, repository: absRepo + "\x00" + key, build: extractionBuildIdentity()}
+	}
+	if options.ExtractionReuse {
+		opened = captureOpenedSource(ctx, opened, extraction)
+	}
 	warnings := append([]ProviderWarning(nil), opened.warnings...)
 	if options.Worktree {
 		warnings = append(warnings, ProviderWarning{
@@ -1719,7 +1754,9 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 			Detail:               headErr.Error(),
 		})
 	}
+
 	return sourceContext{
+		extraction: extraction,
 		absRepo:    absRepo,
 		key:        key,
 		commit:     commit,
@@ -12300,6 +12337,7 @@ func externalParts(id string) (string, string) {
 
 // sourceOptions are the listing and reading bounds openSource enforces.
 type sourceOptions struct {
+	capture      bool
 	ignoreFiles  []string
 	includeFiles []string
 	cachePolicy  *capturedIgnorePolicy
@@ -12564,6 +12602,9 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		}
 		return string(content), true
 	}
+	if options.capture {
+		read = capturedWorktreeReader(ctx, root, repo, maxReadBytes, registry)
+	}
 	readPrefix := func(path string, limit int) (string, bool) {
 		name := filepath.FromSlash(path)
 		info, err := root.Lstat(name)
@@ -12736,7 +12777,7 @@ func openContainedRegularFile(pinned fs.FileInfo, repo, relPath string) (*os.Fil
 	// The size that governs the caller's bound is the one belonging to the OPEN
 	// file, not to the earlier Lstat of the same name.
 	opened, err := file.Stat()
-	if err != nil || !opened.Mode().IsRegular() {
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
 		_ = file.Close()
 		return nil, nil, false
 	}

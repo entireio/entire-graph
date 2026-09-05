@@ -293,11 +293,13 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		return err
 	}
 	options := sem.ProviderSnapshotOptions{
-		NoNetwork:    flags.NoNetwork,
-		Worktree:     flags.Worktree,
-		IgnoreFiles:  flags.IgnoreFiles,
-		IncludeFiles: flags.IncludeFiles,
-		Profile:      profile,
+		ExtractionReuse:    flags.ExtractionReuse,
+		ExtractionCacheDir: resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir),
+		NoNetwork:          flags.NoNetwork,
+		Worktree:           flags.Worktree,
+		IgnoreFiles:        flags.IgnoreFiles,
+		IncludeFiles:       flags.IncludeFiles,
+		Profile:            profile,
 	}
 	if flags.Progress {
 		options.Progress = func(event sem.ProgressEvent) {
@@ -579,14 +581,15 @@ type commonFlags struct {
 }
 
 type providerFlags struct {
-	Repo         string
-	Format       string
-	Profile      string
-	NoNetwork    bool
-	Worktree     bool
-	Progress     bool
-	IgnoreFiles  []string
-	IncludeFiles []string
+	ExtractionReuse bool
+	Repo            string
+	Format          string
+	Profile         string
+	NoNetwork       bool
+	Worktree        bool
+	Progress        bool
+	IgnoreFiles     []string
+	IncludeFiles    []string
 	// Targeted edge filters (edges mode). When any is set the command emits only
 	// the matching relation records (plus header/summary) instead of the whole
 	// graph, so "callers of X" is a tiny reply rather than a 50MB dump that the
@@ -689,6 +692,15 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 				return flags, nil, errors.New("--include-file requires a value")
 			}
 			flags.IncludeFiles = append(flags.IncludeFiles, args[i])
+		case "--extraction-cache":
+			value, next, err := searchFlagValue(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			if value != "on" && value != "off" {
+				return flags, nil, errors.New("--extraction-cache must be off or on")
+			}
+			flags.ExtractionReuse, i = value == "on", next
 		case "--cache-dir":
 			i++
 			if i >= len(args) {

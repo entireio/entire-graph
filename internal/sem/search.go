@@ -50,6 +50,7 @@ const (
 // SearchOptions controls local issue-to-code retrieval. Search reads the same
 // HEAD/worktree view and ignore rules as provider snapshots.
 type SearchOptions struct {
+	ExtractionReuse   bool
 	Worktree          bool
 	IgnoreFiles       []string
 	IncludeFiles      []string
@@ -76,7 +77,8 @@ type SearchOptions struct {
 	// afterPreindexLoad is a deterministic test seam for repository-identity
 	// mutation between a complete cache lookup and source preselection. It is
 	// deliberately unexported and nil in production.
-	afterPreindexLoad func()
+	afterPreindexLoad    func()
+	afterSourceSelection func()
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -294,19 +296,20 @@ type SearchResult struct {
 }
 
 type SearchStats struct {
-	QueryConstraintsTruncated      bool    `json:"query_constraints_truncated,omitempty"`
-	FilesScanned                   int     `json:"files_scanned"`
-	PreselectionBackend            string  `json:"preselection_backend,omitempty"`
-	PreselectionPasses             int     `json:"preselection_passes,omitempty"`
-	PreselectionFilesExamined      int     `json:"preselection_files_examined,omitempty"`
-	PreselectionConfidence         float64 `json:"preselection_confidence,omitempty"`
-	PreselectionCoverage           float64 `json:"preselection_coverage,omitempty"`
-	PreselectionDiversity          float64 `json:"preselection_diversity,omitempty"`
-	PreselectionWidened            bool    `json:"preselection_widened,omitempty"`
-	PreselectionBounded            bool    `json:"preselection_bounded,omitempty"`
-	UsagePreselectionBackend       string  `json:"identifier_usage_preselection_backend,omitempty"`
-	UsagePreselectionPasses        int     `json:"identifier_usage_preselection_passes,omitempty"`
-	UsagePreselectionFilesExamined int     `json:"identifier_usage_preselection_files_examined,omitempty"`
+	Extraction                     *ExtractionStats `json:"extraction,omitempty"`
+	QueryConstraintsTruncated      bool             `json:"query_constraints_truncated,omitempty"`
+	FilesScanned                   int              `json:"files_scanned"`
+	PreselectionBackend            string           `json:"preselection_backend,omitempty"`
+	PreselectionPasses             int              `json:"preselection_passes,omitempty"`
+	PreselectionFilesExamined      int              `json:"preselection_files_examined,omitempty"`
+	PreselectionConfidence         float64          `json:"preselection_confidence,omitempty"`
+	PreselectionCoverage           float64          `json:"preselection_coverage,omitempty"`
+	PreselectionDiversity          float64          `json:"preselection_diversity,omitempty"`
+	PreselectionWidened            bool             `json:"preselection_widened,omitempty"`
+	PreselectionBounded            bool             `json:"preselection_bounded,omitempty"`
+	UsagePreselectionBackend       string           `json:"identifier_usage_preselection_backend,omitempty"`
+	UsagePreselectionPasses        int              `json:"identifier_usage_preselection_passes,omitempty"`
+	UsagePreselectionFilesExamined int              `json:"identifier_usage_preselection_files_examined,omitempty"`
 	// Content-read counters report blobs hydrated into the Go process. Git's
 	// own immutable-tree scans are represented by the backend/pass/examined
 	// counters above; their internal byte IO is deliberately not estimated.
@@ -728,14 +731,16 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	sparseQuery := buildSparseSearchQuery(query)
 	searchStarted := time.Now()
 	baseSnapshotOptions := ProviderSnapshotOptions{
-		NoNetwork:     true,
-		Worktree:      options.Worktree,
-		IgnoreFiles:   options.IgnoreFiles,
-		IncludeFiles:  options.IncludeFiles,
-		MaxParseBytes: options.MaxParseBytes,
-		Profile:       options.Profile,
+		ExtractionReuse:    options.ExtractionReuse,
+		ExtractionCacheDir: options.CacheDir,
+		NoNetwork:          true,
+		Worktree:           options.Worktree,
+		IgnoreFiles:        options.IgnoreFiles,
+		IncludeFiles:       options.IncludeFiles,
+		MaxParseBytes:      options.MaxParseBytes,
+		Profile:            options.Profile,
 	}
-	searchCacheDisabled := options.DisableCache
+	searchCacheDisabled := options.DisableCache || options.ExtractionReuse
 	if !options.Worktree && !searchCacheDisabled && options.CacheDir != "" {
 		capturedOptions, captureErr := CaptureProviderCachePolicy(repo, baseSnapshotOptions)
 		if captureErr != nil {
@@ -755,6 +760,16 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 				options.afterCachePolicyCapture()
 			}
 		}
+	}
+	if options.ExtractionReuse {
+		captured, captureErr := prepareSource(ctx, repo, baseSnapshotOptions)
+		if captureErr != nil {
+			return SearchResponse{}, captureErr
+		}
+		if captured.close != nil {
+			defer captured.close()
+		}
+		baseSnapshotOptions.captured = &captured
 	}
 	var preindexedSnapshot ProviderSnapshot
 	preindexCacheHit := false
@@ -778,6 +793,9 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	)
 	if err != nil {
 		return SearchResponse{}, err
+	}
+	if options.afterSourceSelection != nil {
+		options.afterSourceSelection()
 	}
 	// The repository identity can change without changing HEAD (for example
 	// when a remote URL changes). Symbols embed that identity, so a complete
@@ -899,9 +917,13 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	queryStarted := time.Now()
 	useHead := !options.Worktree && snapshot.Header.Commit != ""
-	read, closeSource, err := openSearchContentReader(
-		ctx, repo, snapshot.Header.Commit, useHead, options.IgnoreFiles, options.IncludeFiles, options.MaxParseBytes,
-	)
+	var read contentReader
+	var closeSource func() error
+	if baseSnapshotOptions.captured != nil {
+		read = baseSnapshotOptions.captured.read
+	} else {
+		read, closeSource, err = openSearchContentReader(ctx, repo, snapshot.Header.Commit, useHead, options.IgnoreFiles, options.IncludeFiles, options.MaxParseBytes)
+	}
 	if err != nil {
 		return SearchResponse{}, err
 	}
@@ -1054,6 +1076,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		LexicalCandidates:         len(candidates),
 		SparseCandidates:          len(sparseCandidates),
 		SparseFilesRead:           sparseFilesRead,
+		Extraction:                snapshot.Header.Stats.Extraction,
 		IndexCacheHit:             cacheHit,
 		IndexLatencyMS:            indexLatency.Milliseconds(),
 		PreselectLatencyMS:        preselectLatency.Milliseconds(),
@@ -1889,7 +1912,7 @@ func preselectSearchFiles(
 		// A resolved commit is what says "this is a Git repository", so a needle the posting lists
 		// cannot price can be answered exactly by one `git grep`. An empty treeish means the working
 		// tree, which is what a worktree search indexes; a HEAD search must grep the commit itself.
-		gitGrepUsable: source.commit != "",
+		gitGrepUsable: source.commit != "" && (!options.Worktree || !options.ExtractionReuse),
 	}
 	if !options.Worktree {
 		selection.gitGrepTreeish = source.commit
@@ -1934,7 +1957,7 @@ func preselectSearchFiles(
 	matcher := newSearchTermMatcher(q.terms)
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
-	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
+	if !options.ExtractionReuse && shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
 		matches, grepErr := gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
 		tracked, trackedErr := gitutil.ListIndexFiles(ctx, source.absRepo)
 		if grepErr == nil && trackedErr == nil {

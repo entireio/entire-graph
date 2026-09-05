@@ -10,3 +10,13 @@ Alternative rejected: an unbounded map defeats the existing bounded-memory provi
 The store accepts a confined bounded upstream reader; it does not authorize paths or widen scope. A separate integration change must connect prefix/oversize routing, manifest readers, source rendering and selective search to the same lifetime and expose fatal spill errors. Until then the store is private and unused in production.
 
 Tests distinguish single acquisition under concurrency, same-size mutation, failed-read memoization, tiny-budget spill, cleanup, cancellation, digest corruption and detached operation lifetimes. No public contract changes.
+
+
+Integration decision (2026-09-05): opt-in extraction reuse owns one capture across
+search preselection, snapshot construction and rendering. Borrowed source contexts
+have no closer; the initiating operation closes the store. Default-off reads retain
+their existing lifetime. Prefix classification for captured operations uses the
+same bounded content observation, with oversized inputs retaining a prefix and
+streamed digest from the same open descriptor. Capture errors never trigger a
+second live read. The source listing and ignore matcher are selected once for
+that operation; a new operation always enumerates and applies policy again.

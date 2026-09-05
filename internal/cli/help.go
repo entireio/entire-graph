@@ -144,6 +144,7 @@ var commandDocs = []commandDoc{
 			{name: "--max-indexed-files", arg: "n", desc: "Bound cold-search parsing to N files"},
 			{name: "--index-all-files", desc: "Widen cold-search parsing to every file"},
 			{name: "--cache-dir", arg: "path", desc: "Override the committed-tree cache directory"},
+			{name: "--extraction-cache", arg: "off|on", def: "off", desc: "Experimental captured per-file extraction reuse; never caches working-tree snapshots"},
 			{name: "--no-cache", desc: "Disable the committed-tree cache"},
 		},
 		examples: []string{
@@ -439,6 +440,7 @@ var commandDocs = []commandDoc{
 
 // providerFlagDocs are shared by the snapshot/symbols/edges bulk-stream commands.
 var providerFlagDocs = []flagDoc{
+	{name: "--extraction-cache", arg: "off|on", def: "off", desc: "Experimental captured per-file extraction reuse"},
 	{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
 	{name: "--format", arg: "ndjson", def: "ndjson", desc: "Required output format"},
 	{name: "--worktree", desc: "Stream the working tree instead of HEAD (never cached)"},
@@ -450,6 +452,7 @@ var providerFlagDocs = []flagDoc{
 
 // snapshotFlagDocs extend the bulk provider flags with complete-snapshot formats.
 var snapshotFlagDocs = []flagDoc{
+	{name: "--extraction-cache", arg: "off|on", def: "off", desc: "Experimental captured per-file extraction reuse"},
 	{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
 	{name: "--format", arg: "ndjson|compact-ndjson|scip", def: "ndjson", desc: "Output format; compact and scip require a complete snapshot"},
 	{name: "--worktree", desc: "Stream the working tree instead of HEAD (never cached)"},
