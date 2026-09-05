@@ -1,11 +1,13 @@
 package sem
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -501,8 +503,11 @@ func TestCompactSnapshotDecoderRejectsRecordAfterSummary(t *testing.T) {
 func TestCompactSnapshotDecoderRejectsMissingSummary(t *testing.T) {
 	requireCompactDecodeError(t, compactHeaderLine(), "missing summary")
 }
-func TestCompactSnapshotDecoderRejectsLineOverLimit(t *testing.T) {
-	requireCompactDecodeError(t, strings.Repeat("x", 16*1024*1024+1), "compact snapshot scan:")
+
+// Every line but the summary is one record and keeps a fixed cap, so an
+// unterminated or garbage line is refused on its length before it is accumulated.
+func TestCompactSnapshotDecoderRejectsOversizedNonSummaryLine(t *testing.T) {
+	requireCompactDecodeError(t, strings.Repeat("x", compactSnapshotRecordLineBytes+1), "compact snapshot line exceeds")
 }
 
 // compactHeaderLine is the minimal valid header line: envelope version plus a
@@ -541,4 +546,299 @@ func TestSnapshotHasherUsesSHA256(t *testing.T) {
 	if got := h.SumHex(); len(got) != hex.EncodedLen(sha256.Size) {
 		t.Fatalf("hash length = %d", len(got))
 	}
+}
+
+// The encoder writes the whole SnapshotSummary as ONE line, and that summary
+// carries a record per partial failure over a corpus of up to
+// defaultMaxSourceFiles files. A decoder that caps a line at a constant chosen
+// ahead of that cannot read every artifact this build can write: a repository
+// with enough parse/size failures encoded cleanly and then failed
+// snapshot-query with "bufio.Scanner: token too long".
+func TestCompactSnapshotDecodesSummaryLargerThanLegacyLineCap(t *testing.T) {
+	var buffer bytes.Buffer
+	encoder := NewCompactSnapshotEncoder(&buffer)
+	if err := encoder.Encode(SnapshotHeader{SchemaVersion: SchemaVersion}); err != nil {
+		t.Fatal(err)
+	}
+	summary := SnapshotSummary{RecordType: "summary", Languages: []string{}, Warnings: []ProviderWarning{}}
+	for index := 0; index < 90_000; index++ {
+		summary.PartialFailures = append(summary.PartialFailures, PartialFailure{
+			Code:                 "E_FILE_TOO_LARGE",
+			Severity:             "warning",
+			FilePath:             fmt.Sprintf("packages/vendor/bundle/chunk-%06d/dist/index.min.js", index),
+			EffectOnCompleteness: "file skipped because it exceeds the parse byte limit",
+			Detail:               "file exceeds the configured max parse bytes",
+		})
+	}
+	if err := encoder.Encode(summary); err != nil {
+		t.Fatal(err)
+	}
+	if buffer.Len() <= 16*1024*1024 {
+		t.Fatalf("encoded %d bytes, want more than the 16 MiB the decoder used to cap a line at", buffer.Len())
+	}
+
+	decoded := 0
+	var readBack SnapshotSummary
+	if _, err := DecodeCompactSnapshot(bytes.NewReader(buffer.Bytes()), func(record any) error {
+		decoded++
+		if typed, ok := record.(SnapshotSummary); ok {
+			readBack = typed
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded != 2 {
+		t.Fatalf("decoded %d records, want 2", decoded)
+	}
+	if len(readBack.PartialFailures) != len(summary.PartialFailures) {
+		t.Fatalf("partial failures = %d, want %d", len(readBack.PartialFailures), len(summary.PartialFailures))
+	}
+	if readBack.PartialFailures[89_999].FilePath != summary.PartialFailures[89_999].FilePath {
+		t.Fatalf("last partial failure path = %q", readBack.PartialFailures[89_999].FilePath)
+	}
+}
+
+// A record split across many reads of the underlying buffer must come back
+// byte-identical, and the surrounding line framing must be unchanged.
+func TestCompactSnapshotLineReaderFraming(t *testing.T) {
+	long := strings.Repeat("x", 300*1024)
+	input := "alpha\r\n" + long + "\nomega"
+	reader := bufio.NewReaderSize(strings.NewReader(input), 64)
+	var lines []string
+	for {
+		line, err := readCompactSnapshotLine(reader, compactSnapshotRecordLineBytes)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatal(err)
+		}
+		lines = append(lines, string(line))
+	}
+	if len(lines) != 3 {
+		t.Fatalf("lines = %d, want 3", len(lines))
+	}
+	if lines[0] != "alpha" {
+		t.Fatalf("line 1 = %q, want %q", lines[0], "alpha")
+	}
+	if lines[1] != long {
+		t.Fatalf("line 2 length = %d, want %d", len(lines[1]), len(long))
+	}
+	if lines[2] != "omega" {
+		t.Fatalf("line 3 = %q, want %q", lines[2], "omega")
+	}
+}
+
+// The bound must sit above everything the encoder can write and still refuse an
+// arbitrarily long line before it is accumulated.
+func TestCompactSnapshotLineReaderRefusesLineOverBound(t *testing.T) {
+	reader := bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 4096)), 64)
+	if _, err := readCompactSnapshotLine(reader, 1024); err == nil {
+		t.Fatal("expected an over-bound line to be refused")
+	} else if !strings.Contains(err.Error(), "exceeds 1024 bytes") {
+		t.Fatalf("err = %v", err)
+	}
+	// A line exactly at the bound is a record, not an overflow.
+	reader = bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 1024)), 64)
+	line, err := readCompactSnapshotLine(reader, 1024)
+	if err != nil {
+		t.Fatalf("line at the bound: %v", err)
+	}
+	if len(line) != 1024 {
+		t.Fatalf("line length = %d, want 1024", len(line))
+	}
+}
+
+// The summary gets a larger allowance than the per-record lines, because its
+// size is a function of how many files the operator let the encoder admit.
+func TestCompactSnapshotSummaryLineGetsTheLargerAllowance(t *testing.T) {
+	summary := `["m",{"record_type":"summary","partial_failures":[`
+	entry := `{"code":"E_FILE_TOO_LARGE","severity":"warning","file_path":"src/x.go","effect_on_semantic_completeness":"skipped"}`
+	entries := make([]string, 0, 200_000)
+	for len(summary)+len(entries)*(len(entry)+1) <= compactSnapshotRecordLineBytes {
+		entries = append(entries, entry)
+	}
+	summary += strings.Join(entries, ",") + `]}]`
+	if len(summary) <= compactSnapshotRecordLineBytes {
+		t.Fatalf("fixture is %d bytes, want more than the %d-byte record cap", len(summary), compactSnapshotRecordLineBytes)
+	}
+
+	decoded := 0
+	if _, err := DecodeCompactSnapshot(strings.NewReader(compactHeaderLine()+summary+"\n"), func(any) error {
+		decoded++
+		return nil
+	}); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded != 2 {
+		t.Fatalf("decoded %d records, want 2", decoded)
+	}
+}
+
+// The summary closes the artifact, so anything after it is refused as a record
+// after the summary — without the decoder buffering it, however large it is.
+func TestCompactSnapshotRefusesContentAfterTheSummary(t *testing.T) {
+	if compactSnapshotSummaryLineCeiling <= compactSnapshotRecordLineBytes {
+		t.Fatalf("summary allowance %d is not larger than the record cap %d", compactSnapshotSummaryLineCeiling, compactSnapshotRecordLineBytes)
+	}
+	trailing := `["m",` + strings.Repeat("x", compactSnapshotRecordLineBytes)
+	input := compactHeaderLine() + `["m",{"record_type":"summary"}]` + "\n" + trailing + "\n"
+	requireCompactDecodeError(t, input, "record after summary")
+}
+
+// The summary is decoded off the stream, so a summary past the limit is refused
+// without ever being held.
+func TestCompactSnapshotSummaryStreamRefusesPastTheLimit(t *testing.T) {
+	summary := `["m",{"record_type":"summary","partial_failures":[`
+	entry := `{"code":"E_FILE_TOO_LARGE","severity":"warning","file_path":"src/x.go"}`
+	entries := make([]string, 0, 64)
+	for len(summary)+len(entries)*(len(entry)+1) <= 4096 {
+		entries = append(entries, entry)
+	}
+	summary += strings.Join(entries, ",") + `]}]` + "\n"
+
+	reader := bufio.NewReaderSize(strings.NewReader(summary), 64)
+	if _, err := decodeCompactSummaryLine(reader, 1024); err == nil {
+		t.Fatal("expected an over-limit summary to be refused")
+	} else if !strings.Contains(err.Error(), "exceeds 1024 bytes") {
+		t.Fatalf("err = %v", err)
+	}
+
+	// The same summary decodes whole under a limit that admits it.
+	reader = bufio.NewReaderSize(strings.NewReader(summary), 64)
+	decoded, err := decodeCompactSummaryLine(reader, compactSnapshotSummaryLineCeiling)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(decoded.PartialFailures) != len(entries) {
+		t.Fatalf("partial failures = %d, want %d", len(decoded.PartialFailures), len(entries))
+	}
+}
+
+// The allowance is granted only where a summary is legal, so a malformed file
+// that merely STARTS with the summary prefix is refused on length.
+func TestCompactSnapshotSummaryAllowanceRequiresAHeader(t *testing.T) {
+	requireCompactDecodeError(t, `["m",`+strings.Repeat("x", compactSnapshotRecordLineBytes), "compact snapshot line exceeds")
+}
+
+// The summary tag is read structurally, so the whitespace JSON permits around it
+// does not decide which path a record takes: `[ "m" , {…}]` is the same record
+// and gets the same allowance.
+func TestCompactSnapshotSummaryTagIsReadStructurally(t *testing.T) {
+	for _, spelling := range []string{`["m",`, `[ "m" ,`, "[\t\"m\"\t,"} {
+		reader := bufio.NewReaderSize(strings.NewReader(spelling+`{}]`), 64)
+		if !compactSnapshotLineIsSummary(reader) {
+			t.Fatalf("%q not recognised as a summary", spelling)
+		}
+	}
+	for _, spelling := range []string{`["f",`, `["h",`, `[ "mm" ,`, `["m"]`, `"m",`, `[xmy,`, `['m',`, ``} {
+		reader := bufio.NewReaderSize(strings.NewReader(spelling+`{}]`), 64)
+		if compactSnapshotLineIsSummary(reader) {
+			t.Fatalf("%q wrongly recognised as a summary", spelling)
+		}
+	}
+
+	// A whitespace-spelled summary past the record cap decodes, where a byte
+	// prefix match would have sent it down the ordinary path and refused it.
+	summary := `[ "m" , {"record_type":"summary","partial_failures":[`
+	entry := `{"code":"E_FILE_TOO_LARGE","severity":"warning","file_path":"src/x.go","effect_on_semantic_completeness":"skipped"}`
+	entries := make([]string, 0, 200_000)
+	for len(summary)+len(entries)*(len(entry)+1) <= compactSnapshotRecordLineBytes {
+		entries = append(entries, entry)
+	}
+	summary += strings.Join(entries, ",") + `]} ]`
+	if len(summary) <= compactSnapshotRecordLineBytes {
+		t.Fatalf("fixture is %d bytes, want more than the %d-byte record cap", len(summary), compactSnapshotRecordLineBytes)
+	}
+	decoded := 0
+	if _, err := DecodeCompactSnapshot(strings.NewReader(compactHeaderLine()+summary+"\n"), func(any) error {
+		decoded++
+		return nil
+	}); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded != 2 {
+		t.Fatalf("decoded %d records, want 2", decoded)
+	}
+}
+
+// The ceiling is an invariant of the artifact, not a decoder policy: the encoder
+// refuses to write a summary the decoder could not read back, so a snapshot this
+// build writes is a snapshot this build reads whatever either side's listing cap
+// was set to.
+func TestCompactSnapshotEncoderRefusesSummaryPastTheCeiling(t *testing.T) {
+	var buffer bytes.Buffer
+	encoder := NewCompactSnapshotEncoder(&buffer)
+	encoder.summaryLineLimit = 4096
+	if err := encoder.Encode(SnapshotHeader{SchemaVersion: SchemaVersion}); err != nil {
+		t.Fatal(err)
+	}
+	summary := SnapshotSummary{RecordType: "summary", Languages: []string{}, Warnings: []ProviderWarning{}}
+	for index := 0; index < 200; index++ {
+		summary.PartialFailures = append(summary.PartialFailures, PartialFailure{
+			Code:                 "E_FILE_TOO_LARGE",
+			Severity:             "warning",
+			FilePath:             fmt.Sprintf("src/module%03d.go", index),
+			EffectOnCompleteness: "file skipped because it exceeds the parse byte limit",
+		})
+	}
+	err := encoder.Encode(summary)
+	if err == nil {
+		t.Fatal("expected an over-ceiling summary to be refused")
+	}
+	if !strings.Contains(err.Error(), "past the 4096-byte limit") {
+		t.Fatalf("err = %v", err)
+	}
+
+	// A summary inside the limit still writes, and still round-trips.
+	buffer.Reset()
+	encoder = NewCompactSnapshotEncoder(&buffer)
+	encoder.summaryLineLimit = 4096
+	if err := encoder.Encode(SnapshotHeader{SchemaVersion: SchemaVersion}); err != nil {
+		t.Fatal(err)
+	}
+	summary.PartialFailures = summary.PartialFailures[:10]
+	if err := encoder.Encode(summary); err != nil {
+		t.Fatalf("summary inside the limit: %v", err)
+	}
+	var readBack SnapshotSummary
+	if _, err := DecodeCompactSnapshot(bytes.NewReader(buffer.Bytes()), func(record any) error {
+		if typed, ok := record.(SnapshotSummary); ok {
+			readBack = typed
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(readBack.PartialFailures) != 10 {
+		t.Fatalf("partial failures = %d, want 10", len(readBack.PartialFailures))
+	}
+}
+
+// An io.Writer may report a short write with no error. The summary closes the
+// artifact, so a truncated one is a snapshot no reader can finish.
+func TestCompactSnapshotEncoderReportsAShortSummaryWrite(t *testing.T) {
+	writer := &shortSummaryWriter{}
+	encoder := NewCompactSnapshotEncoder(writer)
+	if err := encoder.Encode(SnapshotHeader{SchemaVersion: SchemaVersion}); err != nil {
+		t.Fatal(err)
+	}
+	writer.short = true
+	err := encoder.Encode(SnapshotSummary{RecordType: "summary"})
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("err = %v, want io.ErrShortWrite", err)
+	}
+}
+
+type shortSummaryWriter struct {
+	short bool
+	bytes.Buffer
+}
+
+func (writer *shortSummaryWriter) Write(payload []byte) (int, error) {
+	if writer.short && len(payload) > 1 {
+		return writer.Buffer.Write(payload[:1])
+	}
+	return writer.Buffer.Write(payload)
 }
