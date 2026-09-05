@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "0cbb5b474c05",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0033-experimental-ranking-core.md",
+    "internal/sem/search.go",
+    "internal/sem/search_compiler_view_test.go",
+    "internal/sem/search_graphrank_harness_test.go",
+    "internal/sem/search_graphrank_retrieval_evaluation_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0c/bb5b474c05/0/metadata.json",
+      "transcript": "/0c/bb5b474c05/0/full.jsonl",
+      "compact_transcript": "/0c/bb5b474c05/0/transcript.jsonl",
+      "content_hash": "/0c/bb5b474c05/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
