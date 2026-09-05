@@ -797,8 +797,12 @@ func searchVerifyGradleSettingsRemapsProject(settings, project string) bool {
 
 // searchVerifyGradleStatementTail returns what remains of the statement that has just been read up
 // to its call: the rest of the line, extended while the line is continued, or the matching brace
-// when the call is followed by a block. A `}` inside a string literal ends the block window early,
-// which can only make this read LESS and so leaves the command as it was.
+// when the call is followed by a block.
+//
+// STRING LITERALS are stepped over whole in both, for the same reason the include walk does it: a
+// `}` or a `;` inside one is text, and ending the window at it would stop the scan before the
+// `projectDir` assignment that follows — the caller would then emit `./gradlew :lib:test` for a
+// project the settings script moved, which runs and passes about a different directory.
 func searchVerifyGradleStatementTail(rest string) string {
 	index := 0
 	for index < len(rest) && (rest[index] == ' ' || rest[index] == '\t') {
@@ -806,8 +810,13 @@ func searchVerifyGradleStatementTail(rest string) string {
 	}
 	if index < len(rest) && rest[index] == '{' {
 		depth := 0
-		for scan := index; scan < len(rest); scan++ {
+		for scan := index; scan < len(rest); {
 			switch rest[scan] {
+			case '\'', '"':
+				if width := searchVerifyGradleLiteralWidth(rest[scan:]); width > 0 {
+					scan += width
+					continue
+				}
 			case '{':
 				depth++
 			case '}':
@@ -816,22 +825,34 @@ func searchVerifyGradleStatementTail(rest string) string {
 					return rest[:scan+1]
 				}
 			}
+			scan++
 		}
 		return rest
 	}
-	for scan := index; scan < len(rest); scan++ {
-		if rest[scan] == ';' {
+	for scan := index; scan < len(rest); {
+		switch rest[scan] {
+		case '\'', '"':
+			if width := searchVerifyGradleLiteralWidth(rest[scan:]); width > 0 {
+				scan += width
+				continue
+			}
+		case ';':
 			return rest[:scan]
+		case '\n':
+			if !searchVerifyGradleStatementContinues(rest[:scan], rest[scan+1:]) {
+				return rest[:scan]
+			}
 		}
-		if rest[scan] != '\n' {
-			continue
-		}
-		if searchVerifyGradleStatementContinues(rest[:scan], rest[scan+1:]) {
-			continue
-		}
-		return rest[:scan]
+		scan++
 	}
 	return rest
+}
+
+// searchVerifyGradleLiteralWidth reports how far one string literal reaches, or zero when the quote
+// is not closed — in which case the caller steps a single byte rather than swallowing the rest.
+func searchVerifyGradleLiteralWidth(rest string) int {
+	_, width := searchVerifyScriptStringLiteral(rest)
+	return width
 }
 
 // searchVerifyGradleStatementContinues reports whether a statement carries on past a newline: the

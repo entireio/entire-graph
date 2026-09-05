@@ -1087,6 +1087,17 @@ func TestSearchVerifyGradleRemappedProjectIsNotThisDirectory(t *testing.T) {
 			settings: "include(\":lib\")\nproject(\":lib\")\n    .projectDir = file(\"other\")\n",
 		},
 		{
+			// A `}` inside a string is text. Ending the block window at it stopped the scan before
+			// the assignment that follows.
+			name:     "a brace inside a string does not end the block",
+			settings: "include ':lib'\nproject(':lib') { println(\"}\"); projectDir = file('other') }\n",
+		},
+		{
+			// The same for a `;` on the assignment line.
+			name:     "a semicolon inside a string does not end the statement",
+			settings: "include ':lib'\nproject(':lib').buildFileName = 'a;b'; project(':lib').projectDir = file('other')\n",
+		},
+		{
 			name:     "an unremapped project keeps its command",
 			settings: "include ':lib'\n",
 			want:     "./gradlew :lib:test",
