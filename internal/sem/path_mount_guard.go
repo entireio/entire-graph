@@ -20,6 +20,20 @@ type pathMountGuard struct {
 	mountKeys     map[string]struct{}
 }
 
+// readPathMountGuard takes a fresh inventory for each resolver. A table retained
+// from an earlier resolver can miss a newly added mount, allowing Lstat/Open to
+// touch it before the device check can reject it. In particular, independent
+// Git metadata validations have no surrounding snapshot/search operation.
+// Keep the reader explicit so freshness and failure handling can be tested
+// without mounting a filesystem or changing process-global state.
+func readPathMountGuard(root, trustedBase string, read func() (map[string]struct{}, error)) (pathMountGuard, error) {
+	mountPoints, err := read()
+	if err != nil {
+		return pathMountGuard{}, err
+	}
+	return makePathMountGuard(root, trustedBase, mountPoints), nil
+}
+
 func makePathMountGuard(root, trustedBase string, mountPoints map[string]struct{}) pathMountGuard {
 	root = filepath.Clean(root)
 	trustedBase = filepath.Clean(trustedBase)
