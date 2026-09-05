@@ -73,6 +73,10 @@ func TestExtractionEvaluation(t *testing.T) {
 							t.Fatal(err)
 						}
 						observations[step] = observation{size, profile, scenario, trial, arm == 1, elapsed.Nanoseconds(), snapshot.Header.Stats.Extraction, false}
+						if arm == 1 {
+							assertCaptureProvenance(t, snapshot)
+						}
+						snapshot.Header.OperationInputs = nil // separately validated opt-in provenance; semantic digests remain
 						snapshot.Header.Stats.Extraction = nil
 						snapshots[arm] = snapshot
 					}

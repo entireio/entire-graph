@@ -30,6 +30,7 @@ type capturedStore struct {
 	closed      bool
 	active      sync.WaitGroup
 	err         error
+	failure     error
 }
 
 type captureEntry struct {
@@ -49,7 +50,16 @@ func newCapturedStore(ctx context.Context, read contentReader, memoryLimit int64
 	return &capturedStore{ctx: ctx, cancel: cancel, read: read, limit: memoryLimit, entries: make(map[string]*captureEntry), closeDone: make(chan struct{})}
 }
 
-func (store *capturedStore) acquire(path string) (capturedSource, bool, error) {
+func (store *capturedStore) acquire(path string) (sourceResult capturedSource, available bool, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			store.mu.Lock()
+			if store.failure == nil {
+				store.failure = resultErr
+			}
+			store.mu.Unlock()
+		}
+	}()
 	store.mu.Lock()
 	if store.closed {
 		store.mu.Unlock()

@@ -216,6 +216,10 @@ func processProviderFile(
 
 	extraction, reused := sc.extraction.extract(spec, langSpec, source, maxParseBytes)
 	result.reused = reused
+	if extraction.relationFamilies&extractionRawImports != 0 {
+		result.precomputedImports = extraction.rawImports
+		result.hasPrecomputedImports = true
+	}
 	entities, parsedLanguage, parseStatus := extraction.entities, extraction.language, extraction.status
 	if parsedLanguage == "" {
 		result.failures = append(result.failures, PartialFailure{

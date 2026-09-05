@@ -40,6 +40,17 @@ func TestExtractionReuseSnapshotFreshResolution(t *testing.T) {
 	baseline := build(baselineOptions)
 	equal := func(a, b ProviderSnapshot) {
 		t.Helper()
+		if a.Header.OperationInputs != nil {
+			assertCaptureProvenance(t, a)
+		}
+		if b.Header.OperationInputs != nil {
+			assertCaptureProvenance(t, b)
+		}
+		if a.Header.OperationInputs != nil && b.Header.OperationInputs != nil && !reflect.DeepEqual(a.Header.OperationInputs, b.Header.OperationInputs) {
+			t.Fatal("same captured inputs changed identity")
+		}
+		a.Header.OperationInputs = nil
+		b.Header.OperationInputs = nil
 		a.Header.Stats.Extraction = nil
 		b.Header.Stats.Extraction = nil
 		if !reflect.DeepEqual(a, b) {
@@ -160,6 +171,8 @@ func TestExtractionReuseManifestDeleteIgnore(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		assertCaptureProvenance(t, got)
+		got.Header.OperationInputs = nil
 		got.Header.Stats.Extraction = nil
 		if !reflect.DeepEqual(got, want) {
 			t.Fatal("manifest/delete/ignore did not recompute fresh graph")

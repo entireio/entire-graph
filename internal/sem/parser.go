@@ -208,6 +208,9 @@ const treeSitterParseTimeout = 5 * time.Second
 const maxParseWalkDepth = 5000
 
 type ParseStatus struct {
+	// DeterministicSyntaxError is set only after a successful tree parse with error nodes.
+	// Native parser failures and resource limits never set this cache-admission bit.
+	DeterministicSyntaxError bool
 	// ParseError reports that the parse did not fully succeed, so every
 	// consumer surfaces a machine-readable warning for the file.
 	ParseError bool
@@ -380,7 +383,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "YAML" {
 		status := ParseStatus{}
 		if root.HasError() {
-			status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetail(root, src)}
+			status = ParseStatus{ParseError: true, DeterministicSyntaxError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetail(root, src)}
 		}
 		return yamlEntities(path, content), spec.language, status
 	}
@@ -489,7 +492,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 			Detail:        fmt.Sprintf("AST nesting exceeded the %d-level walk limit; declarations nested deeper than that were not extracted", maxParseWalkDepth),
 		}
 	case root.HasError():
-		status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetailWithLineOffset(root, entitySrc, entityLineOffset)}
+		status = ParseStatus{ParseError: true, DeterministicSyntaxError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetailWithLineOffset(root, entitySrc, entityLineOffset)}
 	}
 	return entities, spec.language, status
 }

@@ -163,3 +163,9 @@ func TestRPCSendsBoundedCancellationNotification(t *testing.T) {
 		t.Fatal("no cancellation notification")
 	}
 }
+
+func TestCompilerRejectsMalformedCapturedOperationIdentity(t *testing.T) {
+	if err := validateConfig(Config{OperationID: "not-a-sha256"}); err == nil || !strings.Contains(err.Error(), "operation identity") {
+		t.Fatalf("captured identity validation %v", err)
+	}
+}

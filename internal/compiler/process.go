@@ -34,6 +34,9 @@ func (process *isolatedProcess) close() {
 	})
 }
 func validateConfig(config Config) error {
+	if config.OperationID != "" && !validDigest(config.OperationID) {
+		return errors.New("invalid captured compiler operation identity")
+	}
 	if !filepath.IsAbs(config.ServerPath) || !filepath.IsAbs(config.ToolchainRoot) || !filepath.IsAbs(config.BubblewrapPath) || !validDigest(config.ServerSHA256) {
 		return errors.New("compiler requires explicit absolute installed tool paths and pinned server SHA-256")
 	}

@@ -102,7 +102,7 @@ func loadCachedCompleteSearchSnapshot(
 	options ProviderSnapshotOptions,
 	cacheDir string,
 ) (ProviderSnapshot, bool, error) {
-	if cacheDir == "" {
+	if cacheDir == "" || options.Compiler != nil || options.ExtractionReuse || options.captureInputs {
 		return ProviderSnapshot{}, false, nil
 	}
 	absRepo, err := filepath.Abs(repo)
@@ -167,7 +167,7 @@ func loadOrBuildSearchSnapshot(
 	if options.Profile == "" {
 		options.Profile = ProfileFull
 	}
-	if disableCache || cacheDir == "" {
+	if disableCache || cacheDir == "" || options.Compiler != nil || options.ExtractionReuse || options.captureInputs {
 		snapshot, err := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
 		return snapshot, false, err
 	}
@@ -320,6 +320,9 @@ func preindexProviderSnapshotWithPersistenceReader(
 ) (ProviderSnapshot, bool, error) {
 	if options.Worktree {
 		return ProviderSnapshot{}, false, errors.New("preindex requires a committed HEAD snapshot")
+	}
+	if options.Compiler != nil {
+		return ProviderSnapshot{}, false, errors.New("compiler overlays are operation-local; preindex static facts and request compiler evidence with a query")
 	}
 	if cacheDir == "" {
 		return ProviderSnapshot{}, false, errors.New("preindex requires a cache directory")
