@@ -258,3 +258,23 @@ func (policy *capturedIgnorePolicy) writeCacheKey(writer io.Writer) {
 		writeCacheKeyField(writer, "graphignore-missing", nil)
 	}
 }
+
+// Reuse captured worktree policy bytes if a later content consumer requests the
+// same path. HEAD source bytes intentionally remain from the committed view.
+func capturedPolicyContentReader(repo string, policy *capturedIgnorePolicy, read contentReader) contentReader {
+	inputs := map[string]capturedIgnoreFile{}
+	all := append([]capturedIgnoreFile{policy.graphIgnore}, policy.ignoreFiles...)
+	all = append(all, policy.includeFiles...)
+	for _, input := range all {
+		relative, err := filepath.Rel(repo, input.path)
+		if err == nil && filepath.IsLocal(relative) {
+			inputs[filepath.ToSlash(relative)] = input
+		}
+	}
+	return func(path string) (string, bool) {
+		if input, ok := inputs[path]; ok {
+			return string(input.content), input.present
+		}
+		return read(path)
+	}
+}

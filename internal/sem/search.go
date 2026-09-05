@@ -50,22 +50,26 @@ const (
 // SearchOptions controls local issue-to-code retrieval. Search reads the same
 // HEAD/worktree view and ignore rules as provider snapshots.
 type SearchOptions struct {
-	ExtractionReuse   bool
-	Worktree          bool
-	IgnoreFiles       []string
-	IncludeFiles      []string
-	Profile           Profile
-	TopK              int
-	ContextLines      int
-	MaxRegionLines    int
-	MaxSnippetLines   int
-	MaxRegionsPerFile int
-	MaxParseBytes     int
-	CacheDir          string
-	DisableCache      bool
-	MaxIndexedFiles   int
-	IndexAllFiles     bool
-	MaxContextBytes   int
+	// rankingEvaluationUniform is a test-only ablation, never exposed by the CLI.
+	rankingEvaluationUniform bool
+	Ranking                  string
+	Compiler                 *CompilerOptions
+	ExtractionReuse          bool
+	Worktree                 bool
+	IgnoreFiles              []string
+	IncludeFiles             []string
+	Profile                  Profile
+	TopK                     int
+	ContextLines             int
+	MaxRegionLines           int
+	MaxSnippetLines          int
+	MaxRegionsPerFile        int
+	MaxParseBytes            int
+	CacheDir                 string
+	DisableCache             bool
+	MaxIndexedFiles          int
+	IndexAllFiles            bool
+	MaxContextBytes          int
 	// progressivePreselection is internal policy, not a caller override. The
 	// standard cold default may widen adaptively; explicit and TopK-adaptive
 	// MaxIndexedFiles values remain exact compatibility limits.
@@ -227,14 +231,15 @@ type SearchPassage struct {
 
 // SearchResult is a ranked source region suitable for direct agent context.
 type SearchResult struct {
-	Rank             int     `json:"rank"`
-	Score            float64 `json:"score"`
-	FilePath         string  `json:"file_path"`
-	StartLine        int     `json:"start_line"`
-	EndLine          int     `json:"end_line"`
-	FocusLine        int     `json:"focus_line"`
-	SnippetStartLine int     `json:"snippet_start_line"`
-	SnippetEndLine   int     `json:"snippet_end_line"`
+	Ranking          *SearchRankingComponents `json:"ranking,omitempty"`
+	Rank             int                      `json:"rank"`
+	Score            float64                  `json:"score"`
+	FilePath         string                   `json:"file_path"`
+	StartLine        int                      `json:"start_line"`
+	EndLine          int                      `json:"end_line"`
+	FocusLine        int                      `json:"focus_line"`
+	SnippetStartLine int                      `json:"snippet_start_line"`
+	SnippetEndLine   int                      `json:"snippet_end_line"`
 	// SymbolStartLine/SymbolEndLine are the ENCLOSING symbol's true bounds, which differ from the
 	// snippet bounds whenever the body was elided (too long for the enclosure cap, or a bounded
 	// window). Without them a payload can say `main.c:578-583 symbol=umain` while `umain` actually
@@ -296,20 +301,21 @@ type SearchResult struct {
 }
 
 type SearchStats struct {
-	Extraction                     *ExtractionStats `json:"extraction,omitempty"`
-	QueryConstraintsTruncated      bool             `json:"query_constraints_truncated,omitempty"`
-	FilesScanned                   int              `json:"files_scanned"`
-	PreselectionBackend            string           `json:"preselection_backend,omitempty"`
-	PreselectionPasses             int              `json:"preselection_passes,omitempty"`
-	PreselectionFilesExamined      int              `json:"preselection_files_examined,omitempty"`
-	PreselectionConfidence         float64          `json:"preselection_confidence,omitempty"`
-	PreselectionCoverage           float64          `json:"preselection_coverage,omitempty"`
-	PreselectionDiversity          float64          `json:"preselection_diversity,omitempty"`
-	PreselectionWidened            bool             `json:"preselection_widened,omitempty"`
-	PreselectionBounded            bool             `json:"preselection_bounded,omitempty"`
-	UsagePreselectionBackend       string           `json:"identifier_usage_preselection_backend,omitempty"`
-	UsagePreselectionPasses        int              `json:"identifier_usage_preselection_passes,omitempty"`
-	UsagePreselectionFilesExamined int              `json:"identifier_usage_preselection_files_examined,omitempty"`
+	Ranking                        *graphRankDiagnostics `json:"ranking,omitempty"`
+	Extraction                     *ExtractionStats      `json:"extraction,omitempty"`
+	QueryConstraintsTruncated      bool                  `json:"query_constraints_truncated,omitempty"`
+	FilesScanned                   int                   `json:"files_scanned"`
+	PreselectionBackend            string                `json:"preselection_backend,omitempty"`
+	PreselectionPasses             int                   `json:"preselection_passes,omitempty"`
+	PreselectionFilesExamined      int                   `json:"preselection_files_examined,omitempty"`
+	PreselectionConfidence         float64               `json:"preselection_confidence,omitempty"`
+	PreselectionCoverage           float64               `json:"preselection_coverage,omitempty"`
+	PreselectionDiversity          float64               `json:"preselection_diversity,omitempty"`
+	PreselectionWidened            bool                  `json:"preselection_widened,omitempty"`
+	PreselectionBounded            bool                  `json:"preselection_bounded,omitempty"`
+	UsagePreselectionBackend       string                `json:"identifier_usage_preselection_backend,omitempty"`
+	UsagePreselectionPasses        int                   `json:"identifier_usage_preselection_passes,omitempty"`
+	UsagePreselectionFilesExamined int                   `json:"identifier_usage_preselection_files_examined,omitempty"`
 	// Content-read counters report blobs hydrated into the Go process. Git's
 	// own immutable-tree scans are represented by the backend/pass/examined
 	// counters above; their internal byte IO is deliberately not estimated.
@@ -435,6 +441,8 @@ type SearchStats struct {
 const SearchFormatVersion = 1
 
 type SearchResponse struct {
+	OperationInputs *OperationInputManifest `json:"operation_inputs,omitempty"`
+	Compiler        *CompilerOverlay        `json:"compiler,omitempty"`
 	// FormatVersion leads the payload so a consumer can branch on it before
 	// reading anything else. Search was the only machine-readable surface with no
 	// version discriminator at all: its five sibling query commands emit
@@ -692,7 +700,8 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	return response, nil
 }
 
-func searchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {
+func searchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (response SearchResponse, resultErr error) {
+	var manifestPaths []string
 	q := buildSearchQuery(query)
 	if len(q.terms) == 0 {
 		return SearchResponse{}, errors.New("search query has no meaningful terms")
@@ -730,7 +739,12 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	sparseQuery := buildSparseSearchQuery(query)
 	searchStarted := time.Now()
+	if options.Ranking != "" && options.Ranking != "current" && options.Ranking != "experimental-graph" {
+		return SearchResponse{}, errors.New("ranking must be current or experimental-graph")
+	}
 	baseSnapshotOptions := ProviderSnapshotOptions{
+		captureInputs:      options.Ranking == "experimental-graph",
+		Compiler:           options.Compiler,
 		ExtractionReuse:    options.ExtractionReuse,
 		ExtractionCacheDir: options.CacheDir,
 		NoNetwork:          true,
@@ -740,7 +754,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		MaxParseBytes:      options.MaxParseBytes,
 		Profile:            options.Profile,
 	}
-	searchCacheDisabled := options.DisableCache || options.ExtractionReuse
+	searchCacheDisabled := options.DisableCache || options.ExtractionReuse || options.Compiler != nil || options.Ranking == "experimental-graph"
 	if !options.Worktree && !searchCacheDisabled && options.CacheDir != "" {
 		capturedOptions, captureErr := CaptureProviderCachePolicy(repo, baseSnapshotOptions)
 		if captureErr != nil {
@@ -761,7 +775,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			}
 		}
 	}
-	if options.ExtractionReuse {
+	if options.ExtractionReuse || options.Compiler != nil || options.Ranking == "experimental-graph" {
 		captured, captureErr := prepareSource(ctx, repo, baseSnapshotOptions)
 		if captureErr != nil {
 			return SearchResponse{}, captureErr
@@ -770,6 +784,19 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			defer captured.close()
 		}
 		baseSnapshotOptions.captured = &captured
+		manifestPaths = captured.paths
+		defer func() {
+			if resultErr != nil {
+				return
+			}
+			manifest, err := captured.finishCapture(manifestPaths)
+			if err != nil {
+				response = SearchResponse{}
+				resultErr = err
+				return
+			}
+			response.OperationInputs = manifest
+		}()
 	}
 	var preindexedSnapshot ProviderSnapshot
 	preindexCacheHit := false
@@ -812,6 +839,10 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		replayProvenancePaths = boundedWorktreeSearchReplayProvenance(selection.allFiles)
 	}
 	if len(selectedFiles) == 0 {
+		compilerStatus, compilerErr := compilerNoSelectedSource(options.Compiler)
+		if compilerErr != nil {
+			return SearchResponse{}, compilerErr
+		}
 		// A no-hit query still reports the health of an already-preindexed HEAD
 		// graph. Do not build a cold graph merely to return no results, but do
 		// preserve cached partial failures/completeness and cache-hit provenance.
@@ -841,6 +872,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			symbolsConsidered = len(cachedSnapshot.Symbols)
 		}
 		return SearchResponse{
+			Compiler:              compilerStatus,
 			Query:                 query,
 			RepoRoot:              repoRoot,
 			Commit:                commit,
@@ -887,6 +919,9 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	snapshotOptions := baseSnapshotOptions
 	snapshotOptions.OnlyFiles = onlyFiles
+	if len(onlyFiles) > 0 {
+		manifestPaths = capturedSelectedPaths(manifestPaths, onlyFiles)
+	}
 	snapshot, cacheHit := preindexedSnapshot, preindexCacheHit
 	indexLatency := preindexLoadLatency
 	if cacheHit && len(snapshotOptions.OnlyFiles) > 0 {
@@ -1133,6 +1168,13 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// score that term overlap got right about the TEXT and wrong about the FIX SITE. See
 	// search_boilerplate.go.
 	applySearchBoilerplatePrior(candidates, q)
+	if options.Ranking == "experimental-graph" {
+		diagnostics, rankErr := rerankSearchCandidatesWithPolicy(ctx, candidates, CompilerEnrichedRelations(snapshot, false), options.Deep, options.rankingEvaluationUniform)
+		if rankErr != nil {
+			return SearchResponse{}, rankErr
+		}
+		stats.Ranking = &diagnostics
+	}
 	sortSearchCandidates(candidates)
 	candidates = collapseNearDuplicateCandidates(candidates)
 	semantic := selectSearchCandidates(candidates, q, options.TopK, options.MaxRegionsPerFile, !options.DocumentResolution)
@@ -1512,6 +1554,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		partialFailures = []PartialFailure{}
 	}
 	return SearchResponse{
+		Compiler:              snapshot.Header.Compiler,
 		Query:                 query,
 		RepoRoot:              snapshot.Header.RepoRoot,
 		Commit:                snapshot.Header.Commit,
@@ -1912,7 +1955,7 @@ func preselectSearchFiles(
 		// A resolved commit is what says "this is a Git repository", so a needle the posting lists
 		// cannot price can be answered exactly by one `git grep`. An empty treeish means the working
 		// tree, which is what a worktree search indexes; a HEAD search must grep the commit itself.
-		gitGrepUsable: source.commit != "" && (!options.Worktree || !options.ExtractionReuse),
+		gitGrepUsable: source.commit != "" && (!options.Worktree || (!options.ExtractionReuse && options.Compiler == nil && options.Ranking != "experimental-graph")),
 	}
 	if !options.Worktree {
 		selection.gitGrepTreeish = source.commit
@@ -1957,7 +2000,7 @@ func preselectSearchFiles(
 	matcher := newSearchTermMatcher(q.terms)
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
-	if !options.ExtractionReuse && shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
+	if !options.ExtractionReuse && options.Compiler == nil && options.Ranking != "experimental-graph" && shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
 		matches, grepErr := gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
 		tracked, trackedErr := gitutil.ListIndexFiles(ctx, source.absRepo)
 		if grepErr == nil && trackedErr == nil {

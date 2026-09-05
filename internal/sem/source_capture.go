@@ -27,11 +27,15 @@ func captureOpenedSource(ctx context.Context, opened openedSource, counters ...*
 			if over, found := originalOver(path); found {
 				mu.Lock()
 				overs[path] = over
+				if len(counters) > 0 && counters[0] != nil {
+					counters[0].sourceBytes.Add(over.Bytes)
+				}
 				mu.Unlock()
 			}
 		}
 		return content, ok
 	}, -1)
+	opened.capture = store
 	opened.read = func(path string) (string, bool) {
 		source, ok, err := store.acquire(path)
 		return source.content, ok && err == nil

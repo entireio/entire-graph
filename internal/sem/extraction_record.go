@@ -1,17 +1,20 @@
 package sem
 
 // extractionFormatVersion is private, exact-match data identity. This payload
-// is not a public graph record and is not yet persisted.
-const extractionFormatVersion = 1
+// is not a public graph record; entries require an exact version match.
+const extractionFormatVersion = 3
 
 // extractionRecord contains file-local declarations only. Repository aliases,
 // final IDs, relation resolution and synthetic boundary symbols are recomputed.
-// No raw relation family is present in version 1.
+// Raw imports are the sole supported relation family. A zero bitmap means
+// absent; a set bit with a nil/empty list means computed with no imports.
 type extractionRecord struct {
-	Version      int
-	Language     string
-	Status       ParseStatus
-	Declarations []extractedDeclaration
+	RawImports       []string
+	RelationFamilies uint64
+	Version          int
+	Language         string
+	Status           ParseStatus
+	Declarations     []extractedDeclaration
 }
 
 // extractedDeclaration explicitly preserves parser metadata that Entity JSON
@@ -39,10 +42,14 @@ type extractedDeclaration struct {
 // fileExtraction owns the freshly parsed entities. Default-off persistence does
 // not pay serialization/deep-copy costs; recordExtraction makes an independent
 // payload only when requested by storage or equivalence tests.
+const extractionRawImports uint64 = 1
+
 type fileExtraction struct {
-	entities []Entity
-	language string
-	status   ParseStatus
+	relationFamilies uint64
+	rawImports       []string
+	entities         []Entity
+	language         string
+	status           ParseStatus
 }
 
 func extractCapturedSource(spec profileSpec, language languageSpec, source capturedSource) fileExtraction {

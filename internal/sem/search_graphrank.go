@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"strconv"
 )
 
 // graphRankTransition is an experiment-local transition, not a graph fact.
@@ -13,9 +14,11 @@ type graphRankTransition struct {
 	weight   float64
 }
 type graphRankDiagnostics struct {
-	Nodes, Transitions, Iterations int
-	Residual                       float64
-	Fallback                       string
+	Nodes       int     `json:"nodes"`
+	Transitions int     `json:"transitions"`
+	Iterations  int     `json:"iterations"`
+	Residual    float64 `json:"residual"`
+	Fallback    string  `json:"fallback,omitempty"`
 }
 
 func personalizedPageRank(ctx context.Context, seeds []float64, edges []graphRankTransition, alpha float64, iterations int, tolerance float64) ([]float64, int, float64, error) {
@@ -101,8 +104,12 @@ func personalizedPageRank(ctx context.Context, seeds []float64, edges []graphRan
 
 // graphRankScores is rerank-only. Callers must preserve their existing exact
 // match precedence, file diversity and byte budgeting after using these scores.
-// No product entrypoint calls this experimental core until integration gates.
+// Experimental query integration remains default off pending release gates.
 func graphRankScores(ctx context.Context, lexical map[string]float64, relations []RelationRecord) (map[string]float64, graphRankDiagnostics, error) {
+	return graphRankScoresWithPolicy(ctx, lexical, relations, false)
+}
+
+func graphRankScoresWithPolicy(ctx context.Context, lexical map[string]float64, relations []RelationRecord, uniform bool) (map[string]float64, graphRankDiagnostics, error) {
 	diagnostics := graphRankDiagnostics{Nodes: len(lexical)}
 	if err := ctx.Err(); err != nil {
 		return nil, diagnostics, err
@@ -170,9 +177,14 @@ func graphRankScores(ctx context.Context, lexical map[string]float64, relations 
 		default:
 			weight *= .3
 		}
+		reverseFactor := .5
+		if uniform {
+			weight = 1
+			reverseFactor = 1
+		}
 		forward, reverse := key{from, to, relation.Type}, key{to, from, relation.Type}
 		weights[forward] = math.Max(weights[forward], weight)
-		weights[reverse] = math.Max(weights[reverse], weight*.5)
+		weights[reverse] = math.Max(weights[reverse], weight*reverseFactor)
 		if len(weights) > 10000 {
 			diagnostics.Fallback = "transition_bound"
 			return current, diagnostics, nil
@@ -211,4 +223,57 @@ func graphRankScores(ctx context.Context, lexical map[string]float64, relations 
 		result[id] = .8*seeds[i] + .2*rank[i]/maxRank
 	}
 	return result, diagnostics, nil
+}
+
+// rerankSearchCandidates applies only to the existing candidate pool. A global
+// exact-match fallback preserves the entire current exact-query ordering, not
+// just its top result. Deep sparse fusion requires its own evaluation arm.
+func rerankSearchCandidates(ctx context.Context, candidates []searchCandidate, relations []RelationRecord, deep bool) (graphRankDiagnostics, error) {
+	return rerankSearchCandidatesWithPolicy(ctx, candidates, relations, deep, false)
+}
+
+func rerankSearchCandidatesWithPolicy(ctx context.Context, candidates []searchCandidate, relations []RelationRecord, deep, uniform bool) (graphRankDiagnostics, error) {
+	diagnostics := graphRankDiagnostics{}
+	if deep {
+		diagnostics.Fallback = "deep_fusion_not_evaluated"
+		return diagnostics, nil
+	}
+	lexical := map[string]float64{}
+	keys := make([]string, len(candidates))
+	maximum := 0.0
+	for i, candidate := range candidates {
+		if searchResultHasSignal(candidate.result, "exact-symbol") || searchResultHasSignal(candidate.result, "exact-code-token") {
+			diagnostics.Fallback = "exact_match_preserved"
+			return diagnostics, nil
+		}
+		if candidate.score < 0 || math.IsNaN(candidate.score) || math.IsInf(candidate.score, 0) {
+			diagnostics.Fallback = "nonpositive_or_invalid_lexical_score"
+			return diagnostics, nil
+		}
+		key := candidate.result.SymbolID
+		if key == "" {
+			key = "rank-region:" + extractionIdentity(candidate.result.FilePath, strconv.Itoa(candidate.result.StartLine), strconv.Itoa(candidate.result.EndLine))
+		}
+		keys[i] = key
+		lexical[key] = math.Max(lexical[key], candidate.score)
+		maximum = math.Max(maximum, candidate.score)
+	}
+	scores, diagnostics, err := graphRankScoresWithPolicy(ctx, lexical, relations, uniform)
+	if err != nil || diagnostics.Fallback != "" {
+		return diagnostics, err
+	}
+	for i := range candidates {
+		graphComponent := (scores[keys[i]] - .8*lexical[keys[i]]/maximum) / .2
+		lexicalComponent := candidates[i].score / maximum
+		combined := .8*lexicalComponent + .2*graphComponent
+		candidates[i].result.Ranking = &SearchRankingComponents{Lexical: lexicalComponent, Graph: graphComponent, Combined: combined}
+		candidates[i].score = combined * maximum
+	}
+	return diagnostics, nil
+}
+
+type SearchRankingComponents struct {
+	Lexical  float64 `json:"lexical"`
+	Graph    float64 `json:"graph"`
+	Combined float64 `json:"combined"`
 }

@@ -33,11 +33,9 @@ import (
 )
 
 const (
-	// SchemaVersion is bumped to 1.1 for the additive snapshot fields introduced
-	// alongside boundary source locations (the `external` flag on external records
-	// and the per-symbol source-location fields). The shape is backward compatible
-	// for tolerant readers; the bump lets consumers detect the new fields.
-	SchemaVersion         = "1.1"
+	// Schema 1.2 adds optional extraction telemetry and compiler evidence.
+	// Existing records, meanings and compound-v1 identities remain unchanged.
+	SchemaVersion         = "1.2"
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
 	defaultMaxParseBytes  = 4 * 1024 * 1024
@@ -222,14 +220,16 @@ type ProviderRecord struct {
 }
 
 type SnapshotHeader struct {
-	SchemaVersion   string   `json:"schema_version"`
-	Provider        string   `json:"provider"`
-	ProviderVersion string   `json:"provider_version"`
-	RepoRoot        string   `json:"repo_root"`
-	RepoKey         string   `json:"repo_key"`
-	Commit          string   `json:"commit"`
-	Tree            string   `json:"tree"`
-	Languages       []string `json:"languages"`
+	OperationInputs *OperationInputManifest `json:"operation_inputs,omitempty"`
+	Compiler        *CompilerOverlay        `json:"compiler,omitempty"`
+	SchemaVersion   string                  `json:"schema_version"`
+	Provider        string                  `json:"provider"`
+	ProviderVersion string                  `json:"provider_version"`
+	RepoRoot        string                  `json:"repo_root"`
+	RepoKey         string                  `json:"repo_key"`
+	Commit          string                  `json:"commit"`
+	Tree            string                  `json:"tree"`
+	Languages       []string                `json:"languages"`
 	// LanguageTiers classifies each language present in this snapshot as
 	// "semantic" (grammar-backed extraction) or "inventory-only" (file
 	// discovery + basic symbols), so a consumer can scope trust per language.
@@ -424,11 +424,13 @@ type ProviderSnapshot struct {
 }
 
 type ProviderSnapshotOptions struct {
+	Compiler *CompilerOptions
 	// ExtractionReuse is experimental, default off. It caches only file-local
 	// extraction payloads; working-tree snapshots remain uncached.
 	ExtractionReuse    bool
 	ExtractionCacheDir string
 	captured           *sourceContext
+	captureInputs      bool
 
 	NoNetwork    bool
 	Worktree     bool
@@ -655,16 +657,20 @@ func Capabilities() CapabilityReport {
 		RelationSupportByProfile:        relationSupportByProfile(),
 		HeuristicRelationTypes:          []string{"HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "HANDLES_TOOL", "SIMILAR_TO", "TESTS"},
 		OptionalLocalOnlyFeatures: map[string]bool{
-			"stable_symbol_ids":          true,
-			"semantic_diff":              true,
-			"ndjson_snapshot":            true,
-			"compact_snapshot_ndjson_v1": true,
-			"scip_snapshot_experimental": true,
-			"hybrid_source_search":       true,
-			"near_clone_detection":       true,
-			"git_cochange_edges":         true,
-			"durable_preindex":           true,
-			"focused_neighbors":          true,
+			"extraction_reuse_experimental":      true,
+			"go_compiler_overlay_experimental":   true,
+			"bounded_deeper_impact_experimental": true,
+			"query_graph_ranking_experimental":   true,
+			"stable_symbol_ids":                  true,
+			"semantic_diff":                      true,
+			"ndjson_snapshot":                    true,
+			"compact_snapshot_ndjson_v1":         true,
+			"scip_snapshot_experimental":         true,
+			"hybrid_source_search":               true,
+			"near_clone_detection":               true,
+			"git_cochange_edges":                 true,
+			"durable_preindex":                   true,
+			"focused_neighbors":                  true,
 		},
 		FeaturesRequiringNetworkAccess: map[string]bool{
 			"grammar_download":  false,
@@ -870,15 +876,17 @@ type oversizeReader func(path string) (oversizeFile, bool)
 // the file list, a per-file content reader, and git-state warnings. It holds no
 // file content itself.
 type sourceContext struct {
-	extraction *extractionCache
-	absRepo    string
-	key        string
-	commit     string
-	tree       string
-	paths      []string
-	read       contentReader
-	readPrefix prefixReader
-	oversize   oversizeReader
+	capture         *capturedStore
+	captureIdentity []string
+	extraction      *extractionCache
+	absRepo         string
+	key             string
+	commit          string
+	tree            string
+	paths           []string
+	read            contentReader
+	readPrefix      prefixReader
+	oversize        oversizeReader
 	// ignores is the exact matcher that admitted paths. Search carries it to
 	// whole-tree Git-grep filtering so no second policy-file read can diverge
 	// from the corpus listing.
@@ -935,6 +943,19 @@ func evidenceLimit(spec profileSpec) string {
 // trailing summary), sorting relations for stable output. Intended for tests
 // and small repositories; large repositories should consume StreamSnapshot.
 func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions) (ProviderSnapshot, error) {
+	compilerOptions := options.Compiler
+	if compilerOptions != nil && options.captured == nil {
+		source, err := prepareSource(ctx, repo, options)
+		if err != nil {
+			return ProviderSnapshot{}, err
+		}
+		if source.close != nil {
+			defer source.close()
+		}
+		options.captured = &source
+	}
+	options.Compiler = nil
+
 	var snapshot ProviderSnapshot
 	var summary SnapshotSummary
 	err := StreamSnapshot(ctx, repo, providerVersion, options, func(record any) error {
@@ -957,6 +978,7 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 	if err != nil {
 		return ProviderSnapshot{}, err
 	}
+	snapshot.Header.OperationInputs = summary.OperationInputs
 	snapshot.Header.Languages = summary.Languages
 	snapshot.Header.LanguageTiers = summary.LanguageTiers
 	snapshot.Header.Warnings = summary.Warnings
@@ -968,6 +990,18 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 		right := snapshot.Relations[j].Type + snapshot.Relations[j].FromID + snapshot.Relations[j].ToID
 		return left < right
 	})
+	if compilerOptions != nil {
+		if err := enrichCompilerSnapshot(ctx, &snapshot, *options.captured, *compilerOptions); err != nil {
+			return ProviderSnapshot{}, err
+		}
+	}
+	if options.captured != nil {
+		manifest, err := options.captured.finishCapture(capturedSelectedPaths(options.captured.paths, options.OnlyFiles))
+		if err != nil {
+			return ProviderSnapshot{}, err
+		}
+		snapshot.Header.OperationInputs = manifest
+	}
 	return snapshot, nil
 }
 
@@ -1104,6 +1138,37 @@ func appendFailureClause(existing, incoming string) string {
 // relation dedup key set; it does not scale with held relation records or held
 // file contents.
 func StreamSnapshot(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, emit func(record any) error) error {
+	if options.Compiler != nil {
+		snapshot, err := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
+		if err != nil {
+			return err
+		}
+		if err := emit(snapshot.Header); err != nil {
+			return err
+		}
+		for _, file := range snapshot.Files {
+			if err := emit(file); err != nil {
+				return err
+			}
+		}
+		for _, external := range snapshot.Externals {
+			if err := emit(external); err != nil {
+				return err
+			}
+		}
+		for _, symbol := range snapshot.Symbols {
+			if err := emit(symbol); err != nil {
+				return err
+			}
+		}
+		for _, relation := range snapshot.Relations {
+			if err := emit(relation); err != nil {
+				return err
+			}
+		}
+		return emit(SnapshotSummary{OperationInputs: snapshot.Header.OperationInputs, RecordType: "summary", Languages: snapshot.Header.Languages, LanguageTiers: snapshot.Header.LanguageTiers, Warnings: snapshot.Header.Warnings, PartialFailures: snapshot.Header.PartialFailures, Stats: snapshot.Header.Stats, Completeness: snapshot.Header.Completeness})
+	}
+
 	return streamSnapshotWithWorkerCount(ctx, repo, providerVersion, options, defaultProviderWorkerCount(), emit)
 }
 
@@ -1406,6 +1471,11 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	manifest, captureErr := sc.finishCapture(sc.paths)
+	if captureErr != nil {
+		return captureErr
+	}
+	summary.OperationInputs = manifest
 	if err := emit(summary); err != nil {
 		return err
 	}
@@ -1645,13 +1715,14 @@ func relationDedupKey(r RelationRecord) uint64 {
 // consumer reads it for languages, warnings, partial failures, stats, and the
 // completeness breakdown (the leading header leaves these empty).
 type SnapshotSummary struct {
-	RecordType      string             `json:"record_type"`
-	Languages       []string           `json:"languages"`
-	LanguageTiers   map[string]string  `json:"language_tiers,omitempty"`
-	Warnings        []ProviderWarning  `json:"warnings"`
-	PartialFailures []PartialFailure   `json:"partial_failures"`
-	Stats           ProviderStats      `json:"stats"`
-	Completeness    CompletenessReport `json:"completeness"`
+	OperationInputs *OperationInputManifest `json:"operation_inputs,omitempty"`
+	RecordType      string                  `json:"record_type"`
+	Languages       []string                `json:"languages"`
+	LanguageTiers   map[string]string       `json:"language_tiers,omitempty"`
+	Warnings        []ProviderWarning       `json:"warnings"`
+	PartialFailures []PartialFailure        `json:"partial_failures"`
+	Stats           ProviderStats           `json:"stats"`
+	Completeness    CompletenessReport      `json:"completeness"`
 }
 
 // prepareSource resolves repository identity, lists the source files, and
@@ -1675,6 +1746,13 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		return borrowed, nil
 	}
 
+	if options.ExtractionReuse || options.Compiler != nil || options.captureInputs {
+		capturedPolicy, err := ensureProviderCachePolicy(repo, options)
+		if err != nil {
+			return sourceContext{}, fmt.Errorf("capture operation policy: %w", err)
+		}
+		options = capturedPolicy
+	}
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
 		return sourceContext{}, err
@@ -1704,7 +1782,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		cachePolicy:  options.cachePolicy,
 		maxReadBytes: resolveMaxParseBytes(options.MaxParseBytes),
 		maxFiles:     options.MaxFiles,
-		capture:      options.ExtractionReuse,
+		capture:      options.ExtractionReuse || options.Compiler != nil || options.captureInputs,
 	})
 	if err != nil {
 		return sourceContext{}, err
@@ -1736,7 +1814,10 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 	if options.ExtractionReuse {
 		extraction = &extractionCache{directory: options.ExtractionCacheDir, repository: absRepo + "\x00" + key, build: extractionBuildIdentity()}
 	}
-	if options.ExtractionReuse {
+	if options.ExtractionReuse || options.Compiler != nil || options.captureInputs {
+		if committedRevision == "" && options.cachePolicy != nil {
+			opened.read = capturedPolicyContentReader(absRepo, options.cachePolicy, opened.read)
+		}
 		opened = captureOpenedSource(ctx, opened, extraction)
 	}
 	warnings := append([]ProviderWarning(nil), opened.warnings...)
@@ -1756,18 +1837,20 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 	}
 
 	return sourceContext{
-		extraction: extraction,
-		absRepo:    absRepo,
-		key:        key,
-		commit:     commit,
-		tree:       tree,
-		paths:      paths,
-		read:       opened.read,
-		readPrefix: opened.readPrefix,
-		oversize:   opened.oversize,
-		ignores:    opened.ignores,
-		close:      opened.close,
-		warnings:   warnings,
+		capture:         opened.capture,
+		captureIdentity: operationCaptureIdentity(options, absRepo, key, commit, tree, warnings),
+		extraction:      extraction,
+		absRepo:         absRepo,
+		key:             key,
+		commit:          commit,
+		tree:            tree,
+		paths:           paths,
+		read:            opened.read,
+		readPrefix:      opened.readPrefix,
+		oversize:        opened.oversize,
+		ignores:         opened.ignores,
+		close:           opened.close,
+		warnings:        warnings,
 	}, nil
 }
 
@@ -12353,6 +12436,7 @@ type sourceOptions struct {
 // the oversize registry that explains refused reads, a closer, and any
 // listing-level warnings.
 type openedSource struct {
+	capture    *capturedStore
 	paths      []string
 	read       contentReader
 	readPrefix prefixReader
@@ -12504,7 +12588,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			warnings:   warnings,
 		}, nil
 	}
-	ignores, err := loadWorktreeIgnoreMatcher(repo, options.ignoreFiles, options.includeFiles)
+	ignores, err := loadWorktreeIgnoreMatcherWithPolicy(repo, options.ignoreFiles, options.includeFiles, options.cachePolicy)
 	if err != nil {
 		return openedSource{}, err
 	}

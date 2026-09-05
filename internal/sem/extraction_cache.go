@@ -40,6 +40,10 @@ var extractionBuildIdentity = sync.OnceValue(func() string {
 })
 
 type extractionCache struct {
+	importsParsed, importsReused, importsNS                               atomic.Int64
+	maxBytes                                                              int64
+	maxEntries                                                            int
+	limitsReady                                                           bool
 	directory, repository, build                                          string
 	parsed, reused, sourceBytes, cacheReadBytes, cacheWriteBytes, parseNS atomic.Int64
 	quotaMu                                                               sync.Mutex
@@ -48,6 +52,9 @@ type extractionCache struct {
 	quotaReady                                                            bool
 }
 type ExtractionStats struct {
+	RawImportsParsed  int64 `json:"raw_imports_parsed"`
+	RawImportsReused  int64 `json:"raw_imports_reused"`
+	RawImportsNS      int64 `json:"raw_imports_ns"`
 	FilesParsed       int64 `json:"files_parsed"`
 	FilesReused       int64 `json:"files_reused"`
 	SourceBytesRead   int64 `json:"source_bytes_read"`
@@ -60,14 +67,22 @@ func (cache *extractionCache) stats() *ExtractionStats {
 	if cache == nil {
 		return nil
 	}
-	return &ExtractionStats{FilesParsed: cache.parsed.Load(), FilesReused: cache.reused.Load(), SourceBytesRead: cache.sourceBytes.Load(), CacheBytesRead: cache.cacheReadBytes.Load(), CacheBytesWritten: cache.cacheWriteBytes.Load(), ExtractionNS: cache.parseNS.Load()}
+	return &ExtractionStats{RawImportsParsed: cache.importsParsed.Load(), RawImportsReused: cache.importsReused.Load(), RawImportsNS: cache.importsNS.Load(), FilesParsed: cache.parsed.Load(), FilesReused: cache.reused.Load(), SourceBytesRead: cache.sourceBytes.Load(), CacheBytesRead: cache.cacheReadBytes.Load(), CacheBytesWritten: cache.cacheWriteBytes.Load(), ExtractionNS: cache.parseNS.Load()}
 }
 func (cache *extractionCache) reserve(entry cacheEntry, bytes int64) bool {
 	cache.quotaMu.Lock()
 	defer cache.quotaMu.Unlock()
+	if !cache.limitsReady {
+		cache.maxBytes = extractionConfiguredLimit("ENTIRE_GRAPH_EXTRACTION_CACHE_MAX_BYTES", extractionDiskLimit)
+		cache.maxEntries = int(extractionConfiguredLimit("ENTIRE_GRAPH_EXTRACTION_CACHE_MAX_ENTRIES", extractionEntryLimit))
+		cache.limitsReady = true
+	}
+	if bytes > cache.maxBytes {
+		return false
+	}
 	if !cache.quotaReady || cache.quotaBytes < bytes || cache.quotaEntries < 1 {
 		extractionMaintenance.Lock()
-		freeBytes, freeEntries, ok := maintainExtractionCache(entry, bytes)
+		freeBytes, freeEntries, ok := maintainExtractionCache(entry, bytes, cache.maxBytes, cache.maxEntries)
 		extractionMaintenance.Unlock()
 		if !ok {
 			return false
@@ -111,15 +126,27 @@ func (cache *extractionCache) extract(spec profileSpec, language languageSpec, s
 	if err == nil {
 		if record, ok := loadExtraction(entry, key, cache); ok {
 			cache.reused.Add(1)
-			return fileExtraction{entities: record.entities(), language: record.Language, status: record.Status}, true
+			if record.RelationFamilies&extractionRawImports != 0 {
+				cache.importsReused.Add(1)
+			}
+			return fileExtraction{entities: record.entities(), language: record.Language, status: record.Status, relationFamilies: record.RelationFamilies, rawImports: cloneExtractionStrings(record.RawImports)}, true
 		}
 	}
 	cache.parsed.Add(1)
 	start := time.Now()
 	extraction := extractCapturedSource(spec, language, source)
 	cache.parseNS.Add(time.Since(start).Nanoseconds())
-	if err == nil && extraction.language != "" && !extraction.status.ParseError && !extraction.status.Partial && !extraction.status.DepthExceeded {
+	if rawImportsEligible(spec, source.path, extraction.language) {
+		start := time.Now()
+		extraction.rawImports = importsFor(source.path, source.content)
+		extraction.relationFamilies |= extractionRawImports
+		cache.importsParsed.Add(1)
+		cache.importsNS.Add(time.Since(start).Nanoseconds())
+	}
+	if err == nil && extraction.language != "" && cacheableExtractionStatus(extraction.status) {
 		record := recordExtraction(extraction.entities, extraction.language, extraction.status)
+		record.RelationFamilies = extraction.relationFamilies
+		record.RawImports = cloneExtractionStrings(extraction.rawImports)
 		// Avoid allocating an unbounded serialized derivative of a bounded input.
 		payload, encodeErr := json.Marshal(record)
 		var roundTrip extractionRecord
@@ -165,7 +192,7 @@ func loadExtraction(entry cacheEntry, key string, cache *extractionCache) (extra
 		return extractionRecord{}, false
 	}
 	var envelope extractionEnvelope
-	if json.Unmarshal(data, &envelope) != nil || envelope.Key != key || envelope.Record.Version != extractionFormatVersion || envelope.Record.Language == "" || envelope.Record.Status.ParseError || envelope.Record.Status.Partial || envelope.Record.Status.DepthExceeded {
+	if json.Unmarshal(data, &envelope) != nil || envelope.Key != key || envelope.Record.Version != extractionFormatVersion || envelope.Record.Language == "" || (envelope.Record.RelationFamilies & ^extractionRawImports) != 0 || (envelope.Record.RelationFamilies == 0 && envelope.Record.RawImports != nil) || !cacheableExtractionStatus(envelope.Record.Status) {
 		return extractionRecord{}, false
 	}
 	payload, err := json.Marshal(envelope.Record)
@@ -179,7 +206,7 @@ var extractionMaintenance sync.Mutex
 
 // Maintenance follows held directory capabilities, and removes only internally
 // named regular entries. Admission fails closed when bounded scanning is exceeded.
-func maintainExtractionCache(entry cacheEntry, incoming int64) (int64, int, bool) {
+func maintainExtractionCache(entry cacheEntry, incoming, maxBytes int64, maxEntries int) (int64, int, bool) {
 	if os.MkdirAll(entry.root, 0700) != nil {
 		return 0, 0, false
 	}
@@ -232,7 +259,7 @@ func maintainExtractionCache(entry cacheEntry, incoming int64) (int64, int, bool
 	})
 	remaining := len(items)
 	for _, item := range items {
-		if total+incoming <= extractionDiskLimit*9/10 && remaining < extractionEntryLimit*9/10 {
+		if total+incoming <= maxBytes*9/10 && remaining < max(1, maxEntries*9/10) {
 			break
 		}
 		if dir.Remove(item.name) != nil {
@@ -241,7 +268,7 @@ func maintainExtractionCache(entry cacheEntry, incoming int64) (int64, int, bool
 		total -= item.size
 		remaining--
 	}
-	return extractionDiskLimit - total, extractionEntryLimit - remaining, total+incoming <= extractionDiskLimit && remaining < extractionEntryLimit
+	return maxBytes - total, maxEntries - remaining, total+incoming <= maxBytes && remaining < maxEntries
 }
 
 // Reads refuse redirected descendants as writes do, without creating directories.
@@ -282,4 +309,36 @@ func openExtractionEntry(entry cacheEntry) (*os.File, error) {
 		return nil, os.ErrInvalid
 	}
 	return file, nil
+}
+
+// Cache only fully computed syntax results, including explicitly certified
+// malformed-input diagnostics. Generic E_PARSE_ERROR alone is insufficient.
+func cacheableExtractionStatus(status ParseStatus) bool {
+	if status.Partial || status.DepthExceeded {
+		return false
+	}
+	if status.DeterministicSyntaxError {
+		return status.ParseError && status.Code == "E_PARSE_ERROR"
+	}
+	return !status.ParseError
+}
+
+// Limit the first family to the measured languages and existing import scanner.
+// Other languages and syntax-only profiles explicitly leave the family absent.
+func rawImportsEligible(spec profileSpec, path, language string) bool {
+	if !spec.emits("IMPORTS") || (language != "Go" && language != "TypeScript" && language != "Python") {
+		return false
+	}
+	_, ok := importScanners[strings.ToLower(filepath.Ext(path))]
+	return ok
+}
+
+// Overrides can only tighten the hard safety ceilings. Invalid, zero, negative,
+// and above-ceiling values conservatively select the established default.
+func extractionConfiguredLimit(name string, ceiling int64) int64 {
+	value, err := strconv.ParseInt(os.Getenv(name), 10, 64)
+	if err != nil || value <= 0 || value > ceiling {
+		return ceiling
+	}
+	return value
 }

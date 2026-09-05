@@ -124,6 +124,9 @@ type ProviderRecordsCacheTransaction struct {
 // prepares the one entry used throughout a provider-record cache transaction.
 // Callers must build records with Options before calling Store.
 func BeginProviderRecordsCache(ctx context.Context, repo, providerVersion, commit, tree, mode, cacheDir string, options ProviderSnapshotOptions) (*ProviderRecordsCacheTransaction, error) {
+	if options.Compiler != nil || options.ExtractionReuse {
+		return nil, errors.New("operation-specific compiler or extraction telemetry cannot use persistent record caching")
+	}
 	transaction := &ProviderRecordsCacheTransaction{
 		providerVersion: providerVersion,
 		commit:          commit,

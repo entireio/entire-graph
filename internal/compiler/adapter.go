@@ -21,6 +21,9 @@ const AdapterVersion = "gopls-capsule-v1"
 const PinnedServerVersion = "v0.20.0"
 
 type Config struct {
+	// OperationID binds the caller's captured view, policy and source scope.
+	// Direct adapter tests may omit it and use the capsule-only fallback.
+	OperationID string
 	// Trusted installed paths, never obtained from files in the analyzed repo.
 	ServerPath     string
 	ServerSHA256   string
@@ -96,7 +99,11 @@ func Analyze(ctx context.Context, config Config, files map[string]string, querie
 	for _, input := range inputs {
 		fmt.Fprintf(&operationParts, "%d:%s%d:%s", len(input.Path), input.Path, len(input.Digest), input.Digest)
 	}
-	report.ContextID, err = (BuildContext{OperationID: ContentDigest(operationParts.String()), Inputs: inputs, Configuration: report.Configuration, Packages: modules, AdapterVersion: AdapterVersion, ServerVersion: config.ServerSHA256, ToolchainVersion: report.ToolchainID}).ID()
+	operationID := config.OperationID
+	if operationID == "" {
+		operationID = ContentDigest(operationParts.String())
+	}
+	report.ContextID, err = (BuildContext{OperationID: operationID, Inputs: inputs, Configuration: report.Configuration, Packages: modules, AdapterVersion: AdapterVersion, ServerVersion: config.ServerSHA256, ToolchainVersion: report.ToolchainID}).ID()
 	if err != nil {
 		return fail("compiler_context_unavailable", err)
 	}

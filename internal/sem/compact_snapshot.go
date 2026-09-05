@@ -49,6 +49,9 @@ func (encoder *CompactSnapshotEncoder) Encode(record any) error {
 	}
 	switch typed := record.(type) {
 	case SnapshotHeader:
+		if typed.Compiler != nil {
+			return errors.New("compiler-enriched output requires native NDJSON; projection would lose evidence distinctions")
+		}
 		if encoder.wroteHeader {
 			return errors.New("compact snapshot has more than one header")
 		}
@@ -318,6 +321,9 @@ func (encoder *SCIPSnapshotEncoder) Encode(record any) error {
 	}
 	switch typed := record.(type) {
 	case SnapshotHeader:
+		if typed.Compiler != nil {
+			return errors.New("compiler-enriched output requires native NDJSON; projection would lose evidence distinctions")
+		}
 		if encoder.wroteHeader {
 			return errors.New("scip snapshot has more than one header")
 		}

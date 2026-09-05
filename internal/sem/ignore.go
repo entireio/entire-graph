@@ -374,11 +374,24 @@ func (m *ignoreMatcher) loadBuiltinSecretRules() {
 }
 
 func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) (ignoreMatcher, error) {
+	return loadWorktreeIgnoreMatcherWithPolicy(repo, ignoreFiles, includeFiles, nil)
+}
+
+func loadWorktreeIgnoreMatcherWithPolicy(repo string, ignoreFiles, includeFiles []string, policy *capturedIgnorePolicy) (ignoreMatcher, error) {
 	var matcher ignoreMatcher
 	if err := matcher.loadOptional(filepath.Join(repo, ".gitignore"), false); err != nil {
 		return ignoreMatcher{}, err
 	}
-	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false); err != nil {
+	if policy != nil {
+		if err := policy.validate(repo, ignoreFiles, includeFiles); err != nil {
+			return ignoreMatcher{}, err
+		}
+		if policy.graphIgnore.present {
+			if err := matcher.loadCaptured(policy.graphIgnore, false); err != nil {
+				return ignoreMatcher{}, err
+			}
+		}
+	} else if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false); err != nil {
 		return ignoreMatcher{}, err
 	}
 	// info/exclude is the repository's private exclude list: same syntax and same
@@ -399,7 +412,18 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 		}
 	}
 	matcher.loadBuiltinSecretRules()
-	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
+	if policy != nil {
+		for _, input := range policy.ignoreFiles {
+			if err := matcher.loadCaptured(input, false); err != nil {
+				return ignoreMatcher{}, err
+			}
+		}
+		for _, input := range policy.includeFiles {
+			if err := matcher.loadCaptured(input, true); err != nil {
+				return ignoreMatcher{}, err
+			}
+		}
+	} else if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
 		return ignoreMatcher{}, err
 	}
 	return matcher, nil
