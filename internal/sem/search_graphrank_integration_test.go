@@ -139,3 +139,17 @@ func TestGraphRankingUnrelatedHubAndTransitionBudget(t *testing.T) {
 		t.Fatalf("transition limit changed baseline: %+v %v", diag, err)
 	}
 }
+
+func TestGraphRankingInputScanBoundAndCoverage(t *testing.T) {
+	lexical := map[string]float64{"a": 2, "b": 1, "isolated": 1}
+	edges := []RelationRecord{pathFixtureEdge("a", "b", "CALLS", 1), pathFixtureEdge("outside", "unknown", "CALLS", 1)}
+	_, diag, err := graphRankScores(t.Context(), lexical, edges)
+	if err != nil || diag.InputRelations != 2 || diag.ExaminedRelations != 2 || diag.ConnectedNodes != 2 || diag.Nodes != 3 {
+		t.Fatalf("coverage %+v %v", diag, err)
+	}
+	input := make([]RelationRecord, 100001)
+	got, diag, err := graphRankScores(t.Context(), lexical, input)
+	if err != nil || diag.Fallback != "input_relation_bound" || diag.ExaminedRelations != 0 || !reflect.DeepEqual(got, lexical) {
+		t.Fatalf("unbounded irrelevant scan %+v %v", diag, err)
+	}
+}

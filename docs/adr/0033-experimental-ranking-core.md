@@ -53,3 +53,9 @@ compiler requires explicit pinned configuration. Repetitions and selected arms
 are explicit harness inputs. Smoke tests validate mode selection and one-query
 plumbing only, without scoring quality or collecting performance observations.
 No arm is a public default or authorization to launch a holdout/agent campaign.
+
+Bounded-work follow-up: reject more than 100,000 input relation records before
+scanning, even when most records are outside the candidate scope. Return current
+scores with `input_relation_bound`; diagnostics report input/examined relations
+and connected candidate nodes. This bounds irrelevant-edge scan work without
+changing transitions, weights, ranking, or the 2,000/10,000 topology limits.
