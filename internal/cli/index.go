@@ -13,6 +13,7 @@ import (
 )
 
 type indexFlags struct {
+	Compiler     compilerFlags
 	Repo         string
 	Profile      string
 	CacheDir     string
@@ -30,6 +31,7 @@ type indexFlags struct {
 }
 
 type indexResponse struct {
+	Compiler        *sem.CompilerOverlay   `json:"compiler,omitempty"`
 	FormatVersion   int                    `json:"format_version"`
 	Provider        string                 `json:"provider"`
 	ProviderVersion string                 `json:"provider_version"`
@@ -71,6 +73,10 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	compilerOptions, err := flags.Compiler.options()
+	if err != nil {
+		return err
+	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {
 		return err
@@ -102,6 +108,19 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	var compilerOverlay *sem.CompilerOverlay
+	if compilerOptions != nil {
+		compilerSnapshotOptions := snapOptions
+		compilerSnapshotOptions.Compiler = compilerOptions
+		enriched, buildErr := sem.BuildProviderSnapshotWithOptions(ctx, repo, opts.Version, compilerSnapshotOptions)
+		if buildErr != nil {
+			return buildErr
+		}
+		if enriched.Header.Commit != snapshot.Header.Commit || enriched.Header.Tree != snapshot.Header.Tree || enriched.Header.RepoKey != snapshot.Header.RepoKey {
+			return errors.New("HEAD identity changed during compiler index operation; retry")
+		}
+		compilerOverlay = enriched.Header.Compiler
+	}
 	warnings := snapshot.Header.Warnings
 	if warnings == nil {
 		warnings = []sem.ProviderWarning{}
@@ -111,6 +130,7 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 		partialFailures = []sem.PartialFailure{}
 	}
 	response := indexResponse{
+		Compiler:        compilerOverlay,
 		FormatVersion:   1,
 		Provider:        sem.ProviderName,
 		ProviderVersion: opts.Version,
@@ -163,6 +183,9 @@ func writeIndexText(w io.Writer, r indexResponse, reportPath string) error {
 		fmt.Fprintf(w, "  built in %s\n", time.Duration(r.IndexLatencyMS)*time.Millisecond)
 	}
 
+	if r.Compiler != nil {
+		fmt.Fprintf(w, "  compiler: %s (JSON retains evidence)\n", r.Compiler.Report.Status)
+	}
 	c := r.Counts
 	fmt.Fprintf(w, "  %s of %s files parsed · %s symbols · %s relations\n",
 		humanInt(int64(c.ParsedFiles)), humanInt(int64(c.Files)),
@@ -188,6 +211,13 @@ func parseIndexFlags(args []string) (indexFlags, []string, error) {
 	var rest []string
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
+		case "--compiler", "--require-compiler", "--gopls", "--gopls-sha256", "--go-toolchain", "--compiler-launcher":
+			next, err := flags.Compiler.parse(args, index)
+			if err != nil {
+				return flags, nil, err
+			}
+			index = next
+
 		case "--repo":
 			value, next, err := searchFlagValue(args, index)
 			if err != nil {

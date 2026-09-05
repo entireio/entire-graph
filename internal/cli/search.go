@@ -50,6 +50,8 @@ const (
 )
 
 type searchFlags struct {
+	Ranking         string
+	Compiler        compilerFlags
 	ExtractionReuse bool
 	// VerifyExplain is appended to the emitted VERIFY line as `... 2>&1 | <cmd>`.
 	VerifyExplain         string
@@ -132,10 +134,14 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if strings.TrimSpace(flags.Query) == "" {
 		return errors.New("search requires --query")
 	}
+	compilerOptions, err := flags.Compiler.options()
+	if err != nil {
+		return err
+	}
 	// ZERO-TOLL DELIVERY. When the caller has already computed this session's payload and handed it
 	// to the agent inside context the session pays for anyway, this call must cost nothing: echo
 	// those bytes and return, before the profile, the repo, the cache and the index are touched.
-	if path := strings.TrimSpace(opts.Env.PresearchPath); path != "" {
+	if path := strings.TrimSpace(opts.Env.PresearchPath); path != "" && compilerOptions == nil && !flags.ExtractionReuse && flags.Ranking != "experimental-graph" {
 		return echoPresearchPayload(opts.Stdout, path)
 	}
 	// The echo is decided before any INDEXING work: a replayed payload must not pay for an index
@@ -148,6 +154,9 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	// than promising a fresh ranking. The checks stay deliberately ahead of the index build. See
 	// searchSessionScope and sem.SearchReplayPolicy.
 	session, err := newSearchSession(opts.Env, opts.Stderr)
+	if compilerOptions != nil || flags.ExtractionReuse || flags.Ranking == "experimental-graph" {
+		session = nil
+	}
 	if err != nil {
 		return err
 	}
@@ -183,10 +192,9 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 			forceSessionReplace = true
 		} else {
 			policy, policyErr = sem.ResolveSearchReplayPolicy(ctx, repo, sem.SearchOptions{
-				ExtractionReuse: flags.ExtractionReuse && !flags.DisableCache,
-				Worktree:        false,
-				IgnoreFiles:     flags.IgnoreFiles,
-				IncludeFiles:    flags.IncludeFiles,
+				Worktree:     false,
+				IgnoreFiles:  flags.IgnoreFiles,
+				IncludeFiles: flags.IncludeFiles,
 			})
 		}
 		if policyErr == nil && !policy.MatchesTree(scope.Tree) {
@@ -276,6 +284,9 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		flags.MaxContextBytes = 0
 	}
 	response, err := sem.SearchRepository(ctx, repo, opts.Version, flags.Query, sem.SearchOptions{
+		Ranking:               flags.Ranking,
+		Compiler:              compilerOptions,
+		ExtractionReuse:       flags.ExtractionReuse && !flags.DisableCache,
 		Worktree:              flags.Worktree,
 		IgnoreFiles:           flags.IgnoreFiles,
 		IncludeFiles:          flags.IncludeFiles,
@@ -383,6 +394,24 @@ func searchSessionScopeFor(ctx context.Context, repo string) searchSessionScope 
 }
 
 func writeSearchResponse(out io.Writer, response sem.SearchResponse, format string, contextBudget int) error {
+	if response.Compiler != nil && (format == "text" || format == "agent") {
+		notice := fmt.Sprintf("COMPILER: %s; mapped_evidence=%d (JSON retains evidence)\n", response.Compiler.Report.Status, len(response.Compiler.Calls))
+		if contextBudget > 0 && len(notice) >= contextBudget {
+			notice = "COMPILER: coverage omitted by byte budget\n"
+			if len(notice) > contextBudget {
+				notice = notice[:contextBudget]
+			}
+			_, err := io.WriteString(out, notice)
+			return err
+		}
+		if _, err := io.WriteString(out, notice); err != nil {
+			return err
+		}
+		if contextBudget > 0 {
+			contextBudget -= len(notice)
+		}
+	}
+
 	switch format {
 	case "json":
 		encoder := json.NewEncoder(termsafe.NewJSONWriter(out))
@@ -520,7 +549,7 @@ func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem
 	{
 		encoder := json.NewEncoder(termsafe.NewJSONWriter(out))
 		encoder.SetEscapeHTML(false)
-		if err := encoder.Encode(map[string]any{
+		header := map[string]any{
 			"record_type": "search_header",
 			// The header record carries the envelope version for the same reason
 			// the JSON payload does: a consumer reading the stream must be able to
@@ -531,7 +560,14 @@ func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem
 			"commit":         response.Commit,
 			"tree":           response.Tree,
 			"profile":        response.Profile,
-		}); err != nil {
+		}
+		if response.Compiler != nil {
+			header["compiler"] = response.Compiler
+		}
+		if response.OperationInputs != nil {
+			header["operation_inputs"] = response.OperationInputs
+		}
+		if err := encoder.Encode(header); err != nil {
 			return err
 		}
 		// The closed-set warning leads the stream for the same reason it leads the text output: it is
@@ -2225,6 +2261,21 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.IncludeFiles, i = append(flags.IncludeFiles, value), next
+		case "--compiler", "--require-compiler", "--gopls", "--gopls-sha256", "--go-toolchain", "--compiler-launcher":
+			next, err := flags.Compiler.parse(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			i = next
+		case "--ranking":
+			value, next, err := searchFlagValue(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			if value != "current" && value != "experimental-graph" {
+				return flags, nil, errors.New("--ranking must be current or experimental-graph")
+			}
+			flags.Ranking, i = value, next
 		case "--extraction-cache":
 			value, next, err := searchFlagValue(args, i)
 			if err != nil {
