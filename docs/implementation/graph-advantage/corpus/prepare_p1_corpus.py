@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,7 +20,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_DEST = Path("/Users/thomi/Projects/graph-advantage-p1-corpus")
+DEFAULT_DEST = Path(os.environ.get("P1_CORPUS_ROOT", "/Users/thomi/Projects/graph-advantage-p1-corpus"))
 ENTIRE_COMMIT = "88dd1dc95a996999ae4e456879b6dd86d8027f71"
 QUERY = "trace request routing and graph traversal"
 SEED = 20260905
@@ -39,8 +40,10 @@ SOURCE_EXTENSIONS = {
 }
 EXCLUDED_PARTS = {
     ".git", ".hg", ".svn", "vendor", "node_modules", "third_party", "dist",
-    "build", "generated", "gen", "bazel-out", "_output", "coverage",
+    "build", "generated", "gen", "bazel-out", "_output", "coverage", "docs",
+    "doc", "documentation", "evidence", "examples", "benchmark", "benchmarks",
 }
+PARSABLE_EXTENSIONS = {".go", ".ts", ".tsx", ".py"}
 
 
 def run(*args: str, cwd: Path | None = None, capture: bool = True) -> str:
@@ -67,10 +70,11 @@ def eligible(path: Path) -> bool:
     return path.suffix.lower() in SOURCE_EXTENSIONS
 
 
-def source_inventory(repo: Path) -> tuple[list[str], int]:
+def source_inventory(repo: Path) -> tuple[list[str], int, int]:
     paths: list[str] = []
     total = 0
-    for raw in run("git", "ls-files", "-z", cwd=repo).encode().split(b"\0"):
+    raw_paths = [raw for raw in run("git", "ls-files", "-z", cwd=repo).encode().split(b"\0") if raw]
+    for raw in raw_paths:
         if not raw:
             continue
         rel = Path(os.fsdecode(raw))
@@ -81,14 +85,44 @@ def source_inventory(repo: Path) -> tuple[list[str], int]:
             paths.append(rel.as_posix())
             total += file.stat().st_size
     paths.sort()
-    return paths, total
+    return paths, total, len(raw_paths)
 
 
 def chosen_paths(paths: list[str]) -> list[str]:
     # Hash ordering makes the ten-file sample stable without privileging a
     # repository's top-level directory layout.
     return [p for _, p in sorted((hashlib.sha256(p.encode()).hexdigest(), p)
-                                 for p in paths)[:10]]
+                                 for p in paths if Path(p).suffix.lower() in PARSABLE_EXTENSIONS)[:10]]
+
+
+def query_for(repo: Path, selected: list[str]) -> str:
+    path = selected[0]
+    ignored = {"package", "import", "from", "def", "class", "func", "export", "const",
+               "return", "test", "tests", "init", "input", "number", "string"}
+    text = (repo / path).read_text(errors="ignore")[:65536]
+    identifiers = re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", text)
+    token = next((x for x in identifiers if x.lower() not in ignored), None)
+    if not token:
+        token = Path(path).stem.replace("-", " ").replace("_", " ")
+    return f"find the {token} symbol or entrypoint in {path}"
+
+
+def write_marker(repo: Path, repo_id: str) -> None:
+    marker = repo / ".git" / "p1-corpus-fixture.json"
+    marker.write_text(json.dumps({"id": repo_id, "purpose": "P1 evaluation fixture"}) + "\n")
+
+
+def prepare_branch_variant(repo: Path, record: dict) -> None:
+    branch = "p1-branch-variant"
+    run("git", "switch", "-C", branch, cwd=repo)
+    rel = record["selected_paths"][0]
+    with (repo / rel).open("ab") as f:
+        f.write(comment_for(rel, f"P1-CORPUS {record['id']} committed branch variant").encode())
+    run("git", "add", rel, cwd=repo)
+    run("git", "-c", "user.name=P1 corpus", "-c", "user.email=p1-corpus@example.invalid",
+        "commit", "-q", "-m", "P1 committed branch variant", cwd=repo)
+    record["branch_variant_commit"] = run("git", "rev-parse", "HEAD", cwd=repo)
+    run("git", "checkout", "--detach", record.get("fixture_commit", record["commit"]), cwd=repo)
 
 
 def license_info(repo: Path) -> dict[str, str | None]:
@@ -133,18 +167,23 @@ def make_synthetic(dest: Path) -> dict:
     run("git", "add", ".", cwd=root)
     run("git", "-c", "user.name=P1 corpus", "-c", "user.email=p1-corpus@example.invalid",
         "commit", "-q", "-m", "synthetic P1 seed", cwd=root)
-    paths, total = source_inventory(root)
+    write_marker(root, "synthetic-2000")
+    paths, total, raw_count = source_inventory(root)
     return {
         "id": "synthetic-2000", "kind": "synthetic", "commit": run("git", "rev-parse", "HEAD", cwd=root),
-        "source_counts": {"total": len(paths), "by_extension": {k: v for k, v in counts.items()}},
-        "eligible_bytes": total, "selected_paths": chosen_paths(paths),
+        "raw_tracked_count": raw_count, "all_indexed_count": len(paths), "all_indexed_bytes": total,
+        "language_source_counts": {k: v for k, v in counts.items()},
+        "language_source_bytes": {ext: sum((root / p).stat().st_size for p in paths
+                                            if Path(p).suffix.lower() == f".{ext}")
+                                  for ext in counts},
+        "selected_paths": chosen_paths(paths), "query": query_for(root, chosen_paths(paths)),
         "license": {"path": None, "sha256": None}, "generation_seed": SEED,
         "generation": "2000 independent source files: Go 667, TypeScript 667, Python 666",
     }
 
 
 def repo_record(repo_id: str, repo: Path, source: str, commit: str) -> dict:
-    paths, total = source_inventory(repo)
+    paths, total, raw_count = source_inventory(repo)
     selected = chosen_paths(paths)
     overlays = []
     for idx, path in enumerate(selected):
@@ -156,8 +195,13 @@ def repo_record(repo_id: str, repo: Path, source: str, commit: str) -> dict:
     return {
         "id": repo_id, "kind": "repository", "source": source, "commit": commit,
         "license": license_info(repo), "eligible_ruleset": "p1-source-v1",
-        "eligible_count": len(paths), "eligible_bytes": total,
-        "selected_paths": selected, "overlays": overlays,
+        "raw_tracked_count": raw_count, "all_indexed_count": len(paths), "all_indexed_bytes": total,
+        "language_source_counts": {ext.lstrip("."): sum(1 for p in paths if Path(p).suffix.lower() == ext)
+                                    for ext in sorted(PARSABLE_EXTENSIONS)},
+        "language_source_bytes": {ext.lstrip("."): sum((repo / p).stat().st_size for p in paths
+                                                        if Path(p).suffix.lower() == ext)
+                                   for ext in sorted(PARSABLE_EXTENSIONS)},
+        "selected_paths": selected, "query": query_for(repo, selected), "overlays": overlays,
     }
 
 
@@ -173,8 +217,11 @@ def main() -> int:
         target = dest / repo_id
         if not target.exists():
             run("git", "clone", "--depth", "1", "--no-tags", remote, str(target), capture=False)
+        write_marker(target, repo_id)
         commit = run("git", "rev-parse", "HEAD", cwd=target)
-        records.append(repo_record(repo_id, target, remote, commit))
+        record = repo_record(repo_id, target, remote, commit)
+        prepare_branch_variant(target, record)
+        records.append(record)
 
     # The requested Entire Graph fixture is made from git archive, in a
     # separate non-product repository.  The source checkout is never modified.
@@ -192,11 +239,15 @@ def main() -> int:
     run("git", "add", ".", cwd=entire)
     run("git", "-c", "user.name=P1 corpus", "-c", "user.email=p1-corpus@example.invalid",
         "commit", "-q", "-m", f"archive Entire Graph {ENTIRE_COMMIT[:8]}", cwd=entire)
+    write_marker(entire, "entire-graph-frozen-88dd1dc9")
     archived = repo_record("entire-graph-frozen-88dd1dc9", entire,
                            "git archive from approved Entire Graph checkout", ENTIRE_COMMIT)
     archived["fixture_commit"] = run("git", "rev-parse", "HEAD", cwd=entire)
+    prepare_branch_variant(entire, archived)
     records.append(archived)
-    records.append(make_synthetic(dest))
+    synthetic = make_synthetic(dest)
+    prepare_branch_variant(dest / "synthetic-2000", synthetic)
+    records.append(synthetic)
 
     manifest = {
         "manifest": "p1-corpus-v1", "prepared": "2026-09-05", "query": QUERY,
@@ -211,7 +262,8 @@ def main() -> int:
             {"id": "unchanged", "operation": "repeat query without source changes"},
             {"id": "one-edit", "operation": "apply overlays[0] and query"},
             {"id": "ten-edit", "operation": "apply all ten overlays and query"},
-            {"id": "rename-delete", "operation": "rename selected_paths[0], delete selected_paths[1], query, then restore"},
+            {"id": "rename", "operation": "rename selected_paths[0] to the same-extension *_p1 path, query, then restore"},
+            {"id": "delete", "operation": "delete selected_paths[1], query, then restore"},
             {"id": "branch-switch", "operation": "switch seed branch to a reversible edit branch and back"},
             {"id": "manifest-edit", "operation": "apply a reversible package-manifest/config edit and query"},
         ],
@@ -226,7 +278,7 @@ def main() -> int:
     out = Path(__file__).with_name("corpus-manifest.json")
     out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(json.dumps({"manifest": str(out), "destination": str(dest),
-                      "repositories": [(r["id"], r.get("eligible_count", r.get("source_counts", {}).get("total")), r.get("eligible_bytes")) for r in records]}, indent=2))
+                      "repositories": [(r["id"], r.get("all_indexed_count"), r.get("all_indexed_bytes"), r.get("language_source_counts")) for r in records]}, indent=2))
     return 0
 
 

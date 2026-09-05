@@ -6,7 +6,9 @@ byte totals are machine-readable in [`corpus-manifest.json`](corpus-manifest.jso
 
 The source ruleset is `p1-source-v1`: Git tracked files, regular files only,
 the listed source extensions, and explicit exclusions for vendor/dependency,
-generated/build/output, VCS, coverage and hidden path components. No
+generated/build/output, documentation/evidence, VCS, coverage and hidden path
+components. The ten selected paths per repository are restricted to Go,
+TypeScript/TSX and Python. No
 competitor implementation, comparison artifact, prior conversation or memory
 was consulted. The benchmark runner and scorer consume this manifest but are
 owned elsewhere.

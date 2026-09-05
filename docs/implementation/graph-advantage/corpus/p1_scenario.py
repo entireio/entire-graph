@@ -16,7 +16,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 MANIFEST = HERE / "corpus-manifest.json"
-DEST = Path("/Users/thomi/Projects/graph-advantage-p1-corpus")
+DEST = Path(os.environ.get("P1_CORPUS_ROOT", "/Users/thomi/Projects/graph-advantage-p1-corpus")).resolve()
 
 
 def run(*args: str, cwd: Path, check: bool = True) -> str:
@@ -27,11 +27,25 @@ def run(*args: str, cwd: Path, check: bool = True) -> str:
 
 def repo_path(value: str) -> tuple[str, Path, dict]:
     data = json.loads(MANIFEST.read_text())
+    record = None
     for record in data["repositories"]:
         if record["id"] == value:
-            return record["id"], DEST / value, record
-    p = Path(value).resolve()
-    return p.name, p, next(r for r in data["repositories"] if r["id"] == p.name)
+            p = DEST / value
+            break
+    else:
+        p = Path(value).resolve()
+    if not p.is_dir() or not (p / ".git").is_dir():
+        raise SystemExit(f"not a fixture repository: {p}")
+    try:
+        marker_data = json.loads((p / ".git/p1-corpus-fixture.json").read_text())
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"missing or invalid P1 fixture marker: {p}") from exc
+    if marker_data.get("id") != p.name:
+        raise SystemExit(f"fixture marker id mismatch: {p}")
+    record = next((r for r in data["repositories"] if r["id"] == marker_data["id"]), None)
+    if record is None:
+        raise SystemExit(f"fixture id is not in the manifest: {marker_data['id']}")
+    return p.name, p, record
 
 
 def marker(path: str, text: str) -> str:
@@ -62,11 +76,11 @@ def reset(root: Path, record: dict) -> None:
     baseline = record.get("fixture_commit", record["commit"])
     run("git", "reset", "--hard", baseline, cwd=root)
     run("git", "clean", "-fd", cwd=root)
+    run("git", "checkout", "--detach", baseline, cwd=root)
     branches = run("git", "for-each-ref", "--format=%(refname:short)",
                    "refs/heads/p1-scenario", cwd=root, check=False)
     if branches:
         run("git", "branch", "-D", "p1-scenario", cwd=root, check=False)
-    run("git", "checkout", "--detach", baseline, cwd=root)
 
 
 def apply(root: Path, record: dict, scenario: str) -> dict:
@@ -78,19 +92,32 @@ def apply(root: Path, record: dict, scenario: str) -> dict:
         selected = paths[:1] if scenario == "one-edit" else paths
         for i, rel in enumerate(selected, 1):
             append_overlay(root, rel, f"P1-CORPUS {record['id']} {scenario} edit-{i}")
-    elif scenario == "rename-delete":
+    elif scenario == "rename":
         old = root / paths[0]
-        renamed = old.with_name(old.name + ".p1-renamed")
+        renamed = old.with_name(old.stem + "_p1" + old.suffix)
         renamed.parent.mkdir(parents=True, exist_ok=True)
         old.rename(renamed)
+    elif scenario == "delete":
         (root / paths[1]).unlink()
     elif scenario == "branch-switch":
-        run("git", "switch", "-c", "p1-scenario", cwd=root)
-        append_overlay(root, paths[0], f"P1-CORPUS {record['id']} branch-switch")
+        run("git", "switch", "p1-branch-variant", cwd=root)
     elif scenario == "manifest-edit":
         rel = manifest_path(root)
         if rel:
-            append_overlay(root, rel, f"P1-CORPUS {record['id']} manifest-edit")
+            p = root / rel
+            if rel == "package.json":
+                doc = json.loads(p.read_text())
+                doc["name"] = str(doc.get("name", root.name)) + "-p1"
+                p.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+            elif rel == "go.mod":
+                lines = p.read_text().splitlines()
+                for i, line in enumerate(lines):
+                    if line.startswith("module "):
+                        lines[i] = line + ".p1"
+                        break
+                p.write_text("\n".join(lines) + "\n")
+            else:
+                append_overlay(root, rel, f"P1-CORPUS {record['id']} manifest-edit")
         else:
             rel = ".p1-manifest-overlay"
             (root / rel).write_text("# P1-CORPUS manifest-edit\n")
@@ -136,13 +163,13 @@ def main() -> int:
     rid, root, record = repo_path(args.repository)
     if args.command == "reset":
         reset(root, record)
-        result = digest(root)
+        result = {"reset": "ok"} if os.environ.get("P1_SCENARIO_SKIP_DIGEST") else digest(root)
     elif args.command == "digest":
         result = digest(root)
     else:
         if not args.scenario:
             raise SystemExit("apply requires a scenario")
-        result = apply(root, record, args.scenario)
+        result = apply(root, record, args.scenario) if not os.environ.get("P1_SCENARIO_SKIP_DIGEST") else {"applied": "ok"}
     result["repository_id"] = rid
     result["scenario"] = args.scenario if args.command == "apply" else "baseline" if args.command == "reset" else "observed"
     print(json.dumps(result, indent=2, sort_keys=True))
