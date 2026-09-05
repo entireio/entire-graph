@@ -524,6 +524,59 @@ def code_hashes(root: Path | str | None = None) -> dict:
     return dict(sorted(out.items()))
 
 
+# `git diff HEAD` carries tracked modifications only, and `git status
+# --porcelain` carries untracked *names* only, so a checkout whose sole
+# difference from another is the body of an untracked implementation file
+# digests identically to it. Reading those bodies is what closes that, but
+# reading them unbounded is its own hazard: a bench checkout routinely carries
+# a large untracked build artifact (78MB of `entire-graph-linux-amd64` in one
+# observed tree) and capture() runs at four metadata sites. So budget it —
+# hash smallest-first, which covers the most files for a fixed number of bytes
+# and puts one oversized artifact last rather than first, and record anything
+# past the budget by size instead of dropping it, so the digest stays a total
+# function of the untracked set and the artifact says which files were read.
+_UNTRACKED_MAX_FILES = 512
+_UNTRACKED_MAX_BYTES = 32 << 20  # 32 MiB
+
+
+def _untracked_digest_lines(root: str, run) -> list[str]:
+    """`name\\0<content digest | over-budget size:N>` for each untracked file.
+
+    `--exclude-standard` keeps the set identical to the one `git status
+    --porcelain` reports, so ignored build output never enters the budget.
+    """
+    listing = run("git", "ls-files", "--others", "--exclude-standard",
+                  "--full-name", "-z", "--", ":/")
+    names = [n for n in listing.split("\0") if n]
+    if not names:
+        return []
+    top = run("git", "rev-parse", "--show-toplevel")
+    if not top:
+        return []
+    sized = []
+    for name in names:
+        try:
+            sized.append((os.stat(os.path.join(top, name)).st_size, name))
+        except OSError:
+            sized.append((-1, name))
+    lines, budget, hashed = [], _UNTRACKED_MAX_BYTES, 0
+    for size, name in sorted(sized):
+        if size < 0:
+            lines.append(f"{name}\0unreadable")
+        elif hashed < _UNTRACKED_MAX_FILES and size <= budget:
+            budget -= size
+            hashed += 1
+            # _file_digest caches on (device, inode, size, mtime_ns), so the
+            # four capture() sites in one run re-stat rather than re-read.
+            lines.append(f"{name}\0{_file_digest(os.path.join(top, name))}")
+        else:
+            # Size still separates most edits to a file this large, and the
+            # marker keeps the artifact honest that its bytes were not read.
+            lines.append(f"{name}\0over-budget size:{size}")
+    lines.sort()
+    return lines
+
+
 def git_state(root: Path | str | None = None) -> dict:
     root = str(Path(root) if root else Path(__file__).resolve().parents[2])
     def _run(*a):
@@ -538,9 +591,11 @@ def git_state(root: Path | str | None = None) -> dict:
         # `commit=X, dirty=true` is the same string for two different
         # uncommitted implementations at one checkout, which defeats the point
         # of binding what ran. Digest the working tree so two dirty states are
-        # distinguishable: the tracked diff, plus the porcelain list so an
-        # untracked file counts too.
-        state["dirty_digest"] = _fingerprint(status + "\n" + _run("git", "diff", "HEAD"))
+        # distinguishable: the tracked diff, the porcelain list, and the
+        # contents of the untracked files the list only names.
+        parts = [status, _run("git", "diff", "HEAD")]
+        parts += _untracked_digest_lines(root, _run)
+        state["dirty_digest"] = _fingerprint("\n".join(parts))
     return state
 
 

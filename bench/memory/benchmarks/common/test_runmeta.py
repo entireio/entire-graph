@@ -122,6 +122,85 @@ class CodeHashesTest(unittest.TestCase):
             "two different uncommitted implementations serialize identically",
         )
 
+    def test_untracked_file_contents_reach_the_dirty_digest(self) -> None:
+        """`git diff HEAD` is tracked-only and `--porcelain` lists untracked
+        *names*, so without reading their bodies two checkouts differing solely
+        in an untracked implementation file are stamped with one provenance."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+
+            def git(*args):
+                subprocess.run(("git",) + args, cwd=root, capture_output=True, check=True)
+
+            git("init", "-q")
+            git("config", "user.email", "t@t")
+            git("config", "user.name", "t")
+            (root / "tracked.py").write_text("base\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-qm", "base")
+
+            # Nothing tracked is touched: the whole difference is the body of
+            # an untracked file, which is the case the porcelain list misses.
+            (root / "untracked_impl.py").write_text("variant one\n", encoding="utf-8")
+            first = runmeta.git_state(root)
+            (root / "untracked_impl.py").write_text("variant two\n", encoding="utf-8")
+            second = runmeta.git_state(root)
+
+            self.assertEqual(
+                subprocess.run(("git", "diff", "HEAD"), cwd=root,
+                               capture_output=True, text=True).stdout,
+                "",
+                "premise: the tracked diff is empty, so it cannot carry this change",
+            )
+
+        self.assertTrue(first["dirty"] and second["dirty"])
+        self.assertEqual(first["commit"], second["commit"])
+        self.assertNotEqual(
+            first["dirty_digest"], second["dirty_digest"],
+            "two untracked implementations serialize to one provenance",
+        )
+
+    def test_untracked_content_hashing_is_budgeted(self) -> None:
+        """Bounded on purpose: a bench checkout carries large untracked build
+        artifacts and capture() runs four times a run, so past the byte budget
+        a file is recorded by size rather than read. Small files must still be
+        read even when an oversized one shares the tree."""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+
+            def git(*args):
+                subprocess.run(("git",) + args, cwd=root, capture_output=True, check=True)
+
+            git("init", "-q")
+            git("config", "user.email", "t@t")
+            git("config", "user.name", "t")
+            (root / "tracked.py").write_text("base\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-qm", "base")
+
+            big = root / "artifact.bin"
+            big.write_bytes(b"A" * (runmeta._UNTRACKED_MAX_BYTES + 1))
+            small = root / "impl.py"
+            small.write_text("variant one\n", encoding="utf-8")
+            base = runmeta.git_state(root)
+
+            # Over budget: same size, different bytes -> not read, digest holds.
+            big.write_bytes(b"B" * (runmeta._UNTRACKED_MAX_BYTES + 1))
+            same_size = runmeta.git_state(root)
+            # Over budget but resized -> the size marker still separates it.
+            big.write_bytes(b"B" * (runmeta._UNTRACKED_MAX_BYTES + 2))
+            resized = runmeta.git_state(root)
+            # Under budget alongside it -> read, so an edit is still caught.
+            small.write_text("variant two\n", encoding="utf-8")
+            small_edit = runmeta.git_state(root)
+
+        self.assertEqual(
+            base["dirty_digest"], same_size["dirty_digest"],
+            "an over-budget file is recorded by size, not by content",
+        )
+        self.assertNotEqual(base["dirty_digest"], resized["dirty_digest"])
+        self.assertNotEqual(resized["dirty_digest"], small_edit["dirty_digest"])
+
     def test_hashes_entra_helper_and_dependency_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             harness = Path(tempdir)
