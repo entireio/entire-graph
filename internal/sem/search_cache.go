@@ -787,7 +787,7 @@ func selectiveSearchSnapshotFromFull(
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, shouldStop, emitRelation)
 	} else {
-		forEachRelation(workCtx, sc.key, selective.Files, recordsByFile, budgetedRead, precomputedImports, spec, shouldStop, emitRelation, func(failure PartialFailure) {
+		forEachRelation(workCtx, sc.key, selective.Files, recordsByFile, budgetedRead, precomputedImports, spec, selectiveRelationWorkers(options), shouldStop, emitRelation, func(failure PartialFailure) {
 			relationFailures = append(relationFailures, failure)
 		})
 		// fileChangesWithRelations runs a `git log` subprocess and returns a
@@ -950,6 +950,19 @@ func finalizeSelectiveOrdering(selective *ProviderSnapshot, externalsByID map[st
 // full-build failures already carry for the same file and code into that record
 // instead of adding or dropping one — so the selective path reports the same
 // single record, carrying both phases' effects, that a full build does.
+// selectiveRelationWorkers mirrors the clamp streamSnapshotWithWorkerCount
+// applies to the streaming build: an opt-in wall-clock budget must resolve
+// relations serially, because the retained prefix of a truncated derivation has
+// to be a function of file order alone and parallel workers finish different
+// prefixes depending on scheduling. Without a budget the derivation always runs
+// to completion, so parallelism cannot change what it contains.
+func selectiveRelationWorkers(options ProviderSnapshotOptions) int {
+	if options.MaxDuration > 0 {
+		return 1
+	}
+	return defaultProviderWorkerCount()
+}
+
 func filterSearchPartialFailures(failures []PartialFailure, allowedFiles map[string]bool) []PartialFailure {
 	filtered := make([]PartialFailure, 0, len(failures))
 	for _, failure := range failures {
