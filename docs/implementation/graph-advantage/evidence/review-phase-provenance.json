@@ -1,0 +1,18 @@
+{
+  "phase": "implementation-first-review-follow-up",
+  "sources": [
+    {
+      "path": "/Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md",
+      "sha256": "de576b651bd685888e60b9bf1d1326240248d646cda3ae335d55d0066cc413eb"
+    },
+    {
+      "path": "/Users/thomi/Projects/entire-plan/graph-advantage-progress-review-2026-09-05.md",
+      "sha256": "6d76ddee244a28f582f55d0e5df89b4c6ff2431518ced4f6b77cea1b2bb9d43b"
+    }
+  ],
+  "constraints": [
+    "No comparative evaluation launched",
+    "No prior conversations or competitor sources consulted",
+    "Fixtures independently authored from plan and interim review plus Entire implementation"
+  ]
+}

@@ -31,3 +31,17 @@ native JSON in captured modes includes operation provenance; source context
 budget and separate text-render budget tests remain distinct from metadata bytes.
 Independent reviewer adjudication is absent; the plan does not require a human-only
 reviewer, and no such requirement is inferred here.
+
+
+Implementation-first phase (2026-09-05): comparative evaluation is deferred.
+The harness now accepts `ENTIRE_GRAPH_RANK_ARMS` (comma-separated `current`,
+`current-expansion`, `uniform`, `weighted`, `weighted-compiler`) and
+`ENTIRE_GRAPH_RANK_REPETITIONS` (1..1000). All arms use captured-input handling.
+The expansion control is an explicit identity control: no additional expansion
+has been implemented or measured. The compiler arm requires JSON-encoded pinned
+`compiler.Config` in `ENTIRE_GRAPH_RANK_COMPILER_CONFIG` and requires complete
+backend availability. Existing corpus/output variables remain unchanged.
+`TestGraphRankingEvaluationHarnessPlumbing` smoke-tests one captured baseline
+query and validates options without collecting timings or quality outcomes.
+No new ablation, holdout or agent study ran in this phase. Prior results remain
+attached to their original code versions and continue to fail promotion gates.
