@@ -6,7 +6,7 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
-Implementation and correctness take priority. Comparative measurement campaigns are deferred by the user's revised sequencing. Earlier results and failed gates remain retained; none establish the revised source's performance or quality.
+The user has now authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation and correctness checks are complete; baseline deployment is underway. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
 
 The review findings are addressed in code: type declarations no longer become compiler-confirmed calls; ordinary search and every impact depth consume the effective compiler relation view. Candidate implementation paths remain separate, including terminal covering tests. Source is frozen; immutable integration checks passed.
 
@@ -21,12 +21,12 @@ This table supersedes earlier checkpoint/status statements. “Complete” in th
 
 | Task | Implementation | Correctness evidence | Comparative evaluation | Release gate |
 |---|---|---|---|---|
-| P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Further corpus/scenario measurements deferred | Not passed: full fixed corpus/RSS matrix incomplete |
-| P1.2 pure extraction | Complete: explicit metadata, shared bounded source/policy capture, manifests and sticky errors | Entity field checklist, malformed/overload/language round trips, reader mutation tests; final immutable check passed | Deferred | Not passed |
-| P1.3 storage | Complete: cross-process admission, orphan cleanup, versioned keys, integrity, private atomic writes and bounded decode | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; final immutable check passed | Deferred | Not passed |
-| P1.4 entity integration | Complete: command/policy capture, ordered reuse and fresh IDs/aliases/resolution | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; final immutable check passed | Deferred | Not passed |
+| P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Fixed six-repository campaign prepared; baseline pending | Not passed: full fixed corpus/RSS matrix incomplete |
+| P1.2 pure extraction | Complete: explicit metadata, shared bounded source/policy capture, manifests and sticky errors | Entity field checklist, malformed/overload/language round trips, reader mutation tests; final immutable check passed | Fixed corpus campaign pending | Not passed |
+| P1.3 storage | Complete: cross-process admission, orphan cleanup, versioned keys, integrity, private atomic writes and bounded decode | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; final immutable check passed | Fixed corpus campaign pending | Not passed |
+| P1.4 entity integration | Complete: command/policy capture, ordered reuse and fresh IDs/aliases/resolution | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; final immutable check passed | Fixed corpus campaign pending | Not passed |
 | P1.5 relation inputs | Complete for measured raw-import family: Go/TypeScript/Python fast/full; explicit family presence | Exact relation parity and reuse tests; other families deliberately absent | Further profiling deferred; no new family selected by benchmark tuning | Not passed |
-| P1.6 diagnostics/gates | Complete: diagnostics, policy coverage and rollback controls | Separate parsed/reused/source/cache/phase telemetry; final immutable check passed | Existing cold regression retained; further comparisons deferred | Not passed: performance target previously failed |
+| P1.6 diagnostics/gates | Complete: diagnostics, policy coverage and rollback controls | Separate parsed/reused/source/cache/phase telemetry; final immutable check passed | Existing cold regression retained; fixed corpus campaign pending | Not passed: performance target previously failed |
 | P2.1 feasibility | Complete: pinned gopls v0.20.0 and Linux Bubblewrap execution boundary | Existing positive no-egress/read-only/descendant cancellation checks; final Linux race passed | Hard-Go comparative quality deferred | Not passed |
 | P2.2 client/capture | Complete: bounded lifecycle, source capsule/context identity, mapping and cancellation | Protocol/UTF-16/malformed reply/context/process tests; final immutable check passed | Deferred | Not passed |
 | P2.3 positive integration | Complete: direct declarations and separate implementation candidates; conversions excluded | New conversion/alias/generic fixtures and pinned live fixture; signature/workspace invalidation tests; final Linux race passed | Independent realistic quality evaluation deferred | Not passed |
@@ -64,7 +64,7 @@ The earlier `0038ef70` full `mise run check` passed in 626.23s, but does **not**
 
 ## Retained comparative evidence
 
-No additional performance sweeps, retrieval benchmarks, holdout runs or agent experiments run in this phase. Existing artifacts remain unchanged:
+The prior implementation phase ran no comparative campaigns. The newly authorized P1 campaign has its own frozen protocol and raw artifacts under `p1-corpus-20260905/`. No P2/P3/P4 campaign is authorized in this phase. Existing artifacts remain unchanged:
 
 - P1: 810 paired comparisons / 1,620 observations at the earlier frozen source; all recorded semantic comparisons equal. Large full-profile one-edit median improved approximately 30%, while cold latency regressed approximately 22%; other profiles also failed targets. These are earlier synthetic development results.
 - P2: earlier small compiler-checked synthetic fixture reported static 4/6 versus compiler 6/6 direct targets, with separate candidates 2/2. It does not establish a broad adjudicated quality gate, and does not replace conversion regression verification.
@@ -98,5 +98,12 @@ Fixtures derive from the plan and Entire's maintained behavior, with hand-derive
 Final validation: source commit `88dd1dc9` passed the complete repository check
 and pinned Linux correctness. The initial Linux Git-version prerequisite failure
 is retained; the upgraded run passed without product changes. The validation VM
-is verified deallocated. Evidence-only commits after the source freeze do not
-change tested code. No comparative campaign ran and no merge was performed.
+was deallocated after correctness; it and two identical workers are now active
+for the separately authorized P1 campaign. Evidence-only commits after the source freeze do not
+change tested code. No comparative campaign ran during implementation. No merge was performed.
+
+P1 campaign sources: the user-approved pinned chi, Kubernetes, Zod and Requests
+repositories are evaluation inputs only, alongside frozen Entire source and an
+independent synthetic fixture. See `corpus/corpus-manifest.json` for revisions,
+licenses, selected paths and fixture origins. Official OpenAI model guidance
+was consulted only for the requested cheaper subagent selection.

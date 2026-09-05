@@ -86,8 +86,9 @@ in the denominator and in the failure report.
 ## Baseline phase profiling and selection
 
 Before collecting paired comparisons, the campaign runs a separate baseline
-phase profile over the frozen repository/profile/scenario matrix for
-`snapshot`. It uses three cache-off repetitions per cell and summarizes phase
+phase profile on unchanged inputs for every frozen repository/profile/verb
+combination (108 requests total). Snapshot membership is shared across the
+subsequent scenarios. It uses three cache-off repetitions per cell and summarizes phase
 times by their medians. The current search harness has no equivalent parser
 phase hook, so `search` parse-dominated membership is unavailable by protocol;
 search is still measured and reported in full, but it cannot enter the 25%
@@ -226,3 +227,19 @@ is pure post-processing: it does not query repositories, mutate caches, or
 rerun requests. Its tests use synthetic raw rows only to exercise pairing,
 bootstrap determinism, gate failures, timeouts, zero denominators, and missing
 evidence. They are scorer tests, not benchmark observations.
+
+## Fixed worker limits
+
+Three identical Ubuntu 22.04 Standard_D4s_v5 workers each provide four vCPUs.
+Each worker runs requests serially with `GOMAXPROCS=4`, a 14 GiB systemd
+cgroup memory ceiling (runner plus child), `TasksMax=512`, and the 120-second
+child deadline. Git is 2.55.0 on all workers. The evaluation executable is
+non-race and shared byte-for-byte; this is production API plus native JSON
+serialization timing through a test harness, not distributed CLI timing.
+The source corpus archive includes self-contained Git objects and fixture
+markers. Private blob transfers are preparation/collection, outside measured
+provider execution. Worker resources are deallocated after collection.
+
+An unchanged row with zero total parsed files proves zero eligible reparses.
+For nonzero parses, the current telemetry cannot separate ineligible files;
+the eligible-reparse value is unavailable, keeping that gate incomplete.
