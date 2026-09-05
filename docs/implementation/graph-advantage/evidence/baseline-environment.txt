@@ -1,0 +1,8 @@
+source_commit=3a2a715fad1948e83dc7ebe0d307377ba29e065a
+plan_sha256=de576b651bd685888e60b9bf1d1326240248d646cda3ae335d55d0066cc413eb
+binary_sha256=7dc9a828736c3606f38bf00e9f4917843ffd6d7ec6ad445a03d2731cadb24af4
+go version go1.26.1 darwin/arm64
+macOS-26.6.1-arm64-arm-64bit-Mach-O
+command=GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./internal/sem -run ^$ -bench ^BenchmarkStreamSnapshotWorkerCounts/(workers=1|workers=8)$ -benchtime=1x -count=3 -cpuprofile=/tmp/graph-advantage-baseline.cpu
+page_cache=uncontrolled
+fixture=internal/sem/provider_parallel_test.go:BenchmarkStreamSnapshotWorkerCounts, 600 files x 40 functions

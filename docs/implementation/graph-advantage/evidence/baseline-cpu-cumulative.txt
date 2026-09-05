@@ -1,0 +1,48 @@
+File: sem.test
+Type: cpu
+Time: 2026-09-05 16:38:01 BST
+Duration: 2.61s, Total samples = 3810ms (145.70%)
+Showing nodes accounting for 2610ms, 68.50% of 3810ms total
+Dropped 123 nodes (cum <= 19.05ms)
+Showing top 40 nodes out of 241
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     1750ms 45.93%  runtime.systemstack
+         0     0%     0%     1620ms 42.52%  github.com/entireio/entire-graph/internal/sem.processProviderFile
+         0     0%     0%     1620ms 42.52%  github.com/entireio/entire-graph/internal/sem.runIndexedPipeline[go.shape.178acb3e8949c70ee83b2766765f269facabf959aedc6f31bd80ec4630c5f9c9].func1
+         0     0%     0%     1620ms 42.52%  github.com/entireio/entire-graph/internal/sem.runProviderFilePipeline.func1
+         0     0%     0%     1620ms 42.52%  github.com/entireio/entire-graph/internal/sem.streamSnapshotWithWorkerCount.func3
+         0     0%     0%     1200ms 31.50%  runtime.startm
+         0     0%     0%     1200ms 31.50%  runtime.wakep
+         0     0%     0%     1190ms 31.23%  runtime.notewakeup
+    1190ms 31.23% 31.23%     1190ms 31.23%  runtime.pthread_cond_signal
+         0     0% 31.23%     1190ms 31.23%  runtime.semawakeup
+         0     0% 31.23%     1130ms 29.66%  runtime.ready
+         0     0% 31.23%     1020ms 26.77%  github.com/entireio/entire-graph/internal/sem.TreeSitterParser.ParseWithStatus
+         0     0% 31.23%     1020ms 26.77%  github.com/entireio/entire-graph/internal/sem.parseWithProfile
+         0     0% 31.23%      840ms 22.05%  runtime.send.goready.func1
+         0     0% 31.23%      740ms 19.42%  github.com/entireio/entire-graph/internal/sem.walkEntities (inline)
+         0     0% 31.23%      740ms 19.42%  github.com/entireio/entire-graph/internal/sem.walkEntitiesScoped
+     490ms 12.86% 44.09%      710ms 18.64%  runtime.cgocall
+     660ms 17.32% 61.42%      660ms 17.32%  syscall.rawsyscalln
+         0     0% 61.42%      660ms 17.32%  syscall.syscalln
+         0     0% 61.42%      550ms 14.44%  os.ignoringEINTR (inline)
+         0     0% 61.42%      500ms 13.12%  syscall.syscall6
+         0     0% 61.42%      490ms 12.86%  github.com/entireio/entire-graph/internal/sem.openSource.func7
+         0     0% 61.42%      490ms 12.86%  internal/syscall/unix.Openat (inline)
+         0     0% 61.42%      490ms 12.86%  syscall.openat
+         0     0% 61.42%      380ms  9.97%  os.rootOpenDir
+         0     0% 61.42%      380ms  9.97%  os.rootOpenDir.func1 (inline)
+         0     0% 61.42%      300ms  7.87%  os.(*Root).Lstat
+         0     0% 61.42%      300ms  7.87%  os.doInRoot[go.shape.interface { IsDir bool; ModTime time.Time; Mode io/fs.FileMode; Name string; Size int64; Sys interface {} }]
+         0     0% 61.42%      300ms  7.87%  os.rootStat
+         0     0% 61.42%      280ms  7.35%  runtime.closechan.goready.func1
+         0     0% 61.42%      270ms  7.09%  runtime.lock (partial-inline)
+         0     0% 61.42%      270ms  7.09%  runtime.lock2
+         0     0% 61.42%      270ms  7.09%  runtime.lockWithRank (inline)
+     270ms  7.09% 68.50%      270ms  7.09%  runtime.usleep
+         0     0% 68.50%      240ms  6.30%  github.com/smacker/go-tree-sitter.(*Parser).ParseCtx
+         0     0% 68.50%      240ms  6.30%  github.com/smacker/go-tree-sitter.(*Parser).ParseCtx.func3 (inline)
+         0     0% 68.50%      240ms  6.30%  github.com/smacker/go-tree-sitter._Cfunc_ts_parser_parse_string
+         0     0% 68.50%      240ms  6.30%  os.(*Root).OpenFile
+         0     0% 68.50%      240ms  6.30%  os.doInRoot[go.shape.int]
+         0     0% 68.50%      240ms  6.30%  os.rootOpenFileNolog

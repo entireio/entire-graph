@@ -1,0 +1,33 @@
+File: sem.test
+Type: cpu
+Time: 2026-09-05 16:38:01 BST
+Duration: 2.61s, Total samples = 3.81s (145.70%)
+Showing nodes accounting for 3.58s, 93.96% of 3.81s total
+Dropped 123 nodes (cum <= 0.02s)
+Showing top 25 nodes out of 241
+      flat  flat%   sum%        cum   cum%
+     1.19s 31.23% 31.23%      1.19s 31.23%  runtime.pthread_cond_signal
+     0.66s 17.32% 48.56%      0.66s 17.32%  syscall.rawsyscalln
+     0.49s 12.86% 61.42%      0.71s 18.64%  runtime.cgocall
+     0.27s  7.09% 68.50%      0.27s  7.09%  runtime.usleep
+     0.15s  3.94% 72.44%      0.15s  3.94%  runtime.pthread_cond_wait
+     0.12s  3.15% 75.59%      0.12s  3.15%  runtime.madvise
+     0.11s  2.89% 78.48%      0.11s  2.89%  runtime.memclrNoHeapPointers
+     0.10s  2.62% 81.10%      0.11s  2.89%  runtime.exitsyscall
+     0.08s  2.10% 83.20%      0.08s  2.10%  runtime.pthread_kill
+     0.07s  1.84% 85.04%      0.09s  2.36%  runtime.reentersyscall
+     0.06s  1.57% 86.61%      0.06s  1.57%  runtime.tryDeferToSpanScan
+     0.05s  1.31% 87.93%      0.05s  1.31%  runtime.mallocgcTiny
+     0.04s  1.05% 88.98%      0.04s  1.05%  runtime.kevent
+     0.03s  0.79% 89.76%      0.06s  1.57%  runtime.cgoCheckArg
+     0.03s  0.79% 90.55%      0.03s  0.79%  runtime.cgoIsGoPointer
+     0.02s  0.52% 91.08%      0.02s  0.52%  internal/runtime/sys.DITEnabled
+     0.02s  0.52% 91.60%      0.02s  0.52%  runtime.pthread_cond_timedwait_relative_np
+     0.02s  0.52% 92.13%      0.02s  0.52%  strings.Fields
+     0.01s  0.26% 92.39%      0.18s  4.72%  github.com/entireio/entire-graph/internal/sem.entityFromNode
+     0.01s  0.26% 92.65%      0.07s  1.84%  github.com/smacker/go-tree-sitter.Node.Type
+     0.01s  0.26% 92.91%      0.02s  0.52%  github.com/smacker/go-tree-sitter._Cfunc_ts_node_end_byte
+     0.01s  0.26% 93.18%      0.02s  0.52%  internal/runtime/maps.(*table).uncheckedPutSlot
+     0.01s  0.26% 93.44%      0.07s  1.84%  runtime.cgoCheckPointer
+     0.01s  0.26% 93.70%      0.04s  1.05%  runtime.mallocgcSmallScanNoHeader
+     0.01s  0.26% 93.96%      0.02s  0.52%  runtime.mapaccess2

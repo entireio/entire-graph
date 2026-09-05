@@ -1,0 +1,12 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/entireio/entire-graph/internal/sem
+cpu: Apple M4
+BenchmarkStreamSnapshotWorkerCounts/workers=1-10         	       1	 584202250 ns/op	       600.0 files/op	     24000 relations/op	     24000 symbols/op	183295336 B/op	 3891893 allocs/op
+BenchmarkStreamSnapshotWorkerCounts/workers=1-10         	       1	 603160792 ns/op	       600.0 files/op	     24000 relations/op	     24000 symbols/op	183142488 B/op	 3891311 allocs/op
+BenchmarkStreamSnapshotWorkerCounts/workers=1-10         	       1	 606018292 ns/op	       600.0 files/op	     24000 relations/op	     24000 symbols/op	183081928 B/op	 3891151 allocs/op
+BenchmarkStreamSnapshotWorkerCounts/workers=8-10         	       1	 214647292 ns/op	       600.0 files/op	     24000 relations/op	     24000 symbols/op	183082288 B/op	 3890952 allocs/op
+BenchmarkStreamSnapshotWorkerCounts/workers=8-10         	       1	 197531959 ns/op	       600.0 files/op	     24000 relations/op	     24000 symbols/op	183099056 B/op	 3890912 allocs/op
+BenchmarkStreamSnapshotWorkerCounts/workers=8-10         	       1	 191243083 ns/op	       600.0 files/op	     24000 relations/op	     24000 symbols/op	183112384 B/op	 3890914 allocs/op
+PASS
+ok  	github.com/entireio/entire-graph/internal/sem	3.466s

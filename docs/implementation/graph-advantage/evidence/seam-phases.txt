@@ -1,0 +1,15 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/entireio/entire-graph/internal/sem
+cpu: Apple M4
+BenchmarkExtractionPhases/syntax-only-10         	       1	  63751792 ns/op	    220125 finalize-ns/op	  59448375 inventory-ns/op	     40518 output-bytes/op	   2432583 parse-ns/op	     79000 relations-ns/op	    430956 serialization-ns/op	 2710904 B/op	   27298 allocs/op
+BenchmarkExtractionPhases/syntax-only-10         	       1	  60609125 ns/op	    213542 finalize-ns/op	  57637167 inventory-ns/op	     40518 output-bytes/op	   1213336 parse-ns/op	     67834 relations-ns/op	    133914 serialization-ns/op	 2638200 B/op	   26446 allocs/op
+BenchmarkExtractionPhases/syntax-only-10         	       1	  59965625 ns/op	    196375 finalize-ns/op	  57092958 inventory-ns/op	     40518 output-bytes/op	   1057456 parse-ns/op	     42208 relations-ns/op	    119300 serialization-ns/op	 2640040 B/op	   26443 allocs/op
+BenchmarkExtractionPhases/fast-10                	       1	  69935250 ns/op	    205625 finalize-ns/op	  58715792 inventory-ns/op	     49725 output-bytes/op	   1918043 parse-ns/op	   7338209 relations-ns/op	    223625 serialization-ns/op	 6151376 B/op	   46282 allocs/op
+BenchmarkExtractionPhases/fast-10                	       1	  73433708 ns/op	    209958 finalize-ns/op	  62767625 inventory-ns/op	     49725 output-bytes/op	   1626167 parse-ns/op	   7308084 relations-ns/op	    419087 serialization-ns/op	 6202336 B/op	   45938 allocs/op
+BenchmarkExtractionPhases/fast-10                	       1	  68298459 ns/op	    206917 finalize-ns/op	  57887458 inventory-ns/op	     49725 output-bytes/op	   1517166 parse-ns/op	   7136750 relations-ns/op	    264789 serialization-ns/op	 6042448 B/op	   45904 allocs/op
+BenchmarkExtractionPhases/full-10                	       1	  79304542 ns/op	    210375 finalize-ns/op	  63366417 inventory-ns/op	     65260 output-bytes/op	   1165917 parse-ns/op	  13055625 relations-ns/op	    234746 serialization-ns/op	 6806480 B/op	   51953 allocs/op
+BenchmarkExtractionPhases/full-10                	       1	  75150166 ns/op	    224166 finalize-ns/op	  59290167 inventory-ns/op	     65260 output-bytes/op	   1162416 parse-ns/op	  12713042 relations-ns/op	    392372 serialization-ns/op	 6744400 B/op	   51956 allocs/op
+BenchmarkExtractionPhases/full-10                	       1	  73783375 ns/op	    192375 finalize-ns/op	  58220625 inventory-ns/op	     65260 output-bytes/op	   1146415 parse-ns/op	  12737625 relations-ns/op	    224964 serialization-ns/op	 6771240 B/op	   51941 allocs/op
+PASS
+ok  	github.com/entireio/entire-graph/internal/sem	1.423s

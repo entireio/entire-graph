@@ -159,7 +159,8 @@ func processProviderFile(
 		return result
 	}
 
-	contentBytes := []byte(content)
+	source := captureSource(path, content)
+	contentBytes := []byte(source.content)
 	langSpec, ok := languageForContent(path, content)
 	if !ok {
 		result.failures = append(result.failures, PartialFailure{
@@ -178,7 +179,7 @@ func processProviderFile(
 		RecordType: "file",
 		ID:         fileID(sc.key, path),
 		Path:       path,
-		Blob:       contentHash(contentBytes),
+		Blob:       source.digest,
 		Language:   language,
 		Bytes:      len(contentBytes),
 		Lines:      sourceLineCount(content),
@@ -212,7 +213,8 @@ func processProviderFile(
 		return result
 	}
 
-	entities, parsedLanguage, parseStatus := parseWithProfile(TreeSitterParser{}, spec, langSpec, path, content)
+	extraction := extractCapturedSource(spec, langSpec, source)
+	entities, parsedLanguage, parseStatus := extraction.entities(), extraction.Language, extraction.Status
 	if parsedLanguage == "" {
 		result.failures = append(result.failures, PartialFailure{
 			Code:                 "E_UNSUPPORTED_LANGUAGE",
