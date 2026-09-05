@@ -1,0 +1,8 @@
+{
+  "commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
+  "command": "mise run check",
+  "exit_code": 0,
+  "elapsed_seconds": 653.107,
+  "source_unchanged": true,
+  "changed_sources": []
+}

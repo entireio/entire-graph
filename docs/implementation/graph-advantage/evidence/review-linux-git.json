@@ -1,0 +1,8 @@
+{
+  "reason": "Initial correctness run found VM Git older than required 2.36; product source unchanged",
+  "distribution": "ppa:git-core/ppa",
+  "version": "2.55.0",
+  "binary": "/usr/bin/git",
+  "sha256": "011fb1c28096c72e25688e56793f20b33e68f7f1065489f745763f19b6e9f516",
+  "scope": "Validation VM prerequisite installation only; provider runtime still no-egress"
+}

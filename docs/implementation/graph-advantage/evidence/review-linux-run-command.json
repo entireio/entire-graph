@@ -1,0 +1,3 @@
+[
+  "Enable succeeded: \n[stdout]\n    advantage_review_live_test.go:119: static direct callers=1; static transitive callers=1 (retained as observed coverage, not a missing-edge claim)\n--- PASS: TestLiveReviewCompilerOrdinaryQueries (5.18s)\n=== RUN   TestExtractionReuseCLIReachesSearch\n--- PASS: TestExtractionReuseCLIReachesSearch (0.04s)\n=== RUN   TestCompilerCLIExplicitFallback\n--- PASS: TestCompilerCLIExplicitFallback (0.03s)\n=== RUN   TestCompilerIndexEvidenceDoesNotEnterStaticCache\n--- PASS: TestCompilerIndexEvidenceDoesNotEnterStaticCache (0.18s)\n=== RUN   TestCompilerNoHitAndNativeHeader\n--- PASS: TestCompilerNoHitAndNativeHeader (0.04s)\nPASS\nok  \tgithub.com/entireio/entire-graph/internal/cli\t13.308s\nCORRECTNESS_EXIT=0\n\n[stderr]\n"
+]

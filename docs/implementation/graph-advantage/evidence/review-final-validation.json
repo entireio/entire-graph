@@ -1,0 +1,54 @@
+{
+  "implementation_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
+  "repository_check": {
+    "commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
+    "command": "mise run check",
+    "exit_code": 0,
+    "elapsed_seconds": 653.107,
+    "source_unchanged": true,
+    "changed_sources": []
+  },
+  "linux_correctness": {
+    "commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
+    "exit_code": 0,
+    "source_matches_local_freeze": true,
+    "live_tests_passed": [
+      "TestLiveCompilerDirectAndCandidate",
+      "TestLiveCompilerMissingDependenciesAndCancellation",
+      "TestLiveCompilerWorkspaceAliases",
+      "TestLiveCompilerTagsReplacementAndClosure",
+      "TestLiveCompilerSignatureAndWorkspaceInvalidation",
+      "TestLiveCompilerProcessBoundary",
+      "TestLiveCompilerSemanticMapping",
+      "TestLiveCompilerConversionsAreNotCalls",
+      "TestLiveAdvantageCombinationsAndNextQueryFreshness",
+      "TestLiveReviewCompilerOrdinaryQueries"
+    ],
+    "package_results": [
+      "ok  \tgithub.com/entireio/entire-graph/internal/compiler\t(cached)",
+      "ok  \tgithub.com/entireio/entire-graph/internal/sem\t(cached)",
+      "ok  \tgithub.com/entireio/entire-graph/internal/cli\t13.308s"
+    ],
+    "comparative_evaluation": "not run"
+  },
+  "local_tools": {
+    "go": "go1.26.5 darwin/arm64",
+    "git": "2.53.0"
+  },
+  "linux_tools": {
+    "go": "go1.26.1 linux/amd64",
+    "gopls": "v0.20.0",
+    "git": "2.55.0",
+    "bubblewrap": "0.6.1"
+  },
+  "binary_sha256": "fcfe1b07c6bc8bcdb761d38217b5b38402e8128de3f8a8539b358711e48105b7",
+  "comparative_evaluation": "deferred; no new campaign",
+  "release_gates": "not passed; defaults unchanged",
+  "evidence_sha256": {
+    "review-mise-check.txt": "7e4608324a0dac6f423419f569f6fe6605b4d54b519b8348d0b25ebbe7d9f538",
+    "review-linux-correctness.txt": "f15584029d68134e8fdf6d94d33d4b228ce3696515dbbabce664fd12bda9f457",
+    "review-linux-queries.json": "1965e68ee164257bf10176132c5e51e478f2695e90de82c5aa7a7b2d48be6951",
+    "review-linux-combination.json": "c8fdc2528d05702aaeb3bd3c4bf245a863b29c4fce259a06195e632650ccd6ba",
+    "review-source-freeze.json": "940db7a13161a97b9af75cf922923c1c819adc642e527977f21d20015efcca67"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
+  "exit_code": 0,
+  "source_matches_local_freeze": true,
+  "live_tests_passed": [
+    "TestLiveCompilerDirectAndCandidate",
+    "TestLiveCompilerMissingDependenciesAndCancellation",
+    "TestLiveCompilerWorkspaceAliases",
+    "TestLiveCompilerTagsReplacementAndClosure",
+    "TestLiveCompilerSignatureAndWorkspaceInvalidation",
+    "TestLiveCompilerProcessBoundary",
+    "TestLiveCompilerSemanticMapping",
+    "TestLiveCompilerConversionsAreNotCalls",
+    "TestLiveAdvantageCombinationsAndNextQueryFreshness",
+    "TestLiveReviewCompilerOrdinaryQueries"
+  ],
+  "package_results": [
+    "ok  \tgithub.com/entireio/entire-graph/internal/compiler\t(cached)",
+    "ok  \tgithub.com/entireio/entire-graph/internal/sem\t(cached)",
+    "ok  \tgithub.com/entireio/entire-graph/internal/cli\t13.308s"
+  ],
+  "comparative_evaluation": "not run"
+}
