@@ -690,9 +690,6 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 }
 
 func searchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {
-	// Source preselection walks the worktree before any snapshot build does, so
-	// the scope starts here rather than inside StreamSnapshot alone.
-	beginMountTableScope()
 	q := buildSearchQuery(query)
 	if len(q.terms) == 0 {
 		return SearchResponse{}, errors.New("search query has no meaningful terms")

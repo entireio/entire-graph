@@ -93,11 +93,7 @@ const (
 )
 
 func newPathMountGuard(root, trustedBase string) (pathMountGuard, error) {
-	mountPoints, err := cachedMountPoints(readSolarisMountPoints)
-	if err != nil {
-		return pathMountGuard{}, err
-	}
-	return makePathMountGuard(root, trustedBase, mountPoints), nil
+	return readPathMountGuard(root, trustedBase, readSolarisMountPoints)
 }
 
 // Solaris and illumos expose the current zone's kernel mount snapshot through
