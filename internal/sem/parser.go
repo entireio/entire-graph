@@ -3407,9 +3407,14 @@ func Supported(path string) bool {
 	return ok
 }
 
+var (
+	looksLikeFluxKustomizationManifestRe  = regexp.MustCompile(`(?m)^apiVersion:\s*kustomize\.toolkit\.fluxcd\.io/`)
+	looksLikeFluxKustomizationManifestRe2 = regexp.MustCompile(`(?m)^kind:\s*Kustomization\s*$`)
+)
+
 func looksLikeFluxKustomizationManifest(content string) bool {
-	return regexp.MustCompile(`(?m)^apiVersion:\s*kustomize\.toolkit\.fluxcd\.io/`).MatchString(content) &&
-		regexp.MustCompile(`(?m)^kind:\s*Kustomization\s*$`).MatchString(content)
+	return looksLikeFluxKustomizationManifestRe.MatchString(content) &&
+		looksLikeFluxKustomizationManifestRe2.MatchString(content)
 }
 
 // objcSelectorName returns the first selector segment of an Objective-C
@@ -3449,13 +3454,20 @@ func maskObjectiveCUnsupportedSyntax(content string) string {
 	return strings.Join(lines, "")
 }
 
+var (
+	looksLikeObjectiveCRe  = regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`)
+	looksLikeObjectiveCRe2 = regexp.MustCompile(`(?m)^\s*#import\s+[<"]`)
+)
+
 func looksLikeObjectiveC(content string) bool {
-	return regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`).MatchString(content) ||
-		regexp.MustCompile(`(?m)^\s*#import\s+[<"]`).MatchString(content)
+	return looksLikeObjectiveCRe.MatchString(content) ||
+		looksLikeObjectiveCRe2.MatchString(content)
 }
 
+var looksLikeCPlusPlusHeaderRe = regexp.MustCompile(`(?m)^\s*(namespace|template\s*<|class\s+\w|struct\s+\w+\s*:|using\s+\w+\s*=|(?:inline\s+)?auto\s+\w+\s*\()`)
+
 func looksLikeCPlusPlusHeader(content string) bool {
-	return regexp.MustCompile(`(?m)^\s*(namespace|template\s*<|class\s+\w|struct\s+\w+\s*:|using\s+\w+\s*=|(?:inline\s+)?auto\s+\w+\s*\()`).MatchString(content) ||
+	return looksLikeCPlusPlusHeaderRe.MatchString(content) ||
 		strings.Contains(content, "std::") ||
 		strings.Contains(content, "extern \"C\"") ||
 		strings.Contains(content, "::")
@@ -3602,16 +3614,17 @@ func kustomizeEntities(content string) []Entity {
 	return yamlKeyEntities(content, "kustomize")
 }
 
+var yamlKeyEntitiesKeyRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
+
 func yamlKeyEntities(content, prefix string) []Entity {
 	lines := strings.Split(content, "\n")
-	keyRe := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
 	var entities []Entity
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		match := keyRe.FindStringSubmatch(trimmed)
+		match := yamlKeyEntitiesKeyRe.FindStringSubmatch(trimmed)
 		if match == nil {
 			continue
 		}
@@ -3621,13 +3634,14 @@ func yamlKeyEntities(content, prefix string) []Entity {
 	return entities
 }
 
+var jsonLikeEntitiesKeyRe = regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
+
 func jsonLikeEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	keyRe := regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
-		match := keyRe.FindStringSubmatch(line)
+		match := jsonLikeEntitiesKeyRe.FindStringSubmatch(line)
 		if match == nil || seen[match[1]] {
 			continue
 		}
@@ -3637,18 +3651,21 @@ func jsonLikeEntities(content string) []Entity {
 	return entities
 }
 
+var (
+	tomlEntitiesSectionRe = regexp.MustCompile(`^\s*\[+\s*([A-Za-z0-9_.-]+)\s*\]+`)
+	tomlEntitiesKeyRe     = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
+)
+
 func tomlEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	sectionRe := regexp.MustCompile(`^\s*\[+\s*([A-Za-z0-9_.-]+)\s*\]+`)
-	keyRe := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
 		name := ""
 		kind := "section"
-		if match := sectionRe.FindStringSubmatch(line); match != nil {
+		if match := tomlEntitiesSectionRe.FindStringSubmatch(line); match != nil {
 			name = match[1]
-		} else if match := keyRe.FindStringSubmatch(line); match != nil {
+		} else if match := tomlEntitiesKeyRe.FindStringSubmatch(line); match != nil {
 			name = match[1]
 			kind = "setting"
 		}
@@ -3661,13 +3678,14 @@ func tomlEntities(content string) []Entity {
 	return entities
 }
 
+var xmlEntitiesTagRe = regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
+
 func xmlEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	tagRe := regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
-		match := tagRe.FindStringSubmatch(line)
+		match := xmlEntitiesTagRe.FindStringSubmatch(line)
 		if match == nil || strings.HasPrefix(match[1], "?") || seen[match[1]] {
 			continue
 		}
@@ -3677,15 +3695,16 @@ func xmlEntities(content string) []Entity {
 	return entities
 }
 
+var makeEntitiesTargetRe = regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
+
 func makeEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	targetRe := regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
 	var entities []Entity
 	for i, line := range lines {
 		if strings.HasPrefix(line, "\t") || strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
-		match := targetRe.FindStringSubmatch(line)
+		match := makeEntitiesTargetRe.FindStringSubmatch(line)
 		if match == nil || strings.Contains(match[1], "=") {
 			continue
 		}
@@ -3694,19 +3713,22 @@ func makeEntities(content string) []Entity {
 	return entities
 }
 
+var (
+	markdownEntitiesHeadingRe = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+	markdownEntitiesFenceRe   = regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
+)
+
 func markdownEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	headingRe := regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
-	fenceRe := regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
 	var entities []Entity
 	fenceIndex := 0
 	for i, line := range lines {
-		if match := headingRe.FindStringSubmatch(line); match != nil {
+		if match := markdownEntitiesHeadingRe.FindStringSubmatch(line); match != nil {
 			name := strings.TrimSpace(strings.Trim(match[2], "#"))
 			entities = append(entities, simpleFallbackEntity("section", slugName(name), "markdown heading "+name, i+1, i+1, strings.TrimSpace(line)))
 			continue
 		}
-		if match := fenceRe.FindStringSubmatch(line); match != nil {
+		if match := markdownEntitiesFenceRe.FindStringSubmatch(line); match != nil {
 			fenceIndex++
 			lang := match[1]
 			if lang == "" {
@@ -3719,15 +3741,16 @@ func markdownEntities(content string) []Entity {
 	return entities
 }
 
+var htmlEntitiesIdRe = regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
+
 func htmlEntities(path, content string) []Entity {
 	lines := strings.Split(content, "\n")
-	idRe := regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
 	var entities []Entity
 	seen := map[string]bool{}
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	entities = append(entities, simpleFallbackEntity("document", base, "html document "+base, 1, maxInt(1, len(lines)), base))
 	for i, line := range lines {
-		for _, match := range idRe.FindAllStringSubmatch(line, -1) {
+		for _, match := range htmlEntitiesIdRe.FindAllStringSubmatch(line, -1) {
 			name := slugName(match[1])
 			if name == "" || seen[name] {
 				continue
@@ -3739,12 +3762,13 @@ func htmlEntities(path, content string) []Entity {
 	return entities
 }
 
+var cssEntitiesSelectorRe = regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
+
 func cssEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	selectorRe := regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
 	var entities []Entity
 	for i, line := range lines {
-		match := selectorRe.FindStringSubmatch(line)
+		match := cssEntitiesSelectorRe.FindStringSubmatch(line)
 		if match == nil {
 			continue
 		}
@@ -4093,10 +4117,12 @@ func simpleFallbackEntity(kind, name, signature string, startLine, endLine int, 
 	}
 }
 
+var slugNameRe = regexp.MustCompile(`[^A-Za-z0-9_.:/-]+`)
+
 func slugName(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.Trim(name, `"'`)
-	name = regexp.MustCompile(`[^A-Za-z0-9_.:/-]+`).ReplaceAllString(name, "-")
+	name = slugNameRe.ReplaceAllString(name, "-")
 	name = strings.Trim(name, "-")
 	return name
 }
@@ -5517,18 +5543,17 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 		kind = "function"
 		name = nodeName(node, src)
-		if language == "Objective-C" || language == "C" {
-			// A C function routinely returns a typedef'd type
+		if language == "Objective-C" || language == "C" || language == "C++" {
+			// A C-family function routinely returns a named type
 			// (`CURLcode curl_easy_perform(...)`, `static NSString * Escape(...)`
-			// in a .m file), whose type_identifier is the first name node in
-			// pre-order, so nodeName would misname the function after its
-			// return type. Take the identifier from the declarator field
-			// instead. Gated to C and Objective-C so C++ extraction (qualified
-			// names, destructors) is unchanged.
-			if declarator := node.ChildByFieldName("declarator"); validNode(declarator) {
-				if id := firstDescendantOfType(declarator, "identifier"); validNode(id) {
-					name = strings.TrimSpace(id.Content(src))
-				}
+			// in a .m file, `std::string Config::name() const`), whose
+			// type_identifier is the first name node in pre-order, so nodeName
+			// would misname the function after its return type — collapsing
+			// every `std::string`-returning function in a repo onto the single
+			// name `string`. Take the declared name from the declarator field
+			// instead.
+			if declared := cFamilyDeclaratorName(node, src); declared != "" {
+				name = declared
 			}
 		}
 		if scope != "" {
@@ -7838,6 +7863,8 @@ func javascriptVariableDeclaratorEnd(content string, valueStart int) int {
 	return len(content)
 }
 
+var javascriptAssignmentMethodEntitiesRe = regexp.MustCompile(`\s*\.\s*`)
+
 func javascriptAssignmentMethodEntities(content string) []Entity {
 	matches := jsAssignmentMethodPattern.FindAllStringSubmatchIndex(content, -1)
 	entities := make([]Entity, 0, len(matches))
@@ -7845,7 +7872,7 @@ func javascriptAssignmentMethodEntities(content string) []Entity {
 		if len(match) < 4 {
 			continue
 		}
-		name := strings.Join(regexp.MustCompile(`\s*\.\s*`).Split(strings.TrimSpace(content[match[2]:match[3]]), -1), ".")
+		name := strings.Join(javascriptAssignmentMethodEntitiesRe.Split(strings.TrimSpace(content[match[2]:match[3]]), -1), ".")
 		if name == "" || strings.HasPrefix(name, "module.exports.") || strings.HasPrefix(name, "exports.") {
 			// Export alias properties are useful exports, but not object/prototype
 			// method declarations with a stable receiver.
@@ -8907,6 +8934,176 @@ func firstNamedChildOfType(node *sitter.Node, nodeType string) *sitter.Node {
 	return nil
 }
 
+// cFamilyDeclaratorName returns the name a C/C++/Objective-C function
+// definition declares, read from its `declarator` field rather than from the
+// first name node in pre-order. Pre-order finds the RETURN TYPE whenever the
+// return type is a named type, so `std::string Config::name() const` was
+// extracted as a symbol called `string` — and every other std::string-returning
+// function in the repository collapsed onto that same name.
+//
+// Pointer, array and function declarators nest their target under the same
+// `declarator` field, so the name is found by walking that chain; a reference
+// declarator nests its target as a plain child instead, so the walk drops to
+// firstDeclaratorChild there. C++ adds name shapes C does not have: a member
+// definition names its method with `field_identifier`, an out-of-line
+// definition names it with `qualified_identifier` (`Config::name`) or
+// `destructor_name` (`~Config`), and an overload names it with `operator_name`
+// (`operator new`) or `operator_cast` (`operator const char*`). The bare name
+// is what is kept, matching the pre-existing extraction of primitive-returning
+// members. Anything this walk does not model falls back to the historical
+// pre-order identifier search so no declarator shape loses a name it had.
+func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
+	declarator := node.ChildByFieldName("declarator")
+	if !validNode(declarator) {
+		return ""
+	}
+	for cur := declarator; validNode(cur); {
+		switch cur.Type() {
+		case "identifier", "field_identifier":
+			return strings.TrimSpace(cur.Content(src))
+		case "operator_name":
+			// An overloaded operator declares its name with `operator_name`
+			// (`void *operator new(size_t n)`, `operator delete[]`), whose
+			// operator token is anonymous, so the node holds no identifier at
+			// all. Without this case the walk drops out to the pre-order
+			// identifier search below, which steps straight past the
+			// identifier-free operator_name into the parameter list and names
+			// the function after its FIRST PARAMETER — `operator new` became
+			// `n`, `operator delete` became `p`. The whole spelling is the
+			// name, exactly as C++ writes it, with the optional whitespace C++
+			// allows between its tokens folded out.
+			return canonicalOperatorName(cur.Content(src))
+		case "operator_cast":
+			// A conversion operator (`operator const char*() const`) is named
+			// for the type it converts to, and carries no identifier either;
+			// previously it produced no name at all. Its text runs up to the
+			// (always present) parameter list, so cutting at the first `(`
+			// keeps `operator const char*` and drops `() const`.
+			// Cut at the parameter list STRUCTURALLY. The target type can
+			// contain parentheses of its own -- `operator decltype(value)()
+			// const` and `operator void(*)()` are both valid -- so the first
+			// '(' is not reliably the parameter list. Cutting there produced
+			// `operator decltype` and `operator void`, collapsing unrelated
+			// conversions onto one name and one symbol ID.
+			//
+			// The operator's parameter list is the LAST parameter list under its
+			// declarator child, so the type is everything before that node starts.
+			// A function-pointer target contributes an earlier parameter list of
+			// its own (`operator void(*)(int)()`), which must remain in the name.
+			endByte := cur.EndByte()
+			cutAtParams := false
+			for i := 0; i < int(cur.ChildCount()); i++ {
+				child := cur.Child(i)
+				if !validNode(child) || !strings.HasSuffix(child.Type(), "declarator") {
+					continue
+				}
+				params := lastDescendantOfType(child, "parameter_list")
+				if validNode(params) && params.StartByte() > cur.StartByte() {
+					endByte = params.StartByte()
+					cutAtParams = true
+					break
+				}
+			}
+			text := nodeTextWithoutComments(cur, endByte, src)
+			if !cutAtParams {
+				if paren := strings.IndexByte(text, '('); paren >= 0 {
+					text = text[:paren]
+				}
+			}
+			if name := canonicalOperatorName(text); name != "" {
+				return name
+			}
+		case "qualified_identifier", "template_function":
+			if named := cur.ChildByFieldName("name"); validNode(named) {
+				cur = named
+				continue
+			}
+		case "destructor_name":
+			if id := firstDescendantOfType(cur, "identifier"); validNode(id) {
+				return strings.TrimSpace(id.Content(src))
+			}
+		}
+		next := cur.ChildByFieldName("declarator")
+		if !validNode(next) {
+			// A `reference_declarator` (`Cell &at(int i)`) hangs the declarator
+			// it wraps off an UNNAMED child instead of a `declarator` field, so
+			// a field-only walk stops at the `&`. The fallback below then reads
+			// the first identifier under it, which for a member function is the
+			// first parameter (the method's own name is a `field_identifier`,
+			// which that search skips): `Cell &at(int i)` was named `i`.
+			next = firstDeclaratorChild(cur)
+		}
+		if !validNode(next) {
+			break
+		}
+		cur = next
+	}
+	if id := firstDescendantOfType(declarator, "identifier"); validNode(id) {
+		return strings.TrimSpace(id.Content(src))
+	}
+	return ""
+}
+
+// firstDeclaratorChild returns the declarator a C-family declarator wraps when
+// the grammar attaches it as a plain child rather than under a `declarator`
+// field, as tree-sitter-cpp does for `reference_declarator` and
+// `abstract_reference_declarator`.
+func firstDeclaratorChild(node *sitter.Node) *sitter.Node {
+	if !validNode(node) {
+		return nil
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if validNode(child) && strings.HasSuffix(child.Type(), "declarator") {
+			return child
+		}
+	}
+	return nil
+}
+
+// canonicalOperatorName folds an operator's name down to one spelling. C++
+// permits whitespace between every token of the name, so `operator const char*`,
+// `operator const char *` and `operator  const  char  *` all name the SAME
+// conversion, and `operator new[]`, `operator new []` the same allocation
+// function. The name feeds compound-v1 symbol identity, so carrying the
+// author's spacing into it gives one function a new ID after a whitespace-only
+// edit and gives two files that spell one operator differently two entities for
+// one function.
+//
+// Runs of whitespace collapse to a single space first, then every space that
+// touches a non-identifier byte is dropped. The surviving spaces are exactly
+// those separating two identifier tokens -- `const char`, `unsigned long`,
+// `operator new` -- where dropping the space would fuse two distinct tokens
+// into one and make genuinely different operators collide. Bytes >= 0x80 count
+// as identifier bytes so a UTF-8 identifier is never split or joined.
+func canonicalOperatorName(text string) string {
+	collapsed := normalize(text)
+	var b strings.Builder
+	b.Grow(len(collapsed))
+	for i := 0; i < len(collapsed); i++ {
+		c := collapsed[i]
+		if c == ' ' && i > 0 && i+1 < len(collapsed) &&
+			(!operatorNameWordByte(collapsed[i-1]) || !operatorNameWordByte(collapsed[i+1])) {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// operatorNameWordByte reports whether c can be part of an identifier token, so
+// that a space beside it is load-bearing rather than decoration.
+func operatorNameWordByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '_', c >= 0x80:
+		return true
+	default:
+		return false
+	}
+}
+
 // firstDescendantOfType returns the first node of nodeType in a pre-order
 // descent of node's subtree.
 //
@@ -8933,6 +9130,57 @@ func firstDescendantOfTypeAt(node *sitter.Node, nodeType string, depth int) *sit
 		}
 	}
 	return nil
+}
+
+// lastDescendantOfType returns the last node of nodeType in source order.
+// Conversion operators use it to distinguish parameter lists embedded in a
+// function-pointer target type from the operator's own final parameter list.
+func lastDescendantOfType(node *sitter.Node, nodeType string) *sitter.Node {
+	return lastDescendantOfTypeAt(node, nodeType, 0)
+}
+
+func lastDescendantOfTypeAt(node *sitter.Node, nodeType string, depth int) *sitter.Node {
+	if !validNode(node) || depth >= maxParseWalkDepth {
+		return nil
+	}
+	var found *sitter.Node
+	if node.Type() == nodeType {
+		found = node
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if candidate := lastDescendantOfTypeAt(node.NamedChild(i), nodeType, depth+1); validNode(candidate) {
+			found = candidate
+		}
+	}
+	return found
+}
+
+// nodeTextWithoutComments returns node's source through endByte with comment
+// nodes blanked to whitespace. The tree identifies comments structurally, so
+// comment-looking text inside a literal remains part of the type expression.
+func nodeTextWithoutComments(node *sitter.Node, endByte uint32, src []byte) string {
+	if !validNode(node) || node.StartByte() >= endByte || int(endByte) > len(src) {
+		return ""
+	}
+	startByte := node.StartByte()
+	text := append([]byte(nil), src[startByte:endByte]...)
+	maskCommentDescendants(node, startByte, endByte, text, 0)
+	return string(text)
+}
+
+func maskCommentDescendants(node *sitter.Node, startByte, endByte uint32, text []byte, depth int) {
+	if !validNode(node) || depth >= maxParseWalkDepth || node.StartByte() >= endByte || node.EndByte() <= startByte {
+		return
+	}
+	if node.Type() == "comment" {
+		start := maxInt(0, int(node.StartByte()-startByte))
+		end := minInt(len(text), int(node.EndByte()-startByte))
+		maskBytes(text, start, end)
+		return
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		maskCommentDescendants(node.NamedChild(i), startByte, endByte, text, depth+1)
+	}
 }
 
 func goReceiverName(node *sitter.Node, src []byte) string {

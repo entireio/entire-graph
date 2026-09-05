@@ -310,6 +310,11 @@ func rubyWordBefore(stripped string, start int, word string) bool {
 	return stripped[i+1:end] == word
 }
 
+var (
+	rubyLocalNamesRe  = regexp.MustCompile(`^[a-z_]\w*`)
+	rubyLocalNamesRe2 = regexp.MustCompile(`^def\s+\S+\s+(.*)$`)
+)
+
 // rubyLocalNames collects names bound locally in the block: assignments,
 // rescue bindings, block parameters, and the method's own parameters from its
 // signature. These bare words are variable reads, not implicit-self calls.
@@ -324,7 +329,7 @@ func rubyLocalNames(stripped, signature string) map[string]bool {
 	addParam := func(param string) {
 		param = strings.TrimSpace(param)
 		param = strings.TrimLeft(param, "*&")
-		if m := regexp.MustCompile(`^[a-z_]\w*`).FindString(param); m != "" {
+		if m := rubyLocalNamesRe.FindString(param); m != "" {
 			out[m] = true
 		}
 	}
@@ -338,7 +343,7 @@ func rubyLocalNames(stripped, signature string) map[string]bool {
 		if close := strings.LastIndex(signature, ")"); close > open {
 			params = signature[open+1 : close]
 		}
-	} else if m := regexp.MustCompile(`^def\s+\S+\s+(.*)$`).FindStringSubmatch(strings.TrimSpace(signature)); m != nil {
+	} else if m := rubyLocalNamesRe2.FindStringSubmatch(strings.TrimSpace(signature)); m != nil {
 		params = m[1] // paren-less `def name a, b`
 	}
 	for _, param := range strings.Split(params, ",") {
