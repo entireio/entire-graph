@@ -108,12 +108,7 @@ func runUnderSignals(run func(context.Context) error) error {
 	go func() {
 		select {
 		case sig := <-sigCh:
-			caughtCh <- sig
-			cancel()
-			// Restore the default disposition so a second signal kills the
-			// process immediately, matching the guarantee the previous
-			// NotifyContext-based handler already made.
-			signal.Stop(sigCh)
+			handleFirstSignal(sig, caughtCh, cancel, func() { signal.Stop(sigCh) })
 		case <-stopWatch:
 		}
 	}()
@@ -137,6 +132,29 @@ func runUnderSignals(run func(context.Context) error) error {
 		return err
 	}
 	return err
+}
+
+// handleFirstSignal runs once, when the first SIGINT/SIGTERM is received.
+//
+// stop restores the default disposition and is called FIRST, before the handoff
+// and before cancellation. While signal.Notify is still registered the runtime
+// keeps routing signals into sigCh, and sigCh has a one-slot buffer that nobody
+// reads again -- so every signal arriving before stop returns is BUFFERED, not
+// delivered to the process. That is a second Ctrl-C on a stuck run being
+// swallowed instead of killing it. Restoring first shrinks that window to the
+// signal package's own bookkeeping; leaving it until last widened it by the
+// handoff plus cancel(), and cancel() is not free: it walks and closes every
+// child context, running each of their cancellation paths, while the terminal
+// looks unresponsive.
+//
+// The window cannot be closed entirely from here -- a signal delivered between
+// the receive and stop's effect still lands in the buffer -- so this is a
+// narrowing, not an elimination. The ordering is what is testable and what is
+// asserted.
+func handleFirstSignal(sig os.Signal, caughtCh chan<- os.Signal, cancel context.CancelFunc, stop func()) {
+	stop()
+	caughtCh <- sig
+	cancel()
 }
 
 const writeBytesChunkSize = 64 * 1024
