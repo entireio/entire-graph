@@ -65,7 +65,7 @@ func TestCompilerContextInvalidationAndEvidence(t *testing.T) {
 	if err := ValidateEvidence(evidence, id, build.ServerVersion, sources); err != nil {
 		t.Fatal(err)
 	}
-	for _, mutate := range []func(*BuildContext){func(b *BuildContext) { b.Configuration = append(b.Configuration, "tag=other") }, func(b *BuildContext) { b.ServerVersion = "new" }, func(b *BuildContext) { b.Inputs = append(b.Inputs, Input{Path: "go.work", Present: false}) }, func(b *BuildContext) { b.Packages = []string{"another"} }, func(b *BuildContext) { b.OperationID = ContentDigest("changed dependency") }} {
+	for _, mutate := range []func(*BuildContext){func(b *BuildContext) { b.Configuration = append(b.Configuration, "tag=other") }, func(b *BuildContext) { b.ServerVersion = "new" }, func(b *BuildContext) { b.ToolchainVersion = "new-toolchain" }, func(b *BuildContext) { b.Inputs = append(b.Inputs, Input{Path: "go.work", Present: false}) }, func(b *BuildContext) { b.Packages = []string{"another"} }, func(b *BuildContext) { b.OperationID = ContentDigest("changed dependency") }} {
 		changed := build
 		mutate(&changed)
 		other, err := changed.ID()
