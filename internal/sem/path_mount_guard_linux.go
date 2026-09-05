@@ -6,10 +6,9 @@ package sem
 // repository-controlled candidate. sameVolumePathResolver consults it before
 // each Lstat/Open, so an autofs or remote mount cannot be activated merely to
 // discover that it lives on a different device.
+//
+// Each resolver takes a fresh snapshot, including independent metadata checks.
+// A previous resolver's table can miss mounts added since that resolver began.
 func newPathMountGuard(root, trustedBase string) (pathMountGuard, error) {
-	mountPoints, err := readLinuxMountPoints()
-	if err != nil {
-		return pathMountGuard{}, err
-	}
-	return makePathMountGuard(root, trustedBase, mountPoints), nil
+	return readPathMountGuard(root, trustedBase, readLinuxMountPoints)
 }
