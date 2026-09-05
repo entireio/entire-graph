@@ -131,7 +131,10 @@ digest. A missing or mismatched `semantic_digest` fails the equivalence gate;
 it is not converted to an empty output.
 
 The no-stale-source gate requires an explicit false stale-source indication on
-all successful rows. The unchanged-reparse gate applies to eligible cacheable
+all successful rows. The runner may set that field false only after verifying
+that the pair's captured source stayed unchanged and its semantic digest
+matches the fresh extraction-cache-off baseline; it must not hardcode false
+before that comparison. The unchanged-reparse gate applies to eligible cacheable
 files only. Each successful `unchanged` row therefore carries an explicit
 numeric `unchanged_eligible_reparses` (the scorer also accepts the equivalent
 `unchanged_reparses`) and eligibility accounting. `files_parsed` alone is not
@@ -174,14 +177,20 @@ repository, successful counts, retained failures/timeouts, zero denominators,
 and phase classification. The one-edit gain and cold/RSS comparisons are
 never reported only for a favorable subset.
 
-The runner has a safety circuit breaker for operational failure. Three
-consecutive request timeouts or process failures in the same
-repository/profile/verb stratum stop that stratum. The same rule applies to a
-warming failure before a measured request. Failed rows already observed are
-retained. Remaining planned cells are explicitly recorded as `unrun`; they are
-not synthesized as timeout rows and are not counted as measured requests.
-The breaker never fires for a performance regression, and it does not reduce
-the preregistered 30-pair requirement when the stratum is healthy.
+The runner has a safety circuit breaker for operational failure. In each
+repository/profile/verb stratum it tracks consecutive timeout/process-failure
+counts separately for the `reuse=false` and `reuse=true` measured arms, plus a
+separate count for hard cache-preparation failures. A successful request resets
+the counter for its arm; a partial provider result is retained as an observed
+partial result and does not count as a process failure for this breaker. Three
+consecutive failures in any one of those counters stop the whole stratum. A
+hard preparation timeout/process failure marks the planned pair unrun; a
+partial warm result may continue to the measurement, with eligibility and
+completeness reported by the scorer. Failed rows already observed are
+retained. Every remaining planned request is explicitly recorded as `unrun`;
+it is not synthesized as a timeout row and is not counted as a measured
+request. The breaker never fires for a performance regression, and it does not
+reduce the preregistered 30-pair requirement when the stratum is healthy.
 
 ## Gates and decision states
 
