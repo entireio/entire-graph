@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "e172a2f48b23",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "docs/adr/0032-impact-path-policy.md",
+    "internal/sem/impact_paths.go",
+    "internal/sem/impact_paths_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e1/72a2f48b23/0/metadata.json",
+      "transcript": "/e1/72a2f48b23/0/full.jsonl",
+      "compact_transcript": "/e1/72a2f48b23/0/transcript.jsonl",
+      "content_hash": "/e1/72a2f48b23/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 30318,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2373248,
+    "output_tokens": 5583,
+    "api_call_count": 22
+  }
+}
