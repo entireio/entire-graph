@@ -521,7 +521,7 @@ func TestFilesystemWalkPropagatesNestedIgnoreLimitErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false })
+	_, _, err = walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false }, nil)
 	if err == nil || !strings.Contains(err.Error(), "nested ignore file") ||
 		!strings.Contains(err.Error(), "rule line exceeds") {
 		t.Fatalf("nested ignore limit error = %v, want propagated rule-line failure", err)
@@ -537,7 +537,7 @@ func TestFilesystemWalkRejectsUnreadableNestedIgnoreInReadableDirectory(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false })
+	_, _, err = walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false }, nil)
 	if err == nil || !strings.Contains(err.Error(), "nested/.gitignore") {
 		t.Fatalf("unreadable nested policy error = %v, want a hard error naming nested/.gitignore", err)
 	}
