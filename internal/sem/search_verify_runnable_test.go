@@ -753,3 +753,195 @@ func TestSearchVerifyGradleUnparenthesisedIncludeEndsAtTheStatement(t *testing.T
 		})
 	}
 }
+
+// TestSearchVerifyGradleIncludeRequiresACallShape is the regression for `include` read as a
+// declaration when it is an ordinary NAME.
+//
+// `val include = ":modules:core"` and `def include = ':modules:core'` bind a variable in the two
+// settings DSLs. The scanner matched the identifier and then collected the literal on the right of
+// the `=` as an argument, so the settings script was read as declaring `:modules:core` and
+// `./gradlew :modules:core:test` was advertised for a project that does not exist — Gradle answers
+// "Project 'modules' not found in root project", and the hard gate this derivation exists to satisfy
+// cannot run. An argument list starts at `(` or, in the command-expression form, at the literal
+// itself; nothing else after the identifier is a call.
+func TestSearchVerifyGradleIncludeRequiresACallShape(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		settings string
+		declares bool
+	}{
+		{
+			name:     "a Kotlin val named include is not a call",
+			settings: "val include = \":modules:core\"\n",
+		},
+		{
+			name:     "a Groovy def named include is not a call",
+			settings: "def include = ':modules:core'\n",
+		},
+		{
+			name:     "an assignment to include is not a call",
+			settings: "include = ':modules:core'\n",
+		},
+		{
+			name:     "the parenthesised call still declares",
+			settings: "include(\":modules:core\")\n",
+			declares: true,
+		},
+		{
+			name:     "the command-expression call still declares",
+			settings: "include ':modules:core'\n",
+			declares: true,
+		},
+		{
+			name:     "a call whose parenthesis is spaced off still declares",
+			settings: "include (':modules:core')\n",
+			declares: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := searchVerifyGradleSettingsIncludes(testCase.settings, ":modules:core"); got != testCase.declares {
+				t.Fatalf("declares(:modules:core) = %v, want %v for %q",
+					got, testCase.declares, testCase.settings)
+			}
+			files := map[string]string{
+				"gradlew":                           "",
+				"settings.gradle":                   testCase.settings,
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "modules/core/src/main/java/A.java"}, &evidence)
+			if !testCase.declares {
+				if got != nil {
+					t.Fatalf("command = %q, want silence: %q binds a variable and declares no project",
+						got.Command, testCase.settings)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected the declared project's command, got silence")
+			}
+			if want := "./gradlew :modules:core:test"; got.Command != want {
+				t.Fatalf("command = %q, want %q", got.Command, want)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyMavenReactorWalkIsNotStoppedByAWideRoot is the regression for the reactor walk
+// giving up on breadth.
+//
+// Membership is the transitive closure of the `<modules>` lists, and the walk bounded the set of
+// DISCOVERED modules rather than the POMs it opened. A root aggregator declaring more modules than
+// that bound queued them all on its first pass and the walk stopped there, so nothing declared one
+// level down was ever reached: a real reactor module was reported undeclared and handed
+// `cd <dir> && mvn test`, which resolves the module's siblings from the local repository instead of
+// building them. Breadth costs no reads; `visited` is what makes the walk terminate.
+func TestSearchVerifyMavenReactorWalkIsNotStoppedByAWideRoot(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{
+		"services/pom.xml":     mavenAggregator("api"),
+		"services/api/pom.xml": "<project/>",
+		"services/api/src/main/java/com/example/Handler.java": "",
+	}
+	// A flat root wide enough that the nested aggregator is the last thing the walk would reach.
+	modules := make([]string, 0, 129)
+	for index := 0; index < 128; index++ {
+		module := "leaf" + string(rune('a'+index/26)) + string(rune('a'+index%26))
+		files[module+"/pom.xml"] = "<project/>"
+		modules = append(modules, module)
+	}
+	files["pom.xml"] = mavenAggregator(append(modules, "services")...)
+
+	evidence := searchVerifyTestEvidence(files)
+	got := deriveSearchVerifySuiteCommand(
+		searchVerifySubject{sourcePath: "services/api/src/main/java/com/example/Handler.java"}, &evidence)
+	if got == nil {
+		t.Fatal("expected a Maven command, got silence")
+	}
+	if want := "mvn -q -pl services/api -am test"; got.Command != want {
+		t.Fatalf("command = %q, want %q: services/api is declared through services, "+
+			"and %d sibling modules at the root do not unmake that", got.Command, want, len(modules))
+	}
+}
+
+// TestSearchVerifyNodeAncestorLockfileNeedsWorkspaceMembership is the regression for adopting an
+// ancestor's manager for a package that is not in its project.
+//
+// Yarn ≥2 resolves the project by walking up to the nearest lockfile and then REFUSES to run when
+// the package it was invoked in is not part of it: "The nearest package directory (…) doesn't seem
+// to be part of the project declared in (…)". So a standalone package under an unrelated Yarn
+// project was handed `cd <leaf> && yarn test`, a command that cannot run at all, where `npm test` —
+// the floor this block already falls back to — runs.
+//
+// The check is deliberately permissive in the other direction, because declining wrongly replaces a
+// working command with one Plug'n'Play cannot run: a leaf a pattern reaches, and a leaf nested below
+// one, both keep the workspace's manager.
+func TestSearchVerifyNodeAncestorLockfileNeedsWorkspaceMembership(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		rootPackage string
+		leaf        string
+		wantCommand string
+	}{
+		{
+			name:        "an unrelated Yarn project above a standalone package",
+			rootPackage: `{"name":"root","private":true}`,
+			leaf:        "tools/scratch",
+			wantCommand: "cd tools/scratch && npm test",
+		},
+		{
+			name:        "a workspace whose patterns do not reach the package",
+			rootPackage: `{"name":"root","workspaces":["packages/*"]}`,
+			leaf:        "tools/scratch",
+			wantCommand: "cd tools/scratch && npm test",
+		},
+		{
+			name:        "a declared workspace keeps the workspace's manager",
+			rootPackage: `{"name":"root","workspaces":["packages/*"]}`,
+			leaf:        "packages/api",
+			wantCommand: "cd packages/api && yarn test",
+		},
+		{
+			name:        "the object spelling of the same declaration",
+			rootPackage: `{"name":"root","workspaces":{"packages":["packages/*"]}}`,
+			leaf:        "packages/api",
+			wantCommand: "cd packages/api && yarn test",
+		},
+		{
+			name:        "a package nested below a declared workspace is left alone",
+			rootPackage: `{"name":"root","workspaces":["packages/*"]}`,
+			leaf:        "packages/api/plugin",
+			wantCommand: "cd packages/api/plugin && yarn test",
+		},
+		{
+			name:        "a globstar reaches any depth",
+			rootPackage: `{"name":"root","workspaces":["**"]}`,
+			leaf:        "tools/scratch",
+			wantCommand: "cd tools/scratch && yarn test",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			files := map[string]string{
+				"package.json":                  testCase.rootPackage,
+				"yarn.lock":                     "__metadata:\n  version: 8\n",
+				testCase.leaf + "/package.json": `{"name":"leaf","devDependencies":{"jest":"^29.0.0"}}`,
+				testCase.leaf + "/src/index.js": "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: testCase.leaf + "/src/index.js"}, &evidence)
+			if got == nil {
+				t.Fatal("expected a Node suite command, got silence")
+			}
+			if got.Command != testCase.wantCommand {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.wantCommand)
+			}
+		})
+	}
+}

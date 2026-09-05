@@ -775,9 +775,17 @@ func searchVerifyGradleIncludeArguments(script string) []string {
 }
 
 // searchVerifyGradleCallArguments collects the string literals of one call's argument list and
-// reports how far it consumed. Groovy allows the parentheses to be dropped, so the list ends either
-// at the matching `)` or at the end of the STATEMENT — which is the end of the line, extended while
-// the line is continued, OR a `;` before it.
+// reports how far it consumed, or a zero width when what follows the identifier is not a call at
+// all. Groovy allows the parentheses to be dropped, so the list ends either at the matching `)` or
+// at the end of the STATEMENT — which is the end of the line, extended while the line is continued,
+// OR a `;` before it.
+//
+// A CALL SHAPE is required first, because `include` is a legal ordinary name as well as a settings
+// method: `val include = ":modules:core"` and `def include = ':modules:core'` both bind a variable,
+// and reading the literal on the right of the `=` as an argument named a project the settings script
+// never declares — `./gradlew :modules:core:test` then fails with "Project 'modules' not found in
+// root project". An argument list starts at `(` or, in the command-expression form, at the literal
+// itself; anything else after the identifier (`=`, `.`, `:`, a newline) is a different construct.
 //
 // The semicolon is not a detail. A line is not a statement in Groovy: `include ':app'; project(':app')
 // .projectDir = file('lib')` is the ordinary spelling for an include plus a directory remap, and
@@ -792,7 +800,15 @@ func searchVerifyGradleCallArguments(rest string) ([]string, int) {
 	for index < len(rest) && (rest[index] == ' ' || rest[index] == '\t') {
 		index++
 	}
-	parenthesised := index < len(rest) && rest[index] == '('
+	if index >= len(rest) {
+		return nil, 0
+	}
+	switch rest[index] {
+	case '(', '\'', '"':
+	default:
+		return nil, 0
+	}
+	parenthesised := rest[index] == '('
 	depth := 0
 	for index < len(rest) {
 		switch character := rest[index]; character {
@@ -977,6 +993,7 @@ func searchVerifyNodePackageManager(
 // yarn anywhere — made a leaf's own `package-lock.json` lose to a `pnpm-lock.yaml` several
 // directories above it, and advertised a manager that leaf never declared.
 func searchVerifyNodeLockfileManager(dir string, evidence *searchVerifyEvidence) (string, string) {
+	leaf := dir
 	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
 		// Within ONE directory there is no proximity to separate two lockfiles, so preference
 		// decides: a repository carrying both a pnpm and an npm lock is one that migrated, and the
@@ -984,6 +1001,13 @@ func searchVerifyNodeLockfileManager(dir string, evidence *searchVerifyEvidence)
 		for _, candidate := range searchVerifyNodeLockfiles {
 			lockPath := searchVerifyJoin(dir, candidate.lockfile)
 			if evidence.exists(lockPath) {
+				if dir != leaf && candidate.workspaceScoped &&
+					!searchVerifyNodeWorkspaceCovers(dir, leaf, evidence) {
+					// The lockfile governs a project this package is not in. Adopting its manager
+					// here is not a worse guess, it is an unrunnable command — see
+					// searchVerifyNodeLockfiles. Fall to the npm floor, which runs anywhere.
+					return "", ""
+				}
 				return candidate.command, lockPath
 			}
 		}
@@ -1014,15 +1038,136 @@ var searchVerifyNodeManagers = map[string]string{
 // most specific first: npm's lockfile is listed last because a directory that also carries a yarn or
 // pnpm lock is one that migrated, and the npm lock is the stale one. The order does not outrank
 // proximity — see searchVerifyNodeLockfileManager.
+//
+// workspaceScoped marks the managers that REFUSE to run outside their own project, which is what
+// turns "the ancestor's default" from a worse guess into an unrunnable command. Yarn ≥2 resolves the
+// project by walking up to the nearest lockfile and then checks that the package it was invoked in
+// belongs to it, exiting with "The nearest package directory (…) doesn't seem to be part of the
+// project declared in (…)" when it does not — so a standalone package under an unrelated Yarn
+// project must not be handed `yarn test`. npm, pnpm and bun run the package's own script from the
+// current directory whatever the tree above says, and pnpm declares its members in
+// `pnpm-workspace.yaml`, which this reader does not parse — no evidence either way, so no decline.
 var searchVerifyNodeLockfiles = []struct {
-	lockfile string
-	command  string
+	lockfile        string
+	command         string
+	workspaceScoped bool
 }{
 	{lockfile: "pnpm-lock.yaml", command: "pnpm test"},
-	{lockfile: "yarn.lock", command: "yarn test"},
+	{lockfile: "yarn.lock", command: "yarn test", workspaceScoped: true},
 	{lockfile: "bun.lockb", command: "bun run test"},
 	{lockfile: "bun.lock", command: "bun run test"},
 	{lockfile: "package-lock.json", command: "npm test"},
+}
+
+// searchVerifyNodeWorkspaceCovers reports whether the project rooted at `root` covers the package at
+// `leaf`, read from the root manifest's own `workspaces` field in either of its two spellings (the
+// array, and the `{"packages": […]}` object Yarn 1 also accepted).
+//
+// It is deliberately PERMISSIVE, because the two mistakes are not symmetric. Declining wrongly
+// replaces a working `yarn test` with `npm test`, which a Plug'n'Play project cannot run at all;
+// accepting wrongly leaves the command exactly as it was before this check existed. So a manifest
+// that will not parse, a pattern that will not compile, and a leaf nested BELOW a declared workspace
+// all count as covered — the last because Yarn supports workspaces that declare workspaces of their
+// own, and nothing in a path says which shape is in front of us. The one thing it declines is the
+// leaf that no declaration reaches at all, which is the reported case: an unrelated project above a
+// standalone package.
+func searchVerifyNodeWorkspaceCovers(root, leaf string, evidence *searchVerifyEvidence) bool {
+	relative, inside := searchVerifyRelative(root, leaf)
+	if !inside || relative == "" {
+		return false
+	}
+	content, ok := evidence.file(searchVerifyJoin(root, "package.json"))
+	if !ok {
+		// A lockfile with no manifest beside it declares nothing, and Yarn has no project to
+		// belong to either.
+		return false
+	}
+	var parsed struct {
+		Workspaces json.RawMessage `json:"workspaces"`
+	}
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return true
+	}
+	patterns, ok := searchVerifyNodeWorkspacePatterns(parsed.Workspaces)
+	if !ok {
+		return true
+	}
+	segments := strings.Split(relative, "/")
+	for _, pattern := range patterns {
+		// A pattern matching an ANCESTOR of the leaf covers it too: the leaf is then a package
+		// inside a declared workspace, which Yarn's nested workspaces make legitimate.
+		for cut := len(segments); cut > 0; cut-- {
+			if searchVerifyNodeWorkspaceMatches(pattern, segments[:cut]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// searchVerifyNodeWorkspacePatterns reads the `workspaces` field and reports whether it could be
+// read at all. An ABSENT field reads fine and declares nothing — that is the manifest saying it has
+// no workspaces, which is exactly the reported case — while a field in a shape this does not
+// recognise reports false so the caller stays permissive. Negated (`!`) patterns are dropped rather
+// than applied: honouring them could only make the check decline MORE, and declining is the side
+// with the expensive mistake.
+func searchVerifyNodeWorkspacePatterns(raw json.RawMessage) ([]string, bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err != nil {
+		var object struct {
+			Packages []string `json:"packages"`
+		}
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return nil, false
+		}
+		list = object.Packages
+	}
+	patterns := make([]string, 0, len(list))
+	for _, pattern := range list {
+		pattern = strings.Trim(strings.TrimSpace(pattern), "/")
+		if pattern == "" || strings.HasPrefix(pattern, "!") {
+			continue
+		}
+		patterns = append(patterns, pattern)
+	}
+	return patterns, true
+}
+
+// searchVerifyNodeWorkspaceMatches matches one workspaces glob against a package path, segment by
+// segment. `**` spans any number of segments; everything else is `path.Match` within one segment, so
+// `packages/*` reaches `packages/api` and not `packages/api/plugin`. A pattern `path.Match` rejects
+// as malformed matches, keeping the permissive direction this check is built on.
+func searchVerifyNodeWorkspaceMatches(pattern string, segments []string) bool {
+	patternSegments := strings.Split(pattern, "/")
+	for len(patternSegments) > 0 {
+		if patternSegments[0] == "**" {
+			if len(patternSegments) == 1 {
+				return true
+			}
+			for skip := 0; skip <= len(segments); skip++ {
+				if searchVerifyNodeWorkspaceMatches(
+					strings.Join(patternSegments[1:], "/"), segments[skip:]) {
+					return true
+				}
+			}
+			return false
+		}
+		if len(segments) == 0 {
+			return false
+		}
+		matched, err := path.Match(patternSegments[0], segments[0])
+		if err != nil {
+			return true
+		}
+		if !matched {
+			return false
+		}
+		patternSegments, segments = patternSegments[1:], segments[1:]
+	}
+	return len(segments) == 0
 }
 
 func deriveSearchVerifySuiteComposer(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
@@ -1451,10 +1596,6 @@ func searchVerifyMavenCommand(dir, goals string, evidence *searchVerifyEvidence)
 	return searchVerifyRunIn(dir, "mvn -q "+goals)
 }
 
-// searchVerifyMavenMaxAggregators bounds the reactor walk. The evidence view already caps distinct
-// reads, so this only stops a pathological POM graph from spinning inside that budget.
-const searchVerifyMavenMaxAggregators = 64
-
 // searchVerifyMavenReactorDeclares reports whether the root aggregator POM's reactor CONTAINS the
 // module at `dir` — the Maven half of the question the Gradle settings-inclusion check already
 // answers for `include`.
@@ -1469,13 +1610,22 @@ const searchVerifyMavenMaxAggregators = 64
 // activated, so counting them would re-open the same false accept one level down; a POM that does
 // not parse declares nothing. Both of those decline, and declining is safe here: the caller then
 // emits `cd <dir> && mvn test`, which runs.
+//
+// The walk carries no aggregator count of its own. `visited` already opens each declared directory
+// at most once, which is what makes it terminate on any POM graph including a cyclic one, and
+// `searchVerifyMaxReads` is what bounds the IO. A separate ceiling on the VISITED SET measured
+// neither: a root declaring more modules than the ceiling queued them all on its first pass and
+// stopped the walk before a single child aggregator was opened, so every module declared one level
+// down under a wide root was reported undeclared and handed `cd <dir> && mvn test` — the standalone
+// form, inside a reactor, where the module's siblings are resolved from the local repository instead
+// of being built. Breadth is not depth, and breadth costs no reads.
 func searchVerifyMavenReactorDeclares(dir string, evidence *searchVerifyEvidence) bool {
 	if dir == "" {
 		return false
 	}
 	visited := map[string]bool{"": true}
 	queue := []string{""}
-	for len(queue) > 0 && len(visited) <= searchVerifyMavenMaxAggregators {
+	for len(queue) > 0 {
 		aggregator := queue[0]
 		queue = queue[1:]
 		for _, module := range searchVerifyMavenModules(aggregator, evidence) {
