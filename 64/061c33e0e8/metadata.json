@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "64061c33e0e8",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/p1-corpus-20260905/cloud.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/run_campaign.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_run_campaign.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/worker-1.json",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/worker-2.json",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/worker-3.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/64/061c33e0e8/0/metadata.json",
+      "transcript": "/64/061c33e0e8/0/full.jsonl",
+      "compact_transcript": "/64/061c33e0e8/0/transcript.jsonl",
+      "content_hash": "/64/061c33e0e8/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 62069,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 766208,
+    "output_tokens": 2624,
+    "api_call_count": 17
+  }
+}
