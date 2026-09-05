@@ -12,6 +12,7 @@ VMS=['graph-validation-linux','graph-p1-worker-2','graph-p1-worker-3']
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('stage',choices=['baseline','campaign']);ap.add_argument('--frozen-baseline',type=pathlib.Path);args=ap.parse_args()
  if args.stage=='campaign' and not args.frozen_baseline:raise SystemExit('Campaign requires frozen baseline manifest')
+ expected=json.loads((HERE/'build.json').read_text())['binary_sha256']
  env=cloud.environment()
  with tempfile.TemporaryDirectory() as d:
   archive=pathlib.Path(d)/'scripts.tar.gz'
@@ -34,7 +35,7 @@ def main():
   script+='tar -xzf /opt/p1/scripts.tar.gz -C /opt/p1/scripts\n'
   script+='curl --fail --silent --show-error '+shlex.quote(binary)+' -o /opt/p1/p1-evaluator\n'
   script+='chmod 755 /opt/p1/p1-evaluator\nchown -R graphcheck:graphcheck /opt/p1/scripts /opt/p1/results\n'
-  script+='sha256sum /opt/p1/p1-evaluator\n'
+  script+='echo '+shlex.quote(expected+'  /opt/p1/p1-evaluator')+' | sha256sum -c -\n'
   script+='systemd-run --unit=p1-'+args.stage+' --uid=graphcheck --property=WorkingDirectory=/opt/p1 --property=MemoryMax=14G --property=TasksMax=512 --property=StandardOutput=append:/opt/p1/'+args.stage+'.log --property=StandardError=append:/opt/p1/'+args.stage+'.log '+shlex.join(command)+'\n'
   return {'worker':index,'vm':vm,'result':json.loads(cloud.run(vm,script))}
  with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
