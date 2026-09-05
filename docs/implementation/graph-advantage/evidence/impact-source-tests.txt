@@ -1,1 +1,1 @@
-ok  	github.com/entireio/entire-graph/internal/sem	2.104s
+ok  	github.com/entireio/entire-graph/internal/sem	2.156s
