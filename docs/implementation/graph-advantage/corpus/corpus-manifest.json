@@ -13,7 +13,7 @@
     {
       "all_indexed_bytes": 404361,
       "all_indexed_count": 92,
-      "branch_variant_commit": "b923efffebf8efee0ad7c4d751f8f05f2dae0f57",
+      "branch_variant_commit": "195d749d57672d8448881c726c8dda16b3d480d2",
       "commit": "ae6be7469132cf471ca099d8c7bda4010c4ff7b2",
       "eligible_ruleset": "p1-source-v1",
       "id": "go-chi-chi",
@@ -96,7 +96,7 @@
           "reversible": "remove the exact appended marker line"
         }
       ],
-      "query": "find the middleware symbol or entrypoint in middleware/recoverer.go",
+      "query": "find the recoverer symbol or entrypoint in middleware/recoverer.go",
       "raw_tracked_count": 105,
       "selected_paths": [
         "middleware/recoverer.go",
@@ -115,7 +115,7 @@
     {
       "all_indexed_bytes": 156310441,
       "all_indexed_count": 19782,
-      "branch_variant_commit": "feba670a2bad0fb1032e812cb717f79d57088c7d",
+      "branch_variant_commit": "c48aae3e47865f94917448e6c692a93da7b92d68",
       "commit": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
       "eligible_ruleset": "p1-source-v1",
       "id": "kubernetes-kubernetes",
@@ -198,7 +198,7 @@
           "reversible": "remove the exact appended marker line"
         }
       ],
-      "query": "find the Copyright symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
+      "query": "find the values symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
       "raw_tracked_count": 31253,
       "selected_paths": [
         "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
@@ -217,7 +217,7 @@
     {
       "all_indexed_bytes": 4236067,
       "all_indexed_count": 487,
-      "branch_variant_commit": "0dbe1fa0ff6a35133edd5c38871faf5ed9f38453",
+      "branch_variant_commit": "27cb6f5e2b8af241b05473d316a6b9a2448ba7a1",
       "commit": "7a00236683c79000dbab0d92f6faf0b7fba39f59",
       "eligible_ruleset": "p1-source-v1",
       "id": "colinhacks-zod",
@@ -300,7 +300,7 @@
           "reversible": "remove the exact appended marker line"
         }
       ],
-      "query": "find the expect symbol or entrypoint in packages/zod/src/v4/classic/tests/coalesce.test.ts",
+      "query": "find the coalesce symbol or entrypoint in packages/zod/src/v4/classic/tests/coalesce.test.ts",
       "raw_tracked_count": 722,
       "selected_paths": [
         "packages/zod/src/v4/classic/tests/coalesce.test.ts",
@@ -319,7 +319,7 @@
     {
       "all_indexed_bytes": 483603,
       "all_indexed_count": 58,
-      "branch_variant_commit": "8225dae4e882351509a868f1108fc95485bb684f",
+      "branch_variant_commit": "52286d7c6d60e4fa85d9cb415d08efeda92e334d",
       "commit": "dae7ef63b4df6eded86637f251fc4e3a06c3b479",
       "eligible_ruleset": "p1-source-v1",
       "id": "psf-requests",
@@ -421,10 +421,10 @@
     {
       "all_indexed_bytes": 236437572,
       "all_indexed_count": 650,
-      "branch_variant_commit": "a5398c7eacab089a384f1f2c706de57be47027e4",
+      "branch_variant_commit": "8335708449b47ea2e11f9983d12d14853088b36f",
       "commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
       "eligible_ruleset": "p1-source-v1",
-      "fixture_commit": "7883e58ab52ee340d69cad90d20c32e9b5d5fd7a",
+      "fixture_commit": "b48327ef95b32f7733b40e0b9b9764008d6eb28f",
       "id": "entire-graph-frozen-88dd1dc9",
       "kind": "repository",
       "language_source_bytes": {
@@ -505,7 +505,7 @@
           "reversible": "remove the exact appended marker line"
         }
       ],
-      "query": "find the testing symbol or entrypoint in internal/sem/search_format_version_test.go",
+      "query": "find the search symbol or entrypoint in internal/sem/search_format_version_test.go",
       "raw_tracked_count": 918,
       "selected_paths": [
         "internal/sem/search_format_version_test.go",
@@ -524,8 +524,8 @@
     {
       "all_indexed_bytes": 134287,
       "all_indexed_count": 2000,
-      "branch_variant_commit": "3017f9a8775169eba08b68e2d7aa9cea5fc87421",
-      "commit": "1ec52db1ac0320506624701907a8819ed90c9c9c",
+      "branch_variant_commit": "c2513ff960ebd8826a179586d4b6744fe3e76d76",
+      "commit": "31fdfc115aba51b8fd496a87a402f49dd53596c3",
       "generation": "2000 independent source files: Go 667, TypeScript 667, Python 666",
       "generation_seed": 20260905,
       "id": "synthetic-2000",
@@ -544,7 +544,7 @@
         "path": null,
         "sha256": null
       },
-      "query": "find the function_130 symbol or entrypoint in src/py/file-0130.py",
+      "query": "find the 0130 symbol or entrypoint in src/py/file-0130.py",
       "raw_tracked_count": 2000,
       "selected_paths": [
         "src/py/file-0130.py",
