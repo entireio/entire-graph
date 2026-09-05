@@ -97,8 +97,8 @@ func TestExtractionQuotaOverrides(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(entries) > 1 {
-			t.Fatalf("entry quota exceeded: %d", len(entries))
+		if len(entries) > 2 {
+			t.Fatalf("entry quota exceeded (including lock metadata): %d", len(entries))
 		}
 		if i == 0 {
 			t.Setenv("ENTIRE_GRAPH_EXTRACTION_CACHE_MAX_ENTRIES", "2")

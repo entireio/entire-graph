@@ -47,9 +47,6 @@ type extractionCache struct {
 	directory, repository, build                                          string
 	parsed, reused, sourceBytes, cacheReadBytes, cacheWriteBytes, parseNS atomic.Int64
 	quotaMu                                                               sync.Mutex
-	quotaBytes                                                            int64
-	quotaEntries                                                          int
-	quotaReady                                                            bool
 }
 type ExtractionStats struct {
 	RawImportsParsed  int64 `json:"raw_imports_parsed"`
@@ -69,7 +66,10 @@ func (cache *extractionCache) stats() *ExtractionStats {
 	}
 	return &ExtractionStats{RawImportsParsed: cache.importsParsed.Load(), RawImportsReused: cache.importsReused.Load(), RawImportsNS: cache.importsNS.Load(), FilesParsed: cache.parsed.Load(), FilesReused: cache.reused.Load(), SourceBytesRead: cache.sourceBytes.Load(), CacheBytesRead: cache.cacheReadBytes.Load(), CacheBytesWritten: cache.cacheWriteBytes.Load(), ExtractionNS: cache.parseNS.Load()}
 }
-func (cache *extractionCache) reserve(entry cacheEntry, bytes int64) bool {
+
+// publish holds admission across maintenance and publication. A reservation may
+// never outlive this lock: other operations and processes share the namespace.
+func (cache *extractionCache) publish(entry cacheEntry, bytes int64, envelope extractionEnvelope) bool {
 	cache.quotaMu.Lock()
 	defer cache.quotaMu.Unlock()
 	if !cache.limitsReady {
@@ -80,18 +80,15 @@ func (cache *extractionCache) reserve(entry cacheEntry, bytes int64) bool {
 	if bytes > cache.maxBytes {
 		return false
 	}
-	if !cache.quotaReady || cache.quotaBytes < bytes || cache.quotaEntries < 1 {
-		extractionMaintenance.Lock()
-		freeBytes, freeEntries, ok := maintainExtractionCache(entry, bytes, cache.maxBytes, cache.maxEntries)
-		extractionMaintenance.Unlock()
-		if !ok {
-			return false
-		}
-		cache.quotaBytes, cache.quotaEntries, cache.quotaReady = freeBytes, freeEntries, true
+	extractionMaintenance.Lock()
+	defer extractionMaintenance.Unlock()
+	lock, err := lockExtractionAdmission(entry)
+	if err != nil {
+		return false
 	}
-	cache.quotaBytes -= bytes
-	cache.quotaEntries--
-	return true
+	defer lock.Close() // Kernel releases the lock, including after process failure.
+	_, _, ok := maintainExtractionCache(entry, bytes, cache.maxBytes, cache.maxEntries)
+	return ok && entry.write("extract", envelope) == nil
 }
 
 type extractionEnvelope struct {
@@ -159,14 +156,15 @@ func (cache *extractionCache) extract(spec profileSpec, language languageSpec, s
 			encodeErr = marshalErr
 		}
 		if encodeErr == nil && len(bytes) < extractionDecodeLimit {
-			if cache.reserve(entry, int64(len(bytes))+256) {
-				if entry.write("extract", envelope) == nil {
-					if file, err := entry.open(); err == nil {
-						if info, err := file.Stat(); err == nil {
-							cache.cacheWriteBytes.Add(info.Size())
-						}
-						file.Close()
+			// DEFLATE can expand incompressible data; include block and framing
+			// overhead rather than assuming gzip is always smaller than JSON.
+			bound := int64(len(bytes) + len(bytes)/16384*5 + 1024)
+			if cache.publish(entry, bound, envelope) {
+				if file, err := entry.open(); err == nil {
+					if info, err := file.Stat(); err == nil {
+						cache.cacheWriteBytes.Add(info.Size())
 					}
+					file.Close()
 				}
 			}
 		}
@@ -225,11 +223,11 @@ func maintainExtractionCache(entry cacheEntry, incoming, maxBytes int64, maxEntr
 		return 0, 0, false
 	}
 	defer file.Close()
-	entries, err := file.ReadDir(extractionEntryLimit + 1)
+	entries, err := file.ReadDir(extractionEntryLimit + 2)
 	if err != nil && err != io.EOF {
 		return 0, 0, false
 	}
-	if len(entries) > extractionEntryLimit {
+	if len(entries) > extractionEntryLimit+1 {
 		return 0, 0, false
 	}
 	type item struct {
@@ -241,11 +239,21 @@ func maintainExtractionCache(entry cacheEntry, incoming, maxBytes int64, maxEntr
 	var total int64
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".json.gz") || !validSHA256Hex(strings.TrimSuffix(name, ".json.gz")) {
+		temporary := strings.TrimSuffix(strings.TrimPrefix(name, ".extract-"), ".json.gz")
+		orphan := strings.HasPrefix(name, ".extract-") && strings.HasSuffix(name, ".json.gz") && len(temporary) == 32 && validSHA256Hex(temporary+temporary)
+		if !orphan && (!strings.HasSuffix(name, ".json.gz") || !validSHA256Hex(strings.TrimSuffix(name, ".json.gz"))) {
 			continue
 		}
 		info, err := dir.Lstat(name)
 		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		// The caller holds admission, so no cooperating writer has a live
+		// temporary file here. Remove only exact internally generated names.
+		if orphan {
+			if dir.Remove(name) != nil {
+				return 0, 0, false
+			}
 			continue
 		}
 		items = append(items, item{name, info.Size(), info.ModTime().UnixNano()})
