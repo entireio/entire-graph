@@ -1,0 +1,17 @@
+{
+  "base_commit": "29520508be39f937193b6b034b5792d2cc56be9c",
+  "state": "uncommitted implementation on base; exact source hashes below",
+  "platform": "macOS-26.6.1-arm64-arm-64bit-Mach-O",
+  "go": "go version go1.26.1 darwin/arm64",
+  "files": {
+    "internal/sem/impact_paths.go": "9a51bed5a21352e80f2f00ab86fb1354f103f806bc0e68dd6f8dfd43120e39b3",
+    "internal/sem/impact_paths_test.go": "8367a2d37e8ef1cfe1023bd317bdee15d377565de409168c9431e7593d15c3db",
+    "internal/cli/impact.go": "a88f81366fe4af2ae5493d646afa634a0c10d7e246b4a8316bc40d4c25bdf7e1",
+    "internal/cli/impact_deep.go": "fd0bc25904e1b6ca4c5a9918fbec60d452c83c8c6e9e35bc3c2f0a86fbd73001",
+    "internal/cli/impact_deep_test.go": "4b5bbe0a8f353636e4ccac43ef34657f37df127dd55f7f83a7476866199a2e67",
+    "docs/adr/0032-impact-path-policy.md": "565abb1f6cde338bb11fd4cc3274103d53382196c76ff7b6726960ebbc150960"
+  },
+  "seed": 30905,
+  "fixture_origin": "independently authored from the requirements plan and Entire relation direction contracts",
+  "release_quality_gate": "not established; product-local correctness only"
+}

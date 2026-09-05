@@ -10,3 +10,11 @@ Alternatives: serializing Entity drops private metadata; serializing final Symbo
 P1.2 follow-up prerequisite: an operation-owned 64 MiB bounded store with confined spill, shared prefix/content reads, contextual inputs, failure memoization and cleanup must replace all rereads before enabling reuse. Do not silently retain entire repositories in memory. Relation inputs are absent, not computed empty. P1.3 must add exact parser/build/options/path identity before persistence.
 
 Distinguishing tests: reflection checklist over all Entity fields, JSON round trip including private booleans and nil versus empty parameter names, detached copies, all-profile parser equivalence, mutation after acquisition cannot change extraction. Existing oversize shebang test must pass. Public schema and snapshot-cache refusal remain unchanged.
+
+Deterministic failure amendment: cache syntax failures only when the parser has
+successfully produced a tree whose error nodes establish malformed input.
+An explicit private ParseStatus bit carries that provenance; generic parser
+failure, timeout, depth/resource truncation and IO remain nonpersistent. Inferring
+determinism from the existing E_PARSE_ERROR code is unsafe because it also covers
+native parser failures. Malformed fixture warm hits must preserve exact warnings,
+failures and completeness.

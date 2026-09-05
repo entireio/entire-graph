@@ -1,0 +1,16 @@
+{
+  "internal/compiler/adapter.go": "511d39f5ad4b61127a84aafdb16040582586a6cd5bd7ee11d33efbc02597fd2c",
+  "internal/compiler/adapter_live_test.go": "4f21f47c3100ed164a420c5443dcef87aeff4432b34e02e01ca280f94f17fdd1",
+  "internal/compiler/adapter_test.go": "cc09a91982642136d97e6e90bf6ed2ec6e3d820290a0e28fc262987549798b5e",
+  "internal/compiler/client.go": "84cd676feb3b17fba39528e41a64156e0022ebcd92008df25124fb69ebb03588",
+  "internal/compiler/compiler_test.go": "986d0a7089dfa137d0df4b0122fd9611f6edb3e0f26e8628df4fbf99586ab4c2",
+  "internal/compiler/framing.go": "f2f3888548761f62657252cca1d78dbe6f810fe03a1fb598a149cb10d756d2e2",
+  "internal/compiler/identity.go": "baa711044beaaa7d3c6fa5c2587af0587045149cc56050337231d58a9369b9cd",
+  "internal/compiler/position.go": "4228cef7282da2f457bcefc07054c5dbc8f1bbc04ca0c9bc20a30c4bf9bba733",
+  "internal/compiler/process.go": "a34f8f61d4d419bce440a106d1c1368f3847a44b3daf7c774226d852d26c21a3",
+  "internal/compiler/process_linux.go": "c94339294f627f0b5f5fa8165277b82a0c62d04a0b4f834f0457933af0f4abb4",
+  "internal/compiler/process_linux_test.go": "6954cbe5622c0846a7758c6edcacf00a9d5fd9784a893c16cb9615f49a24809a",
+  "internal/compiler/process_other.go": "8c85152226b9ebd3ca606786e8cc1aa70d214c86d57f14aec836ecb047206d0e",
+  "internal/sem/compiler_overlay.go": "58e145f3246363d89918e1b368bc586082bbb18a92ca0f37c7753c482b816eb1",
+  "internal/sem/compiler_overlay_test.go": "5f39f296ad6b66b9308aa65b559392d559ccb82754d833df4eb56fd3cf28dc55"
+}

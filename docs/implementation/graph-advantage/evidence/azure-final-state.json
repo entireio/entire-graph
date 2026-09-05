@@ -1,0 +1,8 @@
+{
+  "resource_group": "rg-entire-graph-advantage-20260905",
+  "vm": "graph-validation-linux",
+  "status": "PowerState/deallocated",
+  "verified": true,
+  "retained": "task-owned private storage and VM disk for reproducibility; no running VM",
+  "unrelated_resources_modified": false
+}

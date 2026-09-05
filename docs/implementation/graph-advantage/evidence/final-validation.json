@@ -1,0 +1,11 @@
+{
+  "source_commit": "0038ef70ca5e829c150a977d8021ee9fe9c7103a",
+  "command": "mise run check",
+  "exit_code": 0,
+  "elapsed_seconds": 626.23,
+  "source_manifest_verified_unchanged": true,
+  "golden_update": "29 schema values only; full records byte-equivalent otherwise",
+  "linux_combination_race_seconds": 6.78,
+  "statusline_checks_passed": 151,
+  "advantage_release_gates_passed": false
+}

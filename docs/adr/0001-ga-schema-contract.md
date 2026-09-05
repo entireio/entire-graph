@@ -101,3 +101,11 @@ same schema-version decision.
 - The stale `1.0` example header in the
   [semantic provider requirements](../semantic-provider-requirements.md) is
   updated to `1.1` for consistency with the emitted version.
+
+## Amendment (2026-09-05) — optional captured-operation contracts
+
+Current minor is **1.2**. It adds optional extraction telemetry, captured-operation
+provenance and compiler evidence; default field meanings and compound-v1 IDs do
+not change. The existing Result shape digest remains unchanged and its version
+guard advances to1.2. Experimental candidates are namespaced; enriched compact
+and SCIP projections refuse unsupported compiler distinctions. See ADR0038.

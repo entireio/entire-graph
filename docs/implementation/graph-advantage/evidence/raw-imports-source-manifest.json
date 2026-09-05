@@ -1,0 +1,16 @@
+{
+  "head": "ac48877384670cee9613f7ee4e913227d85588ed",
+  "state": "uncommitted product frozen for root integration",
+  "format": 3,
+  "cached_families": [
+    "raw_imports Go/TypeScript/Python fast/full"
+  ],
+  "files_sha256": {
+    "internal/sem/extraction_cache.go": "6453d16046fc039ae6147af024d2b37bce4fd0d26277b58e7d5dd5d048c71231",
+    "internal/sem/extraction_record.go": "bd02784405deb077e57865605de8362324176cbf41cd47b948816940d390f5f1",
+    "internal/sem/provider_parallel.go": "097b16634e4c4364d6ea3bb4551ec7f01d0435f82cf0459e93c14c58f8662304",
+    "internal/sem/extraction_imports_test.go": "cc232227dbbc1e838156c0593a58ebbc3363834ad1653fc2dd013235b38e97ae",
+    "internal/sem/extraction_acceptance_test.go": "effe14c276afd1945a3aa9327722c72325f14baadb4c4ee3356f6b47a2166bb6",
+    "docs/adr/0039-raw-import-extraction-reuse.md": "6bb5c3e33e43fe83151a6eb87480831554e8d5c5dbaa0e6c757208ec3ca0bd3e"
+  }
+}
