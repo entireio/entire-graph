@@ -4477,14 +4477,13 @@ func jsScanDepthPartialFailure(path string) PartialFailure {
 }
 
 // fileRelationScan is one file's share of the relation phase: what its scan
-// would have emitted inline, held until the reducer replays it in file order.
+// accumulates for later cross-file passes, replayed by the reducer in file order.
 //
 // The three entry slices are the accumulator writes the scan used to make
 // directly. They are kept as ordered entries rather than merged maps so the
 // reducer reproduces the exact append order the sequential loop produced, which
 // is what routeBridgeRelations and the OVERRIDES derivation read.
 type fileRelationScan struct {
-	relations       []RelationRecord
 	failures        []PartialFailure
 	resolvedImports map[string][]string
 	routeHandlers   []routeHandlerEntry
@@ -4948,14 +4947,10 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	// while a reducer replays each file's relations, failures and accumulator
 	// entries in the original file order. The reducer decides emission order, so
 	// worker timing cannot reach the snapshot bytes.
-	resolveFileRelations := func(workerCtx context.Context, file FileRecord) fileRelationScan {
+	resolveFileRelations := func(workerCtx context.Context, file FileRecord, emit func(RelationRecord)) fileRelationScan {
 		var result fileRelationScan
-		// emit and recordFailure are shadowed deliberately: the scan below calls
-		// them exactly as it did when it ran inline, and they now buffer for the
-		// reducer rather than reaching the consumer from a worker goroutine.
-		// recordFailure stays nil when the caller passed nil, so the scan skips
-		// building records nobody asked for, as it did before.
-		emit := func(relation RelationRecord) { result.relations = append(result.relations, relation) }
+		// Relations stream through a bounded channel to the ordered reducer.
+		// Failures remain per-file metadata, replayed after that file's relations.
 		var bufferFailure func(PartialFailure)
 		if recordFailure != nil {
 			bufferFailure = func(failure PartialFailure) { result.failures = append(result.failures, failure) }
@@ -6137,16 +6132,20 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	// Syntax-only resolves no content-derived relations, so it runs no scan at
 	// all rather than starting workers that would each return nothing.
 	if profileNeedsPerFileScan(spec) {
-		scanErr := runIndexedPipeline(ctx, len(files), workers,
-			func(workerCtx context.Context, index int) fileRelationScan {
-				return resolveFileRelations(workerCtx, files[index])
+		scanErr := runIndexedStreamingPipeline(ctx, len(files), workers,
+			func(workerCtx context.Context, index int, stream func(RelationRecord)) fileRelationScan {
+				return resolveFileRelations(workerCtx, files[index], stream)
+			},
+			func(_ int, relation RelationRecord) error {
+				if shouldStop != nil && shouldStop() {
+					return errRelationScanStopped
+				}
+				emit(relation)
+				return nil
 			},
 			func(index int, scanned fileRelationScan) error {
 				if shouldStop != nil && shouldStop() {
 					return errRelationScanStopped
-				}
-				for _, relation := range scanned.relations {
-					emit(relation)
 				}
 				if recordFailure != nil {
 					for _, failure := range scanned.failures {

@@ -276,7 +276,7 @@ func runProviderFilePipeline(
 
 // runIndexedPipeline processes count items concurrently and reduces the results
 // in exact index order, so the work is parallel and the output is not. Both
-// snapshot phases run on it: parsing files, and resolving each file's relations.
+// parsing and analysis phases run on it; relations use bounded streaming below.
 //
 // Ordering is the whole contract. reduce sees index 0, then 1, and so on, no
 // matter which worker finishes first, so worker timing cannot reach the emitted
