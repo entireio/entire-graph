@@ -3,7 +3,7 @@
   "checkpoint_id": "e4365ffc9cf2",
   "strategy": "manual-commit",
   "branch": "audit/lang-cpp-inclass-declarations",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "internal/sem/parser.go",
     "internal/sem/parser_cpp_member_declaration_test.go",
@@ -17,13 +17,20 @@
       "compact_transcript": "/e4/365ffc9cf2/0/transcript.jsonl",
       "content_hash": "/e4/365ffc9cf2/0/content_hash.txt",
       "prompt": "/e4/365ffc9cf2/0/prompt.txt"
+    },
+    {
+      "metadata": "/e4/365ffc9cf2/1/metadata.json",
+      "transcript": "/e4/365ffc9cf2/1/full.jsonl",
+      "compact_transcript": "/e4/365ffc9cf2/1/transcript.jsonl",
+      "content_hash": "/e4/365ffc9cf2/1/content_hash.txt",
+      "prompt": ""
     }
   ],
   "token_usage": {
-    "input_tokens": 0,
+    "input_tokens": 136506,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": -48554112,
-    "output_tokens": -58718,
-    "api_call_count": 20
+    "cache_read_tokens": -46041344,
+    "output_tokens": -53166,
+    "api_call_count": 49
   }
 }
