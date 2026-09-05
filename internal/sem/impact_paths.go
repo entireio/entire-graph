@@ -12,17 +12,18 @@ import (
 // ImpactPathOptions bounds graph work independently from presentation. Depth
 // zero means closure under this policy, subject to all other limits.
 type ImpactPathOptions struct {
-	Depth         int     `json:"depth"`
-	MaxNodes      int     `json:"max_nodes"`
-	MaxEdges      int     `json:"max_edges"`
-	MaxFrontier   int     `json:"max_frontier"`
-	MaxPaths      int     `json:"max_paths"`
-	MinConfidence float64 `json:"min_confidence"`
-	GraphPartial  bool    `json:"graph_partial"`
+	Depth          int     `json:"depth"`
+	MaxNodes       int     `json:"max_nodes"`
+	MaxEdges       int     `json:"max_edges"`
+	MaxFrontier    int     `json:"max_frontier"`
+	MaxOutputSteps int     `json:"max_output_steps"`
+	MaxPaths       int     `json:"max_paths"`
+	MinConfidence  float64 `json:"min_confidence"`
+	GraphPartial   bool    `json:"graph_partial"`
 }
 
 func DefaultImpactPathOptions() ImpactPathOptions {
-	return ImpactPathOptions{Depth: 2, MaxNodes: 5000, MaxEdges: 20000, MaxFrontier: 20000, MaxPaths: 2}
+	return ImpactPathOptions{Depth: 2, MaxNodes: 5000, MaxEdges: 20000, MaxFrontier: 20000, MaxPaths: 2, MaxOutputSteps: 20000}
 }
 
 // ImpactPathStep preserves the original fact as well as traversal direction.
@@ -84,7 +85,7 @@ func impactPathPolicy(relation string) (direction, mode string) {
 // structural effects, never a proof that an unreturned site is safe to change.
 func TraverseImpactPaths(ctx context.Context, focus string, relations []RelationRecord, options ImpactPathOptions) (ImpactPathReport, error) {
 	report := ImpactPathReport{Policy: "experimental-structural-v1", Limits: options, Results: []ImpactPathResult{}}
-	if focus == "" || options.Depth < 0 || options.MaxNodes < 1 || options.MaxEdges < 1 || options.MaxFrontier < 1 || options.MaxPaths < 1 || options.MaxPaths > 16 || math.IsNaN(options.MinConfidence) || math.IsInf(options.MinConfidence, 0) || options.MinConfidence < 0 || options.MinConfidence > 1 {
+	if focus == "" || options.Depth < 0 || options.MaxNodes < 1 || options.MaxEdges < 1 || options.MaxFrontier < 1 || options.MaxOutputSteps < 1 || options.MaxPaths < 1 || options.MaxPaths > 16 || math.IsNaN(options.MinConfidence) || math.IsInf(options.MinConfidence, 0) || options.MinConfidence < 0 || options.MinConfidence > 1 {
 		return report, errors.New("invalid impact path options")
 	}
 	stop := func(code string) {
@@ -154,23 +155,21 @@ func TraverseImpactPaths(ctx context.Context, focus string, relations []Relation
 	}
 	states := []impactPredecessor{{id: focus, mode: "dependency", parent: -1, strength: 1}}
 	seenNodes := map[string]bool{focus: true}
-	best := map[string][]ImpactEvidencePath{}
-	pathKey := func(path ImpactEvidencePath) string {
-		var key strings.Builder
-		for _, step := range path.Steps {
-			part := impactStepKey(step)
-			key.WriteString(strconv.Itoa(len(part)))
-			key.WriteByte(':')
-			key.WriteString(part)
+	best := map[string][]int{}
+	pathKey := func(index int) string {
+		parts := make([]string, states[index].depth)
+		for at, position := index, len(parts)-1; position >= 0; position-- {
+			parts[position] = states[at].arc.key
+			at = states[at].parent
 		}
-		return key.String()
+		return impactIdentity(parts...)
 	}
-	better := func(a, b ImpactEvidencePath) bool {
-		if a.WeakestConfidence != b.WeakestConfidence {
-			return a.WeakestConfidence > b.WeakestConfidence
+	better := func(a, b int) bool {
+		if states[a].strength != states[b].strength {
+			return states[a].strength > states[b].strength
 		}
-		if len(a.Steps) != len(b.Steps) {
-			return len(a.Steps) < len(b.Steps)
+		if states[a].depth != states[b].depth {
+			return states[a].depth < states[b].depth
 		}
 		return pathKey(a) < pathKey(b)
 	}
@@ -238,11 +237,7 @@ func TraverseImpactPaths(ctx context.Context, focus string, relations []Relation
 				states = append(states, next)
 				nextFrontier = append(nextFrontier, len(states)-1)
 				seenNodes[arc.target] = true
-				path := ImpactEvidencePath{WeakestConfidence: next.strength, Steps: make([]ImpactPathStep, next.depth)}
-				for at, index := len(states)-1, next.depth-1; index >= 0; index-- {
-					path.Steps[index] = states[at].arc.step
-					at = states[at].parent
-				}
+				path := len(states) - 1
 				paths := best[next.id]
 				duplicate := false
 				for _, existing := range paths {
@@ -270,8 +265,30 @@ func TraverseImpactPaths(ctx context.Context, focus string, relations []Relation
 		}
 	}
 	sort.Strings(ids)
+	outputSteps := 0
 	for _, id := range ids {
-		report.Results = append(report.Results, ImpactPathResult{ID: id, Paths: best[id]})
+		result := ImpactPathResult{ID: id}
+		for _, index := range best[id] {
+			if err := ctx.Err(); err != nil {
+				stop("cancellation")
+				return report, err
+			}
+			state := states[index]
+			if state.depth > options.MaxOutputSteps-outputSteps {
+				stop("output_path_bound")
+				continue
+			}
+			path := ImpactEvidencePath{WeakestConfidence: state.strength, Steps: make([]ImpactPathStep, state.depth)}
+			for at, position := index, state.depth-1; position >= 0; position-- {
+				path.Steps[position] = states[at].arc.step
+				at = states[at].parent
+			}
+			outputSteps += state.depth
+			result.Paths = append(result.Paths, path)
+		}
+		if len(result.Paths) > 0 {
+			report.Results = append(report.Results, result)
+		}
 	}
 	report.VisitedNodes = len(seenNodes)
 	report.AdmittedStates = len(states)
