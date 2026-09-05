@@ -1,0 +1,1147 @@
+{
+  "compiler_contract_pass": true,
+  "label_origin": "hand-derived contract fixtures; compiler-checked, not independently human-adjudicated",
+  "manifest": "compiler-quality-v1",
+  "overlay_calls": [
+    {
+      "call_site_line": 11,
+      "source_symbol_id": "local/001:Go:main.go:function:Imported",
+      "evidence": {
+        "context_id": "91e7b210e9fac2f3fd21c6c6d7ef3f503fdb453382dbf2494f0d282ca16d9a89",
+        "backend_version": "gopls/v0.20.0",
+        "category": "direct_declaration",
+        "query_kind": "textDocument/definition",
+        "caller": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 302,
+          "end_byte": 308
+        },
+        "target": {
+          "path": "library/library.go",
+          "digest": "b4cef421e875775864e6d3d37d93dba83c00a08e9b48f36383a940e1064d1dbc",
+          "start_byte": 21,
+          "end_byte": 27
+        },
+        "target_symbol_id": "local/001:Go:library/library.go:function:Target"
+      },
+      "reconciliation": "confirmed",
+      "static_target_ids": [
+        "local/001:Go:library/library.go:function:Target"
+      ]
+    },
+    {
+      "call_site_line": 12,
+      "source_symbol_id": "local/001:Go:main.go:function:Promoted",
+      "evidence": {
+        "context_id": "91e7b210e9fac2f3fd21c6c6d7ef3f503fdb453382dbf2494f0d282ca16d9a89",
+        "backend_version": "gopls/v0.20.0",
+        "category": "direct_declaration",
+        "query_kind": "textDocument/definition",
+        "caller": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 349,
+          "end_byte": 353
+        },
+        "target": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 125,
+          "end_byte": 129
+        },
+        "target_symbol_id": "local/001:Go:main.go:method:One.Work"
+      },
+      "reconciliation": "direct_evidence"
+    },
+    {
+      "call_site_line": 13,
+      "source_symbol_id": "local/001:Go:main.go:function:GenericCall",
+      "evidence": {
+        "context_id": "91e7b210e9fac2f3fd21c6c6d7ef3f503fdb453382dbf2494f0d282ca16d9a89",
+        "backend_version": "gopls/v0.20.0",
+        "category": "direct_declaration",
+        "query_kind": "textDocument/definition",
+        "caller": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 379,
+          "end_byte": 386
+        },
+        "target": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 233,
+          "end_byte": 240
+        },
+        "target_symbol_id": "local/001:Go:main.go:function:Generic"
+      },
+      "reconciliation": "direct_evidence"
+    },
+    {
+      "call_site_line": 14,
+      "source_symbol_id": "local/001:Go:main.go:function:Expression",
+      "evidence": {
+        "context_id": "91e7b210e9fac2f3fd21c6c6d7ef3f503fdb453382dbf2494f0d282ca16d9a89",
+        "backend_version": "gopls/v0.20.0",
+        "category": "direct_declaration",
+        "query_kind": "textDocument/definition",
+        "caller": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 421,
+          "end_byte": 425
+        },
+        "target": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 125,
+          "end_byte": 129
+        },
+        "target_symbol_id": "local/001:Go:main.go:method:One.Work"
+      },
+      "reconciliation": "confirmed",
+      "static_target_ids": [
+        "local/001:Go:main.go:method:One.Work"
+      ]
+    },
+    {
+      "call_site_line": 15,
+      "source_symbol_id": "local/001:Go:main.go:function:PointerCall",
+      "evidence": {
+        "context_id": "91e7b210e9fac2f3fd21c6c6d7ef3f503fdb453382dbf2494f0d282ca16d9a89",
+        "backend_version": "gopls/v0.20.0",
+        "category": "direct_declaration",
+        "query_kind": "textDocument/definition",
+        "caller": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 469,
+          "end_byte": 476
+        },
+        "target": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 147,
+          "end_byte": 154
+        },
+        "target_symbol_id": "local/001:Go:main.go:method:One.Pointer"
+      },
+      "reconciliation": "confirmed",
+      "static_target_ids": [
+        "local/001:Go:main.go:method:One.Pointer"
+      ]
+    },
+    {
+      "call_site_line": 16,
+      "source_symbol_id": "local/001:Go:main.go:function:Dispatch",
+      "evidence": {
+        "context_id": "91e7b210e9fac2f3fd21c6c6d7ef3f503fdb453382dbf2494f0d282ca16d9a89",
+        "backend_version": "gopls/v0.20.0",
+        "category": "direct_declaration",
+        "query_kind": "textDocument/definition",
+        "caller": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 509,
+          "end_byte": 513
+        },
+        "target": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 87,
+          "end_byte": 91
+        },
+        "target_symbol_id": "local/001:Go:main.go:method:Worker.Work"
+      },
+      "reconciliation": "confirmed",
+      "static_target_ids": [
+        "local/001:Go:main.go:method:Worker.Work"
+      ]
+    },
+    {
+      "call_site_line": 16,
+      "source_symbol_id": "local/001:Go:main.go:function:Dispatch",
+      "evidence": {
+        "context_id": "91e7b210e9fac2f3fd21c6c6d7ef3f503fdb453382dbf2494f0d282ca16d9a89",
+        "backend_version": "gopls/v0.20.0",
+        "category": "implementation_candidate",
+        "query_kind": "textDocument/implementation",
+        "caller": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 509,
+          "end_byte": 513
+        },
+        "target": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 125,
+          "end_byte": 129
+        },
+        "target_symbol_id": "local/001:Go:main.go:method:One.Work"
+      },
+      "reconciliation": "candidate_only"
+    },
+    {
+      "call_site_line": 16,
+      "source_symbol_id": "local/001:Go:main.go:function:Dispatch",
+      "evidence": {
+        "context_id": "91e7b210e9fac2f3fd21c6c6d7ef3f503fdb453382dbf2494f0d282ca16d9a89",
+        "backend_version": "gopls/v0.20.0",
+        "category": "implementation_candidate",
+        "query_kind": "textDocument/implementation",
+        "caller": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 509,
+          "end_byte": 513
+        },
+        "target": {
+          "path": "main.go",
+          "digest": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19",
+          "start_byte": 189,
+          "end_byte": 193
+        },
+        "target_symbol_id": "local/001:Go:main.go:method:Two.Work"
+      },
+      "reconciliation": "candidate_only"
+    }
+  ],
+  "report": {
+    "packages": [
+      "fixture.local/quality",
+      "fixture.local/quality/library"
+    ],
+    "configuration": [
+      "CGO_ENABLED=0",
+      "GOPROXY=off",
+      "GOSUMDB=off",
+      "GOTOOLCHAIN=local",
+      "GOOS=linux",
+      "GOARCH=amd64"
+    ],
+    "toolchain_id": "17fa9868159a85ec188324c7fdc5ff21441c96e482065b2aa11ff062541c4c0c",
+    "status": "partial",
+    "backend": "gopls/v0.20.0",
+    "context_id": "91e7b210e9fac2f3fd21c6c6d7ef3f503fdb453382dbf2494f0d282ca16d9a89",
+    "queries": 8,
+    "answers": [
+      {
+        "query": {
+          "include_candidates": true,
+          "path": "main.go",
+          "offset": 302
+        },
+        "kind": "textDocument/definition",
+        "targets": [
+          {
+            "uri": "file:///workspace/library/library.go",
+            "range": {
+              "start": {
+                "line": 1,
+                "character": 5
+              },
+              "end": {
+                "line": 1,
+                "character": 11
+              }
+            }
+          }
+        ]
+      },
+      {
+        "query": {
+          "include_candidates": true,
+          "path": "main.go",
+          "offset": 349
+        },
+        "kind": "textDocument/definition",
+        "targets": [
+          {
+            "uri": "file:///workspace/main.go",
+            "range": {
+              "start": {
+                "line": 4,
+                "character": 11
+              },
+              "end": {
+                "line": 4,
+                "character": 15
+              }
+            }
+          }
+        ]
+      },
+      {
+        "query": {
+          "include_candidates": true,
+          "path": "main.go",
+          "offset": 379
+        },
+        "kind": "textDocument/definition",
+        "targets": [
+          {
+            "uri": "file:///workspace/main.go",
+            "range": {
+              "start": {
+                "line": 9,
+                "character": 5
+              },
+              "end": {
+                "line": 9,
+                "character": 12
+              }
+            }
+          }
+        ]
+      },
+      {
+        "query": {
+          "include_candidates": true,
+          "path": "main.go",
+          "offset": 421
+        },
+        "kind": "textDocument/definition",
+        "targets": [
+          {
+            "uri": "file:///workspace/main.go",
+            "range": {
+              "start": {
+                "line": 4,
+                "character": 11
+              },
+              "end": {
+                "line": 4,
+                "character": 15
+              }
+            }
+          }
+        ]
+      },
+      {
+        "query": {
+          "include_candidates": true,
+          "path": "main.go",
+          "offset": 469
+        },
+        "kind": "textDocument/definition",
+        "targets": [
+          {
+            "uri": "file:///workspace/main.go",
+            "range": {
+              "start": {
+                "line": 5,
+                "character": 12
+              },
+              "end": {
+                "line": 5,
+                "character": 19
+              }
+            }
+          }
+        ]
+      },
+      {
+        "query": {
+          "include_candidates": true,
+          "path": "main.go",
+          "offset": 509
+        },
+        "kind": "textDocument/definition",
+        "targets": [
+          {
+            "uri": "file:///workspace/main.go",
+            "range": {
+              "start": {
+                "line": 2,
+                "character": 24
+              },
+              "end": {
+                "line": 2,
+                "character": 28
+              }
+            }
+          }
+        ]
+      },
+      {
+        "query": {
+          "path": "main.go",
+          "offset": 509,
+          "implementation": true
+        },
+        "kind": "textDocument/implementation",
+        "targets": [
+          {
+            "uri": "file:///workspace/main.go",
+            "range": {
+              "start": {
+                "line": 4,
+                "character": 11
+              },
+              "end": {
+                "line": 4,
+                "character": 15
+              }
+            }
+          },
+          {
+            "uri": "file:///workspace/main.go",
+            "range": {
+              "start": {
+                "line": 7,
+                "character": 11
+              },
+              "end": {
+                "line": 7,
+                "character": 15
+              }
+            }
+          }
+        ]
+      },
+      {
+        "query": {
+          "include_candidates": true,
+          "path": "main.go",
+          "offset": 543
+        },
+        "kind": "textDocument/definition",
+        "targets": [
+          {
+            "uri": "file:///workspace/main.go",
+            "range": {
+              "start": {
+                "line": 16,
+                "character": 13
+              },
+              "end": {
+                "line": 16,
+                "character": 14
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "diagnostics": [
+      {
+        "code": "compiler_symbol_unmapped",
+        "detail": "main.go"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "category": "aliased_import",
+      "caller": "Imported",
+      "required": [
+        "[\"library/library.go\",21,27]"
+      ],
+      "static": [
+        "[\"library/library.go\",21,27]"
+      ],
+      "compiler": [
+        "[\"library/library.go\",21,27]"
+      ],
+      "static_counts": {
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1
+      },
+      "compiler_counts": {
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1
+      }
+    },
+    {
+      "category": "promoted_method",
+      "caller": "Promoted",
+      "required": [
+        "[\"main.go\",125,129]"
+      ],
+      "static": [],
+      "compiler": [
+        "[\"main.go\",125,129]"
+      ],
+      "static_counts": {
+        "required": 1,
+        "returned": 0,
+        "true_positive": 0,
+        "false_positive": 0,
+        "missed": 1,
+        "precision": null,
+        "recall": 0
+      },
+      "compiler_counts": {
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1
+      }
+    },
+    {
+      "category": "generic_call",
+      "caller": "GenericCall",
+      "required": [
+        "[\"main.go\",233,240]"
+      ],
+      "static": [],
+      "compiler": [
+        "[\"main.go\",233,240]"
+      ],
+      "static_counts": {
+        "required": 1,
+        "returned": 0,
+        "true_positive": 0,
+        "false_positive": 0,
+        "missed": 1,
+        "precision": null,
+        "recall": 0
+      },
+      "compiler_counts": {
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1
+      }
+    },
+    {
+      "category": "method_expression",
+      "caller": "Expression",
+      "required": [
+        "[\"main.go\",125,129]"
+      ],
+      "static": [
+        "[\"main.go\",125,129]"
+      ],
+      "compiler": [
+        "[\"main.go\",125,129]"
+      ],
+      "static_counts": {
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1
+      },
+      "compiler_counts": {
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1
+      }
+    },
+    {
+      "category": "pointer_receiver",
+      "caller": "PointerCall",
+      "required": [
+        "[\"main.go\",147,154]"
+      ],
+      "static": [
+        "[\"main.go\",147,154]"
+      ],
+      "compiler": [
+        "[\"main.go\",147,154]"
+      ],
+      "static_counts": {
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1
+      },
+      "compiler_counts": {
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1
+      }
+    },
+    {
+      "category": "interface_declaration",
+      "caller": "Dispatch",
+      "required": [
+        "[\"main.go\",87,91]"
+      ],
+      "static": [
+        "[\"main.go\",87,91]"
+      ],
+      "compiler": [
+        "[\"main.go\",87,91]"
+      ],
+      "static_counts": {
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1
+      },
+      "compiler_counts": {
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1
+      }
+    },
+    {
+      "category": "dynamic_parameter",
+      "caller": "Dynamic",
+      "required": [],
+      "static": [],
+      "compiler": [],
+      "static_counts": {
+        "required": 0,
+        "returned": 0,
+        "true_positive": 0,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": null,
+        "recall": null
+      },
+      "compiler_counts": {
+        "required": 0,
+        "returned": 0,
+        "true_positive": 0,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": null,
+        "recall": null
+      }
+    },
+    {
+      "category": "interface_candidates",
+      "caller": "Dispatch",
+      "required": [
+        "[\"main.go\",125,129]",
+        "[\"main.go\",189,193]"
+      ],
+      "static": [],
+      "compiler": [
+        "[\"main.go\",125,129]",
+        "[\"main.go\",189,193]"
+      ],
+      "static_counts": {
+        "required": 2,
+        "returned": 0,
+        "true_positive": 0,
+        "false_positive": 0,
+        "missed": 2,
+        "precision": null,
+        "recall": 0
+      },
+      "compiler_counts": {
+        "required": 2,
+        "returned": 2,
+        "true_positive": 2,
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1
+      }
+    }
+  ],
+  "source": {
+    "go.mod": "module fixture.local/quality\n\ngo 1.24\n",
+    "library/library.go": "package library\nfunc Target() {}\n",
+    "main.go": "package quality\nimport renamed \"fixture.local/quality/library\"\ntype Worker interface { Work() }\ntype One struct{}\nfunc (One) Work() {}\nfunc (*One) Pointer() {}\ntype Two struct{}\nfunc (Two) Work() {}\ntype Embedded struct { One }\nfunc Generic[T any](value T) T { return value }\nfunc Imported() { renamed.Target() }\nfunc Promoted() { var e Embedded; e.Work() }\nfunc GenericCall() { Generic[int](1) }\nfunc Expression() { One.Work(One{}) }\nfunc PointerCall() { var o One; o.Pointer() }\nfunc Dispatch(w Worker) { w.Work() }\nfunc Dynamic(f func()) { f() }\n"
+  },
+  "source_sha256": {
+    "go.mod": "055edc2bd75e67561fdb179573820b51da1ec966820bf3ef7798820bee552c45",
+    "library/library.go": "b4cef421e875775864e6d3d37d93dba83c00a08e9b48f36383a940e1064d1dbc",
+    "main.go": "2b8bcc6d0573fb344f24ba80687d7999fe6b5b7b70b3c1efb4827aca740f8f19"
+  },
+  "static_relations": [
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:function:Dispatch",
+      "to_id": "local/001:Go:main.go:method:Worker.Work",
+      "type": "CALLS",
+      "confidence": 0.83,
+      "reason": "method call resolved via typed parameter receiver",
+      "relation_scope": "file",
+      "resolution": "type_inferred",
+      "target_kind": "symbol",
+      "evidence": [
+        {
+          "kind": "call_site",
+          "file_path": "main.go",
+          "start_line": 16,
+          "end_line": 16,
+          "detail": "w.Work"
+        }
+      ],
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:function:Expression",
+      "to_id": "local/001:Go:main.go:method:One.Work",
+      "type": "CALLS",
+      "confidence": 0.82,
+      "reason": "receiver call resolved to same-file qualified method symbol",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "evidence": [
+        {
+          "kind": "call_site",
+          "file_path": "main.go",
+          "start_line": 14,
+          "end_line": 14,
+          "detail": "One.Work"
+        }
+      ],
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:function:Imported",
+      "to_id": "local/001:Go:library/library.go:function:Target",
+      "type": "CALLS",
+      "confidence": 0.84,
+      "reason": "receiver call resolved through imported module path",
+      "relation_scope": "module",
+      "resolution": "import_resolved",
+      "target_kind": "symbol",
+      "evidence": [
+        {
+          "kind": "call_site",
+          "file_path": "main.go",
+          "start_line": 11,
+          "end_line": 11,
+          "detail": "renamed.Target"
+        }
+      ],
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:function:PointerCall",
+      "to_id": "local/001:Go:main.go:method:One.Pointer",
+      "type": "CALLS",
+      "confidence": 0.68,
+      "reason": "method call matched globally unique method name",
+      "relation_scope": "file",
+      "resolution": "name_only",
+      "target_kind": "symbol",
+      "evidence": [
+        {
+          "kind": "call_site",
+          "file_path": "main.go",
+          "start_line": 15,
+          "end_line": 15,
+          "detail": "o.Pointer"
+        }
+      ],
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:type:One",
+      "to_id": "local/001:Go:main.go:method:One.Pointer",
+      "type": "CONTAINS",
+      "confidence": 1,
+      "reason": "symbol qualified name is nested in container",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:type:One",
+      "to_id": "local/001:Go:main.go:method:One.Work",
+      "type": "CONTAINS",
+      "confidence": 1,
+      "reason": "symbol qualified name is nested in container",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:type:Two",
+      "to_id": "local/001:Go:main.go:method:Two.Work",
+      "type": "CONTAINS",
+      "confidence": 1,
+      "reason": "symbol qualified name is nested in container",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:type:Worker",
+      "to_id": "local/001:Go:main.go:method:Worker.Work",
+      "type": "CONTAINS",
+      "confidence": 1,
+      "reason": "symbol qualified name is nested in container",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:library/library.go",
+      "to_id": "local/001:Go:library/library.go:function:Target",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:function:Dispatch",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:function:Dynamic",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:function:Expression",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:function:Generic",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:function:GenericCall",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:function:Imported",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:function:PointerCall",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:function:Promoted",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:method:One.Pointer",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:method:One.Work",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:method:Two.Work",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:method:Worker.Work",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:type:Embedded",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:type:One",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:type:Two",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:Go:main.go:type:Worker",
+      "type": "DEFINES",
+      "confidence": 1,
+      "reason": "symbol parsed from file",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:file:main.go",
+      "to_id": "local/001:file:library/library.go",
+      "type": "IMPORTS",
+      "confidence": 0.93,
+      "reason": "Go module import resolved through go.mod",
+      "relation_scope": "module",
+      "resolution": "import_resolved",
+      "target_kind": "file",
+      "evidence": [
+        {
+          "kind": "go_mod_import",
+          "file_path": "main.go",
+          "detail": "fixture.local/quality/library"
+        }
+      ],
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:function:Dispatch",
+      "to_id": "local/001:Go:main.go:type:Worker",
+      "type": "PARAM_TYPE",
+      "confidence": 0.85,
+      "reason": "parameter type referenced in signature",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "evidence": [
+        {
+          "kind": "signature",
+          "file_path": "main.go",
+          "start_line": 16,
+          "end_line": 16,
+          "detail": "Worker"
+        }
+      ],
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:function:Dispatch",
+      "to_id": "local/001:Go:main.go:type:Worker",
+      "type": "USES_TYPE",
+      "confidence": 0.85,
+      "reason": "type referenced in signature",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "evidence": [
+        {
+          "kind": "signature",
+          "file_path": "main.go",
+          "start_line": 16,
+          "end_line": 16,
+          "detail": "Worker"
+        }
+      ],
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:method:One.Pointer",
+      "to_id": "local/001:Go:main.go:type:One",
+      "type": "USES_TYPE",
+      "confidence": 0.85,
+      "reason": "type referenced in signature",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "evidence": [
+        {
+          "kind": "signature",
+          "file_path": "main.go",
+          "start_line": 6,
+          "end_line": 6,
+          "detail": "One"
+        }
+      ],
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:method:One.Work",
+      "to_id": "local/001:Go:main.go:type:One",
+      "type": "USES_TYPE",
+      "confidence": 0.85,
+      "reason": "type referenced in signature",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "evidence": [
+        {
+          "kind": "signature",
+          "file_path": "main.go",
+          "start_line": 5,
+          "end_line": 5,
+          "detail": "One"
+        }
+      ],
+      "warning_codes": []
+    },
+    {
+      "record_type": "relation",
+      "from_id": "local/001:Go:main.go:method:Two.Work",
+      "to_id": "local/001:Go:main.go:type:Two",
+      "type": "USES_TYPE",
+      "confidence": 0.85,
+      "reason": "type referenced in signature",
+      "relation_scope": "file",
+      "resolution": "exact",
+      "target_kind": "symbol",
+      "evidence": [
+        {
+          "kind": "signature",
+          "file_path": "main.go",
+          "start_line": 8,
+          "end_line": 8,
+          "detail": "Two"
+        }
+      ],
+      "warning_codes": []
+    }
+  ]
+}

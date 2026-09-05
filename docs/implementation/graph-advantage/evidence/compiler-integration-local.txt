@@ -1,0 +1,7 @@
+ok  	github.com/entireio/entire-graph/internal/compiler	1.318s
+--- FAIL: TestCompilerOverlayExactSiteReconciliation (0.09s)
+    compiler_overlay_test.go:60: wrong source site
+FAIL
+FAIL	github.com/entireio/entire-graph/internal/sem	2.946s
+ok  	github.com/entireio/entire-graph/internal/cli	2.301s
+FAIL

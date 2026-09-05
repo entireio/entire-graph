@@ -1,0 +1,6 @@
+{
+  "internal/cli/impact.go": "b0c78e8a3177ffcfa0de81ebd0bda1fdfa1abbd51453dd608cba0724dee6072e",
+  "internal/cli/impact_deep_test.go": "cd13b4b3b4b1acac2f57daea918dfffcf51b93040e53fa62a12daee662c10052",
+  "internal/sem/operation_capture.go": "89a41158f4559160491b49d7ad7889db09e8a7f4bb8651c20a46d033d155a0c5",
+  "internal/sem/provider_operation.go": "59e9c4c34a91a7f4c97b89d2f362be9cae63b20f1a959372a8f1ed338236919a"
+}

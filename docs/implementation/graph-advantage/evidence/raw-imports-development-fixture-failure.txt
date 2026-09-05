@@ -1,0 +1,21 @@
+--- FAIL: TestExtractionConcurrentSameKeyAndNoFollow (0.01s)
+    extraction_acceptance_test.go:64: concurrent drift
+    extraction_acceptance_test.go:64: concurrent drift
+    extraction_acceptance_test.go:64: concurrent drift
+    extraction_acceptance_test.go:64: concurrent drift
+    extraction_acceptance_test.go:64: concurrent drift
+    extraction_acceptance_test.go:64: concurrent drift
+    extraction_acceptance_test.go:64: concurrent drift
+    extraction_acceptance_test.go:64: concurrent drift
+--- FAIL: TestExtractionRawImportsFamilyRoundTripAndProfiles (0.05s)
+    --- FAIL: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/fast (0.00s)
+        extraction_imports_test.go:44: presence/content lost: {relationFamilies:1 rawImports:[other other.value] entities:[{Kind:function Name:run Signature:def run() StartLine:2 EndLine:3 BodyHash:220594194b2f3769 Fingerprint:044e5457942493d7 Local:false bodyless:false cLinkage:false sourceStartByte:24 sourceEndByte:53 parameterNames:[] parameterNamesKnown:true paramTypeText: returnTypeText: signatureTypesKnown:true}] language:Python status:{DeterministicSyntaxError:false ParseError:false Partial:false DepthExceeded:false Code: Detail:}}
+    --- FAIL: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/full (0.00s)
+        extraction_imports_test.go:44: presence/content lost: {relationFamilies:1 rawImports:[other other.value] entities:[{Kind:function Name:run Signature:def run() StartLine:2 EndLine:3 BodyHash:220594194b2f3769 Fingerprint:044e5457942493d7 Local:false bodyless:false cLinkage:false sourceStartByte:24 sourceEndByte:53 parameterNames:[] parameterNamesKnown:true paramTypeText: returnTypeText: signatureTypesKnown:true}] language:Python status:{DeterministicSyntaxError:false ParseError:false Partial:false DepthExceeded:false Code: Detail:}}
+    --- FAIL: TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/fast (0.00s)
+        extraction_imports_test.go:44: presence/content lost: {relationFamilies:1 rawImports:[] entities:[{Kind:function Name:A Signature:func A() StartLine:2 EndLine:2 BodyHash:f4bcd090406b92ea Fingerprint:68a38674d7f932c8 Local:false bodyless:false cLinkage:false sourceStartByte:10 sourceEndByte:20 parameterNames:[] parameterNamesKnown:true paramTypeText: returnTypeText: signatureTypesKnown:true}] language:Go status:{DeterministicSyntaxError:false ParseError:false Partial:false DepthExceeded:false Code: Detail:}}
+    --- FAIL: TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/full (0.00s)
+        extraction_imports_test.go:44: presence/content lost: {relationFamilies:1 rawImports:[] entities:[{Kind:function Name:A Signature:func A() StartLine:2 EndLine:2 BodyHash:f4bcd090406b92ea Fingerprint:68a38674d7f932c8 Local:false bodyless:false cLinkage:false sourceStartByte:10 sourceEndByte:20 parameterNames:[] parameterNamesKnown:true paramTypeText: returnTypeText: signatureTypesKnown:true}] language:Go status:{DeterministicSyntaxError:false ParseError:false Partial:false DepthExceeded:false Code: Detail:}}
+FAIL
+FAIL	github.com/entireio/entire-graph/internal/sem	30.338s
+FAIL

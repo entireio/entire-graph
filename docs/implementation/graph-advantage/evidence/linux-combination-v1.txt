@@ -1,0 +1,3 @@
+[
+  "Enable succeeded: \n[stdout]\n83320410385d7a5391a3f809b06504f5edcc923352ed4c10dcd5999f521ea2ff  /tmp/graph-code.tgz\n22a408a22f5330e30f4de1074b05ef5ea7d0b3a12f1b65b29e7b3996cf38d614  /tmp/advantage-live.test\n=== RUN   TestLiveAdvantageCombinationsAndNextQueryFreshness\n--- PASS: TestLiveAdvantageCombinationsAndNextQueryFreshness (6.86s)\nPASS\nCOMBINATION_TEST_EXIT=0\n\n[stderr]\n"
+]

@@ -1,0 +1,1 @@
+ok  	github.com/entireio/entire-graph/internal/cli	2.480s

@@ -1,0 +1,273 @@
+{
+  "categories": [
+    {
+      "caller": "Imported",
+      "category": "aliased_import",
+      "compiler": [
+        "[\"library/library.go\",21,27]"
+      ],
+      "compiler_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1,
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1
+      },
+      "required": [
+        "[\"library/library.go\",21,27]"
+      ],
+      "static": [
+        "[\"library/library.go\",21,27]"
+      ],
+      "static_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1,
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1
+      }
+    },
+    {
+      "caller": "Promoted",
+      "category": "promoted_method",
+      "compiler": [
+        "[\"main.go\",125,129]"
+      ],
+      "compiler_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1,
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1
+      },
+      "required": [
+        "[\"main.go\",125,129]"
+      ],
+      "static": [],
+      "static_counts": {
+        "false_positive": 0,
+        "missed": 1,
+        "precision": null,
+        "recall": 0,
+        "required": 1,
+        "returned": 0,
+        "true_positive": 0
+      }
+    },
+    {
+      "caller": "GenericCall",
+      "category": "generic_call",
+      "compiler": [
+        "[\"main.go\",233,240]"
+      ],
+      "compiler_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1,
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1
+      },
+      "required": [
+        "[\"main.go\",233,240]"
+      ],
+      "static": [],
+      "static_counts": {
+        "false_positive": 0,
+        "missed": 1,
+        "precision": null,
+        "recall": 0,
+        "required": 1,
+        "returned": 0,
+        "true_positive": 0
+      }
+    },
+    {
+      "caller": "Expression",
+      "category": "method_expression",
+      "compiler": [
+        "[\"main.go\",125,129]"
+      ],
+      "compiler_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1,
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1
+      },
+      "required": [
+        "[\"main.go\",125,129]"
+      ],
+      "static": [
+        "[\"main.go\",125,129]"
+      ],
+      "static_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1,
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1
+      }
+    },
+    {
+      "caller": "PointerCall",
+      "category": "pointer_receiver",
+      "compiler": [
+        "[\"main.go\",147,154]"
+      ],
+      "compiler_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1,
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1
+      },
+      "required": [
+        "[\"main.go\",147,154]"
+      ],
+      "static": [
+        "[\"main.go\",147,154]"
+      ],
+      "static_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1,
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1
+      }
+    },
+    {
+      "caller": "Dispatch",
+      "category": "interface_declaration",
+      "compiler": [
+        "[\"main.go\",87,91]"
+      ],
+      "compiler_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1,
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1
+      },
+      "required": [
+        "[\"main.go\",87,91]"
+      ],
+      "static": [
+        "[\"main.go\",87,91]"
+      ],
+      "static_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1,
+        "required": 1,
+        "returned": 1,
+        "true_positive": 1
+      }
+    },
+    {
+      "caller": "Dynamic",
+      "category": "dynamic_parameter",
+      "compiler": [],
+      "compiler_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": null,
+        "recall": null,
+        "required": 0,
+        "returned": 0,
+        "true_positive": 0
+      },
+      "required": [],
+      "static": [],
+      "static_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": null,
+        "recall": null,
+        "required": 0,
+        "returned": 0,
+        "true_positive": 0
+      }
+    },
+    {
+      "caller": "Dispatch",
+      "category": "interface_candidates",
+      "compiler": [
+        "[\"main.go\",125,129]",
+        "[\"main.go\",189,193]"
+      ],
+      "compiler_counts": {
+        "false_positive": 0,
+        "missed": 0,
+        "precision": 1,
+        "recall": 1,
+        "required": 2,
+        "returned": 2,
+        "true_positive": 2
+      },
+      "required": [
+        "[\"main.go\",125,129]",
+        "[\"main.go\",189,193]"
+      ],
+      "static": [],
+      "static_counts": {
+        "false_positive": 0,
+        "missed": 2,
+        "precision": null,
+        "recall": 0,
+        "required": 2,
+        "returned": 0,
+        "true_positive": 0
+      }
+    }
+  ],
+  "compiler_contract_pass": true,
+  "compiler_direct": {
+    "false_positive": 0,
+    "macro_precision": 1.0,
+    "macro_precision_categories": 6,
+    "macro_recall": 1.0,
+    "macro_recall_categories": 6,
+    "micro_precision": 1.0,
+    "micro_recall": 1.0,
+    "missed": 0,
+    "required": 6,
+    "returned": 6,
+    "true_positive": 6
+  },
+  "label_origin": "hand-derived contract fixtures; compiler-checked, not independently human-adjudicated",
+  "manifest": "compiler-quality-v1",
+  "real_world_release_gate": "not established: synthetic compiler-checked labels are not independent adjudication",
+  "static_direct": {
+    "false_positive": 0,
+    "macro_precision": 1.0,
+    "macro_precision_categories": 4,
+    "macro_recall": 0.6666666666666666,
+    "macro_recall_categories": 6,
+    "micro_precision": 1.0,
+    "micro_recall": 0.6666666666666666,
+    "missed": 2,
+    "required": 6,
+    "returned": 4,
+    "true_positive": 4
+  },
+  "synthetic_direct_advantage": true
+}

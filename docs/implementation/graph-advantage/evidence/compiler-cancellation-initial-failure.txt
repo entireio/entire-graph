@@ -1,0 +1,5 @@
+--- FAIL: TestRPCSendsBoundedCancellationNotification (1.00s)
+    adapter_test.go:163: no cancellation notification
+FAIL
+FAIL	github.com/entireio/entire-graph/internal/compiler	1.365s
+FAIL

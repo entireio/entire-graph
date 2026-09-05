@@ -1,0 +1,1 @@
+PASS: retained P1 paired summary, P4 CLI secondary metrics and P4 three-arm retrieval summary reproduce exactly from raw observations. No queries rerun or parameters changed.

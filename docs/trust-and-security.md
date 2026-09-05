@@ -289,3 +289,45 @@ with `--head`. Bulk streams and ref-based analysis default to committed state
 (`--worktree` opts the streams into the working tree). A result is therefore
 always attributable to one requested repository view; the cache keying that
 preserves this is described in the [operations cache guide](operations.md#cache).
+
+## Experimental captured extraction and compiler analysis
+
+`--extraction-cache on` is opt-in on search, snapshot/record streams and impact.
+It stores only complete file-local declaration payloads in a separate private
+namespace, keyed by captured bytes, path/repository, profile/limits and executable
+identity. Source is acquired again on each operation; aliases and relations are
+rebuilt. Invalid or redirected entries are misses. Initial repository limits are
+1 GiB and 100,000 entries; bounded admission can decline caching. Concurrent
+publishers may temporarily exceed the accounting reservation by in-flight
+writes. No raw source or working-tree snapshot is persisted by this feature.
+The capture store retains at most 64 MiB before private temporary spill; this is
+not a total RSS limit on parser/consumer buffers. Cleanup
+runs when the operation closes. This is observed-file consistency, not an atomic
+filesystem revision. Measured raw import strings are also reusable for Go/TypeScript/Python fast/full
+profiles; other relation passes remain uncached. Deterministic syntax failures
+retain exact diagnostics; transient/resource failures bypass persistence.
+
+`--compiler go` explicitly starts an installed, SHA-256-pinned gopls v0.20.0 and
+an explicit local Go toolchain inside the tested Linux Bubblewrap boundary.
+The entire process tree has an isolated network namespace, read-only captured
+sources/toolchain, private scratch caches and an allowlisted environment.
+Runtime discovery uses offline `go list`; generators, tests, edits and code-action
+execution are never requested. External dependency roots that cannot be captured
+are unavailable, with static results retained. macOS/Windows live execution is
+unavailable. Provisioning tools/dependencies is outside provider runtime.
+
+Compiler work is bounded to 30 seconds total, 5 seconds per request, 500 queries
+and 8 MiB protocol messages. Cancellation requests are best-effort and bounded;
+process-tree termination enforces cleanup. Native optional evidence preserves
+exact source/build identities, direct declarations, implementation candidates,
+coverage and reconciliation. Candidates are never runtime-call proof. Compact
+and SCIP enriched exports refuse the unsupported distinction. Compiler overlays
+are operation-local and never enter durable snapshot caches. `--require-compiler`
+turns incomplete/unavailable compiler coverage into an error.
+
+Experimental deeper impact and graph ranking consume the selected captured
+static graph, with optional separately labeled compiler evidence. They introduce
+no additional network access. Structural impact is bounded and reports stop
+reasons/lower-bound counts; graph ranking falls back explicitly when its bounds
+or supported query conditions are not met. Neither feature establishes runtime
+reachability or safety of a change.

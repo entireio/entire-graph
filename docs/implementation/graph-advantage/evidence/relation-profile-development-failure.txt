@@ -1,0 +1,4 @@
+First compile attempt, before audit observations were produced:
+internal/sem/operation_capture.go:36:105: resolveProfile(options.Profile).profile undefined (type profileSpec has no field or method profile)
+The concurrently implemented operation-capture worker corrected its field to name.
+This was a build failure, not a benchmark observation. The audit then ran normally.

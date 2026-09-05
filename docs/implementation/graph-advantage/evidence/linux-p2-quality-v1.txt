@@ -1,0 +1,3 @@
+[
+  "Enable succeeded: \n[stdout]\n6e39bee5fc640510b2821f55ef25a9858d631c998e3c7b3f70691bd94eacb4af  /tmp/graph-code.tgz\n=== RUN   TestLiveCompilerQualityEvaluationV1\n--- PASS: TestLiveCompilerQualityEvaluationV1 (1.33s)\nPASS\nok  \tgithub.com/entireio/entire-graph/internal/sem\t2.392s\nQUALITY_TEST_EXIT=0\n\n[stderr]\n"
+]

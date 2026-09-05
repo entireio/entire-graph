@@ -1,0 +1,11 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/entireio/entire-graph/internal/sem
+cpu: Apple M4
+BenchmarkImpactPathsThousandDependents-10    	      10	   1251333 ns/op	 2920040 B/op	   18098 allocs/op
+BenchmarkImpactPathsThousandDependents-10    	      10	   1502967 ns/op	 2919949 B/op	   18097 allocs/op
+BenchmarkImpactPathsThousandDependents-10    	      10	   1396225 ns/op	 2920235 B/op	   18098 allocs/op
+BenchmarkImpactPathsThousandDependents-10    	      10	   1281321 ns/op	 2920270 B/op	   18098 allocs/op
+BenchmarkImpactPathsThousandDependents-10    	      10	   1206604 ns/op	 2920329 B/op	   18099 allocs/op
+PASS
+ok  	github.com/entireio/entire-graph/internal/sem	0.830s

@@ -1,139 +1,136 @@
 # Graph advantage implementation ledger
 
-Requirements: `/Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md` (2026-09-05), read in full.
-Baseline: `3a2a715fad1948e83dc7ebe0d307377ba29e065a`, fetched from origin/main on 2026-09-05.
-Branch: `codex/graph-advantage`. Primary checkout preserved; isolated worktree.
+Requirements: `/Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md`, read in full; exact SHA-256 in `evidence/requirements-provenance.json`.
+Baseline: fetched origin/main `3a2a715fad1948e83dc7ebe0d307377ba29e065a`.
+Product branch: `codex/graph-advantage`; final product commit `0038ef70ca5e829c150a977d8021ee9fe9c7103a`.
+Evaluation branch: GraphMark `codex/graph-advantage-evaluation`, commit `c22eda1`.
+Primary Entire Graph checkout and its existing HEAD were preserved. No merge.
 
-## Source and fixture provenance
+## Current checkpoint
 
-This task did not consult prior conversations, memory files, competitors, comparison documents, or adjacent evidence. System-provided context includes general prior-work summaries; none is used as implementation evidence. No claim of an independently certified history is made.
+All four opt-in implementations and cross-workstream acceptance fixtures are
+frozen. The full repository check passed626.23s after a version-only correction
+to29 snapshot goldens; product code is unchanged. Source identity is
+`evidence/final-source-freeze-v2.json`. Final Linux combined race passed6.78s.
+The dedicated Azure VM is verified deallocated; task-owned private storage/disk
+remain available for reproducibility. The obsolete temporary baseline-check
+worktree was removed after verifying it clean.
 
-Consulted Entire sources at the baseline: root AGENTS.md and .entire/graph-agent.md; docs/adr/0001-ga-schema-contract.md; docs/trust-and-security.md; mise.toml; internal/sem/{provider_parallel.go,provider_parallel_test.go,provider.go,model.go,parser.go,search_cache.go}; internal/bench/bench.go; cmd/graph-bench/main.go. Graph search located processProviderFile. These establish extraction, metadata, ordered reduction, cache refusal, and measurement boundaries. Repository files subsequently changed or named in tests are also implementation evidence; no external correctness oracle is used.
+No additional feature work or benchmark tuning is underway. Each worker returned
+bounded implementation, fixtures, exact results and remaining gates. A fresh
+read-only reviewer found no substantiated blocker in capture finalization,
+compiler/native distinctions, cache refusal, schema or CLI/default integration.
+This review does not replace execution evidence or promote a feature.
 
-New fixture origins: authored directly from P1-A/P1-C and private metadata contracts. Hand-derived expected declarations and exact round-trip equality; existing Entire parser provides baseline equivalence, not an external product.
-
-## Tasks
+## Tasks (current integration checkpoint)
 
 | Task | Implementation / status | Tests and evidence | Remaining |
 |---|---|---|---|
-| P1.1 | Characterization started; extraction phase benchmark added | evidence/baseline-bench.txt, baseline.cpu.pprof, baseline-cpu*.txt, baseline-environment.txt, seam-phases.txt | Separate IO/extraction/resolution costs; pinned release corpus and controlled reader schedule across the full operation |
-| P1.2 | Partial: minimal extraction seam and bounded operation-store primitive | extraction_record_test.go, captured_store_test.go; seam-tests.txt, capture-store-tests.txt, focused-final.txt; ADRs 0030/0031 | Integrate one capture lifetime through prefix/oversize/context reads, resolution and rendering; audit all resolver fields |
-| P1.3 | Pending | None yet | Full task |
-| P1.4 | Pending | None yet | Full task |
-| P1.5 | Pending | None yet | Full task |
-| P1.6 | Pending | None yet | Full task |
-| P2.1 | Blocked for live feasibility; evidence ADR written | ADR 0034; Darwin host and absent gopls recorded | Select/test Linux isolation launcher and pin actual server; positive executable probe |
-| P2.2 | Partial: framing, UTF-16 mapping, context identity primitives | internal/compiler; compiler-primitives-tests.txt, focused-final.txt | Immutable capsule, complete protocol lifecycle/client, deadlines and process-tree cleanup |
-| P2.3 | Pending | None yet | Full task |
-| P2.4 | Partial: input-bound evidence validation; categories remain distinct | internal/compiler/identity.go and compiler_test.go | Actual symbol mapping, per-call-site reconciliation, public schema/projection fixtures |
-| P2.5 | Pending | None yet | Full task |
-| P3.1 | Partial: conservative relation policy defined; defaults untouched | ADR 0032; real Go/TypeScript/Python source-chain fixtures | Field/value/endpoint/resource compositions, configuration fixtures and default-output golds |
-| P3.2 | Partial: deterministic level-order bounded traversal core | impact_paths.go; impact-core-tests.txt, impact-source-tests.txt | Immutable adjacency reuse and full composition policies; realistic performance gates |
-| P3.3 | Partial: parallel evidence and stronger alternative paths; terminal tests and stop codes | impact_paths_test.go including shuffled hub, cycle and diamond fixtures | Output integration, omitted-path counts, byte-budget truncation notice and compiler provenance |
-| P3.4 | Pending | None yet | Full task |
-| P3.5 | Pending | None yet | Full task |
-| P3.6 | Pending | None yet | Full task |
-| P4.1 | Partial: preliminary evaluation manifest before tuning | evaluation-manifest.md; ADR 0033 | Captured retrieval baseline, adjudicated labels and repository-disjoint splits in GraphMark |
-| P4.2 | Partial: pure rerank-only PageRank core with bounded topology | search_graphrank.go and tests; experimental-core-tests.txt, focused-final.txt | Broader hub/exact-match fixtures and query integration; no retrieval-quality gate passed |
-| P4.3 | Pending | None yet | Full task |
-| P4.4 | Pending | None yet | Full task |
-| P4.5 | Pending | None yet | Full task |
-| P4.6 | Pending | None yet | Full task |
+| P1.1 | Pinned baseline characterization and paired harness | baseline/phase artifacts; extraction-paired-v2: 810 equal pairs | Full-profile cost audit complete; complete pinned real corpus/RSS/scenarios still required |
+| P1.2 | Explicit private payload, shared bounded capture, final operation identity and sticky storage errors | Entity field checklist, language/overload/malformed fixtures, capture mutation tests | Operation manifest/sticky-error race fixtures passed; final integration check passed626.23s |
+| P1.3 | Atomic private versioned/checksummed storage, bounded decode/quota and no-follow | Concurrent same-key writers, corruption/key isolation, symlink refusal | Positive capped environment quota overrides implemented; upper bounds 1GiB/100k |
+| P1.4 | Declaration reuse with fresh ordered reduction/aliases/relations | P1-A counts 3/0/1 parses; manifests/deletion/ignore and source freshness | Final combination checks; no default enablement |
+| P1.5 | Format3 raw-import family for Go/TS/Python fast/full; other families absent | 450 cost observations; exact relation parity; focused raw-import race32.187s | Calls/scopes remain uncached; raw imports modest3-4% isolated relation benefit, not end-to-end claim |
+| P1.6 | Separate extraction/cache/read telemetry and reproducible development evidence | 810 paired comparisons; frozen29520508 full check passed | Performance gate fails: large full cold +22%; required release corpus/scenarios/RSS incomplete |
+| P2.1 | Pinned gopls v0.20.0 Linux Bubblewrap live feasibility | Grandchild network denial/source EROFS; linux-gopls-feasibility and Linux race logs | Other platforms explicitly unavailable |
+| P2.2 | Bounded stdio lifecycle, cancellation/process cleanup and immutable capsule | Protocol failures/UTF16/tags/workspaces/local replacement, live race | External ambient dependency roots intentionally unavailable |
+| P2.3 | Exact direct declarations and separate implementation candidates | Promoted/generic/alias/interface/closure/build-context fixtures | Dynamic runtime targets intentionally unresolved |
+| P2.4 | Additive native overlay, exact-site reconciliation, projection refusal | Native/static retention, candidate namespace, schema1.2 checks | Linux cross-workstream race passed; final repository check passed626.23s |
+| P2.5 | Source/context invalidation, explicit fallback and frozen fixture quality evaluation | Static4/6 vs compiler6/6 direct; zero false confirmations; candidates2/2 | Synthetic compiler-checked labels do not establish independently adjudicated real-world recall gate |
+| P3.1 | Explicit direction/composition policy; default depth unchanged | Go/TS/Python chains; Go routes/HCL resources; existing depth gold tests | Realistic independent label adjudication |
+| P3.2 | Bounded deterministic predecessor traversal and adjacency construction | Cycles/diamonds/hubs/shuffle/cancellation/all budgets | Final repository check passed626.23s |
+| P3.3 | Evidence alternatives, terminal tests, counts/coverage/stop codes | Seeded path reconstruction; confidence and evidence byte/output-step bounds | No runtime safety inference |
+| P3.4 | DepthN/all CLI, filters/budgets, optional JSON and bounded text | Focused race suite; default/invalid-control/byte notice checks | Help/schema integration implemented; final repository check passed626.23s |
+| P3.5 | Separate compiler-candidate paths and effective direct view | Distinct path category and per-category alternatives | Live combined query verification passed6.78s; final repository check passed626.23s |
+| P3.6 | Contract/stress tests, provenance, propagation-limit docs | 1000-dependent traversal ~1.21–1.50ms/op; not end-to-end/RSS | Realistic adjudicated precision/recall/coverage and total-query/RSS gate unestablished |
+| P4.1 | Frozen fresh GraphMark development fixtures/labels/outputs/provenance | GraphMarkc22eda1, six author-labeled repository families | Independent adjudication and disjoint holdout missing |
+| P4.2 | Deterministic bounded candidate-only PPR | Mass/dangling/cycle/invalid/duplicate/hub/scope tests | No quality inference from arithmetic |
+| P4.3 | Explicit ranking mode, current/exact/deep fallback, rendering/guidance retained | Capture mutation and next-query scope/guidance tests | Final combined Linux race passed |
+| P4.4 | Fixed development CLI current/weighted and API current/uniform/weighted ablations | 120 CLI plus180 API observations; all three arms recall/coverage1; relative gain0% | Full retrieval uniform arm complete; no winning configuration; compiler-winner arm conditional |
+| P4.5 | Held-out protocol recorded; no outcomes invented | Development gate not passed | Fresh disjoint independently adjudicated holdout absent; no tuning against holdout |
+| P4.6 | Conditional study/power planning recorded; current stays default | No unsupported promotion | Agent study not run because retrieval prerequisite has not passed |
 
-## Release gates
+## Release decisions and genuine limitations
 
-All four workstream release gates remain unpassed. Defaults remain unchanged. No performance or quality advantage is claimed.
+No advantage release gate is declared passed. P1's earlier frozen development
+comparison has a cold regression and does not cover the required final real-corpus,
+edit-scenario/RSS matrix. P2 and P3 have executable correctness evidence but lack
+broad independently adjudicated realistic quality evidence. P4's fixed development
+set shows0% recall improvement; independent held-out collection/adjudication is
+incomplete and the conditional powered agent study was not run. These remain
+unfulfilled evidence requirements, not achieved advantages.
 
-Known environment limitations: host is Darwin/arm64, whereas P2 live execution requires a tested Linux process boundary; gopls is not installed on this host. Linux positive/no-egress tests cannot be claimed from this host. GraphMark corpus, reviewer labels, held-out and powered agent evaluations are separate deliverables and have not been run.
+Defaults stay extraction off, compiler off, impact depth2 and current ranking.
+Compiler support is tested Linux only; external dependency roots that cannot be
+captured safely are explicitly unavailable. Dynamic runtime targets remain
+unresolved/candidates. Capture memory limits cover retained store payload, not
+all process RSS. Policy provenance explicitly limits nested/vendor-rule coverage.
+Concurrent cache writers can temporarily exceed per-operation quota reservations;
+this is documented rather than represented as a global hard filesystem quota.
+
+## Source and fixture provenance
+
+No prior conversations, memory files, competitors, comparison documents or
+adjacent comparative evidence were consulted. System-provided context included
+general summaries; they were not implementation evidence. No legal certification
+or independently certified prior-exposure history is claimed.
+
+Consulted Entire sources: AGENTS.md and .entire/graph-agent.md; schema ADR0001;
+trust/security and mise build/check instructions; provider/parser/Entity metadata,
+parallel reducer, cache confinement/policy, relation emitters and search/impact
+entrypoints. Every changed source/test and per-workstream review names its
+implementation evidence. Current-main touchpoints were revalidated before edits;
+main's parallel pipeline was retained rather than replacing it with the plan's
+older baseline design.
+
+Official sources consulted for P2 are LSP3.17, gopls navigation/settings and Go
+modules, with URLs/hashes in ADR0034. Azure CLI help and normal tool distribution
+channels were used only for provisioning; runtime provider execution never
+fetches tools/dependencies. Installed Go1.26.1/goplsv0.20.0/launcher versions and
+binary/source hashes are retained in Linux manifests.
+
+Fixtures were independently authored from plan contracts and Entire's maintained
+behavior: P1 declaration/overload/scope/malformed/read-schedule/cache cases;
+P2 exact Go tokens, interface categories, module/workspace/build-context and
+hostile descendant boundary probes; P3 call/type/field/route/resource chains,
+cycles/hubs/diamonds and seeded proof reconstruction; P4 mathematical examples
+and fresh GraphMark Go/TS/Python development repositories. Expected targets and
+paths are hand-derived and/or checked through pinned gopls, never another product.
+P4 labels are author expectations pending independent reviewer adjudication.
+
+## Validation index
+
+- Initial stageA and a70a1892 full checks passed; frozen29520508 check passed629.12s.
+- `shared-integration-race-v2.txt`, `capture-contract-tests.txt`, `raw-imports-focused.txt`, `p3-focused.txt`, `p4-focused-tests.txt`: focused race checks.
+- `linux-p2-v4.txt`, `compiler-quality-v1.json`, `advantage-combination-v2.json`, associated Linux source manifests: actual pinned backend correctness/quality fixtures and all-feature combinations.
+- `extraction-paired-v2.ndjson` and summary:810 pairs/1620 observations from29520508; explicitly earlier development evidence, not final release evidence.
+- `relation-profile-v1.ndjson`:450 bounded characterization observations and exact precomputed-import equivalence.
+- GraphMark fresh evaluation:120 CLI current/weighted and180 API current/uniform/weighted observations, exact inputs/outputs/settings/scripts and provenance.
+- `scoring-reproduction.txt`: retained P1/P4 summaries reproduced exactly from raw data without query reruns.
+- `check-integration-final.txt`: first full integration run645.62s failed only29 schema-version goldens. `schema-goldens-v12.txt`: exact version-only correction passed all29 under race4.850s.
+- `check-integration-final-v2.txt`: final complete check passed626.23s at0038ef70. No product code changed; initial failures remain retained.
+
+## Reviewable stages
+
+Earlier branch stages introduced the P1.1/minimalP1.2 seam first, then capture,
+protocol/evidence, traversal and pure ranking groundwork. Resumed work:
+
+- 7f123bcc: integrated opt-in captured declaration reuse.
+- 29520508: executable isolated Linux feasibility evidence.
+- 0c721a9e: bounded pinned compiler adapter.
+- ac488773: structural traversal policy/core bounds.
+- 92753f79: shared semantic capture/reuse/evidence/ranking integration and schema1.2.
+- 182c2e5c: optional query/compiler CLI.
+- 0038ef70: deeper impact CLI/help and cross-workstream acceptance tests.
+
+No all-feature PR was opened. Product and GraphMark evaluation commits stay on
+separate review branches; no merge or default-promotion action occurred.
 
 ## Rollback
 
-Revert this branch's commits to restore baseline implementation. No cache migration, installation, generated summary, or Brain changes are introduced by the initial seam.
-
-## Touchpoint revalidation
-
-At current main: processProviderFile remains in provider_parallel.go; parseWithProfile at provider.go:1407; prepareSource at 1650; entitySymbols at 1818; forEachRelation at 4509. parseImpactFlags and buildImpactResponseFromReader remain at impact.go:181/330; expandGraphCandidates remains at search.go:3288. cache_policy.go retains captured-policy validation; cache_entry.go retains confined atomic storage. All plan areas exist; current main added parallel pipeline changes after the plan baseline.
-
-Stage A validation: focused seam tests pass. mise run check initially refused the newly created worktree config; after trusting the inspected mise.toml, the check started successfully. The Stage A full check passed in 634.69 seconds; see evidence/check-stage-a.txt. The final check on product-code commit a70a1892 passed in 730.00 seconds (evidence/check-a70a1892.txt). No release gate is inferred from this test pass. The phase benchmark serialization timing overlaps enclosing provider phases and must not be added to them. Syntax-only worker baseline does not characterize full-profile relation parsing.
-
-## Additional source and fixture ledger
-
-- `cache_entry.go` was inspected for its existing held-root atomic-write boundary; no extraction-cache storage implementation is added yet.
-- `provider.go` TESTS/type/data-flow emission was inspected to verify direction. DATA_FLOWS composition is deliberately absent from the new core because symbol-level composition would lose value identity. Existing product behavior is untouched.
-- LSP 3.17 specification: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/ (retrieved 2026-09-05; HTML SHA-256 in ADR 0034), for framing, lifecycle and UTF-16/EOL contracts.
-- Official https://go.dev/gopls/features/navigation, https://go.dev/gopls/settings and https://go.dev/ref/mod retrieved 2026-09-05 for declaration/candidate semantics and offline-tooling constraints. No executable gopls behavior verified.
-- `compiler_test.go` uses fake version strings explicitly labeled fixture/fake, hand-authored frames and Unicode strings. These are protocol/import tests, not P2 positive-server evidence.
-- `impact_paths_test.go` contains hand-authored graph facts plus new source-only Go, TypeScript and Python chains. Labels derive from the written calls. No external oracle or historical patch labels used.
-- `search_graphrank_test.go` derives expected first/second iterations by hand from the plan recurrence. It is numerical correctness evidence only; no retrieval corpus or success-rate claim.
-
-## Unfinished scope and honest admission boundary
-
-This branch contains groundwork, not completion of the four workstreams. No extraction persistence/reuse, live compiler, deeper-impact CLI mode or graph-ranking CLI mode is exposed. P1.3-P1.6, live P2, P3 integration and complete policy, and P4 integration/evaluation remain unfinished. Ordinary engineering integration work is still outstanding; it is not all blocked by the platform or missing evaluation data. Only the compiler live-platform and external evaluation evidence are presently environmental prerequisites.
-
-Do not promote or describe these primitives as shipped user capabilities. Next implementation stage is operation-wide capture and field audit before storage/reuse. Preserve the plan's reviewable separation and complete the required acceptance fixtures before promotion.
-
-## Reviewable commit stages
-
-- 58f663a6: P1.1 / minimal P1.2 seam and baseline artifacts.
-- 839d8e41: bounded capture-store primitive and allocation-free default handoff; isolated baseline rerun.
-- 338afe30: P2 evidence/protocol primitives; no live execution.
-- b5eaed4b: P3 bounded structural traversal core.
-- f0a4fa11: P4 pure experimental ranking core.
-- 06a018c9: byte-exact evidence identities, including invalid-UTF-8 Git paths.
-- a70a1892: predecessor-only retention and a separate 20000 materialized-step ceiling; long-chain output-bound fixture.
-
-Local Linux probes: docker/colima/limactl are installed, but the Docker daemon is unreachable and colima is stopped. No Linux provisioning attempted. This refines the initial host limitation: a usable enforced Linux boundary has not been established, rather than asserting that this machine can never provide one.
-
-See review-summary.md for the incomplete scope, continuation sequence and rollback. Development failures are retained separately in evidence/development-failures.txt.
-
-## Final validation result
-
-`mise run check` passed on a70a1892: formatting, vet, full race suite, build and 151 status-line checks. No product code changed while that final build/check ran. Final focused race tests and the exact graph VERIFY command also passed. Final documentation changes only record these results. All release gates remain unpassed, and all end-to-end workstream completion boxes remain open.
-
-## Resumed implementation (2026-09-05)
-
-User authorized Azure Linux/Windows VM provisioning. Dedicated test resource:
-`rg-entire-graph-advantage-20260905/graph-validation-linux`, Ubuntu 22.04,
-westus3, Standard_D4s_v5, no public IP. Existing VMs are untouched. Deallocate
-this task-owned VM after validation; remove its resource group when its evidence
-has been retained and it is no longer needed.
-
-P1.2 now has an opt-in operation capture shared across search preselection,
-snapshot resolution and rendering. Prefix/oversize acquisition uses one opened
-file; memory spill is bounded and private. P1.3/P1.4 now have binary/content/path
-keyed atomic per-repository entries, bounded decode and bounded quota scans;
-only complete declaration extractions persist. Search and bulk snapshot expose
-`--extraction-cache off|on`, default off. Snapshot caching remains bypassed for
-all worktree operations. Opt-in search also bypasses committed snapshot reuse
-so per-file telemetry cannot be confused with cached historical counters.
-
-P1-A tests verify 3 cold parses, 0 parses/3 reuses unchanged, 1 parse/2 reuses
-after declaration edit; exact full graph equality with uncached output includes
-private metadata. The capture mutation fixture proves consistent snippets and
-fresh subsequent operations. `p1-reuse-integration-race-v2.txt` passes the focused
-race suite and required graph verification test. The earlier race log retains a
-fixture error: a tiny all-file preselection did not actually read content before
-the injected mutation. The corrected fixture forces lexical preselection before
-mutation; this was not a product capture failure.
-
-P1.5 relation-input families remain absent. P1.6 release evaluation remains
-incomplete; the reproducible product-local paired harness covers independently
-generated 12/120/600-file Go repositories, three profiles, cold/unchanged/one-edit,
-30 alternating trials, full semantic comparison. It does not substitute for
-pinned real repositories, remaining edit scenarios, cold process cost/RSS or
-GraphMark evaluations. No advantage or release promotion is claimed.
-
-P2.1 Linux feasibility is no longer blocked: the actual pinned gopls LSP probe
-passed, with ENETUNREACH in a grandchild and EROFS for a source write. Source and
-fixture origins are recorded in ADR 0034 and the probe script. Azure CLI help
-was consulted solely for provisioning commands; installed packages/toolchains
-came from their normal distribution channels, not implementation references.
-
-Additional P1 source audit: every Entity field is explicitly represented in
-extraction_record.go and guarded by reflection/round-trip tests. SymbolRecord
-IDs, repository aliases, C++ specialization aliases, synthetic boundary symbols,
-imports and relation outputs are recomputed by existing reducers from captured
-source. Symbol parameter names/knownness, signature types/knownness, source byte
-ranges, bodyless/local/C linkage fields originate in the explicit declaration
-payload. No final symbol or relation identity is stored. Inputs that fail an
-exact private-payload JSON round trip bypass persistence.
+Select `--extraction-cache off`, `--compiler off`, `--depth 2` and
+`--ranking current`. Compiler/ranking state is operation-local. Extraction data
+is disposable in its separate `extraction-*` cache namespace. Revert branch
+commits to remove implementations. No migration, installation, MCP, generated
+summary or Brain change is required. Persistent working-tree snapshot caching
+remains disabled.

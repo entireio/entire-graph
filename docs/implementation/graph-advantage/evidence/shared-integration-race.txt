@@ -1,0 +1,6 @@
+ok  	github.com/entireio/entire-graph/internal/sem	30.053s
+--- FAIL: TestCompilerNoHitAndNativeHeader (0.06s)
+    compiler_flags_test.go:98: missing no-hit compiler status
+FAIL
+FAIL	github.com/entireio/entire-graph/internal/cli	4.298s
+FAIL

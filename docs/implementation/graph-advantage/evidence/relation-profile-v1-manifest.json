@@ -1,0 +1,11 @@
+{
+  "base_commit": "0c721a9e5930025a08bd149c267ba668fa801f00",
+  "platform": "macOS-26.6.1-arm64-arm-64bit-Mach-O",
+  "go": "go version go1.26.1 darwin/arm64",
+  "files_sha256": {
+    "internal/sem/relation_profile_evaluation_test.go": "01cc97e603f63f30a356224163d5d786bfacf31bb57ca83a755aecbe196aa3a6",
+    "internal/sem/provider.go": "6dc7c7d4042df198346d9bfd8b2caa7658e64b64ad3ad7c955a6ddec2902fe26",
+    "docs/implementation/graph-advantage/probes/summarize_relation_profile.py": "f073620c61121ee057ce2e33a82051425ac4aab1b3394983b7d9bc803f6ca6e0"
+  },
+  "identity_limit": "Source hashes recorded at audit completion; concurrently edited checkout, no retained temporary go-test executable hash. Development cost audit only."
+}
