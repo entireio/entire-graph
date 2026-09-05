@@ -1,0 +1,20 @@
+[
+  {
+    "vm": "graph-validation-linux",
+    "output": [
+      "Enable succeeded: \n[stdout]\n{\"removed_AppleDouble\": 45558, \"remaining\": 0}\n\n[stderr]\n"
+    ]
+  },
+  {
+    "vm": "graph-p1-worker-2",
+    "output": [
+      "Enable succeeded: \n[stdout]\n{\"removed_AppleDouble\": 45558, \"remaining\": 0}\n\n[stderr]\n"
+    ]
+  },
+  {
+    "vm": "graph-p1-worker-3",
+    "output": [
+      "Enable succeeded: \n[stdout]\n{\"removed_AppleDouble\": 45558, \"remaining\": 0}\n\n[stderr]\n"
+    ]
+  }
+]

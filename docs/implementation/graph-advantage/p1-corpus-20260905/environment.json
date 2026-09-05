@@ -1,0 +1,27 @@
+{
+  "worker_image": {
+    "image": {
+      "exactVersion": "22.04.202608060",
+      "offer": "0001-com-ubuntu-server-jammy",
+      "publisher": "Canonical",
+      "sku": "22_04-lts-gen2",
+      "version": "22.04.202608060"
+    },
+    "location": "westus3",
+    "size": "Standard_D4s_v5"
+  },
+  "git": "2.55.0",
+  "git_binary_sha256": "011fb1c28096c72e25688e56793f20b33e68f7f1065489f745763f19b6e9f516",
+  "python": "3.10.12",
+  "kernel": "6.8.0-1064-azure",
+  "workers": [
+    "graph-validation-linux",
+    "graph-p1-worker-2",
+    "graph-p1-worker-3"
+  ],
+  "parallel_requests_per_worker": 1,
+  "GOMAXPROCS": 4,
+  "MemoryMax_bytes": 15032385536,
+  "TasksMax": 512,
+  "request_timeout_seconds": 120
+}
