@@ -1,0 +1,26 @@
+[
+  {
+    "repository": "kubernetes-kubernetes",
+    "profile": "syntax-only"
+  },
+  {
+    "repository": "entire-graph-frozen-88dd1dc9",
+    "profile": "full"
+  },
+  {
+    "repository": "colinhacks-zod",
+    "profile": "fast"
+  },
+  {
+    "repository": "psf-requests",
+    "profile": "syntax-only"
+  },
+  {
+    "repository": "synthetic-2000",
+    "profile": "full"
+  },
+  {
+    "repository": "go-chi-chi",
+    "profile": "fast"
+  }
+]
