@@ -112,3 +112,68 @@ func TestSearchBoundsCommittedTreePathsInTheDisclosure(t *testing.T) {
 			len(warnings[0].Detail), len(warnings[0].FilePath))
 	}
 }
+
+// TestRepoIgnoreSourcesAreTheTwoRepoControlledLiterals is the counterpart
+// finding, which asked for the same bound on Source.
+//
+// It does not need one, and pinning why is worth more than a bound: Source is
+// never repository-sized. Every ledger write drops a callerControlled origin
+// (ignoreMatcher.repoExclusion, nestedIgnoreStack.noteRepoExclusion and the
+// prune accounting), which removes --ignore-file, --include-file,
+// .git/info/exclude and the built-in rules -- every constructor in ignore.go
+// that takes a supplied label. The two nested-stack sites additionally require
+// gitInvisible, true only for graphIgnoreOrigin, whose label is a constant; a
+// nested .gitignore is repoIgnoreOrigin, so it is swallowed as unattributable
+// and recorded as GitListingUnavailable rather than named. The flat matchers
+// that feed the other two sites register exactly two repo-controlled origins,
+// both literals. Committed nested .gitignore files ARE parsed with tree-path
+// labels (headVendorIgnoreRules), but that matcher drives the vendored-directory
+// heuristic and is never handed a ledger.
+//
+// So a nested .gitignore at a long path -- the case the finding names -- reaches
+// the disclosure as neither a Source nor an attribution.
+func TestRepoIgnoreSourcesAreTheTwoRepoControlledLiterals(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	initRepo(t, repo)
+	deep := "d" + strings.Repeat("/"+strings.Repeat("q", 200), 3)
+	write(t, repo, graphIgnoreFileName, "hidden/\n")
+	write(t, repo, "hidden/auth.go", "package hidden\n\nfunc ValidateTokenHidden(token string) bool { return true }\n")
+	write(t, repo, ".gitignore", "rootignored/\n")
+	write(t, repo, "rootignored/auth.go", "package rootignored\n\nfunc ValidateTokenRoot(token string) bool { return true }\n")
+	write(t, repo, deep+"/.gitignore", "secret.go\n")
+	write(t, repo, deep+"/secret.go", "package deep\n\nfunc ValidateTokenDeep(token string) bool { return true }\n")
+	write(t, repo, "visible/auth.go", "package visible\n\n"+
+		"// ValidateToken checks the bearer token presented on a request.\n"+
+		"func ValidateToken(token string) bool { return len(token) == 64 }\n")
+	git(t, repo, "add", "-f", ".")
+	git(t, repo, "commit", "-q", "-m", "seed")
+
+	allowed := map[string]bool{graphIgnoreFileName: true, ".gitignore": true}
+	for _, worktree := range []bool{true, false} {
+		response, err := SearchRepository(t.Context(), repo, "test", "bearer token validation", SearchOptions{
+			Worktree: worktree,
+			Profile:  ProfileSyntaxOnly,
+			TopK:     5,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.RepoIgnored == nil {
+			t.Fatalf("worktree=%v: fixture is wrong, nothing was disclosed", worktree)
+		}
+		for _, source := range response.RepoIgnored.Sources {
+			if !allowed[source.File] {
+				t.Errorf("worktree=%v: disclosed source %q (%d bytes) is not one of the two"+
+					" repo-controlled literals: a source label the repository sizes needs the same"+
+					" bound the sample paths carry", worktree, source.File, len(source.File))
+			}
+		}
+		for _, exclusion := range response.RepoIgnored.Sample {
+			if !allowed[exclusion.Source] {
+				t.Errorf("worktree=%v: sample entry attributed to %q (%d bytes)",
+					worktree, exclusion.Source, len(exclusion.Source))
+			}
+		}
+	}
+}
