@@ -337,7 +337,7 @@ func TraverseImpactPaths(ctx context.Context, focus string, relations []Relation
 				report.ExaminedEdges++
 				cyclic := false
 				for at := cursor; at >= 0; at = states[at].parent {
-					if states[at].id == arc.target && states[at].mode == arc.mode && states[at].candidate == (state.candidate || arc.mode == "candidate") {
+					if states[at].id == arc.target && states[at].mode == arc.mode && states[at].candidate == (state.candidate || arc.step.Relation == "X-entire-graph:COMPILER_IMPLEMENTATION_CANDIDATE") {
 						cyclic = true
 						break
 					}
@@ -359,7 +359,7 @@ func TraverseImpactPaths(ctx context.Context, focus string, relations []Relation
 					exhausted = true
 					break
 				}
-				next := impactPredecessor{id: arc.target, mode: arc.mode, parent: cursor, depth: state.depth + 1, arc: arc, strength: math.Min(state.strength, arc.step.Confidence), candidate: state.candidate || arc.mode == "candidate"}
+				next := impactPredecessor{id: arc.target, mode: arc.mode, parent: cursor, depth: state.depth + 1, arc: arc, strength: math.Min(state.strength, arc.step.Confidence), candidate: state.candidate || arc.step.Relation == "X-entire-graph:COMPILER_IMPLEMENTATION_CANDIDATE"}
 				states = append(states, next)
 				nextFrontier = append(nextFrontier, len(states)-1)
 				seenNodes[arc.target] = true
