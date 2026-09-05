@@ -1048,3 +1048,81 @@ func TestSearchVerifyGradleTripleQuotedIncludeArgumentIsRead(t *testing.T) {
 		t.Fatalf("settings %q declare :lib and the scanner did not read it", settings)
 	}
 }
+
+// TestSearchVerifyGradleRemappedProjectIsNotThisDirectory is the regression for a project path that
+// is declared but does not live where it was derived from.
+//
+// The suite tier derives `:lib` from the directory `lib/` and confirms it against `include`. Gradle
+// lets a settings script move it — `project(':lib').projectDir = file('other')` — and then `:lib` is
+// a different tree. `./gradlew :lib:test` for an edit in `lib/` RUNS, and passes, about code the
+// edit never touched: worse than a command that cannot run, because nothing announces it.
+//
+// The control matters as much as the cases: an ordinary `include ':lib'` with no remap must keep its
+// command, so the check declines on the remap rather than on the mention of a project() call.
+func TestSearchVerifyGradleRemappedProjectIsNotThisDirectory(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		settings string
+		want     string
+	}{
+		{
+			name:     "the Groovy assignment",
+			settings: "include ':lib'\nproject(':lib').projectDir = file('other')\n",
+		},
+		{
+			name:     "the Kotlin assignment",
+			settings: "include(\":lib\")\nproject(\":lib\").projectDir = file(\"other\")\n",
+		},
+		{
+			name:     "the block spelling of the same assignment",
+			settings: "include ':lib'\nproject(':lib') {\n    projectDir = file('other')\n}\n",
+		},
+		{
+			name:     "the same statement, semicolon separated",
+			settings: "include ':lib'; project(':lib').projectDir = file('other')\n",
+		},
+		{
+			name:     "a chained access continued onto the next line",
+			settings: "include(\":lib\")\nproject(\":lib\")\n    .projectDir = file(\"other\")\n",
+		},
+		{
+			name:     "an unremapped project keeps its command",
+			settings: "include ':lib'\n",
+			want:     "./gradlew :lib:test",
+		},
+		{
+			name:     "a remap of a DIFFERENT project is not this one's",
+			settings: "include ':lib'\ninclude ':app'\nproject(':app').projectDir = file('other')\n",
+			want:     "./gradlew :lib:test",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			files := map[string]string{
+				"gradlew":                  "",
+				"settings.gradle":          testCase.settings,
+				"lib/build.gradle":         "",
+				"lib/src/main/java/A.java": "",
+				"app/build.gradle":         "",
+				"other/build.gradle":       "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "lib/src/main/java/A.java"}, &evidence)
+			if testCase.want == "" {
+				if got != nil {
+					t.Fatalf("command = %q, want silence: the settings script moves :lib to another "+
+						"directory, so it does not name this one", got.Command)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected the declared project's command, got silence")
+			}
+			if got.Command != testCase.want {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.want)
+			}
+		})
+	}
+}

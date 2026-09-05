@@ -688,6 +688,12 @@ func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *
 		// would report a pass the edit never earned.
 		return nil
 	}
+	if searchVerifyGradleSettingsRemapsProject(settings, project) {
+		// The project path is declared, but the settings script moves it somewhere else on disk, so
+		// the path derived from THIS directory names a different tree. `./gradlew :lib:test` would
+		// run, and pass, about code the edit never touched — which is worse than emitting nothing.
+		return nil
+	}
 	// An included subproject is addressed by its project path from the root of the build that
 	// declares it — the documented spelling, `gradle :subproject:taskName`.
 	return searchVerifySuiteCommand(
@@ -728,6 +734,118 @@ func searchVerifyGradleSettingsIncludes(settings, project string) bool {
 		}
 	}
 	return false
+}
+
+// searchVerifyGradleSettingsRemapsProject reports whether the settings script MOVES the project's
+// directory, with `project(':lib').projectDir = file('other')` or the block spelling of the same
+// assignment.
+//
+// A project path is derived here from a directory, and `include ':lib'` alone says that derivation
+// holds. A remap breaks it: `:lib` is then a different tree, and `./gradlew :lib:test` for an edit
+// in `lib/` runs, and passes, about code the edit never touched. That is worse than a command that
+// cannot run, because nothing announces it.
+//
+// The scan is bounded to the STATEMENT the matching `project(...)` call starts — extended to the
+// matching brace when one follows — so a `projectDir` assignment elsewhere in the script, about a
+// different project, is not read as this one's.
+func searchVerifyGradleSettingsRemapsProject(settings, project string) bool {
+	want := strings.TrimPrefix(project, ":")
+	if want == "" {
+		return false
+	}
+	script := searchVerifyStripScriptComments(settings)
+	for index := 0; index < len(script); {
+		character := script[index]
+		if character == '\'' || character == '"' {
+			_, width := searchVerifyScriptStringLiteral(script[index:])
+			if width == 0 {
+				index++
+				continue
+			}
+			index += width
+			continue
+		}
+		if !searchVerifyScriptIdentifierByte(character) {
+			index++
+			continue
+		}
+		start := index
+		for index < len(script) && searchVerifyScriptIdentifierByte(script[index]) {
+			index++
+		}
+		if script[start:index] != "project" {
+			continue
+		}
+		arguments, width := searchVerifyGradleCallArguments(script[index:])
+		if width == 0 {
+			continue
+		}
+		named := false
+		for _, argument := range arguments {
+			if strings.TrimPrefix(argument, ":") == want {
+				named = true
+				break
+			}
+		}
+		index += width
+		if named && strings.Contains(searchVerifyGradleStatementTail(script[index:]), "projectDir") {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyGradleStatementTail returns what remains of the statement that has just been read up
+// to its call: the rest of the line, extended while the line is continued, or the matching brace
+// when the call is followed by a block. A `}` inside a string literal ends the block window early,
+// which can only make this read LESS and so leaves the command as it was.
+func searchVerifyGradleStatementTail(rest string) string {
+	index := 0
+	for index < len(rest) && (rest[index] == ' ' || rest[index] == '\t') {
+		index++
+	}
+	if index < len(rest) && rest[index] == '{' {
+		depth := 0
+		for scan := index; scan < len(rest); scan++ {
+			switch rest[scan] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					return rest[:scan+1]
+				}
+			}
+		}
+		return rest
+	}
+	for scan := index; scan < len(rest); scan++ {
+		if rest[scan] == ';' {
+			return rest[:scan]
+		}
+		if rest[scan] != '\n' {
+			continue
+		}
+		if searchVerifyGradleStatementContinues(rest[:scan], rest[scan+1:]) {
+			continue
+		}
+		return rest[:scan]
+	}
+	return rest
+}
+
+// searchVerifyGradleStatementContinues reports whether a statement carries on past a newline: the
+// line ends on an operator or separator, or the next one opens with the `.` of a chained call, which
+// is how Kotlin spells a continued member access.
+func searchVerifyGradleStatementContinues(before, after string) bool {
+	trimmed := strings.TrimRight(before, " \t\r")
+	for _, suffix := range []string{",", "\\", ".", "=", "("} {
+		if strings.HasSuffix(trimmed, suffix) {
+			return true
+		}
+	}
+	next := strings.TrimLeft(after, " \t\r\n")
+	return strings.HasPrefix(next, ".")
 }
 
 // searchVerifyGradleIncludeArguments returns every string literal passed to an `include` call.
