@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestRenderVerifyVerdictRefusesAnExitCodeTheRunnerNeverUsesForTestFailure is the regression for the
@@ -661,4 +662,111 @@ func TestRenderVerifyVerdictReportsIncompletenessAlongsideARegression(t *testing
 func verifyLastLine(rendered string) string {
 	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
 	return lines[len(lines)-1]
+}
+
+// TestRenderVerifyVerdictHonoursMaxBytesWithAMultiClauseVerdict is the regression for the byte cap
+// against a verdict line that carries more than one clause.
+//
+// verifyTruncateOutput split the verdict at its LAST ": " and kept everything before it. That was safe
+// while the only colon after "VERDICT" was the one introducing the id list — the head was then the
+// short count clause. Reporting a regression together with the run's incompleteness introduces a
+// SECOND colon, and the retained head became the whole regression clause, every listed id, and the
+// start of the incompleteness clause: bounded by nothing. Measured before the fix, a 40-id regression
+// on an incomplete run returned 1254 bytes under a 400-byte cap and the same 1254 under a 100-byte
+// one. `--max-bytes` is an explicit contract and this broke it by more than 12x.
+func TestRenderVerifyVerdictHonoursMaxBytesWithAMultiClauseVerdict(t *testing.T) {
+	t.Parallel()
+	baseline := verifyBaseline{Parser: "pytest", Results: verifyResults{"a::never_ran": verifyStatusPass}}
+	current := verifyResults{}
+	for index := 0; index < 40; index++ {
+		id := "suite::test_with_a_deliberately_long_identifier_number_" + string(rune('a'+index%26)) +
+			string(rune('a'+index/26))
+		baseline.Results[id] = verifyStatusPass
+		current[id] = verifyStatusFail
+	}
+	for _, maxBytes := range []int{verifyDefaultMaxBytes, 800, 400, 300, 200, 100, 40, 12, 4, 1} {
+		got := renderVerifyVerdict(verifyVerdictInput{
+			baseline: baseline, current: current, parser: "pytest", parsed: true,
+			exitCode: 1, maxBytes: maxBytes,
+		})
+		if len(got) > maxBytes {
+			t.Fatalf("--max-bytes %d returned %d bytes:\n%s", maxBytes, len(got), got)
+		}
+		if !utf8.Valid(got) {
+			t.Fatalf("--max-bytes %d cut a rune in half: %q", maxBytes, got)
+		}
+		// While there is room for it, the clause that carries the ANSWER must still survive: the count
+		// is the information and the ids are the bonus.
+		if maxBytes >= 100 && !strings.Contains(string(got), "VERDICT: REGRESSION in 40 tests") {
+			t.Fatalf("--max-bytes %d dropped the verdict clause itself:\n%s", maxBytes, got)
+		}
+	}
+
+	// The single-clause verdict keeps the behaviour it always had: at 400 bytes the ids yield one at a
+	// time and the count clause survives with an ellipsis, rather than the whole line being cut.
+	complete := verifyBaseline{Parser: "pytest", Results: verifyResults{}}
+	for id := range current {
+		complete.Results[id] = verifyStatusPass
+	}
+	tight := string(renderVerifyVerdict(verifyVerdictInput{
+		baseline: complete, current: current, parser: "pytest", parsed: true,
+		exitCode: 1, maxBytes: 400,
+	}))
+	if len(tight) > 400 {
+		t.Fatalf("a single-clause verdict overran a 400-byte cap at %d bytes:\n%s", len(tight), tight)
+	}
+	if !strings.Contains(tight, "VERDICT: REGRESSION in 40 tests: suite::") || !strings.HasSuffix(tight, "…\n") {
+		t.Fatalf("the single-clause verdict stopped yielding ids one at a time:\n%s", tight)
+	}
+}
+
+// TestRenderVerifyVerdictAcceptsJestsConfiguredFailureExitCode is the RSpec regression again, for the
+// runner whose version of the problem is documented rather than idiomatic.
+//
+// `testFailureExitCode` is a first-class Jest setting. Measured on Jest 29.7.0 against a suite with one
+// failing test:
+//
+//	jest a.test.js                              -> exit 1   (the default)
+//	jest --testFailureExitCode=2 a.test.js      -> exit 2
+//	jest.config.js { testFailureExitCode: 7 }   -> exit 7
+//	package.json  { "jest": { ...: 5 } }        -> exit 5
+//
+// The last two are files this verb never opens, and package.json is where most Jest projects keep
+// their configuration, so pinning {1} adjudicated every configured suite INCOMPLETE however complete
+// it was. That is the same false negative the RSpec entry was removed for.
+func TestRenderVerifyVerdictAcceptsJestsConfiguredFailureExitCode(t *testing.T) {
+	t.Parallel()
+	baseline := verifyBaseline{Parser: "jest/vitest", Results: verifyResults{
+		"a > fixed":  verifyStatusFail,
+		"a > broken": verifyStatusFail,
+	}}
+	current := verifyResults{"a > fixed": verifyStatusPass, "a > broken": verifyStatusFail}
+
+	// Every code measured above, plus the default.
+	for _, exitCode := range []int{1, 2, 5, 7} {
+		got := string(renderVerifyVerdict(verifyVerdictInput{
+			baseline: baseline, current: current, parser: "jest/vitest", parsed: true,
+			exitCode: exitCode, maxBytes: verifyDefaultMaxBytes,
+		}))
+		if strings.Contains(got, "VERDICT: INCOMPLETE") {
+			t.Fatalf("a jest run configured with testFailureExitCode %d was called incomplete although "+
+				"its own reported failure explains the exit:\n%s", exitCode, got)
+		}
+		if !strings.Contains(got, "VERDICT: PASS") {
+			t.Fatalf("jest exit %d: want PASS, got:\n%s", exitCode, got)
+		}
+	}
+
+	// Unlisting gives up only the ordinary codes. A run that was KILLED is still refused, because
+	// verifyExitCodeMeansTestFailure rejects >= 128 for listed and unlisted runners alike — otherwise
+	// this change would have traded one false negative for the false PASS the verb exists to prevent.
+	for _, exitCode := range []int{137, 139, -1} {
+		got := string(renderVerifyVerdict(verifyVerdictInput{
+			baseline: baseline, current: current, parser: "jest/vitest", parsed: true,
+			exitCode: exitCode, maxBytes: verifyDefaultMaxBytes,
+		}))
+		if !strings.Contains(got, "VERDICT: INCOMPLETE") {
+			t.Fatalf("a jest run that was killed (%d) was adjudicated complete:\n%s", exitCode, got)
+		}
+	}
 }
