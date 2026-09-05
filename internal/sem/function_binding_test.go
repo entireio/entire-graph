@@ -568,6 +568,145 @@ func TestNestedCallableIDSurvivesAnUnrelatedClass(t *testing.T) {
 	}
 }
 
+// The same identity rule one nesting level down: the enclosing callable a
+// nested declaration is anchored to must be one that is itself qualified.
+//
+// `const cb = () => {}` is a variable_declarator, and a variable_declarator
+// never consults the scope, so its entity name is the bare `cb` however deep in
+// a class it sits. Re-anchoring the body to that name DROPS the `A.m` the walk
+// had already established, so `helper` inside `A.m`'s callback and `helper`
+// inside `B.m`'s callback are both `cb.helper`:
+//
+//	class A alone:   local/r:JavaScript:w.js:function:cb.helper
+//	class B added:   local/r:JavaScript:w.js:function:cb.helper#sig:80cfac553042146c
+//
+// which is TestNestedCallableIDSurvivesAnUnrelatedClass's defect reached
+// through a callback instead of directly. Only a callable whose own name
+// extends the scope replaces it; otherwise the scope — already the nearest
+// enclosing callable's qualified name — is kept, so the declaration is
+// `A.m.helper`, distinct from `B.m.helper`, and contained by a method that
+// exists. The declarator's OWN name is untouched: `cb` stays `cb`, the boundary
+// TestJavaScriptNestedCallableIsNotAClassMember's third case pins.
+func TestNestedCallableInsideAnUnqualifiedCallableKeepsTheEnclosingScope(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		path       string
+		language   string
+		classA     string
+		classB     string
+		classBWith string
+		wantID     string
+		wantOwner  string
+	}{{
+		name:     "JavaScript",
+		path:     "w.js",
+		language: "JavaScript",
+		classA: "class A {\n" +
+			"  m(a) {\n" +
+			"    const cb = () => {\n" +
+			"      function helper(v) { return v }\n" +
+			"      return helper(a)\n" +
+			"    }\n" +
+			"    return cb()\n" +
+			"  }\n" +
+			"}\n",
+		classB: "class B {\n  m(a) { return a }\n}\n",
+		classBWith: "class B {\n" +
+			"  m(a) {\n" +
+			"    const cb = () => {\n" +
+			"      function helper(v) { return v }\n" +
+			"      return helper(a)\n" +
+			"    }\n" +
+			"    return cb()\n" +
+			"  }\n" +
+			"}\n",
+		wantID:    "local/r:JavaScript:w.js:function:A.m.helper",
+		wantOwner: "local/r:JavaScript:w.js:method:A.m",
+	}, {
+		name:     "TypeScript",
+		path:     "w.ts",
+		language: "TypeScript",
+		classA: "class A {\n" +
+			"  m(a: number): number {\n" +
+			"    const cb = (): number => {\n" +
+			"      function helper(v: number): number { return v }\n" +
+			"      return helper(a)\n" +
+			"    }\n" +
+			"    return cb()\n" +
+			"  }\n" +
+			"}\n",
+		classB: "class B {\n  m(a: number): number { return a }\n}\n",
+		classBWith: "class B {\n" +
+			"  m(a: number): number {\n" +
+			"    const cb = (): number => {\n" +
+			"      function helper(v: number): number { return v }\n" +
+			"      return helper(a)\n" +
+			"    }\n" +
+			"    return cb()\n" +
+			"  }\n" +
+			"}\n",
+		wantID:    "local/r:TypeScript:w.ts:function:A.m.helper",
+		wantOwner: "local/r:TypeScript:w.ts:method:A.m",
+	}} {
+		t.Run(testCase.name, func(t *testing.T) {
+			symbolsFor := func(t *testing.T, src string) []SymbolRecord {
+				t.Helper()
+				entities, _, status := TreeSitterParser{}.ParseWithStatus(testCase.path, src)
+				if status.ParseError {
+					t.Fatalf("unexpected parse error: %s", status.Detail)
+				}
+				return entitySymbols("local/r", testCase.path, testCase.language, entities)
+			}
+			// Class A occupies the first nine lines in both sources, so a helper
+			// declared there is the one whose ID must not move.
+			helperInA := func(t *testing.T, src string) SymbolRecord {
+				t.Helper()
+				symbols := symbolsFor(t, src)
+				var found []SymbolRecord
+				for _, symbol := range symbols {
+					if symbol.Name == "helper" && symbol.StartLine <= 9 {
+						found = append(found, symbol)
+					}
+				}
+				if len(found) != 1 {
+					t.Fatalf("helpers declared in A.m = %d, want 1: %s", len(found), symbolIDs(symbols))
+				}
+				if !found[0].Local {
+					t.Errorf("nested helper not marked function-local: %#v", found[0])
+				}
+				return found[0]
+			}
+
+			before := helperInA(t, testCase.classA+testCase.classB)
+			// The edit: an unrelated class gains the same callback.
+			after := helperInA(t, testCase.classA+testCase.classBWith)
+			if after.ID != before.ID {
+				t.Errorf("adding the same callback to B.m moved A.m's helper: %s -> %s", before.ID, after.ID)
+			}
+			if before.ID != testCase.wantID {
+				t.Errorf("helper ID = %s, want the callable-qualified %s", before.ID, testCase.wantID)
+			}
+			// The scope that was kept names a method that is actually emitted, so
+			// the nested declaration still has a container.
+			if before.ContainerID != testCase.wantOwner {
+				t.Errorf("nested container = %q, want the enclosing method %q", before.ContainerID, testCase.wantOwner)
+			}
+
+			// The callback's own published name is unchanged: a variable_declarator
+			// is qualified by nothing, before this rule and after it.
+			var callbacks []SymbolRecord
+			for _, symbol := range symbolsFor(t, testCase.classA+testCase.classB) {
+				if symbol.Name == "cb" {
+					callbacks = append(callbacks, symbol)
+				}
+			}
+			if len(callbacks) != 1 || callbacks[0].QualifiedName != "cb" {
+				t.Errorf("callback symbols = %#v, want exactly one qualified `cb`", callbacks)
+			}
+		})
+	}
+}
+
 // The qualification REPLACES a type scope; it does not invent one, and it does
 // not survive the next type. Three shapes pin that boundary, and each is the
 // only thing standing between the walk and an ID migration far wider than the

@@ -4289,8 +4289,28 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 			// anonymous-class members reached through initializerTypeBodies,
 			// Python's nested defs) rely on the type scope to stay
 			// container-qualified.
+			//
+			// Only a callable whose own name is QUALIFIED by the scope can
+			// become the new scope. The `const cb = () => {}` spelling is a
+			// variable_declarator, which never consults the scope, so its
+			// entity.Name is the bare `cb`: taking it would drop the `A.m`
+			// this walk had already established and re-anchor the body to a
+			// name that says nothing about which class it is in. `helper`
+			// inside `A.m`'s `cb` and inside `B.m`'s `cb` would then BOTH be
+			// `cb.helper` — the very collision this re-anchoring exists to
+			// prevent, one nesting level down, and adding the second class
+			// would move the first from `function:cb.helper` onto
+			// `function:cb.helper#sig:80cfac553042146c`. When the scope
+			// already names a callable it is kept instead, so the body is
+			// anchored to the nearest ENCLOSING callable that has a qualified
+			// name (`A.m.helper` vs `B.m.helper`) and its container is a
+			// symbol that exists. A type scope still hands off to entity.Name
+			// on the first hop, which is what takes the declaration out of the
+			// type in the first place.
 			if functionLocalScopeResets(language) && scope != "" {
-				childScope = entity.Name
+				if !scopeIsCallable || strings.HasPrefix(entity.Name, scope+".") {
+					childScope = entity.Name
+				}
 				childScopeIsCallable = true
 			}
 		}
