@@ -19,9 +19,11 @@ func TestSearchCompilerEffectiveRelationsAcrossQueryStages(t *testing.T) {
 	for _, ranking := range []string{"current", "experimental-graph"} {
 		t.Run(ranking, func(t *testing.T) {
 			var original []RelationRecord
+			var nativeSnapshot *ProviderSnapshot
 			options := SearchOptions{Worktree: true, IndexAllFiles: true, DisableCache: true, Profile: ProfileFull, TopK: 10, MaxContextBytes: 16000, Ranking: ranking}
 			install := func(enriched bool) func(*ProviderSnapshot) {
 				return func(snapshot *ProviderSnapshot) {
+					nativeSnapshot = snapshot
 					ids := map[string]string{}
 					for _, s := range snapshot.Symbols {
 						ids[s.Name] = s.ID
@@ -58,8 +60,8 @@ func TestSearchCompilerEffectiveRelationsAcrossQueryStages(t *testing.T) {
 			if !reflect.DeepEqual(boosted(off), []string{"BeaconWrong"}) || !reflect.DeepEqual(boosted(on), []string{"BeaconTarget"}) {
 				t.Fatalf("caller boost view off=%v on=%v", boosted(off), boosted(on))
 			}
-			if len(original) != 1 {
-				t.Fatal("fixture lost static relation")
+			if !reflect.DeepEqual(nativeSnapshot.Relations, original) {
+				t.Fatal("search mutated native static relations")
 			}
 			// A query matching only the caller must expand using the same direct view.
 			for _, query := range []string{"BeaconStart"} {

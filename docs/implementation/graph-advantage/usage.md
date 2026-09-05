@@ -24,12 +24,17 @@ process RSS. Tighten cache limits with positive capped
 `ENTIRE_GRAPH_EXTRACTION_CACHE_MAX_ENTRIES`; invalid values use defaults.
 Search and impact retain envelope version 1 with additive diagnostics. Existing
 IDs and native static relations retain their meanings. Compact/SCIP refuse an
-enriched compiler projection. Ranking components are diagnostic JSON only.
+enriched compiler projection. Ranking components are diagnostic JSON only. Graph diagnostics include input
+relations, examined relations and connected candidate nodes; more than 100,000
+input relations falls back to current ranking before scanning.
 
 Deeper impact supports depth N/all, node/edge/frontier/retained-path/output-step
 limits, adjacency/evidence input limits, relation families and minimum edge
 confidence. Deeper-only controls require deeper mode; ordinary depth one/two
-keeps its prior behavior. `all` is bounded closure of the chosen static policy,
+keeps its prior behavior with compiler off. Explicit compiler mode uses the
+same enriched direct-call view at every depth and throughout search caller
+boosts, expansion, ranking and related-site selection. Type conversions do not
+create confirmed calls; implementation candidates remain separate. `all` is bounded closure of the chosen static policy,
 not all runtime effects. Candidates and historical associations remain distinct.
 See ADR 0032 for composition rules and terminal boundaries.
 
