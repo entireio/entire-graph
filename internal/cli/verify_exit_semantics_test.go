@@ -484,3 +484,181 @@ func TestRenderVerifyVerdictAcceptsRSpecsConfiguredFailureExitCode(t *testing.T)
 		}
 	}
 }
+
+// goTestBuildFailureOutput is real `go test -v ./...` output, captured verbatim from Go 1.26.5 on a
+// module with three packages: one whose test fails, one that does not compile, one that passes.
+//
+// The exit code that accompanied it was 1 — the SAME code the toolchain uses for an ordinary failing
+// test. Measured on Go 1.26.5, so is a setup failure (`FAIL ... [setup failed]`), a vet failure, an
+// unknown flag and a missing package. That is the whole difficulty: no exit code separates "a test
+// failed" from "a package never compiled", so the classification table cannot, and the output has to.
+const goTestBuildFailureOutput = `# gt/compilepkg [gt/compilepkg.test]
+compilepkg/a_test.go:3:46: cannot use "notanint" (untyped string constant) as int value in variable declaration
+FAIL	gt/compilepkg [build failed]
+=== RUN   TestFail
+    a_test.go:3: boom
+--- FAIL: TestFail (0.00s)
+FAIL
+FAIL	gt/failpkg	0.337s
+=== RUN   TestOK
+--- PASS: TestOK (0.00s)
+PASS
+ok  	gt/okpkg	0.468s
+FAIL
+`
+
+// TestRenderVerifyVerdictRefusesAGoRunWithAnUnbuiltPackage is the regression for the half of the
+// exit-code rule that listing `go test: {1}` cannot reach.
+//
+// `verifyExitCodeMeansTestFailure` asks whether the exit code is one the runner uses for a test
+// failure. For go test the answer is yes for 1 — and 1 is also what it returns for a package that
+// never compiled. So a single reported failure (a PRE-EXISTING one is enough; the baseline already
+// knew about it) made exit 1 look accounted for, the unbuilt package produced no `--- FAIL:` line for
+// the parser to see, and a run that verified none of that package was adjudicated
+// "PASS — verification is complete; no further test runs are needed."
+func TestRenderVerifyVerdictRefusesAGoRunWithAnUnbuiltPackage(t *testing.T) {
+	t.Parallel()
+	current, parser, ok := parseVerifyOutput(goTestBuildFailureOutput)
+	if !ok || parser != "go test" {
+		t.Fatalf("the go parser did not read its own output (parser=%q ok=%v): the premise is gone",
+			parser, ok)
+	}
+	if _, seen := current["TestOK"]; !seen {
+		t.Fatalf("the go parser did not report TestOK: %v", current)
+	}
+	// The parser structurally cannot see the unbuilt package: `FAIL ... [build failed]` names no test.
+	for id := range current {
+		if strings.Contains(id, "compilepkg") {
+			t.Fatalf("the parser now attributes the build failure to id %q, so this test no longer "+
+				"exercises the unattributed class", id)
+		}
+	}
+
+	unattributed := verifyUnattributedFailures(parser, goTestBuildFailureOutput)
+	if len(unattributed) != 1 || unattributed[0] != "gt/compilepkg" {
+		t.Fatalf("the unbuilt package was not recovered from the output: %v", unattributed)
+	}
+
+	// The baseline knew both tests failed. The change fixes one; the other still fails and explains
+	// exit 1 under the classification table. Every baseline id reported, so nothing is NOT RUN.
+	baseline := verifyBaseline{Parser: "go test", Results: verifyResults{
+		"TestOK":   verifyStatusFail,
+		"TestFail": verifyStatusFail,
+	}}
+	got := string(renderVerifyVerdict(verifyVerdictInput{
+		baseline: baseline, current: current, parser: parser, parsed: true,
+		exitCode: 1, maxBytes: verifyDefaultMaxBytes, unattributed: unattributed,
+	}))
+	if strings.Contains(got, "VERDICT: PASS") {
+		t.Fatalf("a go run in which a package never compiled was adjudicated a PASS, because a "+
+			"pre-existing test failure made its exit 1 look explained:\n%s", got)
+	}
+	if !strings.Contains(got, "VERDICT: INCOMPLETE") {
+		t.Fatalf("the unbuilt package did not make the run incomplete:\n%s", got)
+	}
+	if !strings.Contains(got, "gt/compilepkg") {
+		t.Fatalf("the verdict does not name the target that never built:\n%s", got)
+	}
+
+	// A go run with NO build failure keeps the verdict it always had: the fix must not turn every
+	// ordinary go suite into an INCOMPLETE.
+	clean := string(renderVerifyVerdict(verifyVerdictInput{
+		baseline: baseline, current: current, parser: parser, parsed: true,
+		exitCode: 1, maxBytes: verifyDefaultMaxBytes,
+	}))
+	if !strings.Contains(clean, "VERDICT: PASS") {
+		t.Fatalf("an ordinary go run whose exit 1 is explained by a still-failing test lost its "+
+			"PASS:\n%s", clean)
+	}
+}
+
+// TestRenderVerifyVerdictReportsIncompletenessAlongsideARegression is the regression for the verdict
+// switch's precedence.
+//
+// `case len(newlyFailing) > 0` came first, so a run that regressed a test AND came apart was reported
+// only as a REGRESSION. For the NOT RUN class that merely demoted evidence — the list is printed above
+// the verdict, and verifyTruncateOutput drops the lists before it drops the verdict, so a tight byte
+// cap removed it entirely. For an unexplained exit it lost the fact outright: that condition has no
+// list of its own, and the verdict line was its only carrier. A caller keying on the verdict was told
+// "one test regressed" about a run that was killed before it finished.
+func TestRenderVerifyVerdictReportsIncompletenessAlongsideARegression(t *testing.T) {
+	t.Parallel()
+
+	t.Run("killed run that also regressed a test", func(t *testing.T) {
+		t.Parallel()
+		baseline := verifyBaseline{Parser: "pytest", Results: verifyResults{
+			"a::fixed": verifyStatusFail,
+			"a::green": verifyStatusPass,
+		}}
+		// Every baseline id reported, so NOT RUN is empty and the verdict line is the only place the
+		// kill can be reported. 137 is SIGKILL — an OOM kill, not a pytest verdict.
+		got := string(renderVerifyVerdict(verifyVerdictInput{
+			baseline: baseline,
+			current:  verifyResults{"a::fixed": verifyStatusPass, "a::green": verifyStatusFail},
+			parser:   "pytest", parsed: true, exitCode: 137, maxBytes: verifyDefaultMaxBytes,
+		}))
+		if !strings.Contains(got, "VERDICT: REGRESSION in 1 test: a::green") {
+			t.Fatalf("the actionable regression ids were dropped:\n%s", got)
+		}
+		if !strings.Contains(got, "INCOMPLETE") || !strings.Contains(got, "exited 137") {
+			t.Fatalf("a run killed at exit 137 was reported as a plain REGRESSION, so nothing in the "+
+				"output says verification never finished:\n%s", got)
+		}
+		if !strings.Contains(got, "Verification is NOT complete.") {
+			t.Fatalf("the verdict does not state that verification is incomplete:\n%s", got)
+		}
+	})
+
+	t.Run("truncated run that also regressed a test", func(t *testing.T) {
+		t.Parallel()
+		baseline := verifyBaseline{Parser: "pytest", Results: verifyResults{
+			"a::fixed":     verifyStatusFail,
+			"a::green":     verifyStatusPass,
+			"a::never_ran": verifyStatusPass,
+		}}
+		input := verifyVerdictInput{
+			baseline: baseline,
+			current:  verifyResults{"a::fixed": verifyStatusPass, "a::green": verifyStatusFail},
+			parser:   "pytest", parsed: true, exitCode: 1, maxBytes: verifyDefaultMaxBytes,
+		}
+		got := string(renderVerifyVerdict(input))
+		if !strings.Contains(got, "VERDICT: REGRESSION in 1 test: a::green") {
+			t.Fatalf("the actionable regression ids were dropped:\n%s", got)
+		}
+		if !strings.Contains(got, "INCOMPLETE") {
+			t.Fatalf("a run that lost a baseline test was reported as a plain REGRESSION:\n%s", got)
+		}
+		// The byte cap keeps the VERDICT line and drops the lists, which is exactly when carrying the
+		// incompleteness on the verdict line stops being cosmetic.
+		verdictOnly := verifyLastLine(string(renderVerifyVerdict(input)))
+		if !strings.Contains(verdictOnly, "INCOMPLETE") {
+			t.Fatalf("the incompleteness is not on the VERDICT line, so verifyTruncateOutput would "+
+				"discard it with the lists:\n%s", verdictOnly)
+		}
+	})
+
+	t.Run("complete run that regressed a test keeps the plain verdict", func(t *testing.T) {
+		t.Parallel()
+		baseline := verifyBaseline{Parser: "pytest", Results: verifyResults{
+			"a::fixed": verifyStatusFail,
+			"a::green": verifyStatusPass,
+		}}
+		got := string(renderVerifyVerdict(verifyVerdictInput{
+			baseline: baseline,
+			current:  verifyResults{"a::fixed": verifyStatusPass, "a::green": verifyStatusFail},
+			parser:   "pytest", parsed: true, exitCode: 1, maxBytes: verifyDefaultMaxBytes,
+		}))
+		if !strings.Contains(got, "VERDICT: REGRESSION in 1 test: a::green\n") {
+			t.Fatalf("a complete run's regression verdict changed shape:\n%s", got)
+		}
+		if strings.Contains(got, "INCOMPLETE") {
+			t.Fatalf("a complete run was labelled incomplete:\n%s", got)
+		}
+	})
+}
+
+// verifyLastLine returns the VERDICT line — the one line verifyTruncateOutput guarantees survives.
+func verifyLastLine(rendered string) string {
+	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+	return lines[len(lines)-1]
+}

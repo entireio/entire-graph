@@ -2069,11 +2069,22 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 // The two cases are told apart by a one-line stderr note rather than by the number, because the
 // numbers collide — a test and a filter both exit 1 — and the note is the only thing that can say
 // which stage produced it. It is written only when explain is the stage that failed.
+//
+// THE EXPLAIN FRAGMENT IS PARENTHESIZED, and that is load-bearing rather than cosmetic. `explain` is
+// a raw shell fragment the caller supplies (`--verify-explain`), and interpolating it bare left it
+// sharing the wrapper's own command list: `|` binds tighter than `;`, so `--verify-explain 'cat;
+// exit 0'` composed to `… | cat; exit 0; e=$?; …` — the pipeline ran, and then `exit 0` ended the
+// WRAPPER, before `e=$?` and before the `[ "$r" -ne 0 ] && exit "$r"` that is the whole point of the
+// capture. Measured in sh and dash: a test exiting 7 reported 0, which is precisely the false pass
+// the status capture exists to prevent, reachable from an ordinary-looking filter. A subshell rather
+// than a `{ }` group, because a subshell contains `exit` and `exec` wherever it appears and needs no
+// terminating `;` before its closing token. It costs nothing: the pipeline's status is still its last
+// stage's, and the last stage is now the subshell, whose status is the fragment's.
 func composeSearchVerifyExplain(command, explain string) (composed string, overhead int) {
 	const (
 		prefix = "( o=$("
-		middle = " 2>&1); r=$?; printf '%s\\n' \"$o\" | "
-		suffix = "; e=$?; [ \"$r\" -ne 0 ] && exit \"$r\"; " +
+		middle = " 2>&1); r=$?; printf '%s\\n' \"$o\" | ( "
+		suffix = " ); e=$?; [ \"$r\" -ne 0 ] && exit \"$r\"; " +
 			"[ \"$e\" -eq 0 ] || echo 'VERIFY: explain filter failed' >&2; exit \"$e\" )"
 	)
 	return prefix + command + middle + explain + suffix,
