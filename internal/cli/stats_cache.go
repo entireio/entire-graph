@@ -30,9 +30,9 @@ import (
 //     every window, and no --since can ever read another's answer.
 const statsCacheSchema = "v1"
 
-// statsCacheMinTranscripts is the scope size below which the memo is skipped: reading, decoding
-// and rewriting the scope file costs more than re-parsing a handful of transcripts.
+// Small scopes skip memo overhead only when both their file count and total size are small.
 const statsCacheMinTranscripts = 8
+const statsCacheMinTranscriptBytes = 1 << 20
 
 // statsCacheMaxBytes bounds both compressed and decompressed cache data. A memo is a convenience;
 // it is not worth unbounded memory if the file on disk is not what this code wrote.
@@ -57,8 +57,8 @@ func statsCacheDir(flags statsFlags, env EntireEnv) string {
 
 // openStatsCache loads the memo for one scope (a project transcript directory, or a single
 // transcript). A nil *statsCache is a working no-op cache, so callers never branch.
-func openStatsCache(dir, scope, version string, candidates int) *statsCache {
-	if dir == "" || candidates < statsCacheMinTranscripts {
+func openStatsCache(dir, scope, version string, files []transcriptFile) *statsCache {
+	if dir == "" || !statsCacheWorthwhile(files) {
 		return nil
 	}
 	cache := &statsCache{
@@ -68,6 +68,23 @@ func openStatsCache(dir, scope, version string, candidates int) *statsCache {
 	}
 	cache.load()
 	return cache
+}
+
+// statsCacheWorthwhile includes large single transcripts used by status-line callers.
+func statsCacheWorthwhile(files []transcriptFile) bool {
+	if len(files) >= statsCacheMinTranscripts {
+		return true
+	}
+	remaining := int64(statsCacheMinTranscriptBytes)
+	for _, file := range files {
+		if file.size >= remaining {
+			return true
+		}
+		if file.size > 0 {
+			remaining -= file.size
+		}
+	}
+	return false
 }
 
 // statsCacheSalt mixes everything that can change a summary without changing a transcript: the
@@ -97,7 +114,11 @@ func statsCacheKey(values ...string) string {
 
 // entryKey identifies one transcript by content-relevant identity, not by name.
 func (c *statsCache) entryKey(file transcriptFile) string {
-	return statsCacheKey(c.salt, file.path,
+	identity := file.identity
+	if identity == "" {
+		identity = file.path
+	}
+	return statsCacheKey(c.salt, identity,
 		strconv.FormatInt(file.size, 10),
 		strconv.FormatInt(file.modTime.UnixNano(), 10))
 }

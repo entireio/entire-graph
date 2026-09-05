@@ -262,7 +262,7 @@ func runStats(ctx context.Context, opts Options, args []string) error {
 			return err
 		}
 		collector := newStatsCollector()
-		collector.cache = openStatsCache(statsCacheDir(flags, opts.Env), sessionsDir, opts.Version, len(files))
+		collector.cache = openStatsCache(statsCacheDir(flags, opts.Env), sessionsDir, opts.Version, files)
 		collector.run(files, cutoff)
 		collector.finish(&report, cutoff)
 	}
@@ -799,10 +799,11 @@ func mulDiv(a, b, c int64) int64 {
 // --- collector --------------------------------------------------------------------------
 
 type transcriptFile struct {
-	path    string
-	session string
-	size    int64
-	modTime time.Time
+	path     string
+	identity string // absolute resolved path, including a symlink target
+	session  string
+	size     int64
+	modTime  time.Time
 }
 
 type statsCollector struct {
@@ -869,7 +870,13 @@ func (c *statsCollector) summarise(file transcriptFile) (fileSummary, bool) {
 		c.fromCache++
 		return summary, true
 	}
-	summary, ok := summariseTranscript(file.path)
+	// Read the same target whose identity was captured during enumeration.
+	// Retargeting an alias must not store another file's data under this key.
+	path := file.identity
+	if path == "" {
+		path = file.path
+	}
+	summary, ok := summariseTranscript(path)
 	if !ok {
 		return fileSummary{}, false
 	}
@@ -893,13 +900,8 @@ func listTranscriptFiles(root string, single bool) ([]transcriptFile, error) {
 	}
 	base := filepath.Dir(root)
 	files := []transcriptFile{}
-	if info, err := os.Lstat(root); err == nil && info.Mode().IsRegular() {
-		files = append(files, transcriptFile{
-			path:    root,
-			session: sessionKeyForPath(base, root),
-			size:    info.Size(),
-			modTime: info.ModTime(),
-		})
+	if file, ok := transcriptFileAt(root, sessionKeyForPath(base, root)); ok {
+		files = append(files, file)
 	}
 	subagents := strings.TrimSuffix(root, ".jsonl")
 	if subagents == root {
@@ -929,16 +931,9 @@ func walkTranscripts(dir, keyRoot string, reportRootError bool) ([]transcriptFil
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			return nil
 		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil //nolint:nilerr // a file that vanished mid-walk is simply not reported on
+		if file, ok := transcriptFileAt(path, sessionKeyForPath(keyRoot, path)); ok {
+			files = append(files, file)
 		}
-		files = append(files, transcriptFile{
-			path:    path,
-			session: sessionKeyForPath(keyRoot, path),
-			size:    info.Size(),
-			modTime: info.ModTime(),
-		})
 		return nil
 	})
 	if err != nil {
@@ -946,6 +941,24 @@ func walkTranscripts(dir, keyRoot string, reportRootError bool) ([]transcriptFil
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
 	return files, nil
+}
+
+// transcriptFileAt follows transcript symlinks while keeping the alias's session grouping.
+// Cache identity and window pruning use the resolved target, not the symlink's metadata.
+func transcriptFileAt(path, session string) (transcriptFile, bool) {
+	identity, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return transcriptFile{}, false
+	}
+	identity, err = filepath.Abs(identity)
+	if err != nil {
+		return transcriptFile{}, false
+	}
+	info, err := os.Stat(identity)
+	if err != nil || !info.Mode().IsRegular() {
+		return transcriptFile{}, false
+	}
+	return transcriptFile{path: path, identity: identity, session: session, size: info.Size(), modTime: info.ModTime()}, true
 }
 
 // sessionKeyForPath folds `<session>/subagents/agent-x.jsonl` back onto `<session>`.
