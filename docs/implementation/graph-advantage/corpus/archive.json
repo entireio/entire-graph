@@ -1,7 +1,7 @@
 {
-  "archive": "/tmp/p1-corpus-20260905.tar.gz",
-  "sha256": "8535cf154377876bdb93dedc1b80487bb4f63a9db239f2eb4094d4df5d49f107",
-  "bytes": 159752930,
+  "archive": "/tmp/p1-corpus-20260905-clean.tar.gz",
+  "sha256": "a8767fd7f6df1f811e89b7a09257faa723ae53dd606557fb30fc4e90ce9312bd",
+  "bytes": 155753525,
   "repository_ids": [
     "go-chi-chi",
     "kubernetes-kubernetes",
@@ -11,5 +11,11 @@
     "synthetic-2000"
   ],
   "symlink_policy": "preserved; every target resolves within corpus root",
-  "tracked_files_included": true
+  "tracked_files_included": true,
+  "appledouble_members": 0,
+  "rejected_packaging_attempt": {
+    "archive": "/tmp/p1-corpus-20260905.tar.gz",
+    "sha256": "8535cf154377876bdb93dedc1b80487bb4f63a9db239f2eb4094d4df5d49f107",
+    "reason": "AppleDouble metadata members were emitted by macOS tar; do not use"
+  }
 }
