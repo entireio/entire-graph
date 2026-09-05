@@ -1,0 +1,2 @@
+ok  	github.com/entireio/entire-graph/internal/sem	28.206s
+ok  	github.com/entireio/entire-graph/internal/cli	2.533s

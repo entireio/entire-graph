@@ -50,6 +50,7 @@ const (
 )
 
 type searchFlags struct {
+	ExtractionReuse bool
 	// VerifyExplain is appended to the emitted VERIFY line as `... 2>&1 | <cmd>`.
 	VerifyExplain         string
 	Repo                  string
@@ -182,9 +183,10 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 			forceSessionReplace = true
 		} else {
 			policy, policyErr = sem.ResolveSearchReplayPolicy(ctx, repo, sem.SearchOptions{
-				Worktree:     false,
-				IgnoreFiles:  flags.IgnoreFiles,
-				IncludeFiles: flags.IncludeFiles,
+				ExtractionReuse: flags.ExtractionReuse && !flags.DisableCache,
+				Worktree:        false,
+				IgnoreFiles:     flags.IgnoreFiles,
+				IncludeFiles:    flags.IncludeFiles,
 			})
 		}
 		if policyErr == nil && !policy.MatchesTree(scope.Tree) {
@@ -2223,6 +2225,15 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.IncludeFiles, i = append(flags.IncludeFiles, value), next
+		case "--extraction-cache":
+			value, next, err := searchFlagValue(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			if value != "on" && value != "off" {
+				return flags, nil, errors.New("--extraction-cache must be off or on")
+			}
+			flags.ExtractionReuse, i = value == "on", next
 		case "--cache-dir":
 			value, next, err := searchFlagValue(args, i)
 			if err != nil {

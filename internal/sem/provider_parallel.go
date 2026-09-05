@@ -19,6 +19,7 @@ type providerFileResult struct {
 	precomputedImports    []string
 	hasPrecomputedImports bool
 	parsed                bool
+	reused                bool
 	failures              []PartialFailure
 }
 
@@ -213,7 +214,8 @@ func processProviderFile(
 		return result
 	}
 
-	extraction := extractCapturedSource(spec, langSpec, source)
+	extraction, reused := sc.extraction.extract(spec, langSpec, source, maxParseBytes)
+	result.reused = reused
 	entities, parsedLanguage, parseStatus := extraction.entities, extraction.language, extraction.status
 	if parsedLanguage == "" {
 		result.failures = append(result.failures, PartialFailure{

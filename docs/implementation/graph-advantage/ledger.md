@@ -89,3 +89,51 @@ See review-summary.md for the incomplete scope, continuation sequence and rollba
 ## Final validation result
 
 `mise run check` passed on a70a1892: formatting, vet, full race suite, build and 151 status-line checks. No product code changed while that final build/check ran. Final focused race tests and the exact graph VERIFY command also passed. Final documentation changes only record these results. All release gates remain unpassed, and all end-to-end workstream completion boxes remain open.
+
+## Resumed implementation (2026-09-05)
+
+User authorized Azure Linux/Windows VM provisioning. Dedicated test resource:
+`rg-entire-graph-advantage-20260905/graph-validation-linux`, Ubuntu 22.04,
+westus3, Standard_D4s_v5, no public IP. Existing VMs are untouched. Deallocate
+this task-owned VM after validation; remove its resource group when its evidence
+has been retained and it is no longer needed.
+
+P1.2 now has an opt-in operation capture shared across search preselection,
+snapshot resolution and rendering. Prefix/oversize acquisition uses one opened
+file; memory spill is bounded and private. P1.3/P1.4 now have binary/content/path
+keyed atomic per-repository entries, bounded decode and bounded quota scans;
+only complete declaration extractions persist. Search and bulk snapshot expose
+`--extraction-cache off|on`, default off. Snapshot caching remains bypassed for
+all worktree operations. Opt-in search also bypasses committed snapshot reuse
+so per-file telemetry cannot be confused with cached historical counters.
+
+P1-A tests verify 3 cold parses, 0 parses/3 reuses unchanged, 1 parse/2 reuses
+after declaration edit; exact full graph equality with uncached output includes
+private metadata. The capture mutation fixture proves consistent snippets and
+fresh subsequent operations. `p1-reuse-integration-race-v2.txt` passes the focused
+race suite and required graph verification test. The earlier race log retains a
+fixture error: a tiny all-file preselection did not actually read content before
+the injected mutation. The corrected fixture forces lexical preselection before
+mutation; this was not a product capture failure.
+
+P1.5 relation-input families remain absent. P1.6 release evaluation remains
+incomplete; the reproducible product-local paired harness covers independently
+generated 12/120/600-file Go repositories, three profiles, cold/unchanged/one-edit,
+30 alternating trials, full semantic comparison. It does not substitute for
+pinned real repositories, remaining edit scenarios, cold process cost/RSS or
+GraphMark evaluations. No advantage or release promotion is claimed.
+
+P2.1 Linux feasibility is no longer blocked: the actual pinned gopls LSP probe
+passed, with ENETUNREACH in a grandchild and EROFS for a source write. Source and
+fixture origins are recorded in ADR 0034 and the probe script. Azure CLI help
+was consulted solely for provisioning commands; installed packages/toolchains
+came from their normal distribution channels, not implementation references.
+
+Additional P1 source audit: every Entity field is explicitly represented in
+extraction_record.go and guarded by reflection/round-trip tests. SymbolRecord
+IDs, repository aliases, C++ specialization aliases, synthetic boundary symbols,
+imports and relation outputs are recomputed by existing reducers from captured
+source. Symbol parameter names/knownness, signature types/knownness, source byte
+ranges, bodyless/local/C linkage fields originate in the explicit declaration
+payload. No final symbol or relation identity is stored. Inputs that fail an
+exact private-payload JSON round trip bypass persistence.

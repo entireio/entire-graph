@@ -6,3 +6,12 @@ internal/sem/impact_paths.go:158:63: undefined: json
 FAIL github.com/entireio/entire-graph/internal/sem [build failed]
 The path-key function was corrected to use length-prefixed raw byte identities. Focused race tests then passed; the unpublished commit was amended before push.
 3. Live compiler prerequisite probes: gopls, podman and bwrap were not found on PATH. docker, colima and limactl are installed, but docker info could not connect to unix:///var/run/docker.sock, and colima status reported not running. No live Linux/gopls isolation test was performed and no VM/dependency provisioning was attempted.
+
+Resumed P1 integration: the first telemetry insertion missed a gofmt-collapsed
+struct declaration and failed to compile; fixed before tests/commit. The new
+fixture initially called the wrong existing snapshot helper signature; corrected
+to BuildProviderSnapshotWithOptions. Tiny search inventories bypass preselection
+content reads, so the mutation fixture was corrected to force lexical scanning.
+The v1 paired exploratory run began before subsequent quota/telemetry cleanup;
+it is retained as development-only output, not frozen-release evidence. A frozen
+rerun is required before using those observations for any gate.

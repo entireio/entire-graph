@@ -1,0 +1,6 @@
+--- FAIL: TestExtractionReuseSearchCaptureMutation (0.19s)
+    extraction_cache_test.go:121: mixed source: [{"rank":1,"score":41.621,"file_path":"a.go","start_line":2,"end_line":2,"focus_line":2,"snippet_start_line":2,"snippet_end_line":2,"symbol_start_line":2,"symbol_end_line":2,"language":"Go","kind":"function","symbol_id":"local/001:Go:a.go:function:Alpha","symbol_name":"Alpha","qualified_name":"Alpha","signature":"func Alpha() string","signals":["body","exact-symbol","symbol-name","all-query-terms"],"snippet":"func Alpha() string { return \"after!\" }"}]
+FAIL
+FAIL	github.com/entireio/entire-graph/internal/sem	25.382s
+ok  	github.com/entireio/entire-graph/internal/cli	2.505s
+FAIL
