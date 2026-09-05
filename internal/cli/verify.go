@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // `entire graph verify` — an ADJUDICATED verdict, not test output
@@ -646,15 +647,27 @@ func verifyIncompleteReason(input verifyVerdictInput, notRun []string, unexplain
 // only the spelling that happens to be on the command line and would still be wrong for the
 // configured majority — a narrower guess is still a guess. The permissive rule is the honest answer
 // for a runner whose grading codes this build cannot know.
+// JEST IS UNLISTED FOR THE SAME REASON, and it is the stronger case of the two because the option is
+// documented rather than idiomatic. `testFailureExitCode` is a first-class Jest setting — measured on
+// Jest 29.7.0, a failing suite exits 1 by default, 2 under `--testFailureExitCode=2`, 7 under
+// `module.exports = { testFailureExitCode: 7 }` in jest.config.js, and 5 under a `"jest"` key in
+// package.json. Two of those four sources are files this verb never opens, and the package.json one is
+// where the majority of Jest projects keep their configuration, so "the code Jest uses for a test
+// failure" is a property of the project rather than of Jest. `vitest` shares the parser and the entry.
+//
+// Unlisting does not reopen the crash hole it might look like it does: verifyExitCodeMeansTestFailure
+// refuses every code at or above 128 whether the runner is listed or not, so a segfault, an OOM kill
+// and a timeout are still adjudicated INCOMPLETE. What unlisting gives up is only the ordinary codes
+// 1-127 that some runner spends on something other than a test verdict — exactly the exposure RSpec
+// already accepts, for exactly the same reason.
 var verifyTestFailureExitCodes = map[string][]int{
-	"pytest":      {1},
-	"cargo test":  {101},
-	"go test":     {1},
-	"phpunit":     {1, 2},
-	"jest/vitest": {1},
-	"minitest":    {1},
-	"surefire":    {1},
-	"ctest":       {8},
+	"pytest":     {1},
+	"cargo test": {101},
+	"go test":    {1},
+	"phpunit":    {1, 2},
+	"minitest":   {1},
+	"surefire":   {1},
+	"ctest":      {8},
 }
 
 // verifyExitCodeMeansTestFailure reports whether exitCode is one the named runner uses to report a
@@ -710,6 +723,28 @@ func verifyJoinIDs(ids []string) string {
 		fmt.Sprintf(", … and %d more", len(ids)-verifyMaxListedIDs)
 }
 
+// verifyCutToBudget is the last resort: a hard cut to maxBytes on a rune boundary, ending in an
+// ellipsis when one fits. Nothing structural survives here, which is the point — this is only reached
+// when the budget cannot hold even the "VERDICT: " clause, and a caller who set a budget that small has
+// asked for bytes rather than for a verdict.
+func verifyCutToBudget(text string, maxBytes int) string {
+	const ellipsis = "…\n"
+	budget := maxBytes
+	if maxBytes > len(ellipsis) {
+		budget = maxBytes - len(ellipsis)
+	} else {
+		return ""
+	}
+	cut := text
+	if len(cut) > budget {
+		cut = cut[:budget]
+		for len(cut) > 0 && !utf8.ValidString(cut) {
+			cut = cut[:len(cut)-1]
+		}
+	}
+	return cut + ellipsis
+}
+
 // verifyTruncateOutput enforces the byte cap from the END, so the VERDICT line — the last line and the
 // only one that must survive — is never the part that is cut. A verdict without its lists is still a
 // verdict; lists without a verdict are evidence, which is what this verb refuses to return.
@@ -720,13 +755,35 @@ func verifyTruncateOutput(rendered string, maxBytes int) []byte {
 	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
 	verdict := lines[len(lines)-1] + "\n"
 	if len(verdict) > maxBytes {
-		// Even the verdict is too wide, which happens only when its own id list is long. The COUNT is the
+		// Even the verdict is too wide, which happens when its own id list is long. The COUNT is the
 		// information and the ids are the bonus, so the list yields — word by word from the end, never the
 		// "VERDICT: …" clause itself — rather than the cap yielding. A verdict that overruns the caller's
 		// byte budget is the same failure as returning output.
-		head := verdict
-		if colon := strings.LastIndex(verdict, ": "); colon > 0 {
-			head = verdict[:colon+2]
+		//
+		// The split point is the last ": " WHOSE HEAD STILL FITS, not simply the last one. A verdict line
+		// carries more than one clause now — a regression can be reported together with the run's
+		// incompleteness, which introduces a second ": " — and taking the last unconditionally made the
+		// retained head everything up to that colon, ids included. That head is not bounded by anything,
+		// so the function returned it whole: measured, a 40-id regression carrying an incompleteness
+		// clause returned 1254 bytes under a 100-byte cap, and under a 400-byte one. Walking the colons
+		// from the end keeps the most specific clause that fits and falls back to the broadest that does.
+		head := ""
+		for tail := len(verdict); ; {
+			colon := strings.LastIndex(verdict[:tail], ": ")
+			if colon <= 0 {
+				break
+			}
+			if candidate := verdict[:colon+2]; len(candidate)+len(" …\n") <= maxBytes {
+				head = candidate
+				break
+			}
+			tail = colon
+		}
+		if head == "" {
+			// Not even "VERDICT: " and an ellipsis fit in the budget the caller set. There is no clause
+			// left to preserve, so the cap wins: overrunning it would trade a contract the caller can rely
+			// on for a fragment they cannot.
+			return []byte(verifyCutToBudget(verdict, maxBytes))
 		}
 		ids := strings.TrimSuffix(strings.TrimPrefix(verdict, head), "\n")
 		for _, part := range strings.Split(ids, ", ") {
