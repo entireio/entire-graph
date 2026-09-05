@@ -122,6 +122,24 @@ func readCacheGeneration(cacheDir, family, version, key string) (string, error) 
 	if err := json.NewDecoder(reader).Decode(&marker); err != nil {
 		return "", err
 	}
+	// A marker exists only because a rebuild minted one, and every mint records a
+	// token. A marker that is present but carries the empty generation is
+	// therefore a state no producer can reach: it asserts that a rebuild happened
+	// while carrying the exact value that means none ever has. Reporting it would
+	// hand a pre-`--force` derivation back the generation it recorded and undo the
+	// invalidation just as an unreadable marker would, so this state fails closed
+	// with the rest rather than answering the one value that revalidates what the
+	// rebuild retired. Only the marker's ABSENCE still answers the legacy empty
+	// generation, because absence is the pre-generation state itself.
+	//
+	// The token's shape is deliberately not checked beyond that. It is never
+	// parsed, only compared for equality with what a derived entry recorded, so
+	// any non-empty value already fails that comparison for every artifact minted
+	// under a different one; pinning the mint format here would instead retire
+	// every existing marker the day that format changes.
+	if marker.Generation == "" {
+		return "", fmt.Errorf("cache generation marker for %s records no generation", key)
+	}
 	return marker.Generation, nil
 }
 

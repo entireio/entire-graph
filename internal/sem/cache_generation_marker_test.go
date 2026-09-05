@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -203,5 +204,102 @@ func TestSelectiveCacheServesLegacyGenerationWhenMarkerAbsent(t *testing.T) {
 	}
 	if snapshotHasSymbolNamed(served, "Beta") {
 		t.Fatal("selective search returned a file outside OnlyFiles")
+	}
+}
+
+// writeGenerationMarkerBody installs exact bytes as the marker's gzip payload,
+// which is how a marker reaches a state bumpCacheGeneration cannot mint.
+func writeGenerationMarkerBody(t *testing.T, markerPath, body string) {
+	t.Helper()
+	if err := os.Remove(markerPath); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(markerPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := gzip.NewWriter(file)
+	if _, err := writer.Write([]byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A marker that decodes cleanly but carries no generation is the one corruption
+// the reader cannot detect by failing to read it: the decode succeeds, and the
+// value it yields is the legacy empty generation every pre-`--force` derivation
+// stamped itself with. The marker's EXISTENCE is what says a rebuild happened,
+// so a present marker holding that value contradicts itself, and answering it
+// serves exactly the artifact the rebuild retired — the same silent staleness an
+// unreadable marker would cause, reached through a decode that never errors.
+//
+// Both spellings must fail closed: an object with no generation member, and one
+// that spells the member out as empty. Neither is a state bumpCacheGeneration
+// can produce, so failing closed here retires no marker this program writes.
+func TestSelectiveCacheFailsClosedOnEmptyGenerationMarker(t *testing.T) {
+	t.Parallel()
+	bodies := map[string]string{
+		"no generation member":    "{}\n",
+		"empty generation member": `{"generation":""}` + "\n",
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newGenerationMarkerFixture(t)
+
+			// What an in-flight pre-force deriver is holding: a view of the
+			// outgoing snapshot stamped with the generation it read before the
+			// rebuild started, which is the legacy empty one.
+			inFlight := readCachedSnapshotFile(t, fixture.derivedPath)
+			for index := range inFlight.Snapshot.Symbols {
+				inFlight.Snapshot.Symbols[index].Name = "DerivedFromTheOutgoingSnapshot"
+			}
+
+			forced := fixture.complete()
+			forced.ForceRebuild = true
+			if _, _, err := PreindexProviderSnapshot(t.Context(), fixture.repo, "v", forced, fixture.cacheDir); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(fixture.markerPath); err != nil {
+				t.Fatalf("--force should have minted a generation marker: %v", err)
+			}
+
+			// The late write lands after the rebuild invalidated and removed.
+			if err := os.MkdirAll(filepath.Dir(fixture.derivedPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeCachedSnapshotFile(t, fixture.derivedPath, inFlight)
+			writeGenerationMarkerBody(t, fixture.markerPath, body)
+
+			if generation, err := readCacheGeneration(fixture.cacheDir, "search", searchSnapshotCacheVersion, fixture.completeKey); err == nil {
+				t.Fatalf("a marker carrying no generation was accepted, returning %q", generation)
+			}
+
+			served, _, err := loadOrBuildSearchSnapshot(t.Context(), fixture.repo, "v", fixture.selective(), fixture.cacheDir, false, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshotHasSymbolNamed(served, "DerivedFromTheOutgoingSnapshot") {
+				t.Fatal("a marker recording no generation was read as the legacy empty generation and revalidated a pre-force derivation")
+			}
+			if !snapshotHasSymbolNamed(served, "Alpha") {
+				t.Fatalf("selective search lost the real symbol; got %d symbols", len(served.Symbols))
+			}
+			if snapshotHasSymbolNamed(served, "Beta") {
+				t.Fatal("selective search returned a file outside OnlyFiles")
+			}
+			// Nothing may be persisted under a generation this process refused:
+			// a fresh view stamped with the legacy empty generation would be
+			// served the moment the marker is emptied again.
+			if got := readCachedSnapshotFile(t, fixture.derivedPath); !snapshotHasSymbolNamed(got.Snapshot, "DerivedFromTheOutgoingSnapshot") {
+				t.Fatal("a selective entry was persisted while the generation marker recorded no generation")
+			}
+		})
 	}
 }
