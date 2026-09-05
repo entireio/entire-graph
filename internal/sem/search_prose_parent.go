@@ -113,7 +113,9 @@ func selectSearchCandidates(
 	// one-region-per-unit rule discarded. Under section units those are the sections that lost the
 	// slot competition — dropping them would have taken evidence away from a caller reading a
 	// ten-result payload of an eighteen-document corpus, which is a docs repo, not a benchmark.
-	// dropSelectedProsePassages then removes the ones that won a slot after all.
+	// dropSelectedProsePassages then removes the ones that won a slot after all — but it is run by
+	// the CALLER, on the final selection, because this function does not produce that selection on
+	// the --deep path (see the note on dropSelectedProsePassages).
 	documents := parents
 	if sectionUnits {
 		documents = proseParents(candidates, false)
@@ -221,7 +223,7 @@ func selectSearchCandidates(
 		}
 		appendParent(parents[proseParentKey(candidate, sectionUnits)], candidate)
 	}
-	return dropSelectedProsePassages(selected)
+	return selected
 }
 
 // dropSelectedProsePassages keeps every returned region unique. Passages are planned per selected
@@ -230,6 +232,15 @@ func selectSearchCandidates(
 // passage of its neighbours. Both are the same fault — the payload would show one region twice —
 // so both are dropped here: a region is returned as a ranked result if it earned a slot, otherwise
 // as a passage of exactly one result, the highest-ranked one that planned it.
+//
+// IT MUST RUN ON THE FINAL SELECTION, which is why it is not called from selectSearchCandidates.
+// Under --deep, selectSearchCandidates produces only the SEMANTIC half: hybrid fusion then reorders
+// it, drops semantic rows and seats sparse rows in their place. Deduplicating before that is wrong
+// in both directions. A passage claimed by a semantic row that fusion then drops is deleted from
+// the plan of the row that would still have printed it, so the region disappears from the payload
+// entirely; and a sparse row fusion adds was never in `claimed`, so a retained passage can print
+// the same region that row already prints. Running here, on the fused and finally-ordered
+// selection, is the only place both hold.
 func dropSelectedProsePassages(selected []searchCandidate) []searchCandidate {
 	claimed := make(map[string][]SearchPassage, len(selected))
 	for index := range selected {

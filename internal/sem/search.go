@@ -1154,6 +1154,12 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// enclosure planner and the VERIFY deriver all see one consistent order.
 	// See search_testrank.go.
 	selected = promoteFixSiteOverLeadingTest(selected, q)
+	// Passage deduplication runs HERE, on the final selection, and not inside selectSearchCandidates
+	// which only produced the semantic half of it: hybrid fusion replaces and reorders rows, so a
+	// plan deduplicated against the pre-fusion selection loses passages whose claimant fusion
+	// dropped and keeps passages that duplicate a sparse row fusion seated. See
+	// dropSelectedProsePassages.
+	selected = dropSelectedProsePassages(selected)
 	results := make([]SearchResult, 0, len(selected))
 	prosePassagePlans := make(map[int][]SearchPassage)
 	for i := range selected {
@@ -1227,10 +1233,13 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	tailSnippetLines := minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines)
 	seated := results
+	// bodyHeadRanks narrows the BODY head only; the never-demoted head stays at
+	// searchEnclosureHeadRanks. Passing one value for both is what made --body-head-ranks=2
+	// tersify ranks 3-5 as well, contradicting the paragraph above.
 	results, completeSymbols, locators := allocateSearchSnippets(
 		seated, enclosures, plainEnclosures, options.MaxContextBytes,
 		resolvedSearchSnippetGrowth(seated, options.MaxContextBytes),
-		bodyHeadRanks, tailSnippetLines,
+		bodyHeadRanks, searchEnclosureHeadRanks, tailSnippetLines,
 	)
 	// THE RE-ANCHOR FUNDING INVARIANT, the same one seatForcedSearchUnits enforces for forced units: a
 	// body a hit gained only because it was re-anchored may be paid for out of free budget, never out of
@@ -1249,7 +1258,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if control, exempt, gated := unreanchoredSearchEnclosures(seated, enclosures); gated {
 		plan, bodies, demoted := allocateSearchSnippets(
 			seated, control, plainEnclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
-			bodyHeadRanks, tailSnippetLines,
+			bodyHeadRanks, searchEnclosureHeadRanks, tailSnippetLines,
 		)
 		if !searchAllocationPreservesSource(plan, results, exempt) {
 			results, completeSymbols, locators = plan, bodies, demoted
