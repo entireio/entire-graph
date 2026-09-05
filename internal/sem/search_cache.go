@@ -544,12 +544,18 @@ const budgetPollStride = 1024
 // This walks both slices in lockstep so a file crossing the boundary is
 // dropped whole here too, keeping a "retained" file's symbol set complete
 // by construction rather than by the budget's luck.
-func filterFilesAndSymbolsForBudget(fullFiles []FileRecord, fullSymbols []SymbolRecord, allowedFiles map[string]bool, stop func() bool) (files []FileRecord, symbols []SymbolRecord) {
+//
+// complete reports whether the walk reached the end of fullFiles. It is NOT the
+// same question as "did the budget expire": the gate can trip later, in the
+// relation phase, long after this walk finished, and in that case the selection
+// is exactly the one an unbudgeted derivation would have produced. Only this
+// flag can say so, which is what lets the failure filter stay exact whenever the
+// truncation happened downstream of here (see selectiveFailureFiles).
+func filterFilesAndSymbolsForBudget(fullFiles []FileRecord, fullSymbols []SymbolRecord, allowedFiles map[string]bool, stop func() bool) (files []FileRecord, symbols []SymbolRecord, complete bool) {
 	symIndex := 0
-filesAndSymbols:
 	for fileIndex, file := range fullFiles {
 		if fileIndex%budgetPollStride == 0 && stop() {
-			break
+			return files, symbols, false
 		}
 		runStart := symIndex
 		// Polled by SYMBOL, not just by file: the outer poll above only fires
@@ -564,7 +570,7 @@ filesAndSymbols:
 		// with a truncated, budget-luck-sized symbol slice.
 		for symIndex < len(fullSymbols) && fullSymbols[symIndex].FilePath == file.Path {
 			if (symIndex-runStart)%budgetPollStride == 0 && stop() {
-				break filesAndSymbols
+				return files, symbols, false
 			}
 			symIndex++
 		}
@@ -573,7 +579,7 @@ filesAndSymbols:
 			symbols = append(symbols, fullSymbols[runStart:symIndex]...)
 		}
 	}
-	return files, symbols
+	return files, symbols, true
 }
 
 func selectiveSearchSnapshotFromFull(
@@ -668,14 +674,15 @@ func selectiveSearchSnapshotFromFull(
 	for _, filePath := range sc.paths {
 		allowedFiles[filepath.ToSlash(filepath.Clean(filePath))] = true
 	}
-	selective.Files, selective.Symbols = filterFilesAndSymbolsForBudget(full.Files, full.Symbols, allowedFiles, stopNow)
+	selectiveFiles, selectiveSymbols, selectionComplete := filterFilesAndSymbolsForBudget(full.Files, full.Symbols, allowedFiles, stopNow)
+	selective.Files, selective.Symbols = selectiveFiles, selectiveSymbols
 
 	if stopNow() {
 		if err := classifyStop(gate.err()); err != nil {
 			return ProviderSnapshot{}, err
 		}
 		finalizeSelectiveOrdering(&selective, nil, nil, budgetHit)
-		failures := filterSearchPartialFailures(full.Header.PartialFailures, selectiveFailureFiles(allowedFiles, selective.Files, budgetHit))
+		failures := filterSearchPartialFailures(full.Header.PartialFailures, selectiveFailureFiles(allowedFiles, selective.Files, selectionComplete))
 		if budgetHit {
 			failures = append(failures, analysisBudgetFailure(options.MaxDuration))
 		}
@@ -821,7 +828,7 @@ func selectiveSearchSnapshotFromFull(
 	finalizeSelectiveOrdering(&selective, externalsByID, externalOrder, budgetHit)
 
 	warnings := sc.warnings
-	failures := filterSearchPartialFailures(full.Header.PartialFailures, selectiveFailureFiles(allowedFiles, selective.Files, budgetHit))
+	failures := filterSearchPartialFailures(full.Header.PartialFailures, selectiveFailureFiles(allowedFiles, selective.Files, selectionComplete))
 	failures = mergePartialFailures(failures, relationFailures)
 	if budgetHit {
 		// The marker both tells the caller the view is partial and makes the
@@ -978,16 +985,24 @@ func selectiveRelationWorkers(options ProviderSnapshotOptions) int {
 // whole on this path, so widening to the selection cannot admit a failure for a
 // file the answer is silent about for any other reason.
 //
-// A TRUNCATED derivation keeps the retained set. Once the gate has tripped the
-// filter stopped deciding files, so the selection no longer says what the
-// answer covers; reporting per-file outcomes for files it never walked would
-// dress an unreached file as an inspected one. The single
-// E_ANALYSIS_BUDGET_EXCEEDED marker is what accounts for those.
-func selectiveFailureFiles(allowedFiles map[string]bool, retained []FileRecord, budgetHit bool) map[string]bool {
-	if budgetHit {
-		return retainedFileSet(retained)
+// The condition is whether the FILE WALK completed, not whether the budget was
+// hit. Those come apart in the common case: the file/symbol filter is cheap and
+// the relation phase is what actually burns the ceiling, so a derivation that
+// truncates in the relation phase still holds the exact selection an unbudgeted
+// one would have produced, and its record-less failures are exact too.
+//
+// Only a walk that stopped MID-SELECTION falls back to the retained records.
+// There the selection no longer says what the answer covers, and no cheaper
+// signal can recover the record-less files: they are absent from full.Files
+// altogether, so they occupy no position in the walk and no prefix of it can
+// contain them. Distinguishing "record-less" from "beyond the stop point" would
+// mean completing the pass over full.Files that the budget just refused. The
+// single E_ANALYSIS_BUDGET_EXCEEDED marker accounts for them instead.
+func selectiveFailureFiles(allowedFiles map[string]bool, retained []FileRecord, selectionComplete bool) map[string]bool {
+	if selectionComplete {
+		return allowedFiles
 	}
-	return allowedFiles
+	return retainedFileSet(retained)
 }
 
 func filterSearchPartialFailures(failures []PartialFailure, allowedFiles map[string]bool) []PartialFailure {

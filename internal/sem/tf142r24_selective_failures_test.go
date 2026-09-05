@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -24,6 +25,25 @@ func tf142r24Repo(t *testing.T) string {
 	repo := t.TempDir()
 	initRepo(t, repo)
 	writeFile(t, repo, "main.go", "package main\n\nfunc main() {}\n")
+	writeFile(t, repo, "legacy.f90", "      PROGRAM LEGACY\n      END PROGRAM LEGACY\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	return repo
+}
+
+// tf142r24RelationHeavyRepo makes the relation phase, not the file walk, the
+// expensive half: the file/symbol filter walks a handful of records while each
+// JavaScript file resolves calls the relation phase has to scan for. That is
+// the shape a wall-clock budget actually meets in the field, and it is the one
+// where the selection is complete but the derivation still truncates.
+func tf142r24RelationHeavyRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	initRepo(t, repo)
+	for i := range 6 {
+		writeFile(t, repo, fmt.Sprintf("pkg%02d.js", i),
+			fmt.Sprintf("function helper%d(x) {\n  return fetch(\"https://example.com/v%d/items\") + x;\n}\n\nfunction caller%d(y) {\n  return helper%d(y);\n}\n", i, i, i, i))
+	}
 	writeFile(t, repo, "legacy.f90", "      PROGRAM LEGACY\n      END PROGRAM LEGACY\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
@@ -115,5 +135,57 @@ func TestTF142R24TruncatedSelectiveReportsOnlyReachedFiles(t *testing.T) {
 	}
 	if tf142r24FailureFor(selective.Header.PartialFailures, "legacy.f90", "E_UNSUPPORTED_LANGUAGE") {
 		t.Fatalf("a derivation that retained nothing still reported a per-file outcome: %#v", selective.Header.PartialFailures)
+	}
+}
+
+// TestTF142R24TruncationAfterTheWalkStillReportsRecordlessFailures is the
+// distinction that makes the guard above exact rather than merely safe.
+//
+// "The budget was hit" and "the selection is incomplete" are not the same
+// question. The file/symbol walk is cheap; the relation phase is what burns a
+// wall-clock ceiling. When the gate trips downstream of the walk, the retained
+// selection is exactly the one an unbudgeted derivation would have produced,
+// and the record-less failures are exact too -- so keying the filter on
+// budgetHit threw away accurate information on the most common truncation
+// there is. It is keyed on whether the walk itself stopped mid-selection.
+func TestTF142R24TruncationAfterTheWalkStillReportsRecordlessFailures(t *testing.T) {
+	repo := tf142r24RelationHeavyRepo(t)
+	full, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test", ProviderSnapshotOptions{Profile: ProfileFull})
+	if err != nil {
+		t.Fatalf("full build: %v", err)
+	}
+	if !tf142r24FailureFor(full.Header.PartialFailures, "legacy.f90", "E_UNSUPPORTED_LANGUAGE") {
+		t.Fatalf("fixture is not exercising the case: the cold build reported %#v", full.Header.PartialFailures)
+	}
+	selection := []string{"legacy.f90", "pkg00.js", "pkg01.js", "pkg02.js", "pkg03.js", "pkg04.js", "pkg05.js"}
+	wantRecords := len(selection) - 1 // legacy.f90 produces none
+
+	budget := time.Second
+	reached := 0
+	for tolerate := int64(1); tolerate <= 400; tolerate++ {
+		selective, deriveErr := selectiveSearchSnapshotFromFull(t.Context(), repo, "test", ProviderSnapshotOptions{
+			Profile:     ProfileFull,
+			OnlyFiles:   selection,
+			MaxDuration: budget,
+			nowFn:       tf142r22LaggingClock(budget, tolerate),
+		}, full)
+		if deriveErr != nil {
+			t.Fatalf("tolerate=%d: an opt-in budget must truncate, not fail: %v", tolerate, deriveErr)
+		}
+		if !partialFailuresTruncated(selective.Header.PartialFailures) {
+			continue // Ran to completion at this clock; the other tests cover that.
+		}
+		if len(selective.Files) != wantRecords {
+			continue // The walk itself stopped mid-selection; nothing exact to report.
+		}
+		reached++
+		if !tf142r24FailureFor(selective.Header.PartialFailures, "legacy.f90", "E_UNSUPPORTED_LANGUAGE") {
+			t.Fatalf("tolerate=%d: the walk retained all %d record-bearing files, so the selection is exact, "+
+				"yet legacy.f90's E_UNSUPPORTED_LANGUAGE was dropped: %#v",
+				tolerate, wantRecords, selective.Header.PartialFailures)
+		}
+	}
+	if reached == 0 {
+		t.Fatal("fixture never truncated downstream of a complete file walk, so this test asserted nothing")
 	}
 }

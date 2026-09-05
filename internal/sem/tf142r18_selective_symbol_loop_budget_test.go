@@ -61,7 +61,11 @@ func TestFilterFilesAndSymbolsForBudgetStopsMidFile(t *testing.T) {
 		return calls >= 2
 	}
 
-	gotFiles, gotSymbols := filterFilesAndSymbolsForBudget(files, symbols, allowed, stop)
+	gotFiles, gotSymbols, complete := filterFilesAndSymbolsForBudget(files, symbols, allowed, stop)
+
+	if complete {
+		t.Fatal("a walk stopped inside big.go's symbol run reported a complete selection")
+	}
 
 	if len(gotFiles) != 0 {
 		t.Fatalf("stopping inside big.go's symbol run must drop big.go whole (no file finished its scan yet), got %d file(s): %#v", len(gotFiles), gotFiles)
@@ -100,7 +104,11 @@ func TestFilterFilesAndSymbolsForBudgetKeepsFileAtomicOnInnerStop(t *testing.T) 
 		return calls >= 3
 	}
 
-	gotFiles, gotSymbols := filterFilesAndSymbolsForBudget(files, symbols, allowed, stop)
+	gotFiles, gotSymbols, complete := filterFilesAndSymbolsForBudget(files, symbols, allowed, stop)
+
+	if complete {
+		t.Fatal("a walk that never reached z.go reported a complete selection")
+	}
 
 	if len(gotFiles) != 1 || gotFiles[0].Path != "a.go" {
 		t.Fatalf("want only a.go retained (huge.go dropped whole, z.go never reached), got %#v", gotFiles)
@@ -133,7 +141,11 @@ func TestFilterFilesAndSymbolsForBudgetCompletesWithoutStopping(t *testing.T) {
 	allowed := map[string]bool{"keep1.go": true, "keep2.go": true}
 	stop := func() bool { return false }
 
-	gotFiles, gotSymbols := filterFilesAndSymbolsForBudget(files, symbols, allowed, stop)
+	gotFiles, gotSymbols, complete := filterFilesAndSymbolsForBudget(files, symbols, allowed, stop)
+
+	if !complete {
+		t.Fatal("a walk that never stopped reported an incomplete selection")
+	}
 
 	if len(gotFiles) != 2 || gotFiles[0].Path != "keep1.go" || gotFiles[1].Path != "keep2.go" {
 		t.Fatalf("got files %#v, want [keep1.go keep2.go]", gotFiles)
