@@ -121,15 +121,10 @@ func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
 
 	// Remove the selective artifact written by that best-effort miss. The full
 	// entry remains outside, so this isolates the full-cache fallback read.
-	selectiveKey, err := searchSnapshotKey(repo, full.Header.RepoKey, "test-version", full.Header.Tree, selectiveOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	outsideSelective, err := newCacheEntry(outsideCacheDir, "search", searchSnapshotCacheVersion, selectiveKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(outsideSelective.root, outsideSelective.relative)); err != nil {
+	outsideSelective := selectiveSearchEntryPath(
+		t, outsideCacheDir, repo, full.Header.RepoKey, "test-version", full.Header.Tree, selectiveOptions,
+	)
+	if err := os.Remove(outsideSelective); err != nil {
 		t.Fatal(err)
 	}
 	if _, hit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false); err != nil {
@@ -589,11 +584,9 @@ func NeedleTarget() bool { return true }
 		Profile:   ProfileSyntaxOnly,
 		OnlyFiles: []string{"target/needle.go"},
 	}
-	selectiveKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, selectiveProviderOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selectivePath := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, selectiveKey+".json.gz")
+	selectivePath := selectiveSearchEntryPath(
+		t, cacheDir, repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, selectiveProviderOptions,
+	)
 	cached, err := SearchRepository(t.Context(), repo, "test-version", "NeedleTarget preindex request", options)
 	if err != nil {
 		t.Fatal(err)
@@ -731,11 +724,9 @@ func NeedleTarget() bool { return true }
 		Profile:   ProfileSyntaxOnly,
 		OnlyFiles: []string{"target/needle.go"},
 	}
-	selectiveKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, selectiveOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selectivePath := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, selectiveKey+".json.gz")
+	selectivePath := selectiveSearchEntryPath(
+		t, cacheDir, repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, selectiveOptions,
+	)
 
 	options := SearchOptions{
 		Profile:         ProfileSyntaxOnly,
@@ -823,9 +814,10 @@ func helper() {}
 	}, cacheDir); err != nil {
 		t.Fatal(err)
 	}
-	full, hit, err := loadCachedCompleteSearchSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+	binding, hit, err := loadCachedCompleteSearchSnapshotBinding(t.Context(), repo, "test-version", ProviderSnapshotOptions{
 		Profile: ProfileFull,
 	}, cacheDir)
+	full := binding.snapshot
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -847,7 +839,7 @@ func helper() {}
 	if _, deriveErr := selectiveSearchSnapshotFromFull(t.Context(), repo, "test-version", selectiveOptions, full); deriveErr == nil {
 		t.Fatal("stale complete snapshot no longer fails derivation; fixture does not simulate a provenance mismatch")
 	}
-	snapshot, cacheHit, err := loadOrDeriveSelectiveSearchSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false, full)
+	snapshot, cacheHit, err := loadOrDeriveSelectiveSearchSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false, binding)
 	if err != nil {
 		t.Fatalf("warm derivation failure was not treated as soft: %v", err)
 	}

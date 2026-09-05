@@ -757,16 +757,22 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}
 	}
 	var preindexedSnapshot ProviderSnapshot
+	// preindexBinding keeps the generation this complete snapshot was read under
+	// beside the snapshot itself. Deriving a selective view from it later is only
+	// sound while that generation is still current, and this is the only place
+	// that can observe it before the snapshot is read.
+	var preindexBinding preloadedCompleteSnapshot
 	preindexCacheHit := false
 	indexStarted := time.Now()
 	if !options.Worktree && !searchCacheDisabled {
 		var err error
-		preindexedSnapshot, preindexCacheHit, err = loadCachedCompleteSearchSnapshot(
+		preindexBinding, preindexCacheHit, err = loadCachedCompleteSearchSnapshotBinding(
 			ctx, repo, providerVersion, baseSnapshotOptions, options.CacheDir,
 		)
 		if err != nil {
 			return SearchResponse{}, err
 		}
+		preindexedSnapshot = preindexBinding.snapshot
 	}
 	if options.afterPreindexLoad != nil {
 		options.afterPreindexLoad()
@@ -785,6 +791,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// still match. Treat drift as a miss and rebuild from the captured source.
 	if preindexCacheHit && !searchSnapshotMatchesSelection(preindexedSnapshot, selection) {
 		preindexedSnapshot = ProviderSnapshot{}
+		preindexBinding = preloadedCompleteSnapshot{}
 		preindexCacheHit = false
 	}
 	preselectLatency := time.Since(preselectStarted)
@@ -878,7 +885,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// ordinary build when derivation fails (for example after a HEAD move).
 		indexStarted = time.Now()
 		snapshot, cacheHit, err = loadOrDeriveSelectiveSearchSnapshot(
-			ctx, repo, providerVersion, snapshotOptions, options.CacheDir, searchCacheDisabled, preindexedSnapshot,
+			ctx, repo, providerVersion, snapshotOptions, options.CacheDir, searchCacheDisabled, preindexBinding,
 		)
 		if err != nil {
 			return SearchResponse{}, err
