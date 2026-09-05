@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -330,70 +331,107 @@ func TestStatsUsageDedupIsPerSession(t *testing.T) {
 	}
 }
 
+// TestStatsSavingsModelMath pins the savings model. Each credited graph locate call is priced
+// against the exploration cost this very session paid per exploration call — both sides measured
+// from the transcript — rather than against a guessed whole-file read.
 func TestStatsSavingsModelMath(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// the file the graph call points at: the counterfactual whole-file read
-	const topHitBytes = 4000
-	if err := os.WriteFile(filepath.Join(repo, "src", "app.go"), bytes.Repeat([]byte("x"), topHitBytes), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	sessions := t.TempDir()
 	now := statsTime(0)
 
-	searchResult := `{"query":"login","results":[{"rank":1,"file_path":"src/app.go","start_line":10}]}`
-	// a bulk verb must NOT be credited even though its result also names a file
-	edgesResult := `{"file_path":"src/app.go","edges":[]}`
-
+	// One locate call costing 100 bytes, and a bulk verb whose 9,000 bytes must neither be
+	// credited nor allowed to price the locate call.
 	writeTranscript(t, sessions, "s1.jsonl",
 		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --repo . --query "login"`}),
-		toolResultLine(t, now, "g1", searchResult),
+		toolResultLine(t, now, "g1", strings.Repeat("s", 100)),
 		toolUseLine(t, now, "Bash", "g2", map[string]any{"command": `entire graph edges --repo . --format ndjson`}),
-		toolResultLine(t, now, "g2", edgesResult),
+		toolResultLine(t, now, "g2", strings.Repeat("e", 9000)),
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "login"}),
+		toolResultLine(t, now, "e1", strings.Repeat("a", 500)),
+		toolUseLine(t, now, "Read", "e2", map[string]any{"file_path": "/x/a.go"}),
+		toolResultLine(t, now, "e2", strings.Repeat("b", 700)),
 	)
 
 	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
 
-	wantBytes := int64(topHitBytes - len(searchResult))
+	// exploration measured at (500+700)/2 = 600 bytes/call; the one locate call cost 100.
+	const wantBytes = int64(1*(500+700)/2 - 100)
 	if report.EstimatedSavingsBytes != wantBytes {
 		t.Fatalf("savings bytes = %d, want %d", report.EstimatedSavingsBytes, wantBytes)
 	}
 	if report.EstimatedSavingsTokens != wantBytes/4 {
 		t.Fatalf("savings tokens = %d, want %d", report.EstimatedSavingsTokens, wantBytes/4)
 	}
-	if report.CreditedGraphCalls != 1 || report.GraphCalls != 2 {
-		t.Fatalf("credited = %d of %d, want 1 of 2", report.CreditedGraphCalls, report.GraphCalls)
+	if report.GraphBytesPerLocateCall != 100 || report.ExplorationBytesPerCall != 600 {
+		t.Fatalf("measured per-call cost = graph %v / exploration %v, want 100 / 600",
+			report.GraphBytesPerLocateCall, report.ExplorationBytesPerCall)
+	}
+	if report.CreditedGraphCalls != 1 || report.GraphCalls != 2 || report.GraphLocateCalls != 1 {
+		t.Fatalf("credited = %d, graph = %d, locate = %d; want 1 / 2 / 1",
+			report.CreditedGraphCalls, report.GraphCalls, report.GraphLocateCalls)
+	}
+	if report.GraphLocateReturnedBytes != 100 {
+		t.Fatalf("locate returned bytes = %d, want 100 (the bulk verb must not be mixed in)",
+			report.GraphLocateReturnedBytes)
+	}
+	if report.SessionsWithPositiveSavings != 1 {
+		t.Fatalf("sessions with positive savings = %d, want 1", report.SessionsWithPositiveSavings)
 	}
 	if report.SavingsModel == "" || !strings.Contains(report.SavingsModel, "assumption") {
 		t.Fatalf("savings model caveat missing: %q", report.SavingsModel)
 	}
+	if report.MedianTrackedFileBytes != 0 {
+		t.Fatalf("median_tracked_file_bytes is retired and must stay 0, got %d", report.MedianTrackedFileBytes)
+	}
 }
 
+// TestStatsSavingsFlooredAtZeroWhenGraphCostsMore is the answer the tool must be willing to
+// give: a session whose graph calls returned MORE per call than the exploration they displaced
+// saved nothing. This repo's own paired A/B benchmark found graph output larger per call than
+// the baseline's, so a model that could not report 0 would be contradicting our own evidence.
 func TestStatsSavingsFlooredAtZeroWhenGraphCostsMore(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// tiny file: reading it whole would have been cheaper than the graph call
-	if err := os.WriteFile(filepath.Join(repo, "src", "tiny.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	sessions := t.TempDir()
 	now := statsTime(0)
-	result := `{"results":[{"file_path":"src/tiny.go"}],"padding":"` + strings.Repeat("p", 2000) + `"}`
 	writeTranscript(t, sessions, "s1.jsonl",
 		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "tiny"`}),
-		toolResultLine(t, now, "g1", result),
+		toolResultLine(t, now, "g1", strings.Repeat("p", 2000)),
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "tiny"}),
+		toolResultLine(t, now, "e1", strings.Repeat("m", 100)),
 	)
 
 	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
 	if report.EstimatedSavingsTokens != 0 || report.EstimatedSavingsBytes != 0 {
 		t.Fatalf("savings should floor at 0, got %d bytes / %d tokens",
 			report.EstimatedSavingsBytes, report.EstimatedSavingsTokens)
+	}
+	if report.SessionsWithPositiveSavings != 0 {
+		t.Fatalf("sessions with positive savings = %d, want 0", report.SessionsWithPositiveSavings)
+	}
+	// The measurement itself is still reported, so the 0 is auditable rather than mysterious.
+	if report.GraphBytesPerLocateCall != 2000 || report.ExplorationBytesPerCall != 100 {
+		t.Fatalf("per-call cost = graph %v / exploration %v, want 2000 / 100",
+			report.GraphBytesPerLocateCall, report.ExplorationBytesPerCall)
+	}
+}
+
+// TestStatsSavingsNeedsBothSides: with nothing to compare against, the honest answer is 0, not
+// an invented counterfactual.
+func TestStatsSavingsNeedsBothSides(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", strings.Repeat("s", 10)),
+	)
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if report.EstimatedSavingsBytes != 0 {
+		t.Fatalf("a session with no exploration to price against must save 0, got %d",
+			report.EstimatedSavingsBytes)
 	}
 }
 
@@ -408,7 +446,7 @@ func TestStatsHandlesMissingSessionsDirGracefully(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats must exit 0 when no transcripts exist, got %v", err)
 	}
-	if !strings.Contains(out.String(), "No coding-agent session transcripts") {
+	if !strings.Contains(out.String(), "no coding-agent session transcripts for this repo yet") {
 		t.Fatalf("missing graceful message:\n%s", out.String())
 	}
 
@@ -428,7 +466,7 @@ func TestStatsHandlesEmptySessionsDir(t *testing.T) {
 		[]string{"stats", "--repo", repo, "--sessions-dir", empty}); err != nil {
 		t.Fatalf("stats must exit 0 on an empty sessions dir, got %v", err)
 	}
-	if !strings.Contains(out.String(), "No sessions in this window") {
+	if !strings.Contains(out.String(), "no sessions in this window") {
 		t.Fatalf("missing empty-window message:\n%s", out.String())
 	}
 }
@@ -537,6 +575,8 @@ func TestStatsHandlesBlockShapedToolResults(t *testing.T) {
 	}
 }
 
+// TestStatsTextOutputCarriesRatioAndCaveat covers --verbose, which is where the full report
+// moved when the default became the single headline line.
 func TestStatsTextOutputCarriesRatioAndCaveat(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -551,7 +591,7 @@ func TestStatsTextOutputCarriesRatioAndCaveat(t *testing.T) {
 
 	var out bytes.Buffer
 	if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out},
-		[]string{"stats", "--repo", repo, "--sessions-dir", sessions, "--since", "all"}); err != nil {
+		[]string{"stats", "--repo", repo, "--sessions-dir", sessions, "--since", "all", "--verbose"}); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -564,6 +604,7 @@ func TestStatsTextOutputCarriesRatioAndCaveat(t *testing.T) {
 		"session tokens (billed",
 		"ESTIMATED SAVINGS",
 		"assumption, not a measurement",
+		"measured per-call cost",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text output missing %q:\n%s", want, text)
@@ -752,79 +793,6 @@ func TestHumanIntGroupsThousands(t *testing.T) {
 	}
 }
 
-// TestStatsMedianFallbackWhenTopHitUnresolvable pins the documented fallback: when the graph
-// result names no file that exists on disk, the counterfactual is the repo's median file size.
-func TestStatsMedianFallbackWhenTopHitUnresolvable(t *testing.T) {
-	t.Parallel()
-	repo := t.TempDir()
-	for index, size := range []int{100, 500, 900} {
-		name := filepath.Join(repo, fmt.Sprintf("f%d.txt", index))
-		if err := os.WriteFile(name, bytes.Repeat([]byte("z"), size), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	sessions := t.TempDir()
-	now := statsTime(0)
-	result := `{"results":[{"file_path":"gone/deleted.go"}]}`
-	writeTranscript(t, sessions, "s1.jsonl",
-		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
-		toolResultLine(t, now, "g1", result),
-	)
-
-	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
-	want := int64(500 - len(result)) // median of 100/500/900 minus what the call returned
-	if report.EstimatedSavingsBytes != want {
-		t.Fatalf("median-fallback savings = %d, want %d (median reported %d)",
-			report.EstimatedSavingsBytes, want, report.MedianTrackedFileBytes)
-	}
-	if report.MedianTrackedFileBytes != 500 {
-		t.Fatalf("median tracked file bytes = %d, want 500", report.MedianTrackedFileBytes)
-	}
-}
-
-func TestStatsFileSizeStaysInsideTheSelectedRepository(t *testing.T) {
-	t.Parallel()
-	repo := t.TempDir()
-	inside := filepath.Join(repo, "inside.go")
-	insideContent := []byte("package inside\n")
-	if err := os.WriteFile(inside, insideContent, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	external := filepath.Join(t.TempDir(), "outside.go")
-	if err := os.WriteFile(external, bytes.Repeat([]byte("x"), 100), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	linked := filepath.Join(repo, "linked.go")
-	linkedCreated := os.Symlink(external, linked) == nil
-	linkedDir := filepath.Join(repo, "linked-dir")
-	linkedDirCreated := os.Symlink(filepath.Dir(external), linkedDir) == nil
-
-	collector := newStatsCollector(t.Context(), repo)
-	if got := collector.fileSize("inside.go"); got != int64(len(insideContent)) {
-		t.Fatalf("in-repository file size = %d, want %d", got, len(insideContent))
-	}
-	if got := collector.fileSize(external); got != 0 {
-		t.Fatalf("out-of-repository file size = %d, want 0", got)
-	}
-	relativeExternal, err := filepath.Rel(repo, external)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := collector.fileSize(relativeExternal); got != 0 {
-		t.Fatalf("relative out-of-repository file size = %d, want 0", got)
-	}
-	if linkedCreated {
-		if got := collector.fileSize("linked.go"); got != 0 {
-			t.Fatalf("symlinked file size = %d, want 0", got)
-		}
-	}
-	if linkedDirCreated {
-		if got := collector.fileSize("linked-dir/outside.go"); got != 0 {
-			t.Fatalf("file size through an intermediate symlink = %d, want 0", got)
-		}
-	}
-}
-
 func TestStatsTranscriptScopesToOneSession(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -931,5 +899,451 @@ func TestStatsTranscriptDirectoryIsNotATranscript(t *testing.T) {
 	report := runStatsJSON(t, "--repo", t.TempDir(), "--transcript", dir, "--format", "json")
 	if report.SessionsDirFound {
 		t.Fatal("a directory passed to --transcript must report sessions_dir_found=false")
+	}
+}
+
+// --- default output shape ----------------------------------------------------------------
+
+// TestStatsDefaultOutputIsOneHeadlineLine pins the reported problem: the default is the number,
+// not a report. Everything the old default printed is still one --verbose away.
+func TestStatsDefaultOutputIsOneHeadlineLine(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", strings.Repeat("s", 40)),
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "x"}),
+		toolResultLine(t, now, "e1", strings.Repeat("m", 840)),
+	)
+
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out},
+		[]string{"stats", "--repo", repo, "--sessions-dir", sessions, "--since", "all"}); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("default output must be exactly one line, got %d:\n%s", len(lines), text)
+	}
+	// (840-40) bytes saved -> 200 tokens
+	if lines[0] != "[entire-graph] ~200 tokens saved" {
+		t.Fatalf("headline = %q, want %q", lines[0], "[entire-graph] ~200 tokens saved")
+	}
+	for _, unwanted := range []string{"graph calls by verb", "session tokens (billed", "ESTIMATED SAVINGS", "assumption"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("default output leaked the verbose report (%q):\n%s", unwanted, text)
+		}
+	}
+
+	var verbose bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Stdout: &verbose, Stderr: &verbose},
+		[]string{"stats", "--repo", repo, "--sessions-dir", sessions, "--since", "all", "--verbose"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(verbose.String(), "ESTIMATED SAVINGS  ~200 tokens") {
+		t.Fatalf("--verbose must restore the full report:\n%s", verbose.String())
+	}
+}
+
+// TestStatsHeadlineIsPlainTextWhenOutputIsNotATerminal keeps ANSI bytes out of pipes and files.
+func TestStatsHeadlineIsPlainTextWhenOutputIsNotATerminal(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("FORCE_COLOR", "")
+	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "")
+	var out bytes.Buffer
+	if got := statsGreen(&out, "[entire-graph] ~1 tokens saved"); strings.Contains(got, "\x1b[") {
+		t.Fatalf("a non-terminal writer must not receive escapes, got %q", got)
+	}
+	t.Setenv("FORCE_COLOR", "1")
+	if got := statsGreen(&out, "x"); got != "\x1b[32mx\x1b[0m" {
+		t.Fatalf("forced colour = %q, want a green wrap", got)
+	}
+	t.Setenv("NO_COLOR", "1")
+	if got := statsGreen(&out, "x"); got != "x" {
+		t.Fatalf("NO_COLOR must win, got %q", got)
+	}
+}
+
+// --- windowing / performance --------------------------------------------------------------
+
+// TestStatsPrunesTranscriptsOutsideTheWindowByMtime is the fix for the reported CPU burn: a
+// narrow --since must stop the scan from OPENING transcripts it is going to discard anyway. The
+// prune is by file mtime, which is sound in one direction only — a file last written before the
+// window opened cannot hold a record inside it — so this asserts both directions.
+func TestStatsPrunesTranscriptsOutsideTheWindowByMtime(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	recent := statsTime(-2 * time.Hour)
+	old := statsTime(-60 * 24 * time.Hour)
+
+	writeTranscript(t, sessions, "recent.jsonl",
+		toolUseLine(t, recent, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, recent, "g1", "hits"),
+	)
+	writeTranscript(t, sessions, "old.jsonl",
+		toolUseLine(t, old, "Bash", "g2", map[string]any{"command": `entire graph search --query "y"`}),
+		toolResultLine(t, old, "g2", "hits"),
+	)
+	stale := time.Now().Add(-60 * 24 * time.Hour)
+	if err := os.Chtimes(filepath.Join(sessions, "old.jsonl"), stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	windowed := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "7d")
+	if windowed.TranscriptsConsidered != 2 {
+		t.Fatalf("transcripts considered = %d, want 2", windowed.TranscriptsConsidered)
+	}
+	if windowed.Transcripts != 1 {
+		t.Fatalf("--since 7d parsed %d transcript(s); the file whose mtime is 60 days old must never be opened",
+			windowed.Transcripts)
+	}
+	if windowed.Sessions != 1 || windowed.GraphCalls != 1 {
+		t.Fatalf("--since 7d = %d sessions / %d graph calls, want 1 / 1", windowed.Sessions, windowed.GraphCalls)
+	}
+
+	all := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if all.Transcripts != 2 || all.Sessions != 2 || all.GraphCalls != 2 {
+		t.Fatalf("--since all = %d transcripts / %d sessions / %d graph calls, want 2 / 2 / 2",
+			all.Transcripts, all.Sessions, all.GraphCalls)
+	}
+}
+
+// TestStatsKeepsAWholeSessionWhenAnyOfItsTranscriptsIsRecent: pruning decides per SESSION, so a
+// freshly-written subagent transcript cannot be separated from the parent that owns it.
+func TestStatsKeepsAWholeSessionWhenAnyOfItsTranscriptsIsRecent(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	recent := statsTime(-time.Hour)
+
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, recent, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, recent, "g1", "hits"),
+	)
+	writeTranscript(t, filepath.Join(sessions, "s1", "subagents"), "agent-1.jsonl",
+		toolUseLine(t, recent, "Grep", "e1", map[string]any{"pattern": "x"}),
+		toolResultLine(t, recent, "e1", "matches"),
+	)
+	// The parent's own mtime is stale; only the subagent transcript was written recently.
+	stale := time.Now().Add(-60 * 24 * time.Hour)
+	if err := os.Chtimes(filepath.Join(sessions, "s1.jsonl"), stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "7d")
+	if report.Transcripts != 2 {
+		t.Fatalf("transcripts = %d, want 2 (a recent subagent keeps its owner in scope)", report.Transcripts)
+	}
+	if report.GraphCalls != 1 || report.ExplorationCalls != 1 {
+		t.Fatalf("graph/exploration = %d/%d, want 1/1", report.GraphCalls, report.ExplorationCalls)
+	}
+}
+
+// --- double counting ------------------------------------------------------------------------
+
+// TestStatsCountsARepeatedToolUseOnceWithinASession pins a measured defect. Claude Code replays
+// a forked subagent's history into the new transcript, so ONE tool call really does appear in
+// several of a session's files: 215 tool_use ids across 3,316 real transcripts on the machine
+// that reported this. It is one API call and must be billed once.
+func TestStatsCountsARepeatedToolUseOnceWithinASession(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	shared := strings.Repeat("m", 100)
+
+	writeTranscript(t, filepath.Join(sessions, "s1", "subagents"), "agent-1.jsonl",
+		toolUseLine(t, now, "Grep", "shared", map[string]any{"pattern": "x"}),
+		toolResultLine(t, now, "shared", shared),
+	)
+	// The forked sibling replays the same call verbatim.
+	writeTranscript(t, filepath.Join(sessions, "s1", "subagents"), "agent-2.jsonl",
+		toolUseLine(t, now, "Grep", "shared", map[string]any{"pattern": "x"}),
+		toolResultLine(t, now, "shared", shared),
+	)
+
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if report.ExplorationCalls != 1 {
+		t.Fatalf("exploration calls = %d, want 1 (one API call replayed into two transcripts)",
+			report.ExplorationCalls)
+	}
+	if report.ExplorationReturnedBytes != int64(len(shared)) {
+		t.Fatalf("exploration bytes = %d, want %d", report.ExplorationReturnedBytes, len(shared))
+	}
+}
+
+// TestStatsBillsARepeatedMessageOnceWithinASession is the usage half of the same replay: 168
+// usage-bearing message ids appeared in more than one transcript of their own session.
+func TestStatsBillsARepeatedMessageOnceWithinASession(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+
+	writeTranscript(t, filepath.Join(sessions, "s1", "subagents"), "agent-1.jsonl",
+		usageBlocksLine(t, now, "msg_shared", []any{textBlock("a")}, 1, 10, 100, 5),
+	)
+	writeTranscript(t, filepath.Join(sessions, "s1", "subagents"), "agent-2.jsonl",
+		usageBlocksLine(t, now, "msg_shared", []any{textBlock("a")}, 1, 10, 100, 5),
+	)
+
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	want := statsTokens{Input: 1, CacheWrite: 10, CacheRead: 100, Output: 5, Total: 116}
+	if report.SessionTokens != want {
+		t.Fatalf("session tokens = %+v, want %+v (one message replayed into two transcripts)",
+			report.SessionTokens, want)
+	}
+}
+
+// --- determinism ------------------------------------------------------------------------
+
+// TestStatsOutputIsByteIdenticalAcrossRuns: nothing in the report may depend on map iteration
+// order, float accumulation order, or which files happened to be cached.
+func TestStatsOutputIsByteIdenticalAcrossRuns(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	for index := 0; index < 6; index++ {
+		name := fmt.Sprintf("s%d.jsonl", index)
+		writeTranscript(t, sessions, name,
+			toolUseLine(t, now, "Bash", fmt.Sprintf("g%d", index), map[string]any{"command": `entire graph search --query "x"`}),
+			toolResultLine(t, now, fmt.Sprintf("g%d", index), strings.Repeat("s", 10+index)),
+			toolUseLine(t, now, "Bash", fmt.Sprintf("n%d", index), map[string]any{"command": `entire graph neighbors --symbol X`}),
+			toolResultLine(t, now, fmt.Sprintf("n%d", index), strings.Repeat("n", 20+index)),
+			toolUseLine(t, now, "Grep", fmt.Sprintf("e%d", index), map[string]any{"pattern": "x"}),
+			toolResultLine(t, now, fmt.Sprintf("e%d", index), strings.Repeat("m", 300+index)),
+			toolUseLine(t, now, "Read", fmt.Sprintf("r%d", index), map[string]any{"file_path": "/x/a.go"}),
+			toolResultLine(t, now, fmt.Sprintf("r%d", index), strings.Repeat("r", 700+index)),
+			usageBlocksLine(t, now, fmt.Sprintf("msg%d", index), []any{textBlock("done")}, 11, 22, 33, 44),
+		)
+	}
+
+	run := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		full := append([]string{"stats", "--repo", repo, "--sessions-dir", sessions, "--since", "all"}, args...)
+		if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out}, full); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	for _, args := range [][]string{nil, {"--verbose"}, {"--format", "json"}} {
+		first, second := run(args...), run(args...)
+		if first != second {
+			t.Fatalf("stats %v was not byte-identical across two runs:\n--- first ---\n%s\n--- second ---\n%s",
+				args, first, second)
+		}
+	}
+}
+
+// --- arithmetic ---------------------------------------------------------------------------
+
+func TestMulDivIsExactAndDoesNotOverflow(t *testing.T) {
+	t.Parallel()
+	if got := mulDiv(3, 1200, 2); got != 1800 {
+		t.Fatalf("mulDiv(3,1200,2) = %d, want 1800", got)
+	}
+	// The a*b product overflows int64 here; the quotient does not. A naive a*b/c wraps.
+	const wide = int64(1) << 40
+	if got := mulDiv(wide, wide, wide); got != wide {
+		t.Fatalf("mulDiv(2^40,2^40,2^40) = %d, want %d", got, wide)
+	}
+	// The exact boundary of the overflow guard. bits.Div64 PANICS when the high word is >= the
+	// divisor, so `hi >= c` has to be the test and not `hi > c`: here hi and c are both 1.
+	if got := mulDiv(1<<32, 1<<32, 1); got != math.MaxInt64 {
+		t.Fatalf("mulDiv(2^32,2^32,1) = %d, want MaxInt64", got)
+	}
+	// Quotient itself out of range: saturate, never wrap negative.
+	if got := mulDiv(math.MaxInt64, 4, 2); got != math.MaxInt64 {
+		t.Fatalf("mulDiv saturation = %d, want MaxInt64", got)
+	}
+	if got := mulDiv(math.MaxInt64, math.MaxInt64, 1); got != math.MaxInt64 {
+		t.Fatalf("mulDiv saturation = %d, want MaxInt64", got)
+	}
+	for _, args := range [][3]int64{{0, 5, 1}, {5, 0, 1}, {5, 5, 0}, {-1, 5, 1}} {
+		if got := mulDiv(args[0], args[1], args[2]); got != 0 {
+			t.Fatalf("mulDiv%v = %d, want 0", args, got)
+		}
+	}
+}
+
+func TestRoundToRoundsHalfAwayFromZero(t *testing.T) {
+	t.Parallel()
+	// 0.125 and 0.375 are exact in binary, so these pin the tie-breaking rule itself.
+	if got := roundTo(0.125, 2); got != 0.13 {
+		t.Fatalf("roundTo(0.125,2) = %v, want 0.13", got)
+	}
+	if got := roundTo(-0.125, 2); got != -0.13 {
+		t.Fatalf("roundTo(-0.125,2) = %v, want -0.13 (half away from zero, not toward it)", got)
+	}
+	if got := roundTo(0.5, 4); got != 0.5 {
+		t.Fatalf("roundTo(0.5,4) = %v, want 0.5", got)
+	}
+	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if got := roundTo(bad, 2); got != 0 {
+			t.Fatalf("roundTo(%v,2) = %v, want 0", bad, got)
+		}
+	}
+}
+
+// --- the JSON contract ----------------------------------------------------------------------
+
+// TestStatsJSONContractKeepsEveryPublishedKey guards the machine contract. Callers exist —
+// scripts/entire-graph-statusline.sh reads two of these on every prompt render — so keys may be
+// added but never removed or renamed.
+func TestStatsJSONContractKeepsEveryPublishedKey(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(statsResponse{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	published := []string{
+		"format_version", "provider", "repo_root", "sessions_dir", "sessions_dir_found", "since",
+		"window_start", "window_end", "sessions", "transcripts", "malformed_lines_skipped",
+		"graph_calls", "exploration_calls", "sessions_with_locate", "graph_first_sessions",
+		"graph_first_rate", "graph_calls_by_verb", "exploration_by_kind", "graph_returned_bytes",
+		"graph_returned_est_tokens", "exploration_returned_bytes", "exploration_returned_est_tokens",
+		"session_tokens", "estimated_savings_bytes", "estimated_savings_est_tokens",
+		"estimated_savings_pct_of_session_tokens", "credited_graph_calls",
+		"median_tracked_file_bytes", "savings_model",
+	}
+	for _, key := range published {
+		if _, ok := decoded[key]; !ok {
+			t.Fatalf("stats JSON dropped published key %q; the shape may only ever grow", key)
+		}
+	}
+	// The tables must serialise as arrays, never null, for a report with no data.
+	report := statsResponse{GraphByVerb: []statsCount{}, ExplorationByKind: []statsCount{}}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"graph_calls_by_verb":[]`) {
+		t.Fatalf("empty tables must encode as [], got %s", encoded)
+	}
+}
+
+// TestStatsJSONIgnoresVerbose: --verbose is a text-rendering choice and must not reshape the
+// machine output.
+func TestStatsJSONIgnoresVerbose(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", "hits"),
+	)
+	render := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		full := append([]string{"stats", "--repo", repo, "--sessions-dir", sessions,
+			"--since", "all", "--format", "json"}, args...)
+		if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out}, full); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if plain, verbose := render(), render("--verbose"); plain != verbose {
+		t.Fatalf("--verbose changed the JSON:\n%s\n%s", plain, verbose)
+	}
+}
+
+// TestStatsUnmatchedCallsDoNotDeflateThePrice: bytes are only observable on a tool_result, so
+// the per-call prices must divide by RESULTS seen, not by calls issued. Dividing by calls would
+// silently halve a price whenever a call's result was never written to the transcript.
+func TestStatsUnmatchedCallsDoNotDeflateThePrice(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", strings.Repeat("s", 100)),
+		// a second locate call whose result never landed
+		toolUseLine(t, now, "Bash", "g2", map[string]any{"command": `entire graph search --query "y"`}),
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "x"}),
+		toolResultLine(t, now, "e1", strings.Repeat("m", 800)),
+		// likewise an exploration call with no result
+		toolUseLine(t, now, "Grep", "e2", map[string]any{"pattern": "y"}),
+	)
+
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if report.GraphCalls != 2 || report.ExplorationCalls != 2 {
+		t.Fatalf("calls = %d graph / %d exploration, want 2 / 2", report.GraphCalls, report.ExplorationCalls)
+	}
+	if report.CreditedGraphCalls != 1 {
+		t.Fatalf("credited = %d, want 1 (only the call whose result was observed)", report.CreditedGraphCalls)
+	}
+	if report.GraphBytesPerLocateCall != 100 || report.ExplorationBytesPerCall != 800 {
+		t.Fatalf("per-call cost = graph %v / exploration %v, want 100 / 800",
+			report.GraphBytesPerLocateCall, report.ExplorationBytesPerCall)
+	}
+	if report.EstimatedSavingsBytes != 700 {
+		t.Fatalf("savings bytes = %d, want 700 (1 credited call x 800 - 100)", report.EstimatedSavingsBytes)
+	}
+}
+
+// TestStatsIdlessToolUsesAreAllCounted: a block with no tool_use id cannot be recognised as a
+// replay of anything, so every one of them must still be counted. Deduplicating on the empty
+// string would silently collapse them into one.
+func TestStatsIdlessToolUsesAreAllCounted(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Grep", "", map[string]any{"pattern": "x"}),
+		toolUseLine(t, now, "Grep", "", map[string]any{"pattern": "y"}),
+		toolUseLine(t, now, "Grep", "", map[string]any{"pattern": "z"}),
+	)
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if report.ExplorationCalls != 3 {
+		t.Fatalf("exploration calls = %d, want 3 (id-less calls are not deduplicable)",
+			report.ExplorationCalls)
+	}
+}
+
+// TestStatsPruneKeepsAFileWhoseMtimeIsExactlyTheCutoff pins the boundary of the mtime prune.
+// The window is inclusive at its lower edge: a file last written at exactly the cutoff instant
+// is inside it. Driving the collector directly is what makes the tie reachable at all — a cutoff
+// taken from the wall clock can never be hit by a test that only writes files.
+func TestStatsPruneKeepsAFileWhoseMtimeIsExactlyTheCutoff(t *testing.T) {
+	t.Parallel()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "x"}),
+		toolResultLine(t, now, "e1", "matches"),
+	)
+	files, err := listTranscriptFiles(sessions, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 candidate transcript, got %d", len(files))
+	}
+
+	atCutoff := newStatsCollector()
+	atCutoff.run(files, files[0].modTime)
+	if atCutoff.transcripts != 1 {
+		t.Fatalf("a transcript whose mtime equals the cutoff was pruned (%d parsed, want 1)",
+			atCutoff.transcripts)
+	}
+
+	justAfter := newStatsCollector()
+	justAfter.run(files, files[0].modTime.Add(time.Nanosecond))
+	if justAfter.transcripts != 0 {
+		t.Fatalf("a transcript one nanosecond older than the cutoff was parsed (%d, want 0)",
+			justAfter.transcripts)
 	}
 }
