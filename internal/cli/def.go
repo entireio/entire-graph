@@ -579,18 +579,35 @@ func defKindRank(kind string) int {
 // (which is what the provider's partial-type canonicalization produces).
 func (index *defIndex) groupPartials(matches []sem.SymbolRecord) [][]sem.SymbolRecord {
 	var groups [][]sem.SymbolRecord
-	byKey := map[string]int{}
+	// EVERY group seated under a key, not just the latest. Matches arrive in file
+	// order, so an unrelated same-named type can sort BETWEEN two parts of one
+	// partial type (`a.cs` partial, `b.cs` namesake, `c.cs` partial). Remembering
+	// only the newest group per key made the namesake displace the partial group,
+	// and the later part was then tested against the namesake alone, failed, and
+	// stayed split: three declarations where the caller should see one merged
+	// partial type plus one namesake. Searching the earlier groups too costs
+	// nothing (a key holds one group in the common case) and cannot over-merge,
+	// because sharesMemberOwner is still the only thing that seats a part.
+	byKey := map[string][]int{}
 	for _, symbol := range matches {
 		if !sem.IsTypeLikeKind(symbol.Kind) {
 			groups = append(groups, []sem.SymbolRecord{symbol})
 			continue
 		}
 		key := symbol.Language + "\x00" + symbol.Kind + "\x00" + symbol.QualifiedName
-		if position, ok := byKey[key]; ok && index.sharesMemberOwner(groups[position], symbol) {
+		seated := false
+		for _, position := range byKey[key] {
+			if !index.sharesMemberOwner(groups[position], symbol) {
+				continue
+			}
 			groups[position] = append(groups[position], symbol)
+			seated = true
+			break
+		}
+		if seated {
 			continue
 		}
-		byKey[key] = len(groups)
+		byKey[key] = append(byKey[key], len(groups))
 		groups = append(groups, []sem.SymbolRecord{symbol})
 	}
 	return groups
