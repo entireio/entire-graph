@@ -877,15 +877,20 @@ func TestSearchVerifyMavenReactorWalkIsNotStoppedByAWideRoot(t *testing.T) {
 // project was handed `cd <leaf> && yarn test`, a command that cannot run at all, where `npm test` —
 // the floor this block already falls back to — runs.
 //
-// The check is deliberately permissive in the other direction, because declining wrongly replaces a
-// working command with one Plug'n'Play cannot run: a leaf a pattern reaches, and a leaf nested below
-// one, both keep the workspace's manager.
+// Membership is TRANSITIVE, because a workspace may declare workspaces of its own: under a root
+// declaring `packages/*`, whether `packages/app/examples/demo` is in the project is answered by
+// `packages/app`'s manifest, not by the fact that some ancestor matched. Both nested directions are
+// pinned below.
+//
+// Where a declaration cannot be READ the check is permissive, because declining wrongly replaces a
+// working command with one Plug'n'Play cannot run.
 func TestSearchVerifyNodeAncestorLockfileNeedsWorkspaceMembership(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		name        string
 		rootPackage string
 		leaf        string
+		extraFiles  map[string]string
 		wantCommand string
 	}{
 		{
@@ -913,10 +918,22 @@ func TestSearchVerifyNodeAncestorLockfileNeedsWorkspaceMembership(t *testing.T) 
 			wantCommand: "cd packages/api && yarn test",
 		},
 		{
-			name:        "a package nested below a declared workspace is left alone",
+			name:        "a nested workspace the matched workspace declares in turn",
 			rootPackage: `{"name":"root","workspaces":["packages/*"]}`,
-			leaf:        "packages/api/plugin",
-			wantCommand: "cd packages/api/plugin && yarn test",
+			leaf:        "packages/app/examples/demo",
+			extraFiles: map[string]string{
+				"packages/app/package.json": `{"name":"app","workspaces":["examples/*"]}`,
+			},
+			wantCommand: "cd packages/app/examples/demo && yarn test",
+		},
+		{
+			name:        "a package nested below a workspace that does not declare it",
+			rootPackage: `{"name":"root","workspaces":["packages/*"]}`,
+			leaf:        "packages/app/examples/demo",
+			extraFiles: map[string]string{
+				"packages/app/package.json": `{"name":"app"}`,
+			},
+			wantCommand: "cd packages/app/examples/demo && npm test",
 		},
 		{
 			name:        "a globstar reaches any depth",
@@ -932,6 +949,9 @@ func TestSearchVerifyNodeAncestorLockfileNeedsWorkspaceMembership(t *testing.T) 
 				"yarn.lock":                     "__metadata:\n  version: 8\n",
 				testCase.leaf + "/package.json": `{"name":"leaf","devDependencies":{"jest":"^29.0.0"}}`,
 				testCase.leaf + "/src/index.js": "",
+			}
+			for name, content := range testCase.extraFiles {
+				files[name] = content
 			}
 			evidence := searchVerifyTestEvidence(files)
 			got := deriveSearchVerifySuiteCommand(

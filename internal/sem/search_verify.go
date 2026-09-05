@@ -1063,14 +1063,19 @@ var searchVerifyNodeLockfiles = []struct {
 // `leaf`, read from the root manifest's own `workspaces` field in either of its two spellings (the
 // array, and the `{"packages": […]}` object Yarn 1 also accepted).
 //
-// It is deliberately PERMISSIVE, because the two mistakes are not symmetric. Declining wrongly
-// replaces a working `yarn test` with `npm test`, which a Plug'n'Play project cannot run at all;
-// accepting wrongly leaves the command exactly as it was before this check existed. So a manifest
-// that will not parse, a pattern that will not compile, and a leaf nested BELOW a declared workspace
-// all count as covered — the last because Yarn supports workspaces that declare workspaces of their
-// own, and nothing in a path says which shape is in front of us. The one thing it declines is the
-// leaf that no declaration reaches at all, which is the reported case: an unrelated project above a
-// standalone package.
+// Yarn's project is the TRANSITIVE closure of those declarations: a workspace may declare workspaces
+// of its own, so a package under `packages/app/examples/demo` is in the project of a root declaring
+// `packages/*` only if `packages/app`'s OWN manifest also declares it. A pattern matching an
+// ancestor of the leaf therefore hands the question to that ancestor's manifest rather than
+// answering it, which is the difference between reading the declarations and guessing from the path
+// shape.
+//
+// Where it cannot read, it is PERMISSIVE, because the two mistakes are not symmetric: declining
+// wrongly replaces a working `yarn test` with `npm test`, which a Plug'n'Play project cannot run at
+// all, while accepting wrongly leaves the command exactly as it was before this check existed. So a
+// manifest that will not parse and a pattern that will not compile both count as covered. A manifest
+// that reads and declares nothing reaching the leaf is not a failure to read — that is the reported
+// case, an unrelated project above a standalone package, and it declines.
 func searchVerifyNodeWorkspaceCovers(root, leaf string, evidence *searchVerifyEvidence) bool {
 	relative, inside := searchVerifyRelative(root, leaf)
 	if !inside || relative == "" {
@@ -1078,8 +1083,8 @@ func searchVerifyNodeWorkspaceCovers(root, leaf string, evidence *searchVerifyEv
 	}
 	content, ok := evidence.file(searchVerifyJoin(root, "package.json"))
 	if !ok {
-		// A lockfile with no manifest beside it declares nothing, and Yarn has no project to
-		// belong to either.
+		// No manifest here: beside the lockfile it means Yarn has no project to belong to, and at a
+		// nested step it means this directory is not a package and so declares no workspaces.
 		return false
 	}
 	var parsed struct {
@@ -1088,18 +1093,29 @@ func searchVerifyNodeWorkspaceCovers(root, leaf string, evidence *searchVerifyEv
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 		return true
 	}
-	patterns, ok := searchVerifyNodeWorkspacePatterns(parsed.Workspaces)
-	if !ok {
+	patterns, readable := searchVerifyNodeWorkspacePatterns(parsed.Workspaces)
+	if !readable {
 		return true
 	}
 	segments := strings.Split(relative, "/")
 	for _, pattern := range patterns {
-		// A pattern matching an ANCESTOR of the leaf covers it too: the leaf is then a package
-		// inside a declared workspace, which Yarn's nested workspaces make legitimate.
-		for cut := len(segments); cut > 0; cut-- {
-			if searchVerifyNodeWorkspaceMatches(pattern, segments[:cut]) {
+		if searchVerifyNodeWorkspaceMatches(pattern, segments) {
+			return true
+		}
+	}
+	// The leaf is not declared here, but an ancestor of it may be — and that ancestor is then a
+	// workspace whose own manifest decides. The recursion shortens `relative` by at least one
+	// segment each time, so it is bounded by the leaf's depth.
+	for cut := 1; cut < len(segments); cut++ {
+		for _, pattern := range patterns {
+			if !searchVerifyNodeWorkspaceMatches(pattern, segments[:cut]) {
+				continue
+			}
+			nested := searchVerifyJoin(root, strings.Join(segments[:cut], "/"))
+			if searchVerifyNodeWorkspaceCovers(nested, leaf, evidence) {
 				return true
 			}
+			break
 		}
 	}
 	return false
