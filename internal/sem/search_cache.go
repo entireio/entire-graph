@@ -622,7 +622,7 @@ func selectiveSearchSnapshotFromFull(
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, emitRelation)
 	} else {
-		forEachRelation(sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, func() bool {
+		forEachRelation(ctx, sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, defaultProviderWorkerCount(), func() bool {
 			return ctx.Err() != nil
 		}, emitRelation, func(failure PartialFailure) {
 			relationFailures = append(relationFailures, failure)
