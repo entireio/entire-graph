@@ -98,10 +98,14 @@ def chosen_paths(paths: list[str]) -> list[str]:
 def query_for(repo: Path, selected: list[str]) -> str:
     path = selected[0]
     ignored = {"package", "import", "from", "def", "class", "func", "export", "const",
-               "return", "test", "tests", "init", "input", "number", "string"}
+               "return", "test", "tests", "init", "input", "number", "string", "copyright",
+               "expect", "testing", "assert", "require", "should", "file"}
+    path_tokens = [x for x in re.split(r"[^A-Za-z0-9]+", Path(path).stem)
+                   if len(x) >= 4 and x.lower() not in ignored]
+    token = path_tokens[0] if path_tokens else None
     text = (repo / path).read_text(errors="ignore")[:65536]
     identifiers = re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", text)
-    token = next((x for x in identifiers if x.lower() not in ignored), None)
+    token = token or next((x for x in identifiers if x.lower() not in ignored), None)
     if not token:
         token = Path(path).stem.replace("-", " ").replace("_", " ")
     return f"find the {token} symbol or entrypoint in {path}"
