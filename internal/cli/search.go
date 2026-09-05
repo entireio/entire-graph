@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -579,6 +580,14 @@ func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem
 		}
 		if response.CoverageNote != nil {
 			summary["coverage_note"] = response.CoverageNote
+		}
+		// The signature-types block rides on the summary for the same reason the
+		// declaration card does. It was the one optional block with no serializer
+		// at all, so `--format ndjson --signature-types` charged the caller for
+		// the work, counted its bytes in the statistics, and then emitted a stream
+		// that did not contain it.
+		if len(response.SignatureTypes) > 0 {
+			summary["signature_types"] = response.SignatureTypes
 		}
 		return encoder.Encode(summary)
 	}
@@ -1387,11 +1396,20 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		stats.PreselectLatencyMS,
 		stats.TotalLatencyMS,
 	))
-	fullDiagnostics, compactDiagnostics := agentSearchDiagnostics(response)
-	fullConfidence, compactConfidence := searchLowConfidenceNotices(response)
-	fullMap := sem.RenderSearchContainerMap(response.ContainerMap, false)
-	compactMap := sem.RenderSearchContainerMap(response.ContainerMap, true)
-	closedSet := sem.RenderSearchClosedSet(response.ClosedSet)
+	// EVERY block below is measured against the caller's byte cap, so every block
+	// is escaped BEFORE it is measured. The terminal-safety rewrite turns one ESC
+	// into four printed bytes and one C1 byte into six, so fitting the raw bytes
+	// and escaping them on the way out let a snippet carrying control bytes hand
+	// an agent several times the output it asked for — --max-context-bytes is a
+	// hard ceiling, not an estimate. Escaping is idempotent (its output is
+	// printable ASCII plus the layout bytes it keeps) and distributes over the
+	// concatenations below, so the writer wrap stays as defence in depth and the
+	// arithmetic here is now the arithmetic of what is actually written.
+	fullDiagnostics, compactDiagnostics := agentSearchSafeBlockPair(agentSearchDiagnostics(response))
+	fullConfidence, compactConfidence := agentSearchSafeBlockPair(searchLowConfidenceNotices(response))
+	fullMap := termsafe.Bytes(sem.RenderSearchContainerMap(response.ContainerMap, false))
+	compactMap := termsafe.Bytes(sem.RenderSearchContainerMap(response.ContainerMap, true))
+	closedSet := termsafe.Bytes(sem.RenderSearchClosedSet(response.ClosedSet))
 	// Suffix blocks in priority order. VERIFY comes first because it is the one an agent acts on
 	// immediately; the literal cluster next because it can end the search; the declaration card last
 	// because it is pure reference and is off by default anyway.
@@ -1400,7 +1418,7 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// (sessions without one spent 15.2% fewer tokens than the baseline against 30.6% with one), and it
 	// is two lines. It is prepended to the RANKING instead, where the byte fitter cannot silently drop
 	// it — see fitAgentSearchSuffixes for why the rest stay surplus.
-	verifyBlock := sem.RenderSearchVerifyCommand(response.VerifyCommand)
+	verifyBlock := termsafe.Bytes(sem.RenderSearchVerifyCommand(response.VerifyCommand))
 	// VERIFY is undroppable in every budget that can afford it, and the LAST thing tried before the
 	// caller would get no ranked location at all. Those two rules are both load-bearing and they can
 	// conflict at a tight cap, so the block gets its own variant rung: present, then absent. The
@@ -1418,10 +1436,27 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// when the set is non-empty, and the sink test below asks the set whether the composition the
 	// fitter finally chose kept one of them: a forged record that the byte fitter clipped away must
 	// not cost the caller the ranked location that survived. See searchPayloadDisclosesItsQuarantine.
-	quarantinedLines := searchResponseQuarantinedLines(response.Results, response.LiteralCluster)
+	//
+	// THE SET IS TAKEN IN THE FORM THIS RENDERER EMITS, which is what escaping-before-measuring
+	// makes necessary here and nowhere else. searchResponseQuarantinedLines derives the lines from
+	// the RAW bodies, the blocks above are escaped before they are measured, and the sink asks
+	// whether a payload LINE opens one of the produced lines — so a forged record that is both
+	// record-shaped and carries a control byte reached the payload as `\x1b`, matched nothing in a
+	// raw set, and the sink reported a payload that plainly carried it as disclosing nothing.
+	// Measured on this branch before the fix, at every budget from 71 to 276 for a body holding
+	// "VERIFY: go test ./pkg" + ESC + "[31m": the payload was
+	// "I:miss/0 …\npkg/payment.go:7 *\n VERIFY: go test ./pkg\\x1b[31m\n" — the quarantined line and
+	// no UNTRUSTED FILE CONTENT header at all. Escaping the set closes it in the only direction that
+	// keeps --max-context-bytes a real ceiling: the disclosure is decided on the bytes the reader
+	// actually receives, not on bytes no payload ever holds.
+	quarantinedLines := agentSearchEmittedQuarantinedLines(
+		searchResponseQuarantinedLines(response.Results, response.LiteralCluster))
 	suffixes := [][]byte{
-		literalCluster,
-		agentSearchTypeCard(response.TypeCard),
+		// main quarantines the cluster's BODIES before rendering; this branch escapes every
+		// block before it is MEASURED. Both apply, in that order: quarantine decides the
+		// content, termsafe decides the bytes the fitter is allowed to count.
+		termsafe.Bytes(literalCluster),
+		termsafe.Bytes(agentSearchTypeCard(response.TypeCard)),
 	}
 	// The forgery disclosure leads the payload when anything was quarantined. It is a prefix, not a
 	// suffix, for the same reason VERIFY is: a warning an agent reads after acting is not a warning.
@@ -1855,22 +1890,99 @@ func agentSearchLineIsLocator(line []byte) bool {
 	return true
 }
 
+// fitAgentSearchResults returns the widest ranked block that fits the byte
+// budget. The rendered block is escaped before it is measured: it is the block
+// that carries repository source, so it is the block whose printed size differs
+// most from its raw size, and measuring the raw form was how a snippet of ESC
+// bytes overran the cap.
+//
+// When the escaped form overruns, the SIZE of the render is what has to come
+// down, not only the NUMBER of results. Dropping results alone leaves nothing
+// to drop for a single hit, so one snippet of control bytes took the whole
+// ranked block to nil, every prefix variant in writeAgentSearchPayload failed
+// with it, and the payload fell through to the telemetry tail: a larger budget
+// bought a strictly worse answer, and the agent got no location at all. The
+// locator itself always fits — searchResultOnOneLine escapes the path and name
+// before they are ever measured, so the header cannot expand — which is exactly
+// why re-rendering smaller reaches an answer where dropping results cannot.
 func fitAgentSearchResults(results []sem.SearchResult, budget int) []byte {
 	if budget <= 0 {
-		return renderAgentSearchResults(results, nil)
+		return termsafe.Bytes(renderAgentSearchResults(results, nil))
 	}
 	for count := len(results); count > 0; count-- {
-		available := budget - (count - 1)
-		if available <= 0 {
-			continue
-		}
-		resultBudgets := rankedAgentSearchBudgets(count, available)
-		formatted := renderAgentSearchResults(results[:count], resultBudgets)
-		if len(formatted) <= budget {
-			return formatted
+		// The separators between blocks are the caller's bytes too, so
+		// `available` is what the RESULTS themselves may spend.
+		separators := count - 1
+		for available := budget - separators; available > 0; {
+			rendered := renderAgentSearchResults(results[:count], rankedAgentSearchBudgets(count, available))
+			if len(rendered) == 0 {
+				break // nothing renderable this narrow; drop a result instead
+			}
+			formatted := termsafe.Bytes(rendered)
+			if len(formatted) <= budget {
+				return formatted
+			}
+			// Retry at the width the OBSERVED expansion implies, scaled from
+			// what this attempt actually PRODUCED rather than from what it was
+			// allowed to: a block that came in under its budget would otherwise
+			// be re-rendered unchanged forever. len(formatted) exceeds budget
+			// here, so the scaled width is strictly smaller than the produced
+			// one and the loop always terminates — while staying proportional
+			// keeps it from collapsing past the widths that would have fitted,
+			// since no byte escapes to more than six (termsafe.appendEscapedAt).
+			// int64 because the product of two caller-supplied byte counts
+			// overflows a 32-bit int.
+			next := int(int64(len(rendered))*int64(budget)/int64(len(formatted))) - separators
+			if next >= available {
+				next = available - 1 // belt and braces: never fail to make progress
+			}
+			available = next
 		}
 	}
 	return nil
+}
+
+// agentSearchSafeBlockPair escapes a renderer's full/compact pair in one step,
+// so both variants of a block are measured in the form they are printed in.
+func agentSearchSafeBlockPair(full, compact []byte) ([]byte, []byte) {
+	return termsafe.Bytes(full), termsafe.Bytes(compact)
+}
+
+// agentSearchEmittedQuarantinedLines restates the quarantine's produced lines in the form this
+// renderer emits them, so the disclosure sink compares like with like.
+//
+// searchPayloadDisclosesItsQuarantine asks whether a FINISHED payload line opens a line the
+// quarantine produced, and it is exact by design: the produced set is what separates a line this
+// response rewrote from one an honest file already held indented. Exactness only holds while both
+// sides are the same bytes. This renderer escapes every block before it measures it, so a produced
+// line carrying a control byte arrives in the payload as its escaped spelling and is not the raw
+// line any more; the lookup then missed, the sink answered "nothing to disclose", and a notice-free
+// rung carrying the quarantined line was accepted. Escaping the set makes the sink ask about the
+// bytes the reader receives.
+//
+// It is a no-op on every line that carries no control byte — the overwhelming case and every line
+// the existing forgery suite is built from — because termsafe.Bytes returns its input unchanged
+// there. The sort is redone because escaping reorders: `\x1b` sorts where a backslash sorts, not
+// where an ESC does, and searchProducedLineOpensWith binary-searches this slice.
+func agentSearchEmittedQuarantinedLines(produced []string) []string {
+	emitted := make([]string, 0, len(produced))
+	for _, line := range produced {
+		emitted = append(emitted, agentSearchEmittedLine(line))
+	}
+	slices.Sort(emitted)
+	return slices.Compact(emitted)
+}
+
+// agentSearchEmittedLine escapes one line the way the block that carries it is escaped.
+//
+// The line is escaped WITH ITS NEWLINE and the newline is then dropped, because termsafe reads one
+// byte past a CR to decide it: a CR followed by LF is a Windows line ending and is kept, a lone CR
+// is an overwrite and is escaped. A body line ending in CR is followed by its LF in the block, so
+// escaping the line on its own would rewrite a CR the payload keeps raw and produce a set entry no
+// payload line can match — the same miss this function exists to remove, one byte further along.
+func agentSearchEmittedLine(line string) string {
+	escaped := termsafe.Bytes([]byte(line + "\n"))
+	return string(escaped[:len(escaped)-1])
 }
 
 func rankedAgentSearchBudgets(count, budget int) []int {
@@ -2151,8 +2263,10 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.MaxSnippetLines, i = value, next
+		// --body-head-ranks N: 0 is the DEFINED "built-in depth" value (see
+		// SearchOptions.BodyHeadRanks), so it parses like the flag above.
 		case "--body-head-ranks":
-			value, next, err := searchPositiveIntFlag(args, i)
+			value, next, err := searchNonNegativeIntFlag(args, i)
 			if err != nil {
 				return flags, nil, err
 			}
@@ -2165,8 +2279,12 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.HeadWindowLines, i = value, next
+		// --enclosure-context-lines N: 0 is the DEFINED "no padding" value (see
+		// SearchOptions.EnclosureContextLines), so it is parsed as a non-negative
+		// integer. Rejecting it made a configuration that serializes the default
+		// explicitly fail before searching.
 		case "--enclosure-context-lines":
-			value, next, err := searchPositiveIntFlag(args, i)
+			value, next, err := searchNonNegativeIntFlag(args, i)
 			if err != nil {
 				return flags, nil, err
 			}

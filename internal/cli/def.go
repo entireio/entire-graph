@@ -173,14 +173,16 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	// index_latency_ms is the cost of HAVING the snapshot, and the snapshot is
+	// loaded by the call above — so the clock is read here, before anything else
+	// runs. Sampling it after the source reader was opened charged the reader's
+	// `git cat-file` spawn to the index, which is the one field a caller reads to
+	// decide whether the index cache is working. Source enrichment is part of
+	// answering the query and is timed as such.
+	indexLatency := time.Since(totalStarted)
+	queryStarted := time.Now()
 	// Only the source-quoting formats read source. Opening before the format
 	// switch spawned a git cat-file child that `--format json` never touched.
-	//
-	// That is all this gate fixes. The open still happens before indexLatency is
-	// taken below, so text and agent runs continue to report the spawn as index
-	// time — as do impact and neighbors, which open unconditionally. Changing
-	// that is a change to what a published latency field MEANS, so it belongs in
-	// its own commit across all three verbs rather than as a side effect here.
 	var readSource lineReader
 	if flags.Format == "text" || flags.Format == "agent" {
 		var closeSource func() error
@@ -189,8 +191,6 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 			defer closeSource()
 		}
 	}
-	indexLatency := time.Since(totalStarted)
-	queryStarted := time.Now()
 	symbols := flags.Symbols
 	if len(symbols) == 0 {
 		symbols = []string{flags.Symbol}
@@ -579,37 +579,106 @@ func defKindRank(kind string) int {
 // (which is what the provider's partial-type canonicalization produces).
 func (index *defIndex) groupPartials(matches []sem.SymbolRecord) [][]sem.SymbolRecord {
 	var groups [][]sem.SymbolRecord
-	byKey := map[string]int{}
+	// EVERY group seated under a key, not just the latest. Matches arrive in file
+	// order, so an unrelated same-named type can sort BETWEEN two parts of one
+	// partial type (`a.cs` partial, `b.cs` namesake, `c.cs` partial). Remembering
+	// only the newest group per key made the namesake displace the partial group,
+	// and the later part was then tested against the namesake alone, failed, and
+	// stayed split: three declarations where the caller should see one merged
+	// partial type plus one namesake. Searching the earlier groups too costs
+	// nothing (a key holds one group in the common case) and cannot over-merge,
+	// because sharesMemberOwner is still the only thing that seats a part.
+	byKey := map[string][]int{}
 	for _, symbol := range matches {
 		if !sem.IsTypeLikeKind(symbol.Kind) {
 			groups = append(groups, []sem.SymbolRecord{symbol})
 			continue
 		}
 		key := symbol.Language + "\x00" + symbol.Kind + "\x00" + symbol.QualifiedName
-		if position, ok := byKey[key]; ok && index.sharesMemberOwner(groups[position], symbol) {
+		seated := false
+		for _, position := range byKey[key] {
+			if !index.sharesMemberOwner(groups[position], symbol) {
+				continue
+			}
 			groups[position] = append(groups[position], symbol)
+			seated = true
+			break
+		}
+		if seated {
 			continue
 		}
-		byKey[key] = len(groups)
+		byKey[key] = append(byKey[key], len(groups))
 		groups = append(groups, []sem.SymbolRecord{symbol})
 	}
 	return groups
 }
 
 // sharesMemberOwner reports whether a candidate part belongs to a group already
-// seated: either the candidate owns no members of its own (an empty part), or
-// the group's anchor owns members declared in the candidate's file. Both are
-// true of partial declarations and false of two unrelated same-named types,
-// which each own their own members in their own file.
+// seated: either the candidate's own declaration says `partial` and it owns no
+// members (an empty part of a partial type), or the group's anchor owns members
+// declared in the candidate's file. Both are evidence of one type written in
+// several declarations, and both are false of two unrelated same-named types.
+//
+// Owning no members is NOT evidence on its own. Every memberless same-named type
+// used to be absorbed as another part, so two empty `Config` classes in two Java
+// files — a language with no partial types at all — merged into one declaration
+// carrying a PARTIAL part that names a file the type was never split across, and
+// the ambiguity the caller needed to see disappeared. Reporting both
+// declarations and letting the caller narrow is the answer that is merely
+// incomplete; merging them is the answer that is wrong.
 func (index *defIndex) sharesMemberOwner(group []sem.SymbolRecord, candidate sem.SymbolRecord) bool {
 	if len(index.membersByOwner[candidate.ID]) == 0 {
-		return true
+		// BOTH SIDES must say `partial`. The candidate's own keyword says it is A part; it says
+		// nothing about whether the group already seated is the type it is a part OF. C# and F#
+		// require every part of a partial type to carry the keyword, so a group whose declarations
+		// are all non-partial is a DIFFERENT type that merely shares the name — another namespace,
+		// another assembly, another project in the same graph. Seating an empty part on it produced
+		// one declaration carrying a PARTIAL part from a type it was never split across, and the
+		// ambiguity the caller needed to see disappeared: exactly the failure the memberless rule
+		// above was written to stop, reached from the other side.
+		return declaresPartialType(candidate) && groupDeclaresPartialType(group)
 	}
 	for _, part := range group {
 		for _, member := range index.membersByOwner[part.ID] {
 			if member.symbol.FilePath == candidate.FilePath {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// groupDeclaresPartialType reports whether a group already seated is one a
+// memberless part can join: at least one of its declarations says `partial`.
+//
+// One is enough because a group grows only by this predicate or by shared
+// membership, so a partial declaration anywhere in it is evidence that the group
+// is the split type and not a same-named neighbour.
+func groupDeclaresPartialType(group []sem.SymbolRecord) bool {
+	for _, part := range group {
+		if declaresPartialType(part) {
+			return true
+		}
+	}
+	return false
+}
+
+// declaresPartialType reports whether a type declaration carries the `partial`
+// modifier, read from the signature the parser captured.
+//
+// It mirrors the provider's own partial-type test (see partialTypeCanonicalIDs
+// in internal/sem): C# and F# are the languages in this grammar set that let one
+// type be written as several declarations, and the keyword is what separates a
+// part from a same-named type in another namespace or assembly. The two must
+// stay in step — the provider decides which members a part owns, and this
+// decides which declarations are parts.
+func declaresPartialType(symbol sem.SymbolRecord) bool {
+	if symbol.Language != "C#" && symbol.Language != "F#" {
+		return false
+	}
+	for _, field := range strings.Fields(symbol.Signature) {
+		if field == "partial" {
+			return true
 		}
 	}
 	return false
