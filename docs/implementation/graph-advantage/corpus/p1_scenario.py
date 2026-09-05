@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -57,10 +58,19 @@ def marker(path: str, text: str) -> str:
 
 def append_overlay(root: Path, rel: str, text: str) -> None:
     p = root / rel
-    with p.open("ab") as f:
-        if p.stat().st_size and not p.read_bytes().endswith(b"\n"):
-            f.write(b"\n")
-        f.write(marker(rel, text).encode())
+    source = p.read_text()
+    comment = marker(rel, text).rstrip("\n")
+    if p.suffix.lower() == ".py":
+        match = re.search(r"(?m)^(\s*)(?:async\s+)?def\s+[^\n]+:\s*$", source)
+        if not match:
+            raise SystemExit(f"no Python function body for edit: {rel}")
+        source = source[:match.end()] + "\n" + match.group(1) + "    " + comment + source[match.end():]
+    else:
+        match = re.search(r"(?:func\s+\w+[^\{]*|function\s+\w+[^\{]*|=>\s*)\{", source)
+        if not match:
+            raise SystemExit(f"no Go/TypeScript function body for edit: {rel}")
+        source = source[:match.end()] + "\n\t" + comment + source[match.end():]
+    p.write_text(source)
 
 
 def manifest_path(root: Path) -> str | None:
@@ -74,9 +84,9 @@ def manifest_path(root: Path) -> str | None:
 
 def reset(root: Path, record: dict) -> None:
     baseline = record.get("fixture_commit", record["commit"])
+    run("git", "checkout", "--detach", "--force", baseline, cwd=root)
     run("git", "reset", "--hard", baseline, cwd=root)
     run("git", "clean", "-fd", cwd=root)
-    run("git", "checkout", "--detach", baseline, cwd=root)
     branches = run("git", "for-each-ref", "--format=%(refname:short)",
                    "refs/heads/p1-scenario", cwd=root, check=False)
     if branches:
@@ -116,6 +126,12 @@ def apply(root: Path, record: dict, scenario: str) -> dict:
                         lines[i] = line + ".p1"
                         break
                 p.write_text("\n".join(lines) + "\n")
+            elif rel in {"pyproject.toml", "Cargo.toml"}:
+                source = p.read_text()
+                p.write_text(re.sub(r'(?m)^(name\s*=\s*["\'])([^"\']+)', r'\g<1>\2-p1', source, count=1))
+            elif rel == "setup.py":
+                source = p.read_text()
+                p.write_text(re.sub(r"(name\s*=\s*['\"])([^'\"]+)", r"\g<1>\2-p1", source, count=1))
             else:
                 append_overlay(root, rel, f"P1-CORPUS {record['id']} manifest-edit")
         else:

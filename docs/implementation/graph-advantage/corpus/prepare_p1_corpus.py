@@ -88,11 +88,15 @@ def source_inventory(repo: Path) -> tuple[list[str], int, int]:
     return paths, total, len(raw_paths)
 
 
-def chosen_paths(paths: list[str]) -> list[str]:
+def chosen_paths(paths: list[str], root: Path | None = None) -> list[str]:
     # Hash ordering makes the ten-file sample stable without privileging a
     # repository's top-level directory layout.
+    eligible = [p for p in paths if Path(p).suffix.lower() in PARSABLE_EXTENSIONS]
+    if root is not None:
+        eligible = [p for p in eligible if re.search(
+            r"\b(?:func|function|(?:async\s+)?def)\b", (root / p).read_text(errors="ignore"))]
     return [p for _, p in sorted((hashlib.sha256(p.encode()).hexdigest(), p)
-                                 for p in paths if Path(p).suffix.lower() in PARSABLE_EXTENSIONS)[:10]]
+                                 for p in eligible)[:10]]
 
 
 def query_for(repo: Path, selected: list[str]) -> str:
@@ -120,8 +124,20 @@ def prepare_branch_variant(repo: Path, record: dict) -> None:
     branch = "p1-branch-variant"
     run("git", "switch", "-C", branch, cwd=repo)
     rel = record["selected_paths"][0]
-    with (repo / rel).open("ab") as f:
-        f.write(comment_for(rel, f"P1-CORPUS {record['id']} committed branch variant").encode())
+    p = repo / rel
+    source = p.read_text()
+    comment = comment_for(rel, f"P1-CORPUS {record['id']} committed branch variant").rstrip("\n")
+    if p.suffix.lower() == ".py":
+        match = re.search(r"(?m)^(\s*)(?:async\s+)?def\s+[^\n]+:\s*$", source)
+        if not match:
+            raise SystemExit(f"no Python function body for branch variant: {rel}")
+        source = source[:match.end()] + "\n" + match.group(1) + "    " + comment + source[match.end():]
+    else:
+        match = re.search(r"(?:func\s+\w+[^\{]*|function\s+\w+[^\{]*|=>\s*)\{", source)
+        if not match:
+            raise SystemExit(f"no Go/TypeScript function body for branch variant: {rel}")
+        source = source[:match.end()] + "\n\t" + comment + source[match.end():]
+    p.write_text(source)
     run("git", "add", rel, cwd=repo)
     run("git", "-c", "user.name=P1 corpus", "-c", "user.email=p1-corpus@example.invalid",
         "commit", "-q", "-m", "P1 committed branch variant", cwd=repo)
@@ -180,7 +196,7 @@ def make_synthetic(dest: Path) -> dict:
         "language_source_bytes": {ext: sum((root / p).stat().st_size for p in paths
                                             if Path(p).suffix.lower() == f".{ext}")
                                   for ext in counts},
-        "selected_paths": chosen_paths(paths), "query": query_for(root, chosen_paths(paths)),
+        "selected_paths": chosen_paths(paths, root), "query": query_for(root, chosen_paths(paths, root)),
         "license": {"path": None, "sha256": None}, "generation_seed": SEED,
         "generation": "2000 independent source files: Go 667, TypeScript 667, Python 666",
     }
@@ -188,7 +204,7 @@ def make_synthetic(dest: Path) -> dict:
 
 def repo_record(repo_id: str, repo: Path, source: str, commit: str) -> dict:
     paths, total, raw_count = source_inventory(repo)
-    selected = chosen_paths(paths)
+    selected = chosen_paths(paths, repo)
     overlays = []
     for idx, path in enumerate(selected):
         overlays.append({
