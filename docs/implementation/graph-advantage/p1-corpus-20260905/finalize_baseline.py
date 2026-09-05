@@ -228,6 +228,39 @@ def _phase_entry(repository: str, profile: str, verb: str, rows: Sequence[Mappin
     return base
 
 
+def _partial_reason_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    reasons: dict[tuple[str, str, str], int] = defaultdict(int)
+    partial_rows = 0
+    failure_count = 0
+    for row in rows:
+        count = _number(row.get("partial_failures_count"))
+        failures = row.get("partial_failures")
+        if not ((isinstance(count, (int, float)) and count > 0) or _status(row) == "partial" or isinstance(failures, list) and failures):
+            continue
+        partial_rows += 1
+        if isinstance(count, (int, float)) and count > 0:
+            failure_count += int(count)
+        if isinstance(failures, list):
+            for failure in failures:
+                if not isinstance(failure, Mapping):
+                    continue
+                code = failure.get("code", "unknown")
+                severity = failure.get("severity", "unknown")
+                effect = failure.get("effect_on_semantic_completeness", "unknown")
+                key = (str(code), str(severity), str(effect))
+                reasons[key] += 1
+    if not partial_rows:
+        return None
+    return {
+        "partial_rows": partial_rows,
+        "failure_count": failure_count,
+        "reasons": [
+            {"code": code, "severity": severity, "effect_on_semantic_completeness": effect, "rows": count}
+            for (code, severity, effect), count in sorted(reasons.items())
+        ],
+    }
+
+
 def finalize(worker_paths: Sequence[Path]) -> dict[str, Any]:
     if len(worker_paths) != 3:
         raise InputError(f"expected exactly 3 worker baseline artifacts, got {len(worker_paths)}")
@@ -282,6 +315,9 @@ def finalize(worker_paths: Sequence[Path]) -> dict[str, Any]:
             if (repository, profile, verb) in blocked_keys or any(item.get("blocked_stratum") for item in rows):
                 reasons.append("blocked stratum")
             entry = _phase_entry(repository, profile, verb, usable, sorted(set(reasons)))
+            partial_summary = _partial_reason_summary(rows)
+            if partial_summary is not None:
+                entry["partial_reasons"] = partial_summary
             if verb == "snapshot" and entry.get("eligible") and not entry.get("parse_dominated"):
                 entry["reason_code"] = "below_parse_majority_threshold"
             if verb == "snapshot" and not entry.get("eligible"):
@@ -306,8 +342,11 @@ def finalize(worker_paths: Sequence[Path]) -> dict[str, Any]:
         for entry in snapshot_profiles
         if entry.get("eligible") and entry.get("parse_dominated")
     ]
+    partial_baselines = [entry for entry in snapshot_profiles + search_profiles if "partial_reasons" in entry]
+    missing_baselines = [entry for entry in snapshot_profiles + search_profiles if entry.get("reason_code") == "baseline_incomplete" and "partial_reasons" not in entry]
+    counts = {"workers": len(workers), "snapshot_profiles": len(snapshot_profiles), "snapshot_eligible": sum(entry.get("eligible") is True for entry in snapshot_profiles), "parse_dominated": len(parse_dominated_groups), "search_profiles": len(search_profiles), "search_phase_unavailable": sum(entry.get("parse_classification") == "unavailable" for entry in search_profiles), "blocked_strata": len(blocked), "partial_baselines": len(partial_baselines), "missing_baselines": len(missing_baselines)}
     status = "ready" if not issues and all(entry.get("eligible") for entry in snapshot_profiles) else "evidence_incomplete"
-    return {"format_version": 1, "protocol": PROTOCOL, "stage": "baseline-finalized", "status": status, "compiler": "off", "ranking": "current", "binary_sha256": next(iter(binary_digests), None), "input_manifest_sha256": next(iter(input_digests), None), "baseline_repetitions": BASELINE_REPETITIONS, "phase_rule": {"name": "phaseParse_share", "numerator": "median(phaseParse_ns)", "denominator": "median(total_ns)", "threshold": 0.50, "inclusive": True, "scope": "snapshot only"}, "baseline_phase_profiles": snapshot_profiles, "search_phase_profiles": search_profiles, "parse_dominated_groups": parse_dominated_groups, "blocked_strata": blocked, "source_workers": source_workers, "issues": sorted(set(issues))}
+    return {"format_version": 1, "protocol": PROTOCOL, "stage": "baseline-finalized", "status": status, "counts": counts, "compiler": "off", "ranking": "current", "binary_sha256": next(iter(binary_digests), None), "input_manifest_sha256": next(iter(input_digests), None), "baseline_repetitions": BASELINE_REPETITIONS, "phase_rule": {"name": "phaseParse_share", "numerator": "median(phaseParse_ns)", "denominator": "median(total_ns)", "threshold": 0.50, "inclusive": True, "scope": "snapshot only"}, "baseline_phase_profiles": snapshot_profiles, "search_phase_profiles": search_profiles, "parse_dominated_groups": parse_dominated_groups, "blocked_strata": blocked, "partial_baselines": partial_baselines, "missing_baselines": missing_baselines, "source_workers": source_workers, "issues": sorted(set(issues))}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

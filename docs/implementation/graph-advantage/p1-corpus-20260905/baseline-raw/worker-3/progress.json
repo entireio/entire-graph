@@ -1,0 +1,1 @@
+{"stage": "baseline", "observations": 36, "done": true, "blocked": [{"repository": "kubernetes-kubernetes", "profile": "full", "verb": "snapshot", "reason": "three consecutive failures; remaining planned observations unrun"}]}

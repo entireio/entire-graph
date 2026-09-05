@@ -1,0 +1,76 @@
+{
+  "go-chi-chi": {
+    "repository": "go-chi-chi",
+    "effective_tracked_input_sha256": "61d0f57d872f53b30789618c2413dc491fccfd2ad6e2c984dfe6eba354964963",
+    "tracked_manifest_sha256": "4a21ebb7d6c4df0b571820e2e5b6972827554bac74e78ba3bb54e7f4da9861c1",
+    "graphignore_present": false,
+    "git_info_exclude_present": true,
+    "refs": [
+      "ae6be7469132cf471ca099d8c7bda4010c4ff7b2 refs/heads/master",
+      "2ad5bd63d533b579a597bbf477e16b2de716e8ff refs/heads/p1-branch-variant",
+      "ae6be7469132cf471ca099d8c7bda4010c4ff7b2 refs/remotes/origin/HEAD",
+      "ae6be7469132cf471ca099d8c7bda4010c4ff7b2 refs/remotes/origin/master"
+    ]
+  },
+  "kubernetes-kubernetes": {
+    "repository": "kubernetes-kubernetes",
+    "effective_tracked_input_sha256": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+    "tracked_manifest_sha256": "7112c36429cb59223135260d8119a88158edd65786633a0efca30b32a0a719d1",
+    "graphignore_present": false,
+    "git_info_exclude_present": true,
+    "refs": [
+      "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe refs/heads/master",
+      "331746d37d69cc9502f87ca6c33c427588d785e7 refs/heads/p1-branch-variant",
+      "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe refs/remotes/origin/HEAD",
+      "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe refs/remotes/origin/master"
+    ]
+  },
+  "colinhacks-zod": {
+    "repository": "colinhacks-zod",
+    "effective_tracked_input_sha256": "25593f1694b820b52d4f798eba8b0f3aec128359f376601624f326162f5b4f07",
+    "tracked_manifest_sha256": "68c4a0c12c8cf2e80a52c5d73ddeb6bb8f0f38a06d8740b91a921931ee750bc2",
+    "graphignore_present": false,
+    "git_info_exclude_present": true,
+    "refs": [
+      "7a00236683c79000dbab0d92f6faf0b7fba39f59 refs/heads/main",
+      "681744047adb5b9450183d215a2886fe6575d2cd refs/heads/p1-branch-variant",
+      "7a00236683c79000dbab0d92f6faf0b7fba39f59 refs/remotes/origin/HEAD",
+      "7a00236683c79000dbab0d92f6faf0b7fba39f59 refs/remotes/origin/main"
+    ]
+  },
+  "psf-requests": {
+    "repository": "psf-requests",
+    "effective_tracked_input_sha256": "21efd976bf2915bd9b913d38a3db05c27804e552156db5337ae9260675114c59",
+    "tracked_manifest_sha256": "c3cc5d2188ea994d9bce2aeb10b675957c17e14cb784e2a15a55bf5aa94c447b",
+    "graphignore_present": false,
+    "git_info_exclude_present": true,
+    "refs": [
+      "dae7ef63b4df6eded86637f251fc4e3a06c3b479 refs/heads/main",
+      "e31b48aaa0dbeae6e1df7fd401a0126ef5bbfa66 refs/heads/p1-branch-variant",
+      "dae7ef63b4df6eded86637f251fc4e3a06c3b479 refs/remotes/origin/HEAD",
+      "dae7ef63b4df6eded86637f251fc4e3a06c3b479 refs/remotes/origin/main"
+    ]
+  },
+  "entire-graph-frozen-88dd1dc9": {
+    "repository": "entire-graph-frozen-88dd1dc9",
+    "effective_tracked_input_sha256": "4d10df45d6d42e7d6b45bd8861128866091fee337e33cdb0386f7d68a8d7ef50",
+    "tracked_manifest_sha256": "f74abd4054de38f2bbf5046f3a50df013f1398149959f4a0e8281c621f84a414",
+    "graphignore_present": true,
+    "git_info_exclude_present": true,
+    "refs": [
+      "a3fff853542936041c7bb0906eb9606e8b5035c5 refs/heads/main",
+      "69c5a0af68e27726b5b2920ff2f0e577fe630621 refs/heads/p1-branch-variant"
+    ]
+  },
+  "synthetic-2000": {
+    "repository": "synthetic-2000",
+    "effective_tracked_input_sha256": "a5c77bcaadb4eedf571340f1c6e0d8ec51d7f7914e3927d52e165c36eafd2b03",
+    "tracked_manifest_sha256": "52019aaed73073ea3fe256c6022622cf33139870ce8a7e9c8e6e58c766dfa6fe",
+    "graphignore_present": false,
+    "git_info_exclude_present": true,
+    "refs": [
+      "81f46e02a98c446090e89d313cad073ea67d2f31 refs/heads/main",
+      "708a2345874c79273c44c04630cb29f8d57e57c1 refs/heads/p1-branch-variant"
+    ]
+  }
+}
