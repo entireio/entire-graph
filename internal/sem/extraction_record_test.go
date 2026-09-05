@@ -78,7 +78,8 @@ func TestCapturedExtractionMatchesParser(t *testing.T) {
 				}
 				spec := resolveProfile(profile)
 				expected, name, status := parseWithProfile(TreeSitterParser{}, spec, lang, path, content)
-				record := extractCapturedSource(spec, lang, source)
+				extraction := extractCapturedSource(spec, lang, source)
+				record := recordExtraction(extraction.entities, extraction.language, extraction.status)
 				encoded, err := json.Marshal(record)
 				if err != nil {
 					t.Fatal(err)
@@ -112,7 +113,7 @@ func TestCapturedSourceMutationSchedule(t *testing.T) {
 	live = a // A -> B -> A does not change the bytes already acquired
 	lang, _ := languageForContent(captured.path, captured.content)
 	record := extractCapturedSource(resolveProfile(ProfileFull), lang, captured)
-	if len(record.Declarations) == 0 || record.Declarations[0].Name != "A" {
+	if len(record.entities) == 0 || record.entities[0].Name != "A" {
 		t.Fatal("extraction did not use captured bytes")
 	}
 	if captured.content != live || captured.digest != contentHash([]byte(a)) {

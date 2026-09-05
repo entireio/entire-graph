@@ -3,7 +3,7 @@
 Status: accepted for P1.1 / minimal P1.2 only
 Date: 2026-09-05
 
-Decision: represent one successfully acquired file as an immutable string, normalized existing path, and SHA-256 digest. The initial seam captures only the already authorized bounded read in processProviderFile; it does not claim operation-wide source capture. Keep existing unsupported/oversize routing and failures unchanged. A private versioned declaration payload explicitly maps every Entity field, including metadata omitted from public JSON. Reconstruct entities before existing entitySymbols and synthetic boundary creation. No public schema fields change.
+Decision: represent one successfully acquired file as an immutable string, normalized existing path, and SHA-256 digest. The initial seam captures only the already authorized bounded read in processProviderFile; it does not claim operation-wide source capture. Keep existing unsupported/oversize routing and failures unchanged. A private versioned declaration payload explicitly maps every Entity field, including metadata omitted from public JSON. The ordinary path hands owned entities directly to existing entitySymbols and synthetic boundary creation. Payload round-trip tests reconstruct the same entities; default-off persistence pays no payload allocation or serialization cost. No public schema fields change.
 
 Alternatives: serializing Entity drops private metadata; serializing final SymbolRecord also captures repository-dependent identities. Persisting a working-tree snapshot violates the plan and cache policy. None is acceptable.
 
