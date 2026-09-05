@@ -3720,6 +3720,20 @@ func unionResolvedCallTargets(groups ...[]resolvedCallTarget) []resolvedCallTarg
 // retain the raw workspace candidates so an explicit, unique import path can
 // bind a local FFI target that the type-sharing policy deliberately excludes.
 func resolveCallTargetsWithRawImport(name string, from SymbolRecord, candidates, rawCandidates []SymbolRecord, rawImportModuleSets [][]string, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
+	targets := resolveCallTargetsWithRawImportDeclarations(name, from, candidates, rawCandidates, rawImportModuleSets, sameFile, importsByName, allowMethodTargets)
+	for i := range targets {
+		if definition, ok := cPlusPlusOutOfLineDefinition(targets[i].SymbolRecord, candidates); ok {
+			targets[i].SymbolRecord = definition
+			targets[i].Reason = "C++ call resolved through member declaration to out-of-line definition"
+			if definition.FilePath != from.FilePath {
+				targets[i].Scope = "module"
+			}
+		}
+	}
+	return targets
+}
+
+func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord, candidates, rawCandidates []SymbolRecord, rawImportModuleSets [][]string, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	// candidates arrive ALREADY filtered to languages the caller can name: every
 	// call site wraps its symbolsByShortName lookup in sharedTypeCandidates,
 	// because that is where the referring symbol is known. Re-filtering here

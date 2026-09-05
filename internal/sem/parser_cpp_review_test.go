@@ -135,3 +135,29 @@ class Derived : public Base {};`)
 	}
 	t.Fatal("missing inherited call")
 }
+
+func TestCPlusPlusBareCallReachesDefinition(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "ledger.hpp", `class Ledger { public: int Add(); int Run() { return Add(); } };`)
+	writeFile(t, repo, "ledger.cpp", "#include \"ledger.hpp\"\nint Ledger::Add() { return 1; }")
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SymbolRecord{}
+	for _, s := range snapshot.Symbols {
+		byID[s.ID] = s
+	}
+	count := 0
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && byID[r.FromID].Name == "Run" && byID[r.ToID].Name == "Add" {
+			count++
+			if byID[r.ToID].FilePath != "ledger.cpp" || r.RelationScope != "module" {
+				t.Fatalf("wrong bare-call target: %#v", r)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("got %d calls, want one", count)
+	}
+}
