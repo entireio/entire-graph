@@ -1,81 +1,51 @@
-# Review summary — graph advantage implementation
+# Graph advantage implementation phase review
 
-Baseline: `3a2a715fad1948e83dc7ebe0d307377ba29e065a` from fetched main.
-Product branch: `codex/graph-advantage` in the isolated Entire Graph worktree.
-Evaluation branch: GraphMark `codex/graph-advantage-evaluation` (`c22eda1`).
-No merge or default feature promotion is requested.
+Branch: `codex/graph-advantage`, based on fetched main `3a2a715fad1948e83dc7ebe0d307377ba29e065a`. No merge or default promotion.
 
-## Implemented behavior
+The interim review's conversion and query-integration findings are fixed in code. This phase completes remaining implementation and correctness checks; it deliberately defers comparative benchmarks. The [task ledger](ledger.md) is the authoritative 23-task implementation/evidence map.
 
-1. Experimental content-addressed extraction reuse captures source for an operation,
-   preserves private declaration metadata, recomputes IDs/aliases/resolution and
-   uses bounded private atomic storage. Format3 also stores measured raw import
-   strings for Go/TypeScript/Python fast/full profiles. Family absence is explicit;
-   other relation passes remain uncached. Deterministic syntax diagnostics may
-   persist; IO/timeouts/resource failures do not. Quota overrides are positive,
-   capped `ENTIRE_GRAPH_EXTRACTION_CACHE_MAX_BYTES` and `_MAX_ENTRIES` values.
-2. Optional pinned Go compiler analysis runs only inside tested Linux Bubblewrap
-   isolation. It uses immutable captured source, bounded offline package discovery,
-   request/process-tree budgets, exact token mapping, independent context identity,
-   separate candidates and exact-site reconciliation. Static native facts remain.
-   Missing tools/closure return explicit unavailable; require-compiler fails.
-3. Deeper impact uses explicit semantic propagation, bounded deterministic
-   predecessor paths, separate candidate categories, terminal tests and honest
-   coverage/stop codes. Default depth1/2 remains on existing behavior.
-4. Candidate-only graph ranking is explicitly experimental. Current/exact/deep
-   behavior and query scope/render/guidance constraints remain available. Uniform
-   evaluation is a private test hook; no additional public ranking mode was added.
+## Implementation changes
 
-Optional schema1.2 fields carry extraction telemetry, compiler evidence and bounded
-operation input provenance. Search/impact envelope1 additions are optional.
-Capture manifests bind observed inputs and effective scope/options, with policy
-coverage limits explicit; they do not claim an atomic worktree. Late backing-store
-errors prevent a successful final result. Compact/SCIP refuse compiler distinctions
-they cannot represent. Installation, MCP, generated summaries and Brain are untouched.
+- **P1:** captured source and policy inputs, explicit declaration metadata, private content-addressed storage and fresh graph reconstruction. Raw imports are reused for Go/TypeScript/Python fast/full; other relation families remain explicitly uncached. Cross-process admission now protects cache quota decisions. Final policy mutation/spill and orphan-temp cleanup work is pending before source freeze.
+- **P2:** bounded pinned Go analysis in Linux network isolation, exact source/configuration identity, precise declaration mapping and explicit coverage. Go type conversions, aliases and generic type conversions cannot become compiler-confirmed calls or dispute static facts. Ordinary search uses the effective compiler view for caller boosts, expansion and ranking.
+- **P3:** all impact depths use the same effective relation view. Deeper traversal retains bounded valid paths and honest partial counts. Implementation candidates remain separate even when a covering-test rule makes their path terminal.
+- **P4:** experimental ranking remains constrained by existing query scope, source/render budgets and deterministic fallback. Harness controls support later controlled ablations; no measurement campaign or outcome-based tuning occurs in this phase.
 
-## Validation and release decision
+Schema additions remain optional. Native static records are preserved; compiler-enabled compact/SCIP projections refuse distinctions they cannot represent. Persistent working-tree snapshot reuse remains disabled.
 
-Final full repository check passed626.23s at0038ef70; see `evidence/check-integration-final-v2.txt`.
-Source freeze is `evidence/final-source-freeze-v2.json`; final checks must match it.
-Earlier full check at29520508 passed629.12s. Focused capture, storage, compiler,
-impact, ranking and schema/combination tests passed; raw failures and corrections
-are retained rather than overwritten.
+## Correctness status
 
-Final Linux combined CLI race passed6.78s: cache cold→warm→oneedit, compiler
-complete source-bound evidence, two separate interface candidates, stable IDs,
-ranking and three-hop impact, current digests and no worktree snapshot hit.
-Raw responses/source hashes/binary hash are in the v2 combination artifacts.
+- **Final implementation commit:** PENDING_ROOT_FINAL_COMMIT
+- **Immutable `mise run check`:** PENDING_ROOT_FINAL_CHECK
+- **Pinned Linux correctness:** PENDING_ROOT_LINUX_CHECK
 
-| Gate | Observed evidence | Decision |
+New focused impact regressions and race tests passed, covering compiler-off compatibility, redirects, caller/callee sections at all depths, candidate separation and terminal tests. Conversion and source/configuration regressions accompany the compiler fixes. The new Linux ordinary-query fixture compiled on Darwin and skipped there; this is not positive backend evidence.
+
+The previous complete check at `0038ef70` passed in 626.23s. It remains historical evidence and does not certify the newer changes. Final source identity, exact checks and Linux raw responses must be filled above after the new immutable integration run.
+
+## Release status
+
+**No full release gate has passed.** Implementation completion does not authorize default enablement or performance/quality claims.
+
+| Workstream | Retained result | Outstanding gate |
 |---|---|---|
-| P1 equivalence/performance | 810 paired development comparisons all equal on frozen29520508; large full oneedit median−30%, cold+22%. Final code has additional capture/import changes. | No final release speed/RSS claim. Earlier cold gate fails; full pinned real corpus/scenario/RSS matrix remains incomplete. |
-| P2 correctness/quality | Live namespace/source-write/cancellation tests; frozen synthetic direct targets static4/6 versus compiler6/6, zero false confirmations; candidates2/2. | Positive compiler implementation established; six hand-authored/compiler-checked sites do not establish broad independently adjudicated quality. |
-| P3 correctness/quality | Contract paths reconstruct from facts; all independent bounds/default fixtures pass; 1000-dependent traversal measured separately. | No realistic adjudicated recall/precision or total-query/RSS gate established. |
-| P4 retrieval/downstream | 120 CLI current/weighted observations and180 API current/uniform/weighted observations, zero failures; author-label recall/coverage1 for each arm. | Relative recall gain0%, below5%; keep current default. Held-out collection/adjudication is incomplete; conditional agent study not run. |
+| P1 | Earlier semantic comparisons passed; cold performance regressed | Fixed real-corpus/edit/RSS matrix and performance target |
+| P2 | Positive pinned compiler/boundary fixtures exist | Final regression run and independently adjudicated hard-Go quality |
+| P3 | Contract paths and bounds have focused correctness evidence | Final integration and realistic affected-site precision/recall/cost |
+| P4 | Earlier development recall gain was zero | Adjudicated development, disjoint holdout and conditional agent study |
 
-Failed or incomplete advantage gates remain open in the task ledger. Synthetic
-correctness, ceiling-limited retrieval, isolated traversal cost and warm-process
-measurements are not substituted for release evidence. No tuning changed the
-fixed development sets or thresholds after outcomes were observed.
+Existing results and failures remain intact. Comparative evaluation is deferred by instruction, including performance sweeps, retrieval studies and agent experiments.
 
-## Remaining evidence work
+## Functional limitations
 
-The code paths and independent acceptance fixtures are implemented. Release
-admission still needs the prescribed pinned performance matrix and independent
-realistic quality corpus/adjudication, with held-out and adequately powered agent
-studies only under the plan's dependencies. These are explicit unfulfilled gates,
-not claims that the targeted advantages were achieved. Other-platform compiler
-execution and external ambient dependency import remain unsupported by design.
+Compiler execution is tested Linux-only. Unsupported external dependency closure and dynamic runtime targets remain explicit partial/unavailable or candidate results. Captured inputs are observed bytes, not an atomic repository revision; Git listing/global configuration and metadata coverage limits remain explicit. The capture memory bound excludes total process RSS. Relation-input reuse covers the measured import family only. P1's final mutation/spill/admission audit must finish before implementation is declared frozen.
+
+## Proposed next phase
+
+Freeze final code, environments and prospective evaluation manifests after correctness passes. Run P1's fixed paired workload matrix first; then adjudicated P2/P3 target/path studies. Run P4 development ablations with identical capture, expansion and byte budgets, freeze the selected configuration, and evaluate a disjoint holdout. Run the powered paired agent experiment only after retrieval clears its prerequisite gate. Preserve failed and inconclusive outcomes.
 
 ## Rollback
 
-Select defaults: `--extraction-cache off`, `--compiler off`, `--depth 2`,
-`--ranking current`. Disposable extraction entries live in a separate namespace;
-remove only that owned namespace if cleanup is desired. Compiler/topology state
-is operation-local. No migration or persistent working-tree snapshot exists.
-Revert the branch's reviewable commits to remove the implementations entirely.
+Use `--extraction-cache off`, `--compiler off`, `--depth 2`, and `--ranking current`. Extraction records are disposable in their separate namespace; compiler/ranking state is operation-local. No migration is required. Revert reviewable commits to remove the implementation. Installation, MCP, generated summaries and Brain remain untouched.
 
-Sources, fixture origins, exact focused commands and every task's evidence/remain
-mapping are in `ledger.md`, the per-workstream validation notes, ADRs0030–0039,
-and the fresh GraphMark evaluation directory. No competitors, comparison artifacts,
-prior conversations or memory files were consulted as implementation evidence.
+Sources and independently authored fixture origins are recorded in the ledger and existing ADR/evidence manifests. The explicitly authorized interim review is included; competitor implementations, prior conversations and memory are not implementation sources.
