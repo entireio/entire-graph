@@ -11,7 +11,10 @@ This is deliberately a post-processor.  It never starts a benchmark, touches
 the extraction cache, or drops failed observations.  Exit status is non-zero
 only for malformed input or a measured correctness/performance gate failure;
 incomplete or unavailable evidence is represented in the JSON result and is
-never turned into a passing score.
+never turned into a passing score. If the run manifest contains explicit
+``unrun`` planned cells, they are retained in the summary and keep the overall
+result evidence-incomplete; the scorer does not synthesize observations for
+them.
 """
 
 from __future__ import annotations
