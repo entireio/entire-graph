@@ -1,0 +1,14 @@
+{
+  "phase": "baseline_running",
+  "workers": 3,
+  "baseline_planned_requests": 108,
+  "campaign_planned_requests": 17280,
+  "subagent_model": "gpt-5.6-luna",
+  "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
+  "harness_source_commit": "e4d700f80e3888ea5d4dc919a1af30a86f4282e5",
+  "heartbeat": "monitor-p1-corpus-campaign",
+  "correctness": "mise run check in progress; see correctness.json when written",
+  "release_gate": "not passed",
+  "defaults": "unchanged; experimental features off",
+  "transport": "AppleDouble sidecars removed before verified fixture digests; clean archive retained"
+}
