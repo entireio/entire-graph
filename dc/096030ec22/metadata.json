@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "dc096030ec22",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0030-extraction-capture-boundary.md",
+    "docs/implementation/graph-advantage/evaluation-manifest.md",
+    "docs/implementation/graph-advantage/evidence/baseline-bench.txt",
+    "docs/implementation/graph-advantage/evidence/baseline-cpu-cumulative.txt",
+    "docs/implementation/graph-advantage/evidence/baseline-cpu.txt",
+    "docs/implementation/graph-advantage/evidence/baseline-environment.txt",
+    "docs/implementation/graph-advantage/evidence/baseline.cpu.pprof",
+    "docs/implementation/graph-advantage/evidence/seam-phases.txt",
+    "docs/implementation/graph-advantage/evidence/seam-tests.txt",
+    "docs/implementation/graph-advantage/ledger.md",
+    "internal/sem/captured_source.go",
+    "internal/sem/extraction_bench_test.go",
+    "internal/sem/extraction_record.go",
+    "internal/sem/extraction_record_test.go",
+    "internal/sem/provider_parallel.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/dc/096030ec22/0/metadata.json",
+      "transcript": "/dc/096030ec22/0/full.jsonl",
+      "compact_transcript": "/dc/096030ec22/0/transcript.jsonl",
+      "content_hash": "/dc/096030ec22/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 117907,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1864576,
+    "output_tokens": 12740,
+    "api_call_count": 23
+  }
+}
