@@ -1,0 +1,56 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "73528be34f48",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-05T19:13:29.082277Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0040-extraction-admission-lock.md",
+    "internal/sem/extraction_cache.go",
+    "internal/sem/extraction_imports_test.go",
+    "internal/sem/extraction_lock.go",
+    "internal/sem/extraction_lock_other.go",
+    "internal/sem/extraction_lock_test.go",
+    "internal/sem/extraction_lock_unix.go",
+    "internal/sem/extraction_lock_windows.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "6e0d474d1bae",
+  "checkpoint_transcript_start": 2875,
+  "transcript_lines_at_start": 2875,
+  "compact_transcript_start": 346,
+  "token_usage": {
+    "input_tokens": 2477,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 434304,
+    "output_tokens": 1230,
+    "api_call_count": 5
+  },
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-05T19:13:28.752693Z",
+    "agent_lines": 731,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 731,
+    "total_lines_changed": 731,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

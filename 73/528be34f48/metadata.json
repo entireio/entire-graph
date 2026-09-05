@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "73528be34f48",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0040-extraction-admission-lock.md",
+    "internal/sem/extraction_cache.go",
+    "internal/sem/extraction_imports_test.go",
+    "internal/sem/extraction_lock.go",
+    "internal/sem/extraction_lock_other.go",
+    "internal/sem/extraction_lock_test.go",
+    "internal/sem/extraction_lock_unix.go",
+    "internal/sem/extraction_lock_windows.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/73/528be34f48/0/metadata.json",
+      "transcript": "/73/528be34f48/0/full.jsonl",
+      "compact_transcript": "/73/528be34f48/0/transcript.jsonl",
+      "content_hash": "/73/528be34f48/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2477,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 434304,
+    "output_tokens": 1230,
+    "api_call_count": 5
+  }
+}
