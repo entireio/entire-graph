@@ -244,9 +244,16 @@ var (
 		"example", "examples", "sample", "samples", "demo", "demos",
 		"snippet", "snippets", "cookbook", "recipe", "recipes", "playground",
 	}
+	// Deliberately WITHOUT "expected": an intent term switches the whole class prior off, and
+	// "expected" is the most common word in a bug report ("expected X, got Y"). Including it
+	// handed snapshot and golden files full ranking strength on exactly the ordinary defect
+	// queries the fixture prior exists to correct, so they could again outrank the implementation.
+	// The words that remain all NAME the artifact rather than describe a symptom. The OTHER sense
+	// of the word — a caller asking to update an expected-output artifact — is read as a phrase by
+	// searchFixtureArtifactRequest instead, so neither intent is answered with the other's ranking.
 	searchFixtureIntentTerms = []string{
 		"fixture", "fixtures", "snapshot", "snapshots", "golden", "goldens",
-		"testdata", "baseline", "baselines", "expected", "insta", "approvals",
+		"testdata", "baseline", "baselines", "insta", "approvals",
 	}
 	// Words that mean "I am asking about a config/data file". Kept narrow on purpose:
 	// terms like "package", "version" or "data" appear in almost every bug report
@@ -257,6 +264,97 @@ var (
 		"schema", "schemas", "metadata", "dependency", "dependencies", "lockfile",
 	}
 )
+
+// Nouns that make "expected" NAME an artifact rather than describe a symptom. `expected output`
+// and `expected results` are files on disk; `expected a 200 response` is a sentence about a defect.
+var searchExpectedArtifactNouns = map[string]bool{
+	"output": true, "outputs": true, "result": true, "results": true,
+	"file": true, "files": true, "fixture": true, "fixtures": true,
+	"snapshot": true, "snapshots": true, "golden": true, "goldens": true,
+	"baseline": true, "baselines": true, "data": true, "json": true, "yaml": true,
+	"xml": true, "text": true, "tree": true, "dump": true, "dumps": true,
+	"log": true, "logs": true, "transcript": true, "transcripts": true,
+}
+
+// Verbs that make a query a REQUEST TO EDIT the artifact it names. Deliberately without "fix" or
+// "change": both appear in ordinary defect reports, and it is the request — not the mention — that
+// earns the fixture class its full ranking strength.
+var searchArtifactEditVerbs = map[string]bool{
+	"update": true, "updates": true, "updated": true, "updating": true,
+	"regenerate": true, "regenerates": true, "regenerated": true, "regenerating": true,
+	"refresh": true, "refreshes": true, "refreshed": true, "refreshing": true,
+	"rewrite": true, "rewrites": true, "rewrote": true, "rewriting": true,
+	"record": true, "records": true, "recorded": true, "rerecord": true, "rerecording": true,
+	"bless": true, "blessed": true, "accept": true, "approve": true, "approved": true,
+	"sync": true, "resync": true, "replace": true, "replaced": true, "edit": true, "edited": true,
+}
+
+// Words that may sit between an edit verb and the artifact phrase it governs. They are the
+// closed-class fillers of a noun phrase — determiners, quantifiers, possessives, `of` — plus the
+// staleness adjectives an update request actually uses. The list is an ALLOW-list because its
+// failure direction has to be the safe one: an unlisted modifier only costs the request its
+// full-strength fixture prior, which is the demotion every other fixture query already gets,
+// whereas allowing an unlisted word through readmits the co-occurrence the two-part rule exists
+// to reject.
+var searchArtifactRequestModifiers = map[string]bool{
+	"a": true, "an": true, "the": true, "this": true, "that": true, "these": true, "those": true,
+	"all": true, "any": true, "both": true, "each": true, "every": true, "some": true, "of": true,
+	"my": true, "our": true, "its": true, "their": true, "please": true, "just": true,
+	"new": true, "old": true, "stale": true, "outdated": true, "broken": true, "failing": true,
+	"current": true, "existing": true, "remaining": true, "unchanged": true,
+}
+
+// searchFixtureArtifactRequest reports whether the query asks to EDIT an expected-output artifact,
+// which is the sense of "expected" the fixture intent terms deliberately cannot carry.
+//
+// It is a PHRASE, not a word: "expected" must directly modify an artifact noun ("update the
+// expected output for the parser"), and an artifact-editing verb must GOVERN that phrase. Both
+// halves are required because either alone still matches the sentence the word was dropped for:
+// "expected output 42 but the parser returns 43" names the artifact and asks for nothing, and
+// "update the parser, it expected a flush" asks for an edit to something else entirely.
+//
+// Government, not co-occurrence. "update the parser because the expected output is wrong" carries
+// both halves and is still a defect report about the parser: the verb's object is `the parser` and
+// the artifact phrase is the evidence. Accepting it switched the fixture demotion off on one of
+// the most ordinary shapes a bug report has, and ranked snapshots above the implementation the
+// caller had just named as the thing to change.
+func searchFixtureArtifactRequest(q searchQuery) bool {
+	written := q.wordSequence
+	if len(written) == 0 {
+		written = searchQueryWordSequence(q.rawLower)
+	}
+	for index, word := range written {
+		if word != "expected" || index+1 >= len(written) {
+			continue
+		}
+		if !searchExpectedArtifactNouns[written[index+1]] {
+			continue
+		}
+		if searchArtifactRequestGoverned(written, index) {
+			return true
+		}
+	}
+	return false
+}
+
+// searchArtifactRequestGoverned reports whether an artifact-editing verb governs the phrase that
+// begins at `phrase`, rather than merely occurring somewhere in the same sentence.
+//
+// It walks LEFT from the phrase across the words that can legally stand inside the noun phrase the
+// verb would take as its object. The first word that is not one of those decides: an edit verb
+// means the phrase is that verb's object, and anything else — another noun, a conjunction, a
+// clause boundary — means the verb, if there is one, took a different object.
+func searchArtifactRequestGoverned(written []string, phrase int) bool {
+	for index := phrase - 1; index >= 0; index-- {
+		if searchArtifactEditVerbs[written[index]] {
+			return true
+		}
+		if !searchArtifactRequestModifiers[written[index]] {
+			return false
+		}
+	}
+	return false
+}
 
 // searchFixtureClassPath reports whether a path is a snapshot / golden-output artifact,
 // either by extension (.snap, .ambr, ...) or by living in a fixture/snapshot/testdata tree.
@@ -331,8 +429,17 @@ func searchDocumentationClassPath(lower, base string, dirs []string) bool {
 			return true
 		}
 	}
-	for _, prefix := range searchDocBasePrefixes {
-		if strings.HasPrefix(base, prefix) {
+	if searchDocumentationBasePrefix(base) {
+		// A PREFIX, NOT A SUBSTRING OF A FILETYPE. `license_check.go`, `history_store.py` and
+		// `readme_parser.ts` all begin with a prose prefix and are ordinary executable sources.
+		// The raw prefix match halved their score AND — because NonProgramTextPath consumes this
+		// same classification — declared them incapable of holding a relation, so a real fix site
+		// was pushed out of the ranking and out of call-chain reasoning at once.
+		//
+		// Recognized serialized artifacts keep their data class below. Their documentation-style
+		// basename still matters to intent, so searchFileClassPrior lets either vocabulary restore
+		// full strength for files such as README.json and CHANGELOG.xml.
+		if _, known := languageForPath(base); !known {
 			return true
 		}
 	}
@@ -347,6 +454,15 @@ func searchDocumentationClassPath(lower, base string, dirs []string) bool {
 	}
 	if n := len(base); n >= 2 && base[n-2] == '.' && base[n-1] >= '1' && base[n-1] <= '9' {
 		return true
+	}
+	return false
+}
+
+func searchDocumentationBasePrefix(base string) bool {
+	for _, prefix := range searchDocBasePrefixes {
+		if strings.HasPrefix(base, prefix) {
+			return true
+		}
 	}
 	return false
 }
@@ -384,7 +500,9 @@ func searchFileClassPrior(q searchQuery, filePath string) float64 {
 		}
 		return searchNonSourceClassPrior
 	case searchFileClassData:
-		if searchQuerySupplied(q, searchDataIntentTerms...) {
+		base := filepath.Base(strings.ToLower(filepath.ToSlash(filePath)))
+		if searchQuerySupplied(q, searchDataIntentTerms...) ||
+			(searchDocumentationBasePrefix(base) && searchQuerySupplied(q, searchDocIntentTerms...)) {
 			return 1
 		}
 		return searchNonSourceClassPrior
@@ -409,7 +527,7 @@ func searchFileClassPrior(q searchQuery, filePath string) float64 {
 		// well touch, so it is demoted below the implementation rather than pushed out of the ranking.
 		return searchSecondaryClassPrior
 	case searchFileClassFixture:
-		if searchQuerySupplied(q, searchFixtureIntentTerms...) {
+		if searchQuerySupplied(q, searchFixtureIntentTerms...) || searchFixtureArtifactRequest(q) {
 			return 1
 		}
 		// Milder than the non-source prior: a fix legitimately updates a fixture
@@ -476,9 +594,141 @@ func searchReferenceDeclaration(result SearchResult) bool {
 		if strings.ContainsRune(body, '{') {
 			return false
 		}
+		// An EXPRESSION BODY opens no block and is still an implementation. Kotlin and Scala write
+		// `fun f() = expr`, C# and Java write `T F() => expr`, and both are exactly the executable
+		// code a behavioural fix edits. Multiplying them by the reference-declaration prior can push
+		// the real fix site out of the result set, which is the failure this rule exists to prevent
+		// -- in the opposite direction.
+		if searchExpressionBodiedCallable(body) {
+			return false
+		}
 		return strings.TrimSpace(body) != ""
 	}
 	return false
+}
+
+// searchExpressionBodiedCallable reports whether a braceless callable carries an EXPRESSION body.
+//
+// `=>` is unambiguous. A bare `=` is the Kotlin/Scala form, and it is read as an implementation
+// unless what follows is one of the three C++ special-member forms that assign no expression at
+// all: `= 0` (pure virtual), `= delete` and `= default`. Those remain declarations.
+//
+// The bias is deliberate. Treating an implementation as a declaration DEMOTES a fix site out of
+// the ranking; treating a declaration as an implementation merely leaves it at full weight, where
+// it competes on its score like anything else.
+func searchExpressionBodiedCallable(body string) bool {
+	// What the scan looks for is an ASSIGNMENT IN THE CALLABLE'S TAIL: an `=` or `=>` that stands
+	// OUTSIDE every parenthesised group and after the callable's parentheses have closed. Both
+	// halves are load-bearing, and each excludes a different `=` that is not a body.
+	//
+	// DEPTH excludes every bracketed `=`. A DEFAULT ARGUMENT is one — `public function
+	// previous($fallback = false);` is a PHP interface method and nothing else — and so is an
+	// ANNOTATION or ATTRIBUTE argument, which is why the FIRST parenthesised group cannot simply be
+	// skipped as the parameter list: in `@JvmName("f") fun f(x: Int = 3);` the first group belongs
+	// to the annotation, and skipping it left the default argument in the scanned tail and read the
+	// declaration as an expression body. Reading depth instead does not care which group is which.
+	//
+	// POSITION excludes an `=` written before any parentheses at all, which is where a GENERIC TYPE
+	// PARAMETER writes its default: `template <class T = int> void reset();` and TypeScript's
+	// `function f<T = string>(x: T): void;` are declarations. An expression body always follows the
+	// parameter list, so requiring one closed group costs it nothing — `const f = (x: number) => x`
+	// is still caught by the `=>` after that group. A callable written without parentheses at all
+	// (Scala's `def f: Int = 42`) has no group to wait for and is scanned whole.
+	//
+	// TYPE-ARGUMENT GROUPS exclude the third `=` that is not a body: the one that BINDS AN
+	// ASSOCIATED TYPE. Rust writes `fn items(&self) -> impl Iterator<Item = u8>;` — a trait
+	// signature with no body at all — and that `=` stands outside every parenthesised group and
+	// after the parameter list closed, so neither depth nor position sees it.
+	typeArgs := searchTypeArgumentMask(body)
+	depth := 0
+	closedGroup := !strings.ContainsRune(body, '(')
+	for index := 0; index < len(body); index++ {
+		switch body[index] {
+		case '(':
+			depth++
+			continue
+		case ')':
+			if depth > 0 {
+				depth--
+				closedGroup = closedGroup || depth == 0
+			}
+			continue
+		case '=':
+		default:
+			continue
+		}
+		if depth > 0 || !closedGroup {
+			continue
+		}
+		// Skip the comparison operators: `==`, `!=`, `<=`, `>=`.
+		if index > 0 && strings.IndexByte("=!<>", body[index-1]) >= 0 {
+			continue
+		}
+		if index+1 < len(body) && body[index+1] == '>' {
+			return true
+		}
+		if index+1 < len(body) && body[index+1] == '=' {
+			index++
+			continue
+		}
+		if typeArgs[index] {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(body[index+1:]), ";"))
+		switch rest {
+		case "", "0", "delete", "default":
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// searchTypeArgumentMask marks the byte offsets of `body` that lie inside a TYPE-ARGUMENT GROUP:
+// a balanced `<`...`>` pair opened at parenthesis depth zero, AFTER the callable's parameter list
+// has closed.
+//
+// The mask exists so an `=` that BINDS AN ASSOCIATED TYPE is not read as an expression body.
+// `fn items(&self) -> impl Iterator<Item = u8>;` is a Rust trait signature carrying no body at all,
+// and every such declaration escaped the reference-declaration prior while that `=` counted.
+//
+// "After the parameter list" is what keeps a method NAMED `<` out. Scala's
+// `def <(that: A): Boolean = x > y` and C#'s `operator <(A a, B b) => a.X < b.X` write a lone `<`
+// BEFORE the parameters, where a later `>` in the body would otherwise close a bogus group
+// straddling the whole signature and swallow the real body `=`. A group that opens before the
+// first `(` is therefore never a type-argument group — which costs the mask nothing, because a
+// generic parameter list written there (`template <class T = int> void reset();`) is already
+// excluded by the position rule in the caller.
+func searchTypeArgumentMask(body string) []bool {
+	mask := make([]bool, len(body))
+	var open []int
+	depth := 0
+	closedGroup := !strings.ContainsRune(body, '(')
+	for index := 0; index < len(body); index++ {
+		switch body[index] {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+				closedGroup = closedGroup || depth == 0
+			}
+		case '<':
+			if depth == 0 && closedGroup {
+				open = append(open, index)
+			}
+		case '>':
+			if depth > 0 || len(open) == 0 {
+				continue
+			}
+			start := open[len(open)-1]
+			open = open[:len(open)-1]
+			for offset := start; offset <= index; offset++ {
+				mask[offset] = true
+			}
+		}
+	}
+	return mask
 }
 
 func applySearchFileClassPrior(candidates []searchCandidate, q searchQuery) {

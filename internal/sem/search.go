@@ -556,6 +556,10 @@ type searchCandidate struct {
 	score             float64
 	constraintSurface *searchConstraintSurface
 	prosePassagePlan  []SearchPassage
+	// proseSection identifies the headed section of a prose document this region falls in. Set by
+	// attachProseSectionUnits; it is what makes the prose unit of retrieval the SECTION rather than
+	// the file. Empty for code, and for prose whose file has no indexed symbols.
+	proseSection string
 }
 
 type searchContentReadTracker struct {
@@ -1112,6 +1116,10 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	applySearchBoilerplatePrior(candidates, q)
 	sortSearchCandidates(candidates)
 	candidates = collapseNearDuplicateCandidates(candidates)
+	// The prose unit of retrieval is the SECTION, and which section a region belongs to is decided
+	// from the document's headings — not from whether the region happens to carry a symbol of its
+	// own, which is true only for regions that matched a heading LINE. See attachProseSectionUnits.
+	attachProseSectionUnits(candidates, symbolsByFile)
 	semantic := selectSearchCandidates(candidates, q, options.TopK, options.MaxRegionsPerFile, !options.DocumentResolution)
 	selected := semantic
 	if len(sparseCandidates) > 0 {
@@ -1178,6 +1186,17 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// the enclosure planner looks for a callable at the code line rather than in the prose above it,
 	// and the literal block mines program text. Ranking is untouched — see search_reanchor.go.
 	results, stats.DocReanchored = reanchorSearchDocComments(results, symbolsByFile, read, options.MaxSnippetLines)
+	// SECTION LABELS ARE PRICED WITH THE RANKING, not after it. `"section":"docs-and-fixtures"` is
+	// ~28 bytes on every result it touches, and the authoritative pass below runs after the fitter
+	// and the allocator have already spent the ceiling — so on a prose-heavy payload those bytes
+	// landed OUTSIDE the budget and SearchResponse.Validate rejected the whole response with
+	// `search result context exceeds byte budget`, failing the command for a caller who had asked
+	// for a smaller answer. Measured: a 6-document notes corpus at --max-context-bytes 6000 came
+	// back 6170 bytes with --document-resolution.
+	//
+	// Labelling here charges them to the fitter. The pass is idempotent, so the call below still
+	// decides the final labels, and the all-docs fallback, on the payload that is going out.
+	results = assignSearchSections(results, q)
 	ranked := append([]SearchResult(nil), results...)
 	results, resultBytes, dropped, _ := fitSearchResultsToBudget(results, q, options.MaxContextBytes)
 	// The fitter decides HOW MANY results fit; the allocator decides how the bytes they are
@@ -1467,7 +1486,13 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// are handed back to the expansion and spent on regions the payload does not already show.
 	results = dropContainedProseResults(results)
 	if !options.SingleResolution {
-		results = expandProseResolution(results, options.TopK, options.MaxContextBytes)
+		// The reference blocks are funded from the same ceiling the response is validated against,
+		// and they were priced before this pass runs, so promotion may only spend what they left.
+		reserved := stats.SignatureTypeBytes
+		if len(typeCard) > 0 {
+			reserved += serializedSearchResultBytes(typeCard)
+		}
+		results = expandProseResolution(results, options.TopK, options.MaxContextBytes, reserved)
 	}
 	stats.CandidatesSelected = len(results)
 	stats.ProsePassages, stats.ProsePassageBytes = searchPassageStats(results)

@@ -161,7 +161,16 @@ func proseResolutionResult(parent SearchResult, passage SearchPassage) SearchRes
 
 // expandProseResolution spends the result slots the distinct-file ranking left empty on the finer
 // regions it already computed, without breaching the caller's byte ceiling.
-func expandProseResolution(results []SearchResult, topK, budget int) []SearchResult {
+//
+// `reserved` is the bytes the reference blocks funded from that SAME ceiling have already spent —
+// the declaration card and the signature-type block. Both live OUTSIDE `results`, and
+// SearchResponse.Validate checks their SUM against the ceiling
+// (result_bytes + type_card_bytes + signature_type_bytes <= context_budget_bytes). Measuring
+// promotion against the whole ceiling therefore let the combined payload overshoot it, and the
+// response was then rejected by its own validator: with either block on and a tight
+// --max-context-bytes the search command failed outright instead of returning results, which is
+// the worst possible outcome for a caller who asked for a SMALLER answer.
+func expandProseResolution(results []SearchResult, topK, budget, reserved int) []SearchResult {
 	if topK <= 0 || len(results) >= topK {
 		return results
 	}
@@ -172,6 +181,12 @@ func expandProseResolution(results []SearchResult, topK, budget int) []SearchRes
 	if budget <= 0 {
 		return applyProseResolutionPromotions(results, order, len(order))
 	}
+	// `budget <= 0` above means "no ceiling at all"; an available allowance of zero or less means
+	// the opposite — the blocks already spent the ceiling, so nothing may be promoted.
+	available := budget - maxInt(0, reserved)
+	if available <= 0 {
+		return results
+	}
 	// Serialized size is strictly increasing in count: a promotion always moves a passage out of a
 	// `passages` entry and into a full result record, which is strictly larger. The largest fitting
 	// count is therefore found by bisection in ~log2(n) serializations rather than by materializing
@@ -179,7 +194,7 @@ func expandProseResolution(results []SearchResult, topK, budget int) []SearchRes
 	low, high := 0, len(order)
 	for low < high {
 		mid := (low + high + 1) / 2
-		if serializedSearchResultBytes(applyProseResolutionPromotions(results, order, mid)) <= budget {
+		if serializedSearchResultBytes(applyProseResolutionPromotions(results, order, mid)) <= available {
 			low = mid
 		} else {
 			high = mid - 1
