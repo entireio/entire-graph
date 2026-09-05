@@ -46,8 +46,8 @@ upstream's, untouched, and therefore identical for every arm.
 | file | upstream md5 | harness md5 | patch |
 |---|---|---|---|
 | `benchmarks/common/llm_client.py` | `6a5da3c1d05dbf6a78cd364b59fc7a09` | `592bbcc560b15b88aabb2c9d0280380f` | `patches/0001-llm_client-azure-ai-provider-timeouts-reasoning.patch` |
-| `benchmarks/common/mem0_client.py` | `44e367847d94be3a90cdfa1d21aebe96` | `041f93a130c1a91d1b81f67622555b8c` | `patches/0002-mem0_client-optional-date-injection.patch` |
-| `benchmarks/locomo/run.py` | `f791a93df6257fe869ec6687865f8457` | `41158a8eb87cdeeb53d23c3ad845b7bc` | `patches/0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch` |
+| `benchmarks/common/mem0_client.py` | `44e367847d94be3a90cdfa1d21aebe96` | `bb763cabd9e586cf9aa2699c67f96358` | `patches/0002-mem0_client-optional-date-injection.patch` |
+| `benchmarks/locomo/run.py` | `f791a93df6257fe869ec6687865f8457` | `c3331bce8631d07cf69ae94cb82f821c` | `patches/0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch` |
 | `docker/mem0/main.py` | `e4e1e6076c9016bc37de6715ea29e67a` | `3fe9a40ba1cc8b494daadee2b977f411` | `patches/0004-docker-mem0-server-topk-fix-and-ingest-usage-metering.patch` |
 | `requirements.txt` | `13815b8f1ba4ecc628a44fc963a67679` | `51c617883adf40e4ca22b79533f4662a` | `patches/0006-requirements-bm25-deps.patch` |
 
@@ -69,14 +69,25 @@ What each patch does:
   cannot consume the entire budget and return empty content; adds optional `reasoning_effort`
   passthrough that self-disables if the endpoint rejects it. Every inference change is
   question-blind and applies identically to all arms.
-- **0002 `mem0_client.py`** — optional observation-date injection into the first ingest message,
-  gated off by default behind `MEM0_DATE_INJECT=1`. Not enabled in the published runs.
+- **0002 `mem0_client.py`** — two changes. Optional observation-date injection into the first
+  ingest message, gated off by default behind `MEM0_DATE_INJECT=1` and not enabled in the
+  published runs. And, **always active**, `_search_oss` and `_search_cloud` now raise
+  `SEARCH_EXHAUSTED` instead of returning `[]` once their own retries are spent: upstream
+  swallowed the failure, so the caller could not tell an infrastructure failure from an empty
+  index and scored it as a capability miss. Every other adapter already raises (README §3.2);
+  this is the same guard applied to the one client that was missed.
 - **0003 `benchmarks/locomo/run.py`** — registers the new backends; adds bounded retry around
   `search()` for transient failures only (deterministic 4xx still surface as bugs); **records the
   `search_dropped` flag in the per-question record** — upstream discarded it in the LoCoMo runner
   while already recording it in the LongMemEval runner, so retry-exhausted retrievals were being
-  scored as capability misses; adds ingest-phase timing output; wires `runmeta` provenance capture
-  and the `FAIR_MODE` guard; splits `--max-workers` (conversations) from a new `--question-workers`.
+  scored as capability misses. The drop is counted from an explicit
+  signal — patch 0002 makes mem0 raise `SEARCH_EXHAUSTED` — so `[]` keeps meaning a genuine
+  zero-match retrieval. Inferring a drop from emptiness instead would retry a valid query and then
+  count it against the denominator, corrupting the accounting from the other direction; adds ingest-phase timing output; wires `runmeta` provenance capture
+  and the `FAIR_MODE` guard; splits `--max-workers` (conversations) from a new
+  `--question-workers`, both validated as `>= 1` because either at zero caps a semaphore that
+  then blocks every task forever; and rejects `HARNESS_SEARCH_RETRIES < 1`, which would run no
+  search at all and mark every question dropped.
 - **0004 `docker/mem0/main.py`** — the mem0 `top_k` fix described in `README.md` §3.1 (one line,
   at upstream line 233 / patched-container line 351), plus ingest token-usage metering for the
   cost table and optional Anthropic OAuth-bearer wiring. The metering and OAuth wiring are
@@ -135,8 +146,8 @@ Written by us; no upstream code involved.
 | `benchmarks/common/graphify_client.py` | 364 |
 | `benchmarks/common/cmm_client.py` | 418 |
 | `benchmarks/common/graphify_mem_bridge.py` | 184 |
-| `benchmarks/common/runmeta.py` | 136 |
-| `benchmarks/common/test_runmeta.py` | 53 |
+| `benchmarks/common/runmeta.py` | 726 |
+| `benchmarks/common/test_runmeta.py` | 914 |
 | `benchmarks/common/bm25_client.py` | 369 |
 | `benchmarks/common/test_bm25_client.py` | 40 |
 | `benchmarks/common/entra_auth.py` | 94 |
