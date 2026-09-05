@@ -1,0 +1,20 @@
+[
+  {
+    "vm": "graph-validation-linux",
+    "output": [
+      "Enable succeeded: \n[stdout]\nExecMainStatus=0\nActiveState=inactive\nSubState=dead\n{\"status\": \"paused_for_diagnosis\", \"time_utc\": \"2026-09-05T22:54:59.496578+00:00\", \"recorded_rows\": 520, \"statuses\": {\"partial\": 43, \"timeout\": 3, \"unrun\": 474}, \"reason\": \"Investigate cache-on timeouts and partial results before further measurement\", \"in_flight_request\": \"May have been interrupted; request files retained, no observation fabricated\"}\n\n[stderr]\n"
+    ]
+  },
+  {
+    "vm": "graph-p1-worker-2",
+    "output": [
+      "Enable succeeded: \n[stdout]\nExecMainStatus=0\nActiveState=inactive\nSubState=dead\n{\"status\": \"paused_for_diagnosis\", \"time_utc\": \"2026-09-05T22:55:01.178629+00:00\", \"recorded_rows\": 520, \"statuses\": {\"unrun\": 480, \"partial\": 40}, \"reason\": \"Investigate cache-on timeouts and partial results before further measurement\", \"in_flight_request\": \"May have been interrupted; request files retained, no observation fabricated\"}\n\n[stderr]\n"
+    ]
+  },
+  {
+    "vm": "graph-p1-worker-3",
+    "output": [
+      "Enable succeeded: \n[stdout]\nExecMainStatus=0\nActiveState=inactive\nSubState=dead\n{\"status\": \"paused_for_diagnosis\", \"time_utc\": \"2026-09-05T22:54:55.666041+00:00\", \"recorded_rows\": 510, \"statuses\": {\"unrun\": 480, \"partial\": 30}, \"reason\": \"Investigate cache-on timeouts and partial results before further measurement\", \"in_flight_request\": \"May have been interrupted; request files retained, no observation fabricated\"}\n\n[stderr]\n"
+    ]
+  }
+]
