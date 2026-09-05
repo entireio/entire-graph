@@ -203,3 +203,26 @@ func TestImpactPathsDistinctByteEvidence(t *testing.T) {
 		t.Fatal("distinct byte evidence collapsed or reordered")
 	}
 }
+
+func TestImpactPathsOutputStorageBound(t *testing.T) {
+	var edges []RelationRecord
+	for i := 1; i <= 300; i++ {
+		edges = append(edges, pathFixtureEdge(fmt.Sprintf("n%03d", i), fmt.Sprintf("n%03d", i-1), "CALLS", 1))
+	}
+	options := DefaultImpactPathOptions()
+	options.Depth = 0
+	options.MaxOutputSteps = 10
+	report, err := TraverseImpactPaths(t.Context(), "n000", edges, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := 0
+	for _, result := range report.Results {
+		for _, path := range result.Paths {
+			steps += len(path.Steps)
+		}
+	}
+	if steps > 10 || report.VisitedNodes != 301 || !reflect.DeepEqual(report.StopReasons, []string{"output_path_bound"}) {
+		t.Fatalf("output is not independently bounded: steps=%d nodes=%d reasons=%v", steps, report.VisitedNodes, report.StopReasons)
+	}
+}
