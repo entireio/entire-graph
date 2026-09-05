@@ -14,11 +14,14 @@ type graphRankTransition struct {
 	weight   float64
 }
 type graphRankDiagnostics struct {
-	Nodes       int     `json:"nodes"`
-	Transitions int     `json:"transitions"`
-	Iterations  int     `json:"iterations"`
-	Residual    float64 `json:"residual"`
-	Fallback    string  `json:"fallback,omitempty"`
+	InputRelations    int     `json:"input_relations"`
+	ExaminedRelations int     `json:"examined_relations"`
+	ConnectedNodes    int     `json:"connected_nodes"`
+	Nodes             int     `json:"nodes"`
+	Transitions       int     `json:"transitions"`
+	Iterations        int     `json:"iterations"`
+	Residual          float64 `json:"residual"`
+	Fallback          string  `json:"fallback,omitempty"`
 }
 
 func personalizedPageRank(ctx context.Context, seeds []float64, edges []graphRankTransition, alpha float64, iterations int, tolerance float64) ([]float64, int, float64, error) {
@@ -110,7 +113,7 @@ func graphRankScores(ctx context.Context, lexical map[string]float64, relations 
 }
 
 func graphRankScoresWithPolicy(ctx context.Context, lexical map[string]float64, relations []RelationRecord, uniform bool) (map[string]float64, graphRankDiagnostics, error) {
-	diagnostics := graphRankDiagnostics{Nodes: len(lexical)}
+	diagnostics := graphRankDiagnostics{Nodes: len(lexical), InputRelations: len(relations)}
 	if err := ctx.Err(); err != nil {
 		return nil, diagnostics, err
 	}
@@ -133,6 +136,10 @@ func graphRankScoresWithPolicy(ctx context.Context, lexical map[string]float64, 
 		diagnostics.Fallback = "no_positive_seeds"
 		return current, diagnostics, nil
 	}
+	if len(relations) > 100000 {
+		diagnostics.Fallback = "input_relation_bound"
+		return current, diagnostics, nil
+	}
 	sort.Strings(ids)
 	index := map[string]int{}
 	seeds := make([]float64, len(ids))
@@ -146,6 +153,7 @@ func graphRankScoresWithPolicy(ctx context.Context, lexical map[string]float64, 
 	}
 	weights := map[key]float64{}
 	for _, relation := range relations {
+		diagnostics.ExaminedRelations++
 		if err := ctx.Err(); err != nil {
 			return nil, diagnostics, err
 		}
@@ -208,6 +216,12 @@ func graphRankScoresWithPolicy(ctx context.Context, lexical map[string]float64, 
 	for _, k := range keys {
 		edges = append(edges, graphRankTransition{k.from, k.to, weights[k]})
 	}
+	connected := map[int]bool{}
+	for _, edge := range edges {
+		connected[edge.from] = true
+		connected[edge.to] = true
+	}
+	diagnostics.ConnectedNodes = len(connected)
 	diagnostics.Transitions = len(edges)
 	rank, iterations, residual, err := personalizedPageRank(ctx, seeds, edges, .25, 25, 1e-8)
 	diagnostics.Iterations, diagnostics.Residual = iterations, residual

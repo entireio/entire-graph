@@ -47,6 +47,12 @@ func TestGraphRankScopeDuplicatesAndOrder(t *testing.T) {
 	}
 	extra := []RelationRecord{edges[1], edges[0], edges[0], pathFixtureEdge("outside", "a", "CALLS", 1), pathFixtureEdge("c", "a", "CONTAINS", 1)}
 	got, other, err := graphRankScores(t.Context(), lexical, extra)
+	if diag.InputRelations != len(edges) || other.InputRelations != len(extra) || diag.ExaminedRelations != len(edges) || other.ExaminedRelations != len(extra) {
+		t.Fatalf("input work not reported: %+v %+v", diag, other)
+	}
+	// Input work changes; eligible topology and numeric convergence do not.
+	diag.InputRelations, diag.ExaminedRelations = 0, 0
+	other.InputRelations, other.ExaminedRelations = 0, 0
 	if err != nil || !reflect.DeepEqual(got, expected) || diag != other {
 		t.Fatalf("scope or duplicate changed ranking: %v %v", got, err)
 	}
