@@ -87,6 +87,8 @@ func (source sourceContext) finishCapture(selected []string) (*OperationInputMan
 			item.Status = "captured"
 			item.Digest = entry.source.digest
 			item.Bytes = entry.size
+		} else if entry.policy {
+			item.Status = "absent-policy"
 		} else if over, ok := source.oversizeAt(path); ok {
 			item.Status = "oversized"
 			item.Digest = over.Hash
@@ -96,7 +98,7 @@ func (source sourceContext) finishCapture(selected []string) (*OperationInputMan
 		seen[path] = true
 	}
 	sort.Slice(observations, func(i, j int) bool { return observations[i].Path < observations[j].Path })
-	manifest := &OperationInputManifest{Version: 1, Coverage: "observed-inputs-only; not an atomic revision", PolicyCoverage: "captured explicit policy and effective top-level matcher; nested/vendor rules are not individually captured", SelectedPaths: len(selected), SelectedPathsDigest: extractionIdentity(selected...), ObservedInputs: len(observations)}
+	manifest := &OperationInputManifest{Version: 1, Coverage: "observed-inputs-only; not an atomic revision", PolicyCoverage: "captured provider policy bytes including nested/vendor rules; Git listing/configuration and metadata probes are opaque", SelectedPaths: len(selected), SelectedPathsDigest: extractionIdentity(selected...), ObservedInputs: len(observations)}
 	fields := append([]string(nil), source.captureIdentity...)
 	fields = append(fields, "effective-matcher", strconv.Itoa(len(source.ignores.rules)))
 	for _, rule := range source.ignores.rules {

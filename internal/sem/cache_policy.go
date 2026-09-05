@@ -21,10 +21,11 @@ type capturedIgnoreFile struct {
 // same value for key derivation and matcher construction even if the files on
 // disk change while Git is listing or reading the committed tree.
 type capturedIgnorePolicy struct {
-	absRepo      string
-	graphIgnore  capturedIgnoreFile
-	ignoreFiles  []capturedIgnoreFile
-	includeFiles []capturedIgnoreFile
+	operationCapture *capturedStore
+	absRepo          string
+	graphIgnore      capturedIgnoreFile
+	ignoreFiles      []capturedIgnoreFile
+	includeFiles     []capturedIgnoreFile
 }
 
 const (
@@ -215,7 +216,7 @@ func cachePolicyForOptions(absRepo string, options ProviderSnapshotOptions) (*ca
 }
 
 func (policy *capturedIgnorePolicy) matcher() (ignoreMatcher, error) {
-	var matcher ignoreMatcher
+	matcher := ignoreMatcher{capture: policy.operationCapture, captureRepo: policy.absRepo}
 	if policy.graphIgnore.present {
 		if err := matcher.loadCaptured(policy.graphIgnore, false); err != nil {
 			return ignoreMatcher{}, err

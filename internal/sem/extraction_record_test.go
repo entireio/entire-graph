@@ -21,6 +21,30 @@ func TestExtractionEntityFieldChecklist(t *testing.T) {
 	}
 }
 
+// SymbolRecord is reconstructed, never serialized into the extraction payload.
+// Pin each public/private field's ownership so newly added resolver metadata
+// cannot silently disappear at the cache boundary.
+func TestExtractionSymbolFieldChecklist(t *testing.T) {
+	decisions := map[string]string{
+		"RecordType": "recomputed by entitySymbols", "ID": "recomputed from repository/path/declaration", "StableIDVersion": "recomputed contract constant",
+		"Kind": "persisted Entity.Kind", "Name": "persisted Entity.Name", "QualifiedName": "recomputed from current declaration/container", "FilePath": "captured path",
+		"StartLine": "persisted Entity.StartLine", "EndLine": "persisted Entity.EndLine", "Signature": "persisted Entity.Signature", "BodyHash": "persisted Entity.BodyHash",
+		"Language": "persisted extraction language", "ContainerID": "recomputed from current declarations", "Aliases": "recomputed from captured registration inputs",
+		"Local": "persisted Entity.Local", "sourceStartByte": "persisted Entity.sourceStartByte", "sourceEndByte": "persisted Entity.sourceEndByte",
+		"bodyless": "persisted Entity.bodyless", "cLinkage": "persisted Entity.cLinkage", "parameterNames": "persisted Entity.parameterNames",
+		"parameterNamesKnown": "persisted Entity.parameterNamesKnown", "paramTypeText": "persisted Entity.paramTypeText", "returnTypeText": "persisted Entity.returnTypeText", "signatureTypesKnown": "persisted Entity.signatureTypesKnown",
+	}
+	typ := reflect.TypeFor[SymbolRecord]()
+	if typ.NumField() != len(decisions) {
+		t.Fatal("review SymbolRecord extraction preservation decisions")
+	}
+	for field := range typ.Fields() {
+		if decisions[field.Name] == "" {
+			t.Fatalf("missing extraction preservation decision for %s", field.Name)
+		}
+	}
+}
+
 func TestExtractionRecordRoundTrip(t *testing.T) {
 	entity := Entity{Kind: "function", Name: "nested", Signature: "nested(value: T): U", StartLine: 2, EndLine: 5, BodyHash: "body", Fingerprint: "fingerprint", Local: true, bodyless: true, cLinkage: true, sourceStartByte: 12, sourceEndByte: 88, parameterNames: []string{"value"}, parameterNamesKnown: true, paramTypeText: "value: T", returnTypeText: "U", signatureTypesKnown: true}
 	status := ParseStatus{ParseError: true, Partial: true, DepthExceeded: true, Code: "fixture", Detail: "bounded fixture diagnostic"}
