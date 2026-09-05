@@ -53,9 +53,9 @@ type AnalyzeProgressEvent struct {
 // produced and the warnings it raised, held until the reducer folds them in
 // file order.
 //
-// stopped carries the budget decision rather than acting on it, for the same
-// reason the dependents scan does: only the reducer sees files in order, so
-// only it can stop at the index the sequential loop would have stopped at.
+// stopped records that the worker ran out of budget. The reducer also checks
+// the deadline in file order because earlier work can consume the budget while
+// this result waits in the pipeline.
 type changedFileScan struct {
 	delta    *fileDelta
 	warnings []ProviderWarning
@@ -187,13 +187,8 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	// what makes the reads cheap, and it is defined over a run of files.
 	processChangedFile := func(i int, file gitutil.ChangedFile) changedFileScan {
 		var scan changedFileScan
-		// The sequential loop tested the budget before each file, not once per
-		// metadata window. Without the same test here a window that goes over
-		// budget still parses all of its remaining files, and the reducer names
-		// the wrong ones as skipped. Carry the decision out as a flag instead of
-		// acting on it, exactly as the dependent scan does: the reducer is the
-		// only stage that sees files in order, so only it can stop at the index
-		// the sequential loop stopped at.
+		// Avoid starting more parse work after the budget expires. The reducer
+		// independently checks the deadline before accepting buffered results.
 		if overBudget() {
 			scan.stopped = true
 			return scan
@@ -647,8 +642,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	// Windows are sequential because priming is defined over a run of files;
 	// the files inside one window run together. A window that goes over budget
 	// stops the whole parse, and the reducer -- which sees files in order -- is
-	// what decides where, so the skipped-file warnings name the same files the
-	// sequential loop would have named.
+	// what decides where, so skipped-file warnings describe the accepted prefix.
 	stopped := false
 	for start := 0; start < len(changed) && !stopped; start += analyzeMetadataPrimeFiles {
 		if overBudget() {
@@ -700,7 +694,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				// in the sequential loop: a file the budget skips is reported as
 				// skipped in the warnings, so announcing it as parsed first would
 				// contradict the result the same run returns.
-				if scan.stopped {
+				if scan.stopped || overBudget() {
 					appendBudgetWarnings(i)
 					stopped = true
 					return errAnalyzeParseStopped

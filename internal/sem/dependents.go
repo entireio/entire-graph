@@ -83,10 +83,9 @@ func buildReferenceIndex(ctx context.Context, repo, head string, names map[strin
 // index entries it contributes and the warnings it raises, held until the
 // reducer folds them in candidate order.
 //
-// stopped carries the budget decision rather than acting on it. Whether a
-// worker ran out of wall clock says nothing about where the scan should stop --
-// only the reducer, which sees candidates in order, can end it at the same
-// index the sequential scan would have.
+// stopped records that the worker ran out of budget. The ordered reducer also
+// checks the deadline before accepting buffered hits, so earlier work cannot
+// let prefetched candidates bypass the budget.
 type candidateScan struct {
 	hits     []referenceHit
 	warnings []ProviderWarning
@@ -432,7 +431,7 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			if scan.err != nil {
 				return scan.err
 			}
-			if scan.stopped {
+			if scan.stopped || overBudget() {
 				warnings = append(warnings, dependentsBudgetWarning(i, len(files), options.budget))
 				return errDependentsScanStopped
 			}

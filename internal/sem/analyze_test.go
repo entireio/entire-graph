@@ -1966,6 +1966,7 @@ func TestAnalyzeGitRangeBudgetStopsInsideOnePrimeWindow(t *testing.T) {
 	head := rev(t, repo, "HEAD")
 
 	slept := false
+	acceptedBeforeDeadline := 0
 	result, err := AnalyzeGitRangeWithOptions(t.Context(), repo, base, head, nil, AnalyzeOptions{
 		MaxDuration: maxDuration,
 		Progress: func(event AnalyzeProgressEvent) {
@@ -1973,6 +1974,9 @@ func TestAnalyzeGitRangeBudgetStopsInsideOnePrimeWindow(t *testing.T) {
 				return
 			}
 			slept = true
+			// This result is already being reduced. Later buffered results
+			// must be rejected even if their workers finished before we sleep.
+			acceptedBeforeDeadline = event.FilesDone + 1
 			if remaining := maxDuration - event.Elapsed; remaining > 0 {
 				time.Sleep(remaining + 100*time.Millisecond)
 			}
@@ -2011,6 +2015,9 @@ func TestAnalyzeGitRangeBudgetStopsInsideOnePrimeWindow(t *testing.T) {
 	}
 	if len(result.Files)+warned > files {
 		t.Fatalf("analyzed %d and skipped %d exceeds %d changed files", len(result.Files), warned, files)
+	}
+	if slept && len(result.Files) > acceptedBeforeDeadline {
+		t.Fatalf("accepted %d files after the ordered reduction budget expired at %d", len(result.Files), acceptedBeforeDeadline)
 	}
 }
 
