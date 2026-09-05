@@ -1099,8 +1099,24 @@ func TestSearchVerifyGradleRemappedProjectIsNotThisDirectory(t *testing.T) {
 			settings: "include ':lib'\nproject(':lib').buildFileName = 'a;b'; project(':lib').projectDir = file('other')\n",
 		},
 		{
+			name:     "the setter the assignment is sugar for",
+			settings: "include ':lib'\nproject(':lib').setProjectDir(file('other'))\n",
+		},
+		{
 			name:     "an unremapped project keeps its command",
 			settings: "include ':lib'\n",
+			want:     "./gradlew :lib:test",
+		},
+		{
+			// Reading the property does not move the project, and declining on a read costs a
+			// command that would have run.
+			name:     "a READ of projectDir is not a remap",
+			settings: "include ':lib'\nprintln(project(':lib').projectDir)\n",
+			want:     "./gradlew :lib:test",
+		},
+		{
+			name:     "a comparison is not an assignment",
+			settings: "include ':lib'\nif (project(':lib').projectDir == file('lib')) { }\n",
 			want:     "./gradlew :lib:test",
 		},
 		{

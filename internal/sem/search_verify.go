@@ -788,7 +788,33 @@ func searchVerifyGradleSettingsRemapsProject(settings, project string) bool {
 			}
 		}
 		index += width
-		if named && strings.Contains(searchVerifyGradleStatementTail(script[index:]), "projectDir") {
+		if named && searchVerifyGradleAssignsProjectDir(searchVerifyGradleStatementTail(script[index:])) {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyGradleAssignsProjectDir reports whether a statement MOVES a project's directory rather
+// than merely naming it.
+//
+// `println(project(':lib').projectDir)` reads the property; the project is still where it was, and
+// declining on a read costs a command that would have run for no reason. Only an assignment to it,
+// or the setter the assignment is sugar for, relocates the project. `==` is a comparison, not an
+// assignment, and is read as a mention.
+func searchVerifyGradleAssignsProjectDir(statement string) bool {
+	if strings.Contains(statement, "setProjectDir") {
+		return true
+	}
+	const property = "projectDir"
+	for index := 0; index < len(statement); {
+		found := strings.Index(statement[index:], property)
+		if found < 0 {
+			return false
+		}
+		index += found + len(property)
+		after := strings.TrimLeft(statement[index:], " \t\r\n")
+		if strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") {
 			return true
 		}
 	}
