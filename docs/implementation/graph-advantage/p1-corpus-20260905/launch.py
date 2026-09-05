@@ -17,7 +17,7 @@ def main():
  with tempfile.TemporaryDirectory() as d:
   archive=pathlib.Path(d)/'scripts.tar.gz'
   with tarfile.open(archive,'w:gz') as tar:
-   for name in ['run_campaign.py','worker-1.json','worker-2.json','worker-3.json']:
+   for name in ['run_campaign.py','worker-1.json','worker-2.json','worker-3.json','verify_inputs.py','expected-inputs.json']:
     tar.add(HERE/name,arcname=name)
    for name in ['p1_scenario.py','corpus-manifest.json']:
     tar.add(HERE.parent/'corpus'/name,arcname='corpus-tools/'+name)
@@ -36,6 +36,7 @@ def main():
   script+='curl --fail --silent --show-error '+shlex.quote(binary)+' -o /opt/p1/p1-evaluator\n'
   script+='chmod 755 /opt/p1/p1-evaluator\nchown -R graphcheck:graphcheck /opt/p1/scripts /opt/p1/results\n'
   script+='echo '+shlex.quote(expected+'  /opt/p1/p1-evaluator')+' | sha256sum -c -\n'
+  script+='runuser -u graphcheck -- python3 /opt/p1/scripts/verify_inputs.py\n'
   script+='systemd-run --unit=p1-'+args.stage+' --uid=graphcheck --property=WorkingDirectory=/opt/p1 --property=MemoryMax=14G --property=TasksMax=512 --property=StandardOutput=append:/opt/p1/'+args.stage+'.log --property=StandardError=append:/opt/p1/'+args.stage+'.log '+shlex.join(command)+'\n'
   return {'worker':index,'vm':vm,'result':json.loads(cloud.run(vm,script))}
  with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
