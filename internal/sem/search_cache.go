@@ -108,33 +108,71 @@ func loadOrBuildSearchGraphSnapshot(
 	return loadOrBuildSearchSnapshot(ctx, repo, providerVersion, options, cacheDir, disableCache, nil)
 }
 
+// preloadedCompleteSnapshot is a complete snapshot already in memory together
+// with the cache generation that was current BEFORE it was read.
+//
+// The pair is what makes such a snapshot safe to derive from. A selective view
+// is stamped with the generation of the complete instance it came from, and
+// that is sound only while the generation is read FIRST: a reader that then
+// picks up the outgoing snapshot necessarily stamps the generation being
+// retired. A snapshot handed in from an earlier call inverts that order, so it
+// carries the generation it was read under and a consumer compares it against
+// the current one instead of assuming they agree.
+//
+// generationKnown distinguishes "the marker did not exist, which is the legacy
+// empty generation" from "the marker could not be read". Only the former is a
+// generation; the latter must not be compared with anything.
+type preloadedCompleteSnapshot struct {
+	snapshot        ProviderSnapshot
+	generation      string
+	generationKnown bool
+}
+
 func loadCachedCompleteSearchSnapshot(
 	ctx context.Context,
 	repo, providerVersion string,
 	options ProviderSnapshotOptions,
 	cacheDir string,
 ) (ProviderSnapshot, bool, error) {
+	preloaded, hit, err := loadCachedCompleteSearchSnapshotBinding(ctx, repo, providerVersion, options, cacheDir)
+	if err != nil || !hit {
+		return ProviderSnapshot{}, false, err
+	}
+	return preloaded.snapshot, true, nil
+}
+
+// loadCachedCompleteSearchSnapshotBinding is loadCachedCompleteSearchSnapshot
+// with the generation the snapshot was read under. An unreadable generation is
+// reported as unknown rather than as a failed load: a complete entry is not
+// derived from anything and stays perfectly usable for a complete query, and
+// only the selective derivation that needs a generation has to refuse it.
+func loadCachedCompleteSearchSnapshotBinding(
+	ctx context.Context,
+	repo, providerVersion string,
+	options ProviderSnapshotOptions,
+	cacheDir string,
+) (preloadedCompleteSnapshot, bool, error) {
 	if cacheDir == "" {
-		return ProviderSnapshot{}, false, nil
+		return preloadedCompleteSnapshot{}, false, nil
 	}
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
-		return ProviderSnapshot{}, false, err
+		return preloadedCompleteSnapshot{}, false, err
 	}
 	if !worktreeSnapshotCacheable(ctx, absRepo, options) {
-		return ProviderSnapshot{}, false, nil
+		return preloadedCompleteSnapshot{}, false, nil
 	}
 	capturedOptions, captureErr := ensureProviderCachePolicy(absRepo, options)
 	if captureErr != nil {
 		// Cache policy is stricter than sequential matcher construction because
 		// it retains every input at once. An optional cache must not make an
 		// otherwise valid query fail; let the caller continue to a cold build.
-		return ProviderSnapshot{}, false, nil
+		return preloadedCompleteSnapshot{}, false, nil
 	}
 	options = capturedOptions
 	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
 	if headErr != nil {
-		return ProviderSnapshot{}, false, nil
+		return preloadedCompleteSnapshot{}, false, nil
 	}
 	repositoryKey := repoKey(ctx, absRepo)
 	fullOptions := options
@@ -144,21 +182,31 @@ func loadCachedCompleteSearchSnapshot(
 	}
 	fullKey, keyErr := searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree, fullOptions)
 	if keyErr != nil {
-		return ProviderSnapshot{}, false, keyErr
+		return preloadedCompleteSnapshot{}, false, keyErr
 	}
+	// Read the generation BEFORE the snapshot, for the same reason the selective
+	// loader does: a reader that goes on to pick up the OUTGOING complete
+	// snapshot then carries the generation being retired, so the view derived
+	// from it later can be recognised as retired instead of being stamped with
+	// the incoming one and becoming permanently valid.
+	generation, generationErr := readCacheGeneration(cacheDir, "search", searchSnapshotCacheVersion, fullKey)
 	fullEntry, entryErr := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, fullKey)
 	if entryErr != nil {
-		return ProviderSnapshot{}, false, entryErr
+		return preloadedCompleteSnapshot{}, false, entryErr
 	}
 	cached, readErr := readSearchSnapshot(fullEntry)
 	if readErr != nil || !validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, fullOptions) {
-		return ProviderSnapshot{}, false, nil
+		return preloadedCompleteSnapshot{}, false, nil
 	}
 	// The cache key is tree-only: a hit may have been built for a different
 	// commit that shares this tree. The parsed graph is exactly correct, but
 	// commit provenance must reflect the HEAD we are serving right now.
 	cached = restampCachedSearchSnapshotCommit(cached, commit)
-	return cached.Snapshot, true, nil
+	return preloadedCompleteSnapshot{
+		snapshot:        cached.Snapshot,
+		generation:      generation,
+		generationKnown: generationErr == nil,
+	}, true, nil
 }
 
 // loadOrBuildSearchSnapshot is the single search-snapshot cache pipeline: it
@@ -174,7 +222,7 @@ func loadOrBuildSearchSnapshot(
 	options ProviderSnapshotOptions,
 	cacheDir string,
 	disableCache bool,
-	preloadedFull *ProviderSnapshot,
+	preloadedFull *preloadedCompleteSnapshot,
 ) (ProviderSnapshot, bool, error) {
 	if options.Profile == "" {
 		options.Profile = ProfileFull
@@ -292,8 +340,22 @@ func loadOrBuildSearchSnapshot(
 			}
 			return selective, true
 		}
-		if preloadedFull != nil {
-			if selective, ok := deriveFromFull(*preloadedFull); ok {
+		// A preloaded complete snapshot was read by its caller BEFORE this
+		// function read the generation, which is the ordering the generation
+		// depends on, run backwards. A forced rebuild that published and bumped
+		// in between would otherwise let a view of the OUTGOING snapshot be
+		// stamped with the INCOMING generation and validate forever after -
+		// worse than the race the marker was added to close, because the
+		// invalidating removal has already happened by then.
+		//
+		// So the preload is used only while the generation it was read under is
+		// still the current one. When it is not, or when it was never known, the
+		// snapshot is discarded rather than trusted: the on-disk complete entry
+		// below is read AFTER the generation and can be stamped correctly, so
+		// falling through costs a decode and keeps the guarantee.
+		if generationKnown && preloadedFull != nil &&
+			preloadedFull.generationKnown && preloadedFull.generation == derivedFrom {
+			if selective, ok := deriveFromFull(preloadedFull.snapshot); ok {
 				return selective, true, nil
 			}
 		}
@@ -345,7 +407,7 @@ func loadOrDeriveSelectiveSearchSnapshot(
 	options ProviderSnapshotOptions,
 	cacheDir string,
 	disableCache bool,
-	full ProviderSnapshot,
+	full preloadedCompleteSnapshot,
 ) (ProviderSnapshot, bool, error) {
 	return loadOrBuildSearchSnapshot(ctx, repo, providerVersion, options, cacheDir, disableCache, &full)
 }

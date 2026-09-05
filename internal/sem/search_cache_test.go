@@ -814,9 +814,10 @@ func helper() {}
 	}, cacheDir); err != nil {
 		t.Fatal(err)
 	}
-	full, hit, err := loadCachedCompleteSearchSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+	binding, hit, err := loadCachedCompleteSearchSnapshotBinding(t.Context(), repo, "test-version", ProviderSnapshotOptions{
 		Profile: ProfileFull,
 	}, cacheDir)
+	full := binding.snapshot
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -838,7 +839,7 @@ func helper() {}
 	if _, deriveErr := selectiveSearchSnapshotFromFull(t.Context(), repo, "test-version", selectiveOptions, full); deriveErr == nil {
 		t.Fatal("stale complete snapshot no longer fails derivation; fixture does not simulate a provenance mismatch")
 	}
-	snapshot, cacheHit, err := loadOrDeriveSelectiveSearchSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false, full)
+	snapshot, cacheHit, err := loadOrDeriveSelectiveSearchSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false, binding)
 	if err != nil {
 		t.Fatalf("warm derivation failure was not treated as soft: %v", err)
 	}

@@ -303,3 +303,75 @@ func TestSelectiveCacheFailsClosedOnEmptyGenerationMarker(t *testing.T) {
 		})
 	}
 }
+
+// A complete snapshot handed in from an earlier call was read BEFORE the
+// selective loader reads the generation, which runs the generation's ordering
+// backwards. If a forced rebuild publishes and bumps in between, a view derived
+// from that OUTGOING snapshot gets stamped with the INCOMING generation and
+// validates from then on - strictly worse than the race the marker closed,
+// because the invalidating removal has already happened, so nothing later
+// discards it. The preloaded snapshot must therefore carry the generation it
+// was read under and be discarded once that generation is no longer current.
+func TestPreloadedCompleteSnapshotIsBoundToItsGeneration(t *testing.T) {
+	t.Parallel()
+	fixture := newGenerationMarkerFixture(t)
+
+	// T0: what a search reads into memory before any rebuild begins, together
+	// with the generation current at that moment.
+	binding, hit, err := loadCachedCompleteSearchSnapshotBinding(t.Context(), fixture.repo, "v", fixture.complete(), fixture.cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hit {
+		t.Fatal("the preindexed complete snapshot did not load")
+	}
+	if !binding.generationKnown || binding.generation != "" {
+		t.Fatalf("no --force has run, so the preload should carry the legacy empty generation; got %q known=%v", binding.generation, binding.generationKnown)
+	}
+	for index := range binding.snapshot.Symbols {
+		binding.snapshot.Symbols[index].Name = "DerivedFromTheOutgoingSnapshot"
+	}
+
+	// T1: the rebuild publishes, bumps the generation, and removes the views
+	// derived from the snapshot the preload is still holding.
+	forced := fixture.complete()
+	forced.ForceRebuild = true
+	if _, _, err := PreindexProviderSnapshot(t.Context(), fixture.repo, "v", forced, fixture.cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	current, err := readCacheGeneration(fixture.cacheDir, "search", searchSnapshotCacheVersion, fixture.completeKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == binding.generation {
+		t.Fatal("--force did not move the generation; the fixture no longer poses the question")
+	}
+
+	// T2: the selective query arrives holding the retired snapshot.
+	served, _, err := loadOrDeriveSelectiveSearchSnapshot(t.Context(), fixture.repo, "v", fixture.selective(), fixture.cacheDir, false, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshotHasSymbolNamed(served, "DerivedFromTheOutgoingSnapshot") {
+		t.Fatal("a preloaded snapshot read under a retired generation was derived from anyway")
+	}
+	if !snapshotHasSymbolNamed(served, "Alpha") {
+		t.Fatalf("selective search lost the real symbol; got %d symbols", len(served.Symbols))
+	}
+	if snapshotHasSymbolNamed(served, "Beta") {
+		t.Fatal("selective search returned a file outside OnlyFiles")
+	}
+
+	// The damage the ordering causes is durable, so the check that matters is
+	// what an ORDINARY later query - holding no preload at all - is served.
+	later, _, err := loadOrBuildSearchSnapshot(t.Context(), fixture.repo, "v", fixture.selective(), fixture.cacheDir, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshotHasSymbolNamed(later, "DerivedFromTheOutgoingSnapshot") {
+		t.Fatal("a view of the retired snapshot was persisted under the incoming generation and is now permanently valid")
+	}
+	if persisted := readCachedSnapshotFile(t, fixture.derivedPath); persisted.DerivedFrom != current {
+		t.Fatalf("the persisted selective entry should carry the current generation %q, got %q", current, persisted.DerivedFrom)
+	}
+}
