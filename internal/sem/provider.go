@@ -350,6 +350,10 @@ type SymbolRecord struct {
 	// ambiguous same-name definitions. Private, so the frozen schema and the
 	// compound-v1 IDs are unchanged.
 	bodyless bool
+	// cPlusPlusOwners carry legal lexical namespace/class owner spellings used
+	// only to match a bodyless declaration to its out-of-line C++ definition.
+	cPlusPlusOwners         []string
+	cPlusPlusDefinitionName string
 	// cLinkage: this symbol is declared inside an `extern "C" { ... }` block
 	// (see Entity.cLinkage). candidateSharesDeclarations reads it to tell the
 	// C-linkage half of a dual-use header from the C++ half. Private, so the
@@ -1841,6 +1845,13 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 		colliding := definitionCounts[id] > 1
 		if entity.bodyless {
 			colliding = definitionCounts[id]+declarationCounts[id] > 1
+			// C++ member declarations are new records. Always disambiguate
+			// them, even when alone, so adding an overload never retires the
+			// existing declaration's ID. Signature identity also survives
+			// reordering and insertion before existing overloads.
+			if language == "C++" {
+				colliding = true
+			}
 		}
 		if colliding {
 			// Disambiguate same-name symbols by signature hash plus an ordinal
@@ -1868,24 +1879,26 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			containerID = symbols[parent].ID
 		}
 		symbol := SymbolRecord{
-			RecordType:      "symbol",
-			ID:              id,
-			StableIDVersion: StableSymbolIDVersion,
-			Kind:            entity.Kind,
-			Name:            shortEntityName(entity.Name),
-			QualifiedName:   qualified,
-			FilePath:        path,
-			StartLine:       entity.StartLine,
-			EndLine:         entity.EndLine,
-			Signature:       entity.Signature,
-			BodyHash:        entity.BodyHash,
-			Language:        language,
-			ContainerID:     containerID,
-			Local:           entity.Local,
-			sourceStartByte: entity.sourceStartByte,
-			sourceEndByte:   entity.sourceEndByte,
-			bodyless:        entity.bodyless,
-			cLinkage:        entity.cLinkage,
+			RecordType:              "symbol",
+			ID:                      id,
+			StableIDVersion:         StableSymbolIDVersion,
+			Kind:                    entity.Kind,
+			Name:                    shortEntityName(entity.Name),
+			QualifiedName:           qualified,
+			FilePath:                path,
+			StartLine:               entity.StartLine,
+			EndLine:                 entity.EndLine,
+			Signature:               entity.Signature,
+			BodyHash:                entity.BodyHash,
+			Language:                language,
+			ContainerID:             containerID,
+			Local:                   entity.Local,
+			sourceStartByte:         entity.sourceStartByte,
+			sourceEndByte:           entity.sourceEndByte,
+			bodyless:                entity.bodyless,
+			cPlusPlusOwners:         append([]string(nil), entity.cPlusPlusOwners...),
+			cPlusPlusDefinitionName: entity.cPlusPlusDefinitionName,
+			cLinkage:                entity.cLinkage,
 		}
 		// Carried for every language: the parser marks parameterNamesKnown only
 		// when it actually read the names off the parse tree, so a grammar with
@@ -3707,6 +3720,20 @@ func unionResolvedCallTargets(groups ...[]resolvedCallTarget) []resolvedCallTarg
 // retain the raw workspace candidates so an explicit, unique import path can
 // bind a local FFI target that the type-sharing policy deliberately excludes.
 func resolveCallTargetsWithRawImport(name string, from SymbolRecord, candidates, rawCandidates []SymbolRecord, rawImportModuleSets [][]string, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
+	targets := resolveCallTargetsWithRawImportDeclarations(name, from, candidates, rawCandidates, rawImportModuleSets, sameFile, importsByName, allowMethodTargets)
+	for i := range targets {
+		if definition, ok := cPlusPlusOutOfLineDefinition(targets[i].SymbolRecord, candidates); ok {
+			targets[i].SymbolRecord = definition
+			targets[i].Reason = "C++ call resolved through member declaration to out-of-line definition"
+			if definition.FilePath != from.FilePath {
+				targets[i].Scope = "module"
+			}
+		}
+	}
+	return targets
+}
+
+func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord, candidates, rawCandidates []SymbolRecord, rawImportModuleSets [][]string, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	// candidates arrive ALREADY filtered to languages the caller can name: every
 	// call site wraps its symbolsByShortName lookup in sharedTypeCandidates,
 	// because that is where the referring symbol is known. Re-filtering here
@@ -4493,6 +4520,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	symbolsByFile := map[string][]SymbolRecord{}
 	childNamesByContainer := map[string]map[string]bool{}
 	methodsByContainer := map[string]map[string]SymbolRecord{}
+	ambiguousCPlusPlusMethods := map[string]map[string]bool{}
 	fieldsByContainer := map[string]map[string]SymbolRecord{}
 	returnTypesBySymbolNameAndFile := map[string]map[string][]string{}
 	returnTypesBySymbolNameAndDir := map[string]map[string][]string{}
@@ -4649,7 +4677,37 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if methodsByContainer[symbol.ContainerID] == nil {
 						methodsByContainer[symbol.ContainerID] = map[string]SymbolRecord{}
 					}
-					methodsByContainer[symbol.ContainerID][symbol.Name] = symbol
+					if ambiguousCPlusPlusMethods[symbol.ContainerID][symbol.Name] {
+						continue
+					}
+					// This index is keyed by NAME, so C++ overloads collide in
+					// it. Last-write-wins made the winner depend on source
+					// order: with `void f(int) { ... }` followed by
+					// `void f(double);`, the bodyless declaration replaced the
+					// inline definition and every `obj.f(...)` call resolved to
+					// the declaration, leaving the real implementation with no
+					// callers at all.
+					//
+					// A body is what a caller means, so a bodyless entry never
+					// displaces one that has a body. The reverse still applies,
+					// which is what lets a real definition replace a declaration
+					// indexed before it.
+					existing, collides := methodsByContainer[symbol.ContainerID][symbol.Name]
+					if collides && symbol.Language == "C++" && existing.Language == "C++" &&
+						normalize(existing.Signature) != normalize(symbol.Signature) {
+						// A name-keyed index cannot select between overloads. Keeping
+						// either entry would turn source order into a confidently wrong
+						// CALLS edge, so make the name unavailable to this coarse tier.
+						delete(methodsByContainer[symbol.ContainerID], symbol.Name)
+						if ambiguousCPlusPlusMethods[symbol.ContainerID] == nil {
+							ambiguousCPlusPlusMethods[symbol.ContainerID] = map[string]bool{}
+						}
+						ambiguousCPlusPlusMethods[symbol.ContainerID][symbol.Name] = true
+						continue
+					}
+					if !collides || (existing.bodyless && !symbol.bodyless) {
+						methodsByContainer[symbol.ContainerID][symbol.Name] = symbol
+					}
 				}
 				// C# receiver-call resolution also reads the field index:
 				// class-level `Type Name { get; }` members type `Name.Method()`
@@ -7034,9 +7092,12 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if _, isParameter := varTypes[name]; isParameter {
 				continue
 			}
-			if _, exists := localTypes[name]; !exists {
-				localTypes[name] = typeName
-			}
+			// The declared left-hand type is authoritative and must replace the
+			// generic constructor inference. For `acct::Ledger* ledger = new
+			// acct::Ledger()` the generic `new T` scanner records the first path
+			// segment (`acct`), while the C++ declaration scanner deliberately
+			// records the terminal type (`Ledger`) used by the symbol index.
+			localTypes[name] = typeName
 		}
 	}
 	if from.Language == "TypeScript" {
@@ -7447,6 +7508,13 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 		if !ok || method.ID == from.ID {
 			continue
+		}
+		if definition, found := cPlusPlusOutOfLineDefinition(method, symbolsByShortName[method.Name]); found {
+			// The receiver resolved to a header's in-class DECLARATION. The code
+			// that runs is the out-of-line definition in the .cpp, so point the
+			// edge there: leaving it on the declaration hides the implementation
+			// from its own callers and from impact.
+			method = definition
 		}
 		if inherited {
 			// Resolved on a base class, not the receiver's own type. Still a real
@@ -8871,6 +8939,280 @@ func appendGoInterfaceImplementationCalls(relations []RelationRecord, from Symbo
 // uniqueMethodByShortName returns the sole method whose short name matches, if
 // exactly one method (across the workspace) carries that name. Used as a
 // last-resort receiver.method() resolver when the receiver type is unknown.
+// signatureNamesQualifiedMethod reports whether signature writes
+// `Container::Name` as a whole qualified name.
+//
+// A raw substring test is wrong in both directions. It matches too much --
+// `BA::foo` contains `A::foo`, so an unrelated class's definition was accepted
+// as the out-of-line body and produced a false CALLS edge -- and too little,
+// because a template definition is spelled `A<T>::foo` and never contains the
+// bare `A::foo` at all, leaving those calls pointed at the bodyless
+// declaration. Both are the same mistake: treating a qualified name as text
+// rather than as tokens.
+func signatureNamesQualifiedMethod(signature, container, name string) bool {
+	ownerParts := strings.Split(container, "::")
+	if len(ownerParts) == 0 || ownerParts[0] == "" {
+		return false
+	}
+	for offset := 0; ; {
+		index := strings.Index(signature[offset:], ownerParts[0])
+		if index < 0 {
+			return false
+		}
+		start := offset + index
+		offset = start + len(ownerParts[0])
+		// The container must start a token: `BA::foo` must not match `A::foo`.
+		if start > 0 && isIdentifierByte(signature[start-1]) {
+			continue
+		}
+		// It must also start the owner qualification, not merely a suffix of
+		// one: owner `a::Ledger` must not match `x::a::Ledger`. Whitespace is
+		// legal around `::`, so inspect the trimmed prefix.
+		if strings.HasSuffix(strings.TrimRight(signature[:start], " \t\r\n"), "::") {
+			continue
+		}
+		rest := signature[offset:]
+		matched := true
+		for index, part := range append(ownerParts[1:], name) {
+			rest = strings.TrimLeft(rest, " \t\r\n")
+			// Every owner segment may carry template arguments in the
+			// definition (`Outer<T>::Inner<U>::foo`).
+			if strings.HasPrefix(rest, "<") {
+				after, closed := skipBalancedAngles(rest)
+				if !closed {
+					matched = false
+					break
+				}
+				rest = strings.TrimLeft(after, " \t\r\n")
+			}
+			if !strings.HasPrefix(rest, "::") {
+				matched = false
+				break
+			}
+			rest = strings.TrimLeft(rest[2:], " \t\r\n")
+			if !strings.HasPrefix(rest, part) {
+				matched = false
+				break
+			}
+			rest = rest[len(part):]
+			if index < len(ownerParts)-1 && len(rest) > 0 && isIdentifierByte(rest[0]) {
+				matched = false
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		// The name must end a token, so `A::foobar` does not match `A::foo`.
+		if rest == "" || !isIdentifierByte(rest[0]) {
+			return true
+		}
+	}
+}
+
+// skipBalancedAngles returns the text following the template argument list that
+// begins at text[0] == '<', and whether that list was closed. Angle brackets
+// nest, so the list ends at the bracket that matches the opening one -- the
+// SECOND `>` of `<std::vector<T>>` -- and a depth count is the only way to find
+// it. `>>` is two ordinary `>` bytes here, so the C++11 spelling and the
+// spaced-out `> >` both close at the same depth.
+func skipBalancedAngles(text string) (string, bool) {
+	depth := 0
+	parens, brackets, braces := 0, 0, 0
+	var quote byte
+	escaped := false
+	for i := 0; i < len(text); i++ {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if text[i] == '\\' {
+				escaped = true
+				continue
+			}
+			if text[i] == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch text[i] {
+		case '\'', '"':
+			quote = text[i]
+		case '(':
+			parens++
+		case ')':
+			if parens > 0 {
+				parens--
+			}
+		case '[':
+			brackets++
+		case ']':
+			if brackets > 0 {
+				brackets--
+			}
+		case '{':
+			braces++
+		case '}':
+			if braces > 0 {
+				braces--
+			}
+		case '<':
+			if parens == 0 && brackets == 0 && braces == 0 {
+				depth++
+			}
+		case '>':
+			if parens == 0 && brackets == 0 && braces == 0 {
+				depth--
+				if depth == 0 {
+					return text[i+1:], true
+				}
+			}
+		}
+	}
+	return text, false
+}
+
+// cPlusPlusOutOfLineDefinition returns the definition that a bodyless C++
+// in-class method declaration stands for. A header declares
+// `int Add(int) const;` inside `class Ledger` and the .cpp defines
+// `int Ledger::Add(int) const { ... }`; tree-sitter-cpp gives that qualified
+// definition no container, so it parses as a file-scope function and never
+// reaches methodsByContainer. A typed receiver therefore resolves `l.Add(3)` to
+// the DECLARATION — a symbol with no body — which hides the implementation's
+// callers and makes impact on the real code report nothing.
+//
+// The definition is identified by naming this container explicitly: the
+// candidate is a non-bodyless C++ callable of the same short name whose
+// AST declarator and lexical namespace name `Container::Name`. Anything less certain is refused — two
+// such definitions are overloads the name-keyed method index cannot tell apart,
+// and the declaration is then the honest target.
+func cPlusPlusOutOfLineDefinition(declaration SymbolRecord, candidates []SymbolRecord) (SymbolRecord, bool) {
+	if !declaration.bodyless || declaration.Language != "C++" || declaration.Name == "" {
+		return SymbolRecord{}, false
+	}
+	owners := declaration.cPlusPlusOwners
+	if len(owners) == 0 {
+		owners = []string{containerName(declaration.QualifiedName)}
+	}
+	if len(owners) == 0 || owners[0] == "" {
+		return SymbolRecord{}, false
+	}
+	var definition SymbolRecord
+	found := 0
+	for _, candidate := range candidates {
+		if candidate.bodyless || candidate.Language != "C++" || candidate.ID == declaration.ID {
+			continue
+		}
+		if candidate.Name != declaration.Name {
+			continue
+		}
+		ownerMatches := false
+		for _, owner := range owners {
+			if signatureNamesQualifiedMethodPattern(candidate.cPlusPlusDefinitionName, owner, declaration.Name) {
+				ownerMatches = true
+				break
+			}
+		}
+		if !ownerMatches {
+			continue
+		}
+		found++
+		if found > 1 {
+			return SymbolRecord{}, false
+		}
+		definition = candidate
+	}
+	return definition, found == 1
+}
+
+// signatureNamesQualifiedMethodPattern matches the private owner pattern built
+// by cPlusPlusDeclarationOwners. A NUL-prefixed segment is an inline namespace
+// and may be present or omitted. Matching uses memoized (segment, remainder)
+// states, so deeply nested inline namespaces stay linear in the signature size
+// rather than expanding into 2^N owner aliases.
+func signatureNamesQualifiedMethodPattern(signature, pattern, name string) bool {
+	if !strings.Contains(pattern, "\x00") {
+		return signatureNamesQualifiedMethod(signature, pattern, name)
+	}
+	parts := strings.Split(pattern, "::")
+	type state struct{ part, remaining int }
+	memo := map[state]bool{}
+	seen := map[state]bool{}
+	var matchTail func(string, int) bool
+	matchTail = func(rest string, index int) bool {
+		key := state{part: index, remaining: len(rest)}
+		if seen[key] {
+			return memo[key]
+		}
+		seen[key] = true
+		if index == len(parts) {
+			rest = strings.TrimLeft(rest, " \t\r\n")
+			memo[key] = strings.HasPrefix(rest, name) &&
+				(len(rest) == len(name) || !isIdentifierByte(rest[len(name)]))
+			return memo[key]
+		}
+		part := parts[index]
+		inlineable := strings.HasPrefix(part, "\x00")
+		part = strings.TrimPrefix(part, "\x00")
+		if inlineable && matchTail(rest, index+1) {
+			memo[key] = true
+			return true
+		}
+		after, ok := consumeCPlusPlusOwnerSegment(rest, part)
+		memo[key] = ok && matchTail(after, index+1)
+		return memo[key]
+	}
+	for first := 0; first < len(parts); first++ {
+		part := strings.TrimPrefix(parts[first], "\x00")
+		for offset := 0; ; {
+			at := strings.Index(signature[offset:], part)
+			if at < 0 {
+				break
+			}
+			start := offset + at
+			offset = start + len(part)
+			if start > 0 && isIdentifierByte(signature[start-1]) {
+				continue
+			}
+			if strings.HasSuffix(strings.TrimRight(signature[:start], " \t\r\n"), "::") {
+				continue
+			}
+			after, ok := consumeCPlusPlusOwnerSegment(signature[start:], part)
+			if ok && matchTail(after, first+1) {
+				return true
+			}
+		}
+		if !strings.HasPrefix(parts[first], "\x00") {
+			break
+		}
+	}
+	return false
+}
+
+func consumeCPlusPlusOwnerSegment(text, part string) (string, bool) {
+	text = strings.TrimLeft(text, " \t\r\n")
+	if !strings.HasPrefix(text, part) {
+		return text, false
+	}
+	rest := text[len(part):]
+	if len(rest) > 0 && isIdentifierByte(rest[0]) {
+		return text, false
+	}
+	rest = strings.TrimLeft(rest, " \t\r\n")
+	if strings.HasPrefix(rest, "<") {
+		after, closed := skipBalancedAngles(rest)
+		if !closed {
+			return text, false
+		}
+		rest = strings.TrimLeft(after, " \t\r\n")
+	}
+	if !strings.HasPrefix(rest, "::") {
+		return text, false
+	}
+	return rest[2:], true
+}
+
 func uniqueMethodByShortName(candidates []SymbolRecord) (SymbolRecord, bool) {
 	var methods []SymbolRecord
 	for _, c := range candidates {

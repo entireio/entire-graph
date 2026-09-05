@@ -3287,10 +3287,28 @@ func maskCPlusPlusConversionOperatorDecl(text string) string {
 
 func maskCPlusPlusOperatorCall(text string) string {
 	return cPlusPlusOperatorCallPattern.ReplaceAllStringFunc(text, func(match string) string {
-		if strings.HasPrefix(match, "::") {
-			return sameLengthReplacement("::op(", len(match))
+		// The stand-in identifier keeps the width of the OPERATOR NAME, not just
+		// of the whole match. A symbol's name is sliced from the UNMASKED content
+		// at the node's byte range, so a narrower stand-in reads the wrong bytes
+		// back: `op` is two characters where `operator=` is nine. Padding with
+		// '_' keeps it one identifier token, and the slice then returns the
+		// operator's real spelling.
+		paren := strings.LastIndexByte(match, '(')
+		if paren < 0 {
+			return match
 		}
-		return sameLengthReplacement("op(", len(match))
+		name := strings.TrimRight(match[:paren], " \t")
+		if name == "" {
+			return match
+		}
+		stand := "op"
+		if strings.HasPrefix(name, "::") {
+			stand = "::op"
+		}
+		if len(stand) > len(name) {
+			stand = stand[:len(name)]
+		}
+		return stand + strings.Repeat("_", len(name)-len(stand)) + match[len(name):]
 	})
 }
 
@@ -4144,6 +4162,16 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		*depthExceeded = true
 		return
 	}
+	// In-class C++ method declarations must be emitted before the field early
+	// return below. One declaration can legally mix callable and data
+	// declarators (`int Start(), state;`): fieldEntities handles state and then
+	// stops the walk, so extracting methods afterwards silently loses Start.
+	// This remains separate from entityFromNode because one declaration can also
+	// declare several methods (`void Start(), Stop();`).
+	for _, member := range cPlusPlusMemberDeclarationEntities(node, src, language, scope) {
+		setEntitySourceRange(&member, cPlusPlusDeclarationSpan(node), language, src)
+		*entities = append(*entities, member)
+	}
 	// Field/property declarations emit one entity per declared name and are not
 	// descended into (their name nodes would otherwise look like field accesses).
 	if fields, ok := fieldEntities(node, src, language, scope, inFunc); ok {
@@ -4196,6 +4224,9 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	if ok {
 		setEntitySourceRange(&entity, node, language, src)
 		entity.cLinkage = declaredWithCLinkage(language, node, src)
+		if language == "C++" && node.Type() == "function_definition" {
+			entity.cPlusPlusDefinitionName = cPlusPlusDefinitionName(node, src)
+		}
 		if entity.Kind == "function" || entity.Kind == "method" {
 			if language == "JavaScript" || language == "TypeScript" {
 				entity.parameterNames = jsEntityParameterNames(node, src)
@@ -4757,7 +4788,9 @@ func fieldDeclNames(node *sitter.Node, src []byte) []string {
 			// the declaration itself can carry, not only one reached through a
 			// pointer or a function declarator. A plain function declarator
 			// names nothing here: `int Add(int);` in a class body is a method
-			// declaration, not data, and is left to the entity walk.
+			// declaration, not data, and is left to the entity walk. Neither
+			// does `int (*Factory())(double);`, a METHOD returning a function
+			// pointer, which the member-declaration pass extracts.
 			if name := cFamilyMemberDeclaratorName(child, src); name != "" {
 				names = append(names, name)
 			}
@@ -4806,6 +4839,388 @@ func cPlusPlusInitialisedMemberName(node *sitter.Node, src []byte) string {
 	return ""
 }
 
+// cPlusPlusMemberDeclaration is one method declared by an in-class declaration,
+// paired with the declarator that declares it: one declaration can declare
+// several methods, and each carries its own signature text.
+type cPlusPlusMemberDeclaration struct {
+	name       string
+	declarator *sitter.Node
+}
+
+// cPlusPlusMemberDeclarations returns the methods declared when node is an
+// in-class C++ method DECLARATION — members declared in the class body and
+// defined elsewhere. tree-sitter-cpp gives that no node type of its own:
+// `int Add(int) const;` is a field_declaration, the same node type as
+// `int total_;`, and a constructor or destructor declaration is a bare
+// `declaration`, the same node type as a local variable.
+//
+// Two things separate a member method declaration from everything that shares
+// those node types. It sits in a field_declaration_list, which is the class
+// body — that excludes locals, namespace-scope prototypes, and the declaration
+// nested inside a friend_declaration, none of which are members of the class. A
+// member function TEMPLATE is one step further out, because the
+// template_declaration is what the class body holds, so that wrapper is stepped
+// through rather than treated as a different scope. And each declarator must
+// resolve to a function_declarator whose own declarator is a NAME: a
+// function-POINTER data member (`int (*handler_)(int);`) reaches a
+// parenthesized_declarator instead, and stays the field that the member pass
+// classifies it as.
+func cPlusPlusMemberDeclarations(node *sitter.Node, src []byte) []cPlusPlusMemberDeclaration {
+	switch node.Type() {
+	case "field_declaration", "declaration":
+	default:
+		return nil
+	}
+	parent := node.Parent()
+	// `template<class T> T Get();` in a class body is a declaration wrapped in a
+	// template_declaration; the class body holds the wrapper, not the
+	// declaration. Requiring the class body to be the DIRECT parent dropped
+	// every member function template.
+	if validNode(parent) && parent.Type() == "template_declaration" {
+		parent = parent.Parent()
+	}
+	if !validNode(parent) || parent.Type() != "field_declaration_list" {
+		return nil
+	}
+	// C++ allows several declarators in one declaration (`void Start(), Stop();`),
+	// so read every declarator child, not just the first. The field pass ignores
+	// plain function declarators, so anything missed here is missed everywhere.
+	var out []cPlusPlusMemberDeclaration
+	for i := 0; i < int(node.ChildCount()); i++ {
+		if node.FieldNameForChild(i) != "declarator" {
+			continue
+		}
+		child := node.Child(i)
+		if name := cPlusPlusMemberDeclaratorName(child, src); name != "" {
+			out = append(out, cPlusPlusMemberDeclaration{name: name, declarator: child})
+		}
+	}
+	return out
+}
+
+// cPlusPlusMemberDeclaratorName resolves one declarator of an in-class
+// declaration to the method name it declares, or "" when it declares something
+// that is not a method.
+func cPlusPlusMemberDeclaratorName(declarator *sitter.Node, src []byte) string {
+	// A reference or pointer return type wraps the declarator
+	// (`Ledger& operator=(...)`, `Ledger* Clone();`). The parse tree bounds the
+	// walk: every step moves to a strictly smaller span.
+	for validNode(declarator) {
+		if declarator.Type() != "reference_declarator" && declarator.Type() != "pointer_declarator" {
+			break
+		}
+		inner := declarator.ChildByFieldName("declarator")
+		if !validNode(inner) {
+			inner = firstNamedChildOfType(declarator, "function_declarator")
+		}
+		if !descendsStrictly(declarator, inner) {
+			return ""
+		}
+		declarator = inner
+	}
+	if !validNode(declarator) || declarator.Type() != "function_declarator" {
+		return ""
+	}
+	// `int (*Factory())(double);` declares a METHOD returning a function
+	// pointer. The outer function_declarator's own declarator is the
+	// parenthesized_declarator `(*Factory())`, and the name sits on the
+	// function_declarator nested inside it, so stopping at the outer declarator
+	// rejects a valid member declaration. A function-POINTER data member
+	// (`int (*handler_)(int);`) has the same outer shape but its parens hold a
+	// bare identifier with no nested function_declarator, so it reaches nothing
+	// here and stays the field the member pass classifies it as. The parse tree
+	// bounds the walk: every step moves to a strictly smaller span.
+	for {
+		outer := declarator.ChildByFieldName("declarator")
+		if !validNode(outer) || outer.Type() != "parenthesized_declarator" {
+			break
+		}
+		inner := firstDescendantOfType(outer, "function_declarator")
+		if !descendsStrictly(declarator, inner) {
+			return ""
+		}
+		declarator = inner
+	}
+	name := declarator.ChildByFieldName("declarator")
+	if !validNode(name) {
+		return ""
+	}
+	switch name.Type() {
+	case "identifier", // a constructor
+		"field_identifier",     // an ordinary member
+		"destructor_name",      // ~Ledger
+		"qualified_identifier": // a member of a nested or templated scope
+		if !cFamilyNameEndsAtTokenBoundary(name, src) {
+			return ""
+		}
+		text := strings.TrimSpace(name.Content(src))
+		if strings.HasPrefix(text, "operator") &&
+			(len(text) == len("operator") || !isIdentifierByte(text[len("operator")])) {
+			return normalizeCPlusPlusOperatorName(text)
+		}
+		return text
+	case "operator_name":
+		// An operator spelled with PUNCTUATION never arrives here.
+		// maskCPlusPlusOperatorCall rewrites `operator=(` to a same-width `op(`
+		// before tree-sitter sees the file, so the parser reports an ordinary
+		// identifier and the branch above reads the real spelling back out of
+		// the unmasked source at that (unmoved) byte range.
+		//
+		// What is left is the operators spelled with a WORD --
+		// `void* operator new(size_t)`, `void operator delete(void*)` and their
+		// array forms -- which that regex cannot match, because it requires
+		// punctuation between `operator` and the `(`. Nothing rewrites them, so
+		// the node's own range still holds the real name. Discarding it dropped
+		// every in-class allocation and deallocation member: no symbol to search
+		// for, no CONTAINS edge, and no target for a call.
+		if !cFamilyNameEndsAtTokenBoundary(name, src) {
+			return ""
+		}
+		text := normalizeCPlusPlusOperatorName(name.Content(src))
+		// A rewritten range would no longer read as an operator name. Report
+		// nothing rather than a stand-in: a wrong name is worse than a missing
+		// one, because it collides with every other symbol that shares it.
+		if !strings.HasPrefix(text, "operator") ||
+			(len(text) > len("operator") && isIdentifierByte(text[len("operator")])) {
+			return ""
+		}
+		return text
+	}
+	return ""
+}
+
+func normalizeCPlusPlusOperatorName(text string) string {
+	text = normalize(text)
+	suffix := strings.TrimSpace(strings.TrimPrefix(text, "operator"))
+	if suffix == "" {
+		return "operator"
+	}
+	if isIdentifierByte(suffix[0]) {
+		if strings.HasPrefix(suffix, "new") || strings.HasPrefix(suffix, "delete") {
+			suffix = strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(suffix)
+		}
+		return "operator " + suffix
+	}
+	suffix = strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(suffix)
+	return "operator" + suffix
+}
+
+// cPlusPlusMemberDeclarationEntities returns the method symbols an in-class C++
+// declaration declares. It is where a header's interface lives: a class that
+// declares its members and defines them out of line contributed no method
+// symbols at all — nothing to search for, no CONTAINS edge, and nothing for a
+// typed receiver to resolve a call to. The members are bodyless in exactly the
+// sense the field means: the declaration is real (it is where the parameter
+// types are written) but the out-of-line `Type::method` is the definition.
+//
+// This sits beside the walk rather than in entityFromNode because entityFromNode
+// yields at most one entity per node, and `void Start(), Stop();` is one node
+// declaring two methods.
+func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language, scope string) []Entity {
+	if language != "C++" || scope == "" {
+		return nil
+	}
+	members := cPlusPlusMemberDeclarations(node, src)
+	if len(members) == 0 {
+		return nil
+	}
+	// A member function TEMPLATE is written `template<class T> T Get();`, and
+	// the declaration node is only the part after the head. Everything the
+	// symbol reports must come from the whole construct: reading the inner node
+	// alone drops `template<...>` and its constraints from the signature, the
+	// body hash and the source range, so an edit confined to the head produces
+	// no entity change and two overloads separated only by their constraints
+	// collapse onto one fingerprint.
+	span := cPlusPlusDeclarationSpan(node)
+	templateHead := ""
+	if span != node && node.StartByte() > span.StartByte() && int(node.StartByte()) <= len(src) {
+		templateHead = strings.TrimSpace(string(src[span.StartByte():node.StartByte()])) + " "
+	}
+	declarationSignature := signatureFromNode(span, src)
+	// Everything before the first declarator is shared, including virtual,
+	// static, constexpr, attributes and cv-qualified return types.
+	sharedPrefix := ""
+	declaratorCount := 0
+	for i := 0; i < int(node.ChildCount()); i++ {
+		if node.FieldNameForChild(i) == "declarator" {
+			if declaratorCount == 0 {
+				sharedPrefix = string(src[node.StartByte():node.Child(i).StartByte()])
+			}
+			declaratorCount++
+		}
+	}
+	out := make([]Entity, 0, len(members))
+	for _, member := range members {
+		signature := declarationSignature
+		if declaratorCount > 1 {
+			// Several declarators share one declaration, so each method takes
+			// its own declarator text. That keeps both method-method declarations
+			// distinct and a mixed method-field sibling out of the method's
+			// signature and body hash.
+			signature = strings.Join(strings.Fields(templateHead+sharedPrefix+member.declarator.Content(src)), " ")
+		}
+		out = append(out, Entity{
+			Kind:      "method",
+			Name:      qualify(scope, member.name),
+			Signature: signature,
+			StartLine: int(span.StartPoint().Row) + 1,
+			EndLine:   int(span.EndPoint().Row) + 1,
+			// A bodyless declaration has no implementation body to hash. Use
+			// this member's own signature so a sibling declarator in the same
+			// field_declaration cannot make the unchanged method look edited.
+			BodyHash:        hash(normalize(signature)),
+			Fingerprint:     hash(normalize(signature)),
+			bodyless:        true,
+			cPlusPlusOwners: cPlusPlusDeclarationOwners(node, src, scope),
+		})
+		entity := &out[len(out)-1]
+		// Read this member's own parameters, not the template constraint or
+		// a sibling declarator's parameter list. The return type is shared.
+		declarator := member.declarator
+		for validNode(declarator) && declarator.Type() != "function_declarator" {
+			next := declarator.ChildByFieldName("declarator")
+			if !descendsStrictly(declarator, next) {
+				break
+			}
+			declarator = next
+		}
+		if paramText, returnText, known := astSignatureTypeTexts(declarator, src); known {
+			entity.paramTypeText = paramText
+			entity.returnTypeText = returnText
+			if typ := node.ChildByFieldName("type"); validNode(typ) {
+				entity.returnTypeText = typ.Content(src)
+			}
+			entity.signatureTypesKnown = true
+		}
+		entity.parameterNames, entity.parameterNamesKnown = astParameterNames(declarator, src)
+	}
+	return out
+}
+
+// cPlusPlusDefinitionName reads only the declared callable's AST name. Types,
+// parameters and expressions mentioning another method are never candidates.
+// Namespace ancestors supply qualification omitted inside namespace blocks.
+func cPlusPlusDefinitionName(node *sitter.Node, src []byte) string {
+	declarator := node.ChildByFieldName("declarator")
+	for validNode(declarator) {
+		if declarator.Type() == "function_declarator" {
+			name := declarator.ChildByFieldName("declarator")
+			if validNode(name) && name.Type() == "qualified_identifier" {
+				text := strings.TrimSpace(name.Content(src))
+				if strings.HasPrefix(text, "::") {
+					return strings.TrimSpace(strings.TrimPrefix(text, "::"))
+				}
+				for ancestor := node.Parent(); validNode(ancestor); ancestor = ancestor.Parent() {
+					if ancestor.Type() != "namespace_definition" {
+						continue
+					}
+					if ns := ancestor.ChildByFieldName("name"); validNode(ns) {
+						text = strings.TrimSpace(ns.Content(src)) + "::" + text
+					}
+				}
+				return text
+			}
+		}
+		next := declarator.ChildByFieldName("declarator")
+		if !descendsStrictly(declarator, next) {
+			return ""
+		}
+		declarator = next
+	}
+	return ""
+}
+
+// cPlusPlusDeclarationOwners returns lexical namespace/class owner patterns
+// without changing graph-qualified names or IDs. Inline segments are optional.
+func cPlusPlusDeclarationOwners(node *sitter.Node, src []byte, scope string) []string {
+	type segment struct {
+		name       string
+		inlineable bool
+	}
+	immediate := shortEntityName(scope)
+	parts := []segment{{name: immediate}}
+	skippedImmediate := false
+	for current := node.Parent(); validNode(current); current = current.Parent() {
+		switch current.Type() {
+		case "namespace_definition", "class_specifier", "struct_specifier":
+		default:
+			continue
+		}
+		name := current.ChildByFieldName("name")
+		if !validNode(name) {
+			continue
+		}
+		text := strings.TrimSpace(name.Content(src))
+		if text == "" {
+			continue
+		}
+		if !skippedImmediate && text == immediate {
+			skippedImmediate = true
+			continue
+		}
+		inlineable := false
+		if current.Type() == "namespace_definition" {
+			for i := 0; i < int(current.ChildCount()); i++ {
+				if current.Child(i).Type() == "inline" {
+					inlineable = true
+					break
+				}
+			}
+		}
+		parts = append([]segment{{name: text, inlineable: inlineable}}, parts...)
+	}
+	encoded := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name := part.name
+		if part.inlineable {
+			// Private marker consumed by signatureNamesQualifiedMethodPattern;
+			// C++ identifiers cannot contain NUL, so it cannot collide with source.
+			name = "\x00" + name
+		}
+		encoded = append(encoded, name)
+	}
+	return []string{strings.Join(encoded, "::")}
+}
+
+// cPlusPlusDeclarationSpan returns the node that spans a whole in-class
+// declaration. For a member function template the class body holds a
+// template_declaration and the declaration inside it is only the part after
+// `template<...>`, so the template head, its parameters and any constraints sit
+// OUTSIDE the declaration node. Every derived value — signature, body hash,
+// start and end line — must be read from the wrapper, or the head is invisible
+// to change detection and to signature-based disambiguation.
+func cPlusPlusDeclarationSpan(node *sitter.Node) *sitter.Node {
+	if parent := node.Parent(); validNode(parent) && parent.Type() == "template_declaration" {
+		return parent
+	}
+	return node
+}
+
+// cFamilyNameEndsAtTokenBoundary reports whether a name node's range still ends
+// at a token boundary in the ENTITY source. The C++ masks rewrite constructs
+// tree-sitter cannot parse into same-length stand-ins before parsing
+// (`operator=(` becomes `op(`), while entity text is read back from the
+// unmasked file. Where a mask shortened an identifier the two disagree: the
+// node covers `op` and the file has `operator=`, so the name read back is a
+// prefix of a longer token. Rejecting that is what keeps a masked construct
+// from being named after an arbitrary slice of itself — and, because every
+// masked operator shortens to the same stand-in, from putting two members of
+// one class under one name.
+func cFamilyNameEndsAtTokenBoundary(name *sitter.Node, src []byte) bool {
+	isIdent := func(b byte) bool {
+		return b == '_' || ('0' <= b && b <= '9') || ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z')
+	}
+	end := int(name.EndByte())
+	if end > 0 && end < len(src) && isIdent(src[end]) && isIdent(src[end-1]) {
+		return false
+	}
+	start := int(name.StartByte())
+	if start > 0 && start < len(src) && isIdent(src[start]) && isIdent(src[start-1]) {
+		return false
+	}
+	return true
+}
+
 // cFamilyMemberDeclaratorName unwraps the pointer/reference/array declarator
 // chain of a C-family data member down to the declared name, stopping at a
 // function declarator: `int (*handler)(int)` is a function-pointer member and
@@ -4826,6 +5241,15 @@ func cFamilyMemberDeclaratorName(node *sitter.Node, src []byte) string {
 		case "field_identifier", "identifier":
 			return strings.TrimSpace(node.Content(src))
 		case "pointer_declarator", "array_declarator", "parenthesized_declarator", "reference_declarator":
+			// Parens holding a nested function_declarator are the return type of
+			// a METHOD (`int (*Factory())(double);`), not the name of a
+			// function-POINTER member (`int (*handler_)(int);`). The
+			// field_identifier fallback below reaches the same name in both
+			// shapes, so without this the one construct would enter the graph
+			// twice, as a field here and as a method from the declaration pass.
+			if node.Type() == "parenthesized_declarator" && validNode(firstDescendantOfType(node, "function_declarator")) {
+				return ""
+			}
 			next = node.ChildByFieldName("declarator")
 			if !validNode(next) {
 				next = firstChildDeclarator(node)
