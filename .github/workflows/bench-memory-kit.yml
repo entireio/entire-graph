@@ -1,0 +1,35 @@
+name: bench-memory-kit
+
+# Reproducibility guards for the LoCoMo reproduction kit under bench/memory:
+# adapter configuration must be portable or required-and-validated, a failed
+# retrieval subprocess must not be scored as an empty retrieval, the launcher
+# must refuse a resume mode it cannot honour, and the patch set that CI applies
+# to the freshly cloned upstream harness must be internally consistent.
+#
+# Pure standard-library Python: the adapters under test import nothing external,
+# so this job needs no dependency installation and cannot drift with the lock.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kit-reproducibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Kit reproducibility guards
+        run: >-
+          python -B -m unittest
+          bench.memory.benchmarks.common.test_kit_reproducibility
+          bench.memory.ci.test_kit_launcher_and_patches

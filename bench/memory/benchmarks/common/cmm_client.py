@@ -25,7 +25,15 @@ Is cmm a memory system?  It has both halves, and they do work on prose:
   (``~/memarms/inputs/cmm-v0.9.0-markdown-sections.patch``) drops ``Section``
   from that exclusion list and nothing else; the patched build returns the
   section text.  This client defaults to the PATCHED binary, i.e. the most
-  charitable version of the product; ``CMM_BIN`` selects the other.
+  charitable version of the product; ``CMM_BUILD=stock`` selects the other.
+
+  Because the two builds differ only in a string constant, and a stock build
+  scores a structural zero on prose, the arm must never run a binary it has not
+  identified: the resolved binary is fingerprinted against the declared build
+  at construction and an unrecognised or mismatched build ABORTS the run. There
+  is no fallback -- attributing an unknown build's score to the published
+  ``cmm (patched, Markdown-Section)`` row is the silent-wrong-number failure
+  this kit exists to prevent.
 
 Fairness contract (identical to the entire / mem0 / cognee / graphify arms):
   * ingest bytes IDENTICAL to the entire-graph arm (same session grouping, same
@@ -39,7 +47,15 @@ Fairness contract (identical to the entire / mem0 / cognee / graphify arms):
   * state roots under ``$HOME`` (``/tmp`` is wiped by systemd on boot).
 
 Env:
-  CMM_BIN              binary (default: the patched build)
+  CMM_BIN              REQUIRED. The cmm binary: a path, or a bare name resolved
+                       on PATH. There is deliberately no default -- an implicit
+                       PATH lookup silently picks up whichever build happens to
+                       be installed, and the two builds do not score alike.
+  CMM_BUILD            which build is being declared: ``patched`` (default; the
+                       published ``cmm (patched, Markdown-Section)`` row) or
+                       ``stock`` (upstream v0.9.0, which retrieves nothing on
+                       prose). The binary is fingerprinted and must BE the
+                       declared build -- see ``_verify_build``.
   CMM_STATE_ROOT       state root (default: $HOME/memarms/state/cmm_corpora/<pid>)
   CMM_TIMEOUT          per-subprocess timeout seconds (default 900)
 """
@@ -61,9 +77,135 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_BIN = (
-    "/home/suhaan_entire_io/memarms/inputs/bin/cmm-patched/codebase-memory-mcp"
-)
+# The upstream executable name, used only in operator-facing messages. It is
+# NOT a default: resolving it implicitly is exactly how a stock build would get
+# published under the patched build's label.
+_UPSTREAM_BIN = "codebase-memory-mcp"
+
+# The BM25 exclusion list of ``src/mcp/mcp.c::bm25_search``, before and after
+# ``patches/0005-cmm-v0.9.0-markdown-sections.patch``. Both occurrences in that
+# function are adjacent C string literals, so each form is concatenated at
+# compile time and survives verbatim in the binary's read-only data: the build
+# is therefore identifiable from the file alone, with no execution, no version
+# flag to trust, and no network.
+_STOCK_MARKER = b"'File','Folder','Module','Section','Variable','Project'"
+_PATCHED_MARKER = b"'File','Folder','Module','Variable','Project'"
+_MARKERS = {"stock": _STOCK_MARKER, "patched": _PATCHED_MARKER}
+_DEFAULT_BUILD = "patched"
+
+_PATCH_REF = "patches/0005-cmm-v0.9.0-markdown-sections.patch"
+_PUBLISHED_LABEL = "cmm (patched, Markdown-Section)"
+
+
+def _resolve_binary(value: str | None) -> str:
+    """Resolve and validate the cmm binary once, at construction.
+
+    ``CMM_BIN`` is required: there is no default to fall back to, because a
+    bare-name PATH lookup resolves to whichever build is installed and the two
+    builds score differently on this corpus. A value containing a path
+    separator must exist and be executable; a bare name is looked up on PATH.
+    Either way the failure is one clear error naming ``CMM_BIN``, not a
+    ``FileNotFoundError`` raised per subprocess once the run is under way.
+
+    The result is always ABSOLUTE, so the binary fingerprinted here is the
+    binary executed later. ``str(Path("./cmm"))`` drops the ``./`` and turns a
+    deliberate this-directory spelling into a bare name, which a later
+    subprocess resolves on PATH -- against a possibly different build, or not
+    at all. ``os.path.abspath`` only normalises and joins with the cwd; it does
+    not follow symlinks, so the validated target itself is unchanged.
+    """
+    value = (value or "").strip()
+    if not value:
+        raise RuntimeError(
+            "CMM_BIN is required and was not set. Point it at the cmm binary "
+            f"(a path, or the bare name {_UPSTREAM_BIN!r} to resolve on PATH). "
+            "This arm has no default on purpose: the published row is the "
+            f"{_PATCH_REF} build, and an implicit PATH lookup would silently "
+            "score whichever build happened to be installed."
+        )
+    separators = [os.sep] + ([os.altsep] if os.altsep else [])
+    if any(sep in value for sep in separators):
+        path = Path(value).expanduser()
+        if not (path.is_file() and os.access(path, os.X_OK)):
+            raise RuntimeError(
+                f"CMM_BIN={value!r} is not an executable file."
+            )
+        return os.path.abspath(path)
+    found = shutil.which(value)
+    if not found:
+        raise RuntimeError(
+            f"the cmm binary {value!r} named by CMM_BIN was not found on PATH. "
+            "Put it on PATH, or export CMM_BIN=/path/to/codebase-memory-mcp."
+        )
+    return os.path.abspath(found)
+
+
+def _fingerprints(path: str) -> set[str]:
+    """Which build fingerprints ``path`` carries, scanned without executing it."""
+    overlap = max(len(m) for m in _MARKERS.values()) - 1
+    found: set[str] = set()
+    try:
+        with open(path, "rb") as handle:
+            carry = b""
+            while True:
+                chunk = handle.read(1 << 20)
+                if not chunk:
+                    break
+                window = carry + chunk
+                for build, marker in _MARKERS.items():
+                    if marker in window:
+                        found.add(build)
+                if len(found) == len(_MARKERS):
+                    break
+                carry = window[-overlap:]
+    except OSError as exc:
+        raise RuntimeError(
+            f"CMM_BIN={path!r} could not be read to verify which build it is: {exc}"
+        ) from exc
+    return found
+
+
+def _verify_build(path: str, declared: str) -> str:
+    """Refuse any binary that is not positively identified as ``declared``.
+
+    Fail-closed in every direction: the shipped build under the patched label
+    would publish a structural zero as a real score, and an unidentifiable
+    build would publish an unknown one. Neither is recoverable after the fact,
+    so both abort here rather than at analysis time.
+    """
+    if declared not in _MARKERS:
+        raise RuntimeError(
+            f"CMM_BUILD={declared!r} is not a known cmm build. Use "
+            f"{_DEFAULT_BUILD!r} (the published {_PUBLISHED_LABEL} row, built "
+            f"with {_PATCH_REF}) or 'stock' (upstream v0.9.0)."
+        )
+    found = _fingerprints(path)
+    if found == {declared}:
+        return declared
+    if found == {"stock"} and declared == "patched":
+        raise RuntimeError(
+            f"CMM_UNPATCHED_BINARY: CMM_BIN={path!r} is the SHIPPED cmm build -- "
+            "its BM25 queries still exclude 'Section', so Markdown headings are "
+            "indexed and never retrieved and this corpus scores a structural "
+            f"zero. The published row is {_PUBLISHED_LABEL} and requires "
+            f"{_PATCH_REF}. Rebuild the binary with that patch, or set "
+            "CMM_BUILD=stock to score the shipped build deliberately."
+        )
+    if found == {"patched"} and declared == "stock":
+        raise RuntimeError(
+            f"CMM_BUILD=stock was declared but CMM_BIN={path!r} carries the "
+            f"{_PATCH_REF} exclusion list, i.e. it is the patched build. A run "
+            "must be labelled with the build it actually used; unset CMM_BUILD "
+            f"to score it as {_PUBLISHED_LABEL}."
+        )
+    raise RuntimeError(
+        f"CMM_UNVERIFIED_BINARY: could not identify the build of CMM_BIN={path!r} "
+        f"(fingerprints found: {sorted(found) or 'none'}). Exactly one of the "
+        "shipped and patched BM25 exclusion lists must be present, so this "
+        f"binary is refused rather than have its score attributed to "
+        f"{_PUBLISHED_LABEL}. Build cmm v0.9.0 with {_PATCH_REF} and point "
+        "CMM_BIN at the resulting executable."
+    )
 
 
 def _safe_id(value: str) -> str:
@@ -86,7 +228,12 @@ def _iso(timestamp: int | None) -> str:
 
 class CmmClient:
     def __init__(self, rpm: int = 60, **kwargs: Any) -> None:
-        self.binary = os.getenv("CMM_BIN", _DEFAULT_BIN)
+        self.binary = _resolve_binary(os.getenv("CMM_BIN"))
+        self.build = _verify_build(
+            self.binary,
+            (os.getenv("CMM_BUILD") or _DEFAULT_BUILD).strip().lower(),
+        )
+        logger.info("cmm binary=%s build=%s", self.binary, self.build)
         self.timeout = int(os.getenv("CMM_TIMEOUT", "900"))
         root = os.getenv("CMM_STATE_ROOT") or os.path.join(
             os.path.expanduser("~"), "memarms", "state",
