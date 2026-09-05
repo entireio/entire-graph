@@ -1,0 +1,51 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "fb35ff7c49aa",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-05T19:04:15.531353Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0036-compiler-overlay.md",
+    "internal/sem/compiler_overlay.go",
+    "internal/sem/compiler_overlay_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "6e0d474d1bae",
+  "checkpoint_transcript_start": 2640,
+  "transcript_lines_at_start": 2640,
+  "compact_transcript_start": 318,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 1
+  },
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-05T19:04:15.210578Z",
+    "agent_lines": 740,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 740,
+    "total_lines_changed": 740,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "fb35ff7c49aa",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0036-compiler-overlay.md",
+    "internal/sem/compiler_overlay.go",
+    "internal/sem/compiler_overlay_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fb/35ff7c49aa/0/metadata.json",
+      "transcript": "/fb/35ff7c49aa/0/full.jsonl",
+      "compact_transcript": "/fb/35ff7c49aa/0/transcript.jsonl",
+      "content_hash": "/fb/35ff7c49aa/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 1
+  }
+}
