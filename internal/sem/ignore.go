@@ -268,6 +268,46 @@ func boundRuleText(rule string) string {
 	return rule[:cut] + "..."
 }
 
+// maxRepoExclusionPathBytes bounds the path ONE sample entry carries, and
+// maxRepoExclusionSamplePathBytes bounds what all of them carry together.
+//
+// maxRepoExclusionRuleBytes above bounds Rule and says Path and Source bound
+// themselves because they are filesystem paths. That is true of the worktree
+// walk and FALSE of the committed-tree listing this ledger also fills
+// (filterIgnoredPaths, provider.go): those paths are names read out of a Git
+// tree object, and a tree entry's name is bounded by nothing a checkout has to
+// honour. `git update-index --add --cacheinfo` writes a 200,000-byte path into
+// the index and `git write-tree` commits it, no file of that name ever having
+// existed; `git ls-tree` then hands it back. Twelve such paths in one committed
+// tree put ten of them in the sample and turned a two-file repository's report
+// into 2,000,734 serialized bytes — emitted in full on every JSON response and
+// TWICE on an NDJSON stream (the leading record and the summary repeat it), plus
+// once more through the W_REPO_IGNORED_SOURCE warning, which carries
+// Sample[0].Path in both its detail and its file_path.
+//
+// The per-entry bound keeps a hostile name identifiable rather than dropping it;
+// the aggregate is what makes the payload's size a property of this file. Both
+// sit well above anything a filesystem can produce (Linux PATH_MAX is 4096,
+// macOS 1024, and a real monorepo path is a few hundred bytes), so a repository
+// that is not constructing one never reaches either.
+const (
+	maxRepoExclusionPathBytes       = 1024
+	maxRepoExclusionSamplePathBytes = 4096
+)
+
+// boundExclusionPath truncates a repository-controlled path the same way
+// boundRuleText truncates a pattern: on a rune boundary, and marked as cut.
+func boundExclusionPath(path string) string {
+	if len(path) <= maxRepoExclusionPathBytes {
+		return path
+	}
+	cut := maxRepoExclusionPathBytes
+	for cut > 0 && !utf8.RuneStart(path[cut]) {
+		cut--
+	}
+	return path[:cut] + "..."
+}
+
 // repoIgnoreLedger accumulates repository-controlled exclusions during one
 // listing. A nil ledger accumulates nothing, so callers that do not want the
 // accounting pay for none of it.
@@ -278,9 +318,14 @@ type repoIgnoreLedger struct {
 	// seen keeps the count a count of PATHS. A listing can offer the same path
 	// twice (Git's tracked listing plus an include file's re-inclusion), and a
 	// disclosure that inflates is a disclosure readers stop believing.
-	seen      map[string]struct{}
-	sample    []RepoExclusion
-	truncated bool
+	seen   map[string]struct{}
+	sample []RepoExclusion
+	// samplePathBytes is what the retained sample paths cost so far, against
+	// maxRepoExclusionSamplePathBytes. See that constant: a committed tree can
+	// name a path no filesystem could hold, so the sample's size has to be a
+	// property of this file rather than of the repository being searched.
+	samplePathBytes int
+	truncated       bool
 	// sampleClosed stops the ledger NAMING any further exclusion. It is set when
 	// a directory read stopped at a filesystem-ordered prefix (readDirBounded),
 	// because from that point on WHICH paths the walk goes on to see is a
@@ -459,10 +504,34 @@ func (l *repoIgnoreLedger) note(exclusion RepoExclusion) {
 	// signal a sample that simply overflowed its cap raises, and for the reader
 	// the same instruction: the full report is on the --format json channel.
 	if !l.sampleClosed && len(l.sample) < maxRepoExclusionSample {
-		l.sample = append(l.sample, exclusion)
-		return
+		// Bounded HERE, beside the rule text and for the same reason, and charged
+		// against the whole sample's allowance BEFORE the entry is retained: a
+		// path this ledger has already kept is a path every JSON response carries.
+		// The dedupe above deliberately keyed on the full path, so truncation
+		// cannot merge two distinct exclusions into one.
+		if path, admitted := l.admitSamplePath(exclusion.Path); admitted {
+			exclusion.Path = path
+			l.sample = append(l.sample, exclusion)
+			return
+		}
 	}
 	l.truncated = true
+}
+
+// admitSamplePath bounds one path and charges it to the sample's aggregate
+// path allowance, reporting whether the sample can still afford to name it.
+//
+// A path that does not fit leaves the sample unchanged and marks it truncated,
+// which is the signal the entry-count cap already raises and means the same
+// thing to a reader: names were withheld, the count did not change, and the
+// whole report is on the --format json channel.
+func (l *repoIgnoreLedger) admitSamplePath(path string) (string, bool) {
+	bounded := boundExclusionPath(path)
+	if len(bounded) > maxRepoExclusionSamplePathBytes-l.samplePathBytes {
+		return "", false
+	}
+	l.samplePathBytes += len(bounded)
+	return bounded, true
 }
 
 // closeSample stops the ledger naming further exclusions. See sampleClosed.
