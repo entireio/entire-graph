@@ -50,8 +50,8 @@ func qualityScore(required, observed []string) qualityCounts {
 	return c
 }
 func TestLiveCompilerQualityEvaluationV1(t *testing.T) {
-	if os.Getenv("ENTIRE_GRAPH_COMPILER_LIVE") != "1" {
-		t.Skip("explicit frozen Linux quality evaluation")
+	if os.Getenv("ENTIRE_GRAPH_COMPILER_LIVE") != "1" || os.Getenv("ENTIRE_GRAPH_COMPILER_QUALITY_OUTPUT") == "" {
+		t.Skip("explicit frozen Linux quality evaluation and output path required")
 	}
 	files := map[string]string{
 		"go.mod":             "module fixture.local/quality\n\ngo 1.24\n",
