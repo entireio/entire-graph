@@ -1446,7 +1446,8 @@ func searchVerifyBundlePrefix(hasGemfile bool) string {
 // `task(:test)` and gets declined loses a command that would have run.
 func searchVerifyRakefileDefinesTest(content string) bool {
 	return searchVerifyRakeTestTaskGeneratorPattern.MatchString(content) ||
-		searchVerifyRakeTestTaskPattern.MatchString(content)
+		searchVerifyRakeTestTaskPattern.MatchString(content) ||
+		searchVerifyRakeDefineTaskPattern.MatchString(content)
 }
 
 // searchVerifyRakeTestTaskGeneratorPattern matches a Rake::TestTask / Minitest::TestTask generator
@@ -1500,6 +1501,14 @@ var searchVerifyRakeTestTaskGeneratorPattern = regexp.MustCompile(
 // `task test_helper: :compile` still does not match.
 var searchVerifyRakeTestTaskPattern = regexp.MustCompile(
 	`(?m)^[ \t]*(?:multi)?task[ \t(]+(?::test\b|["']test["']|test[ \t]*:)`)
+
+// searchVerifyRakeDefineTaskPattern matches the API the `task` keyword is sugar for. Rake::DSL#task
+// calls Rake::Task.define_task, so `Rake::Task.define_task(:test)` DECLARES the task exactly as
+// `task :test` does — it is rarer, not weaker, and declining it loses a `rake test` that would have
+// run. The `:test` argument is required by the pattern, so this widens what counts as a declaration
+// without admitting a Rakefile that has no such task.
+var searchVerifyRakeDefineTaskPattern = regexp.MustCompile(
+	`(?m)^[ \t]*(?:[A-Za-z_]\w*::)*Task\.define_task[ \t(]+(?::test\b|["']test["']|test[ \t]*:)`)
 
 func deriveSearchVerifySuiteMake(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	content, ok := evidence.file(searchVerifyJoin(dir, "Makefile"))

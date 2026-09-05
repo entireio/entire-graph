@@ -1199,3 +1199,62 @@ func TestSearchVerifyGradleIncludeArgumentsMustBeLiterals(t *testing.T) {
 		})
 	}
 }
+
+// TestSearchVerifyRakeDefineTaskDeclaresTheTask pins the API form of a task declaration.
+//
+// `task :test` is sugar: Rake::DSL#task calls Rake::Task.define_task, so a Rakefile spelling it
+// directly declares the task exactly as the keyword does. Rejecting it costs a `rake test` that
+// would have run, which is a coverage loss rather than a wrong command — but a loss with no reason
+// behind it. The negative case is what keeps the widening honest: a define_task for a DIFFERENT task
+// still licenses nothing, because `rake test` would answer "Don't know how to build task 'test'".
+func TestSearchVerifyRakeDefineTaskDeclaresTheTask(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		rakefile    string
+		wantCommand string
+	}{
+		{
+			name:        "the fully qualified API call",
+			rakefile:    "Rake::Task.define_task(:test)\n",
+			wantCommand: "rake test",
+		},
+		{
+			name:        "the same call without parentheses",
+			rakefile:    "Rake::Task.define_task :test\n",
+			wantCommand: "rake test",
+		},
+		{
+			name:     "a define_task for another task declares nothing",
+			rakefile: "Rake::Task.define_task(:lint)\n",
+		},
+		{
+			name:     "a mention in a comment is still not a declaration",
+			rakefile: "# Rake::Task.define_task(:test) would work here\n",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			files := map[string]string{
+				"Rakefile":     testCase.rakefile,
+				"lib/thing.rb": "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "lib/thing.rb"}, &evidence)
+			if testCase.wantCommand == "" {
+				if got != nil {
+					t.Fatalf("command = %q, want silence: %q declares no test task",
+						got.Command, testCase.rakefile)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("expected %q, got silence for %q", testCase.wantCommand, testCase.rakefile)
+			}
+			if got.Command != testCase.wantCommand {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.wantCommand)
+			}
+		})
+	}
+}
