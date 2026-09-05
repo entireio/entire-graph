@@ -1,9 +1,9 @@
 package sem
 
 // This file is an opt-in, one-request-per-process evaluation harness for P1.
-// It deliberately lives in a _test.go file: GraphMark supplies the repository
-// checkout, mutation, cache directory, and manifest, while the normal product
-// binary and process environment remain the thing being measured. The harness
+// It lives in a _test.go file: the campaign coordinator supplies the repository,
+// mutation, cache directory and manifest. One frozen evaluation executable calls
+// production APIs in both arms; it is not the distributed CLI binary. The harness
 // never edits a corpus file.
 
 import (
@@ -148,7 +148,6 @@ type extractionCorpusObservation struct {
 	SemanticBytes         int                       `json:"semantic_bytes,omitempty"`
 	PeakRSSBytes          any                       `json:"peak_rss_bytes"`
 	CacheBytes            any                       `json:"cache_bytes"`
-	SourceStale           bool                      `json:"stale_source"`
 	Extraction            any                       `json:"extraction"`
 	PartialFailuresCount  int                       `json:"partial_failures_count"`
 	PartialFailuresSHA256 string                    `json:"partial_failures_sha256,omitempty"`
@@ -406,12 +405,11 @@ func extractionCorpusSnapshotDigest(snapshot ProviderSnapshot) (string, int, err
 
 func extractionCorpusSearchDigest(response SearchResponse) (string, int, error) {
 	response.OperationInputs = nil
-	response.Stats.Extraction = nil
-	response.Stats.IndexLatencyMS = 0
-	response.Stats.QueryLatencyMS = 0
-	response.Stats.TotalLatencyMS = 0
-	response.Stats.SearchLatencyMS = 0
-	response.Stats.PreselectLatencyMS = 0
+	// SearchStats is operational telemetry: candidate counts, preselection
+	// backend/read counts, cache state, and latency can differ between reuse
+	// arms while returned results and guidance remain identical. Raw Stats is
+	// retained separately in the observation.
+	response.Stats = SearchStats{}
 	data, err := json.Marshal(response)
 	if err != nil {
 		return "", 0, err
@@ -432,21 +430,26 @@ func extractionCorpusStatus(requestErr error, failures int) string {
 
 func extractionCorpusTelemetry(value *ExtractionStats) any {
 	if value == nil {
-		return map[string]any{"stale_source": false, "unchanged_reparses": nil}
+		return map[string]any{"unchanged_reparses": nil}
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
-		return map[string]any{"stale_source": false, "unchanged_reparses": nil}
+		return map[string]any{"unchanged_reparses": nil}
 	}
 	var telemetry map[string]any
 	if err := json.Unmarshal(data, &telemetry); err != nil {
-		return map[string]any{"stale_source": false, "unchanged_reparses": nil}
+		return map[string]any{"unchanged_reparses": nil}
 	}
-	// The provider exposes files parsed/reused, which is the observable
-	// unchanged-reparse count for this harness. The coordinator still checks
-	// source identity and rejects rows whose captured inputs differ.
-	telemetry["unchanged_reparses"] = value.FilesParsed
-	telemetry["stale_source"] = false
+	// FilesParsed is the native extraction count. It does not prove that every
+	// parsed file was an eligible unchanged input: transient failures, policy
+	// changes, and scenario edits can contribute to it. Only an exact zero can
+	// establish zero unchanged reparses; a positive count is explicitly
+	// evidence-incomplete for that gate rather than a fabricated eligible count.
+	if value.FilesParsed == 0 {
+		telemetry["unchanged_reparses"] = int64(0)
+	} else {
+		telemetry["unchanged_reparses"] = nil
+	}
 	return telemetry
 }
 
@@ -500,7 +503,7 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 		Repository: config.Repository, RepositoryPath: config.RepositoryPath, Operation: config.Operation,
 		Mode: config.Mode, CacheMode: config.CacheMode, CachePath: config.CachePath, Profile: config.Profile,
 		Query: config.Query, ProviderVersion: config.ProviderVersion, MutationID: config.Manifest.MutationID,
-		SourceDigest: config.Manifest.SourceDigest, BinarySHA256: extractionBuildIdentity(), Status: "error",
+		SourceDigest: config.Manifest.SourceDigest, Status: "error",
 		StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Scenario: config.Scenario,
 		Trial: config.Trial, Reuse: config.Reuse, Verb: config.Operation,
 	}
@@ -516,6 +519,8 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 	var stats any
 	var completeness any
 	var extraction *ExtractionStats
+	var snapshotForDigest *ProviderSnapshot
+	var searchForDigest *SearchResponse
 
 	if config.Operation == "snapshot" {
 		options := ProviderSnapshotOptions{
@@ -533,9 +538,7 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 		serializeStarted := time.Now()
 		_, serializeErr = json.Marshal(snapshot)
 		serializationNS = time.Since(serializeStarted).Nanoseconds()
-		if requestErr == nil && serializeErr == nil {
-			semanticDigest, semanticBytes, serializeErr = extractionCorpusSnapshotDigest(snapshot)
-		}
+		snapshotForDigest = &snapshot
 	} else {
 		options := SearchOptions{
 			Compiler: nil, Ranking: "current", ExtractionReuse: config.Reuse, CacheDir: config.CachePath,
@@ -552,9 +555,7 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 		serializeStarted := time.Now()
 		_, serializeErr = json.Marshal(response)
 		serializationNS = time.Since(serializeStarted).Nanoseconds()
-		if requestErr == nil && serializeErr == nil {
-			semanticDigest, semanticBytes, serializeErr = extractionCorpusSearchDigest(response)
-		}
+		searchForDigest = &response
 		if searchStats, ok := stats.(SearchStats); ok {
 			phases["index"] = extractionCorpusPhase{NS: searchStats.IndexLatencyMS * int64(time.Millisecond), FilesDone: searchStats.FilesIndexed}
 			phases["preselect"] = extractionCorpusPhase{NS: searchStats.PreselectLatencyMS * int64(time.Millisecond)}
@@ -562,11 +563,21 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 			phases["total"] = extractionCorpusPhase{NS: searchStats.TotalLatencyMS * int64(time.Millisecond)}
 		}
 	}
-	productNS := time.Since(requestStarted).Nanoseconds() - serializationNS
+	// Stop the request clock before canonical verification and hashing. The
+	// latter is harness validation work and must not inflate elapsed_ns.
+	elapsedNS := time.Since(requestStarted).Nanoseconds()
+	if requestErr == nil && serializeErr == nil {
+		if snapshotForDigest != nil {
+			semanticDigest, semanticBytes, serializeErr = extractionCorpusSnapshotDigest(*snapshotForDigest)
+		} else if searchForDigest != nil {
+			semanticDigest, semanticBytes, serializeErr = extractionCorpusSearchDigest(*searchForDigest)
+		}
+	}
+	productNS := elapsedNS - serializationNS
 	if productNS < 0 {
 		productNS = 0
 	}
-	observation.ElapsedNS = time.Since(requestStarted).Nanoseconds()
+	observation.ElapsedNS = elapsedNS
 	observation.WallNS = observation.ElapsedNS
 	phases["product"] = extractionCorpusPhase{NS: productNS}
 	phases["serialization"] = extractionCorpusPhase{NS: serializationNS}
@@ -584,9 +595,9 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 	observation.WarningsCount = len(warnings)
 	observation.WarningsSHA256 = extractionCorpusWarningDigest(warnings)
 	observation.Extraction = extractionCorpusTelemetry(extraction)
-	observation.PeakRSSBytes = nil  // filled by the external per-process collector
-	observation.CacheBytes = nil    // filled by the runner's cache namespace accounting
-	observation.SourceStale = false // the coordinator validates source_digest around the request
+	observation.PeakRSSBytes = nil // filled by the external per-process collector
+	observation.CacheBytes = nil   // filled by the runner's cache namespace accounting
+	observation.BinarySHA256 = extractionBuildIdentity()
 	observation.Stats = stats
 	observation.Completeness = completeness
 	observation.Status = extractionCorpusStatus(requestErr, len(failures))
@@ -625,6 +636,31 @@ func TestExtractionCorpusEvaluationCanonicalDigest(t *testing.T) {
 	differentDigest, _, err := extractionCorpusSnapshotDigest(changed)
 	if err != nil || digest == differentDigest {
 		t.Fatalf("semantic failure change did not change digest: %q", digest)
+	}
+}
+
+func TestExtractionCorpusEvaluationSearchDigestExcludesOperationalStats(t *testing.T) {
+	response := SearchResponse{
+		Query: "trace request routing", Results: []SearchResult{{Rank: 1, FilePath: "handler.go", StartLine: 4, EndLine: 8, Snippet: "route()"}},
+		Warnings: []ProviderWarning{{Code: "W_TEST", Severity: "warning", EffectOnCompleteness: "none"}},
+		Stats:    SearchStats{IndexCacheHit: true, PreselectionBackend: "git-grep", TotalLatencyMS: 17, ResultBytes: 42},
+	}
+	digest, _, err := extractionCorpusSearchDigest(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedStats := response
+	changedStats.Stats = SearchStats{IndexCacheHit: false, PreselectionBackend: "walk", TotalLatencyMS: 99, ResultBytes: 1000}
+	changedDigest, _, err := extractionCorpusSearchDigest(changedStats)
+	if err != nil || digest != changedDigest {
+		t.Fatalf("operational search stats changed semantic digest: %q != %q (%v)", digest, changedDigest, err)
+	}
+	changedResult := response
+	changedResult.Results = append([]SearchResult(nil), response.Results...)
+	changedResult.Results[0].Snippet = "different()"
+	differentDigest, _, err := extractionCorpusSearchDigest(changedResult)
+	if err != nil || digest == differentDigest {
+		t.Fatalf("semantic search result change did not change digest: %q", digest)
 	}
 }
 

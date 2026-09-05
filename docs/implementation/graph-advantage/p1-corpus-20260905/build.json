@@ -1,0 +1,29 @@
+{
+  "artifact": "p1-20260905-evaluator",
+  "built_at": "2026-09-05T21:26:34Z",
+  "binary_sha256": "640f15267da19c52bac73032b942149fa99a56beea676823ca06754f11955793",
+  "binary_blob": "p1-20260905-evaluator",
+  "source_archive_blob": "p1-20260905-source.tar.gz",
+  "source_archive_sha256": "5ed58ea34aaa3027d921f25d6ab566fb06a5469ab84df6f4f70ec995a7516e14",
+  "source_file_hash_manifest_sha256": "4408c46be0bc6ca7f618939445dedcec90a2793e0d45b705b1ac767baafbbeda",
+  "source_file_count": 697,
+  "code_commit_at_build": "bba7734b32cec697d912fed78b807493089d26a0",
+  "source_tree_scope": [
+    "internal",
+    "cmd",
+    "go.mod",
+    "go.sum"
+  ],
+  "host": "graph-validation-linux",
+  "os_arch": "linux/amd64",
+  "go": "go1.26.1",
+  "go_root": "/usr/local/go",
+  "gomodcache": "/opt/graph-validation/gopath",
+  "gocache": "/opt/graph-validation/cache",
+  "build_command": "go test -c -o /opt/p1/p1-evaluator ./internal/sem",
+  "race": false,
+  "smoke_command": "p1-evaluator -test.run='TestExtractionCorpusEvaluation|TestFSharpDocstringExampleIsNotACall$' -test.count=1 -test.v",
+  "smoke_result": "passed",
+  "measurement_run": false,
+  "notes": "Source archive included the frozen evaluator harness plus the coordinator-approved working-tree telemetry correction; no real-corpus observations were run."
+}
