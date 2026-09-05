@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -178,5 +179,54 @@ func TestExplainPathRankMatchesOnComponentBoundaries(t *testing.T) {
 				t.Fatalf("explainPathRank(%q, %q) = %d, want %d", testCase.symbol, testCase.err, got, testCase.want)
 			}
 		})
+	}
+}
+
+// The dedupe set exists to bound what an UNTRUSTED build can make this process remember. It was
+// also, silently, deciding how many symbols the CALLER was allowed to ask for: collection stops
+// dead once the set is full, so `--max-symbols 1500` resolved 1024 and said nothing about it.
+// The two limits answer different questions and only one of them is attacker-controlled.
+func TestExplainHonoursAMaxSymbolsAboveTheScannedNameBudget(t *testing.T) {
+	t.Parallel()
+	const limit = explainMaxScannedNames + 476 // 1500: above the budget, and not a multiple of it
+	var build strings.Builder
+	for i := 0; i < limit+500; i++ {
+		fmt.Fprintf(&build, "./x.go:%d:1: undefined: Sym%d\n", i+1, i)
+	}
+	candidates, scanned, err := explainCandidates(strings.NewReader(build.String()), limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != limit {
+		t.Fatalf("candidates = %d, want %d: --max-symbols above %d must not be silently clamped to it",
+			len(candidates), limit, explainMaxScannedNames)
+	}
+	// Every one of them distinct: the set still has to dedupe across the whole raised range.
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		if seen[candidate.Name] {
+			t.Fatalf("duplicate candidate %q: the raised cap must not disable dedupe", candidate.Name)
+		}
+		seen[candidate.Name] = true
+	}
+	if scanned < limit {
+		t.Fatalf("scanned = %d, want >= %d", scanned, limit)
+	}
+}
+
+// The other half: with a limit at or below the budget, the budget still binds, because THAT is the
+// case where the build rather than the caller is choosing how much is remembered.
+func TestExplainStillBoundsWhatAnUntrustedBuildCanMakeItRemember(t *testing.T) {
+	t.Parallel()
+	var build strings.Builder
+	for i := 0; i < explainMaxScannedNames+4000; i++ {
+		fmt.Fprintf(&build, "./x.go:%d:1: undefined: Sym%d\n", i+1, i)
+	}
+	_, scanned, err := explainCandidates(strings.NewReader(build.String()), 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scanned != explainMaxScannedNames {
+		t.Fatalf("scanned = %d, want it to saturate at %d", scanned, explainMaxScannedNames)
 	}
 }

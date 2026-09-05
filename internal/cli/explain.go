@@ -63,6 +63,10 @@ const (
 	// build could otherwise grow it without limit. Scanned saturates here rather than growing: a
 	// build naming more than a thousand distinct missing symbols is already "everything is broken",
 	// and an exact count of it buys nothing worth unbounded memory.
+	//
+	// It is a FLOOR, not a ceiling: a caller asking for more symbols than this raises it (see
+	// explainCandidates). The bound exists to keep the BUILD from choosing how much is remembered,
+	// and the caller's own --max-symbols is not the build.
 	explainMaxScannedNames = 1024
 )
 
@@ -348,6 +352,18 @@ func explainCandidates(input io.Reader, limit int) ([]explainCandidate, int, err
 	if limit <= 0 {
 		limit = explainMaxSymbols
 	}
+	// The name budget bounds what an UNTRUSTED build can make this process remember; it is not a
+	// second opinion on what the CALLER may ask for. Those are different questions and only one of
+	// them has an attacker on the other end. Collection stops when the set stops growing, so a
+	// budget below `limit` silently answered a smaller question than the one asked: --max-symbols
+	// 1500 resolved 1024 and reported nothing. Raising the budget to meet the limit costs nothing
+	// that was not already spent — `candidates` is sized by `limit` regardless, and each entry
+	// there is strictly heavier than a set key — while the build still cannot push either past a
+	// bound the caller chose.
+	budget := explainMaxScannedNames
+	if limit > budget {
+		budget = limit
+	}
 	seen := map[string]bool{}
 	var candidates []explainCandidate
 	scanned := 0
@@ -370,7 +386,7 @@ func explainCandidates(input io.Reader, limit int) ([]explainCandidate, int, err
 				if name == "" || seen[name] {
 					continue
 				}
-				if len(seen) >= explainMaxScannedNames {
+				if len(seen) >= budget {
 					// The set is what dedupes, so once it stops growing, collecting stops with it —
 					// otherwise a name already reported could be reported a second time. Scanned
 					// saturates here rather than lying about a build this broken.
