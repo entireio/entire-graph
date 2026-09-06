@@ -122,6 +122,33 @@ func TestWriteTextOmitsWarningSectionWhenNone(t *testing.T) {
 	}
 }
 
+// TestDependentSuffixSilentForConfirmedAndPartial pins the "fully resolved (or merely
+// heuristic) results render exactly as before" half of the evidence-state contract: the
+// dependents suffix must carry no new text for either the zero-value state (existing Result
+// literals built before DependentsEvidence existed) or the documented default Partial state, so
+// an ordinary diff reads byte-for-byte as it always has.
+func TestDependentSuffixSilentForConfirmedAndPartial(t *testing.T) {
+	t.Parallel()
+	for _, state := range []EvidenceState{"", EvidenceConfirmed, EvidencePartial} {
+		change := EntityChange{Type: "body_changed", DependentsCount: 2, DependentsEvidence: state}
+		if got := dependentSuffix(change); got != " (2 dependents)" {
+			t.Fatalf("dependentSuffix(evidence=%q) = %q, want %q", state, got, " (2 dependents)")
+		}
+	}
+}
+
+// TestDependentSuffixFlagsRequiresVerification is the other half: a scan degraded enough to hit
+// RequiresVerification (see dependentsEvidenceState) must visibly say so, because the count may
+// be missing candidates entirely rather than merely being the scan's ordinary heuristic guess.
+func TestDependentSuffixFlagsRequiresVerification(t *testing.T) {
+	t.Parallel()
+	change := EntityChange{Type: "body_changed", DependentsCount: 2, DependentsEvidence: EvidenceRequiresVerification}
+	got := dependentSuffix(change)
+	if !strings.Contains(got, "(2 dependents)") || !strings.Contains(got, "requires_verification") {
+		t.Fatalf("dependentSuffix(evidence=requires_verification) = %q, want the count plus a requires_verification flag", got)
+	}
+}
+
 func sampleTextResult() Result {
 	return Result{
 		Base: "HEAD~1",

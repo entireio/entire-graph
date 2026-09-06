@@ -94,10 +94,18 @@ func dependentSuffix(change EntityChange) string {
 	if change.Type == "added" {
 		return ""
 	}
+	suffix := fmt.Sprintf(" (%d dependents)", change.DependentsCount)
 	if change.DependentsCount == 1 {
-		return " (1 dependent)"
+		suffix = " (1 dependent)"
 	}
-	return fmt.Sprintf(" (%d dependents)", change.DependentsCount)
+	// The dependents scan is always a heuristic (see dependentsEvidenceState); that alone
+	// stays silent here so an ordinary diff reads exactly as it always has. It only
+	// speaks up when the scan itself hit a real limit -- the count may be missing
+	// candidates entirely, not merely imprecise, and the reader needs to know to check.
+	if change.DependentsEvidence == EvidenceRequiresVerification {
+		suffix += " [requires_verification: dependents scan was incomplete; confirm with a repo-wide search or the tests covering it]"
+	}
+	return suffix
 }
 
 type textStyles struct {
