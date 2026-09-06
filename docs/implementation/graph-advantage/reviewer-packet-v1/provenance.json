@@ -1,0 +1,32 @@
+{
+  "origin": "/Users/thomi/Projects/graphmark-advantage-evaluation/advantage-ranking-20260905",
+  "source_tasks_sha256": "a8488fc569ead4ad7184db6b3b4da96d9f3dfdcfe1c396ab3578bb3fff79223d",
+  "selection": "All six existing synthetic development tasks; no selection from scores",
+  "withheld": [
+    "required_sites",
+    "label_status",
+    "results",
+    "scoring outputs",
+    "parameters and prior performance/quality outcomes"
+  ],
+  "source_files": {
+    "fixtures/invoice/charge.go": "4fb21c9d4076b8e09cc998816c4c652469acb1a7cb91e574baefa01cc26521bc",
+    "fixtures/invoice/charge_test.go": "3f11aa86ef8ba5b69313407c055090b756ebd184a4811f6af671e8eaa92a9534",
+    "fixtures/invoice/go.mod": "95a28fcd5bfc61261ac8f7d82013cf78cf5c0a7978b086497f1e608fb029ef79",
+    "fixtures/retry/delivery.go": "9ba55484f377cc1f05a525c2916aa16934ad5a0a5c77604e7c74b69d361802f1",
+    "fixtures/retry/go.mod": "adbee3d2ec0b1287f532f3e1a8af42120ef20c31b61eb7ad6de14367e492ac2b",
+    "fixtures/retry/note.go": "f9b131c82397aed99e53a7ae9cd4aba17c9e4b3addbcd58449a23dfecc8bc120",
+    "fixtures/retry/retry.go": "9ac2c6a9a394e2b314a115361a5e38e0b1e6f29fd96aa428657baab87b7ecb7d",
+    "fixtures/quota/noise.ts": "ab5abda726aa7c600d0c2d76ebeef77667cd9e1d5594a265e7107a8894b19de1",
+    "fixtures/quota/reserve.ts": "f08b8c898517a1e943d1aa660d5d18924b0fb4e8d8b15f788af3badf118cc4cf",
+    "fixtures/quota/validate.ts": "1c5dfb6dc951dc53018bebd1d1106e6ae1436a9b86b2dbc1582d142065768bf1",
+    "fixtures/route/handler.py": "34e33cb133f319d398d2ade6639ba3341224a88b3feb08c96af3f22cd0dc7b86",
+    "fixtures/route/router.py": "57c50062241f01e01327c63697469e1f16ae832f683880943d95ddabac9eeec6",
+    "fixtures/sparse/go.mod": "99d44750f9dc5e92da138e8bf8b8c1a9d70680fad446f5cb0faffdaabddc11c0",
+    "fixtures/sparse/hello.go": "a09168b987524929945ca311af7aa13936f6f74728884aea7f7d565b8ebc3ff1",
+    "fixtures/dynamic/handlers.py": "f395ed9ab567bf4c0297e795d4ddfd615ed82cc41cdedab4b365825a94978f3f",
+    "fixtures/dynamic/payment.py": "45d0c336499c7a84cb542b23d9445b1c9b7f7256669a3666f08e4f8dd939d719"
+  },
+  "validation": "Every copied source byte hash matches the existing manifest. No reviewer answer is prefilled.",
+  "limits": "Development fixtures only; not realistic P3 changes, a held-out split, or release adjudication."
+}

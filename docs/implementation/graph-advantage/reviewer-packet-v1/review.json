@@ -1,0 +1,78 @@
+{
+  "status": "unreviewed",
+  "site_definition": "symbol qualified by file and name, or explicit source line range; reviewer must state granularity consistently",
+  "tasks": [
+    {
+      "task_id": "invoice",
+      "reviewer": null,
+      "reviewed_at": null,
+      "decision": null,
+      "relevant_sites": null,
+      "required_sites": null,
+      "allowed_candidate_sites": null,
+      "forbidden_sites": null,
+      "covering_test_relevance": null,
+      "notes": null
+    },
+    {
+      "task_id": "retry",
+      "reviewer": null,
+      "reviewed_at": null,
+      "decision": null,
+      "relevant_sites": null,
+      "required_sites": null,
+      "allowed_candidate_sites": null,
+      "forbidden_sites": null,
+      "covering_test_relevance": null,
+      "notes": null
+    },
+    {
+      "task_id": "quota",
+      "reviewer": null,
+      "reviewed_at": null,
+      "decision": null,
+      "relevant_sites": null,
+      "required_sites": null,
+      "allowed_candidate_sites": null,
+      "forbidden_sites": null,
+      "covering_test_relevance": null,
+      "notes": null
+    },
+    {
+      "task_id": "route",
+      "reviewer": null,
+      "reviewed_at": null,
+      "decision": null,
+      "relevant_sites": null,
+      "required_sites": null,
+      "allowed_candidate_sites": null,
+      "forbidden_sites": null,
+      "covering_test_relevance": null,
+      "notes": null
+    },
+    {
+      "task_id": "sparse",
+      "reviewer": null,
+      "reviewed_at": null,
+      "decision": null,
+      "relevant_sites": null,
+      "required_sites": null,
+      "allowed_candidate_sites": null,
+      "forbidden_sites": null,
+      "covering_test_relevance": null,
+      "notes": null
+    },
+    {
+      "task_id": "dynamic",
+      "reviewer": null,
+      "reviewed_at": null,
+      "decision": null,
+      "relevant_sites": null,
+      "required_sites": null,
+      "allowed_candidate_sites": null,
+      "forbidden_sites": null,
+      "covering_test_relevance": null,
+      "notes": null
+    }
+  ]
+}
