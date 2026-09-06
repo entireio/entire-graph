@@ -1,4 +1,8 @@
-# Graph advantage implementation phase review
+# Historical graph advantage implementation checkpoint
+
+This document records checkpoint `88dd1dc9`. Its validation and execution
+statements are historical. See [the authoritative ledger](ledger.md) for the
+current source, diagnostic findings, verification and release status.
 
 Branch: `codex/graph-advantage`, based on fetched main `3a2a715fad1948e83dc7ebe0d307377ba29e065a`. No merge or default promotion.
 

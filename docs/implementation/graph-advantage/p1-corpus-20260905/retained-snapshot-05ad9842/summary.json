@@ -1,0 +1,10 @@
+{
+  "status": "setup_failure",
+  "reason": "unsubstituted config_heredocs placeholder; missing request file",
+  "native_test_process_started": true,
+  "source_analysis_started": false,
+  "native_observations": 0,
+  "on_arm": "unrun",
+  "generated_outcome_json": "malformed; preserved unchanged",
+  "next_attempt": "separate retained-snapshot-05ad9842-retry directory; no original artifact overwritten"
+}
