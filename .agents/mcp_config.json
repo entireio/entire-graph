@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "devcheck": {
+      "command": "node",
+      "args": ["devcheck/dist/server.js"],
+      "cwd": "."
+    }
+  }
+}
