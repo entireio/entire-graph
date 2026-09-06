@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,8 +35,10 @@ func runRank(ctx context.Context, opts Options, args []string) error {
 		return runRankCommit(ctx, opts, args[1:])
 	case "developer":
 		return runRankDeveloper(ctx, opts, args[1:])
+	case "leaderboard":
+		return runRankLeaderboard(ctx, opts, args[1:])
 	default:
-		return fmt.Errorf("unknown rank subcommand %q (want demo, commit, or developer)", args[0])
+		return fmt.Errorf("unknown rank subcommand %q (want demo, commit, developer, or leaderboard)", args[0])
 	}
 }
 
@@ -89,6 +92,16 @@ type rankSnapshotFlags struct {
 	CacheDir     string
 	DisableCache bool
 	Worktree     bool
+	// Profile is the raw --profile value ("" defaults to full, matching every
+	// other graph-query command). fast drops evidence collection and deep call
+	// resolution (still resolves CALLS/CONSTRUCTS/HANDLES_ROUTE/HANDLES_TOOL,
+	// but skips IMPLEMENTS/EXTENDS/INHERITS/USES_TYPE/PARAM_TYPE/RETURNS_TYPE
+	// entirely -- see resolveProfile in provider.go) in exchange for being
+	// several times faster on a large repository. That trade-off is real: a
+	// fast-profile CommitAnalysis will report 0 InterfacesAffected/type
+	// consumers even where full would find some. Structural/dependent/route
+	// evidence -- the two heaviest-weighted components -- are unaffected.
+	Profile string
 }
 
 func parseRankSnapshotFlag(args []string, index int, flags *rankSnapshotFlags) (consumed bool, next int, err error) {
@@ -109,17 +122,28 @@ func parseRankSnapshotFlag(args []string, index int, flags *rankSnapshotFlags) (
 	case "--head":
 		flags.Worktree = false
 		return true, index, nil
+	case "--profile":
+		index++
+		if index >= len(args) {
+			return true, index, fmt.Errorf("--profile requires a value")
+		}
+		flags.Profile = args[index]
+		return true, index, nil
 	default:
 		return false, index, nil
 	}
 }
 
 func loadRankSnapshot(ctx context.Context, repo, version string, opts Options, flags rankSnapshotFlags) (sem.ProviderSnapshot, error) {
+	profile, err := parseProfile(flags.Profile)
+	if err != nil {
+		return sem.ProviderSnapshot{}, err
+	}
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	snapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, version, sem.ProviderSnapshotOptions{
 		NoNetwork: true,
 		Worktree:  flags.Worktree,
-		Profile:   sem.ProfileFull,
+		Profile:   profile,
 	}, cacheDir, flags.DisableCache)
 	return snapshot, err
 }
@@ -292,6 +316,111 @@ func runRankDeveloper(ctx context.Context, opts Options, args []string) error {
 	}
 	fmt.Fprint(opts.Stdout, profile.Explain())
 	return nil
+}
+
+// rankRosterEntry is one line of a --roster file: a developer plus the
+// GitHub-reach inputs and the commits/PRs to analyze for them. GitHub is the
+// source of truth for stars/PR counts and for "which commits are this
+// developer's merged PRs" -- this package does not call the GitHub API, so a
+// roster is how that external fact enters the pipeline (see package rank's
+// doc comment: Entire is the evidence provider, not the source of who merged
+// what).
+type rankRosterEntry struct {
+	Username string   `json:"username"`
+	Stars    int      `json:"stars"`
+	UserPRs  int      `json:"user_prs"`
+	TotalPRs int      `json:"total_prs"`
+	Commits  []string `json:"commits"`
+}
+
+// runRankLeaderboard scores every developer in a --roster file against ONE
+// repository, sharing a single relation-graph build (see loadRankSnapshot)
+// across every developer and every one of their commits -- the multi-
+// developer analogue of `rank developer`, for "show me contributors and
+// their score" on a real repository without a GitHub API integration.
+func runRankLeaderboard(ctx context.Context, opts Options, args []string) error {
+	var repoFlag, format, rosterPath string
+	format = "text"
+	var snapshotFlags rankSnapshotFlags
+	for i := 0; i < len(args); i++ {
+		if consumed, next, err := parseRankSnapshotFlag(args, i, &snapshotFlags); consumed {
+			if err != nil {
+				return err
+			}
+			i = next
+			continue
+		}
+		next := func() (string, error) {
+			i++
+			if i >= len(args) {
+				return "", fmt.Errorf("%s requires a value", args[i-1])
+			}
+			return args[i], nil
+		}
+		var err error
+		switch args[i] {
+		case "--repo":
+			repoFlag, err = next()
+		case "--format":
+			format, err = next()
+		case "--roster":
+			rosterPath, err = next()
+		default:
+			err = fmt.Errorf("rank leaderboard received unexpected argument %q", args[i])
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if format != "text" && format != "json" {
+		return fmt.Errorf("rank --format must be text or json, got %q", format)
+	}
+	if rosterPath == "" {
+		return fmt.Errorf("rank leaderboard requires --roster <path.json>")
+	}
+
+	rosterBytes, err := os.ReadFile(rosterPath)
+	if err != nil {
+		return fmt.Errorf("read --roster: %w", err)
+	}
+	var roster []rankRosterEntry
+	if err := json.Unmarshal(rosterBytes, &roster); err != nil {
+		return fmt.Errorf("parse --roster %s: %w", rosterPath, err)
+	}
+	if len(roster) == 0 {
+		return fmt.Errorf("--roster %s lists no developers", rosterPath)
+	}
+
+	repo, err := resolveRepo(ctx, opts.Env, repoFlag)
+	if err != nil {
+		return err
+	}
+	snapshot, err := loadRankSnapshot(ctx, repo, opts.Version, opts, snapshotFlags)
+	if err != nil {
+		return err
+	}
+
+	profiles := make([]rank.DeveloperProfile, 0, len(roster))
+	now := time.Now()
+	for _, entry := range roster {
+		if entry.Username == "" {
+			return fmt.Errorf("--roster %s has an entry with no username", rosterPath)
+		}
+		commits := make([]rank.CommitAnalysis, 0, len(entry.Commits))
+		for _, rev := range entry.Commits {
+			analysis, err := analyzeOneCommit(ctx, repo, rev, &snapshot)
+			if err != nil {
+				return fmt.Errorf("%s: %w", entry.Username, err)
+			}
+			commits = append(commits, analysis)
+		}
+		profiles = append(profiles, rank.AggregateDeveloper(
+			entry.Username, entry.Stars, entry.UserPRs, entry.TotalPRs, commits, rank.DefaultWeights(), now,
+		))
+	}
+
+	sortProfilesByFinalScoreDescending(profiles)
+	return writeRankProfiles(opts.Stdout, profiles, format)
 }
 
 // rankPositiveIntFlag parses one `--flag N` pair, reusing the same shape
