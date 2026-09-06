@@ -11,12 +11,14 @@ HERE=pathlib.Path(__file__).resolve().parent
 VMS=['graph-validation-linux','graph-p1-worker-2','graph-p1-worker-3']
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('stage',choices=['baseline','campaign']);ap.add_argument('--frozen-baseline',type=pathlib.Path);ap.add_argument('--run-id',required=True);ap.add_argument('--canary',action='store_true');ap.add_argument('--canary-results',nargs=3,type=pathlib.Path);ap.add_argument('--supervisor-output',type=pathlib.Path,required=True);args=ap.parse_args()
+ if args.canary and args.stage!='campaign':raise SystemExit('Canary is a campaign stage')
  if args.stage=='campaign' and not args.frozen_baseline:raise SystemExit('Campaign requires frozen baseline manifest')
  if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',args.run_id):raise SystemExit('Invalid isolated run id')
  results_dir='/opt/p1/runs/'+args.run_id
  unit='p1-'+args.stage+'-'+args.run_id
  expected=json.loads((HERE/'build.json').read_text())['binary_sha256']
- identities={'binary_sha256':expected,'input_manifest_sha256':canary_admission.sha(HERE.parent/'corpus/corpus-manifest.json'),'runner_sha256':canary_admission.sha(HERE/'run_campaign.py'),'scenario_sha256':canary_admission.sha(HERE.parent/'corpus/p1_scenario.py')}
+ identities={'binary_sha256':expected,'input_manifest_sha256':canary_admission.sha(HERE.parent/'corpus/corpus-manifest.json'),'runner_sha256':canary_admission.sha(HERE/'run_campaign.py'),'scenario_sha256':canary_admission.sha(HERE.parent/'corpus/p1_scenario.py'),'gate_sha256':canary_admission.sha(HERE/'campaign_gate.py')}
+ if args.frozen_baseline:identities['frozen_baseline_sha256']=canary_admission.sha(args.frozen_baseline)
  if args.stage=='campaign' and not args.canary:
   if not args.canary_results:raise SystemExit('Full campaign requires complete matching canary evidence')
   assignments=[json.loads((HERE/f'worker-{i}.json').read_text()) for i in (1,2,3)]

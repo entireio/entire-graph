@@ -34,8 +34,8 @@ print('P1_LEASE renewed')
 def stop_script(stage,reason,results_dir="/opt/p1/results",unit_name=None):
  unit_name=unit_name or "p1-"+stage
  code="import pathlib,json,time,os\np=pathlib.Path("+repr(results_dir)+");p.mkdir(parents=True,exist_ok=True)\nt=p/'STOP.tmp';t.write_text("+repr(reason)+");os.replace(t,p/'STOP')\n(p/'supervisor-stop.json').write_text(json.dumps({'reason':"+repr(reason)+",'time':time.time()}))\n"
- # Give the worker time to persist its pause and interrupted child evidence.
- return remote_python(code)+"sleep 2\nsystemctl stop "+shlex.quote(unit_name)+"\n"
+ # Give the worker bounded time to persist pause and remaining-cell evidence.
+ return remote_python(code)+"for attempt in $(seq 1 20); do\n  if ! systemctl is-active --quiet "+shlex.quote(unit_name)+"; then break; fi\n  sleep 1\ndone\nsystemctl stop "+shlex.quote(unit_name)+"\n"
 
 def renew(vm,run,results_dir):
  raw=run(vm,lease_script(results_dir))
