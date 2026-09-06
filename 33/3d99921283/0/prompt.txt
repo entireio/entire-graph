@@ -1,10 +1,1 @@
-run the project once is it done tell me the workflow how to show case it...
-
----
-
-i mean run the project in the browser give me the...link so i can test it out and see how the demo works...and for the graph use previous repo of our project [https://github.com/Preethesh16/HardCoders\_](https://github.com/Preethesh16/HardCoders_) to showcase and track everything here okay...what ever we decided finish the project please&#x20;
-and connection stuff do it in through the website only what is this running from terminal.......
-
----
-
 bro no demo please production level visualisation please.....
