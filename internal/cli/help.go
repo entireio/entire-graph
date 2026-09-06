@@ -121,6 +121,30 @@ var commandDocs = []commandDoc{
 
 	// ── Inspect the graph ────────────────────────────────────────────────
 	{
+		name: "spec", group: groupSetup, summary: "Manage authored GPS specifications",
+		usage:    []string{"entire graph spec init|list|show|validate --repo . [--format json]"},
+		long:     "Creates and validates strict repository-local GPS intent documents. Specifications are authored YAML; this command never generates requirements.",
+		examples: []string{"entire graph spec init --repo .", "entire graph spec validate --repo . --format json"},
+	},
+	{
+		name: "anchor", group: groupSetup, summary: "Bind GPS requirements to graph symbols",
+		usage:    []string{"entire graph anchor bind|list|resolve --repo . [--format json]"},
+		long:     "Persists an explicit reviewed symbol binding with structural and body fingerprints. Binding never runs repository code.",
+		examples: []string{"entire graph anchor bind --repo . --id ANCHOR-001 --symbol Authenticate --file auth.go"},
+	},
+	{
+		name: "context", group: groupInspect, summary: "Retrieve intent-aware change context",
+		usage:    []string{"entire graph context --repo . --query \"change request\" [--format json]"},
+		long:     "Returns bounded, deterministic matches from authored GPS specifications. It does not execute tests or modify repository files.",
+		examples: []string{"entire graph context --repo . --query \"change token lifetime\" --format json"},
+	},
+	{
+		name: "check", group: groupAnalyze, summary: "Check GPS traceability and anchor drift",
+		usage:    []string{"entire graph check --repo . [--format json]"},
+		long:     "Performs static, read-only validation of GPS specifications, mappings, bindings, and fingerprint drift. It never executes declared tests.",
+		examples: []string{"entire graph check --repo . --format json"},
+	},
+	{
 		name:    "search",
 		group:   groupInspect,
 		summary: "Find the code for a task from a plain-language query (start here)",

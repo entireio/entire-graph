@@ -1,0 +1,329 @@
+// Package intent owns repository-authored GPS specifications and bindings.
+package intent
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+const Root = ".entire/graph"
+
+type Policy struct {
+	Version     int    `yaml:"version" json:"version"`
+	SpecsRoot   string `yaml:"specs_root" json:"specs_root"`
+	AnchorsRoot string `yaml:"anchors_root" json:"anchors_root"`
+}
+
+type Requirement struct {
+	ID          string `yaml:"id" json:"id"`
+	Description string `yaml:"description" json:"description"`
+}
+type Acceptance struct {
+	ID          string `yaml:"id" json:"id"`
+	Requirement string `yaml:"requirement" json:"requirement"`
+	Description string `yaml:"description" json:"description"`
+}
+type AnchorRef struct {
+	ID          string `yaml:"id" json:"id"`
+	Requirement string `yaml:"requirement" json:"requirement"`
+}
+type TestRef struct {
+	ID         string `yaml:"id" json:"id"`
+	Acceptance string `yaml:"acceptance" json:"acceptance"`
+	Selector   struct {
+		Name string `yaml:"name" json:"name"`
+	} `yaml:"selector" json:"selector"`
+}
+type Spec struct {
+	Version      int           `yaml:"version" json:"version"`
+	ID           string        `yaml:"id" json:"id"`
+	Title        string        `yaml:"title" json:"title"`
+	Intent       string        `yaml:"intent" json:"intent"`
+	Status       string        `yaml:"status,omitempty" json:"status,omitempty"`
+	Requirements []Requirement `yaml:"requirements" json:"requirements"`
+	Acceptance   []Acceptance  `yaml:"acceptance" json:"acceptance"`
+	Anchors      []AnchorRef   `yaml:"anchors" json:"anchors"`
+	Tests        []TestRef     `yaml:"tests" json:"tests"`
+	Path         string        `yaml:"-" json:"path"`
+}
+
+type Baseline struct {
+	SignatureHash string `yaml:"signature_hash" json:"signature_hash"`
+	ContainerID   string `yaml:"container_id,omitempty" json:"container_id,omitempty"`
+	BodyHash      string `yaml:"body_hash" json:"body_hash"`
+	FileBlob      string `yaml:"file_blob,omitempty" json:"file_blob,omitempty"`
+}
+type Selector struct {
+	QualifiedName string `yaml:"qualified_name" json:"qualified_name"`
+	Kind          string `yaml:"kind" json:"kind"`
+	File          string `yaml:"file" json:"file"`
+}
+type Binding struct {
+	ID       string   `yaml:"id" json:"id"`
+	SymbolID string   `yaml:"symbol_id" json:"symbol_id"`
+	Selector Selector `yaml:"selector" json:"selector"`
+	Baseline Baseline `yaml:"baseline" json:"baseline"`
+}
+type BindingFile struct {
+	Version int       `yaml:"version" json:"version"`
+	Anchors []Binding `yaml:"anchors" json:"anchors"`
+	Path    string    `yaml:"-" json:"path"`
+}
+type Set struct {
+	Policy      Policy    `json:"policy"`
+	Specs       []Spec    `json:"specifications"`
+	Bindings    []Binding `json:"bindings"`
+	Diagnostics []string  `json:"diagnostics,omitempty"`
+	Digest      string    `json:"digest"`
+}
+
+func Init(repo string) error {
+	root := filepath.Join(repo, Root)
+	for _, part := range []string{"specs", "anchors"} {
+		if err := os.MkdirAll(filepath.Join(root, part), 0o755); err != nil {
+			return err
+		}
+	}
+	path := filepath.Join(root, "intent.yaml")
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s already exists", filepath.ToSlash(filepath.Join(Root, "intent.yaml")))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.WriteFile(path, []byte("version: 1\nspecs_root: specs\nanchors_root: anchors\n"), 0o644)
+}
+
+func Load(repo string) (Set, error) {
+	set := Set{Policy: Policy{Version: 1, SpecsRoot: "specs", AnchorsRoot: "anchors"}}
+	policyPath := filepath.Join(repo, Root, "intent.yaml")
+	if _, err := os.Stat(policyPath); errors.Is(err, os.ErrNotExist) {
+		set.Digest = digest(nil)
+		return set, nil
+	} else if err != nil {
+		return set, err
+	}
+	if err := decodeFile(policyPath, &set.Policy); err != nil {
+		return set, fmt.Errorf("read policy: %w", err)
+	}
+	if set.Policy.Version != 1 || !safeRelative(set.Policy.SpecsRoot) || !safeRelative(set.Policy.AnchorsRoot) {
+		return set, errors.New("intent policy must use version 1 and relative roots")
+	}
+	if err := loadYAMLFiles(filepath.Join(repo, Root, set.Policy.SpecsRoot), func(path string) error {
+		var spec Spec
+		if err := decodeFile(path, &spec); err != nil {
+			return err
+		}
+		spec.Path = rel(repo, path)
+		if err := validateSpec(&spec); err != nil {
+			return fmt.Errorf("%s: %w", spec.Path, err)
+		}
+		set.Specs = append(set.Specs, spec)
+		return nil
+	}); err != nil {
+		return set, err
+	}
+	if err := loadYAMLFiles(filepath.Join(repo, Root, set.Policy.AnchorsRoot), func(path string) error {
+		var bindings BindingFile
+		if err := decodeFile(path, &bindings); err != nil {
+			return err
+		}
+		if bindings.Version != 1 {
+			return fmt.Errorf("%s: unsupported binding version", rel(repo, path))
+		}
+		for _, binding := range bindings.Anchors {
+			if binding.ID == "" || binding.SymbolID == "" {
+				return fmt.Errorf("%s: binding requires id and symbol_id", rel(repo, path))
+			}
+			set.Bindings = append(set.Bindings, binding)
+		}
+		return nil
+	}); err != nil {
+		return set, err
+	}
+	if err := validateSet(&set); err != nil {
+		return set, err
+	}
+	sort.Slice(set.Specs, func(i, j int) bool { return set.Specs[i].ID < set.Specs[j].ID })
+	sort.Slice(set.Bindings, func(i, j int) bool { return set.Bindings[i].ID < set.Bindings[j].ID })
+	data, _ := yaml.Marshal(struct {
+		Policy   Policy
+		Specs    []Spec
+		Bindings []Binding
+	}{set.Policy, set.Specs, set.Bindings})
+	set.Digest = digest(data)
+	return set, nil
+}
+
+func SaveBinding(repo string, binding Binding, update bool) error {
+	set, err := Load(repo)
+	if err != nil {
+		return err
+	}
+	known := false
+	for _, s := range set.Specs {
+		for _, a := range s.Anchors {
+			if a.ID == binding.ID {
+				known = true
+			}
+		}
+	}
+	if !known {
+		return fmt.Errorf("anchor %q is not declared by a specification", binding.ID)
+	}
+	path := filepath.Join(repo, Root, set.Policy.AnchorsRoot, "anchors.yaml")
+	var file BindingFile
+	if _, err := os.Stat(path); err == nil {
+		if err := decodeFile(path, &file); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	file.Version = 1
+	for i := range file.Anchors {
+		if file.Anchors[i].ID == binding.ID {
+			if !update {
+				return fmt.Errorf("binding %q already exists (pass --update to replace it)", binding.ID)
+			}
+			file.Anchors[i] = binding
+			return writeYAML(path, file)
+		}
+	}
+	file.Anchors = append(file.Anchors, binding)
+	sort.Slice(file.Anchors, func(i, j int) bool { return file.Anchors[i].ID < file.Anchors[j].ID })
+	return writeYAML(path, file)
+}
+
+func validateSpec(s *Spec) error {
+	if s.Version != 1 || s.ID == "" || s.Title == "" || len(s.Requirements) == 0 {
+		return errors.New("spec requires version 1, id, title, and requirements")
+	}
+	reqs, accepts := map[string]bool{}, map[string]bool{}
+	for _, r := range s.Requirements {
+		if r.ID == "" || r.Description == "" || reqs[r.ID] {
+			return errors.New("requirements need unique ids and descriptions")
+		}
+		reqs[r.ID] = true
+	}
+	for _, a := range s.Acceptance {
+		if a.ID == "" || a.Description == "" || !reqs[a.Requirement] || accepts[a.ID] {
+			return errors.New("acceptance needs unique ids, descriptions, and known requirements")
+		}
+		accepts[a.ID] = true
+	}
+	for _, a := range s.Anchors {
+		if a.ID == "" || !reqs[a.Requirement] {
+			return errors.New("anchors need ids and known requirements")
+		}
+	}
+	for _, t := range s.Tests {
+		if t.ID == "" || t.Selector.Name == "" || !accepts[t.Acceptance] {
+			return errors.New("tests need ids, selectors, and known acceptance criteria")
+		}
+	}
+	return nil
+}
+func validateSet(set *Set) error {
+	ids := map[string]bool{}
+	anchors := map[string]bool{}
+	for _, s := range set.Specs {
+		if ids[s.ID] {
+			return fmt.Errorf("duplicate specification id %q", s.ID)
+		}
+		ids[s.ID] = true
+		for _, a := range s.Anchors {
+			if anchors[a.ID] {
+				return fmt.Errorf("duplicate anchor id %q", a.ID)
+			}
+			anchors[a.ID] = true
+		}
+	}
+	seen := map[string]bool{}
+	for _, b := range set.Bindings {
+		if !anchors[b.ID] {
+			return fmt.Errorf("binding %q is not declared", b.ID)
+		}
+		if seen[b.ID] {
+			return fmt.Errorf("duplicate binding %q", b.ID)
+		}
+		seen[b.ID] = true
+	}
+	return nil
+}
+func decodeFile(path string, dest any) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	d := yaml.NewDecoder(io.LimitReader(f, 1<<20))
+	d.KnownFields(true)
+	if err := d.Decode(dest); err != nil {
+		return err
+	}
+	var extra any
+	if err := d.Decode(&extra); err != io.EOF {
+		return errors.New("YAML document must contain one document")
+	}
+	return nil
+}
+func loadYAMLFiles(root string, fn func(string) error) error {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var paths []string
+	for _, e := range entries {
+		if e.IsDir() || e.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if ext == ".yaml" || ext == ".yml" {
+			paths = append(paths, filepath.Join(root, e.Name()))
+		}
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		if err := fn(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func writeYAML(path string, value any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+func safeRelative(path string) bool {
+	return path != "" && !filepath.IsAbs(path) && !strings.Contains(filepath.ToSlash(filepath.Clean(path)), "../") && filepath.Clean(path) != ".."
+}
+func rel(repo, path string) string {
+	value, err := filepath.Rel(repo, path)
+	if err != nil {
+		return path
+	}
+	return filepath.ToSlash(value)
+}
+func digest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+func Hash(value string) string { return digest([]byte(value)) }
