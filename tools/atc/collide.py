@@ -90,6 +90,35 @@ def callers_on_tree(worktree, name, define_file):
     return callers, unknowns
 
 
+def resolve_side(repo, spec):
+    """A side may be a ref, or a WORKTREE PATH with uncommitted work.
+
+    Agents collide before anybody commits, so a tool that only reads commits
+    is looking too late. For a worktree path we snapshot the live working tree
+    with `git stash create` — it writes a commit object into the shared object
+    store and does NOT touch the agent's files, index, or stash list. If the
+    tree is clean, its HEAD is used.
+
+    Returns (ref-or-sha, human label, is_live).
+    """
+    if not os.path.isdir(spec):
+        return spec, spec, False
+    wt = os.path.abspath(spec)
+    try:
+        sh(["git", "-C", wt, "rev-parse", "--git-dir"])
+    except RuntimeError:
+        return spec, spec, False
+    label = os.path.basename(wt.rstrip("/"))
+    snap = sh(["git", "-C", wt, "stash", "create"]).strip()
+    if snap:
+        # make the snapshot reachable from the analysing repo
+        sh(["git", "-C", repo, "update-ref", f"refs/atc/live/{label}", snap])
+        return snap, f"{label} (uncommitted)", True
+    head = sh(["git", "-C", wt, "rev-parse", "HEAD"]).strip()
+    branch = sh(["git", "-C", wt, "rev-parse", "--abbrev-ref", "HEAD"]).strip()
+    return head, f"{label} ({branch}, clean)", False
+
+
 def side_intent(repo, base, ref):
     """What was this side TRYING to do? Tiered, and the source is always labelled.
 
@@ -111,9 +140,12 @@ def side_intent(repo, base, ref):
         pass
     try:
         subjects = sh(["git", "-C", repo, "log", "--format=%s", f"{base}..{ref}"]).strip()
-        if subjects:
-            return {"source": "commit-message",
-                    "text": "; ".join(subjects.splitlines()[:3])}
+        # drop git's own stash-snapshot subjects; they describe the snapshot,
+        # not what the session is trying to do
+        lines = [s for s in subjects.splitlines()
+                 if not s.startswith(("WIP on ", "index on ", "untracked files on "))]
+        if lines:
+            return {"source": "commit-message", "text": "; ".join(lines[:3])}
     except RuntimeError:
         pass
     return {"source": "none", "text": None}
@@ -135,7 +167,9 @@ class TempWorktree:
         shutil.rmtree(self.path, ignore_errors=True)
 
 
-def collide(repo, ref_a, ref_b):
+def collide(repo, spec_a, spec_b):
+    ref_a, label_a, live_a = resolve_side(repo, spec_a)
+    ref_b, label_b, live_b = resolve_side(repo, spec_b)
     mb = sh(["git", "-C", repo, "merge-base", ref_a, ref_b]).strip()
     diff_a, warn_a = graph_diff(repo, mb, ref_a)
     diff_b, warn_b = graph_diff(repo, mb, ref_b)
@@ -179,9 +213,9 @@ def collide(repo, ref_a, ref_b):
                 hits.append((ch["type"] in RED_CHANGE_TYPES, hit))
         return hits
 
-    for red, hit in rw_scan(diff_a, diff_b, ref_b, ref_a, ref_b):
+    for red, hit in rw_scan(diff_a, diff_b, ref_b, label_a, label_b):
         (findings["read_write"] if red else findings["advisory"]).append(hit)
-    for red, hit in rw_scan(diff_b, diff_a, ref_a, ref_b, ref_a):
+    for red, hit in rw_scan(diff_b, diff_a, ref_a, label_b, label_a):
         (findings["read_write"] if red else findings["advisory"]).append(hit)
 
     # ---- PROXIMITY: same file, different entities -------------------------
@@ -208,11 +242,13 @@ def collide(repo, ref_a, ref_b):
     advisories = len(findings["advisory"]) + len(findings["proximity"])
     verdict = "HOLD" if reds else ("CAUTION" if advisories else "CLEARED")
     return {
-        "repo": repo, "ref_a": ref_a, "ref_b": ref_b, "merge_base": mb,
+        "repo": repo, "ref_a": label_a, "ref_b": label_b, "merge_base": mb,
+        "resolved_a": ref_a, "resolved_b": ref_b,
+        "live_sides": [l for l, is_live in ((label_a, live_a), (label_b, live_b)) if is_live],
         "verdict": verdict, "reds": reds, "advisories": advisories,
         "findings": findings, "landing_order": landing, "unknowns": unknowns,
-        "intent": {ref_a: side_intent(repo, mb, ref_a),
-                   ref_b: side_intent(repo, mb, ref_b)},
+        "intent": {label_a: side_intent(repo, mb, ref_a),
+                   label_b: side_intent(repo, mb, ref_b)},
     }
 
 
@@ -234,7 +270,7 @@ def attach_priors(r, backend=None):
                    | {p for (p, _n) in []})
     # also consider every path either side touched, not just colliding ones
     try:
-        for ref in (r["ref_a"], r["ref_b"]):
+        for ref in (r["resolved_a"], r["resolved_b"]):
             d, _w = graph_diff(r["repo"], r["merge_base"], ref)
             paths = sorted(set(paths) | {p for (p, _n) in d})
     except RuntimeError:
@@ -315,8 +351,8 @@ def render(r):
 
 def main():
     ap = argparse.ArgumentParser(description="ATC semantic collision detection")
-    ap.add_argument("ref_a")
-    ap.add_argument("ref_b")
+    ap.add_argument("side_a", help="branch/ref, or a worktree path for live uncommitted work")
+    ap.add_argument("side_b", help="branch/ref, or a worktree path for live uncommitted work")
     ap.add_argument("--repo", default=".")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--priors", action="store_true",
@@ -326,7 +362,7 @@ def main():
     ap.add_argument("--backend", choices=["local", "databricks"], default=None)
     args = ap.parse_args()
     try:
-        r = collide(os.path.abspath(args.repo), args.ref_a, args.ref_b)
+        r = collide(os.path.abspath(args.repo), args.side_a, args.side_b)
     except RuntimeError as e:
         print(f"ATC error (no verdict — do NOT treat as clean): {e}", file=sys.stderr)
         sys.exit(3)

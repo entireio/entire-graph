@@ -129,6 +129,34 @@ def main():
     check("prior evidence scope is labelled (never passed off as fleet)",
           pr.get("priors_backend") in ("local", "databricks"), str(pr.get("priors_backend")))
 
+    # ---------- LIVE WORKTREE (pre-commit radar) ---------------------------
+    print("\nLIVE WORKTREE (collisions before anyone commits)")
+    wt = fixture + "-wt-checkout"
+    if os.path.isdir(wt):
+        with open(os.path.join(wt, "subscriptions.py"), "a") as fh:
+            fh.write('\n\ndef renew_bulk(tokens, amt):\n'
+                     '    """live uncommitted work"""\n'
+                     '    return [renew(t, amt) for t in tokens]\n')
+        before = subprocess.run(["git", "-C", wt, "status", "--short"],
+                                capture_output=True, text=True).stdout
+        code, r = run_collide(fixture, "feat-auth", wt)
+        rw = {f["entity"] for f in r.get("findings", {}).get("read_write", [])}
+        check("collision detected against UNCOMMITTED work", "validate_token" in rw, str(rw))
+        check("side is labelled as uncommitted",
+              any("uncommitted" in s for s in r.get("live_sides", [])),
+              str(r.get("live_sides")))
+        after = subprocess.run(["git", "-C", wt, "status", "--short"],
+                               capture_output=True, text=True).stdout
+        stash = subprocess.run(["git", "-C", wt, "stash", "list"],
+                               capture_output=True, text=True).stdout.strip()
+        check("agent's working tree is left untouched", before == after,
+              f"before={before!r} after={after!r}")
+        check("no stash entry is pushed onto the agent's stack", stash == "", stash)
+        check("intent skips git's stash-snapshot wording",
+              "WIP on" not in json.dumps(r.get("intent", {})), json.dumps(r.get("intent", {}))[:160])
+    else:
+        check("live worktree present in fixture", False, f"missing {wt}")
+
     # ---------- summary ----------------------------------------------------
     passed = sum(1 for _n, ok, _d in results if ok)
     print(f"\n{'='*58}\n{passed}/{len(results)} checks passed")
