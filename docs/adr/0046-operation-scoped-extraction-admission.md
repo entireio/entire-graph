@@ -1,6 +1,7 @@
 # ADR 0046: Operation-scoped extraction admission on a held directory
 
-Status: proposed; implementation design review required.
+Status: accepted implementation decision after directory/lifetime review;
+correctness and performance verification remain required.
 
 Plan tasks: P1.3/P1.6. Sources: supplied plan, Entire cache/admission/capture
 implementation and retained `cold-profile-d793b2be` CPU samples. No external
@@ -13,7 +14,7 @@ API closes its directory handles, while later writers reopen the pathname.
 An operation-length lease therefore requires one coherent directory capability
 for admission, inventory, eviction and publication.
 
-Proposed boundary:
+Accepted boundary:
 
 - Open/validate the cache family/version directory and acquire the existing
   nonblocking lock while retaining that directory handle.
@@ -48,3 +49,9 @@ this design and retain the failed performance gate rather than weakening it.
 
 Rollback: extraction reuse remains default-off; reverting this admission
 change restores per-batch scans without a migration.
+
+Reviewed implementation scope: extraction lock/session/cache and private held-
+directory writer helpers; existing provider final-flush lifecycle is retained.
+Actual installed size comes from the held write, never a reopened pathname.
+Initial inventory and every item remain bounded, and filename/family identity
+checks prevent a batch item from changing the admitted directory.
