@@ -1,5 +1,5 @@
 {
-  "phase": "paused_for_diagnosis",
+  "phase": "fixes_and_stopgaps_correctness",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -28,5 +28,24 @@
   "recorded_unrun_requests": 1434,
   "pending_planned_requests": 15730,
   "heartbeat_status": "PAUSED",
-  "pause_reason": "Diagnose cache-on timeouts and partial-result validity before any further measurement"
+  "pause_reason": "Diagnose cache-on timeouts and partial-result validity before any further measurement",
+  "cache_fix_commits": [
+    "f96483ef",
+    "9bfafe17"
+  ],
+  "ordering_fix_commits": [
+    "4f582425",
+    "f6b8a9d1"
+  ],
+  "remaining_diagnosis": "Campaign-scale partial-failure membership differences are not yet explained",
+  "stopgaps": "Implemented: 41 Python tests pass; supervisor, lease, canary and stale-build admission guards",
+  "full_correctness": "mise run check in progress; see fixes-correctness.json when finished",
+  "campaign": "paused; no new measurements",
+  "stopgap_commits": [
+    "dc0ddce7",
+    "e5873854",
+    "969dc52f",
+    "3b242da7"
+  ],
+  "next_work": "Read-only diagnosis of remaining selective failure-membership mismatch while immutable repository check runs"
 }

@@ -138,3 +138,25 @@ cells, and 15,730 remaining planned cells. Interrupted in-flight requests
 are preserved separately and are not fabricated as completed observations.
 No further measurement is authorized by the old continuation; diagnose and
 correct the findings before defining a separately versioned evaluation.
+
+## Diagnostic fixes and new campaign gates
+
+`f96483ef` and `9bfafe17` add bounded cache-publication batches (128 entries
+or 16 MiB), preserving quota admission, atomic writes and cancellation.
+Focused extraction race tests passed; 391 publications require four
+maintenance passes in a deterministic operation-count regression.
+`4f582425` fixes total ordering of parallel relation evidence; `f6b8a9d1`
+adds exact cache/fresh selective equivalence across input order and current
+HEAD metadata. Neither establishes that all 55 retained real-corpus mismatches
+are explained. Differing partial-failure membership remains under diagnosis.
+
+`stopgaps-v2.md` defines first-issue worker pause, cross-worker supervision,
+expiring leases, immutable run directories and canary admission before broad
+measurement. Supervisor and admission tests pass; worker integration passed all 41 Python tests. A full repository check runs against dc0ddce7 with source hashes
+recorded in fixes-correctness.json when complete. No VMs or benchmarks restarted.
+
+Campaign stopgaps complete in `3b242da7` with supervisor/admission commits
+`dc0ddce7`, `e5873854`, `969dc52f`. All 41 harness tests passed. The running
+repository check still must finish before its result is claimed. Remaining
+selective failure-membership diagnosis continues read-only during that check.
+No campaign restarted; task-owned VMs remain deallocated.
