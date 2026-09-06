@@ -38,6 +38,10 @@ func TestCapturedDiffAttributesUsesCapturedNestedRulesAndDriverConfig(t *testing
 	}
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "attributes")
+	// The captured callback supplies every policy file. A corrupt indexed blob
+	// must therefore remain irrelevant: index fallback is queried only for
+	// missing captures.
+	git(t, repo, "update-index", "--add", "--cacheinfo", "100644,"+strings.Repeat("a", 40)+",.gitattributes")
 
 	requested := make([]string, 0)
 	read := func(path string) (string, bool, error) {
@@ -116,6 +120,75 @@ func TestCapturedDiffAttributesPropagatesReaderErrorAndConfinement(t *testing.T)
 	})
 	if err == nil || called || !strings.Contains(err.Error(), "invalid Git tree path") {
 		t.Fatalf("unsafe captured path error=%v called=%v", err, called)
+	}
+}
+
+func TestCapturedDiffAttributesIgnoresIndexedSymlinkPolicy(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "real.attributes"), []byte("*.go -diff\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.attributes", filepath.Join(repo, ".gitattributes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "symlink attributes")
+	got, err := CapturedDiffAttributes(context.Background(), repo, []string{"main.go"}, func(string) (string, bool, error) {
+		return "", false, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["main.go"].Value != "unspecified" || got["main.go"].Binary || got["main.go"].Text {
+		t.Fatalf("symlink policy = %#v, want unspecified", got["main.go"])
+	}
+}
+
+func TestCapturedDiffAttributesIgnoresIndexedGitlinkPolicy(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "main.go")
+	git(t, repo, "commit", "-m", "gitlink policy")
+	head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+head+",.gitattributes")
+	got, err := CapturedDiffAttributes(context.Background(), repo, []string{"main.go"}, func(string) (string, bool, error) {
+		return "", false, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["main.go"].Value != "unspecified" || got["main.go"].Binary || got["main.go"].Text {
+		t.Fatalf("gitlink policy = %#v, want unspecified", got["main.go"])
+	}
+}
+
+func TestCapturedIndexBlobEnforcesOutputBound(t *testing.T) {
+	var bounded boundedBuffer
+	bounded.limit = 1
+	if _, err := bounded.Write([]byte("abc")); err == nil {
+		t.Fatal("bounded buffer accepted oversized write")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("long-policy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".gitattributes")
+	objectID := strings.TrimSpace(gitOutput(t, repo, "hash-object", ".gitattributes"))
+	got, err := capturedIndexBlob(context.Background(), repo, objectID, 1)
+	if err == nil {
+		t.Fatalf("bounded indexed attribute read unexpectedly succeeded with %q", got)
 	}
 }
 
