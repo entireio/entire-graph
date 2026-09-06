@@ -1,0 +1,7 @@
+{
+  "artifact_blob": "p1-retained-diagnostic-result-retained-05ad9842-20260906-a17cadb5d8e837784febe1914dfd357dd4be8a0581ee74e7ca1e575a7e908baa.tar.gz",
+  "remote_root": "/opt/p1/retained-diagnostics/retained-05ad9842-20260906",
+  "script_sha256": "ff9693fbe474199d6721d408a6aa0fa3cfb23f1662f6374ef398216eba349558",
+  "signed_urls": "redacted",
+  "source_blob": "p1-retained-diagnostic-source-retained-05ad9842-20260906-a17cadb5d8e837784febe1914dfd357dd4be8a0581ee74e7ca1e575a7e908baa.tgz"
+}

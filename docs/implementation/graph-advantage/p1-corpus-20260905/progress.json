@@ -6,8 +6,8 @@
   "subagent_model": "gpt-5.6-luna",
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
   "verified_checkpoint": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
-  "verified_evidence_commit": "pending evidence commit",
-  "current_worktree": "Product source05ad9842 fully checked; one retained Linux query diagnostic now running",
+  "verified_evidence_commit": "97532b0a",
+  "current_worktree": "Product source05ad9842 fully checked; single retained Linux search pair parity verified",
   "workers_state": "graph-validation-linux start requested for pinned correctness and one diagnostic; two campaign workers remain deallocated",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
@@ -41,7 +41,7 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Retained OFF/ON parity and broader locale/platform behavior remain under diagnosis",
+  "remaining_diagnosis": "Historical syntax-only snapshot timeout not yet revalidated; wider corpus parity/canary and locale/platform coverage remain",
   "stopgaps": "56 harness tests passed in4.561s at0381ea6d with unchanged source hashes; no Azure campaign run",
   "full_correctness": "passed at05ad9842; clean detached checkout, HEAD unchanged",
   "campaign": "paused; isolated diagnostic failures retained separately",
@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Inspect single retained Linux diagnostic; stop on any issue before campaign restart",
+  "next_work": "Bounded revalidation of historical snapshot timeout using existing binary; stop on first issue before campaign restart",
   "current_focused_correctness": {
     "commit": "5a60fc8f91855387ee7a7e9d341ccd88e74822ca",
     "source_hashes_unchanged": true,
@@ -63,5 +63,12 @@
     "top_level_tests_passed": 28,
     "live_tests_passed": 10,
     "evidence": "evidence/correctness-05ad9842-20260906"
+  },
+  "retained_linux_search": {
+    "source_commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
+    "files_indexed_per_arm": 381,
+    "partial_failures_per_arm": 11,
+    "semantic_digest": "81d3dc9875d85525486fd75871a38f04ebe605af5907c756c105d83d3e77ff2c",
+    "corpus_unchanged": true
   }
 }

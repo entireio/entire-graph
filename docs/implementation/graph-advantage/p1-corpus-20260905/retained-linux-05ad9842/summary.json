@@ -1,0 +1,12 @@
+{
+  "source_commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
+  "result": "retained query semantic parity verified",
+  "same_corpus_before_after": true,
+  "files_indexed_per_arm": 381,
+  "partial_failures_per_arm": 11,
+  "semantic_digest": "81d3dc9875d85525486fd75871a38f04ebe605af5907c756c105d83d3e77ff2c",
+  "timeout": false,
+  "query_rerun_for_collection": false,
+  "scope": "One correctness diagnostic pair; not corpus-wide parity or a performance gate",
+  "remaining": "Previously timed-out syntax-only snapshot and wider corpus canary remain unverified"
+}

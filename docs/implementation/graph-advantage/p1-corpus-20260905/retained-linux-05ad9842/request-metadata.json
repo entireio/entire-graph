@@ -1,0 +1,36 @@
+{
+  "arm_order": [
+    "off",
+    "on"
+  ],
+  "arm_timeout_seconds": 120,
+  "build_timeout_seconds": 300,
+  "compiler": "off",
+  "diagnostic_harness_sha256": "218f3dc6262386a1294eeecda7d5e9c57620e1a50ad5bec8b5c4c98961ac70d3",
+  "expected_corpus_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+  "format_version": 1,
+  "hard_timeout_seconds": 300,
+  "no_campaign": true,
+  "profile": "syntax-only",
+  "ranking": "current",
+  "repository": "kubernetes-kubernetes",
+  "run_id": "retained-05ad9842-20260906",
+  "runtime_environment": {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GOMAXPROCS": "4",
+    "GOPROXY": "off",
+    "GOSUMDB": "off",
+    "GOTELEMETRY": "off",
+    "GOTOOLCHAIN": "local",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "LC_CTYPE": "C.UTF-8",
+    "PATH": "/usr/local/go/bin:/usr/bin:/bin"
+  },
+  "source_archive_sha256": "a17cadb5d8e837784febe1914dfd357dd4be8a0581ee74e7ca1e575a7e908baa",
+  "source_commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
+  "source_commit_requested": "05ad9842",
+  "test_count": 1,
+  "vm": "graph-validation-linux"
+}

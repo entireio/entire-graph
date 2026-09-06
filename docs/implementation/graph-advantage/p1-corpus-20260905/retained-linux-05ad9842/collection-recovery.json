@@ -1,0 +1,6 @@
+{
+  "action": "decode existing Azure response and download already-acknowledged immutable blob",
+  "artifact_blob": "p1-retained-diagnostic-result-retained-05ad9842-20260906-a17cadb5d8e837784febe1914dfd357dd4be8a0581ee74e7ca1e575a7e908baa.tar.gz",
+  "query_rerun": false,
+  "original_unknown_retained": true
+}
