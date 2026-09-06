@@ -48,11 +48,11 @@ func TestSearchExtractionReusePreservesLargeWorktreePreselectionParity(t *testin
 	if !reflect.DeepEqual(fresh.PartialFailures, reuse.PartialFailures) {
 		t.Fatalf("partial failure membership changed with capture reuse:\nfresh=%#v\nreuse=%#v", fresh.PartialFailures, reuse.PartialFailures)
 	}
-	if reuse.Stats.FilesContentRead > 64 {
-		t.Fatalf("captured preselection read %d files, want bounded candidate scan", reuse.Stats.FilesContentRead)
+	if !reflect.DeepEqual(fresh.Results, reuse.Results) {
+		t.Fatalf("result membership changed with capture reuse:\nfresh=%#v\nreuse=%#v", fresh.Results, reuse.Results)
 	}
-	if reuse.Stats.PreselectionFilesExamined > minGitGrepPreselectionFiles+64 {
-		t.Fatalf("captured preselection examined %d files, want bounded candidate pool", reuse.Stats.PreselectionFilesExamined)
+	if reuse.Stats.FilesContentRead != reuse.Stats.FilesScanned {
+		t.Fatalf("captured preselection read %d of %d source files; expected one coherent source read per file", reuse.Stats.FilesContentRead, reuse.Stats.FilesScanned)
 	}
 }
 
@@ -61,7 +61,9 @@ func TestSearchExtractionReusePreservesLargeWorktreePreselectionParity(t *testin
 func TestSearchExtractionReusePreselectionUsesCapturedBytesAfterMutation(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "src/target.go", "package p\nfunc CapturedNeedle() string { return \"before\" }\n")
-	write(t, repo, "src/other.go", "package p\nfunc Other() {}\n")
+	for index := 0; index < minGitGrepPreselectionFiles+20; index++ {
+		write(t, repo, fmt.Sprintf("src/f%05d.go", index), fmt.Sprintf("package p\nfunc F%05d() {}\n", index))
+	}
 	options := SearchOptions{
 		Worktree: true, ExtractionReuse: true, Profile: ProfileSyntaxOnly,
 		TopK: 4, MaxIndexedFiles: 1, CacheDir: t.TempDir(),
