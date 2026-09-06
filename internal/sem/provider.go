@@ -33,11 +33,14 @@ import (
 )
 
 const (
-	// SchemaVersion is bumped to 1.1 for the additive snapshot fields introduced
-	// alongside boundary source locations (the `external` flag on external records
-	// and the per-symbol source-location fields). The shape is backward compatible
-	// for tolerant readers; the bump lets consumers detect the new fields.
-	SchemaVersion         = "1.1"
+	// SchemaVersion is bumped to 1.2 for the additive `dependents_evidence` field on
+	// EntityChange (persisted Result payload — diff/analyze/checkpoint), which states
+	// whether a dependents_count value is a heuristic estimate or one degraded further
+	// by a scan limit. Previously bumped to 1.1 for the snapshot fields introduced
+	// alongside boundary source locations (the `external` flag on external records and
+	// the per-symbol source-location fields). The shape is backward compatible for
+	// tolerant readers; the bump lets consumers detect the new fields.
+	SchemaVersion         = "1.2"
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
 	defaultMaxParseBytes  = 4 * 1024 * 1024
@@ -85,6 +88,17 @@ var relationTypes = []string{
 	"DATA_FLOWS",
 	"FILE_CHANGES_WITH",
 }
+
+// heuristicRelationTypes are relation kinds the graph documents as pattern/heuristic matches
+// rather than resolved code relationships (routing tables, event names, near-clone detection,
+// and the like — see CapabilityReport.HeuristicRelationTypes). Declared once here and reused
+// by both Capabilities() and RelationEvidenceState (evidence.go) so the two readings of "this
+// relation kind is not ground truth" cannot drift apart.
+var heuristicRelationTypes = []string{
+	"HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "HANDLES_TOOL", "SIMILAR_TO", "TESTS",
+}
+
+var heuristicRelationTypeSet = relationTypeSet(heuristicRelationTypes...)
 
 // ooRelationSupport lists the additional (non-structural) relation types the
 // provider can extract for each language, used by the capabilities matrix.
@@ -646,7 +660,7 @@ func Capabilities() CapabilityReport {
 		SupportedRelationTypes:          append([]string(nil), relationTypes...),
 		RelationSupportByLanguage:       relationSupportByLanguage(),
 		RelationSupportByProfile:        relationSupportByProfile(),
-		HeuristicRelationTypes:          []string{"HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "HANDLES_TOOL", "SIMILAR_TO", "TESTS"},
+		HeuristicRelationTypes:          append([]string(nil), heuristicRelationTypes...),
 		OptionalLocalOnlyFeatures: map[string]bool{
 			"stable_symbol_ids":          true,
 			"semantic_diff":              true,

@@ -117,7 +117,10 @@ func TestImpactRanksDocMentionsLastAndLabelsThem(t *testing.T) {
 	var out bytes.Buffer
 	writeImpactText(&out, response)
 	text := out.String()
-	if !strings.Contains(text, "grouping-plan.md (plans/grouping-plan.md) ["+impactMentionDetail+"]") {
+	// A name-only match on a file with no program text is exactly the shape a caller the
+	// graph could not resolve leaves behind, so it now also carries the evidence-state flag
+	// (see sem.RelationEvidenceState) alongside the existing doc-mention label.
+	if !strings.Contains(text, "grouping-plan.md (plans/grouping-plan.md) ["+impactMentionDetail+", requires_verification]") {
 		t.Fatalf("doc mention is not labelled:\n%s", text)
 	}
 	if strings.Contains(text, "DESIGN.md") {
