@@ -16,7 +16,7 @@ No wider measurement campaign is admitted while these findings remain open. P2/P
 
 ## Authoritative task status
 
-This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery. Product source `1c0b8e24` passed the full repository and pinned Linux checks, but retained-corpus parity remains open. Evaluation tasks cannot be declared complete merely because their harness exists; correctness checks do not establish comparative release gates.
+This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery. Product source `1c0b8e24` passed the full repository and pinned Linux checks, with the three retained query profile paths now verified for exact partial-output parity. Broader evaluation remains paused. Evaluation tasks cannot be declared complete merely because their harness exists; correctness checks do not establish comparative release gates.
 
 | Task | Implementation | Correctness evidence | Comparative evaluation | Release gate |
 |---|---|---|---|---|
@@ -239,3 +239,14 @@ gate is accepted and implementation is active; this is not yet verified or
 claimed to explain the RSS difference. `1c0b8e24` remains the latest fully
 verified product. Syntax-only and fast retained query pairs now have exact
 semantic/partial/warning parity; the corrected full-only replay is active.
+
+Retained query closeout at `1c0b8e24`: all three distinct profile paths now
+have exact semantic, warning, completeness and full 11-record partial parity,
+with 381 indexed files per arm and unchanged inputs. Seven requests ran: two
+completed pairs, one full OFF halted on an oracle error, then the corrected
+full-only pair. Historical repetitions were not rerun or relabeled. See
+`p1-corpus-20260905/retained-query-correctness-1c0b8e24/summary.json`.
+
+ADR 0048 is implemented at `6cf92c9c`; focused correctness and race checks
+passed. Its full immutable and pinned Linux verification is next. Prior
+`1c0b8e24` checks do not verify the new gate, and the RSS screen remains failed.

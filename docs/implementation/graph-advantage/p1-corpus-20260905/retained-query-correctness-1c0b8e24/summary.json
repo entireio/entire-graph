@@ -1,0 +1,68 @@
+{
+  "source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
+  "purpose": "Focused correctness for three distinct profile paths underlying55historicalrepeatedpairs",
+  "pairs": {
+    "syntax-only": {
+      "equal": {
+        "semantic_digest": true,
+        "partial_failures": true,
+        "partial_failures_count": true,
+        "partial_failures_sha256": true,
+        "warnings": true,
+        "warnings_sha256": true,
+        "completeness": true
+      },
+      "semantic_digest": "81d3dc9875d85525486fd75871a38f04ebe605af5907c756c105d83d3e77ff2c",
+      "files_indexed_per_arm": 381,
+      "partial_failures_per_arm": 11,
+      "before_after_input_equal": true,
+      "process_exit_codes": [
+        0,
+        0
+      ]
+    },
+    "fast": {
+      "equal": {
+        "semantic_digest": true,
+        "partial_failures": true,
+        "partial_failures_count": true,
+        "partial_failures_sha256": true,
+        "warnings": true,
+        "warnings_sha256": true,
+        "completeness": true
+      },
+      "semantic_digest": "c75702a6ce564243807b06fd2280da6ea75d074b801c3d75cbe616166a2dd8b7",
+      "files_indexed_per_arm": 381,
+      "partial_failures_per_arm": 11,
+      "before_after_input_equal": true,
+      "process_exit_codes": [
+        0,
+        0
+      ]
+    },
+    "full": {
+      "equal": {
+        "semantic_digest": true,
+        "partial_failures": true,
+        "partial_failures_count": true,
+        "partial_failures_sha256": true,
+        "warnings": true,
+        "warnings_sha256": true,
+        "completeness": true
+      },
+      "semantic_digest": "8e940fff9a8282fb940c045024fd656765deac709f75642b6a3b6db703b39249",
+      "files_indexed_per_arm": 381,
+      "partial_failures_per_arm": 11,
+      "before_after_input_equal": true,
+      "process_exit_codes": [
+        0,
+        0
+      ]
+    }
+  },
+  "coverage": "partial; not full-coverage or release evidence",
+  "performance_score": null,
+  "product_requests": 7,
+  "why_seven": "First fullOFF stopped on incorrectly shared warning oracle; corrected from originalfullbaseline, then onlyfullpair replayed",
+  "historical_repetitions_rerun": false
+}
