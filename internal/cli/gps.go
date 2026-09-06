@@ -247,7 +247,7 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	if len(set.Specs) == 0 {
-		return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "disposition": "NOT_CONFIGURED", "findings": []any{}})
+		return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "change_delta": "not_requested", "disposition": "NOT_CONFIGURED", "findings": []any{}})
 	}
 	snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)
 	if err != nil {
