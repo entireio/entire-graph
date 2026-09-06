@@ -3,7 +3,7 @@
   "checkpoint_id": "303ac9263789",
   "strategy": "manual-commit",
   "branch": "docs/gps-design",
-  "checkpoints_count": 5,
+  "checkpoints_count": 10,
   "files_touched": [
     "scripts/benchmark-fastapi-gps.sh"
   ],
@@ -42,13 +42,20 @@
       "compact_transcript": "/30/3ac9263789/4/transcript.jsonl",
       "content_hash": "/30/3ac9263789/4/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/30/3ac9263789/5/metadata.json",
+      "transcript": "/30/3ac9263789/5/full.jsonl",
+      "compact_transcript": "/30/3ac9263789/5/transcript.jsonl",
+      "content_hash": "/30/3ac9263789/5/content_hash.txt",
+      "prompt": "/30/3ac9263789/5/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 117249,
+    "input_tokens": 128639,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 2597376,
-    "output_tokens": 12432,
-    "api_call_count": 33
+    "cache_read_tokens": 4000768,
+    "output_tokens": 16496,
+    "api_call_count": 43
   }
 }
