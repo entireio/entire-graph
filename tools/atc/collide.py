@@ -90,6 +90,35 @@ def callers_on_tree(worktree, name, define_file):
     return callers, unknowns
 
 
+def side_intent(repo, base, ref):
+    """What was this side TRYING to do? Tiered, and the source is always labelled.
+
+    1. Entire Checkpoint intent for the head commit (richest: the agent session's
+       own stated intent).
+    2. Commit subjects between merge-base and head (always available).
+    Never guesses: if neither yields anything, returns source "none".
+    """
+    try:
+        out = sh(["entire", "checkpoint", "explain", "--commit", ref, "--json"], cwd=repo)
+        env = json.loads(out)
+        cp = env if isinstance(env, dict) else {}
+        for key in ("intent", "summary", "title"):
+            val = (cp.get(key) or cp.get("checkpoint", {}).get(key)) if cp else None
+            if isinstance(val, str) and val.strip():
+                return {"source": "checkpoint", "text": val.strip(),
+                        "checkpoint_id": cp.get("id") or cp.get("checkpoint", {}).get("id")}
+    except (RuntimeError, json.JSONDecodeError, AttributeError):
+        pass
+    try:
+        subjects = sh(["git", "-C", repo, "log", "--format=%s", f"{base}..{ref}"]).strip()
+        if subjects:
+            return {"source": "commit-message",
+                    "text": "; ".join(subjects.splitlines()[:3])}
+    except RuntimeError:
+        pass
+    return {"source": "none", "text": None}
+
+
 class TempWorktree:
     def __init__(self, repo, ref):
         self.repo, self.ref = repo, ref
@@ -182,6 +211,8 @@ def collide(repo, ref_a, ref_b):
         "repo": repo, "ref_a": ref_a, "ref_b": ref_b, "merge_base": mb,
         "verdict": verdict, "reds": reds, "advisories": advisories,
         "findings": findings, "landing_order": landing, "unknowns": unknowns,
+        "intent": {ref_a: side_intent(repo, mb, ref_a),
+                   ref_b: side_intent(repo, mb, ref_b)},
     }
 
 
@@ -189,6 +220,14 @@ def render(r):
     L = []
     L.append(f"🗼 ATC — Agent Traffic Control   {r['ref_a']} ✈ {r['ref_b']}")
     L.append("━" * 66)
+    for ref in (r["ref_a"], r["ref_b"]):
+        it = r.get("intent", {}).get(ref, {})
+        if it.get("text"):
+            src = {"checkpoint": "checkpoint intent",
+                   "commit-message": "commit msg"}.get(it["source"], it["source"])
+            L.append(f"   {ref} is trying to: {it['text']}  [{src}]")
+    if any(r.get("intent", {}).get(x, {}).get("text") for x in (r["ref_a"], r["ref_b"])):
+        L.append("")
     for f in r["findings"]["write_write"]:
         L.append(f"🔴 WRITE–WRITE  {f['entity']}  ({f['path']})")
         L.append(f"   {r['ref_a']}: {f['a']}   ·   {r['ref_b']}: {f['b']}")
