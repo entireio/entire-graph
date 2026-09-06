@@ -157,6 +157,16 @@ def main():
     else:
         check("live worktree present in fixture", False, f"missing {wt}")
 
+    # ---------- BOARD (--all) ----------------------------------------------
+    print("\nBOARD (auto-discovered sides in flight)")
+    p = subprocess.run([sys.executable, COLLIDE, "--all", "--repo", fixture],
+                       capture_output=True, text=True)
+    check("board discovers both agent worktrees", "2 sides in flight" in p.stdout,
+          p.stdout[:160] + p.stderr[:160])
+    check("board reports the red pair and exits 2",
+          "READ–WRITE on validate_token" in p.stdout and p.returncode == 2,
+          f"exit={p.returncode}")
+
     # ---------- summary ----------------------------------------------------
     passed = sum(1 for _n, ok, _d in results if ok)
     print(f"\n{'='*58}\n{passed}/{len(results)} checks passed")

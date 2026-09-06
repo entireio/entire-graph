@@ -48,8 +48,10 @@ def graph_diff(repo, base, head):
     """Changed entities for one side: {(path, name): change-dict}."""
     data = graph_json(["diff", "--base", base, "--head", head, "--json"], repo)
     changes, warnings = {}, []
-    for f in data.get("files", []):
-        for ch in f.get("changes", []):
+    # the graph emits JSON null (not []) for an empty section — `or []` is
+    # required; .get(k, []) returns None when the key exists with a null value
+    for f in (data.get("files") or []):
+        for ch in (f.get("changes") or []):
             key = (f["path"], ch.get("name") or "?")
             ch = dict(ch, path=f["path"], language=f.get("language"))
             changes[key] = ch
@@ -75,8 +77,8 @@ def callers_on_tree(worktree, name, define_file):
         except RuntimeError as e:
             return [], [f"neighbors({name}, {define_file}): ambiguous, retry failed: {e}"]
     callers, unknowns = [], []
-    for m in data.get("matches", []):
-        for edge in m.get("incoming", []):
+    for m in (data.get("matches") or []):
+        for edge in (m.get("incoming") or []):
             ep = edge.get("endpoint", {})
             callers.append({
                 "name": ep.get("name"),
@@ -349,10 +351,72 @@ def render(r):
     return "\n".join(L)
 
 
+def discover_sides(repo, include_branches=False):
+    """Everything currently in flight: linked worktrees (an agent each), and
+    optionally local branches that have diverged from the default branch."""
+    sides = []
+    out = sh(["git", "-C", repo, "worktree", "list", "--porcelain"])
+    # realpath both sides: macOS reports /private/var while callers pass /var
+    main_wt = os.path.realpath(repo)
+    for block in out.strip().split("\n\n"):
+        path = next((l.split(" ", 1)[1] for l in block.splitlines()
+                     if l.startswith("worktree ")), None)
+        if path and os.path.realpath(path) != main_wt:
+            sides.append(path)
+    if include_branches:
+        cur = sh(["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"]).strip()
+        for b in sh(["git", "-C", repo, "branch", "--format=%(refname:short)"]).split():
+            if b != cur and b not in sides:
+                sides.append(b)
+    return sides
+
+
+def run_board(repo, sides, args):
+    """Pairwise board across every in-flight side."""
+    print(f"🗼 ATC — {len(sides)} sides in flight: {', '.join(os.path.basename(s.rstrip('/')) for s in sides)}")
+    print("━" * 66)
+    worst, rows = 0, []
+    for i in range(len(sides)):
+        for j in range(i + 1, len(sides)):
+            try:
+                r = collide(repo, sides[i], sides[j])
+            except RuntimeError as e:
+                rows.append((f"{sides[i]} ✈ {sides[j]}", "NO VERDICT", str(e)[:60]))
+                worst = max(worst, 3)
+                continue
+            if args.priors:
+                attach_priors(r, args.backend)
+            icon = {"HOLD": "🔴", "CAUTION": "🟡", "CLEARED": "🟢"}[r["verdict"]]
+            detail = ""
+            if r["findings"]["read_write"]:
+                f = r["findings"]["read_write"][0]
+                detail = f"READ–WRITE on {f['entity']} ({len(f['dependents'])} call site(s))"
+            elif r["findings"]["write_write"]:
+                detail = f"WRITE–WRITE on {r['findings']['write_write'][0]['entity']}"
+            elif r["advisories"]:
+                detail = f"{r['advisories']} advisory"
+            rows.append((f"{icon} {r['ref_a']} ✈ {r['ref_b']}", r["verdict"], detail))
+            worst = max(worst, 2 if r["reds"] else (1 if r["advisories"] else 0))
+            if r["reds"] and r["landing_order"]:
+                rows.append(("   ✈ landing order", "", r["landing_order"][:110]))
+    for a, b, c in rows:
+        print(f"{a:<46} {b:<9} {c}")
+    print("━" * 66)
+    print({0: "🟢 all clear", 1: "🟡 advisories only", 2: "🔴 hold — see reds above",
+           3: "❔ incomplete board"}[worst])
+    return worst
+
+
 def main():
     ap = argparse.ArgumentParser(description="ATC semantic collision detection")
-    ap.add_argument("side_a", help="branch/ref, or a worktree path for live uncommitted work")
-    ap.add_argument("side_b", help="branch/ref, or a worktree path for live uncommitted work")
+    ap.add_argument("side_a", nargs="?",
+                    help="branch/ref, or a worktree path for live uncommitted work")
+    ap.add_argument("side_b", nargs="?",
+                    help="branch/ref, or a worktree path for live uncommitted work")
+    ap.add_argument("--all", action="store_true",
+                    help="board across every in-flight worktree (pairwise)")
+    ap.add_argument("--branches", action="store_true",
+                    help="with --all, also include local branches")
     ap.add_argument("--repo", default=".")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--priors", action="store_true",
@@ -361,8 +425,20 @@ def main():
                     help="record this verdict to the telemetry store")
     ap.add_argument("--backend", choices=["local", "databricks"], default=None)
     args = ap.parse_args()
+    repo = os.path.abspath(args.repo)
+
+    if args.all:
+        sides = discover_sides(repo, args.branches)
+        if len(sides) < 2:
+            print("ATC: fewer than two sides in flight — nothing to sequence "
+                  f"(found: {sides or 'none'}). Use --branches to include local branches.")
+            sys.exit(0)
+        sys.exit(run_board(repo, sides, args))
+    if not (args.side_a and args.side_b):
+        ap.error("give two sides, or --all")
+
     try:
-        r = collide(os.path.abspath(args.repo), args.side_a, args.side_b)
+        r = collide(repo, args.side_a, args.side_b)
     except RuntimeError as e:
         print(f"ATC error (no verdict — do NOT treat as clean): {e}", file=sys.stderr)
         sys.exit(3)
