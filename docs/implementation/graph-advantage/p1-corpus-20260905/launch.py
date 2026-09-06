@@ -6,18 +6,28 @@ prepared corpus on each worker and the shared evaluator blob. Baselines must
 finish and be frozen locally before launching the campaign stage.
 """
 import argparse,concurrent.futures,hashlib,json,pathlib,shlex,tarfile,tempfile
-import cloud
+import cloud,supervise,canary_admission,re
 HERE=pathlib.Path(__file__).resolve().parent
 VMS=['graph-validation-linux','graph-p1-worker-2','graph-p1-worker-3']
 def main():
- ap=argparse.ArgumentParser();ap.add_argument('stage',choices=['baseline','campaign']);ap.add_argument('--frozen-baseline',type=pathlib.Path);args=ap.parse_args()
+ ap=argparse.ArgumentParser();ap.add_argument('stage',choices=['baseline','campaign']);ap.add_argument('--frozen-baseline',type=pathlib.Path);ap.add_argument('--run-id',required=True);ap.add_argument('--canary',action='store_true');ap.add_argument('--canary-results',nargs=3,type=pathlib.Path);ap.add_argument('--supervisor-output',type=pathlib.Path,required=True);args=ap.parse_args()
  if args.stage=='campaign' and not args.frozen_baseline:raise SystemExit('Campaign requires frozen baseline manifest')
+ if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',args.run_id):raise SystemExit('Invalid isolated run id')
+ results_dir='/opt/p1/runs/'+args.run_id
+ unit='p1-'+args.stage+'-'+args.run_id
  expected=json.loads((HERE/'build.json').read_text())['binary_sha256']
+ identities={'binary_sha256':expected,'input_manifest_sha256':canary_admission.sha(HERE.parent/'corpus/corpus-manifest.json'),'runner_sha256':canary_admission.sha(HERE/'run_campaign.py'),'scenario_sha256':canary_admission.sha(HERE.parent/'corpus/p1_scenario.py')}
+ if args.stage=='campaign' and not args.canary:
+  if not args.canary_results:raise SystemExit('Full campaign requires complete matching canary evidence')
+  assignments=[json.loads((HERE/f'worker-{i}.json').read_text()) for i in (1,2,3)]
+  admitted=canary_admission.validate(args.canary_results,assignments,identities)
+  args.supervisor_output.mkdir(parents=True,exist_ok=True)
+  (args.supervisor_output/'canary-admission.json').write_text(json.dumps(admitted,indent=2)+'\n')
  env=cloud.environment()
  with tempfile.TemporaryDirectory() as d:
   archive=pathlib.Path(d)/'scripts.tar.gz'
   with tarfile.open(archive,'w:gz') as tar:
-   for name in ['run_campaign.py','worker-1.json','worker-2.json','worker-3.json','verify_inputs.py','expected-inputs.json']:
+   for name in ['run_campaign.py','worker-1.json','worker-2.json','worker-3.json','verify_inputs.py','expected-inputs.json','campaign_gate.py']:
     tar.add(HERE/name,arcname=name)
    for name in ['p1_scenario.py','corpus-manifest.json']:
     tar.add(HERE.parent/'corpus'/name,arcname='corpus-tools/'+name)
@@ -26,19 +36,22 @@ def main():
  source=cloud.url(blob,'r',env);binary=cloud.url('p1-20260905-evaluator','r',env)
  def start(pair):
   index,vm=pair
-  command=['/usr/bin/python3','/opt/p1/scripts/run_campaign.py','--root','/opt/p1/corpus','--binary','/opt/p1/p1-evaluator','--manifest','/opt/p1/scripts/corpus-tools/corpus-manifest.json','--scenario-script','/opt/p1/scripts/corpus-tools/p1_scenario.py','--assignment',f'/opt/p1/scripts/worker-{index}.json','--output','/opt/p1/results','--stage',args.stage]
+  command=['/usr/bin/python3','/opt/p1/scripts/run_campaign.py','--root','/opt/p1/corpus','--binary','/opt/p1/p1-evaluator','--manifest','/opt/p1/scripts/corpus-tools/corpus-manifest.json','--scenario-script','/opt/p1/scripts/corpus-tools/p1_scenario.py','--assignment',f'/opt/p1/scripts/worker-{index}.json','--output',results_dir,'--stage',args.stage,'--require-supervisor','--trials','1' if args.canary else '30']
   if args.stage=='campaign':command+=['--frozen-baseline','/opt/p1/scripts/frozen-baseline.json']
   script='set -eu\n'
-  script+='test ! -e /opt/p1/results/'+args.stage+'.ndjson\n'
-  script+='mkdir -p /opt/p1/scripts /opt/p1/results\n'
+  script+='test ! -e '+shlex.quote(results_dir)+'\n'
+  script+='if systemctl list-units --state=active --no-legend \'p1-*.service\' | grep -q .; then exit 1; fi\n'
+  script+='mkdir -p /opt/p1/scripts '+shlex.quote(results_dir)+'\n'
   script+='curl --fail --silent --show-error '+shlex.quote(source)+' -o /opt/p1/scripts.tar.gz\n'
   script+='tar -xzf /opt/p1/scripts.tar.gz -C /opt/p1/scripts\n'
   script+='curl --fail --silent --show-error '+shlex.quote(binary)+' -o /opt/p1/p1-evaluator\n'
-  script+='chmod 755 /opt/p1/p1-evaluator\nchown -R graphcheck:graphcheck /opt/p1/scripts /opt/p1/results\n'
+  script+='chmod 755 /opt/p1/p1-evaluator\nchown -R graphcheck:graphcheck /opt/p1/scripts '+shlex.quote(results_dir)+'\n'
   script+='echo '+shlex.quote(expected+'  /opt/p1/p1-evaluator')+' | sha256sum -c -\n'
-  script+='runuser -u graphcheck -- python3 /opt/p1/scripts/verify_inputs.py\n'
-  script+='systemd-run --unit=p1-'+args.stage+' --uid=graphcheck --property=WorkingDirectory=/opt/p1 --property=MemoryMax=14G --property=TasksMax=512 --property=StandardOutput=append:/opt/p1/'+args.stage+'.log --property=StandardError=append:/opt/p1/'+args.stage+'.log '+shlex.join(command)+'\n'
+  script+='runuser -u graphcheck -- python3 /opt/p1/scripts/verify_inputs.py --output '+shlex.quote(results_dir+'/input-verification.json')+'\n'
+  script+=supervise.lease_script(results_dir)
+  script+='systemd-run --unit='+unit+' --uid=graphcheck --property=WorkingDirectory=/opt/p1 --property=MemoryMax=14G --property=TasksMax=512 --property=StandardOutput=append:/opt/p1/runs/'+args.run_id+'/'+args.stage+'.log --property=StandardError=append:/opt/p1/runs/'+args.run_id+'/'+args.stage+'.log '+shlex.join(command)+'\n'
   return {'worker':index,'vm':vm,'result':json.loads(cloud.run(vm,script))}
  with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
   for result in pool.map(start,enumerate(VMS,1)):print(json.dumps(result),flush=True)
+ if not supervise.supervise(VMS,args.stage,args.supervisor_output,results_dir=results_dir,unit_name=unit):raise SystemExit('Campaign paused; fix findings before a new run')
 if __name__=='__main__':main()
