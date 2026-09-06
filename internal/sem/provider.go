@@ -13746,6 +13746,7 @@ type gitDirExcluder struct {
 	listedDirectoriesObserved int
 	listedDirectoryBytes      int
 	listedObservationExceeded bool
+	listedObservationCanceled bool
 	// promotedUnverified makes promoteUnverifiedGitDirs idempotent, since the
 	// filesystem fallback and the git listing each call it at their own end.
 	promotedUnverified bool
@@ -14178,6 +14179,9 @@ func (g *gitDirExcluder) sweepWarnings() []ProviderWarning {
 // bare repository or at a git directory is a deliberate act by the caller, not a
 // leak, and must keep listing what it lists today.
 func (g *gitDirExcluder) observe(dir string) {
+	if g.listedObservationHalted() {
+		return
+	}
 	switch target, ok, hidden := gitDirPointerTargetWithBudget(g.repo, dir, g.admitPointerRead); {
 	case hidden:
 		g.hiddenEvidence++
@@ -14187,12 +14191,18 @@ func (g *gitDirExcluder) observe(dir string) {
 	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead) != gitDirStructureAbsent:
 		g.addTarget(target)
 	}
+	if g.listedObservationHalted() {
+		return
+	}
 	switch target, ok, hidden := gitDirLinkTarget(g.repo, dir); {
 	case hidden:
 		g.hiddenEvidence++
 		g.noteUnreadablePointer(dir)
 	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead) != gitDirStructureAbsent:
 		g.addTarget(target)
+	}
+	if g.listedObservationHalted() {
+		return
 	}
 	if dir == "" {
 		return
@@ -15502,6 +15512,9 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 	seen := make(map[string]struct{}, len(listed))
 	observeChain := func(start string) bool {
 		for dir := start; dir != "." && dir != "/"; dir = path.Dir(dir) {
+			if g.listedObservationHalted() {
+				return false
+			}
 			if _, done := seen[dir]; done {
 				return true
 			}
@@ -15525,28 +15538,63 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 				}
 			}
 			g.observe(dir)
+			if g.listedObservationHalted() {
+				return false
+			}
 		}
 		return true
 	}
 	for _, entry := range listedDirs {
+		if g.listedObservationHalted() {
+			return
+		}
 		if !observeChain(filepath.ToSlash(entry)) {
 			return
 		}
 	}
 	for _, entry := range listed {
+		if g.listedObservationHalted() {
+			return
+		}
 		if !observeChain(path.Dir(filepath.ToSlash(entry))) {
 			return
 		}
 	}
+	if g.listedObservationHalted() {
+		return
+	}
 	g.observeUnlistedDirs(seen)
+	if g.listedObservationHalted() {
+		return
+	}
 	g.promoteUnverifiedGitDirs()
 }
 
 func (g *gitDirExcluder) listedObservationError() error {
+	if g.listedObservationHalted() {
+		if g.sweepCtx != nil && g.sweepCtx.Err() != nil {
+			return g.sweepCtx.Err()
+		}
+		return context.Canceled
+	}
 	if g.listedObservationExceeded {
 		return errGitDirListedObservationBound
 	}
 	return nil
+}
+
+// listedObservationHalted is checked between each bounded metadata probe. The
+// filesystem guards themselves remain unchanged; this boundary only prevents
+// a cancelled request from starting the next listed-path chain or sweep.
+func (g *gitDirExcluder) listedObservationHalted() bool {
+	if g.listedObservationCanceled {
+		return true
+	}
+	if g.sweepCtx == nil || g.sweepCtx.Err() == nil {
+		return false
+	}
+	g.listedObservationCanceled = true
+	return true
 }
 
 // observeUnlistedDirs observes the directories git's listing does not mention at
