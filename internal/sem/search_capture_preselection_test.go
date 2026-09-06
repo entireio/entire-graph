@@ -30,7 +30,7 @@ func TestSearchExtractionReusePreservesLargeWorktreePreselectionParity(t *testin
 
 	fresh, err := SearchRepository(context.Background(), repo, "fixture", "needle", SearchOptions{
 		Worktree: true, Profile: ProfileSyntaxOnly, TopK: 8, MaxIndexedFiles: 4,
-		CacheDir: t.TempDir(),
+		DisableCache: true, CacheDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatal(err)
