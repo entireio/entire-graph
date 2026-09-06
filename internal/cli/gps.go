@@ -253,6 +253,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	response["dependencies"] = dependencies
 	response["tests"] = tests
 	response["inferred_tests"] = inferredTests
+	response["evidence"] = gpsEvidenceClassification(snapshot)
 	response["gaps"] = gaps
 	if len(gaps) > 0 {
 		response["status"] = "complete_with_gaps"
@@ -404,7 +405,7 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 		findings = append(findings, map[string]any{"id": "GPS-INPUT-CHANGED", "severity": "incomplete", "subject": "repository", "message": "HEAD changed while GPS was reading committed inputs"})
 		disposition = "INCOMPLETE"
 	}
-	response := map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "repository_view": view.repositoryView(), "change_delta": changeDelta, "disposition": disposition, "findings": findings}
+	response := map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "repository_view": view.repositoryView(), "change_delta": changeDelta, "disposition": disposition, "findings": findings, "evidence": gpsEvidenceClassification(snapshot)}
 	if flags.evidence != "" {
 		response["execution_evidence"] = gpsExecutionEvidence(flags.evidence, set)
 	}
@@ -672,6 +673,18 @@ func gpsExecutionEvidence(path string, set intent.Set) map[string]any {
 		}
 	}
 	return map[string]any{"path": path, "scope": baseline.Scope, "status": "CURRENT"}
+}
+
+// gpsEvidenceClassification keeps graph facts, heuristic candidates, and
+// unverified behavioral claims separate in machine-readable GPS responses.
+func gpsEvidenceClassification(snapshot sem.ProviderSnapshot) []map[string]any {
+	evidence := []map[string]any{{"kind": "confirmed_structural", "status": "confirmed", "basis": "resolved symbols, reviewed anchors, and parsed graph relations"}, {"kind": "requires_verification", "status": "unverified", "basis": "requirement behavior requires source review or explicitly authorized tests"}}
+	if len(snapshot.Header.PartialFailures) != 0 || snapshot.Header.Stats.CompletenessLevel != "ok" {
+		evidence = append(evidence, map[string]any{"kind": "heuristic_or_incomplete", "status": "incomplete", "basis": "partial graph analysis; relationships may be absent"})
+	} else {
+		evidence = append(evidence, map[string]any{"kind": "heuristic_or_incomplete", "status": "candidate_only", "basis": "inferred test candidates are not declared mappings"})
+	}
+	return evidence
 }
 func gpsIntent(ctx context.Context, repo string, head bool) (intent.Set, error) {
 	if head {
@@ -1062,6 +1075,9 @@ func fitGPSMinimalManifest(response map[string]any, maximum int) {
 	// The quota declaration is useful only when there is room for evidence. Drop
 	// it in the emergency manifest so the advertised minimum remains achievable.
 	delete(budget, "section_quotas")
+	// The compact manifest reports only the budget failure. Its evidence classes
+	// are useful only when there is room to carry an actual context package.
+	delete(response, "evidence")
 	for _, quota := range gpsContextSectionQuotas {
 		response[quota.name] = []any{}
 	}

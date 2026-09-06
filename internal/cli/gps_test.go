@@ -124,6 +124,13 @@ func TestResolveBindingIsUnverifiableForPartialFile(t *testing.T) {
 	}
 }
 
+func TestGPSEvidenceClassificationMarksPartialRelationshipsIncomplete(t *testing.T) {
+	evidence := gpsEvidenceClassification(sem.ProviderSnapshot{Header: sem.SnapshotHeader{Stats: sem.ProviderStats{CompletenessLevel: "degraded"}, PartialFailures: []sem.PartialFailure{{Code: "E_PARSE_ERROR", FilePath: "dynamic.go"}}}})
+	if evidence[0]["status"] != "confirmed" || evidence[1]["status"] != "unverified" || evidence[2]["status"] != "incomplete" {
+		t.Fatalf("evidence classification = %#v", evidence)
+	}
+}
+
 func TestResolveBindingProposesButDoesNotApplyRebind(t *testing.T) {
 	binding := intent.Binding{ID: "ANCHOR-1", SymbolID: "old", Selector: intent.Selector{QualifiedName: "Authenticate", File: "auth.go"}}
 	snapshot := sem.ProviderSnapshot{Symbols: []sem.SymbolRecord{{ID: "new", QualifiedName: "Authenticate", FilePath: "auth.go"}}}
