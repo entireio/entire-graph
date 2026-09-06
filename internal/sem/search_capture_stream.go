@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -21,23 +22,53 @@ type captureMatchStream struct {
 	buffer          string
 	lines, maxLines int
 	lineMatched     bool
+	matched         bool
 	sniffed         int
 	binary          bool
 }
 
 func newCaptureMatchStream(ctx context.Context, patterns []string, maxLines int, emit func(string)) (*captureMatchStream, error) {
+	locale := ""
+	for _, name := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
+		if locale = os.Getenv(name); locale != "" {
+			break
+		}
+	}
+	asciiFold := locale == "" || locale == "C" || locale == "POSIX"
 	quoted := make([]string, 0, len(patterns))
 	window := 1
 	for _, pattern := range patterns {
 		if pattern == "" {
 			continue
 		}
-		quoted = append(quoted, regexp.QuoteMeta(pattern))
+		quotedPattern := regexp.QuoteMeta(pattern)
+		if asciiFold {
+			var fixed strings.Builder
+			for _, character := range pattern {
+				if character >= 'A' && character <= 'Z' {
+					character += 'a' - 'A'
+				}
+				if character >= 'a' && character <= 'z' {
+					fixed.WriteRune('[')
+					fixed.WriteRune(character)
+					fixed.WriteRune(character - 'a' + 'A')
+					fixed.WriteRune(']')
+				} else {
+					fixed.WriteString(regexp.QuoteMeta(string(character)))
+				}
+			}
+			quotedPattern = fixed.String()
+		}
+		quoted = append(quoted, quotedPattern)
 		// Case folding can change UTF-8 width. Four bytes per rune bounds
 		// every spelling accepted by the fixed-string regular expression.
 		window = max(window, utf8.RuneCountInString(pattern)*utf8.UTFMax)
 	}
-	matcher, err := regexp.Compile("(?i)(?:" + strings.Join(quoted, "|") + ")")
+	expression := "(?:" + strings.Join(quoted, "|") + ")"
+	if !asciiFold {
+		expression = "(?i)" + expression
+	}
+	matcher, err := regexp.Compile(expression)
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +142,7 @@ func (stream *captureMatchStream) drain(final bool) {
 			return
 		}
 		stream.lineMatched = true
+		stream.matched = true
 		stream.emit(stream.buffer[match[0]:match[1]])
 		stream.buffer = stream.buffer[match[1]:]
 	}
@@ -127,9 +159,10 @@ func (stream *captureMatchStream) finish() error {
 }
 
 type capturedMatchEvidence struct {
-	terms  []string
-	binary bool
-	err    error
+	matched bool
+	terms   []string
+	binary  bool
+	err     error
 }
 
 // The observer retains at most one bit per query term per acquired file. In
@@ -169,7 +202,7 @@ func (observer *capturePreselectionObserver) factory(path string) (io.Writer, fu
 		if err == nil {
 			err = stream.finish()
 		}
-		evidence := capturedMatchEvidence{binary: stream.binary, err: err}
+		evidence := capturedMatchEvidence{matched: stream.matched, binary: stream.binary, err: err}
 		for index, matched := range seen {
 			if matched {
 				evidence.terms = append(evidence.terms, observer.terms[index])

@@ -2,7 +2,6 @@ package sem
 
 import (
 	"context"
-	"regexp"
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
@@ -17,26 +16,31 @@ func capturedPreselectionMatches(ctx context.Context, source sourceContext, trac
 	if len(observers) > 0 && observers[0] != nil {
 		observers[0].activate()
 	}
-	quoted := make([]string, 0, len(patterns))
-	for _, pattern := range patterns {
-		if pattern != "" {
-			quoted = append(quoted, regexp.QuoteMeta(pattern))
-		}
-	}
-	if len(quoted) == 0 {
-		return nil, 0, nil
-	}
-	matcher, err := regexp.Compile("(?i)(?:" + strings.Join(quoted, "|") + ")")
+	prototype, err := newCaptureMatchStream(ctx, patterns, maxLines, nil)
 	if err != nil {
 		return nil, 0, err
 	}
-	matcher.Longest()
-	if maxLines <= 0 {
-		maxLines = 32
+	terms := make([]string, len(patterns))
+	for index, pattern := range patterns {
+		terms[index] = strings.ToLower(pattern)
 	}
+	if len(observers) > 0 && observers[0] != nil {
+		terms = observers[0].terms
+	}
+	termMatcher := newSearchTermMatcher(terms)
 	allowed := make(map[string]bool, len(source.paths))
 	for _, path := range source.paths {
 		allowed[path] = true
+	}
+	eligible := make([]string, 0, len(tracked))
+	for _, path := range tracked {
+		if allowed[path] {
+			eligible = append(eligible, path)
+		}
+	}
+	attributes, err := source.capturedDiffAttributes(ctx, eligible)
+	if err != nil {
+		return nil, 0, err
 	}
 	matches := make([]gitutil.GrepMatch, 0)
 	reads := 0
@@ -54,7 +58,11 @@ func capturedPreselectionMatches(ctx context.Context, source sourceContext, trac
 					return nil, reads, evidence.err
 				}
 				reads++
-				if !evidence.binary {
+				attribute := attributes[path]
+				if !attribute.Binary && (attribute.Text || !evidence.binary) {
+					if evidence.matched && len(evidence.terms) == 0 {
+						matches = append(matches, gitutil.GrepMatch{Path: path})
+					}
 					for _, term := range evidence.terms {
 						matches = append(matches, gitutil.GrepMatch{Path: path, Text: term})
 					}
@@ -66,35 +74,31 @@ func capturedPreselectionMatches(ctx context.Context, source sourceContext, trac
 			continue
 		}
 		reads++
-		// Git's automatic binary sniff uses the first 8000 bytes. The scorer later
-		// rejects any NUL-containing source independently.
-		if strings.IndexByte(content[:min(len(content), 8000)], 0) >= 0 {
-			continue
-		}
-		seen := make(map[string]bool, len(patterns))
-		matchingLines := 0
-		for remaining := content; remaining != "" && matchingLines < maxLines; {
-			line, rest, _ := strings.Cut(remaining, "\n")
-			remaining = rest
-			matched := false
-			for offset := 0; offset < len(line); {
-				location := matcher.FindStringIndex(line[offset:])
-				if location == nil {
-					break
-				}
-				matched = true
-				text := line[offset+location[0] : offset+location[1]]
-				key := strings.ToLower(text)
-				if !seen[key] {
-					matches = append(matches, gitutil.GrepMatch{Path: path, Text: text})
-					seen[key] = true
-				}
-				offset += location[1]
-			}
-			if matched {
-				matchingLines++
+		stream := *prototype
+		seen := make([]bool, len(terms))
+		stream.emit = func(text string) {
+			for index, matched := range termMatcher.match(text) {
+				seen[index] = seen[index] || matched
 			}
 		}
+		if _, err := stream.Write([]byte(content)); err != nil {
+			return nil, reads, err
+		}
+		if err := stream.finish(); err != nil {
+			return nil, reads, err
+		}
+		attribute := attributes[path]
+		if !attribute.Binary && (attribute.Text || !stream.binary) {
+			if stream.matched {
+				matches = append(matches, gitutil.GrepMatch{Path: path})
+			}
+			for index, matched := range seen {
+				if matched {
+					matches = append(matches, gitutil.GrepMatch{Path: path, Text: terms[index]})
+				}
+			}
+		}
+
 	}
 	return matches, reads, nil
 }

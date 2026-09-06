@@ -42,7 +42,7 @@ func TestCapturedPreselectionLocaleTermPresenceMatchesGit(t *testing.T) {
 		"turkish-dotless.go": "ı",
 	}
 	for path, content := range fixtures {
-		write(t, repo, "src/"+path, "package p\n// "+content+"\n")
+		write(t, repo, "src/"+path, "// "+content+"\n")
 	}
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "captured locale fixture")

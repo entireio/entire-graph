@@ -2033,6 +2033,9 @@ func preselectSearchFiles(
 		if options.ExtractionReuse {
 			if trackedErr == nil {
 				matches, capturedPreselectionReads, grepErr = capturedPreselectionMatches(ctx, source, tracked, searchGitGrepPreselectionPatterns(q), 32, options.preselectionCapture)
+				if grepErr != nil {
+					return selection, fmt.Errorf("captured preselection: %w", grepErr)
+				}
 			}
 		} else {
 			matches, grepErr = gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
