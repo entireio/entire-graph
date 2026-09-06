@@ -71,3 +71,17 @@ Planned opt-in (rungs D1–D3 in ATC_PLAN.md §8): verdict telemetry → Delta v
 
 ## Known limitations and next steps
 Static, heuristic analysis (tree-sitter): dynamic dispatch/reflection edges surface as UNKNOWN — verify by test; dependent counts are guidance, not compiler facts. Pairwise refs today (`--all` planned); watch mode planned (poll, not event-driven). Next step to production: run as an `entire` plugin subcommand with shadow-branch (uncommitted work) visibility for true pre-commit radar, and CI gate mode using the existing exit codes.
+
+## Decisions log (pre-noon)
+**Chosen:** Track 2 — blast-radius intersection between parallel work streams as the core new graph capability.
+
+**Rejected:**
+- Track 3 framing — category mismatch for what ATC actually is.
+- Heal-agents idea — harness auto-update trend already covers it.
+- Red severity for body-only changes — false-positive risk; body-only changes with cross-side dependents stay advisory (BEHAVIOR DRIFT), only signature/removal/rename go red.
+
+**Assumptions:**
+- Tree-sitter resolution is sufficient for READ–WRITE detection (unresolved edges degrade to labeled UNKNOWN, never silent).
+- Pairwise refs first; `--all` pairwise comes later (S4).
+
+**Open risks:** static analysis misses dynamic dispatch (mitigated: UNKNOWN labeling; errors exit 3 — "no verdict ≠ clean"); body-change advisories could be noisy on large repos (mitigated: advisories never page — only signature/removal/rename are red); `neighbors` symbol ambiguity on big codebases (mitigated: `--file` disambiguation retry).
