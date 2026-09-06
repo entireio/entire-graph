@@ -22,3 +22,38 @@ Users and agents must be able to tell apart:
 
 > A partial analysis repository fixture is attached.\
 >
+
+---
+
+You’re right—the current implementation does not provide real team connectivity.
+
+Currently `/api/v1/sessions` runs `entire session list --json` on the portal laptop, so it only sees local agents. A loopback-only backend cannot monitor teammates’ laptops.
+
+The correct architecture is:
+
+1. Leader creates a team and receives an invite code/link.
+2. Teammate joins and runs a connector command in their Entire-enabled clone.
+3. Connector registers their agent and sends bounded heartbeats to a shared server.
+4. Portal displays agent type, online status, mission, branch, changed files, checkpoints, blockers, and last activity.
+5. Names and roles are entered manually. Agent/provider details are detected—never invented.
+6. Raw prompts, reasoning, terminal contents, and secrets are not transmitted.
+
+Preethesh needs to add:
+```text
+POST /api/v1/teams
+POST /api/v1/teams/{id}/join
+POST /api/v1/agents/connect
+POST /api/v1/agents/{id}/heartbeat
+GET  /api/v1/teams/{id}/agents
+GET  /api/v1/teams/{id}/events   (SSE/WebSocket)
+```
+
+Also, the backend must be deployed or LAN-accessible; `127.0.0.1` cannot receive teammate heartbeats.
+
+Send Preethesh:
+
+> Current onboarding only lists sessions local to the portal machine. We need genuine cross-machine onboarding: team invite code, agent connector registration, authenticated heartbeat/event APIs, and a shared reachable backend. The connector should report bounded metadata—agent, session, mission, branch, changed files, checkpoint, blocker and last activity—never prompts or reasoning. Names/roles must remain user-entered, not inferred. Once these contracts exist, Deepthi will build the connection-first UI under `web/spidey-sense/**`.
+
+---
+
+bro i am preethesh bro are u thinking just do it
