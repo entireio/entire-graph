@@ -1,0 +1,6 @@
+{
+  "name": "Entire Graph",
+  "description": "Code graph analyzer providing semantic search, symbol definitions, caller-callee relationships, and change impact analysis for coding agents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
