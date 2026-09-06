@@ -1,0 +1,30 @@
+{
+  "command": [
+    "runuser",
+    "-u",
+    "graphcheck",
+    "--",
+    "/usr/bin/python3",
+    "/opt/graph-validation/correctness-6cf92c9c-20260906/corrective-resource-runner.py",
+    "--output",
+    "/opt/graph-validation/correctness-6cf92c9c-20260906/snapshot-resource-diagnostic-r2",
+    "--binary",
+    "/opt/graph-validation/correctness-6cf92c9c-20260906/p1-evaluator",
+    "--binary-sha256",
+    "70b0ea859509337fb765e8d104f168e03a651cf144fd88c7ce696f8e4cafec02",
+    "--source-root",
+    "/opt/graph-validation/correctness-6cf92c9c-20260906",
+    "--source-commit",
+    "6cf92c9ccff1882bb2ab63aa9edeb8da0d633cc3",
+    "--scenario-script",
+    "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/corpus-tools/p1_scenario.py",
+    "--corpus-root",
+    "/opt/p1/corpus",
+    "--input-sha256",
+    "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4"
+  ],
+  "runner_sha256": "d0f0c5601c22a0156a8d610b210ef3c3a24b5110278aa8cc1544084072b3b497",
+  "script_sha256": "429dd7ae57c3f1c089cc24aedcfd12fb67dc48281d9795fc065324a03c5d073f",
+  "result_blob": "p1-snapshot-resource-6cf92c9c-results.tar.gz",
+  "purpose": "One corrective pair after immutable and pinned correctness; no campaign expansion"
+}

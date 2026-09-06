@@ -1,0 +1,21 @@
+{
+  "command": [
+    "/usr/bin/time",
+    "-v",
+    "-o",
+    "/opt/graph-validation/correctness-6cf92c9c-20260906/snapshot-resource-diagnostic-r2/time-off.txt",
+    "--",
+    "/opt/graph-validation/correctness-6cf92c9c-20260906/p1-evaluator",
+    "-test.run=^TestExtractionCorpusMeasurement$",
+    "-test.count=1",
+    "-test.v",
+    "-test.timeout=130s"
+  ],
+  "exit_code": 0,
+  "peak_rss_bytes": 3312332800,
+  "rss_error": null,
+  "rss_status": "measured by /usr/bin/time -v",
+  "time_output_path": "/opt/graph-validation/correctness-6cf92c9c-20260906/snapshot-resource-diagnostic-r2/time-off.txt",
+  "timed_out": false,
+  "timeout_seconds": 120
+}

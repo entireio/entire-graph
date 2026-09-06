@@ -1,5 +1,5 @@
 {
-  "phase": "p1_profile_correctness_and_operation_backpressure",
+  "phase": "p1_remaining_admission_blockers",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T13:48:47.597766+00:00",
+  "as_of_utc": "2026-09-06T14:09:00.357124+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -32,7 +32,7 @@
   "recorded_unrun_requests": 1434,
   "pending_planned_requests": 15730,
   "heartbeat_status": "ACTIVE",
-  "pause_reason": "1c0b8e24 corrective pair RSS ratio1.170 exceeds1.10 screen",
+  "pause_reason": "Remaining baseline timeouts and partial-result admission; one corrective pair does not authorize expansion",
   "cache_fix_commits": [
     "f96483ef",
     "9bfafe17"
@@ -41,7 +41,7 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Cold latency screen within10percent inonepair; RSSscreen fails. Retained55search mismatches reduce to3distinctprofile requests toverify forsemanticparity.",
+  "remaining_diagnosis": "Three retained query profile mismatches closed. Latest single cold pair within latency/RSS screens. Baseline fast/full snapshot timeouts and frozen partial admission policy remain unresolved.",
   "stopgaps": "77 campaign-control tests passed in7.809s after startup/final-lease/accounting fixes; protocol supersedes old three-failure rule",
   "full_correctness": "passed6cf92c9c immutablecheckout unchangedHEAD",
   "campaign": "paused; isolated diagnostic failures retained separately",
@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "One guarded corrective RSS/latency pair at verified6cf92c9c; no widercampaign. Humanreviewpacket prepared for deferredP3/P4 inputs.",
+  "next_work": "Read-only review of retained timeout and partial evidence; resolve concrete issues before a new versioned campaign. No further cold sweeps.",
   "current_focused_correctness": {
     "commit": "1c0b8e24",
     "correctness_seconds": 0.788,
@@ -142,7 +142,7 @@
     "source_commit": "31cc145dca122729edbc45894b6bcb8560332a6c",
     "tests": 4,
     "root_test_seconds": 1.51,
-    "measurements_run": 0,
+    "measurements_run": 4,
     "contract": "exactly one positive bounded RSS reading; malformed or missing reading halts before next arm"
   },
   "retained_snapshot_1c0b8e24": {
@@ -230,5 +230,23 @@
     "product_requests": 7,
     "why_seven": "First fullOFF stopped on incorrectly shared warning oracle; corrected from originalfullbaseline, then onlyfullpair replayed",
     "historical_repetitions_rerun": false
+  },
+  "retained_snapshot_6cf92c9c": {
+    "source_commit": "6cf92c9ccff1882bb2ab63aa9edeb8da0d633cc3",
+    "binary_sha256": "70b0ea859509337fb765e8d104f168e03a651cf144fd88c7ce696f8e4cafec02",
+    "semantic_equal": true,
+    "partial_and_warning_digests_equal": true,
+    "known_partial_failures_per_arm": 194,
+    "corpus_before_between_after_equal": true,
+    "off_wall_seconds": 57.768514922,
+    "on_wall_seconds": 62.613695456,
+    "latency_ratio": 1.083872340158684,
+    "off_peak_rss_bytes": 3312332800,
+    "on_peak_rss_bytes": 3167264768,
+    "rss_ratio": 0.956203666491483,
+    "cold_screen": "Both single-pair ratios within 1.10; campaign remains paused",
+    "measurement_scope": "One isolated pair; GNU time process peak RSS, not simultaneous aggregate process-tree RSS. No statistical, causal or release-gate claim. Earlier failed observations remain retained.",
+    "next_action": "Resolve remaining baseline timeout and partial admission blockers before separately versioned campaign continuation.",
+    "results_sha256": "fec54dd1a21810616cc4518969dc510f1cfc9572174a6bab8dac7f5423ca9008"
   }
 }

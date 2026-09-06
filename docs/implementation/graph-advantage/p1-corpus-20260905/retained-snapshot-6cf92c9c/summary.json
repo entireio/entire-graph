@@ -1,0 +1,18 @@
+{
+  "source_commit": "6cf92c9ccff1882bb2ab63aa9edeb8da0d633cc3",
+  "binary_sha256": "70b0ea859509337fb765e8d104f168e03a651cf144fd88c7ce696f8e4cafec02",
+  "semantic_equal": true,
+  "partial_and_warning_digests_equal": true,
+  "known_partial_failures_per_arm": 194,
+  "corpus_before_between_after_equal": true,
+  "off_wall_seconds": 57.768514922,
+  "on_wall_seconds": 62.613695456,
+  "latency_ratio": 1.083872340158684,
+  "off_peak_rss_bytes": 3312332800,
+  "on_peak_rss_bytes": 3167264768,
+  "rss_ratio": 0.956203666491483,
+  "cold_screen": "Both single-pair ratios within 1.10; campaign remains paused",
+  "measurement_scope": "One isolated pair; GNU time process peak RSS, not simultaneous aggregate process-tree RSS. No statistical, causal or release-gate claim. Earlier failed observations remain retained.",
+  "next_action": "Resolve remaining baseline timeout and partial admission blockers before separately versioned campaign continuation.",
+  "results_sha256": "fec54dd1a21810616cc4518969dc510f1cfc9572174a6bab8dac7f5423ca9008"
+}
