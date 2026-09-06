@@ -231,3 +231,11 @@ one retained Kubernetes query. `retained-query-correctness-1c0b8e24/` freezes
 one trial-0 pair per profile, with strict semantic/partial/warning membership
 parity and first-failure pause. These are correctness cases, not a performance
 sweep; execution and complete coverage are not yet claimed.
+
+Current follow-up: ADR 0048 bounds detached publication batches operation-wide.
+The source audit found that up to eight workers can each detach a whole batch
+before waiting for the serialized writer. A cancellation-aware publication
+gate is accepted and implementation is active; this is not yet verified or
+claimed to explain the RSS difference. `1c0b8e24` remains the latest fully
+verified product. Syntax-only and fast retained query pairs now have exact
+semantic/partial/warning parity; the corrected full-only replay is active.
