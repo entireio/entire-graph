@@ -7,8 +7,8 @@
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
   "verified_checkpoint": "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
   "verified_evidence_commit": "see evidence/check-d793b2be/verification.json",
-  "current_worktree": "Product d793b2be full and pinned Linux correctness passed; stopgap harness77passed",
-  "workers_state": "validation VM deallocation requested after profile collection; two campaign workers off; no jobs running",
+  "current_worktree": "b253e18a encoded publication committed; focused cache/extraction racepassed6.077s; latest full+Linuxverifiedproduct remainsd793b2be",
+  "workers_state": "all task VMs deallocated; no benchmark jobs",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
   "correctness": "d793b2be full check683.699s;28pinned Linux tests including10live",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T11:54:25.778142+00:00",
+  "as_of_utc": "2026-09-06T12:02:53.345217+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Review bounded encoded-publication change and quota-scan architecture; no additional measurements or broad checks until code settles",
+  "next_work": "Design review of capability-bound admission session (ADR0046); no measurements or repeated broadchecks until related implementation settles",
   "current_focused_correctness": {
     "commit": "5a60fc8f91855387ee7a7e9d341ccd88e74822ca",
     "source_hashes_unchanged": true,
