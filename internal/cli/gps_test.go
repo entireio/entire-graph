@@ -283,35 +283,257 @@ func TestGPSGitFixtureCodeOnlyGoldenContract(t *testing.T) {
 	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"check", "--repo", repo, "--head", "--base", strings.TrimSpace(string(baseOutput))}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "GPS-DELTA-CODE-ONLY") {
-		t.Fatalf("code-only finding missing: %s", out.String())
+	assertGPSCheckGolden(t, "check-code-only.json", out.Bytes())
+}
+
+func TestGPSGitFixtureDeletedAnchorAndTestMappingGoldenContract(t *testing.T) {
+	repo := copyGPSFixture(t, "token-auth")
+	gpsGit(t, repo, "init")
+	gpsGit(t, repo, "config", "user.email", "gps@example.invalid")
+	gpsGit(t, repo, "config", "user.name", "GPS Test")
+	if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "specs", "auth.yaml"), []byte("version: 1\nid: SPEC-AUTH-001\ntitle: Token authentication\nrequirements:\n  - id: REQ-AUTH-TOKEN\n    description: Valid credentials produce an access token.\nacceptance:\n  - id: ACC-AUTH-TOKEN\n    requirement: REQ-AUTH-TOKEN\n    description: Authentication returns a token.\nanchors:\n  - id: ANCHOR-AUTH\n    requirement: REQ-AUTH-TOKEN\ntests:\n  - id: TEST-AUTH-TOKEN\n    acceptance: ACC-AUTH-TOKEN\n    selector:\n      name: TestAuthenticateReturnsToken\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	golden, err := os.ReadFile(filepath.Join("testdata", "gps", "golden", "check-code-only.json"))
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "add reviewed auth mapping")
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}}, []string{"anchor", "bind", "--repo", repo, "--id", "ANCHOR-AUTH", "--symbol", "Authenticate", "--file", "auth.go"}); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "bind auth anchor")
+	base := gpsRevision(t, repo)
+	if err := os.Remove(filepath.Join(repo, "auth.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "specs", "auth.yaml"), []byte("version: 1\nid: SPEC-AUTH-001\ntitle: Token authentication\nrequirements:\n  - id: REQ-AUTH-TOKEN\n    description: Valid credentials produce an access token.\nacceptance:\n  - id: ACC-AUTH-TOKEN\n    requirement: REQ-AUTH-TOKEN\n    description: Authentication returns a token.\nanchors:\n  - id: ANCHOR-AUTH\n    requirement: REQ-AUTH-TOKEN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", "-A")
+	gpsGit(t, repo, "commit", "-m", "remove auth implementation and mapping")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"check", "--repo", repo, "--head", "--base", base}); err != nil {
+		t.Fatal(err)
+	}
+	assertGPSCheckGolden(t, "check-deleted-anchor-test-mapping.json", out.Bytes())
+}
+
+func TestGPSGitFixtureDirtyWorktreeAndHeadGoldenContracts(t *testing.T) {
+	repo := copyGPSFixture(t, "token-auth")
+	gpsGit(t, repo, "init")
+	gpsGit(t, repo, "config", "user.email", "gps@example.invalid")
+	gpsGit(t, repo, "config", "user.name", "GPS Test")
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "token auth fixture")
+	if err := os.Remove(filepath.Join(repo, "auth_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	var worktree bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &worktree}, []string{"check", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+	assertGPSCheckGolden(t, "check-dirty-worktree.json", worktree.Bytes())
+	var head bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &head}, []string{"check", "--repo", repo, "--head"}); err != nil {
+		t.Fatal(err)
+	}
+	assertGPSCheckGolden(t, "check-head-clean.json", head.Bytes())
+}
+
+func TestGPSGitFixtureIgnoredPathGoldenContract(t *testing.T) {
+	repo := copyGPSFixture(t, "token-auth")
+	gpsGit(t, repo, "init")
+	gpsGit(t, repo, "config", "user.email", "gps@example.invalid")
+	gpsGit(t, repo, "config", "user.name", "GPS Test")
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("ignored.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "specs", "auth.yaml"), []byte("version: 1\nid: SPEC-AUTH-001\ntitle: Ignored test source\nrequirements:\n  - id: REQ-IGNORED\n    description: Ignored files are not indexed.\nacceptance:\n  - id: ACC-IGNORED\n    requirement: REQ-IGNORED\n    description: A declared test must be visible.\ntests:\n  - id: TEST-IGNORED\n    acceptance: ACC-IGNORED\n    selector:\n      name: TestIgnoredPath\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "declare ignored test mapping")
+	if err := os.WriteFile(filepath.Join(repo, "ignored.go"), []byte("package auth\nfunc TestIgnoredPath() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "check-ignore", "ignored.go")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"check", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+	assertGPSCheckGolden(t, "check-ignored-path.json", out.Bytes())
+}
+
+func TestGPSGitFixtureMalformedIntentValidationGoldenContract(t *testing.T) {
+	repo := copyGPSFixture(t, "token-auth")
+	gpsGit(t, repo, "init")
+	gpsGit(t, repo, "config", "user.email", "gps@example.invalid")
+	gpsGit(t, repo, "config", "user.name", "GPS Test")
+	if err := os.MkdirAll(filepath.Join(repo, ".entire", "graph", "anchors"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "anchors", "malformed.yaml"), []byte("version: 1\nanchors:\n  - id: ANCHOR-AUTH\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "add malformed binding")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"spec", "validate", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+	assertGPSValidationGolden(t, "spec-validate-malformed-binding.json", out.Bytes())
+}
+
+func TestGPSGitFixturePartialGraphGoldenContract(t *testing.T) {
+	repo := copyGPSFixture(t, "token-auth")
+	gpsGit(t, repo, "init")
+	gpsGit(t, repo, "config", "user.email", "gps@example.invalid")
+	gpsGit(t, repo, "config", "user.name", "GPS Test")
+	if err := os.WriteFile(filepath.Join(repo, "broken.go"), []byte("package auth\nfunc Broken( {\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "add malformed source")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"check", "--repo", repo, "--head"}); err != nil {
+		t.Fatal(err)
+	}
+	assertGPSCheckGolden(t, "check-partial-graph.json", out.Bytes())
+}
+
+func TestGPSGitFixtureAmbiguousBindingGoldenContract(t *testing.T) {
+	repo := copyGPSFixture(t, "token-auth")
+	gpsGit(t, repo, "init")
+	gpsGit(t, repo, "config", "user.email", "gps@example.invalid")
+	gpsGit(t, repo, "config", "user.name", "GPS Test")
+	if err := os.WriteFile(filepath.Join(repo, "other.go"), []byte("package auth\nfunc Authenticate() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "specs", "auth.yaml"), []byte("version: 1\nid: SPEC-AUTH-001\ntitle: Ambiguous anchor\nrequirements:\n  - id: REQ-AUTH\n    description: Authentication is anchored.\nanchors:\n  - id: ANCHOR-AUTH\n    requirement: REQ-AUTH\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".entire", "graph", "anchors"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "anchors", "auth.yaml"), []byte("version: 1\nanchors:\n  - id: ANCHOR-AUTH\n    symbol_id: removed-symbol\n    selector:\n      qualified_name: Authenticate\n      file: auth.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "add ambiguous anchor candidates")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"anchor", "resolve", "--repo", repo, "--head", "--id", "ANCHOR-AUTH"}); err != nil {
+		t.Fatal(err)
+	}
+	assertGPSAnchorGolden(t, "anchor-resolve-ambiguous.json", out.Bytes())
+}
+
+func TestGPSGitFixtureUnbornHeadFails(t *testing.T) {
+	repo := t.TempDir()
+	gpsGit(t, repo, "init")
+	err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}}, []string{"check", "--repo", repo, "--head"})
+	if err == nil || !strings.Contains(err.Error(), "HEAD") {
+		t.Fatalf("check --head on unborn repository error = %v, want HEAD resolution failure", err)
+	}
+}
+
+func gpsRevision(t *testing.T, repo string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
+	return strings.TrimSpace(string(out))
+}
+
+func assertGPSCheckGolden(t *testing.T, name string, output []byte) {
+	t.Helper()
 	var response struct {
-		SchemaVersion string `json:"schema_version"`
-		ChangeDelta   string `json:"change_delta"`
-		Disposition   string `json:"disposition"`
-		Findings      []struct {
+		SchemaVersion  string `json:"schema_version"`
+		ChangeDelta    string `json:"change_delta"`
+		Disposition    string `json:"disposition"`
+		RepositoryView struct {
+			Kind string `json:"kind"`
+		} `json:"repository_view"`
+		Findings []struct {
 			ID string `json:"id"`
 		} `json:"findings"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+	if err := json.Unmarshal(output, &response); err != nil {
 		t.Fatal(err)
 	}
 	var contract struct {
-		SchemaVersion string   `json:"schema_version"`
-		ChangeDelta   string   `json:"change_delta"`
-		Disposition   string   `json:"disposition"`
-		FindingIDs    []string `json:"finding_ids"`
+		SchemaVersion      string   `json:"schema_version"`
+		ChangeDelta        string   `json:"change_delta"`
+		Disposition        string   `json:"disposition"`
+		RepositoryViewKind string   `json:"repository_view_kind"`
+		FindingIDs         []string `json:"finding_ids"`
 	}
-	if err := json.Unmarshal(golden, &contract); err != nil {
+	readGPSGolden(t, name, &contract)
+	ids := make([]string, len(response.Findings))
+	for i, finding := range response.Findings {
+		ids[i] = finding.ID
+	}
+	if response.SchemaVersion != contract.SchemaVersion || response.ChangeDelta != contract.ChangeDelta || response.Disposition != contract.Disposition || response.RepositoryView.Kind != contract.RepositoryViewKind || strings.Join(ids, ",") != strings.Join(contract.FindingIDs, ",") {
+		t.Fatalf("GPS check contract %s changed: %s", name, output)
+	}
+}
+
+func assertGPSValidationGolden(t *testing.T, name string, output []byte) {
+	t.Helper()
+	var response struct {
+		SchemaVersion string `json:"schema_version"`
+		Valid         bool   `json:"valid"`
+		Diagnostics   []struct {
+			Code string `json:"code"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(output, &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.SchemaVersion != contract.SchemaVersion || response.ChangeDelta != contract.ChangeDelta || response.Disposition != contract.Disposition || len(response.Findings) != len(contract.FindingIDs) || response.Findings[0].ID != contract.FindingIDs[0] {
-		t.Fatalf("code-only contract changed: %s", out.String())
+	var contract struct {
+		SchemaVersion   string   `json:"schema_version"`
+		Valid           bool     `json:"valid"`
+		DiagnosticCodes []string `json:"diagnostic_codes"`
+	}
+	readGPSGolden(t, name, &contract)
+	if response.SchemaVersion != contract.SchemaVersion || response.Valid != contract.Valid || len(response.Diagnostics) != len(contract.DiagnosticCodes) {
+		t.Fatalf("GPS validation contract %s changed: %s", name, output)
+	}
+	for i, diagnostic := range response.Diagnostics {
+		if diagnostic.Code != contract.DiagnosticCodes[i] {
+			t.Fatalf("GPS validation contract %s changed: %s", name, output)
+		}
+	}
+}
+
+func assertGPSAnchorGolden(t *testing.T, name string, output []byte) {
+	t.Helper()
+	var response struct {
+		ID         string `json:"id"`
+		State      string `json:"state"`
+		Candidates []any  `json:"candidates"`
+	}
+	if err := json.Unmarshal(output, &response); err != nil {
+		t.Fatal(err)
+	}
+	var contract struct {
+		ID             string `json:"id"`
+		State          string `json:"state"`
+		CandidateCount int    `json:"candidate_count"`
+	}
+	readGPSGolden(t, name, &contract)
+	if response.ID != contract.ID || response.State != contract.State || len(response.Candidates) != contract.CandidateCount {
+		t.Fatalf("GPS anchor contract %s changed: %s", name, output)
+	}
+}
+
+func readGPSGolden(t *testing.T, name string, target any) {
+	t.Helper()
+	golden, err := os.ReadFile(filepath.Join("testdata", "gps", "golden", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(golden, target); err != nil {
+		t.Fatal(err)
 	}
 }
 

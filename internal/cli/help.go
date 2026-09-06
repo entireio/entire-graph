@@ -400,11 +400,13 @@ var commandDocs = []commandDoc{
 		usage:   []string{`entire graph verify --test "<cmd>" --repo . [--setup "<cmd>"] [--scope id] [--record-baseline path | --pre-edit-baseline path] [--max-bytes 2048]`},
 		long: "verify runs your test command and reports WHICH TESTS CHANGED rather than what the runner printed: which newly pass, which newly fail, and which were ALREADY failing before the edit (labelled PRE-EXISTING). Raw runner output is never forwarded — ids are, text is not — and id lists cap at 20 with a count.\n\n" +
 			"Record a baseline on the pristine tree first (--record-baseline), then pass that file as --pre-edit-baseline after editing. Without a baseline the verdict is a state rather than a delta, so a failure that predates the change cannot be labelled as one.\n\n" +
+			"When .entire/graph/verification.yaml declares scopes, --scope is required and its caller-supplied command and setup metadata must match. The policy is never executed; its digest is recorded and compared with the baseline.\n\n" +
 			"Parsers: pytest, jest/vitest, cargo test, go test, phpunit, rspec, minitest, maven/gradle surefire, ctest. An unrecognised format degrades to an exit-code-only verdict and says so.",
 		flags: []flagDoc{
 			{name: "--test", arg: "cmd", desc: "The test command to run (required)"},
 			{name: "--repo", arg: "path", desc: "Repository to run in (default: current repo)"},
 			{name: "--setup", arg: "cmd", desc: "Command run before the tests; its output never contributes test ids"},
+			{name: "--scope", arg: "id", desc: "Declared verification-policy scope (required when a policy has scopes)"},
 			{name: "--record-baseline", arg: "path", desc: "Write the pristine-tree result to this file instead of adjudicating"},
 			{name: "--pre-edit-baseline", arg: "path", desc: "Diff this run against a previously recorded baseline"},
 			{name: "--max-bytes", arg: "n", def: "2048", desc: "Cap the rendered verdict; the verdict clause always survives"},

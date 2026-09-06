@@ -19,9 +19,11 @@ fixture changes `auth.go` in a later commit and expects the static
 `GPS-DELTA-CODE-ONLY` finding.
 
 `internal/cli/testdata/gps/golden/` pins the public JSON contract fields for
-invalid validation and Git-backed code-only checks. Dynamic values such as Git
-object IDs and intent digests are deliberately excluded from those compact
-goldens.
+invalid validation, Git-backed code-only checks, removed mappings and anchors,
+working-tree versus `--head` selection, ignored paths, partial graphs, and
+ambiguous anchor resolution. Dynamic values such as Git object IDs and intent
+digests are deliberately excluded from those compact goldens. The fixture
+README also documents the malformed-binding and unborn-`HEAD` negative cases.
 
 ## Invalid Authoring
 

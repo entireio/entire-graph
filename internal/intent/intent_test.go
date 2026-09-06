@@ -58,3 +58,40 @@ func TestLoadRejectsYAMLAliases(t *testing.T) {
 		t.Fatal("accepted YAML alias")
 	}
 }
+
+func TestLoadVerificationPolicyValidatesAndDigestsCanonicalScopes(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, Root, VerificationPolicyFile)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "version: 1\nscopes:\n  - id: unit\n    command: go test ./internal/intent\n  - id: cli\n    command: go test ./internal/cli\n    setup_command: go mod download\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := LoadVerificationPolicy(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Digest == "" || policy.Scopes[0].ID != "cli" {
+		t.Fatalf("policy = %#v", policy)
+	}
+	if err := policy.VerifyScope("cli", "go test ./internal/cli", "go mod download"); err != nil {
+		t.Fatal(err)
+	}
+	if err := policy.VerifyScope("cli", "go test ./...", "go mod download"); err == nil {
+		t.Fatal("accepted mismatched command metadata")
+	}
+	if err := os.WriteFile(path, []byte("version: 1\nscopes:\n  - id: cli\n    command: go test ./...\n  - id: cli\n    command: go test ./...\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadVerificationPolicy(repo); err == nil {
+		t.Fatal("accepted duplicate policy scope")
+	}
+	if err := os.WriteFile(path, []byte("version: 1\nscopes: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadVerificationPolicy(repo); err == nil {
+		t.Fatal("accepted an empty policy")
+	}
+}

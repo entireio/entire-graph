@@ -63,6 +63,7 @@ type verifyBaseline struct {
 	Commit        string        `json:"commit,omitempty"`
 	Tree          string        `json:"tree,omitempty"`
 	IntentDigest  string        `json:"intent_digest,omitempty"`
+	PolicyDigest  string        `json:"policy_digest"`
 	Scope         string        `json:"scope,omitempty"`
 	Platform      string        `json:"platform"`
 	TimeoutMillis int64         `json:"timeout_millis"`
@@ -141,6 +142,13 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	policy, err := intent.LoadVerificationPolicy(repo)
+	if err != nil {
+		return err
+	}
+	if err := policy.VerifyScope(flags.Scope, flags.Test, flags.Setup); err != nil {
+		return err
+	}
 	output, exitCode, runErr := runVerifyCommands(ctx, repo, flags)
 	if runErr != nil {
 		// A command that could not be LAUNCHED is a different failure from a command that ran and
@@ -150,7 +158,7 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	results, parser, parsed := parseVerifyOutput(output)
 
 	if flags.RecordBaseline != "" {
-		return writeVerifyBaseline(ctx, opts, repo, flags, results, parser, parsed, exitCode)
+		return writeVerifyBaseline(ctx, opts, repo, flags, policy.Digest, results, parser, parsed, exitCode)
 	}
 	baseline, err := readVerifyBaseline(flags.PreEditBaseline)
 	if err != nil {
@@ -158,6 +166,9 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	}
 	if baseline.Repo != repo || baseline.TestCommand != flags.Test || baseline.Scope != flags.Scope {
 		return fmt.Errorf("verify baseline is incompatible with the selected repository, command, or scope")
+	}
+	if baseline.PolicyDigest != policy.Digest {
+		return fmt.Errorf("verify baseline policy digest is incompatible with the selected local verification policy")
 	}
 	if parsed && baseline.Parser != "exit-code-only" && baseline.Parser != parser {
 		return fmt.Errorf("verify baseline parser %q is incompatible with current parser %q", baseline.Parser, parser)
@@ -234,13 +245,14 @@ func errorsAs(err error, target **exec.ExitError) bool {
 
 func writeVerifyBaseline(
 	ctx context.Context, opts Options, repo string, flags verifyFlags,
-	results verifyResults, parser string, parsed bool, exitCode int,
+	policyDigest string, results verifyResults, parser string, parsed bool, exitCode int,
 ) error {
 	baseline := verifyBaseline{
 		FormatVersion: 1,
 		RecordedAt:    time.Now().UTC().Format(time.RFC3339),
 		Repo:          repo,
 		Scope:         flags.Scope,
+		PolicyDigest:  policyDigest,
 		Platform:      runtime.GOOS + "/" + runtime.GOARCH,
 		TimeoutMillis: verifyTimeout(flags.Test).Milliseconds(),
 		TestCommand:   flags.Test,

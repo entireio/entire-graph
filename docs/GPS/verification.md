@@ -128,7 +128,22 @@ entire graph verify --repo . --test "go test ./internal/auth" --record-baseline 
 entire graph verify --repo . --test "go test ./internal/auth" --pre-edit-baseline .entire/graph/evidence/auth-baseline.json
 ```
 
-Before using a result for intent-aware review, extend the evidence format with:
+Verification policy is a strict, optional local document at
+`.entire/graph/verification.yaml`:
+
+```yaml
+version: 1
+scopes:
+  - id: auth
+    command: go test ./internal/auth
+    setup_command: go mod download
+```
+
+It is command metadata, not execution authority. When it declares scopes,
+`verify` requires `--scope` and rejects caller command or setup metadata that
+does not exactly match the selected scope. The command remains caller-supplied.
+
+Evidence records include:
 
 - execution evidence schema version;
 - normalized repository identity, resolved commit or worktree content identity;
@@ -138,10 +153,11 @@ Before using a result for intent-aware review, extend the evidence format with:
 - baseline identity and compatibility decision; and
 - a statement of unparsed or unavailable results.
 
-The runner must reject incompatible baselines by default: different repository,
-command, parser, scope, intent digest, or policy digest requires an explicit
-comparison override with a visible warning. Removed test IDs and missing baseline
-IDs must be reported; comparison cannot silently iterate only current test IDs.
+The runner rejects incompatible baselines by default: different repository,
+command, parser, scope, or policy digest is incompatible. A missing policy
+digest in legacy evidence is incompatible with the current policy. Removed test
+IDs and missing baseline IDs must be reported; comparison cannot silently
+iterate only current test IDs.
 
 Specs may name a runner command only as non-executable metadata for display. A
 future `verify --scope <spec-or-acceptance-id>` can select from caller-approved
