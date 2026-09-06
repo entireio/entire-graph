@@ -117,6 +117,20 @@ func TestValidateExtractionRecordAllowsNilAndEmptySlices(t *testing.T) {
 	}
 }
 
+func TestValidateExtractionRecordValidPathAllocatesNothing(t *testing.T) {
+	record := validationFixtureRecord()
+	if err := validateExtractionRecord(record); err != nil {
+		t.Fatal(err)
+	}
+	if allocations := testing.AllocsPerRun(100, func() {
+		if err := validateExtractionRecord(record); err != nil {
+			t.Fatal(err)
+		}
+	}); allocations != 0 {
+		t.Fatalf("valid extraction validation allocations = %v, want zero", allocations)
+	}
+}
+
 func TestValidateExtractionValueRejectsFutureLossyShapes(t *testing.T) {
 	type tagged struct {
 		Value string `json:"value,omitempty"`
