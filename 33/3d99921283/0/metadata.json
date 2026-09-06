@@ -1,0 +1,64 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "333d99921283",
+  "session_id": "01a07576-9d98-7953-813f-ac68be2dc69b",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T08:29:26.799233302Z",
+  "branch": "progress",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "BUILDATHON.md",
+    "docs/spidey-sense-architecture.md",
+    "docs/spidey-sense-context.md",
+    "examples/hardcoders-plan.json",
+    "internal/cli/coordinate_test.go",
+    "internal/coordinate/network.go",
+    "internal/coordinate/network_test.go",
+    "web/spidey-sense/src/App.tsx",
+    "web/spidey-sense/src/components/ConnectionHub.tsx",
+    "web/spidey-sense/src/components/Dashboard.tsx",
+    "web/spidey-sense/src/components/GraphExperience.tsx",
+    "web/spidey-sense/src/components/Workflow.tsx",
+    "web/spidey-sense/src/network.test.ts",
+    "web/spidey-sense/src/network.ts",
+    "web/spidey-sense/src/styles.css",
+    "web/spidey-sense/vite.config.ts"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "96db9ef0381e",
+  "checkpoint_transcript_start": 1019,
+  "transcript_lines_at_start": 1019,
+  "compact_transcript_start": 162,
+  "token_usage": {
+    "input_tokens": 84466,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 9807872,
+    "output_tokens": 30486,
+    "api_call_count": 53
+  },
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T08:29:26.49479242Z",
+    "agent_lines": 747,
+    "agent_removed": 47,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 747,
+    "total_lines_changed": 794,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
