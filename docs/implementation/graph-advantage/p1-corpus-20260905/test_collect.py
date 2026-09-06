@@ -106,12 +106,44 @@ class CollectorLayoutTests(unittest.TestCase):
         self.assertIn('/opt/p1/runs/run-7/campaign.log', calls[0][1])
         self.assertIn('"run_id": "run-7"', output.getvalue())
 
+    def test_status_collection_does_not_require_terminal_guard(self):
+        calls = []
+
+        def run(vm, script):
+            calls.append(script)
+            return json.dumps(['active status'])
+
+        with mock.patch.object(collect, 'VMS', ['worker-a']), \
+                mock.patch.object(collect.cloud, 'run', side_effect=run), \
+                mock.patch.object(collect.cloud, 'environment', side_effect=AssertionError), \
+                mock.patch.object(sys, 'argv', ['collect.py', '--stage', 'campaign']):
+            collect.main()
+
+        self.assertNotIn('P1_COLLECT_GUARD', calls[0])
+
+    def test_archive_requires_explicit_upload_ack_before_download(self):
+        downloads = []
+
+        def run(vm, script):
+            return json.dumps(['remote command failed: curl exited 22'])
+
+        with mock.patch.object(collect, 'VMS', ['worker-a']), \
+                mock.patch.object(collect.cloud, 'environment', return_value='env'), \
+                mock.patch.object(collect.cloud, 'run', side_effect=run), \
+                mock.patch.object(collect.cloud, 'url', return_value='sas'), \
+                mock.patch.object(collect.cloud, 'download', side_effect=lambda *args: downloads.append(args)), \
+                mock.patch.object(sys, 'argv', ['collect.py', '--stage', 'baseline', '--output', '/tmp/out']):
+            with self.assertRaisesRegex(RuntimeError, 'upload was not acknowledged'):
+                collect.main()
+
+        self.assertEqual(downloads, [])
+
     def test_run_scoped_archive_script_and_blob_are_isolated(self):
         calls = []
 
         def run(vm, script):
             calls.append(script)
-            return json.dumps(['status'])
+            return json.dumps(['status', 'P1_UPLOAD_OK p1-20260905-baseline-run-7-worker-1.tar.gz'])
 
         with mock.patch.object(collect, 'VMS', ['worker-a']), \
                 mock.patch.object(collect.cloud, 'environment', return_value='env'), \
@@ -131,7 +163,7 @@ class CollectorLayoutTests(unittest.TestCase):
 
         def run(vm, script):
             calls.append(script)
-            return json.dumps(['status'])
+            return json.dumps(['status', 'P1_UPLOAD_OK p1-20260905-baseline-worker-1.tar.gz'])
 
         with mock.patch.object(collect, 'VMS', ['worker-a']), \
                 mock.patch.object(collect.cloud, 'environment', return_value='env'), \

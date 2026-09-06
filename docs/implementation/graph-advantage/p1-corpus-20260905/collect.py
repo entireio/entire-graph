@@ -74,6 +74,18 @@ def download_immutable(blob,destination,env):
  finally:
   temporary.unlink(missing_ok=True)
 
+def _strings(value):
+ if isinstance(value,str):yield value
+ elif isinstance(value,(list,tuple)):
+  for item in value:yield from _strings(item)
+ elif isinstance(value,dict):
+  for item in value.values():yield from _strings(item)
+
+def require_upload_ack(payload,blob):
+ expected='P1_UPLOAD_OK '+blob
+ if any(line.strip()==expected for text in _strings(payload) for line in text.splitlines()):return
+ raise RuntimeError('remote archive upload was not acknowledged for '+blob)
+
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('--stage',choices=['baseline','campaign'],required=True);ap.add_argument('--run-id');ap.add_argument('--output',type=pathlib.Path);args=ap.parse_args()
  try:paths=layout(args.stage,args.run_id)
@@ -81,7 +93,9 @@ def main():
  env=cloud.environment() if args.output else None
  def collect(pair):
   index,vm=pair
-  script='set -eu\n'+terminal_guard(args.stage,paths)+'systemctl show '+shlex.quote(paths['unit'])+' --property=ActiveState --property=SubState --property=ExecMainStatus\ncat '+shlex.quote(paths['results_dir']+'/progress.json')+' 2>/dev/null || true\ntail -c 2000 '+shlex.quote(paths['log'])+' 2>/dev/null || true\n'
+  script='set -eu\n'
+  if args.output:script+=terminal_guard(args.stage,paths)
+  script+='systemctl show '+shlex.quote(paths['unit'])+' --property=ActiveState --property=SubState --property=ExecMainStatus\ncat '+shlex.quote(paths['results_dir']+'/progress.json')+' 2>/dev/null || true\ntail -c 2000 '+shlex.quote(paths['log'])+' 2>/dev/null || true\n'
   if args.output:
    blob='p1-20260905-'+paths['token']+'-worker-'+str(index)+'.tar.gz';url=cloud.url(blob,'cw',env)
    archive='/opt/p1/'+paths['token']+'-results.tar.gz'
@@ -90,7 +104,11 @@ def main():
    else:
     script+='tar -czf '+shlex.quote(archive)+' -C '+shlex.quote(paths['results_dir'])+' .\n'
    script+='curl --fail --silent --show-error -X PUT -H "x-ms-blob-type: BlockBlob" --upload-file '+shlex.quote(archive)+' '+shlex.quote(url)+'\n'
-  result={'worker':index,'vm':vm,'output':json.loads(cloud.run(vm,script))}
+   script+='printf \'P1_UPLOAD_OK %s\\n\' '+shlex.quote(blob)+'\n'
+  raw=cloud.run(vm,script)
+  output=json.loads(raw)
+  if args.output:require_upload_ack(output,blob)
+  result={'worker':index,'vm':vm,'output':output}
   if args.run_id is not None:result['run_id']=args.run_id
   if args.output:
    download_immutable(blob,args.output/('worker-'+str(index)+'.tar.gz'),env)
