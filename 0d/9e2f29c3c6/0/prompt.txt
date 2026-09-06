@@ -1,1 +1,1 @@
-take the brnach named docs/gps-design from the repo
+commit and push to the repo upto whatever is done and continue with the remaining tasks
