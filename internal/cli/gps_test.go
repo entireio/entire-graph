@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,14 @@ import (
 	"github.com/entireio/entire-graph/internal/intent"
 	"github.com/entireio/entire-graph/internal/sem"
 )
+
+func gpsGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, output)
+	}
+}
 
 func TestGPSSpecAndContextCommands(t *testing.T) {
 	repo := t.TempDir()
@@ -158,5 +167,41 @@ func TestGPSCheckReportsDeltaNotRequested(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"change_delta":"not_requested"`) {
 		t.Fatalf("missing no-base delta state: %s", out.String())
+	}
+}
+
+func TestGPSCheckCommittedBaseReportsSpecOnlyDelta(t *testing.T) {
+	repo := t.TempDir()
+	gpsGit(t, repo, "init")
+	gpsGit(t, repo, "config", "user.email", "gps@example.invalid")
+	gpsGit(t, repo, "config", "user.name", "GPS Test")
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}}, []string{"spec", "init", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "token.go"), []byte("package token\nfunc Lifetime() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	specPath := filepath.Join(repo, ".entire", "graph", "specs", "token.yaml")
+	if err := os.WriteFile(specPath, []byte("version: 1\nid: SPEC-1\ntitle: Token\nrequirements:\n  - id: REQ-1\n    description: Token lifetime.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "initial gps fixture")
+	baseCmd := exec.Command("git", "-C", repo, "rev-parse", "HEAD")
+	baseOutput, err := baseCmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, []byte("version: 1\nid: SPEC-1\ntitle: Token\nrequirements:\n  - id: REQ-1\n    description: Token lifetime is configurable.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "change intent only")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"check", "--repo", repo, "--head", "--base", strings.TrimSpace(string(baseOutput))}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "GPS-DELTA-SPEC-ONLY") {
+		t.Fatalf("missing spec-only delta: %s", out.String())
 	}
 }
