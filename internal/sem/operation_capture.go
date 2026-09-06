@@ -100,6 +100,9 @@ func (source sourceContext) finishCapture(selected []string) (*OperationInputMan
 	sort.Slice(observations, func(i, j int) bool { return observations[i].Path < observations[j].Path })
 	manifest := &OperationInputManifest{Version: 1, Coverage: "observed-inputs-only; not an atomic revision", PolicyCoverage: "captured provider policy bytes including nested/vendor rules; Git listing/configuration and metadata probes are opaque", SelectedPaths: len(selected), SelectedPathsDigest: extractionIdentity(selected...), ObservedInputs: len(observations)}
 	fields := append([]string(nil), source.captureIdentity...)
+	if store.attributeDecisionDigest != "" {
+		fields = append(fields, "captured-diff-attribute-decisions", store.attributeDecisionDigest)
+	}
 	fields = append(fields, "effective-matcher", strconv.Itoa(len(source.ignores.rules)))
 	for _, rule := range source.ignores.rules {
 		expression := ""

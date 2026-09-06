@@ -8,6 +8,8 @@ import (
 	"os"
 	"strconv"
 	"sync"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 const defaultCaptureMemoryBytes int64 = 64 << 20
@@ -16,21 +18,23 @@ const defaultCaptureMemoryBytes int64 = 64 << 20
 // bounded reader. It never makes a cache lookup an authorization to read a path.
 // Integration with query lifetimes is deliberately separate from this primitive.
 type capturedStore struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	read        contentReader
-	limit       int64
-	mu          sync.Mutex
-	entries     map[string]*captureEntry
-	memory      int64
-	root        *os.Root
-	directory   string
-	nextBacking int
-	closeDone   chan struct{}
-	closed      bool
-	active      sync.WaitGroup
-	err         error
-	failure     error
+	attributeDecisionDigest string
+	attributeDecisions      map[string]gitutil.CapturedDiffAttribute
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	read                    contentReader
+	limit                   int64
+	mu                      sync.Mutex
+	entries                 map[string]*captureEntry
+	memory                  int64
+	root                    *os.Root
+	directory               string
+	nextBacking             int
+	closeDone               chan struct{}
+	closed                  bool
+	active                  sync.WaitGroup
+	err                     error
+	failure                 error
 }
 
 type captureEntry struct {

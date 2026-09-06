@@ -4,11 +4,40 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
+
+func TestCapturedAttributePolicyRefusesPromisorBeforeGit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell tripwire is Unix-only")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	write(t, repo, "target.go", "needle")
+	source, err := prepareSource(context.Background(), repo, ProviderSnapshotOptions{Worktree: true, ExtractionReuse: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.close()
+	git(t, repo, "config", "remote.origin.promisor", "true")
+	tripwire := t.TempDir()
+	marker := filepath.Join(tripwire, "invoked")
+	if err := os.WriteFile(filepath.Join(tripwire, "git"), []byte("#!/bin/sh\n: > \"$GRAPH_GIT_TRIPWIRE\"\nexit 99\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GRAPH_GIT_TRIPWIRE", marker)
+	t.Setenv("PATH", tripwire+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := source.capturedDiffAttributes(context.Background(), []string{"target.go"}); err == nil {
+		t.Fatal("unsafe promisor metadata accepted")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("Git launched before metadata refusal: %v", err)
+	}
+}
 
 func TestCapturedPreselectionBindsAttributePolicyAndDriverDecisions(t *testing.T) {
 	repo := t.TempDir()
