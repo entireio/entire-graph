@@ -8,17 +8,17 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 The user authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation is complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is paused for diagnosis; all three jobs and task-owned VMs are stopped/deallocated. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
 
-The original implementation checkpoint addressed the review findings: type declarations no longer become compiler-confirmed calls; ordinary search and every impact depth consume the effective compiler relation view; candidate implementation paths remain separate, including terminal covering tests. That source was verified through `dc0ddce7`. Captured-preselection fixes at `5a60fc8f` pass pinned focused race and Git utility checks; compatibility and end-to-end diagnosis remain open, so this is not final.
+The current source checkpoint is `6102b209`, which includes the repository-subdirectory capture fix at `9c7c70b8` and adds cancellation handling for listed Git-directory observation. These later source commits have focused evidence only. The latest complete repository check is the earlier `dc0ddce7` checkpoint (621.0947 seconds, source unchanged for that check), so it does not verify the current source. The original implementation and captured-selection checkpoints remain historical evidence; compatibility and end-to-end diagnosis remain open, so this is not final.
 
 - **Original implementation commit:** `88dd1dc95a996999ae4e456879b6dd86d8027f71` (historical source checkpoint).
 - **Latest verified checkpoint:** `dc0ddce7`, with the full `mise run check` passing in 621.0947 seconds; evidence is retained by `da3c59ee`.
 - **Pinned Linux correctness:** passed at `88dd1dc9`; later cache/ordering and captured-selection changes are not covered by that Linux run.
-- **Current diagnosis checkpoint:** `5a60fc8f`, focused race regressions passed (35.322s) and Git utility tests passed (22.896s), with unchanged source hashes. Full repository verification and remaining compatibility work are pending.
+- **Retained diagnostic source:** `5a60fc8f`, with focused race regressions (35.322s) and Git utility tests (22.896s) recorded there. The current source is later (`6102b209`) and has focused evidence only.
 - **Release status:** no workstream's complete release gate has passed; defaults remain unchanged.
 
 ## Authoritative task status
 
-This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery at the verified implementation checkpoint only. Evaluation tasks cannot be declared complete merely because their harness exists. “Focused” correctness does not verify the unresolved current working tree.
+This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery at a named historical checkpoint; it is not a claim that the current source has passed a complete check. Evaluation tasks cannot be declared complete merely because their harness exists. “Focused” correctness does not verify the current source or establish a release gate.
 
 | Task | Implementation | Correctness evidence | Comparative evaluation | Release gate |
 |---|---|---|---|---|
@@ -99,11 +99,11 @@ Fixtures derive from the plan and Entire's maintained behavior, with hand-derive
 Final validation at the original implementation checkpoint: source commit
 `88dd1dc9` passed the complete repository check and pinned Linux correctness.
 The initial Linux Git-version prerequisite failure is retained; the upgraded
-run passed without product changes. The validation VM and the two identical
-P1 workers were deallocated after correctness/diagnostic work. Evidence-only
-commits after the source freeze do not change tested code; the current
-working-tree fix is explicitly unverified. No comparative campaign ran during
-implementation. No merge was performed.
+run passed without product changes. The validation VM and the P1 workers were
+deallocated after correctness/diagnostic work. Later source and evidence
+commits are recorded separately below and do not inherit that checkpoint's
+verification. No comparative campaign ran during implementation. No merge was
+performed.
 
 P1 campaign sources: the user-approved pinned chi, Kubernetes, Zod and Requests
 repositories are evaluation inputs only, alongside frozen Entire source and an
@@ -143,77 +143,57 @@ are preserved separately and are not fabricated as completed observations.
 No further measurement is authorized by the old continuation; diagnose and
 correct the findings before defining a separately versioned evaluation.
 
-## Diagnostic fixes and new campaign gates
+## Current evidence and pause state
 
-`f96483ef` and `9bfafe17` add bounded cache-publication batches (128 entries
-or 16 MiB), preserving quota admission, atomic writes and cancellation.
-Focused extraction race tests passed; 391 publications require four
-maintenance passes in a deterministic operation-count regression.
-`4f582425` fixes total ordering of parallel relation evidence; `f6b8a9d1`
-adds exact cache/fresh selective equivalence across input order and current
-HEAD metadata. Neither establishes that all 55 retained real-corpus mismatches
-are explained. Differing partial-failure membership remains under diagnosis.
+The current source checkpoint is `6102b209` (including `9c7c70b8` for
+repository-subdirectory attribute capture). These source changes have focused
+checks only. The latest complete repository check is `dc0ddce7`:
+`mise run check` passed in 621.0947 seconds with unchanged source hashes, and
+is retained by `da3c59ee`; it does not verify the later source commits.
 
-`stopgaps-v2.md` defines first-issue worker pause, cross-worker supervision,
-expiring leases, immutable run directories and canary admission before broad
-measurement. Supervisor and admission tests pass; worker integration passed
-56 Python tests in 6.460 seconds, including the collector. The full repository check against `dc0ddce7` passed in
-621.0947 seconds and is retained by `da3c59ee`. No VMs or benchmarks restarted.
+The retained Kubernetes syntax-only diagnostic was run from `5a60fc8f` on
+Darwin/arm64. The cache-off arm exceeded its 120-second context deadline and
+returned an error after 161.18 seconds; the cache-on arm was unrun. The
+ten-second stack diagnostic is retained under
+`p1-corpus-20260905/retained-search-timeout-trace/` and only locates work in
+listed Git-directory observation. It is not a campaign observation and does
+not establish semantic equivalence or a performance result.
 
-Campaign stopgaps complete in `3b242da7` with supervisor/admission commits
-`dc0ddce7`, `e5873854`, `969dc52f`. The stopgap test evidence is preserved by
-`5957f604` and `69268ec4`; the latest collector-inclusive run passed 47 Python
-tests in 6.460 seconds. The latest verified
-repository check is retained by `da3c59ee`. Remaining selective
-failure-membership diagnosis is now represented by an unverified working-tree
-fix; no campaign restarted and task-owned VMs remain deallocated.
+All three campaign services and task-owned VMs are stopped/deallocated. No
+campaign has resumed. Historical campaign counts remain 116 measured requests
+(113 partial, 3 timeouts), 1,434 protocol-unrun cells, and 15,730 remaining
+planned cells; interrupted requests remain separate evidence. No release gate
+has passed.
 
-Latest integration check: `dc0ddce7` passed `mise run check` in 621.0947
-seconds, source hashes unchanged (`fixes-correctness.json`). Retained evidence
-from the verified checkpoint identifies 55 off/on pairs with distinct
-preselection paths:
-off uses git-index-grep+go-content (381 indexed files,11 partial failures); on
-uses go-content (384 indexed files,10 partial failures). See
-`retained-selection-diagnosis.json`. The access telemetry test now counts
-accesses, including selected-pool hydration. The combined large parity and
-mutation run passed in 16.860 seconds. The new reduced Git matcher contract
-still fails because a `.gitattributes` binary-classified file is included.
-The current uncommitted P1 fix must preserve source capture and default
-selection semantics; committed full-preindex recall behavior is separate and
-is not to be narrowed to fix this working-tree discrepancy. No current
-working-tree claim is release evidence.
+## Historical checkpoint record
 
-## Latest stopgap verification
+The following entries are retained as dated or explicitly versioned historical
+evidence. They do not override the current source, pause, or release status
+above.
 
-At `0381ea6d`, 56 harness unit/local subprocess tests passed in 4.561s, with
-unchanged harness source hashes (`p1-corpus-20260905/stopgaps-v3-tests.json`).
-Azure transport was mocked; no campaign restarted. Successful completion now
-requires a successful worker exit. Paused evidence can be collected after a
-verified terminal service state, with upload acknowledgement and no replacement
-of a different local archive. Unknown/garbage-collected units fail closed and
-require separate terminal-state verification before collection.
-
-Captured selection prototype `134c3752` remains explicitly WIP: the independent
-large-pool and mutation tests pass in 16.287s, but binary-attribute parity fails.
-Oversized and locale-sensitive matching remain unresolved. This is a retained
-failing regression, not a release candidate. See `captured-preselection-diagnosis.md`
-in the same evidence directory. No full repository check is claimed for this WIP.
-
-## Captured selection checkpoint 5a60fc8f
-
-P1.2/P1.4/P1.6 diagnosis progressed: single-descriptor stream observation now
-retains bounded oversized-file match evidence; Git attribute decisions and C/POSIX
-matching preserve the preliminary candidate pool in independent regressions.
-The previously failing binary-attribute fixture passes. First attribute decisions
-are operation-bound and included in input identity. Promisor metadata is refused
-before Git launches. Policy/index/output resource bounds are tested.
-
-Pinned evidence: `p1-corpus-20260905/captured-selection-checks.json` and its two
-raw logs. Focused semantic race suite35.322s and Git utility suite22.896s passed
-at `5a60fc8f`; all recorded source hashes remained unchanged. This is not a full
-repository check and not a benchmark. ADR0042 records the chosen boundary.
-
-Remaining functional work includes repository-subdirectory attribute capture,
-locale/platform coverage and full query parity for the retained corpus request.
-The campaign stays paused, all task VMs stay deallocated, and no release gate or
-implementation-wide completion is claimed from these checks.
+- `f96483ef` and `9bfafe17` added bounded cache-publication batches; focused
+  extraction race tests passed. `4f582425` fixed parallel relation ordering and
+  `f6b8a9d1` added cache/fresh selective equivalence checks. These checks did
+  not explain all retained real-corpus mismatches.
+- The stopgap protocol in `stopgaps-v2.md` added first-issue worker pause,
+  cross-worker supervision, expiring leases, immutable run directories and
+  canary admission. Stopgap evidence is preserved by `3b242da7`, `5957f604`
+  and `69268ec4`; no campaign was restarted from those checks.
+- At `0381ea6d`, 56 harness unit/local subprocess tests passed in 4.561s with
+  mocked Azure transport. This checkpoint required successful worker exits,
+  terminal-state verification and upload acknowledgement before collection.
+- The captured-selection prototype `134c3752` retained a failing
+  binary-attribute parity regression; oversized and locale-sensitive matching
+  remained unresolved. It was not a release candidate and had no full
+  repository check.
+- At `5a60fc8f`, focused semantic race (35.322s) and Git utility (22.896s)
+  checks passed with unchanged source hashes. The checkpoint added bounded
+  oversized-file evidence and operation-bound Git-attribute decisions; it did
+  not complete repository-subdirectory, locale/platform or full retained-corpus
+  parity.
+- The verified `dc0ddce7` checkpoint retained 55 off/on pairs with distinct
+  preselection paths. Access telemetry included selected-pool hydration, and
+  the combined large parity/mutation run passed in 16.860s. A reduced Git
+  matcher contract still failed because a `.gitattributes` binary-classified
+  file was included; this remains historical diagnosis, not current release
+  evidence.
