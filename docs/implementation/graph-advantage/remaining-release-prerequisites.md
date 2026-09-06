@@ -25,12 +25,12 @@ and the [plan's evaluation rules](</Users/thomi/Projects/entire-plan/entire-grap
   inclusion/exclusion rules, labels, metric formulas, thresholds, repetitions,
   seeds, interval method, and treatment of failures, partials, and zero
   denominators. Preserve raw failures and incomplete denominators.
-- The latest full `mise run check` against `dc0ddce7` passed in 621.095
-  seconds. Pinned Linux compiler correctness passed at `88dd1dc9`; it does
-  not cover subsequent source changes. The full check of source `6102b209` was
-  interrupted to fix newly identified enumeration cancellation gaps first. The 56 harness tests at
-  `0381ea6d` remain local harness evidence, not a substitute for product
-  checks or live Azure stop propagation.
+- The full `mise run check` passed at `05ad9842` in 721.029 seconds in a
+  clean immutable checkout. Pinned Linux correctness also passed at that source
+  (28 top-level tests, including 10 live tests). Retained-query parity remains
+  a separate diagnostic requirement. The 56 campaign harness tests and seven
+  diagnostic wrapper tests remain local harness evidence, not live Azure
+  cross-worker stop-propagation verification.
 
 ## P2 — optional compiler-backed Go resolution
 

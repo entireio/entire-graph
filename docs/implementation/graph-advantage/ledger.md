@@ -8,19 +8,18 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 The user authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation is complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is paused for diagnosis; all campaign jobs are stopped; the validation VM is temporarily running for correctness while two worker VMs remain deallocated. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
 
-The current product source is `05ad9842`, including captured subdirectory policy and cancellation through enumeration/final filtering. Focused race and filesystem regressions passed. A full repository check is running in a detached checkout pinned to that commit. Pinned Linux correctness has passed at the same source: 28 top-level tests, including 10 live tests with the expected gopls v0.20.0 hash. Raw logs, responses and tool identities are retained in `evidence/correctness-05ad9842-20260906/`.
+The current product source is `05ad9842`, including captured subdirectory policy and cancellation through enumeration/final filtering. Focused race and filesystem regressions passed. The full repository check passed in 721.029 seconds in a clean detached checkout pinned to that commit. Pinned Linux correctness has passed at the same source: 28 top-level tests, including 10 live tests with the expected gopls v0.20.0 hash. Raw logs, responses and tool identities are retained in `evidence/correctness-05ad9842-20260906/`.
 
-- **Latest completed full check:** `dc0ddce7`, passing in 621.0947 seconds; evidence retained by `da3c59ee`. This earlier check does not verify later source.
-- **Current full check:** `05ad9842`, immutable detached checkout, in progress.
+- **Latest completed full check:** `05ad9842`, passing in 721.029 seconds; immutable HEAD and clean status confirmed. Evidence: `evidence/check-05ad9842/`.
 - **Linux correctness:** passed at `05ad9842`, including process-boundary, missing-dependency, conversion, ordinary-query, opt-in combination and freshness checks.
 - **Interrupted check:** `6102b209` was deliberately stopped after review found additional cancellation gaps; it is not a pass. Those findings were addressed by `05ad9842`.
-- **Retained query:** Darwin OFF exceeded its deadline; ON unrun. Linux diagnostic wrapper remains under review, not executed.
+- **Retained query:** Darwin OFF exceeded its deadline; ON unrun. A single Linux diagnostic at `05ad9842` is running after correctness passed; no campaign launched.
 - **Execution:** only the validation VM is running for correctness/diagnosis; two campaign workers remain deallocated. Campaign remains paused.
 - **Release status:** no workstream's complete release gate has passed; defaults remain unchanged.
 
 ## Authoritative task status
 
-This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery at a named historical checkpoint; it is not a claim that the current source has passed a complete check. Evaluation tasks cannot be declared complete merely because their harness exists. “Focused” correctness does not verify the current source or establish a release gate.
+This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery. Product source `05ad9842` passed the full repository and pinned Linux checks, but retained-corpus parity remains open. Evaluation tasks cannot be declared complete merely because their harness exists; correctness checks do not establish comparative release gates.
 
 | Task | Implementation | Correctness evidence | Comparative evaluation | Release gate |
 |---|---|---|---|---|
@@ -29,7 +28,7 @@ This table supersedes earlier checkpoint/status statements. “Complete” in th
 | P1.3 storage | Complete: cross-process admission, orphan cleanup, versioned keys, integrity, private atomic writes and bounded decode | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.4 entity integration | Implemented; retained-query parity and current diagnostic corrections remain open | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.5 relation inputs | Complete for measured raw-import family: Go/TypeScript/Python fast/full; explicit family presence | Exact relation parity and reuse tests; other families deliberately absent | Further profiling deferred; no new family selected by benchmark tuning | Not passed |
-| P1.6 diagnostics/gates | Implemented; cancellation follow-up committed at `05ad9842`, integration verification in progress | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
+| P1.6 diagnostics/gates | Implemented; cancellation follow-up and integration verified at `05ad9842` | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
 | P2.1 feasibility | Complete: pinned gopls v0.20.0 and Linux Bubblewrap execution boundary | Existing positive no-egress/read-only/descendant cancellation checks; historical Linux race passed | Hard-Go comparative quality deferred | Not passed |
 | P2.2 client/capture | Complete: bounded lifecycle, source capsule/context identity, mapping and cancellation | Protocol/UTF-16/malformed reply/context/process tests; historical immutable check passed | Deferred | Not passed |
 | P2.3 positive integration | Complete: direct declarations and separate implementation candidates; conversions excluded | New conversion/alias/generic fixtures and pinned live fixture; signature/workspace invalidation tests; historical Linux race passed | Independent realistic quality evaluation deferred | Not passed |
@@ -63,7 +62,7 @@ Historical P1 focused race passed (49.124s); graph-requested regression passed (
 
 For `57e000a1`, `go test ./internal/cli -run TestImpact -count=1` passed (3.092s); the same under race passed (4.464s). Semantic impact and graph-requested compiler reconciliation regression passed (1.118s); semantic impact race passed (2.599s). The new pinned ordinary-query test passed on Linux with the actual backend; raw responses are retained.
 
-The earlier `0038ef70` full `mise run check` passed in 626.23s, but does **not** verify subsequent changes. Its logs, earlier schema-golden failure/correction and source freeze remain historical evidence. The `dc0ddce7` check is the latest verified checkpoint; the current captured-preselection fix remains outside that evidence.
+The earlier `0038ef70` full `mise run check` passed in 626.23s, but does **not** verify subsequent changes. Its logs, earlier schema-golden failure/correction and source freeze remain historical evidence. The later `05ad9842` check now covers the captured-preselection and cancellation fixes.
 
 ## Retained comparative evidence
 
@@ -115,17 +114,17 @@ was consulted only for the requested cheaper subagent selection.
 
 P1 execution monitoring: heartbeat `monitor-p1-corpus-campaign` checks every
 15 minutes. Three Luna subagents prepared the corpus, harness and protocol.
-The earlier check at `039d213b` is historical; the latest verified check is
-`dc0ddce7` and is retained by `da3c59ee`. No gate pass is claimed from an
-unverified working tree or paused campaign.
+The earlier `039d213b` and `dc0ddce7` checks are historical. Current
+verification is summarized at the top of this ledger; no comparative gate
+pass is claimed from a paused campaign.
 
 P1 baseline freeze: `2840a152`, authoritative `frozen-baseline.json`.
 Kubernetes fast/full snapshots each timed out three times at 120 seconds;
 the protocol blocks those two strata and preserves 960 planned unrun cells.
 The remaining 16,320 paired requests retain the original settings. The
 `039d213b` check passed historically in 1126.765 seconds with source hashes
-unchanged; see `p1-corpus-20260905/correctness.json`. The later `dc0ddce7`
-check supersedes it as the latest verified checkpoint. No release gate has
+unchanged; see `p1-corpus-20260905/correctness.json`. The later `dc0ddce7` and `05ad9842`
+checks supersede that historical verification. No release gate has
 passed.
 
 Historical P1 monitor (`monitor-20260905T2234.json`): all three workers were active;
@@ -137,8 +136,8 @@ and its other 474 cells are unrun. The two baseline-blocked strata retain
 No interim performance or quality conclusion is drawn. P4.1 remains pending;
 a previous ledger wording error is corrected without changing P4 status.
 
-User-directed diagnostic stop: all three services verified inactive on
-2026-09-05 at approximately 22:55 UTC; recurring continuation is PAUSED.
+Historical user-directed diagnostic stop: all three services verified inactive on
+2026-09-05 at approximately 22:55 UTC; recurring continuation was paused at that checkpoint.
 Retained 116 measured requests (113 partial, 3 timeouts), 1,434 protocol-unrun
 cells, and 15,730 remaining planned cells. Interrupted in-flight requests
 are preserved separately and are not fabricated as completed observations.
@@ -147,11 +146,7 @@ correct the findings before defining a separately versioned evaluation.
 
 ## Current evidence and pause state
 
-The current source checkpoint is `6102b209` (including `9c7c70b8` for
-repository-subdirectory attribute capture). These source changes have focused
-checks only. The latest complete repository check is `dc0ddce7`:
-`mise run check` passed in 621.0947 seconds with unchanged source hashes, and
-is retained by `da3c59ee`; it does not verify the later source commits.
+Product source and verification are recorded once in Current phase above.
 
 The retained Kubernetes syntax-only diagnostic was run from `5a60fc8f` on
 Darwin/arm64. The cache-off arm exceeded its 120-second context deadline and
@@ -161,7 +156,8 @@ ten-second stack diagnostic is retained under
 listed Git-directory observation. It is not a campaign observation and does
 not establish semantic equivalence or a performance result.
 
-All three campaign services and task-owned VMs are stopped/deallocated. No
+All campaign services remain stopped. The validation VM is temporarily up for
+correctness and one retained diagnostic; both campaign worker VMs remain off. No
 campaign has resumed. Historical campaign counts remain 116 measured requests
 (113 partial, 3 timeouts), 1,434 protocol-unrun cells, and 15,730 remaining
 planned cells; interrupted requests remain separate evidence. No release gate

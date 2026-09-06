@@ -1,0 +1,16 @@
+{
+  "commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
+  "checkout": "/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-integration-05ad9842-trvs3bez/source",
+  "output": "/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-integration-05ad9842-trvs3bez/check.log",
+  "exit_code": 0,
+  "elapsed_seconds": 721.0293449999299,
+  "status": "",
+  "head_after": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
+  "log_sha256": "782ff5c6475e0126612b401cae8f9e9362e0ffaf6cd6d31754379cca593d37de",
+  "command": [
+    "mise",
+    "run",
+    "check"
+  ],
+  "verification_scope": "complete repository check in immutable detached checkout"
+}
