@@ -332,7 +332,7 @@ def stop_workers(stage, run_id, output, attempt=1):
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(VMS)) as pool:
         failures = list(pool.map(stop, enumerate(VMS, 1)))
-    (output / "launch-failure.json").write_text(
+    (output / f"launch-failure{suffix}.json").write_text(
         json.dumps(
             {
                 "reason": reason,
