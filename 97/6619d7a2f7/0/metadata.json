@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "976619d7a2f7",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T08:21:03.739036Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "docs/implementation/graph-advantage/p1-corpus-20260905/campaign_gate.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/run_campaign.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_campaign_gate.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_run_campaign.py"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "43418dccb81b",
+  "checkpoint_transcript_start": 4888,
+  "transcript_lines_at_start": 4888,
+  "compact_transcript_start": 625,
+  "token_usage": {
+    "input_tokens": 20785,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 464768,
+    "output_tokens": 1230,
+    "api_call_count": 3
+  },
+  "session_metrics": {
+    "turn_count": 8
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T08:21:03.285483Z",
+    "agent_lines": 779,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 779,
+    "total_lines_changed": 779,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
