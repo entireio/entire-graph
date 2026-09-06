@@ -1,0 +1,10 @@
+time (GNU Time) UNKNOWN
+Copyright (C) 2018 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+
+Written by David Keppel, David MacKenzie, and Assaf Gordon.
+go version go1.26.1 linux/amd64
+7310b9b4c51a8f4d26c1af0da250f03a49ec8a8141033123e79196ad18f6c81b  /usr/bin/time
+uid=1000(graphcheck) gid=1000(graphcheck) groups=1000(graphcheck),4(adm),20(dialout),24(cdrom),25(floppy),27(sudo),29(audio),30(dip),44(video),46(plugdev),118(netdev),119(lxd)

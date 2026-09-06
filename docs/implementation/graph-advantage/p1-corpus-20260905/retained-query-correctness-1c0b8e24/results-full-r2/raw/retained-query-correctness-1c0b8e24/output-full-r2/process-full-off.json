@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/usr/bin/time",
+    "-v",
+    "-o",
+    "/opt/graph-validation/retained-query-correctness-1c0b8e24/output-full-r2/time-full-off.txt",
+    "--",
+    "/opt/graph-validation/correctness-1c0b8e24-20260906/p1-evaluator",
+    "-test.run=^TestExtractionCorpusMeasurement$",
+    "-test.count=1",
+    "-test.v",
+    "-test.timeout=130s"
+  ],
+  "config_path": "/opt/graph-validation/retained-query-correctness-1c0b8e24/output-full-r2/request-full-off.json",
+  "exit_code": 0,
+  "peak_rss_bytes": 315518976,
+  "rss_error": null,
+  "rss_status": "measured by /usr/bin/time -v",
+  "time_output_path": "/opt/graph-validation/retained-query-correctness-1c0b8e24/output-full-r2/time-full-off.txt",
+  "timed_out": false,
+  "timeout_seconds": 120
+}
