@@ -1,6 +1,8 @@
 """One review orchestrator; both backends return the same observation contract."""
 import time
 import subprocess
+import json
+import re
 import uuid
 from pathlib import Path
 
@@ -15,8 +17,10 @@ from .scenarios import matches, matrix
 from .selector import select
 
 
-def review(request: ReviewRequest, output: Path, *, remote=None):
-    started, run_id = time.perf_counter(), uuid.uuid4().hex
+def review(request: ReviewRequest, output: Path, *, remote=None, run_id=None):
+    started, run_id = time.perf_counter(), run_id or uuid.uuid4().hex
+    if not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        raise ValueError("Invalid review identity")
     repo = Path(request.repo_path).resolve()
     commits = {"base": resolve(repo, request.base_sha), "head": resolve(repo, request.head_sha)}
     request = request.model_copy(update={"base_sha": commits["base"], "head_sha": commits["head"]})
@@ -38,9 +42,17 @@ def review(request: ReviewRequest, output: Path, *, remote=None):
     execution_start = time.perf_counter()
     backend_meta, observations = {}, {}
     if request.runner == "databricks":
+        pending = Path(output) / "pending"
+        pending.mkdir(parents=True, exist_ok=True)
+        request_file = pending / f"{run_id}-request.json"
+        if request_file.exists():
+            if digest(json.loads(request_file.read_text())) != digest(request.model_dump()):
+                raise ValueError("Recovery request differs from the original review")
+        else:
+            write_json(request_file, request.model_dump())
         if remote is None:
             from .runners.databricks import execute_remote
-            remote = execute_remote
+            remote = lambda bundle, cases, identity: execute_remote(bundle, cases, identity, pending_dir=pending)
         observations, backend_meta = remote(bundle_payload, chosen, run_id)
     else:
         for side in ("base", "head"):
@@ -86,6 +98,18 @@ def review(request: ReviewRequest, output: Path, *, remote=None):
     for side, graph in analysis["versions"].items():
         (run_dir / f"graph-{side}.ndjson").write_text(graph["raw"])
     return report
+
+
+def recover(run_id: str, output: Path):
+    if not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        raise ValueError("Invalid review identity")
+    completed = Path(output) / run_id / "report.json"
+    if completed.exists():
+        return json.loads(completed.read_text())
+    request_file = Path(output) / "pending" / f"{run_id}-request.json"
+    if not request_file.exists() or not (Path(output) / "pending" / f"{run_id}.json").exists():
+        raise ValueError("No recoverable remote receipt/request pair; inspect the job before submitting again")
+    return review(ReviewRequest.model_validate_json(request_file.read_text()), output, run_id=run_id)
 
 
 def benchmark(request: ReviewRequest, output: Path):

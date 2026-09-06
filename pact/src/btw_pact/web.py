@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from .checkpoints import read_sources
@@ -45,6 +46,7 @@ def create_app(repo: Path, data: Path | None = None):
         for r in proposed_requirements():
             store.add(r)
     app = FastAPI(title="PACT for Entire")
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
     assets = Path(__file__).parent
     app.mount("/static", StaticFiles(directory=assets / "static"), name="static")
     executor, jobs, lock = ThreadPoolExecutor(max_workers=1), {}, threading.Lock()
@@ -110,7 +112,7 @@ def create_app(repo: Path, data: Path | None = None):
     def start(body: Start):
         try:
             request = ReviewRequest(repo_path=str(repo), base_sha=body.base_sha, head_sha=body.head_sha,
-                                    runner=body.runner, requirements=store.requirements())
+                                    runner=body.runner, requirements=store.review_requirements())
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         if not any(r.status == "confirmed_active" for r in request.requirements):
@@ -149,5 +151,13 @@ def create_app(repo: Path, data: Path | None = None):
     def reproducer(run_id: str):
         run(run_id)  # Membership check prevents path traversal.
         return FileResponse(data / run_id / "reproducer.json", filename=f"pact-{run_id[:8]}-reproducer.json")
+
+    @app.get("/api/remote-history")
+    def cloud_history():
+        from .runners.databricks import remote_history
+        try:
+            return remote_history()
+        except Exception as error:
+            raise HTTPException(503, str(error)[:1000]) from error
 
     return app

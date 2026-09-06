@@ -33,7 +33,7 @@ def package():
     return buffer.getvalue()
 
 
-def execute_remote(bundle, chosen, run_id, *, workspace=None, wait_seconds=180):
+def execute_remote(bundle, chosen, run_id, *, workspace=None, wait_seconds=180, pending_dir=None):
     from databricks.sdk.service.jobs import NotebookTask, SubmitTask
     from databricks.sdk.service.workspace import ImportFormat, Language
     w = workspace or client()
@@ -51,11 +51,11 @@ def execute_remote(bundle, chosen, run_id, *, workspace=None, wait_seconds=180):
     import hashlib
     code_hash = hashlib.sha256(code).hexdigest()
     input_bytes = canonical({"payload": payload, "payload_hash": payload_hash, "code_hash": code_hash}).encode()
-    w.workspace.mkdirs(folder)
-    w.workspace.upload(folder + "/input.json", input_bytes, format=ImportFormat.RAW, overwrite=False)
-    w.workspace.upload(folder + "/runtime.zip", code, format=ImportFormat.RAW, overwrite=False)
     notebook = '''# Databricks notebook source
 # MAGIC %pip install pydantic==2.13.5
+
+# COMMAND ----------
+dbutils.library.restartPython()
 
 # COMMAND ----------
 import hashlib, json, sys, tempfile, zipfile
@@ -70,20 +70,32 @@ with tempfile.TemporaryDirectory(prefix="pact-runtime-") as td:
         archive.extractall(td)
     sys.path.insert(0, td)
     from btw_pact.remote_worker import run
-    receipt = run(envelope, spark)
+    receipt = run(envelope, spark, dbutils.widgets.get("job_run_id"))
+    repeated = run(envelope, spark, dbutils.widgets.get("job_run_id"))
+    assert receipt == repeated, "Completed run replay changed the immutable receipt"
+    receipt["idempotent_replay_verified"] = True
 dbutils.notebook.exit(json.dumps(receipt))
 '''
-    w.workspace.upload(folder + "/execute", notebook.encode(), format=ImportFormat.SOURCE,
-                       language=Language.PYTHON, overwrite=False)
-    submitted = w.jobs.submit(run_name=f"PACT {run_id[:8]}", idempotency_token=run_id,
+    receipt_file = Path(pending_dir or os.environ.get("PACT_PENDING_DIR", "pact/runs/pending")) / f"{run_id}.json"
+    if receipt_file.exists():
+        saved = json.loads(receipt_file.read_text())
+        if saved["payload_hash"] != payload_hash or saved["code_hash"] != code_hash:
+            raise ValueError("Recovery input/runtime differs from the submitted artifact; use its original implementation version")
+        remote_id = saved["remote_run_id"]
+    else:
+        w.workspace.mkdirs(folder)
+        w.workspace.upload(folder + "/input.json", input_bytes, format=ImportFormat.RAW, overwrite=False)
+        w.workspace.upload(folder + "/runtime.zip", code, format=ImportFormat.RAW, overwrite=False)
+        w.workspace.upload(folder + "/execute", notebook.encode(), format=ImportFormat.SOURCE,
+                           language=Language.PYTHON, overwrite=False)
+        submitted = w.jobs.submit(run_name=f"PACT {run_id[:8]}", idempotency_token=run_id,
                              timeout_seconds=900, tasks=[SubmitTask(task_key="verify_pact",
                              notebook_task=NotebookTask(notebook_path=folder + "/execute",
-                                                       base_parameters={"artifact_folder": folder}),
+                                                       base_parameters={"artifact_folder": folder, "job_run_id": "{{job.run_id}}"}),
                              timeout_seconds=840, max_retries=0)])
-    remote_id = submitted.response.run_id
-    receipt_file = Path(os.environ.get("PACT_PENDING_DIR", "pact/runs/pending")) / f"{run_id}.json"
-    receipt_file.parent.mkdir(parents=True, exist_ok=True)
-    receipt_file.write_text(canonical({"run_id": run_id, "remote_run_id": remote_id, "artifact_folder": folder,
+        remote_id = submitted.response.run_id
+        receipt_file.parent.mkdir(parents=True, exist_ok=True)
+        receipt_file.write_text(canonical({"run_id": run_id, "remote_run_id": remote_id, "artifact_folder": folder,
                                        "payload_hash": payload_hash, "code_hash": code_hash}))
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
@@ -112,7 +124,7 @@ dbutils.notebook.exit(json.dumps(receipt))
                 "remote_run_id": remote_id, "run_url": remote.run_page_url, "artifact_folder": folder,
                 "assertion_parity": "verified against returned observations"}
         time.sleep(5)
-    raise RuntimeError(f"Databricks run {remote_id} remains pending after {wait_seconds}s; receipt preserved at {receipt_file}. Do not submit a duplicate; inspect or recover this run.")
+    raise RuntimeError(f"Databricks run {remote_id} remains pending after {wait_seconds}s; receipt preserved at {receipt_file}. Recover PACT run {run_id} instead of submitting a duplicate.")
 
 
 def remote_history():

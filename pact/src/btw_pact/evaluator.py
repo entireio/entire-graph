@@ -55,4 +55,26 @@ def classify(results, requirements, paths):
         row["evidence_hash"] = digest(row)
         row["finding_id"] = row["evidence_hash"][:20]
         findings.append(row)
+    for requirement in requirements:
+        if not requirement.policy_changed or requirement.applies_to != ["head"] or requirement.status != "confirmed_active":
+            continue
+        current = [a for a in results if a.requirement_id == requirement.requirement_id
+                   and a.requirement_revision == requirement.revision and a.side == "head"]
+        prior = [r for r in requirements if r.requirement_id == requirement.requirement_id
+                 and r.revision < requirement.revision and r.status == "confirmed_active" and "base" in r.applies_to]
+        if not prior or not current or any(a.status != "pass" for a in current):
+            continue
+        old = max(prior, key=lambda r: r.revision)
+        if old.scenario_filter == requirement.scenario_filter and old.expected_allowed == requirement.expected_allowed:
+            continue
+        row = {"requirement_ref": requirement.key, "scenario_ref": "policy-revision",
+               "classification": "intentional_change", "base_result": None, "head_result": None,
+               "previous_requirement_ref": old.key,
+               "explanation": "A human-confirmed head-only revision replaces the baseline policy; the new applicable checks passed. This does not certify unconstrained scenarios.",
+               "path_refs": [p["path_id"] for p in paths if p["requirement_ref"] == requirement.key],
+               "source_refs": [s.model_dump() for s in requirement.source_refs],
+               "provenance_verified": bool(requirement.source_refs) and all(s.association_status == "verified" for s in requirement.source_refs)}
+        row["evidence_hash"] = digest(row)
+        row["finding_id"] = row["evidence_hash"][:20]
+        findings.append(row)
     return findings

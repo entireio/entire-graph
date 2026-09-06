@@ -54,10 +54,24 @@ class Store:
             data = old.model_dump()
             data.update(amendments or {})
             data.update(revision=latest + 1, status="confirmed_active", confirmed_by=actor.strip(),
-                        confirmed_at=now(), supersedes=old.key, policy_changed=bool(amendments))
+                        confirmed_at=now(), supersedes=old.key, policy_changed=old.policy_changed or bool(amendments))
             new = Requirement.model_validate(data)
             db.execute("INSERT INTO requirements VALUES (?, ?, ?)", (rid, new.revision, canonical(new)))
             return new
+
+    def review_requirements(self) -> list[Requirement]:
+        """Bind an explicitly head-only revision to its prior baseline policy."""
+        latest, history = self.requirements(), self.requirements(history=True)
+        result = list(latest)
+        for current in latest:
+            if current.status != "confirmed_active" or not current.policy_changed or current.applies_to != ["head"]:
+                continue
+            previous = [r for r in history if r.requirement_id == current.requirement_id
+                        and r.revision < current.revision and r.status == "confirmed_active" and "base" in r.applies_to]
+            if previous:
+                # Applicability is a review binding; stored historical revision stays unchanged.
+                result.append(previous[-1].model_copy(update={"applies_to": ["base"]}))
+        return result
 
     def save_run(self, report: dict):
         with self.connect() as db:

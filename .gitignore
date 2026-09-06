@@ -13,6 +13,7 @@ __pycache__/
 /.venv
 /pact/runs/
 /pact/dist/
+/pact/build/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/

@@ -6,7 +6,7 @@ from pathlib import Path
 from .checkpoints import read_sources
 from .contracts import ReviewRequest
 from .evidence import replay
-from .review import benchmark, review
+from .review import benchmark, review, recover
 from .scenarios import proposed_requirements
 
 
@@ -24,6 +24,9 @@ def main():
     command = sub.add_parser("sources")
     command.add_argument("--commit", default="HEAD")
     command.add_argument("--repo", default=".")
+    command = sub.add_parser("recover")
+    command.add_argument("--run-id", required=True)
+    command.add_argument("--output", type=Path, default=Path("pact/runs"))
     command = sub.add_parser("serve")
     command.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
@@ -36,6 +39,14 @@ def main():
             result = [r.model_dump() for r in proposed_requirements()]
         elif args.command == "sources":
             result = read_sources(args.repo, args.commit)
+        elif args.command == "recover":
+            result = recover(args.run_id, args.output)
+            from .storage import Store
+            store = Store(args.output / "pact.sqlite")
+            try:
+                store.run(result["run_id"])
+            except KeyError:
+                store.save_run(result)
         elif args.command == "reproduce":
             result = replay(json.loads(args.bundle.read_text()))
             print(json.dumps(result, indent=2))
@@ -49,7 +60,7 @@ def main():
             request = ReviewRequest.model_validate_json(args.request.read_text())
             result = (review if args.command == "review" else benchmark)(request, args.output)
         print(json.dumps(result, indent=2))
-        if args.command == "review":
+        if args.command in ("review", "recover"):
             return 2 if result["completion_state"] != "complete" else 1 if result["counts"]["head"]["fail"] else 0
         return 0
     except (ValueError, RuntimeError, OSError) as error:

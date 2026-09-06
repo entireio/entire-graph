@@ -21,6 +21,10 @@ def select(requirements, analysis, strategy="graph", max_depth=8):
         if strategy == "all" or (strategy == "changed_file" and any(e.rsplit(":", 1)[0] in changed_files for e in r.entrypoints)):
             selected.add(r.key)
             reasons[r.key].append("All registered checks" if strategy == "all" else "Entrypoint definition file changed")
+        if any(new.requirement_id == r.requirement_id and new.policy_changed and new.applies_to == ["head"]
+               for new in active) and r.applies_to == ["base"]:
+            selected.add(r.key)
+            reasons[r.key].append("Baseline policy retained for an explicit candidate policy revision")
     if strategy == "graph":
         for side, graph in analysis["versions"].items():
             symbols, reverse = graph["symbols"], defaultdict(list)

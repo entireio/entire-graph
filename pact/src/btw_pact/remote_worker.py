@@ -7,7 +7,7 @@ from .evaluator import evaluate
 from .runners.local import execute
 
 
-def run(envelope, spark):
+def run(envelope, spark, remote_run_id=None):
     payload = envelope["payload"]
     if digest(payload) != envelope["payload_hash"]:
         raise ValueError("Remote input hash mismatch")
@@ -16,6 +16,17 @@ def run(envelope, spark):
         raise ValueError("Invalid table namespace")
     if not re.fullmatch(r"[0-9a-f]{32}", run_id):
         raise ValueError("Invalid run identity")
+    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {ns}")
+    schema = "record_id string, run_id string, side string, requirement_ref string, scenario_id string, role string, status string, payload string, created_at string"
+    spark.sql(f"CREATE TABLE IF NOT EXISTS {ns}.pact_runs ({schema}) USING DELTA")
+    existing = spark.sql(f"SELECT payload FROM {ns}.pact_runs WHERE record_id='{run_id}'").collect()
+    if existing:
+        if len(existing) != 1:
+            raise ValueError("Duplicate completed run identity")
+        receipt = json.loads(existing[0]["payload"])
+        if receipt["payload_hash"] != envelope["payload_hash"] or receipt["code_hash"] != envelope["code_hash"]:
+            raise ValueError("A run identity cannot be reused with changed input or runtime")
+        return receipt
     bundle = payload["bundle"]
     requirements = [Requirement.model_validate(r) for r in bundle["requirements"]]
     scenarios = [Scenario.model_validate(s) for s in bundle["scenarios"]]
@@ -25,8 +36,6 @@ def run(envelope, spark):
         cases = [Scenario.model_validate(s) for s in payload["chosen"][side]]
         observations[side] = execute(bundle["fixtures"][side], cases, run_id, side, bundle["commits"][side], backend="databricks")
         assertions.extend(evaluate(requirements, scenarios, observations[side], side, run_id))
-    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {ns}")
-    schema = "record_id string, run_id string, side string, requirement_ref string, scenario_id string, role string, status string, payload string, created_at string"
 
     def persist(table, rows):
         spark.sql(f"CREATE TABLE IF NOT EXISTS {ns}.{table} ({schema}) USING DELTA")
@@ -74,7 +83,7 @@ def run(envelope, spark):
         o = json.loads(r["payload"])
         actual_obs[o["side"]].append(o)
     grouped = spark.sql(f"SELECT requirement_ref, role, count(*) AS violations FROM {ns}.pact_assertion_results WHERE run_id='{run_id}' AND side='head' AND status='fail' GROUP BY requirement_ref, role ORDER BY requirement_ref, role").collect()
-    receipt = {"run_id": run_id, "payload_hash": envelope["payload_hash"], "code_hash": envelope["code_hash"],
+    receipt = {"run_id": run_id, "remote_run_id": remote_run_id, "payload_hash": envelope["payload_hash"], "code_hash": envelope["code_hash"],
                "original_bundle_hash": payload["original_bundle_hash"], "commits": bundle["commits"],
                "assertion_hash": digest(expected), "observations": actual_obs,
                "assertions": expected, "grouped_violations": [r.asDict() for r in grouped],
