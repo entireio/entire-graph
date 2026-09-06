@@ -67,8 +67,10 @@ Verdict card = the whole product surface: ≤15-second read, every claim with fi
 | **S2** ✅ | Intent enrichment, tiered + source-labelled | intent lines render on every card | done 11:25 |
 | **S3** ✅ | Live UNCOMMITTED worktrees via `git stash create` (watch mode NOT done) | collision caught pre-commit; agent's tree/index/stash untouched (tested) | done 11:33 |
 | **S4** ✅ | `--all` board auto-discovering worktrees | board flags the red pair, exits worst-of | done 11:35 |
+| **S5** ✅ | Tower UI — self-contained visual simulation demo | `tools/atc/tower.html` renders the board | done 11:55 |
+| **CB** ✅ | Noon Curveball (Track 2): `CLEARED_PARTIAL` + analysis completeness + evidence tiers | dynamic-dispatch fixture: no more false green; 33/33 checks | done 12:45 |
 
-**Status: S0–S4 and D1–D3 shipped, 24/24 tests passing, verified on both the fixture and this Go repo.** Remaining: watch mode, shadow-branch reads, live Databricks workspace screenshots.
+**Status: S0–S5, D1–D3 and the Noon Curveball response shipped, 33/33 tests passing, verified on the fixtures and this Go repo.** The curveball invalidated the assumption that a missing graph edge proves independence; verdicts now carry an analysis-completeness block, a `CLEARED_PARTIAL` state (exit 4), and confirmed-vs-heuristic evidence tiers (see BUILDATHON.md). Remaining: watch mode, shadow-branch reads, live Databricks workspace screenshots.
 
 ## 7. Seeded fixture (build FIRST — it is both test-bed and demo)
 

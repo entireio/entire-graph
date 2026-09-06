@@ -38,7 +38,7 @@ Collision taxonomy (sessions as transactions): **WRITE–WRITE** (same entity ch
 
 **Unresolved / next:** S3 `--watch` + shadow-branch (uncommitted) visibility → S4 `--all` pairwise + co-change PROXIMITY → Databricks dashboard screenshots against a live workspace.
 
-**Open risks:** static analysis misses dynamic dispatch (mitigated: UNKNOWN labeling; errors exit 3 "no verdict ≠ clean"); body-change advisories could be noisy on large repos (mitigated: advisories never page — only signature/removal/rename are red); `neighbors` symbol ambiguity on big codebases (mitigated: `--file` disambiguation retry).
+**Open risks:** static analysis misses dynamic dispatch — *closed by the Noon Curveball response (see below)*: blind spots are now detected and downgrade a clean verdict to `CLEARED_PARTIAL` (exit 4) with a verification path, so the graph's silence is never sold as safety; body-change advisories could be noisy on large repos (mitigated: advisories never page — only signature/removal/rename are red); `neighbors` symbol ambiguity on big codebases (mitigated: `--file` disambiguation retry).
 
 ## Entire Graph findings and verification
 - `graph diff --base <merge-base> --head feat-auth --json` on the fixture: flagged `validate_token` `signature_changed` `def validate_token(token)` → `def validate_token(token, expiry)` with `dependents_count: 3` — verified against source (auth.py:4).
@@ -50,13 +50,59 @@ Collision taxonomy (sessions as transactions): **WRITE–WRITE** (same entity ch
 - **The self-review changed the implementation.** That same diff reported `dependents_count` of 91 for `sh`, 209 for `prefix`, 204 for `main` — implausible for functions we had just written, and on inspection they are name collisions across a large polyglot repo rather than real dependents. Since ATC's own red verdicts rest on dependent resolution, this was a live false-positive risk in the product. Fixed in `tools/atc/collide.py`: dependents are now resolved by `<file>:<line>` from the diff's `before_start_line`, falling back to name+file and only then to bare name, with every ambiguous selector recorded as UNKNOWN. Graph evidence caught a defect in the tool that consumes graph evidence.
 
 ## Noon Curveball: what changed and how we adapted
-_To be filled at 12:00. Procedure: close session → receive constraint → fresh session → reconstruct from checkpoint context → `graph impact` on the affected area before editing → smallest complete response → test → checkpoint._
+
+**Track 2: "the graph is evidence, not an oracle."** The constraint: a repository using
+dynamic dispatch / reflection / generated code that static analysis cannot fully resolve.
+
+**Procedure followed:** last stable state committed (`a4ad6ef`, checkpoint `782973365874`)
+→ session ended → work reconstructed from checkpoint context → **`graph impact` run on
+`collide` and `callers_on_tree` BEFORE any edit** (it scoped the change: `collide` →
+`run_board`/`main` = render + JSON + exit codes + board; evidence produced in
+`callers_on_tree`/`graph_diff`; co-change coupling named `test_atc.py`) → focused revision
+→ tests → final checkpoint.
+
+**The invalidated assumption.** ATC's `CLEARED` verdict equated "the graph found no edge"
+with "no dependency exists." We proved the failure before fixing it: a probe repo where one
+branch changes `handle_payment(amount)` → `(amount, currency)` and the other adds a caller
+reachable only through `getattr(handlers, "handle_" + event)`. Pre-curveball ATC:
+`CLEARED (0 red)`, exit 0. `git merge`: zero conflicts. Runtime: `TypeError`. A false
+green from a merge-gating tool is its worst possible failure — worse than a false red.
+
+**The design change** (commit `c13ce3c`):
+- **Analysis completeness is first-class.** Every verdict carries an `analysis` block:
+  `complete` plus a `gaps` list. Detectors: a blind-spot scan for dynamic-dispatch and
+  generated-code sentinels in files referencing a shape-changed module on the other side;
+  inventory-only languages feature-detected via `graph capabilities` (prose/data formats
+  exempt — a README edit must not cry wolf); and unresolved graph unknowns.
+- **Third verdict state.** Zero findings + incomplete analysis = **`CLEARED_PARTIAL`,
+  exit 4** — rendered as "PARTIAL ANALYSIS — not authoritative" with a concrete VERIFY
+  path (trial-merge, run both sides' suites, inspect the listed call sites). A bare
+  `CLEARED` (exit 0) is only issued when analysis is complete, and says so.
+- **Evidence is tiered.** Every dependent is labelled **confirmed** (structurally resolved:
+  `import_resolved`/`same_file`/`type_inferred`/`exact`) or **heuristic** (`name_only` —
+  "verify at source"), in both the card and JSON: confirmed structural evidence, heuristic
+  evidence, and claims requiring verification are distinguishable by humans and agents.
+
+**Why the new result is safe.** The detectors only ever *downgrade* certainty
+(`CLEARED` → `CLEARED_PARTIAL`); they cannot create a red, so precision on fully resolved
+code is untouched by construction — and asserted: all 24 pre-curveball checks still pass
+unchanged, plus 9 new ones (runtime-broken dynamic merge, `CLEARED_PARTIAL` + exit 4,
+blind spot located at `dispatch.py`, verification path present, card wording, a static
+control pair **in the same repo** still red HOLD, confirmed evidence tiers, and the
+precision pair still labelled analysis-complete). Fixture:
+`tools/atc-fixture/build_partial_fixture.sh` — the `getattr` trap plus a static control.
 
 ## Checkpoint links and what each checkpoint proves
 1. Initial understanding and intended architecture — the plan itself was authored in commit `9ebeac6` (ATC_PLAN.md: problem, taxonomy, architecture, ladder). The checkpoint attaches to **this milestone commit**, made from an in-repo session after reconstructing the full state from ATC_HANDOFF.md/ATC_PLAN.md and re-verifying the build (24/24 checks). Earlier sessions ran from a different working directory, so Entire's capture hooks could not fire for them.
 2. Last stable state before the Noon Curveball — S0–S4 and D1–D3 all shipped as of `0eb376a` (ladder table in ATC_HANDOFF.md; first stable cut was `3d8fb66`, S0+S1). Re-verified from this session at 11:45: fixture rebuilds, `feat-auth × feat-checkout` → HOLD exit 2 with both planted RW call sites, control pair → CLEARED exit 0, and `tools/atc/test_atc.py` passes 24/24. The checkpoint attaches to this milestone commit. (Milestone 1 checkpoint: `4e39b887f9d5`.)
-3. Response to the Noon Curveball — _pending_
-4. Final implementation and verification — _pending_
+3. Response to the Noon Curveball — commit `c13ce3c`, checkpoint `89170ff08efe`. The
+   commit message itself states the invalidated assumption, the design change and the
+   safety argument; the session transcript shows `graph impact` running before the edit
+   and the failing probe (false `CLEARED` on dynamic dispatch) demonstrated before the fix.
+4. Final implementation and verification — this commit's checkpoint: docs aligned with the
+   revised design, full suite re-verified at 33/33, demo cards rendered from the committed
+   partial-analysis fixture (`CLEARED_PARTIAL` exit 4 on the dynamic pair; HOLD exit 2
+   with confirmed-tier evidence on the static control pair in the same repo).
 
 ## Setup, run and test instructions
 ```bash
@@ -75,8 +121,15 @@ git checkout main && git branch -D merge-demo
 python3 <fork>/tools/atc/collide.py feat-auth feat-checkout --repo .   # exit 2, HOLD
 python3 <fork>/tools/atc/collide.py feat-logging feat-docs --repo .    # exit 0, CLEARED
 
-# full test suite (17 checks: recall, precision, fail-closed, priors)
+# full test suite (33 checks: recall, precision, partial analysis, fail-closed, priors)
 python3 <fork>/tools/atc/test_atc.py
+
+# the curveball beat: dynamic dispatch the graph cannot see -> honest partial verdict
+tools/atc-fixture/build_partial_fixture.sh /tmp/atc-partial
+python3 <fork>/tools/atc/collide.py feat-currency feat-webhooks --repo /tmp/atc-partial
+#   -> CLEARED_PARTIAL, exit 4, blind spot at dispatch.py + VERIFY path (never a false green)
+python3 <fork>/tools/atc/collide.py feat-refund-sig feat-billing --repo /tmp/atc-partial
+#   -> HOLD, exit 2 - same change class through a static call is still a confirmed red
 
 # fleet memory: record verdicts, then get warned before any overlap exists
 python3 <fork>/tools/atc/collide.py feat-auth feat-checkout --repo . --record
@@ -85,7 +138,7 @@ python3 <fork>/tools/atc/collide.py feat-audit feat-docs --repo . --priors
 #   -> CLEARED (no overlap today) + "auth.py — 3 red findings across 3 prior runs"
 ```
 
-Exit codes: `0` cleared · `1` advisory · `2` red · `3` no verdict (error — never read as clean).
+Exit codes: `0` cleared (analysis complete) · `1` advisory · `2` red · `3` no verdict (error) · `4` cleared on **partial analysis only**. Neither an error nor a partial analysis ever reads as clean.
 
 ## Databricks use, data sources and limitations (if applicable)
 **Capabilities used:** Databricks SQL warehouse + Delta tables (`atc.atc_runs`, `atc.atc_findings`), written and queried through `databricks-sql-connector` from `tools/atc/telemetry.py`.

@@ -24,7 +24,7 @@ using Entire Graph (`graph diff` for write-sets, `graph neighbors --direction in
 read-sets), classifies collisions, and reports a verdict with receipts plus a **landing
 order**. A "side" may be a branch, a ref, or a **worktree path with uncommitted work**.
 
-## Shipped and verified (24/24 tests green)
+## Shipped and verified (33/33 tests green)
 
 | Rung | What | Commit |
 |---|---|---|
@@ -38,8 +38,12 @@ order**. A "side" may be a branch, a ref, or a **worktree path with uncommitted 
 | S4 | `--all` board auto-discovering worktrees in flight | `2e4f1c7` |
 | Fix | Dependents resolved by `<file>:<line>`, not bare name (see below) | `d7587ea` |
 | Docs | Judge README, semantic-diff self-review recorded, plan status | `d8480c0` |
+| S5 | Tower UI — self-contained visual simulation demo | `10e8960` |
+| CB | **Noon Curveball (Track 2):** analysis completeness + `CLEARED_PARTIAL` (exit 4) + evidence tiers + blind-spot detection; 24→33 checks | `c13ce3c` |
 
 Verified from a **clean clone** at `d8480c0`: fixture builds, verdict correct, 24/24 pass.
+Post-curveball (`c13ce3c`): 33/33 pass — all 24 originals unchanged plus 9 partial-analysis
+checks (see BUILDATHON.md "Noon Curveball" for the invalidated assumption and design change).
 
 ## Two defects the work found in itself (keep these in the pitch — corrections read as rigor)
 
@@ -64,7 +68,12 @@ Verified from a **clean clone** at `d8480c0`: fixture builds, verdict correct, 2
 - **Label evidence scope.** A local telemetry prior must never be presented as fleet
   evidence — the backend and scope are printed with every prior.
 - **Graph output is evidence, not oracle.** Print confidence and resolution so a human
-  can verify; verify claims against source before asserting them.
+  can verify; verify claims against source before asserting them. Since the curveball:
+  every dependent is tiered **confirmed** vs **heuristic**, and a verdict may only say
+  `CLEARED` when the `analysis` block is complete — with blind spots (dynamic dispatch,
+  generated code, inventory-only languages) present, the most it may say is
+  `CLEARED_PARTIAL` (exit 4) plus a verification path. The graph's silence is never
+  sold as safety.
 
 ## Rejected options (already decided — don't relitigate)
 
@@ -102,14 +111,18 @@ python3 tools/atc/collide.py feat-auth feat-checkout --repo /tmp/atc-fixture
 python3 tools/atc/collide.py --all --repo /tmp/atc-fixture      # board
 python3 tools/atc/collide.py <a> <b> --repo . --record --priors # fleet memory
 python3 tools/atc/telemetry.py hotspots                          # leaderboard
-python3 tools/atc/test_atc.py                                    # 24 checks
+python3 tools/atc/test_atc.py                                    # 33 checks
 ```
 
-Exit codes: `0` cleared · `1` advisory · `2` red · `3` no verdict.
+Exit codes: `0` cleared (analysis complete) · `1` advisory · `2` red · `3` no verdict · `4` cleared on partial analysis only.
 
 ## The demo beat that wins the room
 
 `git merge` says clean → `python3 tests_checkout.py` explodes → ATC's card called it in
 advance with the exact edge, the confidence, and the landing order. Then: a pair with
 **zero** overlap returns CLEARED and still warns that `auth.py` ate 3 of 3 prior runs —
-the fleet-memory capability a single local run cannot produce.
+the fleet-memory capability a single local run cannot produce. Post-curveball closer:
+`build_partial_fixture.sh` + `collide.py feat-currency feat-webhooks` — a `getattr` router
+the graph cannot see; where we used to print a false green, the card now answers
+`CLEARED_PARTIAL` with the blind spot at `dispatch.py` and a VERIFY recipe, while the
+static control pair in the same repo still goes confirmed-red HOLD.
