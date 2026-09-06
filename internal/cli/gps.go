@@ -383,6 +383,60 @@ func runGPSWhy(ctx context.Context, opts Options, args []string) error {
 	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "status": status, "symbol": symbol, "requirements": requirements, "tests": tests, "decisions": decisions, "gaps": gaps})
 }
 
+func runGPSReview(ctx context.Context, opts Options, args []string) error {
+	_, flags, err := gpsFlags(args)
+	if err != nil {
+		return err
+	}
+	if flags.base == "" {
+		return errors.New("review requires --base")
+	}
+	repo, err := resolveRepo(ctx, opts.Env, flags.repo)
+	if err != nil {
+		return err
+	}
+	set, err := intent.LoadRevision(ctx, repo, "HEAD")
+	if err != nil {
+		return err
+	}
+	changed, err := gitutil.ChangedFiles(ctx, repo, flags.base, "HEAD", nil)
+	if err != nil {
+		return err
+	}
+	anchors := map[string]string{}
+	for _, binding := range set.Bindings {
+		for _, file := range changed {
+			if binding.Selector.File == file.Path || binding.Selector.File == file.OldPath {
+				anchors[binding.ID] = binding.Selector.File
+			}
+		}
+	}
+	var requirements []map[string]string
+	var tests []intent.TestRef
+	for _, spec := range set.Specs {
+		for _, anchor := range spec.Anchors {
+			if _, ok := anchors[anchor.ID]; ok {
+				requirements = append(requirements, map[string]string{"specification": spec.ID, "id": anchor.Requirement, "anchor": anchor.ID, "file": anchors[anchor.ID]})
+				for _, acceptance := range spec.Acceptance {
+					if acceptance.Requirement == anchor.Requirement {
+						for _, test := range spec.Tests {
+							if test.Acceptance == acceptance.ID {
+								tests = append(tests, test)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "base": flags.base, "changed_files": changed, "requirements": requirements, "tests": tests, "disposition": func() string {
+		if len(requirements) > 0 {
+			return "REVIEW_REQUIRED"
+		}
+		return "PASS"
+	}()})
+}
+
 type gpsOptions struct {
 	repo, format, id, symbol, file, query, base string
 	update                                      bool

@@ -151,6 +151,12 @@ var commandDocs = []commandDoc{
 		examples: []string{"entire graph why --repo . --symbol Authenticate --file auth.go --format json"},
 	},
 	{
+		name: "review", group: groupAnalyze, summary: "Project a committed diff onto declared GPS intent",
+		usage:    []string{"entire graph review --repo . --base REV [--format json]"},
+		long:     "Produces a read-only review projection of changed anchored files, affected requirements, and declared tests. It does not approve changes or execute tests.",
+		examples: []string{"entire graph review --repo . --base HEAD~1 --format json"},
+	},
+	{
 		name:    "search",
 		group:   groupInspect,
 		summary: "Find the code for a task from a plain-language query (start here)",

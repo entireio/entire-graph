@@ -115,6 +115,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runGPSCheck(ctx, opts, args[1:])
 	case "why":
 		return runGPSWhy(ctx, opts, args[1:])
+	case "review":
+		return runGPSReview(ctx, opts, args[1:])
 	case "agent-guide":
 		return runAgentGuide(opts, args[1:])
 	case "init-agents":
