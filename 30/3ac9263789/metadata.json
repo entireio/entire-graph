@@ -3,7 +3,7 @@
   "checkpoint_id": "303ac9263789",
   "strategy": "manual-commit",
   "branch": "docs/gps-design",
-  "checkpoints_count": 4,
+  "checkpoints_count": 5,
   "files_touched": [
     "scripts/benchmark-fastapi-gps.sh"
   ],
@@ -34,6 +34,13 @@
       "transcript": "/30/3ac9263789/3/full.jsonl",
       "compact_transcript": "/30/3ac9263789/3/transcript.jsonl",
       "content_hash": "/30/3ac9263789/3/content_hash.txt",
+      "prompt": ""
+    },
+    {
+      "metadata": "/30/3ac9263789/4/metadata.json",
+      "transcript": "/30/3ac9263789/4/full.jsonl",
+      "compact_transcript": "/30/3ac9263789/4/transcript.jsonl",
+      "content_hash": "/30/3ac9263789/4/content_hash.txt",
       "prompt": ""
     }
   ],
