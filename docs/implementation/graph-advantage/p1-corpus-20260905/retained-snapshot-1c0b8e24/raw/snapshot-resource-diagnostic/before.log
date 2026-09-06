@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/corpus-tools/p1_scenario.py", line 196, in <module>
+    raise SystemExit(main())
+  File "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/corpus-tools/p1_scenario.py", line 184, in main
+    result = digest(root)
+  File "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/corpus-tools/p1_scenario.py", line 148, in digest
+    tracked = run("git", "ls-files", "-s", "-z", cwd=root).encode()
+  File "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/corpus-tools/p1_scenario.py", line 24, in run
+    p = subprocess.run(args, cwd=cwd, check=check, text=True,
+  File "/usr/lib/python3.10/subprocess.py", line 526, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '('git', 'ls-files', '-s', '-z')' returned non-zero exit status 128.

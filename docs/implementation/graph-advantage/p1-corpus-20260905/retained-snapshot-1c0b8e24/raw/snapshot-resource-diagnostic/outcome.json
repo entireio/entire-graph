@@ -1,0 +1,11 @@
+{
+  "issue": "before input fingerprint failed",
+  "observations": {},
+  "processes_started": [],
+  "scope": "one isolated corrective diagnostic; no campaign or release gate",
+  "status": "issue",
+  "unrun": [
+    "off",
+    "on"
+  ]
+}
