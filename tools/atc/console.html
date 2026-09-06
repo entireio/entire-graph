@@ -1,0 +1,561 @@
+<title>ATC Console</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Figtree:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --paper:#F4F2EE; --ink:#15171B; --muted:#8C8A83; --faint:#B6B3AB;
+    --rule:rgba(21,23,27,.13); --rule2:rgba(21,23,27,.07);
+    --red:#D9412F; --amber:#B4802A; --green:#3F7A5E; --sky:#DDE7EC;
+    --cond:'Barlow Condensed',system-ui,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+    --body:'Figtree',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--body);
+       font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased;overflow:hidden}
+  h1,h2,h3{margin:0;font-weight:inherit}
+  button,input,textarea,select{font-family:inherit;color:inherit}
+  .lbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.22em;
+       text-transform:uppercase;color:var(--muted)}
+
+  .cab{height:100%;display:flex;flex-direction:column;position:relative}
+
+  /* ---------- nav: one hairline, nothing else ---------- */
+  nav{height:46px;flex:none;display:flex;align-items:center;gap:20px;padding:0 22px;
+      border-bottom:1px solid var(--rule);position:relative;z-index:6}
+  .mark{font-family:var(--cond);font-weight:700;font-size:16px;letter-spacing:.22em;
+        text-transform:uppercase}
+  .mark i{font-style:normal;color:var(--muted);font-weight:500}
+  .repo{display:flex;align-items:center;gap:7px}
+  .repo select{border:none;background:none;font-family:var(--mono);font-size:11px;
+               outline:none;cursor:pointer;max-width:180px;border-bottom:1px solid var(--rule);
+               padding-bottom:1px}
+  .navspace{flex:1}
+  .navtab{border:none;background:none;font-family:var(--mono);font-size:10px;
+          letter-spacing:.2em;text-transform:uppercase;color:var(--faint);cursor:pointer;
+          padding:4px 0;margin-left:20px;border-bottom:1px solid transparent}
+  .navtab.on{color:var(--ink);border-bottom-color:var(--ink)}
+  .navtab:focus-visible{outline:1px solid var(--ink);outline-offset:3px}
+  .pulse{font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;color:var(--green);
+         display:inline-flex;align-items:center;gap:6px}
+  .pulse i{width:5px;height:5px;border-radius:50%;background:var(--green);
+           animation:bl 2s infinite}
+  .pulse.off{color:var(--faint)} .pulse.off i{background:var(--faint);animation:none}
+  @keyframes bl{50%{opacity:.2}}
+
+  /* ---------- the window: type first, sky as a whisper ---------- */
+  .glass{position:relative;flex:none;height:180px;overflow:hidden;
+         border-bottom:1px solid var(--rule);
+         background:linear-gradient(180deg,var(--sky) 0%,var(--paper) 88%)}
+  .glass .far,.frame{position:absolute;inset:0}
+  .glass .far svg,.frame svg{width:100%;height:100%;display:block}
+  .readout{position:absolute;left:22px;bottom:18px;z-index:4;display:flex;
+           align-items:flex-end;gap:42px}
+  .readout .n{font-family:var(--cond);font-weight:700;font-size:72px;line-height:.8;
+              letter-spacing:-.02em;display:flex;align-items:flex-start}
+  .readout .n sup{font-size:9.5px;font-weight:400;letter-spacing:.22em;color:var(--muted);
+                  margin-left:9px;margin-top:6px;font-family:var(--mono);text-transform:uppercase}
+  .readout .col{padding-bottom:5px}
+  .readout .v{font-family:var(--cond);font-weight:600;font-size:17px;letter-spacing:.1em;
+              text-transform:uppercase}
+  .readout .v.bad{color:var(--red)} .readout .v.ok{color:var(--green)}
+  .stampline{position:absolute;right:22px;bottom:16px;z-index:4;text-align:right}
+  .stampline .big{font-family:var(--cond);font-weight:600;font-size:15px;letter-spacing:.14em;
+                  text-transform:uppercase}
+
+  /* ---------- desk: three columns, ruled not boxed ---------- */
+  .desk{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1.18fr 1fr;
+        position:relative}
+  .col{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--rule)}
+  .col:last-child{border-right:none}
+  .col > header{flex:none;display:flex;align-items:baseline;gap:10px;
+                padding:15px 20px 11px}
+  .col > header h2{font-family:var(--cond);font-weight:600;font-size:15px;
+                   letter-spacing:.2em;text-transform:uppercase}
+  .col > header .sub{margin-left:auto;font-family:var(--mono);font-size:9.5px;
+                     letter-spacing:.14em;color:var(--faint);text-transform:uppercase}
+  .col .body{flex:1;min-height:0;overflow-y:auto;padding:0 20px 18px}
+  .col .body.flush{padding:0}
+  @media(max-width:1080px){.desk{grid-template-columns:1fr;overflow-y:auto}
+    .col{border-right:none;border-bottom:1px solid var(--rule)}}
+
+  /* ---------- map: line art ---------- */
+  .map{height:100%;display:flex;align-items:center;justify-content:center;padding:6px 0}
+  .map svg{width:100%;height:100%;display:block}
+  .apt{fill:var(--ink)}
+  .apt-code{font-family:var(--cond);font-weight:700;font-size:14px;fill:var(--ink);
+            letter-spacing:.06em}
+  .apt-file{font-family:var(--mono);font-size:7px;fill:var(--faint);letter-spacing:.04em}
+  .arc{fill:none;stroke-width:1;stroke-dasharray:1.5 5;stroke-linecap:round;
+       stroke:var(--muted);opacity:.85}
+  .hub-t{font-family:var(--mono);font-size:8.5px;fill:var(--muted);letter-spacing:.2em}
+  @keyframes cr{0%{r:9;opacity:.85}100%{r:30;opacity:0}}
+  .crash-ring{animation:cr 2.2s ease-out infinite;fill:none;stroke:var(--red);stroke-width:1.2}
+  @media(prefers-reduced-motion:reduce){.crash-ring{animation:none;opacity:.4}}
+
+  /* ---------- launch ---------- */
+  .field{margin-bottom:14px}
+  .field .lbl{display:block;margin-bottom:6px}
+  textarea,input[type=text]{width:100%;border:none;border-bottom:1px solid var(--rule);
+        padding:6px 0;font-size:14px;background:none;border-radius:0}
+  textarea{min-height:56px;resize:vertical;font-family:var(--body);line-height:1.45}
+  input[type=text]{font-family:var(--mono);font-size:12.5px}
+  textarea::placeholder,input::placeholder{color:var(--faint)}
+  textarea:focus,input:focus{outline:none;border-bottom-color:var(--ink)}
+  .apts{display:flex;flex-wrap:wrap;gap:5px}
+  .aptchip{border:1px solid var(--rule);background:none;padding:4px 9px;cursor:pointer;
+           font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--muted);
+           transition:all .13s;border-radius:2px}
+  .aptchip b{font-family:var(--cond);font-size:12.5px;letter-spacing:.08em;color:var(--ink);
+             font-weight:700;margin-right:4px}
+  .aptchip.on{border-color:var(--ink);background:var(--ink);color:#F4F2EE}
+  .aptchip.on b{color:#F4F2EE}
+  .aptchip.hot{border-color:var(--red)} .aptchip.hot b{color:var(--red)}
+  .launch{width:100%;background:var(--ink);color:var(--paper);border:none;border-radius:2px;
+          padding:13px;font-family:var(--cond);font-weight:600;letter-spacing:.24em;
+          font-size:13px;text-transform:uppercase;cursor:pointer;transition:opacity .15s}
+  .launch:hover:not(:disabled){opacity:.84}
+  .launch:disabled{opacity:.3;cursor:default}
+  .clr{padding:9px 0;font-size:12px;margin-bottom:12px;border-top:1px solid var(--rule);
+       border-bottom:1px solid var(--rule);color:var(--muted)}
+  .clr.bad{color:var(--red)} .clr.warn{color:var(--amber)} .clr.ok{color:var(--green)}
+  .log{flex:none;border-top:1px solid var(--rule);padding:9px 20px 12px;
+       font-family:var(--mono);font-size:9.5px;color:var(--faint);max-height:92px;
+       overflow-y:auto;letter-spacing:.03em}
+  .log div{padding:1.5px 0} .log b{color:var(--muted);font-weight:400}
+
+  /* ---------- strips ---------- */
+  .strip{padding:13px 20px;cursor:pointer;border-bottom:1px solid var(--rule2);
+         display:grid;grid-template-columns:1fr auto;gap:3px 12px;transition:background .13s}
+  .strip:hover{background:rgba(21,23,27,.035)}
+  .strip .cs{font-family:var(--cond);font-weight:700;font-size:19px;letter-spacing:.09em}
+  .strip .st{font-family:var(--mono);font-size:9px;letter-spacing:.18em;align-self:center;
+             color:var(--muted)}
+  .strip.hold .st{color:var(--red)} .strip.clear .st{color:var(--green)}
+  .strip.adv .st{color:var(--amber)}
+  .strip.hold .cs{color:var(--red)}
+  .strip .plan{grid-column:1/-1;color:var(--muted);font-size:12.5px;line-height:1.4;
+               display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .strip .meta{grid-column:1/-1;font-family:var(--mono);font-size:9.5px;color:var(--faint);
+               display:flex;gap:14px;flex-wrap:wrap;margin-top:3px;letter-spacing:.08em}
+  .strip .meta b{color:var(--ink);font-weight:500}
+  .empty{padding:26px 20px;color:var(--faint);font-size:12px;line-height:1.6}
+
+  /* ---------- cockpit ---------- */
+  .cockpit{position:fixed;inset:0;z-index:40;display:none}
+  .cockpit.on{display:block}
+  .cockpit .veil{position:absolute;inset:0;background:rgba(21,23,27,.30)}
+  .cockpit .win{position:absolute;top:0;right:0;bottom:0;width:min(540px,100%);
+        background:var(--paper);border-left:1px solid var(--rule);
+        display:flex;flex-direction:column;animation:sl .28s cubic-bezier(.2,.7,.2,1)}
+  @keyframes sl{from{transform:translateX(24px);opacity:0}}
+  .cockpit header{display:flex;align-items:baseline;gap:12px;padding:18px 22px 14px;
+                  border-bottom:1px solid var(--rule)}
+  .cockpit header .cs{font-family:var(--cond);font-weight:700;font-size:27px;letter-spacing:.09em}
+  .cockpit header .st{font-family:var(--mono);font-size:10px;letter-spacing:.2em}
+  .cockpit .x{margin-left:auto;border:none;background:none;cursor:pointer;font-size:15px;
+              color:var(--muted)}
+  .cockpit .body{flex:1;overflow-y:auto;padding:20px 22px 30px}
+  .blk{margin-bottom:26px}
+  .blk .lbl{display:block;margin-bottom:9px}
+  .doing{font-size:14.5px;line-height:1.5}
+  .doing .src{font-family:var(--mono);font-size:9.5px;color:var(--faint);margin-top:8px;
+              letter-spacing:.1em;text-transform:uppercase}
+  .wrote .w{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:baseline;
+            font-family:var(--mono);font-size:11.5px;padding:6px 0;
+            border-bottom:1px solid var(--rule2)}
+  .wrote .w.conflict{color:var(--red)}
+  .wrote .w .n{color:var(--faint);font-size:9.5px;letter-spacing:.08em}
+  .wrote .w.conflict .n{color:var(--red)}
+  .traj{display:flex;flex-direction:column;gap:0}
+  .tstep{display:grid;grid-template-columns:46px 1fr;gap:10px;padding:5px 0;
+         border-bottom:1px solid var(--rule2)}
+  .tstep .at{font-family:var(--mono);font-size:9.5px;color:var(--faint)}
+  .tstep .txt{font-family:var(--mono);font-size:11px;color:var(--muted);word-break:break-word}
+  .tstep.prompt .txt{font-family:var(--body);font-size:13px;color:var(--ink)}
+  .tstep.write .txt{color:var(--ink)}
+  .conf{border-left:2px solid var(--red);padding:8px 0 8px 12px;margin-bottom:12px}
+  .conf .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;color:var(--red);
+           display:block;margin-bottom:5px;text-transform:uppercase}
+  .conf code{font-family:var(--mono);font-size:12px}
+  .conf .rc{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:3px}
+
+  /* ---------- incidents ---------- */
+  #incidents{display:none;position:absolute;top:46px;left:0;right:0;bottom:0;z-index:8;
+             overflow-y:auto;padding:34px 22px 40px;background:var(--paper)}
+  #incidents.on{display:block}
+  .inc{max-width:760px;margin:0 auto 34px;border-top:2px solid var(--ink);padding-top:14px}
+  .inc .tag{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;color:var(--muted);
+            text-transform:uppercase;display:flex}
+  .inc .tag .r{margin-left:auto;color:var(--red)}
+  .inc h2{font-family:var(--cond);font-weight:700;font-size:34px;letter-spacing:.01em;
+          margin:8px 0 4px}
+  .inc .meta{color:var(--muted);font-size:12px;margin-bottom:18px;font-family:var(--mono);
+             font-size:10.5px;letter-spacing:.05em}
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(70px);
+         background:var(--ink);color:var(--paper);padding:11px 20px;font-size:12.5px;
+         transition:transform .3s;z-index:60;max-width:90vw;border-radius:2px;
+         font-family:var(--mono);letter-spacing:.04em}
+  .toast.on{transform:translateX(-50%)}
+</style>
+
+<div class="cab">
+  <nav>
+    <span class="mark">ATC <i>Console</i></span>
+    <span class="repo"><span class="lbl">repo</span>
+      <select id="repo-sel"><option>—</option></select></span>
+    <span class="pulse off" id="pulse"><i></i>CONNECTING</span>
+    <span class="navspace"></span>
+    <button class="navtab on" data-screen="tower">Tower</button>
+    <button class="navtab" data-screen="incidents">Incidents</button>
+  </nav>
+
+  <div class="glass">
+    <div class="far" id="far"></div>
+    <div class="frame" id="frame"></div>
+    <div class="readout">
+      <div class="n" id="gi-n">0<sup>IN FLIGHT</sup></div>
+      <div class="col"><span class="lbl">separation</span>
+        <div class="v ok" id="gi-s">CLEAR</div></div>
+    </div>
+    <div class="stampline"><span class="lbl">airspace</span>
+      <div class="big" id="gi-r">—</div></div>
+  </div>
+
+  <div class="desk">
+    <section class="col">
+      <header><h2>World</h2><span class="sub" id="world-sub">—</span></header>
+      <div class="body flush"><div class="map" id="map"></div></div>
+    </section>
+
+    <section class="col">
+      <header><h2>Launch</h2><span class="sub">real claude session</span></header>
+      <div class="body">
+        <div id="clearance" class="clr">Pick destinations to check the route.</div>
+        <div class="field"><span class="lbl">Flight plan</span>
+          <textarea id="lp" placeholder="what should this agent do?"></textarea></div>
+        <div class="field"><span class="lbl">Callsign</span>
+          <input type="text" id="lb" placeholder="agent-retry"></div>
+        <div class="field"><span class="lbl">Destinations</span>
+          <div class="apts" id="apts"></div></div>
+        <button class="launch" id="go">Clear for takeoff</button>
+      </div>
+      <div class="log" id="log"><div>tower ready.</div></div>
+    </section>
+
+    <section class="col">
+      <header><h2>Flights</h2><span class="sub" id="fl-sub">0</span></header>
+      <div class="body flush" id="strips"><div class="empty">No agents in flight.</div></div>
+    </section>
+  </div>
+
+  <div id="incidents"></div>
+</div>
+
+<div class="cockpit" id="cockpit">
+  <div class="veil" onclick="closeCockpit()"></div>
+  <div class="win"><header><span class="cs" id="ck-cs"></span>
+      <span class="st" id="ck-st"></span>
+      <button class="x" onclick="closeCockpit()">Close</button></header>
+    <div class="body" id="ck-body"></div></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let S = {flights:[], pairs:[], sides_in_flight:0};
+let picked = new Set(), openCs = null, logged = [];
+
+const key = f => f.label || f.branch;
+const pairsOf = f => (S.pairs||[]).filter(p=>p.result && (p.a===key(f)||p.b===key(f)));
+function statusOf(f){
+  const ps = pairsOf(f);
+  if (ps.some(p=>p.result.reds)) return {cls:"hold", label:"HOLD"};
+  if (ps.some(p=>p.result.verdict==="CLEARED_PARTIAL")) return {cls:"adv", label:"PARTIAL"};
+  if (ps.some(p=>p.result.advisories)) return {cls:"adv", label:"CAUTION"};
+  return {cls:"clear", label:ps.length?"CLEARED":"SOLO"};
+}
+function conflictFiles(){
+  const s = new Set();
+  for (const p of S.pairs||[]){
+    if (!p.result) continue;
+    for (const f of [...(p.result.findings.read_write||[]),
+                     ...(p.result.findings.write_write||[])]) s.add(f.path);
+  }
+  return s;
+}
+function code3(path){
+  const stem=(path.split("/").pop()||"x").split(".")[0].toLowerCase();
+  const cons=stem[0]+[...stem.slice(1)].filter(c=>!"aeiou".includes(c)).join("");
+  return (cons+stem+"XXX").slice(0,3).toUpperCase();
+}
+function allFiles(){
+  const m = new Map();
+  for (const f of S.flights) f.files.forEach((p,i)=>m.set(p, f.codes[i]));
+  // a collision site is an airport even when neither agent has touched it yet
+  // in their uncommitted diff — it is where the two blast radii actually meet
+  for (const p of conflictFiles()) if (!m.has(p)) m.set(p, code3(p));
+  return m;
+}
+function log(msg){
+  logged.unshift(`<div><b>${new Date().toTimeString().slice(0,8)}</b> ${esc(msg)}</div>`);
+  $("#log").innerHTML = logged.slice(0,40).join("");
+}
+let tt; function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("on");
+  clearTimeout(tt); tt=setTimeout(()=>t.classList.remove("on"),3400); }
+
+/* ---------- the view out the window ---------- */
+function renderGlass(){
+  const hot = conflictFiles().size, n = S.sides_in_flight||0;
+  $("#gi-n").innerHTML = `${n}<sup>IN FLIGHT</sup>`;
+  const el = $("#gi-s");
+  el.textContent = hot ? `${hot} LOSS OF SEPARATION` : "CLEAR";
+  el.className = "v " + (hot ? "bad" : "ok");
+  $("#gi-r").textContent = (S.profile_label || "—").toUpperCase();
+
+  // distant traffic: thin silhouettes drifting the width of the glass
+  $("#far").innerHTML = `<svg viewBox="0 0 1000 180" preserveAspectRatio="none">
+    ${S.flights.map((f,i)=>{
+      const y = 30 + (i*29)%86, dur = 64 + i*13, st = statusOf(f);
+      const col = st.cls==="hold" ? "#D9412F" : st.cls==="adv" ? "#B4802A" : "#8C8A83";
+      return `<g opacity=".7"><text font-family="var(--mono)" font-size="9" fill="${col}"
+        letter-spacing="1.5">✈ ${esc(f.callsign)}
+        <animateMotion dur="${dur}s" begin="${-i*11}s" repeatCount="indefinite"
+          path="M-90,${y} C300,${y-9} 700,${y+9} 1090,${y}"/></text></g>`;}).join("")}
+  </svg>`;
+}
+function renderFrame(){
+  // the cab's geometry, drawn as one hairline
+  $("#frame").innerHTML = `<svg viewBox="0 0 1000 180" preserveAspectRatio="none">
+    <polygon points="0,118 300,180 0,180" fill="#F4F2EE"/>
+    <polygon points="1000,118 700,180 1000,180" fill="#F4F2EE"/>
+    <g stroke="#15171B" stroke-width="1" fill="none" opacity=".55">
+      <line x1="300" y1="0" x2="300" y2="180"/>
+      <line x1="700" y1="0" x2="700" y2="180"/>
+      <line x1="300" y1="180" x2="0" y2="118"/>
+      <line x1="700" y1="180" x2="1000" y2="118"/>
+    </g>
+  </svg>`;
+}
+
+/* ---------- world map ---------- */
+function renderMap(){
+  const W=460, H=380, files=[...allFiles().keys()], hot=conflictFiles();
+  const nodes={}, cx=W/2, rows=Math.max(files.length,1);
+  files.forEach((f,i)=>{
+    const t=(i+1)/(rows+1);
+    nodes[f]=[ cx + (i%2 ? 1 : -1) * (46 + (i%3)*30), 54 + t*(H-108) ];
+  });
+  const BASE=[cx,H-16], MAIN=[cx,14];
+  let svg=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet"
+      role="img" aria-label="Repo airspace">`;
+  S.flights.forEach((fl,fi)=>{
+    const stops=[BASE, ...fl.files.map(f=>nodes[f]).filter(Boolean), MAIN];
+    if(stops.length<2) return;
+    let d=`M${stops[0][0]},${stops[0][1]}`;
+    for(let i=1;i<stops.length;i++){
+      const [x0,y0]=stops[i-1],[x1,y1]=stops[i];
+      d+=` Q${(x0+x1)/2+(fi%2?26:-26)},${(y0+y1)/2} ${x1},${y1}`;
+    }
+    const st=statusOf(fl);
+    const col = st.cls==="hold" ? "#D9412F" : st.cls==="adv" ? "#B4802A" : "#8C8A83";
+    svg+=`<path id="arc${fi}" class="arc" d="${d}" stroke="${col}"/>
+      <text font-size="10" fill="${col}">✈<animateMotion dur="${44+fi*9}s"
+        repeatCount="indefinite" rotate="auto"><mpath href="#arc${fi}"/></animateMotion></text>`;
+  });
+  for (const [f,[x,y]] of Object.entries(nodes)){
+    const isHot=hot.has(f), code=allFiles().get(f)||"?";
+    if(isHot) svg+=`<circle class="crash-ring" cx="${x}" cy="${y}" r="9"/>
+       <path d="M${x-4},${y-4} L${x+4},${y+4} M${x+4},${y-4} L${x-4},${y+4}"
+         stroke="#D9412F" stroke-width="1.6"/>`;
+    else svg+=`<circle class="apt" cx="${x}" cy="${y}" r="2.6"/>`;
+    svg+=`<text class="apt-code" x="${x+9}" y="${y+3.5}"
+            ${isHot?'fill="#D9412F"':""}>${esc(code)}</text>
+          <text class="apt-file" x="${x+9}" y="${y+13}">${esc(f.split("/").pop())}</text>`;
+  }
+  for (const [pt,label] of [[BASE,"BASE"],[MAIN,"MAIN"]])
+    svg+=`<circle cx="${pt[0]}" cy="${pt[1]}" r="3.4" fill="#15171B"/>
+          <text class="hub-t" x="${pt[0]+9}" y="${pt[1]+3}">${label}</text>`;
+  svg+=`</svg>`;
+  $("#map").innerHTML = files.length ? svg
+    : `<div class="empty">Airspace empty.<br>Launch an agent to chart it.</div>`;
+  $("#world-sub").textContent = [...hot].length
+    ? `${[...hot].length} conflict` : `${files.length} airports`;
+}
+
+/* ---------- flight strips ---------- */
+function renderStrips(){
+  $("#fl-sub").textContent = `${S.flights.length}`;
+  if(!S.flights.length){ $("#strips").innerHTML =
+    `<div class="empty">No agents in flight.<br>Launch one from the console.</div>`; return; }
+  $("#strips").innerHTML = S.flights.map(f=>{
+    const st=statusOf(f), t=f.trajectory||{}, wrote=(t.wrote||[]).length;
+    return `<div class="strip ${st.cls}" onclick="openCockpit('${esc(f.callsign)}')">
+      <span class="cs">${esc(f.callsign)}</span><span class="st">${st.label}</span>
+      <span class="plan">${esc(f.intent)}</span>
+      <span class="meta"><span><b>${f.uncommitted_lines||0}</b> lines</span>
+        <span><b>${f.files.length}</b> files</span>
+        ${wrote?`<span><b>${wrote}</b> written</span>`:""}
+        ${f.idle_seconds!=null?`<span>${f.idle_seconds}s ago</span>`:`<span>no session</span>`}
+      </span></div>`;}).join("");
+}
+
+/* ---------- cockpit ---------- */
+function openCockpit(cs){
+  const f=S.flights.find(x=>x.callsign===cs); if(!f) return;
+  openCs=cs;
+  const st=statusOf(f), t=f.trajectory||{}, hot=conflictFiles();
+  $("#ck-cs").textContent=f.callsign;
+  $("#ck-st").textContent=st.label;
+  $("#ck-st").style.color = st.cls==="hold"?"var(--coral)":st.cls==="adv"?"#8A6D00":"var(--mint)";
+  const tools=Object.entries(t.tool_counts||{}).map(([k,v])=>`${k}×${v}`).join(" · ")
+    || "no tool activity yet";
+  const wrote=(t.wrote||[]).map(w=>{
+    const isHot=[...hot].some(h=>w.path.endsWith(h)||h.endsWith(w.path));
+    return `<div class="w ${isHot?"conflict":""}">
+      <span>${esc(w.path)}</span>
+      <span class="n">${isHot?"CONFLICT · ":""}×${w.edits} · ${esc(w.last)}</span></div>`;}).join("")
+    || `<div class="empty" style="padding:10px">No files written yet.</div>`;
+  const steps=(t.steps||[]).slice().reverse().slice(0,18).map(s=>
+    `<div class="tstep ${esc(s.kind)}"><span class="at">${esc(s.at)}</span>
+      <span class="txt">${s.kind==="write"?"wrote ":s.kind==="run"?"ran ":""}${esc(s.text)}</span></div>`
+  ).join("") || `<div class="empty" style="padding:10px">No trajectory recorded.</div>`;
+  const confs=pairsOf(f).flatMap(p=>{
+    const other=p.a===key(f)?p.b:p.a;
+    return [...(p.result.findings.read_write||[]),...(p.result.findings.write_write||[])].map(x=>
+      `<div class="conf"><span class="k">${x.dependents?"READ–WRITE":"WRITE–WRITE"} · vs ${esc(other)}</span>
+        <code>${esc(x.entity)}</code> in ${esc(x.path)}
+        ${x.old_signature?`<div class="rc">${esc(x.old_signature)} → ${esc(x.new_signature)}</div>`:""}
+        ${(x.dependents||[]).map(d=>`<div class="rc">↳ ${esc(d.name)}() ${esc(d.path)}:${esc(d.line)} · conf ${esc(d.confidence)}</div>`).join("")}
+      </div>`);}).join("");
+  $("#ck-body").innerHTML=`
+    <div class="blk"><span class="lbl">What it's doing</span><div class="doing">${esc(f.intent)}
+      <div class="src">${esc(f.intent_source||"unknown")} ·
+        ${f.idle_seconds!=null?`updated ${f.idle_seconds}s ago`:"no live session"} ·
+        branch ${esc(f.branch)}</div></div></div>
+    <div class="blk"><span class="lbl">Files written</span><div class="wrote">${wrote}</div></div>
+    ${confs?`<div class="blk"><span class="lbl">Conflicts</span>${confs}</div>`:""}
+    <div class="blk"><span class="lbl">Trajectory</span>
+      <div style="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:8px">
+        ${esc(tools)} · ${t.read_count||0} reads</div>
+      <div class="traj">${steps}</div></div>`;
+  $("#cockpit").classList.add("on");
+}
+function closeCockpit(){ $("#cockpit").classList.remove("on"); openCs=null; }
+addEventListener("keydown", e=>{ if(e.key==="Escape") closeCockpit(); });
+
+/* ---------- launch ---------- */
+function renderApts(){
+  const hot=conflictFiles(), files=[...allFiles().entries()];
+  $("#apts").innerHTML = files.length ? files.map(([f,c])=>
+    `<button class="aptchip ${picked.has(f)?"on":""} ${hot.has(f)?"hot":""}"
+      data-f="${esc(f)}"><b>${esc(c)}</b> ${esc(f.split("/").pop())}</button>`).join("")
+    : `<span style="color:var(--muted);font-size:12px">No airports charted yet.</span>`;
+  document.querySelectorAll(".aptchip").forEach(c=>c.onclick=()=>{
+    const f=c.dataset.f; picked.has(f)?picked.delete(f):picked.add(f);
+    c.classList.toggle("on"); clearance();
+  });
+}
+function clearance(){
+  const hot=conflictFiles(), el=$("#clearance");
+  const bad=[...picked].filter(f=>hot.has(f));
+  if(bad.length){ el.className="clr bad";
+    el.innerHTML=`⚠ <b>${esc(allFiles().get(bad[0])||bad[0])}</b> already has a loss of
+      separation. Land that conflict first, or route around it.`; }
+  else if(picked.size){ el.className="clr ok";
+    el.textContent=`Route clear through ${[...picked].map(f=>allFiles().get(f)).join(" · ")}.`; }
+  else { el.className="clr ok"; el.textContent="Pick destinations to check the route."; }
+}
+$("#go").onclick = async () => {
+  const prompt=$("#lp").value.trim();
+  if(!prompt){ toast("File a flight plan first."); $("#lp").focus(); return; }
+  const dests=[...picked];
+  const full = dests.length ? `${prompt}\n\nWork in these files: ${dests.join(", ")}.` : prompt;
+  const btn=$("#go"); btn.disabled=true; btn.textContent="CLEARING…";
+  log(`requesting clearance: ${prompt.slice(0,46)}`);
+  try{
+    const r=await fetch("/launch",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({prompt:full, branch:$("#lb").value.trim()||null})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||"launch refused");
+    log(`✈ ${j.branch} airborne — ${j.mode}, pid ${j.pid||"—"}`);
+    toast(`${j.branch} is airborne.`);
+    $("#lp").value=""; $("#lb").value=""; picked.clear(); clearance(); renderApts();
+  }catch(e){ log(`launch failed: ${e.message}`); toast(`Launch failed: ${e.message}`); }
+  finally{ btn.disabled=false; btn.textContent="CLEAR FOR TAKEOFF"; }
+};
+
+/* ---------- incidents ---------- */
+function renderIncidents(){
+  const reds=(S.pairs||[]).filter(p=>p.result && p.result.reds);
+  $("#incidents").innerHTML = reds.length ? reds.map(p=>{
+    const r=p.result, f=(r.findings.read_write||[])[0]||(r.findings.write_write||[])[0]||{};
+    return `<div class="inc">
+      <div class="tag">${esc(p.a)} × ${esc(p.b)}<span class="r">Caught pre-merge</span></div>
+      <h2>${esc(f.entity||"collision")} — ${r.reds} red finding${r.reds===1?"":"s"}</h2>
+      <div class="meta">merge-base ${esc((r.merge_base||"").slice(0,7))} ·
+        verdict ${esc(r.verdict)} · git reports zero conflicts on this pair</div>
+      ${[...(r.findings.read_write||[]),...(r.findings.write_write||[])].map(x=>
+        `<div class="conf" style="margin-bottom:9px">
+          <span class="k">${x.dependents?"READ–WRITE":"WRITE–WRITE"}</span>
+          <code>${esc(x.entity)}</code> · ${esc(x.path)}
+          ${x.old_signature?`<div class="rc">${esc(x.old_signature)} → ${esc(x.new_signature)}</div>`:""}
+          ${(x.dependents||[]).map(d=>`<div class="rc">↳ ${esc(d.name)}() ${esc(d.path)}:${esc(d.line)}</div>`).join("")}
+        </div>`).join("")}
+      ${r.landing_order?`<div class="clr warn">✈ ${esc(r.landing_order)}</div>`:""}</div>`;}).join("")
+    : `<div class="inc"><div class="tag">Incidents</div><h2>No incidents on file</h2>
+       <div class="meta">Every pair in flight is clear. Incidents appear the moment two
+       agents lose separation.</div></div>`;
+}
+
+document.querySelectorAll(".navtab").forEach(t=>t.onclick=()=>{
+  document.querySelectorAll(".navtab").forEach(x=>x.classList.toggle("on",x===t));
+  const inc=t.dataset.screen==="incidents";
+  $("#incidents").classList.toggle("on",inc);
+  if(inc) renderIncidents();
+});
+
+/* ---------- poll ---------- */
+let stamp=null, fails=0;
+async function poll(){
+  try{
+    const r=await fetch("/live.json",{cache:"no-store"});
+    if(!r.ok) throw new Error(r.status);
+    const s=await r.json(); fails=0;
+    $("#pulse").className="pulse";
+    $("#pulse").innerHTML=`<i></i>LIVE`;
+    const sig=JSON.stringify([s.generated, s.flights.map(f=>[f.intent,f.files,
+      f.uncommitted_lines,(f.trajectory||{}).wrote]), s.pairs.map(p=>p.result&&p.result.verdict)]);
+    if(sig===stamp) return;
+    const prevHot=conflictFiles().size, first=stamp===null;
+    stamp=sig; S=s;
+    renderGlass(); renderMap(); renderStrips(); renderApts(); clearance();
+    if($("#incidents").classList.contains("on")) renderIncidents();
+    if(openCs) openCockpit(openCs);
+    const hot=conflictFiles().size;
+    if(!first && hot>prevHot){ log("⚠ loss of separation detected"); toast("⚠ Loss of separation — see Incidents."); }
+    if(!first) log(`sweep: ${s.sides_in_flight} in flight`);
+  }catch(e){
+    if(++fails===1){ $("#pulse").className="pulse off";
+      $("#pulse").innerHTML=`<i></i>WATCHER OFFLINE`;
+      log("watcher offline — run tools/atc/live.py --serve"); }
+  }
+}
+async function boot(){
+  renderFrame(); renderGlass();
+  try{
+    const j=await (await fetch("/repos")).json();
+    $("#repo-sel").innerHTML=(j.repos||[]).map(p=>
+      `<option value="${esc(p)}" ${p===j.current?"selected":""}>${esc(p.split("/").pop())}</option>`).join("");
+    $("#repo-sel").onchange=async e=>{
+      await fetch("/switch",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({repo:e.target.value})});
+      stamp=null; log(`switched to ${e.target.value.split("/").pop()}`); poll();
+    };
+  }catch{ $("#repo-sel").innerHTML=`<option>—</option>`; }
+  await poll(); setInterval(poll,4000);
+}
+boot();
+</script>

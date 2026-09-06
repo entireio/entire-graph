@@ -24,6 +24,7 @@ import argparse
 import http.server
 import json
 import os
+import shutil
 import socketserver
 import subprocess
 import sys
@@ -94,6 +95,68 @@ def live_prompt(worktree):
     }
 
 
+def trajectory(worktree, limit=40):
+    """What this agent has actually been doing, from its own transcript.
+
+    Returns the ordered tool activity and, separately, the files it has
+    WRITTEN (Edit/Write), which is the half that can collide with another
+    agent. Reads are noise for our purposes and are counted, not listed.
+    """
+    d = transcript_dir(worktree)
+    if not os.path.isdir(d):
+        return {"steps": [], "wrote": [], "read_count": 0, "tool_counts": {}}
+    files = [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".jsonl")]
+    if not files:
+        return {"steps": [], "wrote": [], "read_count": 0, "tool_counts": {}}
+    path = max(files, key=os.path.getmtime)
+    steps, wrote, reads, counts = [], {}, 0, {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("type") == "user":
+                    text = _human_text(row)
+                    if text:
+                        steps.append({"kind": "prompt", "text": text[:180],
+                                      "at": (row.get("timestamp") or "")[11:19]})
+                    continue
+                if row.get("type") != "assistant":
+                    continue
+                for b in (row.get("message") or {}).get("content") or []:
+                    if not isinstance(b, dict) or b.get("type") != "tool_use":
+                        continue
+                    name = b.get("name") or "?"
+                    counts[name] = counts.get(name, 0) + 1
+                    inp = b.get("input") or {}
+                    fp = inp.get("file_path") or inp.get("notebook_path")
+                    at = (row.get("timestamp") or "")[11:19]
+                    if name in ("Edit", "Write", "NotebookEdit") and fp:
+                        rel = os.path.relpath(fp, worktree) if fp.startswith("/") else fp
+                        entry = wrote.setdefault(rel, {"path": rel, "edits": 0, "last": at})
+                        entry["edits"] += 1
+                        entry["last"] = at
+                        steps.append({"kind": "write", "text": rel, "at": at, "tool": name})
+                    elif name == "Read":
+                        reads += 1
+                    elif name == "Bash":
+                        cmd = (inp.get("command") or "")[:90]
+                        steps.append({"kind": "run", "text": cmd, "at": at})
+    except OSError:
+        pass
+    return {
+        "steps": steps[-limit:],
+        "wrote": sorted(wrote.values(), key=lambda w: -w["edits"]),
+        "read_count": reads,
+        "tool_counts": dict(sorted(counts.items(), key=lambda x: -x[1])[:6]),
+    }
+
+
 def _human_text(row):
     content = (row.get("message") or {}).get("content")
     if isinstance(content, str):
@@ -152,6 +215,7 @@ def snapshot_sides(repo):
             "branch": branch,
             "label": os.path.basename(path.rstrip("/")),
             "prompt": live_prompt(path),
+            "trajectory": trajectory(path),
             "uncommitted_files": files,
             "uncommitted_lines": lines,
         })
@@ -194,6 +258,7 @@ def build_state(repo, profile_label=None):
             "session_id": prompt["session_id"] if prompt else None,
             "idle_seconds": prompt["idle_seconds"] if prompt else None,
             "uncommitted_lines": s["uncommitted_lines"],
+            "trajectory": s["trajectory"],
             "commits": 0,
         })
     return {
@@ -207,11 +272,58 @@ def build_state(repo, profile_label=None):
     }
 
 
+def launch_agent(repo, prompt, branch=None, headless=True):
+    """Put a real agent in the air: new worktree + a live Claude session.
+
+    Headless (`claude -p`) keeps the demo self-contained — the session edits
+    the worktree and the next sweep picks it up like any other flight. With
+    headless off we open a Terminal window instead, so a human can watch and
+    take over. Either way the session is real; nothing here is simulated.
+    """
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise ValueError("a flight plan is required")
+    slug = "".join(c if c.isalnum() or c in "-_" else "-"
+                   for c in (branch or prompt.lower())[:28]).strip("-") or "agent"
+    branch = branch or f"agent-{slug}"
+    wt = os.path.join(os.path.dirname(os.path.abspath(repo)), f"wt-{slug}")
+    if os.path.exists(wt):
+        raise ValueError(f"{os.path.basename(wt)} already exists — pick another name")
+
+    collide.sh(["git", "-C", repo, "worktree", "add", "-q", "-b", branch, wt])
+    claude = os.environ.get("ATC_CLAUDE_BIN") or shutil.which("claude")
+    if not claude:
+        # No CLI on this machine: the worktree is real and the plan is filed,
+        # so the flight is ready — it just needs a human to start the engine.
+        with open(os.path.join(wt, ".atc-flightplan"), "w", encoding="utf-8") as f:
+            f.write(prompt + "\n")
+        return {"branch": branch, "worktree": wt, "prompt": prompt, "pid": None,
+                "mode": "manual",
+                "command": f'cd {wt} && claude "{prompt.splitlines()[0]}"'}
+    if headless:
+        log = open(os.path.join(wt, ".atc-agent.log"), "wb")
+        proc = subprocess.Popen(
+            [claude, "-p", prompt, "--permission-mode", "acceptEdits"],
+            cwd=wt, stdout=log, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, start_new_session=True)
+        pid, how = proc.pid, "headless"
+    else:
+        script = (f'cd {json.dumps(wt)[1:-1]} && '
+                  f'{claude} {json.dumps(prompt)}')
+        subprocess.run(["osascript", "-e",
+                        f'tell app "Terminal" to do script {json.dumps(script)}'],
+                       capture_output=True)
+        pid, how = None, "terminal"
+    return {"branch": branch, "worktree": wt, "prompt": prompt,
+            "pid": pid, "mode": how}
+
+
 class State:
     """Shared latest sweep, refreshed by a background thread."""
 
-    def __init__(self, repo, interval, label):
+    def __init__(self, repo, interval, label, known=()):
         self.repo, self.interval, self.label = repo, interval, label
+        self.known = list(dict.fromkeys([repo, *known]))
         self.lock = threading.Lock()
         self.data = {"live": True, "flights": [], "pairs": [],
                      "generated": None, "sides_in_flight": 0,
@@ -255,13 +367,45 @@ def serve(state, page, port):
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path.startswith("/live.json"):
+            if self.path.startswith("/repos"):
+                self._send(json.dumps({"repos": state.known,
+                                       "current": state.repo}), "application/json")
+            elif self.path.startswith("/live.json"):
                 self._send(state.snapshot(), "application/json")
-            elif self.path in ("/", "/index.html"):
+            elif self.path in ("/", "/index.html", "/console", "/console.html"):
+                with open(os.path.join(HERE, "console.html"), encoding="utf-8") as f:
+                    self._send(f.read(), "text/html; charset=utf-8")
+            elif self.path in ("/terminal", "/terminal.html"):
                 with open(page, encoding="utf-8") as f:
                     self._send(f.read(), "text/html; charset=utf-8")
             else:
                 self.send_error(404)
+
+        def do_POST(self):
+            if self.path.startswith("/switch"):
+                n = int(self.headers.get("Content-Length") or 0)
+                repo = (json.loads(self.rfile.read(n) or b"{}")).get("repo")
+                if repo in state.known:
+                    state.repo = repo
+                    state.label = os.path.basename(repo.rstrip("/"))
+                    threading.Thread(target=state.sweep, daemon=True).start()
+                    return self._send(json.dumps({"ok": True, "repo": repo}),
+                                      "application/json")
+                return self._send(json.dumps({"ok": False, "error": "unknown repo"}),
+                                  "application/json")
+            if not self.path.startswith("/launch"):
+                return self.send_error(404)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(n) or b"{}")
+                info = launch_agent(state.repo, body.get("prompt"),
+                                    body.get("branch"),
+                                    headless=body.get("headless", True))
+                threading.Thread(target=state.sweep, daemon=True).start()
+                self._send(json.dumps({"ok": True, **info}), "application/json")
+            except Exception as e:
+                self._send(json.dumps({"ok": False, "error": str(e)[:300]}),
+                           "application/json")
 
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("127.0.0.1", port), Handler) as httpd:
@@ -280,6 +424,7 @@ def main():
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--page", default=os.path.join(HERE, "terminal.html"))
     ap.add_argument("--label", default=None, help="repo name shown in the UI")
+    ap.add_argument("--also", default="", help="comma-separated repos for the selector")
     ap.add_argument("--once", action="store_true", help="print one sweep as JSON")
     ap.add_argument("--serve", action="store_true", help="serve the live UI")
     args = ap.parse_args()
@@ -289,7 +434,8 @@ def main():
         print(json.dumps(build_state(repo, args.label), indent=2))
         return
 
-    state = State(repo, args.interval, args.label)
+    known = [os.path.abspath(x) for x in args.also.split(",") if x.strip()]
+    state = State(repo, args.interval, args.label, known)
     print("[atc-live] first sweep ...")
     first = state.sweep()
     print(f"[atc-live] {first['sides_in_flight']} side(s) in flight, "

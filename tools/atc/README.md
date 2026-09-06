@@ -67,6 +67,19 @@ live.py --repo . --serve             # watch the agents flying right now
 python3 tools/atc/live.py --repo <path> --serve      # then open :8787
 ```
 
+The page it serves is the **console**: a tower cab with the airspace out the
+window and three consoles on the desk — World (the repo as a route map),
+Launch (files a flight plan and starts a real Claude session in a fresh
+worktree), and Flights (one strip per agent; tap one for the cockpit, which
+shows what it is doing, the files it has written, its trajectory, and any
+conflict with receipts). Collision sites are charted as airports and marked
+with a crash cross, so a loss of separation is visible on the map itself.
+
+`--also <repo,repo>` puts more repositories in the navbar selector.
+Launching needs the `claude` CLI on PATH (or `ATC_CLAUDE_BIN`); without it the
+worktree is still created and the flight plan filed, and the console tells you
+the command to run.
+
 Everything else in ATC reasons about commits. `live.py` watches work that has
 not been committed yet, which is when a collision is still cheap to avoid.
 Every few seconds it sweeps each worktree (and the main checkout, when that is
