@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -97,6 +98,38 @@ class LaunchContracts(unittest.TestCase):
             self.assertIn("not-json", record["raw_response_redacted"])
             self.assertNotIn("secret", record["raw_response_redacted"])
             self.assertTrue(record["raw_response_sha256"])
+
+    def test_redaction_starts_at_first_query_delimiter(self):
+        redacted = launch._redact_transport(
+            "https://storage/blob?sig=secret?secondary=also-secret"
+        )
+        self.assertEqual(redacted, "https://storage/blob?<redacted-sas>")
+
+    def test_frozen_baseline_identity_changes_when_baseline_changes(self):
+        root, first, _ = self.fixture()
+        context = launch.load_and_validate_build_manifest(first, root)
+        baseline_a = root / "baseline-a.json"
+        baseline_b = root / "baseline-b.json"
+        baseline_a.write_text("{\"binary_sha256\":\"a\"}\n")
+        baseline_b.write_text("{\"binary_sha256\":\"b\"}\n")
+        identity_a = launch._identity(context, baseline_a)
+        identity_b = launch._identity(context, baseline_b)
+        self.assertNotEqual(
+            identity_a["frozen_baseline_sha256"],
+            identity_b["frozen_baseline_sha256"],
+        )
+
+    def test_failure_handler_attempts_stop_on_every_worker(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(
+            launch.cloud, "run", return_value=json.dumps(["status"])
+        ) as run:
+            launch.stop_workers("campaign", "run-a", pathlib.Path(d))
+            self.assertEqual(run.call_count, len(launch.VMS))
+            self.assertEqual(
+                len(list(pathlib.Path(d).glob("launch-worker-*-stop.json"))),
+                len(launch.VMS),
+            )
+            self.assertTrue((pathlib.Path(d) / "launch-failure.json").exists())
 
 
 if __name__ == "__main__":

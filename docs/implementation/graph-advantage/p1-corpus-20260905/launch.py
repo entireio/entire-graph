@@ -153,7 +153,7 @@ def _redact_transport(value):
     text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
     # Azure command output must not put signed URLs or query credentials in local
     # evidence. Keep the URL origin/path and replace the complete query string.
-    return re.sub(r"(https?://[^\s\"']+)\?[^\s\"']*", r"\1?<redacted-sas>", text)
+    return re.sub(r"(https?://[^\s\"'?]+)\?[^\s\"']*", r"\1?<redacted-sas>", text)
 
 
 def persist_transport_response(path, raw):
@@ -275,7 +275,7 @@ def worker_script(
     ) + "\n"
 
 
-def _identity(context):
+def _identity(context, frozen_baseline=None):
     document = context["document"]
     identity = {
         "binary_sha256": context["binary_sha256"],
@@ -288,7 +288,45 @@ def _identity(context):
     }
     if document.get("frozen_source_commit"):
         identity["frozen_source_commit"] = document["frozen_source_commit"]
+    if frozen_baseline is not None:
+        identity["frozen_baseline_sha256"] = canary_admission.sha(frozen_baseline)
     return identity
+
+
+def stop_workers(stage, run_id, output):
+    """Stop every worker after a startup/transport failure.
+
+    Stop responses are retained before any interpretation, just like startup
+    responses. A failed stop request is recorded and does not prevent attempts
+    against the remaining workers.
+    """
+    output = pathlib.Path(output)
+    results_dir = f"/opt/p1/runs/{run_id}"
+    unit = f"p1-{stage}-{run_id}"
+    reason = "launcher startup or transport failure; diagnose before retry"
+
+    def stop(item):
+        index, vm = item
+        path = output / f"launch-worker-{index}-stop.json"
+        try:
+            raw = cloud.run(vm, supervise.stop_script(stage, reason, results_dir, unit))
+            persist_transport_response(path, raw)
+            return None
+        except BaseException as exc:  # preserve attempts to all workers
+            return f"{index}:{type(exc).__name__}"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(VMS)) as pool:
+        failures = list(pool.map(stop, enumerate(VMS, 1)))
+    (output / "launch-failure.json").write_text(
+        json.dumps(
+            {
+                "reason": reason,
+                "stop_failures": [failure for failure in failures if failure],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def main(argv=None):
@@ -320,7 +358,7 @@ def main(argv=None):
             for i in range(1, 4)
         ]
         admitted = canary_admission.validate(
-            args.canary_results, assignments, _identity(context)
+            args.canary_results, assignments, _identity(context, args.frozen_baseline)
         )
         supervisor_output = prepare_supervisor_output(args.supervisor_output)
         (supervisor_output / "canary-admission.json").write_text(
@@ -357,8 +395,17 @@ def main(argv=None):
             supervisor_output / f"launch-worker-{index}-run-command.json",
         )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(VMS)) as pool:
-        list(pool.map(start, enumerate(VMS, 1)))
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(VMS))
+    futures = [pool.submit(start, item) for item in enumerate(VMS, 1)]
+    try:
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+    except BaseException:
+        pool.shutdown(wait=False, cancel_futures=True)
+        stop_workers(args.stage, args.run_id, supervisor_output)
+        raise
+    else:
+        pool.shutdown(wait=True)
     unit = f"p1-{args.stage}-{args.run_id}"
     if not supervise.supervise(
         VMS,
@@ -370,7 +417,7 @@ def main(argv=None):
         raise SystemExit("Campaign paused; fix findings before a new run")
     if args.stage == "campaign" and args.canary:
         (supervisor_output / "launch-identities.json").write_text(
-            json.dumps(_identity(context), indent=2, sort_keys=True) + "\n"
+            json.dumps(_identity(context, args.frozen_baseline), indent=2, sort_keys=True) + "\n"
         )
 
 
