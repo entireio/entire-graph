@@ -2,7 +2,6 @@ package sem
 
 import (
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -38,12 +37,12 @@ func validationFixtureRecord() extractionRecord {
 
 func TestValidateExtractionRecordCoversEveryStringField(t *testing.T) {
 	record := validationFixtureRecord()
-	got := extractionStringPaths(reflect.ValueOf(record), "record")
+	got := extractionStringPaths(reflect.TypeOf(record), "record")
 	want := []string{
-		"record.RawImports[0]", "record.Language", "record.Status.Code", "record.Status.Detail",
-		"record.Declarations[0].Kind", "record.Declarations[0].Name", "record.Declarations[0].Signature",
-		"record.Declarations[0].BodyHash", "record.Declarations[0].Fingerprint", "record.Declarations[0].ParameterNames[0]",
-		"record.Declarations[0].ParamTypeText", "record.Declarations[0].ReturnTypeText",
+		"record.RawImports[]", "record.Language", "record.Status.Code", "record.Status.Detail",
+		"record.Declarations[].Kind", "record.Declarations[].Name", "record.Declarations[].Signature",
+		"record.Declarations[].BodyHash", "record.Declarations[].Fingerprint", "record.Declarations[].ParameterNames[]",
+		"record.Declarations[].ParamTypeText", "record.Declarations[].ReturnTypeText",
 	}
 	sort.Strings(got)
 	sort.Strings(want)
@@ -75,23 +74,19 @@ func TestValidateExtractionRecordCoversEveryStringField(t *testing.T) {
 	}
 }
 
-func extractionStringPaths(value reflect.Value, path string) []string {
-	switch value.Kind() {
+func extractionStringPaths(typ reflect.Type, path string) []string {
+	switch typ.Kind() {
 	case reflect.String:
 		return []string{path}
 	case reflect.Struct:
 		var paths []string
-		for index := 0; index < value.NumField(); index++ {
-			field := value.Type().Field(index)
-			paths = append(paths, extractionStringPaths(value.Field(index), path+"."+field.Name)...)
+		for index := 0; index < typ.NumField(); index++ {
+			field := typ.Field(index)
+			paths = append(paths, extractionStringPaths(field.Type, path+"."+field.Name)...)
 		}
 		return paths
 	case reflect.Slice:
-		var paths []string
-		for index := 0; index < value.Len(); index++ {
-			paths = append(paths, extractionStringPaths(value.Index(index), fmt.Sprintf("%s[%d]", path, index))...)
-		}
-		return paths
+		return extractionStringPaths(typ.Elem(), path+"[]")
 	default:
 		return nil
 	}
