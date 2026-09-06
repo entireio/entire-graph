@@ -7,6 +7,10 @@ relevance labels. `review.json` is deliberately unanswered (`null`, not an
 empty list meaning no relevant sites).
 
 For each task in `tasks.json`, inspect its query and all listed source files.
+Open each file using `stored_path`; use its original `path` when recording
+labels. Go inputs have a `.go.txt` storage suffix to preserve original bytes
+when repository formatting runs. The suffix is packaging only, not a change
+to fixture language, contents, logical paths or hashes.
 Record relevant and required sites, allowed implementation candidates,
 forbidden sites and any covering-test relevance in `review.json`. Identify a
 site consistently by file plus qualified symbol or an explicit source range.

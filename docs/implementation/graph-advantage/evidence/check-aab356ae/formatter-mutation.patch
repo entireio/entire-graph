@@ -1,0 +1,59 @@
+diff --git a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge.go b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge.go
+index 8e1aaca9..4f62f543 100644
+--- a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge.go
++++ b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge.go
+@@ -1,2 +1,3 @@
+ package invoice
++
+ func ChargeInvoice() int { return 7 }
+diff --git a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge_test.go b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge_test.go
+index 9e5eb881..97dcec7e 100644
+--- a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge_test.go
++++ b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge_test.go
+@@ -1,3 +1,9 @@
+ package invoice
++
+ import "testing"
+-func TestChargeInvoice(t *testing.T) { if ChargeInvoice()!=7 { t.Fatal("bad charge") } }
++
++func TestChargeInvoice(t *testing.T) {
++	if ChargeInvoice() != 7 {
++		t.Fatal("bad charge")
++	}
++}
+diff --git a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/delivery.go b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/delivery.go
+index 104836ae..edd2551b 100644
+--- a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/delivery.go
++++ b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/delivery.go
+@@ -1,3 +1,4 @@
+ package delivery
++
+ // Retry delivery after a transient transport failure.
+ func Deliver() bool { return Retry() }
+diff --git a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/note.go b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/note.go
+index 595f07f3..3e432b66 100644
+--- a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/note.go
++++ b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/note.go
+@@ -1,3 +1,4 @@
+ package delivery
++
+ // Example documentation discusses retry delivery.
+ func Example() {}
+diff --git a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/retry.go b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/retry.go
+index c3a67ac3..95130c31 100644
+--- a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/retry.go
++++ b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/retry.go
+@@ -1,3 +1,4 @@
+ package delivery
++
+ // Retry repeats delivery on transient failures.
+ func Retry() bool { return true }
+diff --git a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/sparse/hello.go b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/sparse/hello.go
+index 21e535f3..6aa69d6f 100644
+--- a/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/sparse/hello.go
++++ b/docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/sparse/hello.go
+@@ -1,3 +1,4 @@
+ package hello
++
+ // Load greeting message.
+ func Greeting() string { return "hello" }

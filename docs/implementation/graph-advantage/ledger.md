@@ -6,6 +6,8 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
+**Paused at the user’s request for laptop shutdown.** All three Azure VMs are confirmed deallocated; the 15-minute heartbeat is paused. No test or collector is running. Resume from `shutdown-handoff-20260906.md`; do not restart the campaign automatically.
+
 Current implementation source is `6cf92c9c`: ADR 0048 adds cancellation-aware ownership before batch detachment, permitting only one detached publication batch operation-wide. Focused correctness and race checks passed. Pinned Linux passed 76 top-level tests including 10 live compiler tests. Full `mise run check` passed in 687.332 seconds with unchanged HEAD and clean status. Evidence: `evidence/check-6cf92c9c/` and `evidence/correctness-6cf92c9c-20260906/`.
 
 The three retained query profile paths are verified at `1c0b8e24`: syntax-only, fast and full all have exact semantic, warning, completeness and full 11-record partial parity, with 381 indexed files per arm and unchanged inputs. These are the three distinct requests behind the 55 historical repeated mismatch pairs. Seven requests ran: two completed pairs, a full OFF stopped on a warning-oracle error, then only the corrected full pair. The warning correction came from the original full-profile baseline. Historical repetitions remain retained, not relabeled as new observations. Evidence: `p1-corpus-20260905/retained-query-correctness-1c0b8e24/summary.json`.
@@ -14,7 +16,7 @@ The P1 campaign remains paused. Baseline counts remain 108 requests (69 complete
 
 All 77 campaign-control tests passed; a live fake-service smoke verified that all three active workers stopped after an injected pause. The validation VM is confirmed deallocated after correctness and corrective evidence collection; the two campaign workers remain deallocated. No campaign is running. P2/P3/P4 comparative studies remain deferred, and no complete workstream release gate has passed. Defaults remain extraction reuse off, compiler off, impact depth two and current ranking.
 
-The test-only corpus harness now has an optional `diagnostics_path` artifact containing every failure and warning. Eight focused tests, including tiny-repository subprocess plumbing and race, passed. Required immutable integration checks are pending for this harness addition. Existing campaign admission remains unchanged; no old sampled observation is relabeled fully reviewed. See `p1-corpus-20260905/admission-audit-1058c133/README.md`.
+The test-only corpus harness now has an optional `diagnostics_path` artifact containing every failure and warning. Eight focused tests, including tiny-repository subprocess plumbing and race, passed. The `aab356ae` check command passed in 705.514s, but its immutable-state gate failed because gofmt changed six original reviewer input files. The formatting diff is retained. Those inputs now use `.go.txt` storage with unchanged original hashes and logical-path mapping. A new immutable check after this packaging fix is still required. Existing campaign admission remains unchanged; no old sampled observation is relabeled fully reviewed. See `p1-corpus-20260905/admission-audit-1058c133/README.md`.
 
 ## Authoritative task status
 

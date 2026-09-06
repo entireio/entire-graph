@@ -1,0 +1,1 @@
+Local syntax preflight caught a quoting error while preparing the controller. It was corrected and py_compile passed before any controller, Azure or test execution. No remote request was issued by the rejected preparation.

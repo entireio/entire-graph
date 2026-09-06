@@ -9,15 +9,18 @@
     "files": [
       {
         "path": "fixtures/invoice/charge.go",
-        "sha256": "4fb21c9d4076b8e09cc998816c4c652469acb1a7cb91e574baefa01cc26521bc"
+        "sha256": "4fb21c9d4076b8e09cc998816c4c652469acb1a7cb91e574baefa01cc26521bc",
+        "stored_path": "fixtures/invoice/charge.go.txt"
       },
       {
         "path": "fixtures/invoice/charge_test.go",
-        "sha256": "3f11aa86ef8ba5b69313407c055090b756ebd184a4811f6af671e8eaa92a9534"
+        "sha256": "3f11aa86ef8ba5b69313407c055090b756ebd184a4811f6af671e8eaa92a9534",
+        "stored_path": "fixtures/invoice/charge_test.go.txt"
       },
       {
         "path": "fixtures/invoice/go.mod",
-        "sha256": "95a28fcd5bfc61261ac8f7d82013cf78cf5c0a7978b086497f1e608fb029ef79"
+        "sha256": "95a28fcd5bfc61261ac8f7d82013cf78cf5c0a7978b086497f1e608fb029ef79",
+        "stored_path": "fixtures/invoice/go.mod"
       }
     ]
   },
@@ -31,19 +34,23 @@
     "files": [
       {
         "path": "fixtures/retry/delivery.go",
-        "sha256": "9ba55484f377cc1f05a525c2916aa16934ad5a0a5c77604e7c74b69d361802f1"
+        "sha256": "9ba55484f377cc1f05a525c2916aa16934ad5a0a5c77604e7c74b69d361802f1",
+        "stored_path": "fixtures/retry/delivery.go.txt"
       },
       {
         "path": "fixtures/retry/go.mod",
-        "sha256": "adbee3d2ec0b1287f532f3e1a8af42120ef20c31b61eb7ad6de14367e492ac2b"
+        "sha256": "adbee3d2ec0b1287f532f3e1a8af42120ef20c31b61eb7ad6de14367e492ac2b",
+        "stored_path": "fixtures/retry/go.mod"
       },
       {
         "path": "fixtures/retry/note.go",
-        "sha256": "f9b131c82397aed99e53a7ae9cd4aba17c9e4b3addbcd58449a23dfecc8bc120"
+        "sha256": "f9b131c82397aed99e53a7ae9cd4aba17c9e4b3addbcd58449a23dfecc8bc120",
+        "stored_path": "fixtures/retry/note.go.txt"
       },
       {
         "path": "fixtures/retry/retry.go",
-        "sha256": "9ac2c6a9a394e2b314a115361a5e38e0b1e6f29fd96aa428657baab87b7ecb7d"
+        "sha256": "9ac2c6a9a394e2b314a115361a5e38e0b1e6f29fd96aa428657baab87b7ecb7d",
+        "stored_path": "fixtures/retry/retry.go.txt"
       }
     ]
   },
@@ -57,15 +64,18 @@
     "files": [
       {
         "path": "fixtures/quota/noise.ts",
-        "sha256": "ab5abda726aa7c600d0c2d76ebeef77667cd9e1d5594a265e7107a8894b19de1"
+        "sha256": "ab5abda726aa7c600d0c2d76ebeef77667cd9e1d5594a265e7107a8894b19de1",
+        "stored_path": "fixtures/quota/noise.ts"
       },
       {
         "path": "fixtures/quota/reserve.ts",
-        "sha256": "f08b8c898517a1e943d1aa660d5d18924b0fb4e8d8b15f788af3badf118cc4cf"
+        "sha256": "f08b8c898517a1e943d1aa660d5d18924b0fb4e8d8b15f788af3badf118cc4cf",
+        "stored_path": "fixtures/quota/reserve.ts"
       },
       {
         "path": "fixtures/quota/validate.ts",
-        "sha256": "1c5dfb6dc951dc53018bebd1d1106e6ae1436a9b86b2dbc1582d142065768bf1"
+        "sha256": "1c5dfb6dc951dc53018bebd1d1106e6ae1436a9b86b2dbc1582d142065768bf1",
+        "stored_path": "fixtures/quota/validate.ts"
       }
     ]
   },
@@ -79,11 +89,13 @@
     "files": [
       {
         "path": "fixtures/route/handler.py",
-        "sha256": "34e33cb133f319d398d2ade6639ba3341224a88b3feb08c96af3f22cd0dc7b86"
+        "sha256": "34e33cb133f319d398d2ade6639ba3341224a88b3feb08c96af3f22cd0dc7b86",
+        "stored_path": "fixtures/route/handler.py"
       },
       {
         "path": "fixtures/route/router.py",
-        "sha256": "57c50062241f01e01327c63697469e1f16ae832f683880943d95ddabac9eeec6"
+        "sha256": "57c50062241f01e01327c63697469e1f16ae832f683880943d95ddabac9eeec6",
+        "stored_path": "fixtures/route/router.py"
       }
     ]
   },
@@ -97,11 +109,13 @@
     "files": [
       {
         "path": "fixtures/sparse/go.mod",
-        "sha256": "99d44750f9dc5e92da138e8bf8b8c1a9d70680fad446f5cb0faffdaabddc11c0"
+        "sha256": "99d44750f9dc5e92da138e8bf8b8c1a9d70680fad446f5cb0faffdaabddc11c0",
+        "stored_path": "fixtures/sparse/go.mod"
       },
       {
         "path": "fixtures/sparse/hello.go",
-        "sha256": "a09168b987524929945ca311af7aa13936f6f74728884aea7f7d565b8ebc3ff1"
+        "sha256": "a09168b987524929945ca311af7aa13936f6f74728884aea7f7d565b8ebc3ff1",
+        "stored_path": "fixtures/sparse/hello.go.txt"
       }
     ]
   },
@@ -115,11 +129,13 @@
     "files": [
       {
         "path": "fixtures/dynamic/handlers.py",
-        "sha256": "f395ed9ab567bf4c0297e795d4ddfd615ed82cc41cdedab4b365825a94978f3f"
+        "sha256": "f395ed9ab567bf4c0297e795d4ddfd615ed82cc41cdedab4b365825a94978f3f",
+        "stored_path": "fixtures/dynamic/handlers.py"
       },
       {
         "path": "fixtures/dynamic/payment.py",
-        "sha256": "45d0c336499c7a84cb542b23d9445b1c9b7f7256669a3666f08e4f8dd939d719"
+        "sha256": "45d0c336499c7a84cb542b23d9445b1c9b7f7256669a3666f08e4f8dd939d719",
+        "stored_path": "fixtures/dynamic/payment.py"
       }
     ]
   }

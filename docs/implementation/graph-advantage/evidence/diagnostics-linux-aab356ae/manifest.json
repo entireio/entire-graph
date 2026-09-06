@@ -1,0 +1,19 @@
+{
+  "source_commit": "aab356ae40eabbbdca7659eac9bcb58ccd8feb18",
+  "source_archive_sha256": "5171940dedfa843849b997474eadb4bb8470288ac60b630bc4bbc39be7feda05",
+  "archive_recipe": [
+    "git",
+    "archive",
+    "--format=tar.gz",
+    "aab356ae40eabbbdca7659eac9bcb58ccd8feb18",
+    "internal",
+    "cmd",
+    "scripts",
+    "go.mod",
+    "go.sum"
+  ],
+  "purpose": "Linux correctness of new full-diagnostics interface, then pinned test evaluator build. No comparative campaign.",
+  "status": "prepared only, not executed; paused for shutdown; re-pin after new immutable packaging-fix check",
+  "test_command": "go test -race ./internal/sem -run ^TestExtractionCorpusDiagnostics -count=1",
+  "build_command": "go test -c -o p1-evaluator ./internal/sem"
+}

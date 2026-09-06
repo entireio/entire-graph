@@ -1,0 +1,11 @@
+{
+  "source_commit": "aab356ae40eabbbdca7659eac9bcb58ccd8feb18",
+  "command": "mise run check",
+  "exit_code": 0,
+  "elapsed_seconds": 705.5144825000316,
+  "after_commit": "aab356ae40eabbbdca7659eac9bcb58ccd8feb18",
+  "status_after": "M docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge.go\n M docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge_test.go\n M docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/delivery.go\n M docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/note.go\n M docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/retry.go\n M docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/sparse/hello.go",
+  "immutable": false,
+  "log_sha256": "c46922c729d1144cfdaa4a241b2d2b9139e1b37aa87d0382abda36a81aabf5e3",
+  "checkout": "/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-integration-0c9e80f5-61zo1a1q/source"
+}
