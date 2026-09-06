@@ -1,0 +1,1 @@
+The benchmark campaign should have stopgaps that pause it again when failures or other issues appear. Fix those first, then continue.
