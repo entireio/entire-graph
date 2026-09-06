@@ -1,0 +1,27 @@
+{
+  "helper_commit": "90763282",
+  "product_commit": "0c9e80f5",
+  "command": "python3 docs/implementation/graph-advantage/p1-corpus-20260905/stopgap-live-smoke/run_stop_smoke.py --run-id stop-smoke-20260906-0c9e80f5 --output docs/implementation/graph-advantage/p1-corpus-20260905/stopgap-live-smoke/run-0c9e80f5",
+  "scope": "live supervisor correctness; sleeping fake services only",
+  "files_sha256": {
+    "supervisor-001-graph-validation-linux.json": "5c12947286de1fc808f743f982258274b3c3ea8347471b94be7803c7c1ee9813",
+    "setup-graph-validation-linux.json": "41da7f992f20e6379c0e1dbaafe9aa2dafadf1f4a976c6c7dfc328ef94c469d8",
+    "summary.json": "8fb01065a99ebbdb1ea4586ca7e987f522ccc410d2bef74df9a41f3eea7a7788",
+    "supervisor-004-graph-validation-linux.json": "f1dde295808429e0f3b6591e747a0058cdf2b964381c621e8ee90e9f10b9d1d2",
+    "terminal-status-graph-validation-linux.json": "977e77413df90df947512145621ce95a4a98452d79ac6386410e2dbb08093e80",
+    "pause-graph-validation-linux.json": "b6c803e8417dcce5ee51d1f8902e387acc6ab79ce76a9bbe15d6454f3e656c45",
+    "supervisor-006-graph-p1-worker-2.json": "f1dde295808429e0f3b6591e747a0058cdf2b964381c621e8ee90e9f10b9d1d2",
+    "setup-graph-p1-worker-3.json": "41da7f992f20e6379c0e1dbaafe9aa2dafadf1f4a976c6c7dfc328ef94c469d8",
+    "initial-status-graph-p1-worker-2.json": "7596351bb216c598a7809b62f0477ef7d0101028a47c7b758ce1157ab4712393",
+    "supervisor-005-graph-p1-worker-3.json": "f1dde295808429e0f3b6591e747a0058cdf2b964381c621e8ee90e9f10b9d1d2",
+    "initial-status-graph-p1-worker-3.json": "7596351bb216c598a7809b62f0477ef7d0101028a47c7b758ce1157ab4712393",
+    "setup-graph-p1-worker-2.json": "41da7f992f20e6379c0e1dbaafe9aa2dafadf1f4a976c6c7dfc328ef94c469d8",
+    "supervisor-002-graph-p1-worker-2.json": "7596351bb216c598a7809b62f0477ef7d0101028a47c7b758ce1157ab4712393",
+    "supervisor-pause.json": "7f1d154ce342a8a2e68f3e175504c29daf12b86b4270b8ab169523c14b6a9912",
+    "supervisor.ndjson": "863c2d31c4c059b222aeded6811e43bc48709f3900b8add072d983f25bf06815",
+    "initial-status-graph-validation-linux.json": "7596351bb216c598a7809b62f0477ef7d0101028a47c7b758ce1157ab4712393",
+    "terminal-status-graph-p1-worker-3.json": "c3f73f55ce55f2584c640aabde135852ef14a3db699455e54eb931efe547f4a3",
+    "terminal-status-graph-p1-worker-2.json": "c3f73f55ce55f2584c640aabde135852ef14a3db699455e54eb931efe547f4a3",
+    "supervisor-003-graph-p1-worker-3.json": "7596351bb216c598a7809b62f0477ef7d0101028a47c7b758ce1157ab4712393"
+  }
+}

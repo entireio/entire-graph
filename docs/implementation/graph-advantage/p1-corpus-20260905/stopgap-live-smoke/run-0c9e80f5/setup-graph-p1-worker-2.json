@@ -1,0 +1,1 @@
+{"raw_response_redacted": "[\n  \"Enable succeeded: \\n[stdout]\\nP1_SMOKE_READY stop-smoke-20260906-0c9e80f5\\n\\n[stderr]\\nRunning as unit: p1-campaign-stop-smoke-20260906-0c9e80f5.service\\n\"\n]", "raw_response_sha256": "5f396d53a7bbcee22248566fde72a859aa90315a34f9d1d28ac08c901da4c58c"}

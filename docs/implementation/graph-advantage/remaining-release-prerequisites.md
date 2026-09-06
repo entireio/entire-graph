@@ -30,10 +30,11 @@ and the [plan's evaluation rules](</Users/thomi/Projects/entire-plan/entire-grap
   10 live tests at that source. Encoded-publication `b253e18a` has focused
   race verification; the related ADR 0046 admission correction is active and
   requires a new immutable integration check once settled.
-- The 77 campaign-control tests pass locally. They do not establish live
-  cross-worker propagation. A bounded fake-service smoke is being prepared
-  to verify the real supervisor stop path without product queries or corpus
-  measurements. The P1 campaign remains paused after the retained cold-screen
+- The 77 campaign-control tests pass locally. A live fake-service smoke now verifies the real
+  supervisor stop path: all three services were active before injection and
+  inactive with STOP markers afterward. Raw responses are retained under
+  `p1-corpus-20260905/stopgap-live-smoke/run-0c9e80f5/`. This verifies the injected
+  pause path, not every possible control-plane outage or product workload. The P1 campaign remains paused after the retained cold-screen
   failure at `d793b2be`; no gate or default promotion is claimed.
 
 

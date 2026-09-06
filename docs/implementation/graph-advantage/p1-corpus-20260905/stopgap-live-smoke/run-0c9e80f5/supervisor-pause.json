@@ -1,0 +1,5 @@
+{
+  "reason": "RuntimeError: campaign supervision stopped; diagnose before a new run",
+  "stop_errors": {},
+  "lease_expiry_seconds": 180
+}
