@@ -6,9 +6,7 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
-Implementation source is `1c0b8e24`: ADR 0047 adds one lazily allocated gzip writer per extraction admission session. Root reviewed the private lifecycle and focused byte-equivalence, failure-recovery, quota and race tests passed. Its immutable full repository check is running; pinned Linux correctness passed 72 top-level tests including 10 live tests. Evidence: `evidence/correctness-1c0b8e24-20260906/`. This source does not inherit earlier verification or performance results.
-
-The latest fully verified source is `0c9e80f5`: full `mise run check` passed in 693.532 seconds with unchanged HEAD and clean status; pinned Linux passed 69 top-level tests, including 10 live tests. Evidence: `evidence/check-0c9e80f5/` and `evidence/correctness-0c9e80f5-20260906/`.
+The latest fully verified implementation source is `1c0b8e24`: ADR 0047 adds one lazily allocated gzip writer per extraction admission session. Root reviewed the private lifecycle; focused byte-equivalence, failure-recovery, quota and race tests passed. Full `mise run check` passed in 676.769 seconds in an immutable checkout with unchanged HEAD and clean status. Pinned Linux passed 72 top-level tests, including 10 live compiler tests. Evidence: `evidence/check-1c0b8e24/` and `evidence/correctness-1c0b8e24-20260906/`. Earlier checks and failed screens remain historical evidence, not performance results for this source.
 
 The P1 campaign remains paused. Its 108 baseline requests completed (69 complete, 33 partial, 6 timeouts); the paired campaign recorded 116 requests before stopping. The latest isolated corrective snapshot pair at `0c9e80f5` preserved exact semantics and all 194 known partials, but OFF 56.991 seconds versus ON 66.019 seconds failed the 1.10 cold screening limit. RSS was unavailable. This one pair is not statistical or release evidence. Earlier failures and the unresolved campaign-scale parity cases remain retained.
 
@@ -18,16 +16,16 @@ No wider measurement campaign is admitted while these findings remain open. P2/P
 
 ## Authoritative task status
 
-This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery. Product source `0c9e80f5` passed the full repository and pinned Linux checks, but retained-corpus parity remains open. Evaluation tasks cannot be declared complete merely because their harness exists; correctness checks do not establish comparative release gates.
+This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery. Product source `1c0b8e24` passed the full repository and pinned Linux checks, but retained-corpus parity remains open. Evaluation tasks cannot be declared complete merely because their harness exists; correctness checks do not establish comparative release gates.
 
 | Task | Implementation | Correctness evidence | Comparative evaluation | Release gate |
 |---|---|---|---|---|
 | P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Fixed six-repository campaign prepared; baseline complete; paired campaign paused for diagnosis | Not passed: full fixed corpus/RSS matrix incomplete |
 | P1.2 pure extraction | Complete: explicit metadata, shared bounded source/policy capture, manifests and sticky errors | Entity field checklist, malformed/overload/language round trips, reader mutation tests; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
-| P1.3 storage | Implemented through `1c0b8e24`: encoded publication, capability-bound operation admission and session-owned compression; latest correction awaits immutable and pinned verification | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
+| P1.3 storage | Implemented through `1c0b8e24`: encoded publication, capability-bound operation admission and session-owned compression; immutable and pinned verification passed | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.4 entity integration | Implemented; retained query/snapshot parity verified for diagnostic cases; full corpus validation incomplete | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.5 relation inputs | Complete for measured raw-import family: Go/TypeScript/Python fast/full; explicit family presence | Exact relation parity and reuse tests; other families deliberately absent | Further profiling deferred; no new family selected by benchmark tuning | Not passed |
-| P1.6 diagnostics/gates | Implemented; local first-issue stops verified, live fake-service smoke passed; ADR 0046 verified and ADR 0047 focused checks passed | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
+| P1.6 diagnostics/gates | Implemented; local first-issue stops verified, live fake-service smoke passed; ADR 0046 verified and ADR 0047 immutable and pinned checks passed | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
 | P2.1 feasibility | Complete: pinned gopls v0.20.0 and Linux Bubblewrap execution boundary | Existing positive no-egress/read-only/descendant cancellation checks; historical Linux race passed | Hard-Go comparative quality deferred | Not passed |
 | P2.2 client/capture | Complete: bounded lifecycle, source capsule/context identity, mapping and cancellation | Protocol/UTF-16/malformed reply/context/process tests; historical immutable check passed | Deferred | Not passed |
 | P2.3 positive integration | Complete: direct declarations and separate implementation candidates; conversions excluded | New conversion/alias/generic fixtures and pinned live fixture; signature/workspace invalidation tests; historical Linux race passed | Independent realistic quality evaluation deferred | Not passed |
@@ -217,6 +215,6 @@ Root review caught future-shrink reservation undercounting; the follow-up
 reserves existing bytes plus all pending bounds, including temporary overlap.
 Focused correctness/subprocess quota and race fixtures passed, followed by
 the immutable full check and pinned Linux checks at `0c9e80f5`. The current
-compressor follow-up at `1c0b8e24` is under full and pinned correctness
+compressor follow-up at `1c0b8e24` passed full and pinned correctness
 verification. The separate live stop smoke passed with all three fake services
 stopped; it ran no product queries.
