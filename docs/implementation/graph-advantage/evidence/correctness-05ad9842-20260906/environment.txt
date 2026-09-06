@@ -1,0 +1,6 @@
+Linux graph-validation-linux 6.8.0-1064-azure #72~22.04.1-Ubuntu SMP Wed Jul 22 23:39:45 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+go version go1.26.1 linux/amd64
+golang.org/x/tools/gopls v0.20.0
+git version 2.55.0
+2b4652d6ac42a22942f63735d9c7e44e9dfbc1dade5d4fd09c0d4eb8fa3539b1  /opt/graph-tools/gopls
+548e61b2d08ae52043be2f1924ed3c1d2b2c41967e360f3e317667f6fa912fc2  /usr/local/go/bin/go

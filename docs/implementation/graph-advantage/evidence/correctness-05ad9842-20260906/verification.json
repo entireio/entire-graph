@@ -1,0 +1,24 @@
+{
+  "source_commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
+  "archive_sha256": "3a09da4c598f53c21bec4891b4312eb64cf01c8362b274e2b4d4c32fab092d47",
+  "purpose": "Pinned positive Linux correctness; no comparative evaluation",
+  "status": "passed",
+  "command": "cd /opt/graph-validation/correctness-05ad9842-20260906 && export PATH=/usr/local/go/bin:/usr/bin:/bin GOPATH=/opt/graph-validation/gopath GOCACHE=/opt/graph-validation/cache GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local ENTIRE_GRAPH_COMPILER_LIVE=1 ENTIRE_GRAPH_ADVANTAGE_LIVE_OUTPUT=/opt/graph-validation/correctness-05ad9842-20260906/combination.json ENTIRE_GRAPH_REVIEW_LIVE_OUTPUT=/opt/graph-validation/correctness-05ad9842-20260906/queries.json; go test -race -v -timeout 30m ./internal/compiler ./internal/sem ./internal/cli -run 'Test(Compiler|LiveCompiler|LiveAdvantage|LiveReview|MapLocation|RPC|Capsule)' -skip 'QualityEvaluation|ExtractionEvaluation' -count=1",
+  "test_exit_code": 0,
+  "script_sha256": "74084abe522a1c0fcffa60a31a47eaf6383f76f230eaaabc6b93c36927055b50",
+  "results_sha256": "8458c90237572abd90c1e171b4d2160fb527400d1247f48213acd788cd33e968",
+  "source_archive_blob": "validation/correctness-05ad9842-20260906-source.tar.gz",
+  "source_archive_recipe": [
+    "git",
+    "archive",
+    "--format=tar.gz",
+    "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
+    "internal",
+    "cmd",
+    "scripts",
+    "go.mod",
+    "go.sum"
+  ],
+  "live_tests_passed": 10,
+  "top_level_tests_passed": 28
+}
