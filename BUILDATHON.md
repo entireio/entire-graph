@@ -2,7 +2,7 @@
 
 PACT turns confirmed developer intent into Graph-selected checks, executes them against pinned commits, and produces evidence a reviewer can replay.
 
-**Track:** E2 — Build with Graph Intelligence. **Status:** working pre-noon implementation; not yet a complete submission. The actual Noon Curveball, required later Checkpoints and fork-lineage correction remain open. Full scope is defined in [PACT_IMPLEMENTATION_GUIDE.md](PACT_IMPLEMENTATION_GUIDE.md).
+**Track:** E2 — Build with Graph Intelligence. **Status:** working local/remote product with implemented Noon Curveball; not yet a complete submission. Fresh Curveball cloud verification, milestone publication, later Checkpoints and submission remain open. Full scope is defined in [PACT_IMPLEMENTATION_GUIDE.md](PACT_IMPLEMENTATION_GUIDE.md).
 
 ## Problem, intended user and why it matters
 
@@ -54,7 +54,19 @@ The required final semantic review of the final submission SHA is still pending.
 
 ## Noon Curveball: what changed and how we adapted
 
-**Pending the actual E2 instruction at 12:00 IST.** Do not invent the constraint. At 11:45 preserve the stable commit and an authentic Checkpoint; at noon close the coding session, start fresh, reconstruct from Checkpoints and the handoff, then run Graph impact analysis before modifying the affected area. Record the actual implementation and focused regression test here afterward.
+**Track 2 — Graph is evidence, not an oracle.** The user supplied the official screenshots and confirmed they are the complete supplied information. Track 2 permits any suitably complex open-source repository; we retained the existing Entire Graph fork. The dynamic-dispatch fixture is transparently team-authored.
+
+The fresh actual session recovered the original setup Checkpoint and handoff before edits. Before-edit Graph impact identified selector/adapter consumers including review, recovery and benchmarking. The invalidated assumption was that parser success and internal endpoints justified excluding unselected policies. The initial dynamic-dispatch test demonstrated the defect: zero detected failures despite two guest-export regressions.
+
+PACT now qualifies bound structural versus heuristic evidence, retains diagnostic origin/file/line/version, reconciles semantic changes with Git's file inventory, and checks bounded Python runtime-lookup patterns. Potentially incomplete Graph selection falls back to every confirmed registered assertion. The fallback adds R1 and R3 for the unchanged dynamic export caller without inventing an R1 path. D1 finds two regressions; D2 passes ten candidate assertions while retaining incomplete analysis.
+
+Selection quality and source gaps travel in hashed replay/cloud bundles. New Delta receipts preserve them independently of execution completion; the client rejects changed or missing receipt context. Legacy reports remain immutable and are labelled as unassessed rather than upgraded.
+
+Observed verification: **22 tests passed in 13.08 seconds**, including the original H1/H2/H3/H4 cases and seven Curveball tests. The real D1→D2 browser flow had no JavaScript errors. Before-edit evidence and design: [CURVEBALL.md](pact/docs/CURVEBALL.md). Local report: [D1](pact/docs/evidence/d1-local-report.json), [D2](pact/docs/evidence/d2-local-report.json). [Recorded live walkthrough](pact/docs/evidence/curveball-live-walkthrough.gif) is genuine sampled browser footage, not generated UI.
+
+A new measured D1 comparison reports 2 candidate scenarios/0 failures for changed-file, 10/2 for Graph with fallback, 10/2 for all-registered, and 24/2 for the separate full-matrix reference. [Full measurement](pact/docs/evidence/curveball-local-comparison.json). No speed advantage or universal coverage is claimed.
+
+The existing Databricks profile is valid. Five concrete Curveball verification jobs are prepared, but automatic approval review blocked their upload/execution pending explicit user authorization. Earlier genuine H1/H2 cloud evidence remains available and is not relabelled as post-Curveball verification.
 
 ## Checkpoint links and what each checkpoint proves
 
@@ -63,16 +75,17 @@ The required final semantic review of the final submission SHA is still pending.
 | Initial setup | `7c02a621a7d5`, manually attached from the authentic Codex session; `entire checkpoint explain 7c02a621a7d5` |
 | Four-policy approval | Explicit user approval recorded locally; original approval excerpt has not yet been captured into a readable Checkpoint |
 | Pre-noon stable state | Pending a distinct authentic Checkpoint; the repeated setup ID does not count as a new milestone |
-| Fresh-session Curveball response | Pending noon |
+| Fresh-session recovery | `f899811e4ff1`, supported manual attachment of actual new session; creation `2026-09-06T06:39:31.244113Z`, trailer in recovery commit `e9e3634` |
+| Implemented adaptation | Local commits and tests exist; distinct final adaptation Checkpoint remains open |
 | Final verification | Pending final implementation |
 
 Initial source locator: `entire://checkpoint/7c02a621a7d5?session=0`. This is an internal evidence locator, not a verified public judge-access URL. Public/organiser-accessible Checkpoint links must be filled in and opened before submission.
 
-The installed CLI's manual attachment reuses the earlier Checkpoint for the same session and selects an older Codex rollout. We disclose this capture limitation instead of fabricating transcripts, hooks or milestone IDs.
+The installed CLI reuses LastCheckpointID on repeated attachment of the same session. The fresh noon transcript produced a new genuine recovery Checkpoint through supported manual attachment. Native capture remains unverified (seven hooks require approval); a distinct final adaptation Checkpoint is still open. No IDs, hooks, timestamps or transcripts were fabricated, and no published commits were amended.
 
 ## Setup, run and test instructions
 
-Use the actual final fork/mirror once the lineage issue below is resolved. Current implementation branch is `pact/implementation`. Preserve fixture tags `pact-B0`, `pact-H1`, `pact-H2`, `pact-H3`, `pact-H4`.
+Use the active genuine fork/mirror below. Current implementation branch is `pact/implementation`. Preserve fixture tags `pact-B0`, `pact-H1`, `pact-H2`, `pact-H3`, `pact-H4`.
 
 ```sh
 entire repo clone entire://aws-ap-south-1.entire.io/gh/Shaurya002800/entire-graph PACT-fork
@@ -138,8 +151,28 @@ Upstream boundary: `3a2a715fad1948e83dc7ebe0d307377ba29e065a`. Earlier commits b
 
 - Destination fork lineage is corrected; disclose the earlier workflow deviation and provide accessible Checkpoint links before claiming event compliance.
 - Capture/link the real policy approval and the remaining milestone contexts; current reports intentionally retain partial provenance.
-- Implement the actual Noon Curveball in a fresh captured session and verify preserved behavior.
-- Finish final semantic review, demo rehearsal, judge-access check and submission receipt before **15:00 IST**.
+- Curveball implementation and local preservation tests are verified; finish the prepared post-Curveball cloud checks and final capture.
+- Finish final semantic review, judge-access check and submission receipt before **15:00 IST**. Two local D1→D2 walkthroughs were performed; the second was genuinely recorded.
 - This is a bounded trusted fixture, not hostile-code isolation, broad-language support, autonomous repair, formal verification or a guarantee that code is safe.
 
 Submission owner, demo owner and Databricks deployment owner must be confirmed by the team. No submission has been made.
+
+
+## Full frozen-scope status after noon
+
+| Capability | Actual evidence/state |
+| --- | --- |
+| F01 Checkpoint ingestion | Real setup source ingestion works; recovery Checkpoint is readable. Original policy source association remains partial. |
+| F02 Human confirmation | Immutable confirmed policies/revisions and live UI; policies were not changed for the Curveball. |
+| F03 Graph investigation | Versioned snapshots, original structural paths, and saved before-edit impact. Final submitted-SHA review pending. |
+| F04 Selection | Resolved unchanged callers preserved; dynamic-dispatch fallback demonstrated without invented edges. |
+| F05 Local execution | Pinned subprocess execution, 22 passing tests, D1/D2 reports and portable bundles. |
+| F06 Databricks | Original real H1/H2 runs, Delta history and recovery verified. New Curveball jobs prepared; approval pending. |
+| F07 Verdicts | Baseline/candidate, intentional revisions, execution errors and incomplete analysis remain separate. |
+| F08 Evidence/replay | New bundles retain evidence quality and source gaps; legacy evidence is not upgraded. |
+| F09 UI | Real D1→D2 flow verified, diagnostics and correction visible, zero JS errors. |
+| F10 Comparison | Real local strategy comparison plus independent full matrix. New remote comparison awaits approval. |
+| F11 Authentic history | Setup and manually attached fresh recovery available; missing original/pre-noon/final capture remains disclosed. |
+| F12 Delivery | Setup/architecture/limitations/demo docs and genuine backup recording prepared; publication/access/submission receipt pending. |
+
+Milestone pushes to the existing India mirror were blocked by automatic approval review pending explicit destination/payload approval. Commits remain local and preserved; they are not described as published. See [setup](pact/docs/SETUP.md), [architecture](pact/docs/ARCHITECTURE.md), and [limitations](pact/docs/LIMITATIONS.md).

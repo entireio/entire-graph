@@ -16,7 +16,7 @@ Use a local browser at 1440 × 900 or 1440 × 1000. Keep the real Databricks H1/
 
 **2:10–2:40 — Databricks is real.** Open the saved remote H1 result and its actual job link. Show 18 persisted observations, 20 assertion rows, and SQL grouping R1/guest into two violations. Recover remote history from Delta. Show H2's zero violations and idempotent completed-receipt replay. Label saved views Recorded run.
 
-**2:40–3:00 — Adaptation and limits.** After noon, replace this sentence with the actual constraint, the architectural decision it changed, and its passing test. Until then say the mandatory constraint is pending. Close with the bounded 24-case domain and the next supported assertion template; never claim a guaranteed win or universal security proof.
+**2:40–3:00 — Adaptation and limits.** Select D1 (baseline auto-selects D0). The unchanged export caller uses runtime lookup, so Graph cannot provide its R1 relationship. Show the two executed regressions, the “no Graph relationship asserted” explanation and conservative fallback. Correct to D2: all ten candidate assertions pass while analysis remains partial. The domain remains 24 synthetic cases; no global safety claim follows.
 
 ## Optional extensions
 
@@ -30,3 +30,10 @@ Use a local browser at 1440 × 900 or 1440 × 1000. Keep the real Databricks H1/
 Genuine report JSON and portable replay bundles are in `pact/docs/evidence/`. H1/H2 browser screenshots are generated from the actual local review when browser verification completes. Saved cloud evidence does not become a live cloud run because it is shown in a browser.
 
 If a remote job times out, inspect the preserved job ID instead of blindly resubmitting. Continue with a clearly labelled recorded remote result and run the local reproducer. Capture a final short recording after the real Curveball behavior is integrated; do not manufacture footage or hide current blockers.
+
+
+## Curveball backup
+
+`pact/docs/evidence/curveball-live-walkthrough.gif` records the actual localhost D1→D2 interaction at approximately two browser screenshots per second, preserving observed timing. Its manifest records the capture time, duration, implementation and checksum. It is a local execution recording; it does not imply a new Databricks run.
+
+D1/D2 replay files and reports retain partial analysis and missing original policy source links. If showing an earlier cloud receipt, label it as recorded and explain that post-Curveball cloud verification is pending until the prepared jobs run successfully.

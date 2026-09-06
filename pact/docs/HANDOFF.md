@@ -109,3 +109,33 @@ Active checkout is now `/Users/shaurya/Desktop/BTW/PACT-fork`, created with `ent
 Fork lineage is corrected for the destination; the earlier standalone-repository workflow remains a disclosed deviation. Fresh capture and the authentic pre-noon Checkpoint remain unresolved. The noon session must start in this active clone, not the parent BTW directory.
 
 Migration verification: all 15 tests passed in the new clone in 7.59 seconds; Checkpoint 7c02a621a7d5 remains readable with one original session.
+
+
+## Fresh noon adaptation — latest state (overrides historical pending-noon entries)
+
+Actual fresh task/session: `01a07570-4e5d-7f20-bdc6-75eeb8d46a18`. Recovered genuine setup Checkpoint `7c02a621a7d5` before product edits. Supported manual attachment created recovery Checkpoint `f899811e4ff1` at `2026-09-06T06:39:31.244113Z`, verified readable and linked by trailer in local recovery commit `e9e3634`. Native Entire capture is not verified; seven hooks need approval. Repeated same-session attachment is known to reuse the earlier Checkpoint; do not manufacture a later milestone. Original/pre-noon capture gaps remain disclosed.
+
+Actual official Curveball from the user's screenshots: **Graph is evidence, not an oracle**. User confirmed no separate fixture is available and to keep this repository; Track 2 allows any sufficiently complex open-source repository. Read `CURVEBALL.md`. Raw Graph impact on selector/adapter was recorded before edits at implementation `a8dd2ac`. Source inspection identified replay/UI/Delta consumers too.
+
+Implementation `fed2063` includes evidence qualification, source precautions, Git/semantic file reconciliation, all-confirmed-registered fallback, preserved evidence context in replay and cloud receipts, receipt context validation, legacy-history labels and the visible verification path. Version is 0.2.0. Do not interpret resolved structural evidence as runtime proof or absence of diagnostics as global completeness.
+
+Pinned team-authored fixture tags:
+- D0 `32030ee415285802f847499eef8ae12c6e677a22`: baseline with unchanged dynamic export caller.
+- D1 `dc177b0ccff06dfe9f13020df23b1caed4b855f5`: helper regression, dynamic caller unchanged.
+- D2 `f80531734b57dd9c883e6111146238da68625224`: corrected helper, dynamic caller unchanged.
+
+All seven original tags and policies remain. D1 fallback adds R1/R3, executes ten candidate scenarios and finds both guest-export regressions with no invented R1 Graph path. D2 passes ten assertions while retaining incomplete analysis. The initial failing test actually observed zero failures before the change.
+
+Verification: 22 tests passed in 13.08s; JS syntax passed; real D1→D2 browser flow and second recorded walkthrough had zero JS errors. New local comparison: changed-file 2 scenarios/0 failures, Graph fallback 10/2, all registered 10/2, independent full matrix 24/2. Isolated wheel build succeeded; installed CLI in a fresh /tmp environment reproduced D1 exit 1 (2 failures) and D2 exit 0 (0 failures), both retaining partial analysis. Sources/recording/manifests are in `pact/docs/evidence/`.
+
+Known validation detail: Graph search suggested unrelated upstream `go test ./internal/cli`; attempted command failed on sandbox build-cache permissions. No upstream Go code changed. Do not claim this Go suite passed. Semantic review against `fed2063` covers 19 files and retains upstream generated-parser warnings; final documentation SHA review remains to be recorded.
+
+The current localhost:8765 server runs source from PACT-fork; the identified old PACT-event server was stopped. Its active exec session is managed by this task. Do not kill unrelated processes. The disposable `/tmp/pact-clean-20260906` environment contains the verified 0.2.0 wheel; shared `.venv` can still have an older installed distribution, so use `PYTHONPATH=pact/src` for source commands.
+
+### Explicit approval blockers
+
+Automatic approval review rejected the milestone push and concrete Curveball Databricks verification because it did not recognize prior destination/payload authorization. Two concise approval requests are pending with the user. Do not bypass rejection by pushing via GitHub, another tool or UI. No new cloud jobs were submitted. Databricks profile PACT was verified valid via a read-only check.
+
+After explicit authorization, push coherent local milestones and D0/D1/D2 tags to the existing origin. The prepared ignored `pact/runs/curveball/verify.py` runs the three selection strategies, a separate 24-per-side reference and D2 remotely, with local parity and Delta history checks. It uploads only fixture/runtime, approved policy parameters and evidence metadata; no private transcript text. It writes progress/receipts and uses the existing workspace/profile/schema. If it fails after submission, inspect its pending run before restarting; do not submit duplicates. A stopped script is not verified cloud evidence.
+
+Remaining full scope: post-Curveball cloud verification; approved publication; authentic final adaptation capture; judge/submission access and receipt before 15:00. Earlier real H1/H2 cloud runs remain valid original evidence. Never label them as fresh Curveball verification. F01–F12 status and deviations are explicit in BUILDATHON.md.

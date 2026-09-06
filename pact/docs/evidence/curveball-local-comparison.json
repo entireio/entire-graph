@@ -1,0 +1,203 @@
+{
+  "comparison_id": "45e9b39cc22e4262a199dc7a5852dd1d",
+  "implementation_sha": "fed2063",
+  "data_source": "team-authored dynamic-dispatch permission fixture",
+  "rows": [
+    {
+      "run_id": "e4f179be0d1a4df28391777d691be254",
+      "strategy": "changed_file",
+      "execution_scope": "selected_applicable_scenarios",
+      "counts": {
+        "base": {
+          "pass": 0,
+          "fail": 0,
+          "not_applicable": 2,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 0
+        },
+        "head": {
+          "pass": 2,
+          "fail": 0,
+          "not_applicable": 0,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 2
+        }
+      },
+      "selection": {
+        "selected": [
+          "R4@2"
+        ],
+        "fallback": {
+          "mode": "none",
+          "added_requirement_ids": [],
+          "scope": "confirmed registered assertions only; not complete program coverage"
+        }
+      },
+      "commits": {
+        "base": "32030ee415285802f847499eef8ae12c6e677a22",
+        "head": "dc177b0ccff06dfe9f13020df23b1caed4b855f5"
+      },
+      "requirement_set_hash": "e9ae4d5c5fd6a21ec094a85683dbda1eeca10e2efd750822fecc00dc7f53ec4f",
+      "scenario_set_hash": "328e881f1bc472b7d38731e637cb4184d94a4fcd0ed692c5534e9e03c1aeca51",
+      "timing_ms": {
+        "graph": 1068.2137080002576,
+        "execution": 50.29904100229032,
+        "total": 1200.2778339956421
+      },
+      "backend": "local",
+      "cache_mode": "disabled"
+    },
+    {
+      "run_id": "de5dba67e1414f848aa051d767886fe5",
+      "strategy": "graph",
+      "execution_scope": "selected_applicable_scenarios",
+      "counts": {
+        "base": {
+          "pass": 8,
+          "fail": 0,
+          "not_applicable": 2,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 8
+        },
+        "head": {
+          "pass": 8,
+          "fail": 2,
+          "not_applicable": 0,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 10
+        }
+      },
+      "selection": {
+        "selected": [
+          "R1@2",
+          "R2@2",
+          "R3@2",
+          "R4@2"
+        ],
+        "fallback": {
+          "mode": "all_registered",
+          "added_requirement_ids": [
+            "R1@2",
+            "R3@2"
+          ],
+          "scope": "confirmed registered assertions only; not complete program coverage"
+        }
+      },
+      "commits": {
+        "base": "32030ee415285802f847499eef8ae12c6e677a22",
+        "head": "dc177b0ccff06dfe9f13020df23b1caed4b855f5"
+      },
+      "requirement_set_hash": "e9ae4d5c5fd6a21ec094a85683dbda1eeca10e2efd750822fecc00dc7f53ec4f",
+      "scenario_set_hash": "328e881f1bc472b7d38731e637cb4184d94a4fcd0ed692c5534e9e03c1aeca51",
+      "timing_ms": {
+        "graph": 778.8280829990981,
+        "execution": 93.52887500426732,
+        "total": 930.5215839995071
+      },
+      "backend": "local",
+      "cache_mode": "disabled"
+    },
+    {
+      "run_id": "a770778039914365853b14f80467b985",
+      "strategy": "all",
+      "execution_scope": "selected_applicable_scenarios",
+      "counts": {
+        "base": {
+          "pass": 8,
+          "fail": 0,
+          "not_applicable": 2,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 8
+        },
+        "head": {
+          "pass": 8,
+          "fail": 2,
+          "not_applicable": 0,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 10
+        }
+      },
+      "selection": {
+        "selected": [
+          "R1@2",
+          "R2@2",
+          "R3@2",
+          "R4@2"
+        ],
+        "fallback": {
+          "mode": "none",
+          "added_requirement_ids": [],
+          "scope": "confirmed registered assertions only; not complete program coverage"
+        }
+      },
+      "commits": {
+        "base": "32030ee415285802f847499eef8ae12c6e677a22",
+        "head": "dc177b0ccff06dfe9f13020df23b1caed4b855f5"
+      },
+      "requirement_set_hash": "e9ae4d5c5fd6a21ec094a85683dbda1eeca10e2efd750822fecc00dc7f53ec4f",
+      "scenario_set_hash": "328e881f1bc472b7d38731e637cb4184d94a4fcd0ed692c5534e9e03c1aeca51",
+      "timing_ms": {
+        "graph": 789.9771669981419,
+        "execution": 95.3987499960931,
+        "total": 943.9939160001813
+      },
+      "backend": "local",
+      "cache_mode": "disabled"
+    },
+    {
+      "run_id": "dce92afc9fa84cf6bc5be83edac86254",
+      "strategy": "all",
+      "execution_scope": "full_scenario_matrix",
+      "counts": {
+        "base": {
+          "pass": 8,
+          "fail": 0,
+          "not_applicable": 2,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 24
+        },
+        "head": {
+          "pass": 8,
+          "fail": 2,
+          "not_applicable": 0,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 24
+        }
+      },
+      "selection": {
+        "selected": [
+          "R1@2",
+          "R2@2",
+          "R3@2",
+          "R4@2"
+        ],
+        "fallback": {
+          "mode": "none",
+          "added_requirement_ids": [],
+          "scope": "confirmed registered assertions only; not complete program coverage"
+        }
+      },
+      "commits": {
+        "base": "32030ee415285802f847499eef8ae12c6e677a22",
+        "head": "dc177b0ccff06dfe9f13020df23b1caed4b855f5"
+      },
+      "requirement_set_hash": "e9ae4d5c5fd6a21ec094a85683dbda1eeca10e2efd750822fecc00dc7f53ec4f",
+      "scenario_set_hash": "328e881f1bc472b7d38731e637cb4184d94a4fcd0ed692c5534e9e03c1aeca51",
+      "timing_ms": {
+        "graph": 778.9391249971231,
+        "execution": 65.37899999966612,
+        "total": 902.9665420021047
+      },
+      "backend": "local",
+      "cache_mode": "disabled"
+    }
+  ]
+}

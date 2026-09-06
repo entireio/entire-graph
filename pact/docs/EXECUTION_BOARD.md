@@ -62,3 +62,13 @@ Active checkout is now `/Users/shaurya/Desktop/BTW/PACT-fork`, created with `ent
 Fork lineage is corrected for the destination; the earlier standalone-repository workflow remains a disclosed deviation. Fresh capture and the authentic pre-noon Checkpoint remain unresolved. The noon session must start in this active clone, not the parent BTW directory.
 
 Migration verification: 15 tests passed in 7.59 seconds in PACT-fork; original Checkpoint export succeeded. New working branch and all pact tags are being pushed to the genuine fork.
+
+
+## Noon adaptation update — latest
+
+- T08 implemented and locally verified in fresh actual session 01a07570-4e5d-7f20-bdc6-75eeb8d46a18. Recovery Checkpoint f899811e4ff1 is genuine manual attachment, not native or pre-noon capture.
+- T09: 22 passing tests, real dynamic-dispatch negative test before fix, original behavior retained, local comparison/full matrix, genuine UI correction and clean installed replay verified.
+- T05: existing cloud backend remains verified at earlier H1/H2 versions. New Curveball evidence preservation implemented; five prepared real cloud checks await explicit approval after automatic review rejection.
+- T10: setup/architecture/limitations docs, D1/D2 reports/bundles, genuine 23.5-second sampled browser recording and two walkthroughs exist. Submission/access/receipt remain open.
+- Local milestones: e9e3634 recovery, c796c88 adaptation, D0/D1/D2 fixture commits, fed2063 omission/low-confidence handling. Publication awaits explicit approval after automatic review rejection. Do not claim these pushes succeeded.
+- Scope remains all F01–F12. Missing original/pre-noon/final capture cannot be replaced with Git tags or copied transcripts. Deadline remains 15:00 IST.

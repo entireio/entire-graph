@@ -1,0 +1,21 @@
+{
+  "created_at": "2026-09-06T07:16:58.727340+00:00",
+  "implementation_sha": "fed2063",
+  "tests": {
+    "command": "PYTHONPATH=pact/src .venv/bin/python -m pytest -q -c pact/pyproject.toml pact/tests",
+    "passed": 22,
+    "seconds": 13.08,
+    "warnings": "Two dependency deprecations from Starlette/httpx/anyio; no failing tests."
+  },
+  "javascript": "node --check passed; actual D1-to-D2 browser flow had no console errors",
+  "graph_requested_go_check": {
+    "command": "go test ./internal/cli",
+    "state": "not_run_successfully",
+    "reason": "Sandbox denied Go build cache access. No upstream Go source changed; focused Python suite passed."
+  },
+  "remote_curveball": "Prepared; automatic approval review requires user approval before upload/execution",
+  "publication": "Local milestones exist; automatic approval review requires user approval before push",
+  "capture": "Genuine manually attached fresh recovery f899811e4ff1; final adaptation Checkpoint unresolved",
+  "clean_install": "Isolated 0.2.0 wheel build and clean installed D1/D2 replay passed; see curveball-clean-install.json",
+  "recording": "Genuine 23.512-second sampled browser recording, 44 captured frames; see curveball-recording.json"
+}

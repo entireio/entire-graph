@@ -28,3 +28,12 @@ The initial real-Graph dynamic-dispatch test failed before implementation: expec
 After the adaptation, the five focused Curveball tests pass: dynamic lookup with no fabricated R1 path; Graph unavailable; resolved versus heuristic paths; silent edge omission despite parser success; module configuration precaution. The first full suite passed 18 tests in 10.07 seconds before the last two focused tests were added. Final integrated/cloud verification is still pending.
 
 Source-based diagnostics retain their origin, file, line, side and commit. They are deliberately conservative and do not assert universal Python completeness. Fallback executes all confirmed registered assertions, not unapproved behavior. Original strategy baselines remain visible for comparison; their omissions are not presented as unaffected code. Saved reports retain their original schema and are labelled as unassessed if they predate this evidence-quality version.
+
+
+## Integrated local outcome
+
+Final integrated suite: 22 passed in 13.08 seconds. Additional failing-before-fix tests cover low-confidence bound edges and a semantic diff that silently omits a changed file. Qualified evidence keeps reported confidence; the 0.8 structural threshold is a conservative policy, not a runtime probability.
+
+The real UI D1→D2 interaction was verified twice with no JavaScript errors; the second interaction was captured as 44 actual browser frames over 23.512 seconds. The clean 0.2.0 wheel was installed in a fresh temporary environment and replayed both bundles from a clean directory: D1 exit 1/two failures, D2 exit 0/no failures, both retaining partial review evidence.
+
+Databricks context changes are implemented but the prepared five-job Curveball verification was blocked by automatic approval review pending explicit user permission. Existing pre-Curveball cloud runs remain separately identified. Final capture and publication remain open; local artifacts are not represented as pushed Checkpoints or completed cloud work.
