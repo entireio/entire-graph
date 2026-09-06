@@ -115,6 +115,43 @@ git commit -q -m "add request timing instrumentation
 Wraps the dispatch pipeline so slow endpoints show up in logs, including
 requests that end in an error handler."
 
+# ---- Agent C: docs only — genuinely disjoint (precision control) --------
+git checkout -q -B agent-docs main
+python3 - <<'PY'
+import re, pathlib
+p = pathlib.Path("CHANGES.rst")
+text = p.read_text(encoding="utf-8")
+marker = "Unreleased\n"
+idx = text.find(marker)
+insert = ("\n-   Document the request dispatch pipeline and the order in which\n"
+          "    before_request handlers run.\n")
+if idx != -1:
+    end = text.find("\n\n", idx)
+    text = text[:end] + insert + text[end:]
+    p.write_text(text, encoding="utf-8")
+PY
+git add CHANGES.rst
+git commit -q -m "document the dispatch pipeline ordering"
+
+# ---- Agent D: JSON provider — disjoint from dispatch --------------------
+git checkout -q -B agent-json main
+python3 - <<'PY'
+import pathlib
+p = pathlib.Path("src/flask/json/provider.py")
+text = p.read_text(encoding="utf-8")
+text += '''
+
+def compact_dumps(obj: t.Any, **kwargs: t.Any) -> str:
+    """Serialize without insignificant whitespace, for size-sensitive payloads."""
+    kwargs.setdefault("separators", (",", ":"))
+    kwargs.setdefault("sort_keys", False)
+    return json.dumps(obj, **kwargs)
+'''
+p.write_text(text, encoding="utf-8")
+PY
+git add src/flask/json/provider.py
+git commit -q -m "add compact JSON serialization helper"
+
 git checkout -q main
 
 # ---- prove the trap: git is happy, the merged tree is not ---------------

@@ -360,11 +360,13 @@ $("#v-home").innerHTML = `
     ${A["sky-hero"] ? `<div class="bg" style="background-image:url(${A["sky-hero"]})"></div>` : ""}
     <div class="veil"></div>
     <div class="hero-in">
-      <div class="eyebrow">Tower · ${esc(DATA.generated.slice(0,10))} · live data</div>
+      <div class="eyebrow">Tower · ${esc(DATA.profile_label||"repo")} ·
+        ${esc(DATA.generated.slice(0,10))}</div>
       <h1>Good afternoon.</h1>
-      <div class="sub"><b>${DATA.flights.length} flights</b> in the air ·
-        <span class="alert">${holdCount} on conflict hold</span> ·
-        1 incident on file · all live data.</div>
+      <div class="sub"><b>${DATA.flights.length} agents</b> working
+        <b>${esc(DATA.profile_label||"this repo")}</b> in parallel ·
+        <span class="alert">${holdCount} on conflict hold</span>.
+        ${esc(DATA.source_note||"")}</div>
     </div>
   </div>
   <div class="navcards">
@@ -378,13 +380,14 @@ $("#v-home").innerHTML = `
       <h3>New flight</h3><p>Book an agent, get a boarding pass.</p></button>
   </div>
   <div class="board">
-    <div class="board-head"><h2>Departures</h2><span>MAIN INTL · RWY 01</span></div>
+    <div class="board-head"><h2>Departures</h2>
+      <span>${esc(DATA.profile_label||"repo")} · base ${esc(R.merge_base.slice(0,7))}</span></div>
     ${DATA.flights.map(fl=>{const st=statusOf(fl);return `
       <div class="brow" onclick="gotoFlight('${esc(fl.callsign)}')"
            title="Open flight card">
         <span class="cs">${esc(fl.callsign)}</span>
         <span class="intent">${esc(fl.intent)}</span>
-        <span class="rt">${fl.codes.map(esc).join(" · ")||"—"}</span>
+        <span class="rt">${[...new Set(fl.codes)].map(esc).join(" · ")||"—"}</span>
         <span class="chip ${st.cls}"><i></i>${st.label}</span>
       </div>`;}).join("")}
   </div>`;
@@ -519,18 +522,20 @@ addEventListener("keydown",e=>{ if(e.key==="Escape") closeSheet(); });
 $("#v-incident").innerHTML = `
   <div class="inc">
     <div class="stamp">PREDICTED PRE-MERGE</div>
-    <div class="rep">Incident report · IR-001 · runway MAIN</div>
+    <div class="rep">Incident report · IR-001 · ${esc(DATA.profile_label||"repo")}</div>
     <h2>Clean merge, broken runtime</h2>
     <div class="meta">${esc(red.a)} × ${esc(red.b)} · merge-base ${esc(R.merge_base.slice(0,7))} ·
-      all output below captured verbatim from the reproduction</div>
+      every terminal below is captured verbatim from the reproduction</div>
     <div class="tl">
-      <div class="ev"><h3>Both flights land — git reports zero conflicts</h3>
-        <span class="t">git merge --no-ff feat-auth && git merge --no-ff feat-checkout</span>
+      <div class="ev"><h3>${esc(red.b)} passes on its own branch</h3>
+        <span class="t">the feature works — in isolation</span>
+        <div class="term"><span class="p">$ pytest tests/test_timing.py</span>\n${esc(DATA.trap.tests_pass_out)}</div></div>
+      <div class="ev"><h3>Both agents land — git reports zero conflicts</h3>
+        <span class="t">git merge --no-ff ${esc(red.a)} &amp;&amp; git merge --no-ff ${esc(red.b)}</span>
         <div class="term"><span class="p">$ git merge …</span>\n${esc(DATA.trap.merge_out)}</div></div>
-      <div class="ev"><h3>${esc(red.a)}'s own tests pass — it is self-consistent</h3>
-        <div class="term"><span class="p">$ python3 run_tests.py</span>\n${esc(DATA.trap.tests_pass_out)}</div></div>
-      <div class="ev bad"><h3>${esc(red.b)}'s features explode on the merged tree</h3>
-        <div class="term"><span class="p">$ python3 tests_checkout.py</span>\n${esc(DATA.trap.tests_fail_out)}</div></div>
+      <div class="ev bad"><h3>The merged tree raises</h3>
+        <span class="t">same test, same code, nothing edited — only merged</span>
+        <div class="term"><span class="p">$ pytest tests/test_timing.py</span>\n${esc(DATA.trap.tests_fail_out)}</div></div>
     </div>
     <div class="verdict-quote"><b>Probable cause:</b> ${esc(rw.changed_by)} changed
       <code style="font-family:var(--mono)">${esc(rw.entity)}</code>'s signature while
@@ -538,6 +543,15 @@ $("#v-incident").innerHTML = `
       invisible to git. ATC flagged this exact edge <b>before any merge</b>
       (verdict ${esc(R.verdict)}, exit ${esc(red.exit_code)}) with receipts at
       ${(rw.dependents||[]).map(d=>`${esc(d.path)}:${esc(d.line)}`).join(", ")}.</div>
+    ${DATA.profile==="flask"?`<div class="verdict-quote" style="border-left-color:var(--sky-deep)">
+      <b>Not hypothetical.</b> ${esc(red.a)} is Flask's real commit
+      <code style="font-family:var(--mono)">6a64969</code>, which added
+      <code style="font-family:var(--mono)">ctx</code> to 12 dispatch signatures.
+      Flask ships ~40 lines of runtime introspection in
+      <code style="font-family:var(--mono)">Flask.__init_subclass__</code> to catch
+      dependents left on the old shape — their own comment reads
+      <i>“Detect overridden methods in subclasses that still have the old signature.”</i>
+      That is the cure, paid at import time, forever. ATC is the X-ray, before the merge.</div>`:""}
   </div>`;
 
 /* =============== BOOKING =============== */
