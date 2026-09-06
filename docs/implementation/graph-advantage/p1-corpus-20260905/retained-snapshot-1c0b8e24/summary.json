@@ -1,0 +1,12 @@
+{
+  "status": "preflight_failed",
+  "product_requests_started": 0,
+  "unrun": [
+    "off",
+    "on"
+  ],
+  "cause": "Azure root invocation differs from graphcheck corpus owner; Git ownership guard rejects fingerprint",
+  "verification": "execution-context.json retains root rejection and graphcheck successful HEAD",
+  "correction": "new run identity executes as graphcheck without altering Git safety or corpus",
+  "release_gate_claim": false
+}

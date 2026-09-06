@@ -18,7 +18,7 @@ Prepared invocation, with the separately verified binary and source arguments
 filled by the operator:
 
 ```text
-/usr/bin/python3 run_remote.py \
+runuser -u graphcheck -- /usr/bin/python3 run_remote.py \
   --output /opt/graph-validation/corrective-resource-runner/<unique-id> \
   --binary <verified-binary-path> \
   --binary-sha256 <verified-binary-sha256> \
@@ -33,3 +33,9 @@ The final input digest argument must be the frozen corpus digest from the
 retained evaluation; the command above intentionally leaves the binary SHA
 operator-supplied. No VM or product measurement was run while preparing this
 runner.
+
+On the task VM, execute as `graphcheck`, the corpus and source owner. Azure
+Run Command defaults to root; Git must retain its ownership protection. Do
+not add a safe-directory exception or alter corpus ownership to bypass it.
+The first 1c0b8e24 preflight refusal and owner-specific verification are
+retained in `../retained-snapshot-1c0b8e24/`; neither product arm started.
