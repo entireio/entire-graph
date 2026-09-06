@@ -17733,6 +17733,13 @@ func gitMetadataRefusalError(repo string) error {
 // It reads the config through the same resolver the predicate uses, rather than
 // opening it directly, so the bytes described here are the bytes that were
 // rejected -- a second, independent read could resolve to a different file.
+//
+// It is deliberately narrower than the predicate. The predicate also supports
+// Git discovery in ancestor directories, bare repositories, and `.git` gitfiles;
+// this only speaks when `<repo>/.git` is a directory it can open, which is the
+// one case where it knows it is describing the same metadata. Everywhere else it
+// returns "" and the caller keeps the original wording, because a confident
+// wrong cause is worse than no cause at all.
 func describeGitMetadataRefusal(repo string) string {
 	repoAbs, err := filepath.Abs(repo)
 	if err != nil {
@@ -17744,7 +17751,11 @@ func describeGitMetadataRefusal(repo string) string {
 	}
 	defer resolver.Close()
 
-	common, state := gitCommonDirStateWithResolver(resolver, filepath.Join(repoAbs, ".git"), nil)
+	gitDir, ok := diagnosableGitDirectory(resolver, repoAbs)
+	if !ok {
+		return ""
+	}
+	common, state := gitCommonDirStateWithResolver(resolver, gitDir, nil)
 	if state != gitCommonDirResolved {
 		return "its Git common directory could not be resolved inside this repository's filesystem"
 	}
@@ -17757,8 +17768,8 @@ func describeGitMetadataRefusal(repo string) string {
 	if statErr != nil {
 		return ""
 	}
-	config, ok := gitLocalConfigPreflightFromOpened(opened, info)
-	if !ok {
+	config, configOK := gitLocalConfigPreflightFromOpened(opened, info)
+	if !configOK {
 		return "its Git config could not be parsed under Git's own config grammar, so it is refused rather than guessed at"
 	}
 	switch {
@@ -17770,10 +17781,29 @@ func describeGitMetadataRefusal(repo string) string {
 			"indexing falls back to a filesystem walk to stay offline"
 	case config.hasInclude:
 		return "its Git config uses include or includeIf, so the effective configuration is not knowable from this file alone"
-	case config.hasCoreWorktree:
+	case config.hasCoreWorktree && !gitCoreWorktreePathSafeWithResolver(resolver, gitDir, config.coreWorktree):
+		// The key merely being present is not the refusal; the predicate refuses
+		// only when the path it names leaves the repository's filesystem, so ask
+		// the same question rather than reporting a valid core.worktree as bad.
 		return "its Git config sets core.worktree to a path that leaves this repository's filesystem"
 	}
 	return ""
+}
+
+// diagnosableGitDirectory returns `<repo>/.git` when it is a directory this
+// process can open, which is the only shape describeGitMetadataRefusal can
+// attribute a cause to with certainty.
+func diagnosableGitDirectory(resolver *sameVolumePathResolver, repoAbs string) (string, bool) {
+	opened, resolved, err := resolver.open(filepath.Join(repoAbs, ".git"))
+	if err != nil {
+		return "", false
+	}
+	info, statErr := opened.Stat()
+	_ = opened.Close()
+	if statErr != nil || !info.IsDir() {
+		return "", false
+	}
+	return resolved, true
 }
 
 type gitMetadataValidationContextKey struct{}
