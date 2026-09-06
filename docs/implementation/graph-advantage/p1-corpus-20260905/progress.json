@@ -1,5 +1,5 @@
 {
-  "phase": "p1_corrective_retry_ready_campaign_paused",
+  "phase": "p1_retained_profile_correctness",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -8,7 +8,7 @@
   "verified_checkpoint": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
   "verified_evidence_commit": "see evidence/check-1c0b8e24/verification.json",
   "current_worktree": "1c0b8e24 full676.769s and pinned Linux72tests passed",
-  "workers_state": "all three task VMs deallocated; no active campaign or diagnostic",
+  "workers_state": "validation VM available for focused correctness; campaign workers off",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
   "correctness": "72 pinned Linux tests including10live; full repository check676.769s",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T13:01:12.837623+00:00",
+  "as_of_utc": "2026-09-06T13:09:57.152005+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -32,7 +32,7 @@
   "recorded_unrun_requests": 1434,
   "pending_planned_requests": 15730,
   "heartbeat_status": "ACTIVE",
-  "pause_reason": "0c9e80f5 retained cold pair exceeds1.10 screen",
+  "pause_reason": "1c0b8e24 corrective pair RSS ratio1.170 exceeds1.10 screen",
   "cache_fix_commits": [
     "f96483ef",
     "9bfafe17"
@@ -41,7 +41,7 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "1c0b8e24 compressor fix correctness verified; performance unmeasured. Latest retained0c9e80f5 pair still fails1.10 cold screen. Campaign-scale parity cases remain open.",
+  "remaining_diagnosis": "Cold latency screen within10percent inonepair; RSSscreen fails. Retained55search mismatches reduce to3distinctprofile requests toverify forsemanticparity.",
   "stopgaps": "77 campaign-control tests passed in7.809s after startup/final-lease/accounting fixes; protocol supersedes old three-failure rule",
   "full_correctness": "passed1c0b8e24 clean immutable checkout unchangedHEAD",
   "campaign": "paused; isolated diagnostic failures retained separately",
@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "One separately versioned corrective pair may check the verified compressor fix with measured RSS; stop on first issue. No campaign expansion while prior findings remain unresolved.",
+  "next_work": "Execute one retained correctness pair per profile with first-failure halt; no new cold-performance tuning or campaign expansion",
   "current_focused_correctness": {
     "commit": "1c0b8e24",
     "correctness_seconds": 0.788,
@@ -144,5 +144,23 @@
     "root_test_seconds": 1.51,
     "measurements_run": 0,
     "contract": "exactly one positive bounded RSS reading; malformed or missing reading halts before next arm"
+  },
+  "retained_snapshot_1c0b8e24": {
+    "source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
+    "binary_sha256": "b51728ed2c0840081c0921e6ec29931d2b10dce749802fb4f6fb341a60852e37",
+    "semantic_equal": true,
+    "partial_and_warning_digests_equal": true,
+    "known_partial_failures_per_arm": 194,
+    "corpus_before_between_after_equal": true,
+    "off_wall_seconds": 58.180889331,
+    "on_wall_seconds": 62.393518134,
+    "latency_ratio": 1.072405713481513,
+    "off_peak_rss_bytes": 2686144512,
+    "on_peak_rss_bytes": 3142365184,
+    "rss_ratio": 1.1698421920197866,
+    "cold_screen": "failed: RSS ratio exceeds 1.10; campaign remains paused",
+    "measurement_scope": "One isolated pair; GNU time process peak RSS, not simultaneous aggregate process-tree RSS. No statistical or release-gate claim.",
+    "next_action": "No new cold sweeps; close retained profile-specific semantic correctness cases independently.",
+    "results_sha256": "6f71e5c8d22cb43d56d32b685aef2b1c7ce76a700632f104ca44ccc569829cb9"
   }
 }

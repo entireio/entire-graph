@@ -1,0 +1,760 @@
+{
+  "issue": null,
+  "observations": {
+    "off": {
+      "binary_sha256": "b51728ed2c0840081c0921e6ec29931d2b10dce749802fb4f6fb341a60852e37",
+      "cache_bytes": null,
+      "cache_mode": "off",
+      "cache_path": "/opt/graph-validation/correctness-1c0b8e24-20260906/snapshot-resource-diagnostic-r2/cache-off",
+      "completeness": {
+        "languages": {
+          "ANTLR": {
+            "files": 1,
+            "symbols": 1
+          },
+          "Bash": {
+            "files": 327,
+            "symbols": 936
+          },
+          "C": {
+            "files": 6,
+            "symbols": 15
+          },
+          "Dockerfile": {
+            "files": 42,
+            "symbols": 52
+          },
+          "EditorConfig": {
+            "files": 6,
+            "symbols": 6
+          },
+          "Git Ignore": {
+            "files": 78,
+            "symbols": 78
+          },
+          "Go": {
+            "files": 16940,
+            "symbols": 271772
+          },
+          "HTML": {
+            "files": 1,
+            "symbols": 1
+          },
+          "JSON": {
+            "files": 1244,
+            "symbols": 94119
+          },
+          "Kustomize": {
+            "files": 4,
+            "symbols": 23
+          },
+          "Make": {
+            "files": 51,
+            "symbols": 560
+          },
+          "Markdown": {
+            "files": 587,
+            "symbols": 14989
+          },
+          "Pip Requirements": {
+            "files": 1,
+            "symbols": 1
+          },
+          "Protocol Buffers": {
+            "files": 133,
+            "symbols": 2279
+          },
+          "Python": {
+            "files": 7,
+            "symbols": 30
+          },
+          "YAML": {
+            "files": 6456,
+            "symbols": 33787
+          },
+          "sed": {
+            "files": 6,
+            "symbols": 6
+          }
+        },
+        "relations": {
+          "CONTAINS": 172593,
+          "DEFINES": 418655
+        }
+      },
+      "elapsed_ns": 58180889331,
+      "extraction": {
+        "unchanged_reparses": null
+      },
+      "format_version": 1,
+      "manifest_path": "/opt/graph-validation/correctness-1c0b8e24-20260906/snapshot-resource-diagnostic-r2/request-off.json",
+      "manifest_version": 1,
+      "mode": "measure",
+      "mutation_id": "retained-snapshot-d793b2be-corrective",
+      "operation": "snapshot",
+      "partial_failures": [
+        {
+          "code": "E_FILE_TOO_LARGE",
+          "detail": "file is 4475944 bytes, above max parser input 4194304 bytes; content was never held in memory",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "api/openapi-spec/swagger.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 279 column 11 near \"kube\"; error ERROR at line 283 column 11 near \"kube\"; error ERROR at line 286 column 11 near \"kube\"; error ERROR at line 335 column 9 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "build/common.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"apiVersion: apps/v1\\nkind: DaemonSet\\nmetadata:\\n  name: fluentd-gcp-{{ fluentd_gcp...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/addons/fluentd-gcp/fluentd-gcp-ds.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"---\\napiVersion: apps/v1\\nkind: DaemonSet\\nmetadata:\\n  labels:\\n    addonmanager.kub...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/addons/konnectivity-agent/konnectivity-agent-ds.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 175 column 84 near \"${WINDOWS_K8S_DIR}\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/config-common.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 19 column 1 near \"KUBE_ROOT=$(dirname \\\"${BASH_SOURCE[0]}\\\")/../..\\nsource \\\"${KUBE_ROOT}/cluster/gce/...\"; error ERROR at line 391 column 33 near \"memory.available<250Mi,nodefs.available<10%,nodefs.inodesFree<5%}\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/config-default.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing } at line 443 column 48 near \"EVICTION_HARD=${EVICTION_HARD:-memory.available<250Mi,nodefs.available<10%,nodef...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/config-test.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"apiVersion: v1\\nkind: Pod\\nmetadata:\\n  name: konnectivity-server\\n  namespace: kube...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/manifests/konnectivity-server.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 2347 column 28 near \"[0]\"; error ERROR at line 3107 column 23 near \"${aliases};}${ip}/32\\\"\\n  echo \\\"Setting ${name}'s aliases to '${aliases}' (added $...\"; error ERROR at line 3127 column 125 near \"[0]\"; error ERROR at line 3127 column 142 near \"[]\"; error ERROR at line 3127 column 161 near \"[\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/util.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 161 column 31 near \"/storage.googleapis.com/'/gs://}\\\" \\\"${download_path}/${file}\\\"\\n  elif [[ $(which c...\"; missing ; at line 217 column 48 near \"echo \\\"Server: ${SERVER_PLATFORM}/${SERVER_ARCH}  (to override, set KUBERNETES_SE...\"; missing ; at line 217 column 91 near \"echo \\\"Server: ${SERVER_PLATFORM}/${SERVER_ARCH}  (to override, set KUBERNETES_SE...\"; missing ; at line 220 column 11 near \"printf \\\"  (autodetected)\\\"\"; error ERROR at line 220 column 13 near \"(autodetected)\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/get-kube-binaries.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"#!/usr/bin/env bash\\n\\n# Copyright 2014 The Kubernetes Authors.\\n#\\n# Licensed under...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/get-kube.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"apiVersion: baz.k8s.io/v1\\nkind: Baz\\nbaz:\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cmd/kubeadm/app/util/testdata/baz.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ` at line 49 column 1 near \"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/_update-generated-protobuf-dockerized.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 34 column 1 near \"\"; error ERROR at line 34 column 1 near \"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/benchmark-go.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ]] at line 49 column 24 near \"if [[ \\\"${lhs}\\\" = *\\\".pb\\\" || \\\"${rhs}\\\" = *\\\".pb\\\" ]]; then\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/diff-protobuf.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 167 column 11 near \"kube\"; error ERROR at line 189 column 9 near \"kube\"; error ERROR at line 196 column 7 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/lib/etcd.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 657 column 7 near \"kube\"; error ERROR at line 670 column 13 near \"kube\"; error ERROR at line 677 column 9 near \"kube\"; error ERROR at line 786 column 13 near \"kube\"; error ERROR at line 802 column 11 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/lib/golang.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing } at line 337 column 43 near \"kube::test::if_has_string \\\"${var}\\\" \\\"${@:$#}\\\"\"; error ERROR at line 442 column 115 near \"$\"; error ERROR at line 450 column 82 near \"$\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/lib/test.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 557 column 5 near \"ETCD_DRY_RUN=\\\"${DRY_RUN:-}\\\" kube::etcd::start\\n}\"; missing } at line 1581 column 1 near \"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/local-up-cluster.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 17 column 1 near \"set -o errexit\\nset -o nounset\\nset -o pipefail\\n\\nKUBE_ROOT=$(cd \\\"$(dirname \\\"${BASH...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/tools/instrumentation/stability-utils.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 101 column 59 near \"`\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-codegen.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 19 column 1 near \"set -o errexit\\nset -o nounset\\nset -o pipefail\\n\\nKUBE_ROOT=$(dirname \\\"${BASH_SOURC...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-gofmt.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 20 column 1 near \"set -o errexit\\nset -o nounset\\nset -o pipefail\\n\\nKUBE_ROOT=$(dirname \\\"${BASH_SOURC...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-mocks.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 23 column 1 near \"set -o errexit\\nset -o nounset\\nset -o pipefail\\n\\nKUBE_ROOT=$(dirname \\\"${BASH_SOURC...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-netparse-cve.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 37 column 59 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/verify-openapi-spec.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 121 column 38 near \"cfg.Policy.Gang.MinCount = new(max(int32(1), ptr.Deref(parallelism, 1)))\"; error ERROR at line 121 column 75 near \")\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/api/job/util.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 119 column 39 near \"\\\"\"; error ERROR at line 119 column 43 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/api/job/util_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 945 column 66 near \"{Name: api.ResourceMemory, Quantity: new(resource.MustParse(\\\"100Mi\\\"))},\"; error ERROR at line 945 column 75 near \")\"; missing ) at line 977 column 38 near \"PerPod: new(resource.MustParse(\\\"100Mi\\\")),\"; error ERROR at line 977 column 47 near \")\"; error ERROR at line 3313 column 19 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/api/pod/util_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 93 column 58 near \"s.RollingUpdate.MaxUnavailable = new(intstr.FromInt32(1))\"; error ERROR at line 93 column 61 near \")\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/apis/apps/fuzzer/fuzzer.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 5944 column 19 near \"\\\"\"; error ERROR at line 5944 column 23 near \"\\\"\"; error ERROR at line 5960 column 19 near \"\\\"\"; error ERROR at line 5960 column 23 near \"\\\"\"; error ERROR at line 5980 column 19 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/apis/core/validation/validation_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 141 column 76 near \"input:    mkValidEvictionRequestStatus(setERObservedGeneration(new(int64(5)))),\"; error ERROR at line 141 column 81 near \")\"; missing ) at line 390 column 70 near \"input:    mkValidEvictionStatus(0, setObservedGeneration(new(int64(5)))),\"; error ERROR at line 390 column 75 near \")\"; missing ) at line 1692 column 32 near \"ObservedGeneration: new(int64(1)),\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/apis/lifecycle/validation/validation_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 345 column 55 near \"DeviceMultiplier: new(apiresource.MustParse(\\\"1\\\")),\"; error ERROR at line 345 column 60 near \")\"; missing ) at line 373 column 54 near \"DeviceMultiplier: new(apiresource.MustParse(\\\"1\\\")),\"; error ERROR at line 373 column 59 near \")\"; missing ) at line 401 column 54 near \"DeviceMultiplier: new(apiresource.MustParse(\\\"1\\\")),\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/apis/resource/v1beta1/conversion_test.go",
+          "severity": "warning"
+        }
+      ],
+      "partial_failures_count": 194,
+      "partial_failures_sha256": "846649bc1925c607b91b3f41014408938c37232d0a12d86f71569776b46819ef",
+      "peak_rss_bytes": null,
+      "phase_ns": {
+        "finalize": 303098,
+        "inventory": 11817385504,
+        "parse": 40774411692,
+        "product": 56390045531,
+        "relations": 782886301,
+        "serialization": 1790843800,
+        "total": 58180889331
+      },
+      "product_ns": 56390045531,
+      "profile": "syntax-only",
+      "provider_version": "p1-corpus-20260905",
+      "repository": "kubernetes-kubernetes",
+      "repository_path": "/opt/p1/corpus/kubernetes-kubernetes",
+      "reuse": false,
+      "scenario": "diagnostic",
+      "semantic_bytes": 500306909,
+      "semantic_digest": "fa08ae3464a63c71db89f5755062ac76b3a8960e5bccd2f536c1491d8543b4f7",
+      "semantic_sha256": "fa08ae3464a63c71db89f5755062ac76b3a8960e5bccd2f536c1491d8543b4f7",
+      "serialization_ns": 1790843800,
+      "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+      "started_at": "2026-09-06T13:05:55.612542718Z",
+      "stats": {
+        "completeness_level": "degraded",
+        "files": 25890,
+        "parsed_files": 25882,
+        "partial_failures": 194,
+        "relations": 591248,
+        "symbols": 418655
+      },
+      "status": "partial",
+      "trial": 0,
+      "verb": "snapshot",
+      "wall_ns": 58180889331,
+      "warnings": [
+        {
+          "code": "W_WORKTREE_SNAPSHOT",
+          "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested",
+          "severity": "warning"
+        }
+      ],
+      "warnings_count": 1,
+      "warnings_sha256": "e0ce85fefeba137c4e41fcfa3bc5f1d62d461bc1f4fc7eff5587bbd52cf50468"
+    },
+    "on": {
+      "binary_sha256": "b51728ed2c0840081c0921e6ec29931d2b10dce749802fb4f6fb341a60852e37",
+      "cache_bytes": null,
+      "cache_mode": "on",
+      "cache_path": "/opt/graph-validation/correctness-1c0b8e24-20260906/snapshot-resource-diagnostic-r2/cache-on",
+      "completeness": {
+        "languages": {
+          "ANTLR": {
+            "files": 1,
+            "symbols": 1
+          },
+          "Bash": {
+            "files": 327,
+            "symbols": 936
+          },
+          "C": {
+            "files": 6,
+            "symbols": 15
+          },
+          "Dockerfile": {
+            "files": 42,
+            "symbols": 52
+          },
+          "EditorConfig": {
+            "files": 6,
+            "symbols": 6
+          },
+          "Git Ignore": {
+            "files": 78,
+            "symbols": 78
+          },
+          "Go": {
+            "files": 16940,
+            "symbols": 271772
+          },
+          "HTML": {
+            "files": 1,
+            "symbols": 1
+          },
+          "JSON": {
+            "files": 1244,
+            "symbols": 94119
+          },
+          "Kustomize": {
+            "files": 4,
+            "symbols": 23
+          },
+          "Make": {
+            "files": 51,
+            "symbols": 560
+          },
+          "Markdown": {
+            "files": 587,
+            "symbols": 14989
+          },
+          "Pip Requirements": {
+            "files": 1,
+            "symbols": 1
+          },
+          "Protocol Buffers": {
+            "files": 133,
+            "symbols": 2279
+          },
+          "Python": {
+            "files": 7,
+            "symbols": 30
+          },
+          "YAML": {
+            "files": 6456,
+            "symbols": 33787
+          },
+          "sed": {
+            "files": 6,
+            "symbols": 6
+          }
+        },
+        "relations": {
+          "CONTAINS": 172593,
+          "DEFINES": 418655
+        }
+      },
+      "elapsed_ns": 62393518134,
+      "extraction": {
+        "cache_bytes_read": 0,
+        "cache_bytes_written": 35498690,
+        "extraction_ns": 84089443624,
+        "files_parsed": 25882,
+        "files_reused": 0,
+        "raw_imports_ns": 0,
+        "raw_imports_parsed": 0,
+        "raw_imports_reused": 0,
+        "source_bytes_read": 275900643,
+        "unchanged_reparses": null
+      },
+      "format_version": 1,
+      "manifest_path": "/opt/graph-validation/correctness-1c0b8e24-20260906/snapshot-resource-diagnostic-r2/request-on.json",
+      "manifest_version": 1,
+      "mode": "measure",
+      "mutation_id": "retained-snapshot-d793b2be-corrective",
+      "operation": "snapshot",
+      "partial_failures": [
+        {
+          "code": "E_FILE_TOO_LARGE",
+          "detail": "file is 4475944 bytes, above max parser input 4194304 bytes; content was never held in memory",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "api/openapi-spec/swagger.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 279 column 11 near \"kube\"; error ERROR at line 283 column 11 near \"kube\"; error ERROR at line 286 column 11 near \"kube\"; error ERROR at line 335 column 9 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "build/common.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"apiVersion: apps/v1\\nkind: DaemonSet\\nmetadata:\\n  name: fluentd-gcp-{{ fluentd_gcp...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/addons/fluentd-gcp/fluentd-gcp-ds.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"---\\napiVersion: apps/v1\\nkind: DaemonSet\\nmetadata:\\n  labels:\\n    addonmanager.kub...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/addons/konnectivity-agent/konnectivity-agent-ds.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 175 column 84 near \"${WINDOWS_K8S_DIR}\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/config-common.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 19 column 1 near \"KUBE_ROOT=$(dirname \\\"${BASH_SOURCE[0]}\\\")/../..\\nsource \\\"${KUBE_ROOT}/cluster/gce/...\"; error ERROR at line 391 column 33 near \"memory.available<250Mi,nodefs.available<10%,nodefs.inodesFree<5%}\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/config-default.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing } at line 443 column 48 near \"EVICTION_HARD=${EVICTION_HARD:-memory.available<250Mi,nodefs.available<10%,nodef...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/config-test.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"apiVersion: v1\\nkind: Pod\\nmetadata:\\n  name: konnectivity-server\\n  namespace: kube...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/manifests/konnectivity-server.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 2347 column 28 near \"[0]\"; error ERROR at line 3107 column 23 near \"${aliases};}${ip}/32\\\"\\n  echo \\\"Setting ${name}'s aliases to '${aliases}' (added $...\"; error ERROR at line 3127 column 125 near \"[0]\"; error ERROR at line 3127 column 142 near \"[]\"; error ERROR at line 3127 column 161 near \"[\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/gce/util.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 161 column 31 near \"/storage.googleapis.com/'/gs://}\\\" \\\"${download_path}/${file}\\\"\\n  elif [[ $(which c...\"; missing ; at line 217 column 48 near \"echo \\\"Server: ${SERVER_PLATFORM}/${SERVER_ARCH}  (to override, set KUBERNETES_SE...\"; missing ; at line 217 column 91 near \"echo \\\"Server: ${SERVER_PLATFORM}/${SERVER_ARCH}  (to override, set KUBERNETES_SE...\"; missing ; at line 220 column 11 near \"printf \\\"  (autodetected)\\\"\"; error ERROR at line 220 column 13 near \"(autodetected)\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/get-kube-binaries.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"#!/usr/bin/env bash\\n\\n# Copyright 2014 The Kubernetes Authors.\\n#\\n# Licensed under...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cluster/get-kube.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"apiVersion: baz.k8s.io/v1\\nkind: Baz\\nbaz:\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "cmd/kubeadm/app/util/testdata/baz.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ` at line 49 column 1 near \"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/_update-generated-protobuf-dockerized.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 34 column 1 near \"\"; error ERROR at line 34 column 1 near \"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/benchmark-go.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ]] at line 49 column 24 near \"if [[ \\\"${lhs}\\\" = *\\\".pb\\\" || \\\"${rhs}\\\" = *\\\".pb\\\" ]]; then\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/diff-protobuf.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 167 column 11 near \"kube\"; error ERROR at line 189 column 9 near \"kube\"; error ERROR at line 196 column 7 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/lib/etcd.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 657 column 7 near \"kube\"; error ERROR at line 670 column 13 near \"kube\"; error ERROR at line 677 column 9 near \"kube\"; error ERROR at line 786 column 13 near \"kube\"; error ERROR at line 802 column 11 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/lib/golang.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing } at line 337 column 43 near \"kube::test::if_has_string \\\"${var}\\\" \\\"${@:$#}\\\"\"; error ERROR at line 442 column 115 near \"$\"; error ERROR at line 450 column 82 near \"$\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/lib/test.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 557 column 5 near \"ETCD_DRY_RUN=\\\"${DRY_RUN:-}\\\" kube::etcd::start\\n}\"; missing } at line 1581 column 1 near \"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/local-up-cluster.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 17 column 1 near \"set -o errexit\\nset -o nounset\\nset -o pipefail\\n\\nKUBE_ROOT=$(cd \\\"$(dirname \\\"${BASH...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/tools/instrumentation/stability-utils.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 101 column 59 near \"`\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-codegen.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 19 column 1 near \"set -o errexit\\nset -o nounset\\nset -o pipefail\\n\\nKUBE_ROOT=$(dirname \\\"${BASH_SOURC...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-gofmt.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 20 column 1 near \"set -o errexit\\nset -o nounset\\nset -o pipefail\\n\\nKUBE_ROOT=$(dirname \\\"${BASH_SOURC...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-mocks.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 23 column 1 near \"set -o errexit\\nset -o nounset\\nset -o pipefail\\n\\nKUBE_ROOT=$(dirname \\\"${BASH_SOURC...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-netparse-cve.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 37 column 59 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/verify-openapi-spec.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 121 column 38 near \"cfg.Policy.Gang.MinCount = new(max(int32(1), ptr.Deref(parallelism, 1)))\"; error ERROR at line 121 column 75 near \")\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/api/job/util.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 119 column 39 near \"\\\"\"; error ERROR at line 119 column 43 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/api/job/util_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 945 column 66 near \"{Name: api.ResourceMemory, Quantity: new(resource.MustParse(\\\"100Mi\\\"))},\"; error ERROR at line 945 column 75 near \")\"; missing ) at line 977 column 38 near \"PerPod: new(resource.MustParse(\\\"100Mi\\\")),\"; error ERROR at line 977 column 47 near \")\"; error ERROR at line 3313 column 19 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/api/pod/util_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 93 column 58 near \"s.RollingUpdate.MaxUnavailable = new(intstr.FromInt32(1))\"; error ERROR at line 93 column 61 near \")\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/apis/apps/fuzzer/fuzzer.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 5944 column 19 near \"\\\"\"; error ERROR at line 5944 column 23 near \"\\\"\"; error ERROR at line 5960 column 19 near \"\\\"\"; error ERROR at line 5960 column 23 near \"\\\"\"; error ERROR at line 5980 column 19 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/apis/core/validation/validation_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 141 column 76 near \"input:    mkValidEvictionRequestStatus(setERObservedGeneration(new(int64(5)))),\"; error ERROR at line 141 column 81 near \")\"; missing ) at line 390 column 70 near \"input:    mkValidEvictionStatus(0, setObservedGeneration(new(int64(5)))),\"; error ERROR at line 390 column 75 near \")\"; missing ) at line 1692 column 32 near \"ObservedGeneration: new(int64(1)),\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/apis/lifecycle/validation/validation_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 345 column 55 near \"DeviceMultiplier: new(apiresource.MustParse(\\\"1\\\")),\"; error ERROR at line 345 column 60 near \")\"; missing ) at line 373 column 54 near \"DeviceMultiplier: new(apiresource.MustParse(\\\"1\\\")),\"; error ERROR at line 373 column 59 near \")\"; missing ) at line 401 column 54 near \"DeviceMultiplier: new(apiresource.MustParse(\\\"1\\\")),\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "pkg/apis/resource/v1beta1/conversion_test.go",
+          "severity": "warning"
+        }
+      ],
+      "partial_failures_count": 194,
+      "partial_failures_sha256": "846649bc1925c607b91b3f41014408938c37232d0a12d86f71569776b46819ef",
+      "peak_rss_bytes": null,
+      "phase_ns": {
+        "finalize": 47823207,
+        "inventory": 10630760725,
+        "parse": 45316787421,
+        "product": 60271675717,
+        "relations": 882075251,
+        "serialization": 2121842417,
+        "total": 62393518134
+      },
+      "product_ns": 60271675717,
+      "profile": "syntax-only",
+      "provider_version": "p1-corpus-20260905",
+      "repository": "kubernetes-kubernetes",
+      "repository_path": "/opt/p1/corpus/kubernetes-kubernetes",
+      "reuse": true,
+      "scenario": "diagnostic",
+      "semantic_bytes": 500306909,
+      "semantic_digest": "fa08ae3464a63c71db89f5755062ac76b3a8960e5bccd2f536c1491d8543b4f7",
+      "semantic_sha256": "fa08ae3464a63c71db89f5755062ac76b3a8960e5bccd2f536c1491d8543b4f7",
+      "serialization_ns": 2121842417,
+      "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+      "started_at": "2026-09-06T13:06:56.339609437Z",
+      "stats": {
+        "completeness_level": "degraded",
+        "extraction": {
+          "cache_bytes_read": 0,
+          "cache_bytes_written": 35498690,
+          "extraction_ns": 84089443624,
+          "files_parsed": 25882,
+          "files_reused": 0,
+          "raw_imports_ns": 0,
+          "raw_imports_parsed": 0,
+          "raw_imports_reused": 0,
+          "source_bytes_read": 275900643
+        },
+        "files": 25890,
+        "parsed_files": 25882,
+        "partial_failures": 194,
+        "relations": 591248,
+        "symbols": 418655
+      },
+      "status": "partial",
+      "trial": 0,
+      "verb": "snapshot",
+      "wall_ns": 62393518134,
+      "warnings": [
+        {
+          "code": "W_WORKTREE_SNAPSHOT",
+          "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested",
+          "severity": "warning"
+        }
+      ],
+      "warnings_count": 1,
+      "warnings_sha256": "e0ce85fefeba137c4e41fcfa3bc5f1d62d461bc1f4fc7eff5587bbd52cf50468"
+    }
+  },
+  "processes_started": [
+    "off",
+    "on"
+  ],
+  "scope": "one isolated corrective diagnostic; no campaign or release gate",
+  "status": "pair_semantics_equal",
+  "unrun": []
+}
