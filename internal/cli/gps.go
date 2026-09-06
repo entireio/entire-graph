@@ -643,6 +643,8 @@ func fitGPSContextBudget(response map[string]any, maximum int) {
 	response["dependencies"] = []any{}
 	response["tests"] = []any{}
 	budget["omitted"] = []string{"symbols", "code", "dependencies", "tests"}
+	response["status"] = "complete_with_gaps"
+	response["gaps"] = append(response["gaps"].([]string), "CONTEXT_OMITTED_FOR_BUDGET")
 	if renderedGPSJSONBytes(response) > maximum {
 		response["requirements"] = []map[string]string{}
 		response["status"] = "BUDGET_TOO_SMALL"
