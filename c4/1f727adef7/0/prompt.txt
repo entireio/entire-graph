@@ -1,1 +1,5 @@
 You are the persistent Entire-tracked Codex session for this Buildathon worktree. Context: progress contains the integrated pre-Curveball Spidey Sense flow: dynamic team/session onboarding, leader plan assignment with atomic revisioned persistence, Entire Graph BLOCK/REVIEW/CLEAR evidence, loopback API, React UI, and team-scoped Entire checkpoint data. Do not modify files or commit yet. Confirm the context, run read-only `entire status`, and then remain at the Codex prompt so this session stays active for the next checkpoint commit.
+
+---
+
+The latest commit 3ec531ca is the unpushed stable pre-Curveball milestone, but it was created from a separate shell and has no Entire-Checkpoint trailer. From this tracked session, run `entire session attach 01a07572-09a3-7ca3-93c8-46e5007349d8 --force` to attach this session to the current unpushed HEAD. Do not modify other files. Then show the resulting HEAD commit message and checkpoint status, and remain at the prompt.

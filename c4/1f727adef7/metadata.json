@@ -2,8 +2,11 @@
   "cli_version": "0.10.5",
   "checkpoint_id": "c41f727adef7",
   "strategy": "manual-commit",
+  "branch": "progress",
   "checkpoints_count": 2,
-  "files_touched": null,
+  "files_touched": [
+    "BUILDATHON.md"
+  ],
   "sessions": [
     {
       "metadata": "/c4/1f727adef7/0/metadata.json",
