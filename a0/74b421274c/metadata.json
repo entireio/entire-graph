@@ -3,7 +3,7 @@
   "checkpoint_id": "a074b421274c",
   "strategy": "manual-commit",
   "branch": "docs/gps-design",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "docs/GPS/README.md"
   ],
@@ -21,6 +21,13 @@
       "compact_transcript": "/a0/74b421274c/1/transcript.jsonl",
       "content_hash": "/a0/74b421274c/1/content_hash.txt",
       "prompt": "/a0/74b421274c/1/prompt.txt"
+    },
+    {
+      "metadata": "/a0/74b421274c/2/metadata.json",
+      "transcript": "/a0/74b421274c/2/full.jsonl",
+      "compact_transcript": "/a0/74b421274c/2/transcript.jsonl",
+      "content_hash": "/a0/74b421274c/2/content_hash.txt",
+      "prompt": "/a0/74b421274c/2/prompt.txt"
     }
   ],
   "token_usage": {
