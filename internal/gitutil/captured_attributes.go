@@ -105,7 +105,28 @@ func CapturedDiffAttributes(
 		attributeNames = append(attributeNames, path)
 	}
 	sort.Strings(attributeNames)
-	indexAttributes, err := capturedIndexAttributes(ctx, root, attributeNames)
+	capturedAttributes := make(map[string]string, len(attributeNames))
+	missingAttributes := make([]string, 0)
+	var capturedBytes int64
+	for _, path := range attributeNames {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		content, ok, err := capturedRead(path)
+		if err != nil {
+			return nil, fmt.Errorf("capture %s: %w", path, err)
+		}
+		if !ok {
+			missingAttributes = append(missingAttributes, path)
+			continue
+		}
+		capturedBytes += int64(len(content))
+		if capturedBytes > maxCapturedAttributeBytes {
+			return nil, errors.New("captured attribute bytes exceeded their bound")
+		}
+		capturedAttributes[path] = content
+	}
+	indexAttributes, err := capturedIndexAttributes(ctx, root, missingAttributes, maxCapturedAttributeBytes-capturedBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -120,21 +141,10 @@ func CapturedDiffAttributes(
 	}
 	defer temporaryRoot.Close()
 
-	var attributeBytes int64
 	for _, path := range attributeNames {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		content, ok, err := capturedRead(path)
-		if err != nil {
-			return nil, fmt.Errorf("capture %s: %w", path, err)
-		}
+		content, ok := capturedAttributes[path]
 		if !ok {
 			content = indexAttributes[path]
-		}
-		attributeBytes += int64(len(content))
-		if attributeBytes > maxCapturedAttributeBytes {
-			return nil, errors.New("captured attribute bytes exceeded their bound")
 		}
 		name := filepath.FromSlash(path)
 		if directory := filepath.Dir(name); directory != "." {
@@ -196,6 +206,9 @@ func capturedDiffCheckAttr(ctx context.Context, repo, worktree string, paths []s
 	if err := cmd.Run(); err != nil {
 		return nil, gitAttributeCommandError("check-attr", err, stderr.String())
 	}
+	if stdout.exceeded {
+		return nil, errCapturedAttributeOutputLimit
+	}
 	records := bytes.Split(stdout.Bytes(), []byte{0})
 	if len(records) == 0 || len(records[len(records)-1]) != 0 {
 		return nil, errors.New("Git check-attr returned malformed NUL output")
@@ -232,7 +245,10 @@ const literalPathspecPrefix = ":(literal)"
 // when a worktree .gitattributes file is absent. It is resolved before the
 // temporary worktree is populated, so a mutable working-tree policy is never
 // consulted and the fallback remains an immutable stage-0 index observation.
-func capturedIndexAttributes(ctx context.Context, repo string, paths []string) (map[string]string, error) {
+func capturedIndexAttributes(ctx context.Context, repo string, paths []string, byteLimit int64) (map[string]string, error) {
+	if byteLimit < 0 {
+		return nil, errors.New("captured index attribute byte budget is negative")
+	}
 	objects := make(map[string]string)
 	for start := 0; start < len(paths); {
 		end := start
@@ -261,6 +277,9 @@ func capturedIndexAttributes(ctx context.Context, repo string, paths []string) (
 		if err := cmd.Run(); err != nil {
 			return nil, gitAttributeCommandError("ls-files captured attributes", err, stderr.String())
 		}
+		if stdout.exceeded {
+			return nil, errCapturedAttributeOutputLimit
+		}
 		records := bytes.Split(stdout.Bytes(), []byte{0})
 		if len(records) == 0 || len(records[len(records)-1]) != 0 {
 			return nil, errors.New("Git ls-files returned malformed captured-attribute output")
@@ -278,38 +297,77 @@ func capturedIndexAttributes(ctx context.Context, repo string, paths []string) (
 			if fields[2] != "0" {
 				continue
 			}
+			// Git does not apply a symlink or gitlink as a .gitattributes
+			// policy file. Keep only ordinary index files, including executable
+			// regular files, and let the empty placeholder represent all other
+			// modes.
+			if fields[0] != "100644" && fields[0] != "100755" {
+				continue
+			}
 			if err := validateLimitedFilePath(path); err != nil {
 				return nil, fmt.Errorf("Git ls-files returned unsafe captured attribute path %q: %w", path, err)
+			}
+			if !validGitObjectID(fields[1]) {
+				return nil, fmt.Errorf("Git ls-files returned invalid captured attribute object ID %q", fields[1])
 			}
 			objects[path] = fields[1]
 		}
 		start = end
 	}
 	result := make(map[string]string, len(objects))
-	for path, objectID := range objects {
-		content, err := capturedIndexBlob(ctx, repo, objectID)
+	var bytesRead int64
+	objectPaths := make([]string, 0, len(objects))
+	for path := range objects {
+		objectPaths = append(objectPaths, path)
+	}
+	sort.Strings(objectPaths)
+	for _, path := range objectPaths {
+		objectID := objects[path]
+		content, err := capturedIndexBlob(ctx, repo, objectID, byteLimit-bytesRead)
 		if err != nil {
 			return nil, fmt.Errorf("read indexed attribute %s: %w", path, err)
+		}
+		bytesRead += int64(len(content))
+		if bytesRead > byteLimit {
+			return nil, errors.New("indexed attribute bytes exceeded their bound")
 		}
 		result[path] = content
 	}
 	return result, nil
 }
 
-func capturedIndexBlob(ctx context.Context, repo, objectID string) (string, error) {
-	if objectID == "" || strings.ContainsAny(objectID, "\x00\r\n") {
+func capturedIndexBlob(ctx context.Context, repo, objectID string, maxBytes int64) (string, error) {
+	if !validGitObjectID(objectID) {
 		return "", fmt.Errorf("invalid indexed attribute object ID %q", objectID)
+	}
+	if maxBytes < 0 {
+		return "", errors.New("indexed attribute byte budget is negative")
 	}
 	cmd := newCmd(ctx, repo, "git", "cat-file", "blob", objectID)
 	var stdout boundedBuffer
-	stdout.limit = maxCapturedAttributeBytes
+	stdout.limit = maxBytes
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return "", gitAttributeCommandError("cat-file indexed attribute", err, stderr.String())
 	}
+	if stdout.exceeded {
+		return "", errCapturedAttributeOutputLimit
+	}
 	return stdout.String(), nil
+}
+
+func validGitObjectID(objectID string) bool {
+	if len(objectID) != 40 && len(objectID) != 64 {
+		return false
+	}
+	for _, character := range objectID {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 type capturedDiffDriverSetting struct {
@@ -345,6 +403,9 @@ func capturedDiffBinaryDrivers(ctx context.Context, repo string, drivers map[str
 			}
 			return nil, gitAttributeCommandError("config diff driver", err, stderr.String())
 		}
+		if stdout.exceeded {
+			return nil, errCapturedAttributeOutputLimit
+		}
 		value := strings.TrimSpace(stdout.String())
 		switch value {
 		case "true":
@@ -367,15 +428,19 @@ func gitAttributeCommandError(operation string, err error, stderr string) error 
 }
 
 type boundedBuffer struct {
-	bytes.Buffer
+	buffer   bytes.Buffer
 	limit    int64
 	exceeded bool
 }
 
 func (buffer *boundedBuffer) Write(data []byte) (int, error) {
-	if int64(buffer.Len()+len(data)) > buffer.limit {
+	if int64(buffer.buffer.Len()+len(data)) > buffer.limit {
 		buffer.exceeded = true
 		return 0, errCapturedAttributeOutputLimit
 	}
-	return buffer.Buffer.Write(data)
+	return buffer.buffer.Write(data)
 }
+
+func (buffer *boundedBuffer) Bytes() []byte { return buffer.buffer.Bytes() }
+
+func (buffer *boundedBuffer) String() string { return buffer.buffer.String() }
