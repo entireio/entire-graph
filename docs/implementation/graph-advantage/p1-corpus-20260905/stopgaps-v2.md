@@ -36,8 +36,11 @@ The complete preregistered evaluation and release gates remain required later.
 Before a new evaluation, finish diagnosis and correctness verification, rebuild
 and freeze the executable, and prepare a new baseline and run identity. The old
 binary in build.json is historical and must not be reused to claim these fixes.
-The unresolved campaign-scale partial-membership differences remain a blocker;
-the new small deterministic fixture does not explain all 55 retained mismatches.
+The three distinct query/profile paths behind the 55 historical mismatches
+now have retained exact-output parity at `1c0b8e24`; see
+`retained-query-correctness-1c0b8e24/summary.json`. This closes those
+reproduction cases, not the broader baseline timeout and complete-canary
+admission requirements. Historical failed observations remain unchanged.
 
 On pause, retain raw rows, request artifacts, manifests and supervisor events.
 Collect them before deallocating task-owned VMs. Fix and verify the cause before

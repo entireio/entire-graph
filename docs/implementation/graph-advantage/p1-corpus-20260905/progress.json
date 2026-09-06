@@ -8,7 +8,7 @@
   "verified_checkpoint": "6cf92c9ccff1882bb2ab63aa9edeb8da0d633cc3",
   "verified_evidence_commit": "see evidence/check-6cf92c9c/verification.json",
   "current_worktree": "6cf92c9c full687.332s and pinnedLinux76tests passed",
-  "workers_state": "validation VM available for focused correctness; campaign workers off",
+  "workers_state": "Validation VM confirmed deallocated after corrective raw collection; campaign workers remain off",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
   "correctness": "76pinnedLinuxtests including10live; fullcheck687.332s",
