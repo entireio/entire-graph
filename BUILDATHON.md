@@ -53,7 +53,7 @@ Collision taxonomy (sessions as transactions): **WRITE–WRITE** (same entity ch
 _To be filled at 12:00. Procedure: close session → receive constraint → fresh session → reconstruct from checkpoint context → `graph impact` on the affected area before editing → smallest complete response → test → checkpoint._
 
 ## Checkpoint links and what each checkpoint proves
-1. Initial understanding and intended architecture — commit `9ebeac6` (ATC_PLAN.md) — _link after push_
+1. Initial understanding and intended architecture — the plan itself was authored in commit `9ebeac6` (ATC_PLAN.md: problem, taxonomy, architecture, ladder). The checkpoint attaches to **this milestone commit**, made from an in-repo session after reconstructing the full state from ATC_HANDOFF.md/ATC_PLAN.md and re-verifying the build (24/24 checks). Earlier sessions ran from a different working directory, so Entire's capture hooks could not fire for them.
 2. Last stable state before the Noon Curveball — commit `3d8fb66` + this record — _link after push_
 3. Response to the Noon Curveball — _pending_
 4. Final implementation and verification — _pending_
