@@ -149,3 +149,11 @@ The user's stopping point is completion of post-Curveball Databricks verificatio
 `90d4a736f01e`, supported manual attachment of actual fresh final-verification session `01a075de-fbc5-7b60-b38c-b14cb13816a0`; reviews adaptation and five completed Databricks runs at `e3b512e`. This is authentic later verification/reconstruction, not retroactive capture of the original implementation session.
 
 All five cloud jobs, local/cloud assertion parity, evidence preservation, idempotent replay and Delta history are verified. Both user-requested tasks are complete after the final trailer commit and remote Checkpoint branch verification. Stop here; do not submit or add further features. Earlier original/pre-noon provenance gaps and judge access/submission remain open.
+
+## Screening package - user will submit manually
+
+The latest user instruction supersedes the earlier stopping scope: finish screening preparation, but do not submit. BUILDATHON.md is rewritten as the judge-facing evidence narrative, with absolute public artifact links, measured local/cloud comparison, architecture, Curveball behavior, reproduction and honest capture limits. `pact/submission/` contains a six-slide PDF, editable PPTX, genuine silent MP4 conversion and a three-minute presenter script.
+
+A new real browser rehearsal ran D1 `b07fb5748d07456da7ce73be22671905` (two failures) then D2 `37d8833480a74064ae4d2ed4d5566fea` (ten passes), preserving partial evidence with no JS errors. Public implementation and Checkpoint branch links returned200 without credentials. Databricks job access remains permissioned; public reports and offline replay are the judge-access fallback.
+
+The coordinating task will verify the final commit with Graph and remote SHA equality after this package commit. No product source changed during screening preparation. Do not backdate or relabel Checkpoint90d4a736f01e, which reviewed e3b512e and the same product implementation. The user will upload BUILDATHON.md and the pitch PDF, paste the supplied notes and submit personally. No submission receipt exists yet.

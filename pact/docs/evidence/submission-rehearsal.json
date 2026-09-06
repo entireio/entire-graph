@@ -1,0 +1,45 @@
+{
+  "method": "Real browser rehearsal through CUA: D1 run and Review corrected version button; existing confirmed policies unchanged.",
+  "d1_run": "b07fb5748d07456da7ce73be22671905",
+  "d2_run": "37d8833480a74064ae4d2ed4d5566fea",
+  "javascript_errors": 0,
+  "observed": "D1 two guest-export failures with no asserted R1 Graph path; D2 ten passes; both preserve partial analysis.",
+  "d1_run_counts": {
+    "base": {
+      "fail": 0,
+      "not_applicable": 2,
+      "not_run": 0,
+      "observations": 8,
+      "pass": 8,
+      "unresolved": 0
+    },
+    "head": {
+      "fail": 2,
+      "not_applicable": 0,
+      "not_run": 0,
+      "observations": 10,
+      "pass": 8,
+      "unresolved": 0
+    }
+  },
+  "d1_run_created_at": "2026-09-06T09:03:36.806992+00:00",
+  "d2_run_counts": {
+    "base": {
+      "fail": 0,
+      "not_applicable": 2,
+      "not_run": 0,
+      "observations": 8,
+      "pass": 8,
+      "unresolved": 0
+    },
+    "head": {
+      "fail": 0,
+      "not_applicable": 0,
+      "not_run": 0,
+      "observations": 10,
+      "pass": 10,
+      "unresolved": 0
+    }
+  },
+  "d2_run_created_at": "2026-09-06T09:06:30.506586+00:00"
+}

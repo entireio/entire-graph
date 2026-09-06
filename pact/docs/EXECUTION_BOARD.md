@@ -76,3 +76,7 @@ Migration verification: 15 tests passed in 7.59 seconds in PACT-fork; original C
 ## Authorized stopping milestone
 
 Post-Curveball cloud verification is complete; see `evidence/curveball-databricks-verification.json`. Authentic final review is captured in `90d4a736f01e` from user-authorized task `01a075de-fbc5-7b60-b38c-b14cb13816a0`. Both requested stopping tasks are complete after final link/publication verification. Submission/access and earlier provenance gaps remain open.
+
+## Final screening preparation
+
+User requested completion of preparation and explicitly reserved submission for themselves. Judge-facing BUILDATHON.md, pitch PDF/PPTX, MP4 conversion and presenter script are prepared; real D1/D2 rehearsal passed. Public evidence links were verified. No new product changes or cloud jobs. Final exact-commit Graph and remote checks precede the chat handoff. Submission and receipt remain the user's action.
