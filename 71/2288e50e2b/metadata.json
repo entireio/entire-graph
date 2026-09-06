@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "712288e50e2b",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/progress.json",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/stopgaps-tests.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/71/2288e50e2b/0/metadata.json",
+      "transcript": "/71/2288e50e2b/0/full.jsonl",
+      "compact_transcript": "/71/2288e50e2b/0/transcript.jsonl",
+      "content_hash": "/71/2288e50e2b/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3007,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 813952,
+    "output_tokens": 1192,
+    "api_call_count": 5
+  }
+}
