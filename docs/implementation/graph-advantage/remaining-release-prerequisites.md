@@ -27,8 +27,8 @@ and the [plan's evaluation rules](</Users/thomi/Projects/entire-plan/entire-grap
   denominators. Preserve raw failures and incomplete denominators.
 - The latest full `mise run check` against `dc0ddce7` passed in 621.095
   seconds. Pinned Linux compiler correctness passed at `88dd1dc9`; it does
-  not cover subsequent source changes. A full check of source `6102b209` is
-  in progress after focused race verification. The 56 harness tests at
+  not cover subsequent source changes. The full check of source `6102b209` was
+  interrupted to fix newly identified enumeration cancellation gaps first. The 56 harness tests at
   `0381ea6d` remain local harness evidence, not a substitute for product
   checks or live Azure stop propagation.
 

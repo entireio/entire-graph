@@ -1,0 +1,7 @@
+{
+  "source_commit": "6102b209b75b6d685634cda890dba3d77d7d464b",
+  "command": "mise run check",
+  "status": "deliberately interrupted, not passed",
+  "reason": "Read-only review found remaining cancellation gaps in ignored/listed/filter/promotion loops; fix findings before continuing broad checks",
+  "product_source_changed_during_run": false
+}
