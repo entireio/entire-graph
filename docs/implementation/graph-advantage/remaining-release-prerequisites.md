@@ -25,10 +25,11 @@ and the [plan's evaluation rules](</Users/thomi/Projects/entire-plan/entire-grap
   inclusion/exclusion rules, labels, metric formulas, thresholds, repetitions,
   seeds, interval method, and treatment of failures, partials, and zero
   denominators. Preserve raw failures and incomplete denominators.
-- Obtain a fresh immutable repository check after the post-freeze diagnostic
-  changes. The ledger records the earlier source check as passed, while its
-  latest diagnostic note still leaves the post-stopgap check pending; do not
-  treat the 41 harness tests as a product correctness check.
+- The latest full `mise run check` against `dc0ddce7` passed in 621.095
+  seconds, and the pinned Linux compiler environment/correctness checks are
+  already complete. After the remaining P1 changes settle, record one final
+  source-hash-stable check; the 41 harness tests remain harness evidence, not
+  a substitute for that product check.
 
 ## P2 — optional compiler-backed Go resolution
 
@@ -37,7 +38,10 @@ complete. P2.5 has invalidation/evaluation interfaces and regression fixtures,
 but its comparative task is incomplete and its release gate is not passed
 ([ledger task table](ledger.md:30)).
 
-Before a P2 release study, the following must be frozen and evidenced:
+Before a P2 release study, the following must be frozen and evidenced. The
+pinned `gopls`/Linux isolation implementation and its focused correctness
+checks are already complete; they are study inputs to preserve, not
+outstanding environment-provisioning blockers:
 
 - A pinned `gopls` executable and toolchain, a Linux process boundary that
   denies network access to the complete process tree, a read-only captured
@@ -64,10 +68,11 @@ time budgets. The compiler remains opt-in even if this gate passes. These
 requirements are in [P2 tasks and gate](</Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md:171)
 and the [P2 execution contract](</Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md:330).
 
-Human or external inputs still required are reviewer-adjudicated hard-Go
-labels, a provisioned and pinned local `gopls`/dependency environment, and
-independent validation of the OS network/process restriction. No competitor
-implementation or external product is an evaluation oracle.
+The plan does not require an external approval for P2. The remaining label
+work can be prepared from the maintained hard-Go fixtures and independent
+oracle; any human review of disputed direct/candidate labels should be
+recorded as study provenance. No competitor implementation or external
+product is an evaluation oracle.
 
 ## P3 — deeper impact with evidence paths
 
@@ -103,11 +108,13 @@ improvement on the frozen depth-sensitive slice with at most two percentage
 points precision loss. See [P3 validation and gate](</Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md:227)
 and the [P3 task list](</Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md:218).
 
-Human input is required to adjudicate affected sites, required/allowed/
-forbidden paths, route/config behavior, and covering-test relevance across the
-four fixture categories. External inputs are limited to the separately pinned
-repositories/toolchains used to reproduce those fixtures; they do not replace
-reviewer labels.
+The plan explicitly requires human adjudication here: “Use manually
+adjudicated changes across at least Go, TypeScript, Python, and
+configuration/route fixtures” (plan §5 validation). It also says: “Historical
+changed-file sets are candidate labels, not complete ground truth.” The
+remaining human input is therefore the reviewer label set and disputed
+affected-site decisions. The pinned repositories and toolchains are already
+available study inputs, not external approval blockers.
 
 ## P4 — query-seeded graph ranking
 
@@ -149,10 +156,13 @@ interval excluding more than two percentage points of resolution loss and no
 new severity-critical regression; claim a gain only when the interval supports
 it. These margins must be frozen before the holdout ([P4 evaluation and gate](</Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md:256)).
 
-Human or external inputs are required for GraphMark task/relevance
-adjudication, split review, independent resolution oracles, prospective power
-analysis, and the fixed model/build/tool configuration. No default promotion
-follows from numerical PageRank tests or anecdotes.
+The plan explicitly requires reviewer labeling: “Label relevance with
+reviewer adjudication; all changed files in a historical patch are not
+automatically relevant.” Human input remains necessary for GraphMark
+relevance labels and split review, while the independent resolution oracle,
+power analysis, and fixed model/build/tool configuration can be prepared
+autonomously. No default promotion follows from numerical PageRank tests or
+anecdotes.
 
 ## Release handoff
 
