@@ -3,7 +3,7 @@
   "checkpoint_id": "a074b421274c",
   "strategy": "manual-commit",
   "branch": "docs/gps-design",
-  "checkpoints_count": 3,
+  "checkpoints_count": 7,
   "files_touched": [
     "docs/GPS/README.md"
   ],
@@ -28,13 +28,20 @@
       "compact_transcript": "/a0/74b421274c/2/transcript.jsonl",
       "content_hash": "/a0/74b421274c/2/content_hash.txt",
       "prompt": "/a0/74b421274c/2/prompt.txt"
+    },
+    {
+      "metadata": "/a0/74b421274c/3/metadata.json",
+      "transcript": "/a0/74b421274c/3/full.jsonl",
+      "compact_transcript": "/a0/74b421274c/3/transcript.jsonl",
+      "content_hash": "/a0/74b421274c/3/content_hash.txt",
+      "prompt": "/a0/74b421274c/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 117249,
+    "input_tokens": 125181,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 2597376,
-    "output_tokens": 12432,
-    "api_call_count": 33
+    "cache_read_tokens": 3424768,
+    "output_tokens": 14545,
+    "api_call_count": 40
   }
 }
