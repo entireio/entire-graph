@@ -37,8 +37,9 @@ or persistent working-tree snapshot is introduced.
 C/POSIX matching folds ASCII only. Other locale matching currently uses Go's
 Unicode simple folding; discriminating fixtures cover C, POSIX and one available
 UTF-8 locale. This evidence does not establish equivalence for every locale or
-platform. Repository-subdirectory attribute capture still needs integration;
-its current explicit refusal is a functional limitation, not gate completion.
+platform. Repository-subdirectory attribute capture is implemented at
+`9c7c70b8`, with a fixture covering ancestor policy and caller-relative paths.
+Full integration verification and retained-request parity remain pending.
 
 ## Verification and rollback
 

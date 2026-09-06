@@ -1,0 +1,35 @@
+package sem
+
+import (
+ "context"
+ "encoding/json"
+ "os"
+ "path/filepath"
+ "testing"
+ "time"
+)
+
+// One retained request, two arms, no repetitions or tuning. Partial responses
+// are the diagnosed historical behavior and are retained verbatim for parity.
+func TestRetainedSearchDiagnostic(t *testing.T) {
+ repo:=os.Getenv("P1_DIAGNOSTIC_REPO")
+ out:=os.Getenv("P1_DIAGNOSTIC_OUTPUT")
+ if repo=="" || out=="" { t.Fatal("explicit diagnostic input/output required") }
+ query:="find the values symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go"
+ digests:=map[string]string{}
+ for _,reuse:=range []bool{false,true} {
+  arm:="off"; if reuse {arm="on"}
+  ctx,cancel:=context.WithTimeout(t.Context(),120*time.Second)
+  response,err:=SearchRepository(ctx,repo,"p1-corpus-20260905",query,SearchOptions{Worktree:true,Profile:ProfileSyntaxOnly,TopK:8,DisableCache:!reuse,ExtractionReuse:reuse,CacheDir:filepath.Join(out,"cache-"+arm)})
+  cancel()
+  bytes,marshalErr:=json.MarshalIndent(response,"","  "); if marshalErr!=nil {t.Fatal(marshalErr)}
+  if writeErr:=os.WriteFile(filepath.Join(out,arm+".json"),bytes,0600);writeErr!=nil {t.Fatal(writeErr)}
+  if err!=nil {t.Fatalf("%s: %v",arm,err)}
+  digest,_,err:=extractionCorpusSearchDigest(response);if err!=nil {t.Fatal(err)}
+  digests[arm]=digest
+  t.Logf("arm=%s indexed=%d failures=%d digest=%s",arm,response.Stats.FilesIndexed,len(response.PartialFailures),digest)
+ }
+ bytes,err:=json.MarshalIndent(digests,"","  ");if err!=nil {t.Fatal(err)}
+ if err:=os.WriteFile(filepath.Join(out,"digests.json"),bytes,0600);err!=nil {t.Fatal(err)}
+ if digests["off"]!=digests["on"] {t.Fatal("retained request still differs; stop and diagnose")}
+}
