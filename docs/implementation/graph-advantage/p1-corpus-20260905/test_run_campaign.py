@@ -86,6 +86,23 @@ def digest(root): return {"effective_tracked_input_sha256": "fixed-source"}
         self.assertEqual(json.loads((output / 'progress.json').read_text())['done'], True)
         self.assertNotEqual(self.execute(case)[0].returncode, 0)
 
+    def test_build_manifest_identity_is_recorded_and_binary_is_pinned(self):
+        case = self.case()
+        root, fake, manifest, assignment, counter, scenario = case
+        build = root / 'build.json'
+        build.write_text(json.dumps({
+            'binary_sha256': runner.sha(fake),
+            'source_file_hash_manifest_sha256': 'a' * 64,
+        }))
+        result, output, _ = self.execute(
+            case,
+            extra=('--build-manifest', str(build)),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        metadata = json.loads((output / 'campaign-manifest.json').read_text())
+        self.assertEqual(metadata['build_manifest_sha256'], runner.sha(build))
+        self.assertEqual(metadata['source_file_hash_manifest_sha256'], 'a' * 64)
+
     def test_first_process_error_pauses_without_starting_another_child(self):
         case = self.case(mode='error')
         result, output, rows = self.execute(case, mode='error')
