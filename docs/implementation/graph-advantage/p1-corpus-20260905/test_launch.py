@@ -150,7 +150,13 @@ class LaunchContracts(unittest.TestCase):
                 len(list(pathlib.Path(d).glob("launch-worker-*-stop.json"))),
                 len(launch.VMS),
             )
-            self.assertTrue((pathlib.Path(d) / "launch-failure.json").exists())
+            first_failure = json.loads((pathlib.Path(d) / "launch-failure.json").read_text())
+            launch.stop_workers("campaign", "run-a", pathlib.Path(d), attempt=2)
+            self.assertEqual(
+                first_failure,
+                json.loads((pathlib.Path(d) / "launch-failure.json").read_text()),
+            )
+            self.assertTrue((pathlib.Path(d) / "launch-failure-retry-2.json").exists())
 
 
 if __name__ == "__main__":
