@@ -30,13 +30,22 @@ Collision taxonomy (sessions as transactions): **WRITE–WRITE** (same entity ch
 - `tools/atc-fixture/build_fixture.sh` — seeded fixture: two "parallel session" branches whose merge is **textually clean** (git ort, zero conflicts) yet breaks at runtime (`TypeError: validate_token() missing 'expiry'`), plus WW / PROXIMITY seeds and an independent control pair. Verified by running the merge + tests.
 - `tools/atc/collide.py` — working end-to-end collider. Verified on the fixture: catches the READ–WRITE (both new call sites `quick_pay checkout.py:14`, `renew subscriptions.py:8`, with signatures old→new and confidence), the WRITE–WRITE (`parse_config`), correct advisories/proximity, correct landing order — and returns **CLEARED** on the independent control pair (precision bar).
 
-**Unresolved / next (post-noon ladder):** S2 checkpoint-intent enrichment → Databricks D1–D3 (telemetry → hotspot dashboard → priors loop) → S3 `--watch`/live worktrees → S4 `--all` pairwise + co-change PROXIMITY.
+**Also shipped and verified before noon (S2 + D1–D3 + tests):**
+- **S2 — intent enrichment** (`d44016a`): every verdict card states what each side was *trying* to do, tiered and source-labelled (Entire Checkpoint intent when the head commit carries one, else commit subjects; never guessed).
+- **Real-codebase verification** (`3c68645`): the same clean-merge trap reproduced in **this Go repository** — session A adds a parameter to `signatureTypeReferences`, session B adds a caller on the old shape, `git merge` reports zero conflicts. ATC flags READ–WRITE with the exact call site `internal/sem/types.go:3665` (confidence 0.92) in ~21s on a 5k-star repo. Not just a toy fixture.
+- **D1–D3 — fleet telemetry + priors loop** (`8a9757a`): verdicts stream to Delta (Databricks SQL warehouse) or a local SQLite store; history feeds back as a **pre-collision warning**. Verified: after 3 recorded runs, an unrelated pair returns `CLEARED` (zero overlap) *and* surfaces `auth.py — 3 red findings across 3 prior runs (rate 1.0)`. Backend and evidence scope are always printed, so a local prior is never presented as fleet evidence.
+- **Tests — 17/17 passing** (`aeab60a`, `tools/atc/test_atc.py`): recall and precision held as separate bars, the trap itself asserted, and fail-closed behaviour asserted (unknown refs exit 3 "no verdict", never 0 "clear"). Writing the tests found two real defects: the telemetry store's HOME-based isolation broke `entire` plugin discovery (now `ATC_LOCAL_DB`), and the fixture lacked a branch that made the priors capability testable.
+
+**Unresolved / next:** S3 `--watch` + shadow-branch (uncommitted) visibility → S4 `--all` pairwise + co-change PROXIMITY → Databricks dashboard screenshots against a live workspace.
 
 **Open risks:** static analysis misses dynamic dispatch (mitigated: UNKNOWN labeling; errors exit 3 "no verdict ≠ clean"); body-change advisories could be noisy on large repos (mitigated: advisories never page — only signature/removal/rename are red); `neighbors` symbol ambiguity on big codebases (mitigated: `--file` disambiguation retry).
 
 ## Entire Graph findings and verification
 - `graph diff --base <merge-base> --head feat-auth --json` on the fixture: flagged `validate_token` `signature_changed` `def validate_token(token)` → `def validate_token(token, expiry)` with `dependents_count: 3` — verified against source (auth.py:4).
 - `graph neighbors --symbol validate_token --direction in` on session B's tree: returned 5 callers incl. the two B-added ones with call sites + confidence (0.86, import_resolved) — verified: those exact lines raise TypeError after a clean merge.
+- `graph search --query "format a symbol reference for output"` on this repo located `signatureTypeReferences` (`internal/sem/types.go:2299`) as the realistic subject for the Go verification — a graph lookup that directly shaped what we built and tested.
+- `graph diff` on the Go pair returned `signature_changed` for `signatureTypeReferences`; `graph neighbors --direction in` returned `atcDemoTypeSummary` at `internal/sem/types.go:3665` (confidence 0.92, `resolution: import_resolved`). Verified against source: that call site passes 2 arguments to a now-3-parameter function, so the merged tree cannot build — while `git merge` reported zero conflicts.
+- Graph output is treated as evidence, not oracle: every dependent is printed with its confidence and resolution reason so a reviewer can check it, and anything unresolved is surfaced as UNKNOWN rather than dropped.
 - Final semantic-diff analysis of the submitted implementation: **to be recorded post-curveball.**
 
 ## Noon Curveball: what changed and how we adapted
@@ -64,10 +73,29 @@ git checkout main && git branch -D merge-demo
 # ATC catches it pre-merge
 python3 <fork>/tools/atc/collide.py feat-auth feat-checkout --repo .   # exit 2, HOLD
 python3 <fork>/tools/atc/collide.py feat-logging feat-docs --repo .    # exit 0, CLEARED
+
+# full test suite (17 checks: recall, precision, fail-closed, priors)
+python3 <fork>/tools/atc/test_atc.py
+
+# fleet memory: record verdicts, then get warned before any overlap exists
+python3 <fork>/tools/atc/collide.py feat-auth feat-checkout --repo . --record
+python3 <fork>/tools/atc/telemetry.py hotspots            # contention leaderboard
+python3 <fork>/tools/atc/collide.py feat-audit feat-docs --repo . --priors
+#   -> CLEARED (no overlap today) + "auth.py — 3 red findings across 3 prior runs"
 ```
 
+Exit codes: `0` cleared · `1` advisory · `2` red · `3` no verdict (error — never read as clean).
+
 ## Databricks use, data sources and limitations (if applicable)
-Planned opt-in (rungs D1–D3 in ATC_PLAN.md §8): verdict telemetry → Delta via SQL warehouse; contention-hotspot dashboard; priors loop feeding historical hotspot warnings back into the verdict card (early warning before any overlap exists — impossible locally). Data: synthetic fixture telemetry + this repo's own runs; will document snapshot dates and limits here if shipped.
+**Capabilities used:** Databricks SQL warehouse + Delta tables (`atc.atc_runs`, `atc.atc_findings`), written and queried through `databricks-sql-connector` from `tools/atc/telemetry.py`.
+
+**The core function Databricks performs:** ATC's per-run analysis judges one pair of branches on one machine. The Databricks layer is the *fleet's contention memory*: every verdict any developer produces lands in Delta, and the CLI queries that history back as a **pre-collision warning** — it fires on a path's track record even when the current pair has no overlap at all (verified: `feat-audit × feat-docs` → `CLEARED`, plus `auth.py — 3 red findings across 3 prior runs, rate 1.0`). Cross-developer, cross-repo, cross-time aggregation is exactly what a single local run cannot produce; remove the shared store and that early-warning capability disappears, leaving only same-moment overlap detection.
+
+**Honest scoping (and the reason the code is backend-pluggable):** the same schema and queries run against a local SQLite store for offline development and for the test suite. That fallback is single-machine only, and the tool **always prints which backend produced a prior and its evidence scope** (`this machine only` vs `fleet-wide`) — a local prior is never presentable as fleet evidence. Only the Databricks backend delivers the fleet capability being claimed.
+
+**Reproduction:** set `DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN` (never committed; kept in the environment), then `python3 tools/atc/telemetry.py init --backend databricks`, `... collide.py <a> <b> --record --backend databricks`, `... telemetry.py hotspots --backend databricks`.
+
+**Data sources, provenance and limits:** synthetic data only — verdicts generated from the seeded fixture in `tools/atc-fixture/` and from this repository's own branches, produced on 6 September 2026. No customer, personal or proprietary data. Limits: the priors are frequency statistics over a small synthetic sample, so they indicate contention tendency, not probability; counts under two runs touching a path are deliberately not reported at all rather than shown as weak evidence.
 
 ## Known limitations and next steps
 Static, heuristic analysis (tree-sitter): dynamic dispatch/reflection edges surface as UNKNOWN — verify by test; dependent counts are guidance, not compiler facts. Pairwise refs today (`--all` planned); watch mode planned (poll, not event-driven). Next step to production: run as an `entire` plugin subcommand with shadow-branch (uncommitted work) visibility for true pre-commit radar, and CI gate mode using the existing exit codes.
