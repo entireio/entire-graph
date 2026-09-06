@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"compress/gzip"
 	"context"
 	"io"
 	"math"
@@ -24,6 +25,7 @@ type extractionAdmissionSession struct {
 	totalBytes int64
 	maxBytes   int64
 	maxEntries int
+	compressor *gzip.Writer
 }
 
 func beginExtractionAdmissionSession(ctx context.Context, entry cacheEntry, maxBytes int64, maxEntries int) (*extractionAdmissionSession, error) {
@@ -50,6 +52,10 @@ func beginExtractionAdmissionSession(ctx context.Context, entry cacheEntry, maxB
 func (session *extractionAdmissionSession) Close() error {
 	if session == nil {
 		return nil
+	}
+	if session.compressor != nil {
+		session.compressor.Reset(io.Discard)
+		session.compressor = nil
 	}
 	err := session.held.Close()
 	session.held = nil
@@ -199,7 +205,10 @@ func (session *extractionAdmissionSession) publishBatch(ctx context.Context, pen
 			return writtenBytes, written, err
 		}
 		name := filepath.Base(item.entry.relative)
-		size, modified, err := item.entry.writeEncodedHeld(session.held.directory, "extract", item.encoded, item.bound)
+		if session.compressor == nil {
+			session.compressor = gzip.NewWriter(io.Discard)
+		}
+		size, modified, err := item.entry.writeEncodedHeldWithWriter(session.held.directory, "extract", item.encoded, item.bound, session.compressor)
 		if err != nil {
 			return writtenBytes, written, err
 		}

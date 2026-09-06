@@ -2,8 +2,10 @@ package sem
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +28,159 @@ func deterministicAdmissionBytes(size int, seed uint64) []byte {
 		data[index] = byte(state)
 	}
 	return data
+}
+
+func freshGzipBytes(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := gzip.NewWriter(&buffer)
+	if _, err := writer.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
+
+func readGzipBytes(t *testing.T, path string) []byte {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	reader, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, readErr := io.ReadAll(reader)
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	return got
+}
+
+func TestExtractionAdmissionReusableWriterMatchesFreshWriter(t *testing.T) {
+	root := t.TempDir()
+	first, err := newCacheEntry(root, "extraction-writer-reuse", "v1", strings.Repeat("1", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := lockExtractionAdmission(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	writer := gzip.NewWriter(io.Discard)
+	payloads := [][]byte{
+		[]byte("first payload with repeated repeated words"),
+		deterministicAdmissionBytes(8192, 17),
+		{0xff, 0xfe, 0x00, '{', '}', 0x80},
+	}
+	for index, payload := range payloads {
+		writer.Name = "must-not-leak"
+		writer.Comment = "reset must restore the default header"
+		entry, err := newCacheEntry(root, "extraction-writer-reuse", "v1", fmt.Sprintf("%064x", index+1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := entry.writeEncodedHeldWithWriter(held.directory, "extract", payload, int64(len(payload)+2048), writer); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(filepath.Join(entry.root, entry.relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fresh := freshGzipBytes(t, payload); !bytes.Equal(raw, fresh) {
+			t.Fatalf("payload %d reused gzip differs from fresh writer", index)
+		}
+		if got := readGzipBytes(t, filepath.Join(entry.root, entry.relative)); !bytes.Equal(got, payload) {
+			t.Fatalf("payload %d contains cross-file bytes: got %x, want %x", index, got, payload)
+		}
+		if writer.Name != "" || writer.Comment != "" {
+			t.Fatalf("payload %d retained gzip header state after reset: name=%q comment=%q", index, writer.Name, writer.Comment)
+		}
+	}
+}
+
+func TestExtractionAdmissionReusableWriterResetsAfterFailure(t *testing.T) {
+	root := t.TempDir()
+	bad, err := newCacheEntry(root, "extraction-writer-failure", "v1", strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := lockExtractionAdmission(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := os.Mkdir(filepath.Join(root, bad.relative), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writer := gzip.NewWriter(io.Discard)
+	if _, _, err := bad.writeEncodedHeldWithWriter(held.directory, "extract", []byte("failed payload"), 2048, writer); err == nil {
+		t.Fatal("rename failure unexpectedly succeeded")
+	}
+	good, err := newCacheEntry(root, "extraction-writer-failure", "v1", strings.Repeat("b", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("successful payload after failed rename")
+	if _, _, err := good.writeEncodedHeldWithWriter(held.directory, "extract", payload, 2048, writer); err != nil {
+		t.Fatalf("writer was not reusable after failure: %v", err)
+	}
+	if got := readGzipBytes(t, filepath.Join(good.root, good.relative)); !bytes.Equal(got, payload) {
+		t.Fatalf("successful payload after failure = %q, want %q", got, payload)
+	}
+}
+
+func TestExtractionAdmissionSessionLazilyReusesOneWriter(t *testing.T) {
+	root := t.TempDir()
+	first, err := newCacheEntry(root, "extraction-writer-session", "v1", strings.Repeat("c", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := beginExtractionAdmissionSession(context.Background(), first, 4096, extractionEntryLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.compressor != nil {
+		t.Fatal("admission inventory eagerly allocated a compressor")
+	}
+	rejected := pendingWithEncoded(first, deterministicAdmissionBytes(4096, 19))
+	if _, ok, err := session.publish(context.Background(), rejected); err != nil || ok {
+		t.Fatalf("oversized publication = ok %v, err %v", ok, err)
+	}
+	if session.compressor != nil {
+		t.Fatal("rejected publication allocated a compressor")
+	}
+	if _, ok, err := session.publish(context.Background(), pendingWithEncoded(first, []byte("first"))); err != nil || !ok {
+		t.Fatalf("first publication = ok %v, err %v", ok, err)
+	}
+	writer := session.compressor
+	if writer == nil {
+		t.Fatal("successful publication did not allocate compressor")
+	}
+	second, err := newCacheEntry(root, "extraction-writer-session", "v1", strings.Repeat("d", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := session.publish(context.Background(), pendingWithEncoded(second, []byte("second"))); err != nil || !ok {
+		t.Fatalf("second publication = ok %v, err %v", ok, err)
+	}
+	if session.compressor != writer {
+		t.Fatal("session replaced its compressor between sequential writes")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if session.compressor != nil {
+		t.Fatal("session close retained compressor")
+	}
 }
 
 func TestExtractionAdmissionFlushReleasesAndLaterBatchRescans(t *testing.T) {
