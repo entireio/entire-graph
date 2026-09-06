@@ -36,7 +36,7 @@ class FakeTransport:
             raise self.error
         artifact = next((item[1] for item in reversed(self.calls)
                          if item[0] == 'url' and item[2] == 'cw'), 'artifact.tar.gz')
-        return self.response.replace('artifact.tar.gz', artifact)
+        return json.dumps([self.response.replace('artifact.tar.gz', artifact)])
 
 
 class RetainedDiagnosticTests(unittest.TestCase):
@@ -97,6 +97,13 @@ class RetainedDiagnosticTests(unittest.TestCase):
             self.assertNotIn('secret-source', record)
             self.assertNotIn('secret-artifact', record)
             self.assertNotIn('remote-script.sh', [path.name for path in output.iterdir()])
+
+    def test_azure_json_string_envelope_is_decoded(self):
+        self.assertEqual(
+            diagnostic.decode_run_command_response(json.dumps(['P1_UPLOAD_OK blob'])),
+            ['P1_UPLOAD_OK blob'],
+        )
+        self.assertEqual(diagnostic.decode_run_command_response('plain output'), 'plain output')
 
     def test_run_requires_unique_run_id_and_output(self):
         args = argparse.Namespace(run_id='../escape', output=pathlib.Path('/tmp/nope'),

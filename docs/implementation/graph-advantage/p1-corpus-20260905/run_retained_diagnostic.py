@@ -135,6 +135,16 @@ def persist_script_evidence(output: pathlib.Path, script: str, *, source_blob: s
         json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def decode_run_command_response(raw: Any) -> Any:
+    """Decode Azure's JSON string envelope while retaining raw transport output."""
+    if not isinstance(raw, str):
+        return raw
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
 def remote_script(*, source_url: str, archive_sha256: str, expected_digest: str,
                   artifact_url: str, artifact_blob: str, remote_root: str,
                   run_id: str) -> str:
@@ -360,7 +370,7 @@ def run(args: argparse.Namespace, *, transport: Any = cloud,
                 remote_root=f"{REMOTE_PARENT}/{args.run_id}")
             raw = transport.run(args.vm, script)
             (output / "run-command-response.json").write_text(str(raw) + "\n")
-            require_upload_ack(raw, artifact_blob)
+            require_upload_ack(decode_run_command_response(raw), artifact_blob)
             downloader(artifact_blob, output / artifact_blob, env)
             return {"outcome": "artifact_collected", "artifact_blob": artifact_blob,
                     "source_blob": source_blob, "output": str(output)}
