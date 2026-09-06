@@ -15510,9 +15510,13 @@ func startsWithObjectID(content string) bool {
 // performs over the same listing.
 func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 	seen := make(map[string]struct{}, len(listed))
+	stopFailClosed := func() {
+		g.failClosedListedPath(listed)
+	}
 	observeChain := func(start string) bool {
 		for dir := start; dir != "." && dir != "/"; dir = path.Dir(dir) {
 			if g.listedObservationHalted() {
+				g.failClosedListedPath(listed)
 				return false
 			}
 			if _, done := seen[dir]; done {
@@ -15539,6 +15543,7 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 			}
 			g.observe(dir)
 			if g.listedObservationHalted() {
+				g.failClosedListedPath(listed)
 				return false
 			}
 		}
@@ -15546,6 +15551,7 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 	}
 	for _, entry := range listedDirs {
 		if g.listedObservationHalted() {
+			stopFailClosed()
 			return
 		}
 		if !observeChain(filepath.ToSlash(entry)) {
@@ -15554,6 +15560,7 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 	}
 	for _, entry := range listed {
 		if g.listedObservationHalted() {
+			stopFailClosed()
 			return
 		}
 		if !observeChain(path.Dir(filepath.ToSlash(entry))) {
@@ -15561,13 +15568,37 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 		}
 	}
 	if g.listedObservationHalted() {
+		stopFailClosed()
 		return
 	}
 	g.observeUnlistedDirs(seen)
 	if g.listedObservationHalted() {
+		stopFailClosed()
 		return
 	}
 	g.promoteUnverifiedGitDirs()
+	if g.listedObservationHalted() {
+		stopFailClosed()
+	}
+}
+
+// failClosedListedPath retains the cancellation safety invariant when a query
+// is already cancelled before the first listed path can be observed. The
+// operation will return the context error, but callers and diagnostics may
+// still inspect the excluder; conservatively excluding one listed path's
+// containing directory prevents that state from appearing searchable.
+func (g *gitDirExcluder) failClosedListedPath(listed []string) {
+	if len(listed) == 0 {
+		return
+	}
+	entry := filepath.ToSlash(listed[0])
+	candidate := path.Dir(entry)
+	if candidate == "." || candidate == "/" || candidate == "" {
+		candidate = entry
+	}
+	if candidate != "." && candidate != "/" && candidate != "" {
+		g.addTarget(candidate)
+	}
 }
 
 func (g *gitDirExcluder) listedObservationError() error {
@@ -15594,6 +15625,11 @@ func (g *gitDirExcluder) listedObservationHalted() bool {
 		return false
 	}
 	g.listedObservationCanceled = true
+	// Keep the sweep's fail-closed state and disclosure in sync with the
+	// observation-specific cancellation flag. Listed observation may stop before
+	// entering observeUnlistedDirs, so relying only on admitSweepDirectory would
+	// otherwise leave sweepStop at its successful value.
+	g.sweepHalted()
 	return true
 }
 
@@ -16040,11 +16076,17 @@ func (g *gitDirExcluder) promoteUnverifiedGitDirs() {
 	if g.promotedUnverified || g.hiddenEvidence == 0 {
 		return
 	}
+	if g.listedObservationHalted() {
+		return
+	}
 	g.promotedUnverified = true
 	if hasGitDirStructureWithBudget(g.repo, g.admitPointerRead) != gitDirStructureAbsent {
 		g.addTarget(gitDirRootTarget)
 	}
 	for _, dir := range g.observedDirs {
+		if g.listedObservationHalted() {
+			return
+		}
 		if g.excluded(dir) {
 			continue
 		}
@@ -18395,9 +18437,15 @@ func worktreeSourceFilesWithLister(
 			return nil, nil, fmt.Errorf("list ignored Git worktree paths for explicit includes: %w", ignoredErr)
 		}
 		for _, rel := range ignored {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
 			if ignores.Reincluded(filepath.ToSlash(rel), false) {
 				listed = append(listed, rel)
 			}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
 		}
 	}
 	// The vendored-directory heuristic consults the project's own re-inclusion
@@ -18425,6 +18473,9 @@ func worktreeSourceFilesWithLister(
 	kinds := make([]listedPathKind, len(listed))
 	var listedDirs []string
 	for index, entry := range listed {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		info, statErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(entry)))
 		switch {
 		case statErr != nil:
@@ -18434,6 +18485,9 @@ func worktreeSourceFilesWithLister(
 		case info.Mode()&fs.ModeSymlink == 0 && info.Mode().IsRegular():
 			kinds[index] = listedPathRegular
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
 	}
 	gitDirs := newGitDirExcluder(ctx, repo)
 	// The directories git lists nothing under come from git itself, so the sweep
@@ -18449,9 +18503,33 @@ func worktreeSourceFilesWithLister(
 	if err := gitDirs.listedObservationError(); err != nil {
 		return nil, nil, err
 	}
+	paths, err := filterListedWorktreePaths(ctx, listed, kinds, gitDirs, ignores, vendorRules, dirTracked)
+	if err != nil {
+		return nil, nil, err
+	}
+	warnings := append(gitDirs.sweepWarnings(), gitDirs.sweepUnreadableDirWarning()...)
+	return paths, warnings, nil
+}
+
+// filterListedWorktreePaths performs the final, non-I/O eligibility pass over
+// Git's listing. It polls the request context between entries and after the
+// sort so a cancellation cannot turn a completed enumeration into a successful
+// source listing after the caller has stopped waiting.
+func filterListedWorktreePaths(
+	ctx context.Context,
+	listed []string,
+	kinds []listedPathKind,
+	gitDirs *gitDirExcluder,
+	ignores ignoreMatcher,
+	vendorRules vendorIgnoreRules,
+	dirTracked func(string) bool,
+) ([]string, error) {
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
 	for index, entry := range listed {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		rel := filepath.ToSlash(entry)
 		if _, exists := seen[rel]; exists {
 			continue
@@ -18477,11 +18555,13 @@ func worktreeSourceFilesWithLister(
 		paths = append(paths, rel)
 	}
 	if err := gitDirs.listedObservationError(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	sort.Strings(paths)
-	warnings := append(gitDirs.sweepWarnings(), gitDirs.sweepUnreadableDirWarning()...)
-	return paths, warnings, nil
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return paths, nil
 }
 
 func includeEveryNestedIgnore(string) bool { return true }
@@ -18864,26 +18944,65 @@ func visitWalkWorktreeFilesWithRawLimit(
 	// once more against every pointer the whole walk found — and against the
 	// candidates promoted for the pointers it could NOT read.
 	gitDirs.promoteUnverifiedGitDirs()
+	kept, filterErr := filterPromotedWorktreePaths(ctx, paths, gitDirs)
+	if filterErr != nil {
+		walkErr = filterErr
+		if kept != nil {
+			paths = kept
+		}
+	} else {
+		paths = kept
+	}
+	if boundErr := gitDirs.listedObservationError(); boundErr != nil && walkErr == nil {
+		walkErr = boundErr
+	}
+	warnings := append(gitDirs.sweepWarnings(), gitDirs.unreadableWalkWarning()...)
+	warnings = append(warnings, gitDirs.sweepUnreadableDirWarning()...)
+	if err := ctx.Err(); err != nil {
+		walkErr = err
+	}
+	if walkErr != nil && (errors.Is(walkErr, context.Canceled) || errors.Is(walkErr, context.DeadlineExceeded)) {
+		return warnings, walkErr
+	}
+	sort.Strings(paths)
+	if err := ctx.Err(); err != nil {
+		return warnings, err
+	}
+	for _, rel := range paths {
+		if err := ctx.Err(); err != nil {
+			return warnings, err
+		}
+		if !visit(rel) {
+			if err := ctx.Err(); err != nil {
+				return warnings, err
+			}
+			return warnings, nil
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return warnings, err
+	}
+	return warnings, walkErr
+}
+
+// filterPromotedWorktreePaths applies the fallback's final pointer exclusions
+// after the walk. This pass can retain a large path list, so it must observe
+// cancellation just like the walk itself before handing paths to its visitor.
+func filterPromotedWorktreePaths(ctx context.Context, paths []string, gitDirs *gitDirExcluder) ([]string, error) {
 	kept := paths[:0]
 	for _, rel := range paths {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if gitDirs.excluded(rel) {
 			continue
 		}
 		kept = append(kept, rel)
 	}
-	paths = kept
-	if boundErr := gitDirs.listedObservationError(); boundErr != nil && walkErr == nil {
-		walkErr = boundErr
+	if err := gitDirs.listedObservationError(); err != nil {
+		return kept, err
 	}
-	sort.Strings(paths)
-	warnings := append(gitDirs.sweepWarnings(), gitDirs.unreadableWalkWarning()...)
-	warnings = append(warnings, gitDirs.sweepUnreadableDirWarning()...)
-	for _, rel := range paths {
-		if !visit(rel) {
-			return warnings, nil
-		}
-	}
-	return warnings, walkErr
+	return kept, nil
 }
 
 func filterVendoredPaths(paths []string, ignores vendorIgnoreRules) []string {
