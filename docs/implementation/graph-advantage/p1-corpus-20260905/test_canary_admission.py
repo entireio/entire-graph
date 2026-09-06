@@ -11,6 +11,13 @@ class CanaryTests(unittest.TestCase):
  def validate(self,p,identity,rows):
   (p/'campaign.ndjson').write_text('\n'.join(json.dumps(r) for r in rows))
   return gate.validate([p],[[{'repository':'r','profile':'fast'}]],identity)
+ def test_stale_binary_sources_block_before_cloud_launch(self):
+  with tempfile.TemporaryDirectory() as d:
+   p=pathlib.Path(d);source=p/'a.go';source.write_text('package a');manifest=p/'sources';manifest.write_text(gate.sha(source)+'  a.go\n')
+   gate.verify_build_sources(p,manifest,gate.sha(manifest),['a.go'])
+   with self.assertRaises(ValueError):gate.verify_build_sources(p,manifest,gate.sha(manifest),['a.go','new.go'])
+   source.write_text('package changed')
+   with self.assertRaises(ValueError):gate.verify_build_sources(p,manifest,gate.sha(manifest),['a.go'])
  def test_complete_matching_canary_admitted(self):
   with tempfile.TemporaryDirectory() as d:
    p,i,r=self.fixture(d);self.assertEqual(self.validate(p,i,r)['observations'],32)

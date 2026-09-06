@@ -28,3 +28,14 @@ def validate(directories,assignments,identities):
   if any(row[k]!=other[k] for k in ('semantic_digest','source_digest')):raise ValueError('Canary pair differs')
   if key[-1] and row['scenario']=='cold' and any(row[k]>other[k]*1.10 for k in ('elapsed_ns','peak_rss_bytes')):raise ValueError('Cold canary exceeds 10% latency/RSS screen; diagnose before expansion (not a statistical conclusion)')
  return {'status':'pass','identities':identities,'observations':len(seen),'evidence':evidence}
+
+def verify_build_sources(root,manifest,expected_manifest_hash,current_files):
+ root=pathlib.Path(root).resolve();manifest=pathlib.Path(manifest)
+ if sha(manifest)!=expected_manifest_hash:raise ValueError('Build source manifest changed')
+ recorded={}
+ for line in manifest.read_text().splitlines():
+  digest,name=line.split('  ',1);path=(root/name).resolve()
+  if not path.is_relative_to(root) or name in recorded:raise ValueError('Invalid build source path')
+  recorded[name]=digest
+  if not path.is_file() or sha(path)!=digest:raise ValueError('Executable is stale; rebuild and verify before evaluation: '+name)
+ if set(recorded)!=set(current_files):raise ValueError('Build source inventory changed; rebuild before evaluation')
