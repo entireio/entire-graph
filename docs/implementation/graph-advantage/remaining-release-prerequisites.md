@@ -25,17 +25,17 @@ and the [plan's evaluation rules](</Users/thomi/Projects/entire-plan/entire-grap
   inclusion/exclusion rules, labels, metric formulas, thresholds, repetitions,
   seeds, interval method, and treatment of failures, partials, and zero
   denominators. Preserve raw failures and incomplete denominators.
-- Full `mise run check` passed at `d793b2be` in 683.699 seconds in a
-  clean immutable checkout. Pinned Linux passed 28 top-level tests including
-  10 live tests at that source. Encoded-publication `b253e18a` has focused
-  race verification; the related ADR 0046 admission correction is active and
-  requires a new immutable integration check once settled.
+- Full `mise run check` passed at `0c9e80f5` in 693.532 seconds in a
+  clean immutable checkout. Pinned Linux passed 69 top-level tests including
+  10 live tests. Session-owned compressor correction `1c0b8e24` has focused
+  correctness and race verification; its immutable check is running and pinned
+  Linux verification is pending. Earlier checks do not cover this new source.
 - The 77 campaign-control tests pass locally. A live fake-service smoke now verifies the real
   supervisor stop path: all three services were active before injection and
   inactive with STOP markers afterward. Raw responses are retained under
   `p1-corpus-20260905/stopgap-live-smoke/run-0c9e80f5/`. This verifies the injected
   pause path, not every possible control-plane outage or product workload. The P1 campaign remains paused after the retained cold-screen
-  failure at `d793b2be`; no gate or default promotion is claimed.
+  failure at `0c9e80f5`; no gate or default promotion is claimed.
 
 
 ## P2 — optional compiler-backed Go resolution

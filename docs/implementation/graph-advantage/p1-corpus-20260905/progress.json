@@ -1,5 +1,5 @@
 {
-  "phase": "p1_remaining_publication_correction",
+  "phase": "p1_compressor_correctness",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -7,8 +7,8 @@
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
   "verified_checkpoint": "0c9e80f523ed433cb81ccdaa87b3f8f0c3e6d0dd",
   "verified_evidence_commit": "see evidence/check-0c9e80f5/verification.json",
-  "current_worktree": "0c9e80f5 full693.532s and pinnedLinux69tests passed; livefake-service stop verified",
-  "workers_state": "three taskVMs active only forfake-service stop smoke; no productcampaign",
+  "current_worktree": "1c0b8e24; focused correctness and race passed; immutable full check running; pinned Linux pending",
+  "workers_state": "campaign paused; validation VM starting for correctness; other two VMs deallocated",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
   "correctness": "69pinnedLinuxtests including10live; fullrepositorycheck693.532s",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T12:42:01.043949+00:00",
+  "as_of_utc": "2026-09-06T12:49:12.120597+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -41,7 +41,7 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Exact semantics and known194 partials preserved; OFF53.5s ON73.5s; remaining cold cost needs attribution",
+  "remaining_diagnosis": "Latest retained 0c9e80f5 pair preserves semantics and 194 known partials; OFF56.991s ON66.019s fails 1.10 screen; current lifecycle correction awaits correctness",
   "stopgaps": "77 campaign-control tests passed in7.809s after startup/final-lease/accounting fixes; protocol supersedes old three-failure rule",
   "full_correctness": "passed0c9e80f5 cleanimmutablecheckout unchangedHEAD",
   "campaign": "paused; isolated diagnostic failures retained separately",
@@ -51,12 +51,12 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Review one operation-owned compressor reuse; no pool, limit or codec tuning; no measurements before correctness",
+  "next_work": "Complete immutable and pinned correctness for1c0b8e24 before considering any isolated corrective retry",
   "current_focused_correctness": {
-    "commit": "5a60fc8f91855387ee7a7e9d341ccd88e74822ca",
-    "source_hashes_unchanged": true,
-    "semantic_race_seconds": 35.322,
-    "gitutil_seconds": 22.896
+    "commit": "1c0b8e24",
+    "correctness_seconds": 0.788,
+    "race_seconds": 1.851,
+    "source": "worker executed focused compressor/session tests; root reviewed patch"
   },
   "linux_correctness": {
     "source_commit": "0c9e80f523ed433cb81ccdaa87b3f8f0c3e6d0dd",
@@ -135,5 +135,6 @@
     "cold_screen": "failed; campaign remains paused",
     "rss": "unavailable",
     "limitations": "single corrective pair; no statistical or release-gate claim"
-  }
+  },
+  "current_product_source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782"
 }
