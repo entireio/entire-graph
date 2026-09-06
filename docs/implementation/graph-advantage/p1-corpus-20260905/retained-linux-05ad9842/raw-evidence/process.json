@@ -1,0 +1,13 @@
+{
+  "run_id": "retained-05ad9842-20260906",
+  "returncode": 0,
+  "timed_out": false,
+  "hard_timeout_seconds": 300,
+  "command": [
+    "diagnostic",
+    "-test.run=^TestRetainedSearchDiagnostic$",
+    "-test.v",
+    "-test.count=1",
+    "-test.timeout=5m"
+  ]
+}

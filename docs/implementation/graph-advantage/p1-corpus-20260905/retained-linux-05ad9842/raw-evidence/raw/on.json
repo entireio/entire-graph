@@ -1,0 +1,1866 @@
+{
+  "operation_inputs": {
+    "policy_coverage": "captured provider policy bytes including nested/vendor rules; Git listing/configuration and metadata probes are opaque",
+    "id": "0c05a395851ba180873d7c2bb7bb0d68af3bd69d3b40c8283978cf77a411fc6e",
+    "version": 1,
+    "coverage": "observed-inputs-only; not an atomic revision",
+    "selected_paths_digest": "368813f82f395b990288c6f561efcce0d217fad98a74b8b10108bbfa03f0bc28",
+    "selected_paths": 381,
+    "observed_inputs": 36573,
+    "unobserved_selected": 0,
+    "unavailable_inputs": 31,
+    "observations_omitted": 36317,
+    "observations": [
+      {
+        "path": ".generated_files",
+        "status": "captured",
+        "digest": "e60b049a2a75fc14c102c37c132c32dfed1586cca49bab56d6570365b27d329c",
+        "bytes": 750
+      },
+      {
+        "path": ".git/info/exclude",
+        "status": "captured",
+        "digest": "6671fe83b7a07c8932ee89164d1f2793b2318058eb8b98dc5c06ee0a5a3b0ec1",
+        "bytes": 240
+      },
+      {
+        "path": ".gitattributes",
+        "status": "captured",
+        "digest": "0a5da73fd05043dca57919dfa85fc46d3cec3dc28979124b9680d94e77437f06",
+        "bytes": 510
+      },
+      {
+        "path": ".github/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": ".github/ISSUE_TEMPLATE/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": ".github/ISSUE_TEMPLATE/bug-report.yaml",
+        "status": "captured",
+        "digest": "473028ad638d8c97ceb4896556d8205399a45ddb18661ff9022a0c5ddc06f4b7",
+        "bytes": 2212
+      },
+      {
+        "path": ".github/ISSUE_TEMPLATE/config.yml",
+        "status": "captured",
+        "digest": "94434c06aefa88beb8a08ecf49255eab9d2314f408777ebf4b079598675ac06d",
+        "bytes": 142
+      },
+      {
+        "path": ".github/ISSUE_TEMPLATE/enhancement.yaml",
+        "status": "captured",
+        "digest": "72e8b9a9fe3c8edd3335f181ca4eca36a2cf5c8c66066575aa80209cbc126633",
+        "bytes": 750
+      },
+      {
+        "path": ".github/ISSUE_TEMPLATE/failing-test.yaml",
+        "status": "captured",
+        "digest": "896104d43484efe87c23f60d32d90c6787d054725db80b78b114c8640f978359",
+        "bytes": 1128
+      },
+      {
+        "path": ".github/ISSUE_TEMPLATE/flaking-test.yaml",
+        "status": "captured",
+        "digest": "864bfa74bf334593dfd60bf01595fe28ff1aed8a1028d89f31da6151d20fcab5",
+        "bytes": 1393
+      },
+      {
+        "path": ".github/OWNERS",
+        "status": "captured",
+        "digest": "745b4f2448f01948d783af493fb23f539793f803c3f87643dabc0a68b60c613c",
+        "bytes": 464
+      },
+      {
+        "path": ".github/PULL_REQUEST_TEMPLATE.md",
+        "status": "captured",
+        "digest": "f0423bff4b3aa2885675bacca11d106577ec28099772f6dd52a2484311307ac8",
+        "bytes": 3442
+      },
+      {
+        "path": ".github/SECURITY.md",
+        "status": "captured",
+        "digest": "916000252816c3466f1e5ce9bf1ee776a7f89fde2231fd45c49844c2b8e06824",
+        "bytes": 616
+      },
+      {
+        "path": ".gitignore",
+        "status": "captured",
+        "digest": "349c333958bf246bebccb48541ef0f35d098741b21fe4030bc19506801896277",
+        "bytes": 2167
+      },
+      {
+        "path": ".go-version",
+        "status": "captured",
+        "digest": "a8844fbc8c3eb51c26ed00aec4cd5a5a9d647f849c6ead07bcc83ed24c4a7718",
+        "bytes": 7
+      },
+      {
+        "path": ".graphignore",
+        "status": "absent-policy"
+      },
+      {
+        "path": ".import-restrictions",
+        "status": "captured",
+        "digest": "7f541edb5629b319ac0228b7b406a74003d4412b6c46c337208de89ef389a22d",
+        "bytes": 269
+      },
+      {
+        "path": "AGENTS.md",
+        "status": "captured",
+        "digest": "ca28500a4f6f358090c58b2d3ed06c2eaf41ca4f441cddb23cec84e71362096a",
+        "bytes": 1584
+      },
+      {
+        "path": "CHANGELOG/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.10.md",
+        "status": "captured",
+        "digest": "32e78f155084303cbd830f09f159829701c59bb510a2d398d75e43b74647c213",
+        "bytes": 350040
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.11.md",
+        "status": "captured",
+        "digest": "0b50a98aea669b3601ff9ae94cb730d90867699aa2af347790ee54ed68e2cc03",
+        "bytes": 336236
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.12.md",
+        "status": "captured",
+        "digest": "7cbd1d6950eed7207c4bd2cafa35c549e53784d28a1d150ec4bba38562d8f2f5",
+        "bytes": 300828
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.13.md",
+        "status": "captured",
+        "digest": "69778093fc9e4b27fe24c58877ccbd533b8d87f3637319837d80781dafac4ccb",
+        "bytes": 279687
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.14.md",
+        "status": "captured",
+        "digest": "552a20b06f07b27e8bfc04c3c0de58726062235f4838cbee3f7e2083fac6f96b",
+        "bytes": 278023
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.15.md",
+        "status": "captured",
+        "digest": "152396383b31809ab198bc340f04e7fe4b4772d4f4ac860f3649ac896ef25303",
+        "bytes": 285634
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.16.md",
+        "status": "captured",
+        "digest": "330fbd62ff9f4e575e5b2332bb207b85e7a4225ee541233cb1ac17bc327e3829",
+        "bytes": 353490
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.17.md",
+        "status": "captured",
+        "digest": "8761135ae6717555f8da5b922ea602e20c177325b58ed0fe173baf2f44cc8f58",
+        "bytes": 354484
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.18.md",
+        "status": "captured",
+        "digest": "4dfe5ec32835068d3ea24bcff4ebc5297544d6aef2c3def97e41d70948f5428d",
+        "bytes": 382198
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.19.md",
+        "status": "captured",
+        "digest": "6a8174c94d35da10448b85caccf4ed54970c9bbf4448d30402040b236edcd6e5",
+        "bytes": 501422
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.2.md",
+        "status": "captured",
+        "digest": "139f4ceae76639f12fd842ffb436f7d8ce2636abc4466d370afaf4433c287daf",
+        "bytes": 42377
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.20.md",
+        "status": "captured",
+        "digest": "facace4fee682db88cbc87bfc30f6bb573a88bdc69f3e0c7fea4d4e3b91bf016",
+        "bytes": 418773
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.21.md",
+        "status": "captured",
+        "digest": "9bdfdf1006d589299970b25c423e0de0facf64a09707545faf647cdf9bc2299f",
+        "bytes": 376132
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.22.md",
+        "status": "captured",
+        "digest": "ad485808073b4e761a38a0c34f42396b630495dc10c7a18ea19d12b14458b852",
+        "bytes": 464986
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.23.md",
+        "status": "captured",
+        "digest": "8e3bf22e3f22fe00c92061f5babb3cf8e737f67f773ad95875855e027798ffc8",
+        "bytes": 434673
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.24.md",
+        "status": "captured",
+        "digest": "7a71507e21e7da138ad5c8b4fd9c53818649594be2e999d177d00bce5cdb65b4",
+        "bytes": 484759
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.25.md",
+        "status": "captured",
+        "digest": "3586eb457c8d0691bbf71ba434b5af2967d5b3e446cba63a3b24795a9a73f5c8",
+        "bytes": 429109
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.26.md",
+        "status": "captured",
+        "digest": "ab53c1bd3e2918f7d858cbfae62c50a9a63b8cce7b7daf72873be8330fab2fae",
+        "bytes": 435894
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.27.md",
+        "status": "captured",
+        "digest": "40ef3d8ae717001e058711fd45977088ae5244cc5791794cd452ee565952aa5c",
+        "bytes": 477502
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.28.md",
+        "status": "captured",
+        "digest": "56ac36a059f960dd61cb8c4bdbf443749cf1e33cd541029ad89dd8794c30fce9",
+        "bytes": 467915
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.29.md",
+        "status": "captured",
+        "digest": "4f76db493839abe8973fa6a973199cb9b46bcea53e24ea5c9324dcf07c7e0bb9",
+        "bytes": 439923
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.3.md",
+        "status": "captured",
+        "digest": "54a8725423a3c5613c29e9727366764d45fb754cc9f5eeda069e7ed1701bd42f",
+        "bytes": 86008
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.30.md",
+        "status": "captured",
+        "digest": "976292faf9eab5b1b2eaf8f89ff4cc9512bc1cd6579eef525b11c855a82fef7b",
+        "bytes": 407670
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.31.md",
+        "status": "captured",
+        "digest": "906f9b9e0eded59965692d4c9f60b21659b6cacbf91284d4a7f6e14ec8f9890e",
+        "bytes": 462719
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.32.md",
+        "status": "captured",
+        "digest": "20568d8771a44a51780f7d73855e2e21f34fc4b9e4fdb0506f93262edc7f7069",
+        "bytes": 481843
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.33.md",
+        "status": "captured",
+        "digest": "1d66bf92e7129d7424b3b27922447b9968388d0179ee0c2290e1ed913280be33",
+        "bytes": 413039
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.34.md",
+        "status": "captured",
+        "digest": "b007cb247f43a6f36972b2eb1c2008db184014922ba36b550202bc1f4641b46b",
+        "bytes": 440462
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.35.md",
+        "status": "captured",
+        "digest": "0e1fc5de1107f72761e0ce393b4504af15647e154511fe5cb6725d6da178b3b0",
+        "bytes": 335104
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.36.md",
+        "status": "captured",
+        "digest": "dba8daf41f094ef7894c527e1b20ab04453bc9d64e04a9b000f100913dee7159",
+        "bytes": 360975
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.37.md",
+        "status": "captured",
+        "digest": "62e73d8c0afda3145d114eade561a1efd30392c70c50717ea7be879af4b2ae61",
+        "bytes": 366010
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.4.md",
+        "status": "captured",
+        "digest": "b7e12181d2b0fdfd88d5a00299ba4fcfce77e586ed8a9c6ad2ba6c09fe62b4be",
+        "bytes": 136717
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.5.md",
+        "status": "captured",
+        "digest": "cd2a0450387310f400bb468e825d8ceab5f2041cc387bf433d5a42f74d55bbdd",
+        "bytes": 139648
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.6.md",
+        "status": "captured",
+        "digest": "d4015aef4912cecefe66edfce06143c41ca597cef0d24321e79cb5f50671b4ce",
+        "bytes": 311321
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.7.md",
+        "status": "captured",
+        "digest": "08ccae08e9203c5018824bccb1a5f62b032f2d83a3e004f205abac3edea57348",
+        "bytes": 316155
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.8.md",
+        "status": "captured",
+        "digest": "acd4e0de3f9db792997be8d7bc7c8d76861b0639a688c5657d250d3e37d3a268",
+        "bytes": 319688
+      },
+      {
+        "path": "CHANGELOG/CHANGELOG-1.9.md",
+        "status": "captured",
+        "digest": "94300b07686ba3249041b5f7c7d3c6bd0dd236f7c38145c12e59cfd89f5f626d",
+        "bytes": 321191
+      },
+      {
+        "path": "CHANGELOG/OWNERS",
+        "status": "captured",
+        "digest": "b36475dab4e4a6753545e49dbfb98cc2e51bd0f741eedf8fb5f7b0ae972c2ae5",
+        "bytes": 417
+      },
+      {
+        "path": "CHANGELOG/README.md",
+        "status": "captured",
+        "digest": "861835308b1fbc6344b89195da1e18568c730159a1722ebc8a9f59d1d2f66b79",
+        "bytes": 1546
+      },
+      {
+        "path": "CONTRIBUTING.md",
+        "status": "captured",
+        "digest": "639af1c94c39ded3a781d1f82c7075b6af898b7bb6d284ea0313278568c54231",
+        "bytes": 525
+      },
+      {
+        "path": "LICENSE",
+        "status": "captured",
+        "digest": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "bytes": 11358
+      },
+      {
+        "path": "LICENSES/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "LICENSES/LICENSE",
+        "status": "captured",
+        "digest": "0a01c61fe0ccc3f477daf3666d75088bf86c5b651f4f5c8ad0a47e36611a6dc1",
+        "bytes": 11596
+      },
+      {
+        "path": "LICENSES/OWNERS",
+        "status": "captured",
+        "digest": "ae17861df70e6354e2c91f883c88e959760dcbfedce06cee47017aabbf490305",
+        "bytes": 151
+      },
+      {
+        "path": "OWNERS",
+        "status": "captured",
+        "digest": "239a40e2a00d1123fb0f082c1c8eab149569bfef302b90d14137d1546729ff43",
+        "bytes": 950
+      },
+      {
+        "path": "OWNERS_ALIASES",
+        "status": "captured",
+        "digest": "2fe6bb506a2264823ff6de1a6bf82088babbe858b8bd03168b392c7c0a592b19",
+        "bytes": 13430
+      },
+      {
+        "path": "README.md",
+        "status": "captured",
+        "digest": "0c1159ea384aa0855eaad87f4595da8fd776553830297f3a7c43db81c7708fbd",
+        "bytes": 4236
+      },
+      {
+        "path": "SECURITY_CONTACTS",
+        "status": "captured",
+        "digest": "0cbc1bd2cd1c38d1692c78dfa85ece3c78de7a36d014ca95807402c08c7e973b",
+        "bytes": 665
+      },
+      {
+        "path": "SUPPORT.md",
+        "status": "captured",
+        "digest": "2b9ff099de22b3144a8f1fd79c82d008d3d20508d4832838973300bc923c280a",
+        "bytes": 1077
+      },
+      {
+        "path": "api/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "api/OWNERS",
+        "status": "captured",
+        "digest": "a5c9dd50f243913d48824dbe8a84c14485fca361cf38abbc5350b47abceba403",
+        "bytes": 195
+      },
+      {
+        "path": "api/api-rules/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "api/api-rules/README.md",
+        "status": "captured",
+        "digest": "2631dc8dd05e0ffcb3738f2a04c76c78bbd227d7784aa42aad95733686fbf997",
+        "bytes": 1709
+      },
+      {
+        "path": "api/api-rules/aggregator_violation_exceptions.list",
+        "status": "captured",
+        "digest": "b3c0ffd19528cec85c47fa5575bbdf1273cf1f19530835217e249e51ccd940e9",
+        "bytes": 1283
+      },
+      {
+        "path": "api/api-rules/apiextensions_violation_exceptions.list",
+        "status": "captured",
+        "digest": "91803e68274cb29968a23efd1c51ba2982faa67af11a98eca3fd146924425fa1",
+        "bytes": 5064
+      },
+      {
+        "path": "api/api-rules/codegen_violation_exceptions.list",
+        "status": "captured",
+        "digest": "e5feea87fc76c495f2ce497b2338f46afd0009fe7e44d048642885b8162deee4",
+        "bytes": 1522
+      },
+      {
+        "path": "api/api-rules/sample_apiserver_violation_exceptions.list",
+        "status": "captured",
+        "digest": "b3c0ffd19528cec85c47fa5575bbdf1273cf1f19530835217e249e51ccd940e9",
+        "bytes": 1283
+      },
+      {
+        "path": "api/api-rules/sample_controller_violation_exceptions.list",
+        "status": "captured",
+        "digest": "b3c0ffd19528cec85c47fa5575bbdf1273cf1f19530835217e249e51ccd940e9",
+        "bytes": 1283
+      },
+      {
+        "path": "api/api-rules/violation_exceptions.list",
+        "status": "captured",
+        "digest": "ca78dc35207968d1f0ca1946374ebbffe41359d57187fcf3e4fd3d45cafbd7e1",
+        "bytes": 34635
+      },
+      {
+        "path": "api/discovery/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "api/discovery/aggregated_v2.json",
+        "status": "captured",
+        "digest": "88bbc6838fa03ad402caf2796f59a03111865a31ec7216434b35e84b07fec5a8",
+        "bytes": 72664
+      },
+      {
+        "path": "api/discovery/api.json",
+        "status": "captured",
+        "digest": "3ee95db3e99f00875ae2365b27aa393c54f08dc9b960acecb4186e7b317f5e11",
+        "bytes": 184
+      },
+      {
+        "path": "api/discovery/api__v1.json",
+        "status": "captured",
+        "digest": "42826c23c911b595c495f93ccfae15de0869908fa7d539601e4b3acbb8ebfffc",
+        "bytes": 10932
+      },
+      {
+        "path": "api/discovery/apis.json",
+        "status": "captured",
+        "digest": "7e8ef11ff550be039788dff31f8a9523dc8c1adfa3f06aa7e6b6d9c1357c388c",
+        "bytes": 7896
+      },
+      {
+        "path": "api/discovery/apis__admissionregistration.k8s.io.json",
+        "status": "captured",
+        "digest": "f18d517a70fd9bd41f32c6e014eaab5f0954699e1054d9e5f04f5eccfd51fcea",
+        "bytes": 511
+      },
+      {
+        "path": "api/discovery/apis__admissionregistration.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "dc007f5da7a446e31d58cb31c2ec770d85bbc47254d12209929765d6950ec47f",
+        "bytes": 3113
+      },
+      {
+        "path": "api/discovery/apis__admissionregistration.k8s.io__v1alpha1.json",
+        "status": "captured",
+        "digest": "d0f599b96771225b88da165ad63d25e2a852a248a1a70b5c7a574edb68ce819f",
+        "bytes": 1042
+      },
+      {
+        "path": "api/discovery/apis__admissionregistration.k8s.io__v1beta1.json",
+        "status": "captured",
+        "digest": "6e0ae5e9210b254b70390b9e6430fb36947d3e3efbf6859440147db74e6e82d8",
+        "bytes": 1041
+      },
+      {
+        "path": "api/discovery/apis__apiextensions.k8s.io.json",
+        "status": "captured",
+        "digest": "71f2764fd879a771c376a3dff5e42c8bf6befa44d1b8470763acef2fdaf96bbe",
+        "bytes": 281
+      },
+      {
+        "path": "api/discovery/apis__apiextensions.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "d1b08024e717542e0ea3e472c1282495e30b002219b03891ae2888cc3c7db0e4",
+        "bytes": 859
+      },
+      {
+        "path": "api/discovery/apis__apiregistration.k8s.io.json",
+        "status": "captured",
+        "digest": "53ef0ec2d2c14ed677f3f93077573294f6b7c7fa55128cad5073da64e72b1072",
+        "bytes": 287
+      },
+      {
+        "path": "api/discovery/apis__apiregistration.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "64140089a05a8e30330bbb5fb75687000bb00aea3cf1c88c61d7ac3584ca8b47",
+        "bytes": 730
+      },
+      {
+        "path": "api/discovery/apis__apps.json",
+        "status": "captured",
+        "digest": "f7f6225690f2e48777102047a7e26d7fec8a013877c426938ffe4dc6afbcf6ff",
+        "bytes": 233
+      },
+      {
+        "path": "api/discovery/apis__apps__v1.json",
+        "status": "captured",
+        "digest": "c58569cbf743bf22507d475c15be39f72f5aec4bef4472552bc27ce95ce04361",
+        "bytes": 3787
+      },
+      {
+        "path": "api/discovery/apis__authentication.k8s.io.json",
+        "status": "captured",
+        "digest": "b0f1c661b91bb37ca63a2f253136a2d1e3c64d424220774e295d4aff6594d7d9",
+        "bytes": 284
+      },
+      {
+        "path": "api/discovery/apis__authentication.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "5673e9fd816deb7c63226d79284cc070cbf08d1638e3bb3fd68d394335c73c21",
+        "bytes": 495
+      },
+      {
+        "path": "api/discovery/apis__authorization.k8s.io.json",
+        "status": "captured",
+        "digest": "5e9ce6d0463dadb8b232422b730dea313461fa23c2c1748ed8918b4b3c845c12",
+        "bytes": 281
+      },
+      {
+        "path": "api/discovery/apis__authorization.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "a34ba83fc4b98a75390dca6a6f3f982cab9240a5c9f10334dfd8b40353e7b223",
+        "bytes": 963
+      },
+      {
+        "path": "api/discovery/apis__autoscaling.json",
+        "status": "captured",
+        "digest": "6875a43244bad63d15102db42cab4bc6e44aef58355b4acbce5e84244d942bd2",
+        "bytes": 329
+      },
+      {
+        "path": "api/discovery/apis__autoscaling__v1.json",
+        "status": "captured",
+        "digest": "0ee1f2cb387c2434444085700aefdeee2ee122b396d29b55375e327ce1fec038",
+        "bytes": 816
+      },
+      {
+        "path": "api/discovery/apis__autoscaling__v2.json",
+        "status": "captured",
+        "digest": "0d72ac6ff9d46b426d35365d76570e1e6ec4addc36bffaa21340d8e862882428",
+        "bytes": 816
+      },
+      {
+        "path": "api/discovery/apis__batch.json",
+        "status": "captured",
+        "digest": "0aee079afc44c471ddbdb4c76dc1cf9072991e4787914022e6cdae73ee836d77",
+        "bytes": 236
+      },
+      {
+        "path": "api/discovery/apis__batch__v1.json",
+        "status": "captured",
+        "digest": "53f9081a29d5ddc5e20c324204c6d74755e6e1e216be39697b424a4bbebe5c8a",
+        "bytes": 1289
+      },
+      {
+        "path": "api/discovery/apis__certificates.k8s.io.json",
+        "status": "captured",
+        "digest": "be04a3a5ed452a2cefe962e1fdf02556f03cf70abc22ae4b8297ea899cde8b83",
+        "bytes": 371
+      },
+      {
+        "path": "api/discovery/apis__certificates.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "af61096c4dec3fbc47bd58855a32d8aafd769cb1f2c51e8c241aa13cac985549",
+        "bytes": 2004
+      },
+      {
+        "path": "api/discovery/apis__certificates.k8s.io__v1beta1.json",
+        "status": "captured",
+        "digest": "d514354e6e61e607a049ebd9cf7b48180e9e9a4bb71995d9467e2300d4a367ef",
+        "bytes": 1101
+      },
+      {
+        "path": "api/discovery/apis__coordination.k8s.io.json",
+        "status": "captured",
+        "digest": "89d9a3ca16ef4111e50209dd9bd88b5ed30a064be5252b763b20b2a4c49b28b9",
+        "bytes": 466
+      },
+      {
+        "path": "api/discovery/apis__coordination.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "beba22f7a291cc9127f74b16188f853b6838302fb9ae42f177f292575ca68ac5",
+        "bytes": 451
+      },
+      {
+        "path": "api/discovery/apis__coordination.k8s.io__v1alpha2.json",
+        "status": "captured",
+        "digest": "e3784b1149ca9498373d8152f852b1085a0719a02b6461c524d57f1e4fd85287",
+        "bytes": 484
+      },
+      {
+        "path": "api/discovery/apis__coordination.k8s.io__v1beta1.json",
+        "status": "captured",
+        "digest": "9c6dc90ec39e13d5de005a4d9247b80716067c4466ad03393f1ac7f57908a01f",
+        "bytes": 483
+      },
+      {
+        "path": "api/discovery/apis__discovery.k8s.io.json",
+        "status": "captured",
+        "digest": "50e1cbd7bb9422ba1f4c21035ee710374c026536c3376dc560ad22d39fc4e4d1",
+        "bytes": 269
+      },
+      {
+        "path": "api/discovery/apis__discovery.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "547e5b2d6388de9e4773e0de031fde1678f4e2c08907ce19aaf3e586231a7032",
+        "bytes": 472
+      },
+      {
+        "path": "api/discovery/apis__events.k8s.io.json",
+        "status": "captured",
+        "digest": "8150b34498905e723ea0deb13fcc230f4f6aa09175544c630b4cf75de4ccacff",
+        "bytes": 260
+      },
+      {
+        "path": "api/discovery/apis__events.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "3f06afba5c90437432012abb950d115e9b0987f9b651696003e4643ee8f3e2f2",
+        "bytes": 489
+      },
+      {
+        "path": "api/discovery/apis__flowcontrol.apiserver.k8s.io.json",
+        "status": "captured",
+        "digest": "c674e61c12a88e01bb2b2a86cac96ee7d4ed489b9da3ce6daa747181952ebc62",
+        "bytes": 305
+      },
+      {
+        "path": "api/discovery/apis__flowcontrol.apiserver.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "654beb7852d0b56747399b55be516a9050135cb07184f2f44fba8952c7b9a66c",
+        "bytes": 1312
+      },
+      {
+        "path": "api/discovery/apis__internal.apiserver.k8s.io.json",
+        "status": "captured",
+        "digest": "982decef4f16fb609bfe478c8051eaebde53d4e7befc8b68f841103374d55abb",
+        "bytes": 320
+      },
+      {
+        "path": "api/discovery/apis__internal.apiserver.k8s.io__v1alpha1.json",
+        "status": "captured",
+        "digest": "4cc6df5b5048ebddcb93821e3072690062d7380b115afe6358e32d81c891cfef",
+        "bytes": 703
+      },
+      {
+        "path": "api/discovery/apis__lifecycle.k8s.io.json",
+        "status": "captured",
+        "digest": "0c9ed28582b0df7179cf7d497ecf0dc0bbc396fdd1188980278067590e548ac7",
+        "bytes": 293
+      },
+      {
+        "path": "api/discovery/apis__lifecycle.k8s.io__v1alpha1.json",
+        "status": "captured",
+        "digest": "3ad419f507e5408a2cd4316dcdbb42c95d692b9584661328be7f028655847dd5",
+        "bytes": 1237
+      },
+      {
+        "path": "api/discovery/apis__networking.k8s.io.json",
+        "status": "captured",
+        "digest": "e031e3fff1444e5703f1b384c8bce227d89209f01b4dac7b098332c01576c074",
+        "bytes": 272
+      },
+      {
+        "path": "api/discovery/apis__networking.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "4054fdedfd7fb1959b07176d82e04ac3f8c0c1ead8d07678b5bceb3ad964b060",
+        "bytes": 2406
+      },
+      {
+        "path": "api/discovery/apis__node.k8s.io.json",
+        "status": "captured",
+        "digest": "f7cb4fb18de542262e4bbaef4ad170675ac9f0f5769b97bd2274179ce4bbcb34",
+        "bytes": 254
+      },
+      {
+        "path": "api/discovery/apis__node.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "6e4fccb9dfa9fb97fb81e3347178791741c5b55de4a7cfbbcc0e1b1bd9aab9a2",
+        "bytes": 466
+      },
+      {
+        "path": "api/discovery/apis__policy.json",
+        "status": "captured",
+        "digest": "41cb46ad144497148c7997c77c84b95d6e4ae9aa594b0fdc75035de175c1ffcf",
+        "bytes": 239
+      },
+      {
+        "path": "api/discovery/apis__policy__v1.json",
+        "status": "captured",
+        "digest": "8038b3ca20bbc8f4335422ef4325a6ef196102ceac1e3065e4c70dd42e08b3c4",
+        "bytes": 746
+      },
+      {
+        "path": "api/discovery/apis__rbac.authorization.k8s.io.json",
+        "status": "captured",
+        "digest": "5852c306810a2d2a3da518c17545da5fae01f822a737b6cf257abde6ef49d4bc",
+        "bytes": 296
+      },
+      {
+        "path": "api/discovery/apis__rbac.authorization.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "a64b4e5261446f411b7e673c16d89efa4e4f31a7a69d2a712fd1ccebbe15c8d5",
+        "bytes": 1527
+      },
+      {
+        "path": "api/discovery/apis__resource.k8s.io.json",
+        "status": "captured",
+        "digest": "d047e99117f4abdad2b94d817c909e01948637aee293747bf2a17d516c8a0d4c",
+        "bytes": 535
+      },
+      {
+        "path": "api/discovery/apis__resource.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "8ba43834a7da7de36044fe520147bd726d56be7000d97593312059787e62356b",
+        "bytes": 2346
+      },
+      {
+        "path": "api/discovery/apis__resource.k8s.io__v1alpha3.json",
+        "status": "captured",
+        "digest": "a180059c09f2f71a29cfd6ee76b34a5e30a40109c8f4ae46de0cf39cb380be33",
+        "bytes": 1325
+      },
+      {
+        "path": "api/discovery/apis__resource.k8s.io__v1beta1.json",
+        "status": "captured",
+        "digest": "a064dda8e860318e385d8eb6d3c6748c7a24fac935a25b36fdb0557fcd19f0a2",
+        "bytes": 1774
+      },
+      {
+        "path": "api/discovery/apis__resource.k8s.io__v1beta2.json",
+        "status": "captured",
+        "digest": "0aa6c80d553f57ee1b7993618fcbf6a6769d74a659fc674c823eca74d7d1cca7",
+        "bytes": 2351
+      },
+      {
+        "path": "api/discovery/apis__scheduling.k8s.io.json",
+        "status": "captured",
+        "digest": "007cd064577156824b3cb43c6ec4ce6a251267eba8b4e98f3c828c04bba75533",
+        "bytes": 456
+      },
+      {
+        "path": "api/discovery/apis__scheduling.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "bf6e93f0e79a54d0a38757be1b09411fe099083e7661ecc6f95d3bedf934702b",
+        "bytes": 519
+      },
+      {
+        "path": "api/discovery/apis__scheduling.k8s.io__v1alpha3.json",
+        "status": "captured",
+        "digest": "4bded0840b885b958108c86916bd3046134a1c13f535c9242d2d6c64cf5dce4f",
+        "bytes": 1589
+      },
+      {
+        "path": "api/discovery/apis__scheduling.k8s.io__v1beta1.json",
+        "status": "captured",
+        "digest": "a9f2cff706ab883d0ecc465d762ffd187cd1680d15b308167c83731d0ce926af",
+        "bytes": 1003
+      },
+      {
+        "path": "api/discovery/apis__storage.k8s.io.json",
+        "status": "captured",
+        "digest": "267a9c60bed48bb4ec69462ebbe2d3544bd6fb1786c9740ce6d6cc5d4ab84e22",
+        "bytes": 263
+      },
+      {
+        "path": "api/discovery/apis__storage.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "72573943bd7375d66d6491d8d497edd463f09a16cf61a50dd36442fb486dbd59",
+        "bytes": 2776
+      },
+      {
+        "path": "api/discovery/apis__storagemigration.k8s.io.json",
+        "status": "captured",
+        "digest": "3163aeb24d5feedbe97e4946b910c9f91ed7bbb3193b1cd915a212f528704ef9",
+        "bytes": 387
+      },
+      {
+        "path": "api/discovery/apis__storagemigration.k8s.io__v1.json",
+        "status": "captured",
+        "digest": "cbe43e10a080427df0ba8ba5933320b414671f1a28dabd7c2449f7784de19f15",
+        "bytes": 740
+      },
+      {
+        "path": "api/discovery/apis__storagemigration.k8s.io__v1beta1.json",
+        "status": "captured",
+        "digest": "ed94efed22d16b21cec5fa9cfbd484b45cb054b523c0c89de69142e75ac1324d",
+        "bytes": 745
+      },
+      {
+        "path": "api/openapi-spec/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "api/openapi-spec/README.md",
+        "status": "captured",
+        "digest": "fd59e0576345ad17f293cd10275cd9538d4717be412eae5274ae93213b63df30",
+        "bytes": 2487
+      },
+      {
+        "path": "api/openapi-spec/swagger.json",
+        "status": "oversized",
+        "digest": "08a88d5d5fd9dcd1f93a77286f1d3ac8e471caca158284f511e75500a97a4de7",
+        "bytes": 4475944
+      },
+      {
+        "path": "api/openapi-spec/v3/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "api/openapi-spec/v3/.well-known__openid-configuration_openapi.json",
+        "status": "captured",
+        "digest": "d776f5a3b4924075c3105f6576a4167c56a9b31d94219e4eb304af17841f1c0c",
+        "bytes": 987
+      },
+      {
+        "path": "api/openapi-spec/v3/api__v1_openapi.json",
+        "status": "captured",
+        "digest": "db5342172ebb0f8e3c17a13d842332fdeb47909cbd2134847aad617cfadfd59a",
+        "bytes": 2135691
+      },
+      {
+        "path": "api/openapi-spec/v3/api_openapi.json",
+        "status": "captured",
+        "digest": "c8b5ff931e265a81bce87df0e27a8d512fa056623b99b7a7d307b6ad9f9c0f8e",
+        "bytes": 4957
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__admissionregistration.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "435535e38b4d67af572e0d6a1798f06b0a6e4e9914d90edf7ac160b50c5ba803",
+        "bytes": 607819
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__admissionregistration.k8s.io__v1alpha1_openapi.json",
+        "status": "captured",
+        "digest": "7d41dcbcf2de444ad4d1d0feaee329aaa8d7a6ac53242e996fdab0e376660222",
+        "bytes": 231488
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__admissionregistration.k8s.io__v1beta1_openapi.json",
+        "status": "captured",
+        "digest": "94dd75c4e543db25f2e05e378d7589a079342f9bcdf2e58139a327e4705bf674",
+        "bytes": 231776
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__admissionregistration.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "70cb34b24e86d43a7a92b88581766ff56a5330fafa4a166f2634c545d235b1ce",
+        "bytes": 6360
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__apiextensions.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "41d85b9f6f2757d35b6645086d5bcadf4904a8f0133b00d77e2576b3feb47d56",
+        "bytes": 182439
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__apiextensions.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "704cf006b3e6f5770b3b0ad6bb5a7e537118460002a362c0fe0fd8e6031181ae",
+        "bytes": 6336
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__apiregistration.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "a8e1310237c1b7a484ab98cd594f1d98e46e6d4c6ae7d7c9fd2c86f4cd91a19c",
+        "bytes": 138365
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__apiregistration.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "165a977dbe9f1b72fe7279bad3c0673233e36f35721b560261cd7d14b2a74ce1",
+        "bytes": 6342
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__apps__v1_openapi.json",
+        "status": "captured",
+        "digest": "81dd819cd72e9cd48b1135e94d85b7362a71cee00370b759aa6affb0b3585225",
+        "bytes": 935171
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__apps_openapi.json",
+        "status": "captured",
+        "digest": "6779f188ee2c99db2bdd88917239a9c9625a19a6750b320d96f461c540abc50f",
+        "bytes": 6302
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__authentication.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "443427d822f77db77202c96df06d453845abc5cc67390180129a67e6c74d421e",
+        "bytes": 43337
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__authentication.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "47ea9f9e3db010ab9aad434d2267bafe7312db3fd86f4894845ec3d1d61325d4",
+        "bytes": 6339
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__authorization.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "50a7d1978dbaa39bfb1f698f28241d25785f616df894ea7db5404e2d3d95e9d1",
+        "bytes": 76464
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__authorization.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "c382b090a07e46c830b5473b245e939a07df06a8f272a75eca53e42946a6a9b4",
+        "bytes": 6336
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__autoscaling__v1_openapi.json",
+        "status": "captured",
+        "digest": "424e756aa03460e09e39ead79c767dcb0450d0647dd1a4302598d3961c159898",
+        "bytes": 160978
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__autoscaling__v2_openapi.json",
+        "status": "captured",
+        "digest": "32628d59e2dd0ba83166bf5e64440acb60e1e634dc04d9e0bb35e8a272206d38",
+        "bytes": 196265
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__autoscaling_openapi.json",
+        "status": "captured",
+        "digest": "49ad88585dbb6e0d7c1678b64229b0318c0c3c77a43e39ed9e4e1291dc998b67",
+        "bytes": 6323
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__batch__v1_openapi.json",
+        "status": "captured",
+        "digest": "5a6f8bb278937e7ce2acf07be36eb9dab9025d8cd7194b8492bab9c8feff7639",
+        "bytes": 552064
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__batch_openapi.json",
+        "status": "captured",
+        "digest": "ca1cff400884c89ec9937307bf5df57d76134a6e6398d2b8d702f0d317e4dc27",
+        "bytes": 6305
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__certificates.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "3765029c37a822e9aa4a9988e5269f7efdc71253ad412876e3d88ccc9e36e630",
+        "bytes": 362632
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__certificates.k8s.io__v1beta1_openapi.json",
+        "status": "captured",
+        "digest": "ce12f49e852cc4c215e778c8dccd36027b9b6caba0ea07d43555f58d99fddd27",
+        "bytes": 249969
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__certificates.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "0f707ce9c9958b5b3626c413b0321e3c0d9bd19054312d3ecfa6ba9c99e2dc83",
+        "bytes": 6333
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__coordination.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "7799819c8dcc9d851cf8ba6150a8e5d4769299391bf7c04b61fe434533b0a2b3",
+        "bytes": 143625
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__coordination.k8s.io__v1alpha2_openapi.json",
+        "status": "captured",
+        "digest": "ac7ddea6f340e6b15dc9a64a71b66f9cb8ede1915fc21374425b43fc13d27915",
+        "bytes": 145755
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__coordination.k8s.io__v1beta1_openapi.json",
+        "status": "captured",
+        "digest": "2b24466baffd395c0a88a6e655c2574277c7dc3ffabadbe3ea3480a02f3f8be8",
+        "bytes": 145773
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__coordination.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "e8b44c0014c66639de9ab49fd2f6b94b4638248fdd12c7e28fd37a65070857c7",
+        "bytes": 6333
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__discovery.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "ec495888f7179b410d365dca5491d3d928028330ace1337c507c29e800303155",
+        "bytes": 154056
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__discovery.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "d91aba554ae0aa379e9f791e1c8e22946049145563507ee521e032c42c7aa000",
+        "bytes": 6324
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__events.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "8b28cdfd726c2a32158d9eee8142608fbc8edeb7b6bf802d3d571c8d1ed9b66e",
+        "bytes": 149134
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__events.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "150d18a0678f49742512e8542389a3922f3c97ae726a3d50b94d3764a16ca5d5",
+        "bytes": 6315
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__flowcontrol.apiserver.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "9537cf220638db6aacb9d2e1fe4ad594f8608a4e94abd699b5a24785710b8ab4",
+        "bytes": 250174
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__flowcontrol.apiserver.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "76ef41112e6821e5033d753958098ec54a5429326f28cb2ac1db6a186e2614e0",
+        "bytes": 6358
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__internal.apiserver.k8s.io__v1alpha1_openapi.json",
+        "status": "captured",
+        "digest": "a8cfae049ce35813a609c15a043850af2f38d458d96f45ca3e6749ce8d945fea",
+        "bytes": 136592
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__internal.apiserver.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "8ad8517418e0d51c124eedf31262ac74aeba40d4e134eff629130ddac955187c",
+        "bytes": 6349
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__lifecycle.k8s.io__v1alpha1_openapi.json",
+        "status": "captured",
+        "digest": "bae5e4f71a6653acad16418315ee53a9aff5953342cc45af57f38f27e76426ca",
+        "bytes": 296013
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__lifecycle.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "3ce58a6ccff5596e528f7a1cadbfcc63d089a507b7655551bff0d6268af35cd0",
+        "bytes": 6324
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__networking.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "1131b65062eb33dbdc5ac169babae1a79b8dd6105a60c9259d036eb1d3c50a92",
+        "bytes": 536394
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__networking.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "cae94ff4f36c4ce2466dccbac517b9aa33b51ceca2d730bc77ffff8024ca69ae",
+        "bytes": 6327
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__node.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "c95217662f9273c219c1c5277bbf3fbe9f76104ee7e437cdb881c5eb4e9579a3",
+        "bytes": 124692
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__node.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "2c0e84baa43a28671434c1493bcf0923272035d6d023763702e0aca812bcabf4",
+        "bytes": 6309
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__policy__v1_openapi.json",
+        "status": "captured",
+        "digest": "9ca7d6ca168176d2eae2f40c8b79bf04491857b0f2f98ba239e9774f65b052ab",
+        "bytes": 167433
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__policy_openapi.json",
+        "status": "captured",
+        "digest": "1c16756247e546e403c3f60c23ca09dc5976d6a564613e1fe3e675f838cfc6e4",
+        "bytes": 6308
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__rbac.authorization.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "58efa60097c0c4bfbde12e27bc14c00bbfd86e927feea109e5e368baee5c6fc0",
+        "bytes": 404130
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__rbac.authorization.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "c5e049cbae7855f68f3ee2f581b519d97088723f0fd92437bc06a035d4de84e6",
+        "bytes": 6349
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__resource.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "da8a17a1f899354c878b60d62db21264277e3f3e107832d1cdeb42e5f690db45",
+        "bytes": 600798
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__resource.k8s.io__v1alpha3_openapi.json",
+        "status": "captured",
+        "digest": "1c08d22cc7462662a6928fbcf91b0072e4a77e8d6e0e1422ee005c85abc2535d",
+        "bytes": 245908
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__resource.k8s.io__v1beta1_openapi.json",
+        "status": "captured",
+        "digest": "d6341b30008f6613883a6130eee93c8c6ad3691532cb4928d3a1e8cd05907854",
+        "bytes": 510692
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__resource.k8s.io__v1beta2_openapi.json",
+        "status": "captured",
+        "digest": "e21198e5fe06dbaadbf2a14f1176e1b6d253cee000a93488e7c7d10cd567734e",
+        "bytes": 604347
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__resource.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "37dadaef1dbaa713091f98f68c8f5528aefefa026d372c64a8b456e20013c4c0",
+        "bytes": 6321
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__scheduling.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "c95d06aaea2dbf186b67bd7d1854ee7d06b0be37a8441eb264c6d5db05c33259",
+        "bytes": 118047
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__scheduling.k8s.io__v1alpha3_openapi.json",
+        "status": "captured",
+        "digest": "830b06081f51008992f2d62bfb2a29c65fd1243c3537428213136dc5508c2d3c",
+        "bytes": 414421
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__scheduling.k8s.io__v1beta1_openapi.json",
+        "status": "captured",
+        "digest": "7f461b4dcd16b14d7201eb5c7d91807c6e9a642c7fe24b991f61f6792bbd8526",
+        "bytes": 291603
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__scheduling.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "17c721726736034c2cc3dc4f54362e92f3278f21c18ed68128c7f66622975242",
+        "bytes": 6327
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__storage.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "e9c81be08cd25a3eec1f55f5d7658ac5ab03b2631de607a8503993005813a2ab",
+        "bytes": 645359
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__storage.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "f5c8f45497c04ca9018b161efdecfbe96241fcec1105ba53f7399bc51224373d",
+        "bytes": 6318
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__storagemigration.k8s.io__v1_openapi.json",
+        "status": "captured",
+        "digest": "bcc24f34b51bdcd1df0a55e0f61ed918741f5280ef23fbb12e5e6a31a393d223",
+        "bytes": 136477
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__storagemigration.k8s.io__v1beta1_openapi.json",
+        "status": "captured",
+        "digest": "70ea52b9e63f3eadc819a7063eab6bd054344d7697317de1c9788a5fef71232e",
+        "bytes": 137062
+      },
+      {
+        "path": "api/openapi-spec/v3/apis__storagemigration.k8s.io_openapi.json",
+        "status": "captured",
+        "digest": "05b4951c0c4f1de457513751a16c031f5d2bf38622fe0f32352c6db861ec2556",
+        "bytes": 6345
+      },
+      {
+        "path": "api/openapi-spec/v3/apis_openapi.json",
+        "status": "captured",
+        "digest": "b3cc654411b42803e5f8b6f7299ec0f96bf19a0c21133640d4c270be6ee98792",
+        "bytes": 7842
+      },
+      {
+        "path": "api/openapi-spec/v3/logs_openapi.json",
+        "status": "captured",
+        "digest": "6b263751854cd33af73aa5d3a753e8e406c9f32d60e8fa67af7c188141134bf7",
+        "bytes": 1099
+      },
+      {
+        "path": "api/openapi-spec/v3/openid__v1__jwks_openapi.json",
+        "status": "captured",
+        "digest": "be0369fabc2dd2e26ddde8ffcc4829f0559c4f76841d96d154f76cb3ad2e95db",
+        "bytes": 972
+      },
+      {
+        "path": "api/openapi-spec/v3/version_openapi.json",
+        "status": "captured",
+        "digest": "9077133c6af1c993f466a91f9f870daaee779581adc2c3614176c273dd2f52a2",
+        "bytes": 3124
+      },
+      {
+        "path": "build/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/OWNERS",
+        "status": "captured",
+        "digest": "404d59b3de4b283acd591e7cb1bc5e9c63907889d0433eb56bbb9e49900048a8",
+        "bytes": 854
+      },
+      {
+        "path": "build/README.md",
+        "status": "captured",
+        "digest": "d64b604a94ff82207a3ca7c03448c6247510fb446927c7d17940fa64a6174c0c",
+        "bytes": 5921
+      },
+      {
+        "path": "build/build-image/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/build-image/OWNERS",
+        "status": "captured",
+        "digest": "792410a09323c54462e2d599dec9c58bf41186b4593ec85ef0ecb263fd06a003",
+        "bytes": 170
+      },
+      {
+        "path": "build/build-image/cross/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/build-image/cross/VERSION",
+        "status": "captured",
+        "digest": "ac6fee981bec27a3c6ed053ef9941e067457787ea4fa25fb2ea671e91b0f1dce",
+        "bytes": 28
+      },
+      {
+        "path": "build/common.sh",
+        "status": "captured",
+        "digest": "ecb24ce39be66a111ad3ec9e30a00539201478f0bde163f196b1de60ea2d328a",
+        "bytes": 17801
+      },
+      {
+        "path": "build/dependencies.yaml",
+        "status": "captured",
+        "digest": "1fff76b31ad4614d378b1611ee7673b743de1d192f478b76fc24f975fb815a27",
+        "bytes": 11984
+      },
+      {
+        "path": "build/lib/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/lib/release.sh",
+        "status": "captured",
+        "digest": "5ac9be1087ad081b2e69075f776660f5dc1a24b27dc753c5fd472f762504ad1d",
+        "bytes": 22878
+      },
+      {
+        "path": "build/make-clean.sh",
+        "status": "captured",
+        "digest": "98ae0a5cf46939257a22e0645d1781fe0169d57ec226b152dc5b84e2d980c4ca",
+        "bytes": 835
+      },
+      {
+        "path": "build/package-tarballs.sh",
+        "status": "captured",
+        "digest": "fb53bee0f3a7544d3b57bed25c6d37654f9ee05fc3ebe6721cc359bd467cad90",
+        "bytes": 914
+      },
+      {
+        "path": "build/pause/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/pause/.gitignore",
+        "status": "captured",
+        "digest": "cd547b75e628a134357754069dd333eabdf9b418c3f4ec2e050898a85976157a",
+        "bytes": 28
+      },
+      {
+        "path": "build/pause/CHANGELOG.md",
+        "status": "captured",
+        "digest": "d2408ad24711247445a58c236a7c074e519123ff6bba37973c9583e9e4594361",
+        "bytes": 2791
+      },
+      {
+        "path": "build/pause/Dockerfile",
+        "status": "captured",
+        "digest": "e8492fb273ea0b2563f1c12b70c4cf665e2e1a65e3e3fc67c66b99da5877b0a6",
+        "bytes": 693
+      },
+      {
+        "path": "build/pause/Dockerfile_windows",
+        "status": "captured",
+        "digest": "12c4bfe82c5d60fc643be9824180f1928740d727b69334677dbe2d2b56eaca6e",
+        "bytes": 748
+      },
+      {
+        "path": "build/pause/Makefile",
+        "status": "captured",
+        "digest": "5738543fcef12f8c18047503167b5438bfee01b8f8d130461fbc226327a9a5de",
+        "bytes": 6861
+      },
+      {
+        "path": "build/pause/OWNERS",
+        "status": "captured",
+        "digest": "7db5fff2be95ca9a51dac4af61e43eec6fc423f2505c5f4f17579ba30064c8eb",
+        "bytes": 125
+      },
+      {
+        "path": "build/pause/cloudbuild.yaml",
+        "status": "captured",
+        "digest": "29f398097db3158f2a65f4612701aa4abb5091163b8426ec4e94ce5983622aa9",
+        "bytes": 458
+      },
+      {
+        "path": "build/pause/linux/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/pause/linux/orphan.c",
+        "status": "captured",
+        "digest": "c194396ee8c76bd6871c2bf387c69bd0766eb4289a34040b2480edb853d927f3",
+        "bytes": 1014
+      },
+      {
+        "path": "build/pause/linux/pause.c",
+        "status": "captured",
+        "digest": "14a3fe21ab5f8e62937a2b453e76f3b94b0d3c7c04c3d09bc37195f54c1695ea",
+        "bytes": 1826
+      },
+      {
+        "path": "build/pause/windows/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/pause/windows/pause.c",
+        "status": "captured",
+        "digest": "0028c2f78748af07c3b652fb76d15f8d0a47e2dbd902d4eea710bb55657def27",
+        "bytes": 1365
+      },
+      {
+        "path": "build/pause/windows/wincat/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/pause/windows/wincat/wincat.go",
+        "status": "captured",
+        "digest": "57fb4755f5f23a51183adcad43d127f115d219d3d10e1689e166b97fcc19e98c",
+        "bytes": 1766
+      },
+      {
+        "path": "build/release-images.sh",
+        "status": "captured",
+        "digest": "39606913845c95836f2f75a13ddd18ac2b916830cb9d0b9ae2b0387243e4e2d4",
+        "bytes": 1546
+      },
+      {
+        "path": "build/release-in-a-container.sh",
+        "status": "captured",
+        "digest": "b13cbeeabde18fe63cccbfc85e8af4313cc0b31d997fdc3102a3a2670aa5413d",
+        "bytes": 1366
+      },
+      {
+        "path": "build/release.sh",
+        "status": "captured",
+        "digest": "52963a8d60db15b82f2f5cad31e2f4d57dc9fb0756ded7f1cd008f5fcf4aa6d6",
+        "bytes": 1376
+      },
+      {
+        "path": "build/root/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/root/Makefile",
+        "status": "captured",
+        "digest": "7616fff3d3367e93d24f12ea3b456a25bd72fa09d32c506e9f8d4797098e4461",
+        "bytes": 16120
+      },
+      {
+        "path": "build/run.sh",
+        "status": "captured",
+        "digest": "f3820179203ee5665276319e054dee6395da83296a009927130b48ed08fc8374",
+        "bytes": 1373
+      },
+      {
+        "path": "build/server-image/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/server-image/Dockerfile",
+        "status": "captured",
+        "digest": "b7ea2c4568aec0e03b111bd60e542e8c4cdc818ec982bace1d168f446583408c",
+        "bytes": 849
+      },
+      {
+        "path": "build/server-image/kube-apiserver/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/server-image/kube-apiserver/Dockerfile",
+        "status": "captured",
+        "digest": "9b09046eec9757488b4004e70c591098f7915360c4042b4e7354aeed61c2dcb6",
+        "bytes": 1287
+      },
+      {
+        "path": "build/server-image/kubectl/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "build/server-image/kubectl/Dockerfile",
+        "status": "captured",
+        "digest": "c767758b0cc862ee81e477e9de37710c66cb7612406e895e4a1d523ccbac59c9",
+        "bytes": 738
+      },
+      {
+        "path": "build/shell.sh",
+        "status": "captured",
+        "digest": "83c2129ad8847f74e64b6107e85316d51c23ae0d6da3a89ee8c547c88d06eeeb",
+        "bytes": 939
+      },
+      {
+        "path": "build/tools.go",
+        "status": "captured",
+        "digest": "9374208a7c2e0edfa41db1d2c8274958b9a6bbd1a5c494c60b8e803cc24a397a",
+        "bytes": 1025
+      },
+      {
+        "path": "build/util.sh",
+        "status": "captured",
+        "digest": "4f3e951b21e6e173695a3280eb56fad9a722dc31e2dbe971ae08e7723571a02f",
+        "bytes": 1310
+      },
+      {
+        "path": "cluster/.gitattributes",
+        "status": "absent-policy"
+      },
+      {
+        "path": "cluster/OWNERS",
+        "status": "captured",
+        "digest": "db9e5f04f373d0ddeb0bef827fae53d24251b26451d0eea05ca4fb3886d82ad4",
+        "bytes": 419
+      },
+      {
+        "path": "cluster/README.md",
+        "status": "captured",
+        "digest": "01e157b95e138bf74e7519da85d562a164f094102b4fa0c5b5db1038fc5561bc",
+        "bytes": 331
+      },
+      {
+        "path": "cluster/addons/.gitattributes",
+        "status": "absent-policy"
+      }
+    ]
+  },
+  "format_version": 1,
+  "query": "find the values symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
+  "repo_root": "/opt/p1/corpus/kubernetes-kubernetes",
+  "commit": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
+  "tree": "b53ec4e9462d649a4c761bc5d6b3940a56a2ec7c",
+  "profile": "syntax-only",
+  "results": [
+    {
+      "rank": 1,
+      "score": 32.9772,
+      "file_path": "staging/src/k8s.io/cli-runtime/artifacts/openapi/swagger-with-shared-parameters.json",
+      "start_line": 14990,
+      "end_line": 14990,
+      "focus_line": 14990,
+      "snippet_start_line": 14990,
+      "snippet_end_line": 14990,
+      "symbol_start_line": 14990,
+      "symbol_end_line": 14990,
+      "language": "JSON",
+      "kind": "section",
+      "symbol_id": "gh/kubernetes/kubernetes:JSON:staging/src/k8s.io/cli-runtime/artifacts/openapi/swagger-with-shared-parameters.json:section:io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+      "symbol_name": "JSONSchemaProps",
+      "qualified_name": "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+      "signature": "json key io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+      "signals": [
+        "body",
+        "symbol-name",
+        "constraint:phrase"
+      ],
+      "snippet": "    \"io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps\": {"
+    },
+    {
+      "rank": 2,
+      "score": 32.9672,
+      "file_path": "staging/src/k8s.io/kubectl/pkg/explain/v2/templates/apiextensions.k8s.io_v1.json",
+      "start_line": 1769,
+      "end_line": 1769,
+      "focus_line": 1769,
+      "snippet_start_line": 1769,
+      "snippet_end_line": 1769,
+      "symbol_start_line": 1769,
+      "symbol_end_line": 1769,
+      "language": "JSON",
+      "kind": "section",
+      "symbol_id": "gh/kubernetes/kubernetes:JSON:staging/src/k8s.io/kubectl/pkg/explain/v2/templates/apiextensions.k8s.io_v1.json:section:io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrArray",
+      "symbol_name": "JSONSchemaPropsOrArray",
+      "qualified_name": "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrArray",
+      "signature": "json key io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrArray",
+      "signals": [
+        "body",
+        "symbol-name",
+        "constraint:phrase"
+      ],
+      "snippet": "      \"io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrArray\": {"
+    },
+    {
+      "rank": 3,
+      "score": 32.4672,
+      "file_path": "api/openapi-spec/v3/apis__apiextensions.k8s.io__v1_openapi.json",
+      "start_line": 684,
+      "end_line": 684,
+      "focus_line": 684,
+      "snippet_start_line": 684,
+      "snippet_end_line": 684,
+      "symbol_start_line": 684,
+      "symbol_end_line": 684,
+      "language": "JSON",
+      "kind": "section",
+      "symbol_id": "gh/kubernetes/kubernetes:JSON:api/openapi-spec/v3/apis__apiextensions.k8s.io__v1_openapi.json:section:io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrBool",
+      "symbol_name": "JSONSchemaPropsOrBool",
+      "qualified_name": "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrBool",
+      "signature": "json key io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrBool",
+      "signals": [
+        "body",
+        "symbol-name",
+        "constraint:phrase"
+      ],
+      "snippet": "      \"io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrBool\": {"
+    },
+    {
+      "rank": 4,
+      "score": 30.1795,
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_discovery_controller_test.go",
+      "start_line": 65,
+      "end_line": 69,
+      "focus_line": 67,
+      "snippet_start_line": 65,
+      "snippet_end_line": 69,
+      "language": "Go",
+      "signals": [
+        "body",
+        "symbol-usage"
+      ],
+      "snippet": "\t\t\t\tSchema: \u0026v1.CustomResourceValidation{\n\t\t\t\t\t// Unused by discovery\n\t\t\t\t\tOpenAPIV3Schema: \u0026v1.JSONSchemaProps{},\n\t\t\t\t},\n\t\t\t},"
+    },
+    {
+      "rank": 5,
+      "score": 30.1795,
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_handler.go",
+      "start_line": 799,
+      "end_line": 803,
+      "focus_line": 801,
+      "snippet_start_line": 799,
+      "snippet_end_line": 803,
+      "symbol_start_line": 616,
+      "symbol_end_line": 1075,
+      "language": "Go",
+      "kind": "method",
+      "symbol_id": "gh/kubernetes/kubernetes:Go:staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_handler.go:method:crdHandler.getOrCreateServingInfoFor",
+      "symbol_name": "getOrCreateServingInfoFor",
+      "qualified_name": "crdHandler.getOrCreateServingInfoFor",
+      "signature": "func (r *crdHandler) getOrCreateServingInfoFor(uid types.UID, name string) (*crdInfo, error)",
+      "signals": [
+        "body",
+        "symbol-usage"
+      ],
+      "snippet": "\t\t\treturn nil, fmt.Errorf(\"the server could not properly serve the CR schema\")\n\t\t}\n\t\tvar internalSchemaProps *apiextensionsinternal.JSONSchemaProps\n\t\tvar internalValidationSchema *apiextensionsinternal.CustomResourceValidation\n\t\tif validationSchema != nil {"
+    },
+    {
+      "rank": 6,
+      "score": 30.1705,
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/test/integration/ratcheting_test.go",
+      "start_line": 65,
+      "end_line": 69,
+      "focus_line": 67,
+      "snippet_start_line": 65,
+      "snippet_end_line": 69,
+      "language": "Go",
+      "signals": [
+        "body",
+        "symbol-usage"
+      ],
+      "snippet": "var stringMapSchema *apiextensionsv1.JSONSchemaProps = \u0026apiextensionsv1.JSONSchemaProps{\n\tType: \"object\",\n\tAdditionalProperties: \u0026apiextensionsv1.JSONSchemaPropsOrBool{\n\t\tSchema: stringSchema,\n\t},"
+    },
+    {
+      "rank": 7,
+      "score": 28.5393,
+      "file_path": "test/integration/controlplane/kube_apiserver_test.go",
+      "start_line": 569,
+      "end_line": 631,
+      "focus_line": 580,
+      "snippet_start_line": 577,
+      "snippet_end_line": 582,
+      "symbol_start_line": 497,
+      "symbol_end_line": 631,
+      "language": "Go",
+      "kind": "function",
+      "symbol_id": "gh/kubernetes/kubernetes:Go:test/integration/controlplane/kube_apiserver_test.go:function:TestOpenAPIApiextensionsOverlapProtection",
+      "symbol_name": "TestOpenAPIApiextensionsOverlapProtection",
+      "qualified_name": "TestOpenAPIApiextensionsOverlapProtection",
+      "signature": "func TestOpenAPIApiextensionsOverlapProtection(t *testing.T)",
+      "signals": [
+        "body",
+        "symbol-name"
+      ],
+      "snippet": "\t// Create a CRD that overlaps OpenAPI definition with the CRD API\n\tcrd = \u0026apiextensionsv1.CustomResourceDefinition{\n\t\tObjectMeta: metav1.ObjectMeta{\n\t\t\tName:        \"customresourcedefinitions.apiextensions.apis.pkg.apiextensions-apiserver.k8s.io\",\n\t\t\tAnnotations: map[string]string{\"api-approved.kubernetes.io\": \"unapproved, test-only\"},\n\t\t},"
+    },
+    {
+      "rank": 8,
+      "score": 0,
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_handler.go",
+      "start_line": 606,
+      "end_line": 612,
+      "focus_line": 606,
+      "snippet_start_line": 606,
+      "snippet_end_line": 606,
+      "kind": "method",
+      "qualified_name": "crdHandler.GetCustomResourceListerCollectionDeleter",
+      "signals": [
+        "related:sibling"
+      ],
+      "section": "related",
+      "snippet": "func (r *crdHandler) GetCustomResourceListerCollectionDeleter(crd *apiextensionsv1.CustomResourceDefinition) (finalizer.ListerCollectionDeleter, error) {"
+    },
+    {
+      "rank": 9,
+      "score": 0,
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_handler.go",
+      "start_line": 589,
+      "end_line": 602,
+      "focus_line": 589,
+      "snippet_start_line": 589,
+      "snippet_end_line": 589,
+      "kind": "method",
+      "qualified_name": "crdHandler.destroy",
+      "signals": [
+        "related:sibling"
+      ],
+      "section": "related",
+      "snippet": "func (r *crdHandler) destroy() {"
+    }
+  ],
+  "verify_command": {
+    "command": "cd staging/src/k8s.io/apiextensions-apiserver \u0026\u0026 go test ./pkg/apiserver",
+    "targets": "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_discovery_controller_test.go",
+    "derived_from": "staging/src/k8s.io/apiextensions-apiserver/go.mod module root",
+    "tier": "narrow"
+  },
+  "stats": {
+    "extraction": {
+      "raw_imports_parsed": 0,
+      "raw_imports_reused": 0,
+      "raw_imports_ns": 0,
+      "files_parsed": 371,
+      "files_reused": 0,
+      "source_bytes_read": 275900643,
+      "cache_bytes_read": 0,
+      "cache_bytes_written": 769629,
+      "extraction_ns": 3307277896
+    },
+    "query_constraints_truncated": true,
+    "files_scanned": 30866,
+    "preselection_backend": "captured-index-match+go-content",
+    "preselection_passes": 3,
+    "preselection_files_examined": 31250,
+    "preselection_confidence": 1,
+    "preselection_coverage": 1,
+    "preselection_diversity": 1,
+    "preselection_widened": true,
+    "files_content_read_during_preselection": 31247,
+    "files_content_read_during_query": 382,
+    "bytes_content_read_during_query": 19592575,
+    "files_content_read_for_identifier_usage": 1,
+    "bytes_content_read_for_identifier_usage": 2436821,
+    "files_indexed": 381,
+    "symbols_considered": 11626,
+    "lexical_candidates": 14260,
+    "graph_candidates": 0,
+    "identifier_usage_candidates": 32,
+    "sparse_candidates": 0,
+    "sparse_files_content_read": 0,
+    "candidates_selected": 9,
+    "result_bytes": 6546,
+    "related_sites": 2,
+    "verify_command_bytes": 477,
+    "verify_tier": "narrow",
+    "context_block_bytes": 477,
+    "index_cache_hit": false,
+    "index_latency_ms": 1804,
+    "query_latency_ms": 3263,
+    "total_latency_ms": 50944,
+    "search_latency_ms": 50944,
+    "preselect_latency_ms": 35094
+  },
+  "warnings": [
+    {
+      "code": "W_WORKTREE_SNAPSHOT",
+      "severity": "warning",
+      "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested"
+    }
+  ],
+  "partial_failures": [
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "hack/lib/golang.sh",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 657 column 7 near \"kube\"; error ERROR at line 670 column 13 near \"kube\"; error ERROR at line 677 column 9 near \"kube\"; error ERROR at line 786 column 13 near \"kube\"; error ERROR at line 802 column 11 near \"kube\""
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "hack/update-codegen.sh",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 101 column 59 near \"`\""
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/hack/update-codegen.sh",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: missing ` at line 61 column 1 near \"\""
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/test/integration/ratcheting_test_cases/crds/standard-install.yaml",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"# Copyright 2023 The Kubernetes Authors.\\n#\\n# Licensed under the Apache License, ...\""
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1beta1.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/dynamic-resource-allocation/cel/compile_test.go",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: missing ) at line 173 column 107 near \"attributes:       map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{\\\"nam...\"; error ERROR at line 173 column 110 near \")\"; error ERROR at line 189 column 105 near \"\\\"\"; error ERROR at line 189 column 110 near \"\\\"\"; error ERROR at line 264 column 100 near \"\\\"\""
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v1.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v2.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "test/cmd/discovery.sh",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 460 column 69 near \"|| [\""
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "test/integration/apiserver/cel/validatingadmissionpolicy_test.go",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 3427 column 33 near \"\\\"impersonate:user-\"; error ERROR at line 3427 column 55 near \"\\\"\""
+    }
+  ],
+  "completeness": {
+    "languages": {
+      "Bash": {
+        "files": 17,
+        "symbols": 201
+      },
+      "Dockerfile": {
+        "files": 2,
+        "symbols": 2
+      },
+      "Go": {
+        "files": 287,
+        "symbols": 4978
+      },
+      "JSON": {
+        "files": 25,
+        "symbols": 6159
+      },
+      "Protocol Buffers": {
+        "files": 2,
+        "symbols": 53
+      },
+      "YAML": {
+        "files": 42,
+        "symbols": 233
+      }
+    },
+    "relations": {
+      "CONTAINS": 2509,
+      "DEFINES": 11626
+    }
+  }
+}

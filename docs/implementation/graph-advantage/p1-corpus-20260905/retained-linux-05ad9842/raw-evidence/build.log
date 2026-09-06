@@ -1,0 +1,4 @@
+# github.com/smacker/go-tree-sitter/lua
+parser.c:254:17: warning: null character(s) preserved in literal
+  254 |   [anon_sym_] = " ",
+      |                 ^

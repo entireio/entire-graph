@@ -13,7 +13,7 @@ The current product source is `05ad9842`, including captured subdirectory policy
 - **Latest completed full check:** `05ad9842`, passing in 721.029 seconds; immutable HEAD and clean status confirmed. Evidence: `evidence/check-05ad9842/`.
 - **Linux correctness:** passed at `05ad9842`, including process-boundary, missing-dependency, conversion, ordinary-query, opt-in combination and freshness checks.
 - **Interrupted check:** `6102b209` was deliberately stopped after review found additional cancellation gaps; it is not a pass. Those findings were addressed by `05ad9842`.
-- **Retained query:** Darwin OFF exceeded its deadline; ON unrun. A single Linux diagnostic at `05ad9842` is running after correctness passed; no campaign launched.
+- **Retained query:** Darwin OFF exceeded its deadline; ON unrun. Linux parity passed for this one retained request at `05ad9842`: both arms381files/11identical partials and identical semantic digest; unchanged corpus. Wider canary and snapshot timeout verification remain open.
 - **Execution:** only the validation VM is running for correctness/diagnosis; two campaign workers remain deallocated. Campaign remains paused.
 - **Release status:** no workstream's complete release gate has passed; defaults remain unchanged.
 

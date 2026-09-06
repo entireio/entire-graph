@@ -1,0 +1,353 @@
+{
+  "format_version": 1,
+  "query": "find the values symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
+  "repo_root": "/opt/p1/corpus/kubernetes-kubernetes",
+  "commit": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
+  "tree": "b53ec4e9462d649a4c761bc5d6b3940a56a2ec7c",
+  "profile": "syntax-only",
+  "results": [
+    {
+      "rank": 1,
+      "score": 32.9772,
+      "file_path": "staging/src/k8s.io/cli-runtime/artifacts/openapi/swagger-with-shared-parameters.json",
+      "start_line": 14990,
+      "end_line": 14990,
+      "focus_line": 14990,
+      "snippet_start_line": 14990,
+      "snippet_end_line": 14990,
+      "symbol_start_line": 14990,
+      "symbol_end_line": 14990,
+      "language": "JSON",
+      "kind": "section",
+      "symbol_id": "gh/kubernetes/kubernetes:JSON:staging/src/k8s.io/cli-runtime/artifacts/openapi/swagger-with-shared-parameters.json:section:io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+      "symbol_name": "JSONSchemaProps",
+      "qualified_name": "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+      "signature": "json key io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+      "signals": [
+        "body",
+        "symbol-name",
+        "constraint:phrase"
+      ],
+      "snippet": "    \"io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps\": {"
+    },
+    {
+      "rank": 2,
+      "score": 32.9672,
+      "file_path": "staging/src/k8s.io/kubectl/pkg/explain/v2/templates/apiextensions.k8s.io_v1.json",
+      "start_line": 1769,
+      "end_line": 1769,
+      "focus_line": 1769,
+      "snippet_start_line": 1769,
+      "snippet_end_line": 1769,
+      "symbol_start_line": 1769,
+      "symbol_end_line": 1769,
+      "language": "JSON",
+      "kind": "section",
+      "symbol_id": "gh/kubernetes/kubernetes:JSON:staging/src/k8s.io/kubectl/pkg/explain/v2/templates/apiextensions.k8s.io_v1.json:section:io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrArray",
+      "symbol_name": "JSONSchemaPropsOrArray",
+      "qualified_name": "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrArray",
+      "signature": "json key io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrArray",
+      "signals": [
+        "body",
+        "symbol-name",
+        "constraint:phrase"
+      ],
+      "snippet": "      \"io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrArray\": {"
+    },
+    {
+      "rank": 3,
+      "score": 32.4672,
+      "file_path": "api/openapi-spec/v3/apis__apiextensions.k8s.io__v1_openapi.json",
+      "start_line": 684,
+      "end_line": 684,
+      "focus_line": 684,
+      "snippet_start_line": 684,
+      "snippet_end_line": 684,
+      "symbol_start_line": 684,
+      "symbol_end_line": 684,
+      "language": "JSON",
+      "kind": "section",
+      "symbol_id": "gh/kubernetes/kubernetes:JSON:api/openapi-spec/v3/apis__apiextensions.k8s.io__v1_openapi.json:section:io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrBool",
+      "symbol_name": "JSONSchemaPropsOrBool",
+      "qualified_name": "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrBool",
+      "signature": "json key io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrBool",
+      "signals": [
+        "body",
+        "symbol-name",
+        "constraint:phrase"
+      ],
+      "snippet": "      \"io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrBool\": {"
+    },
+    {
+      "rank": 4,
+      "score": 30.1795,
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_discovery_controller_test.go",
+      "start_line": 65,
+      "end_line": 69,
+      "focus_line": 67,
+      "snippet_start_line": 65,
+      "snippet_end_line": 69,
+      "language": "Go",
+      "signals": [
+        "body",
+        "symbol-usage"
+      ],
+      "snippet": "\t\t\t\tSchema: \u0026v1.CustomResourceValidation{\n\t\t\t\t\t// Unused by discovery\n\t\t\t\t\tOpenAPIV3Schema: \u0026v1.JSONSchemaProps{},\n\t\t\t\t},\n\t\t\t},"
+    },
+    {
+      "rank": 5,
+      "score": 30.1795,
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_handler.go",
+      "start_line": 799,
+      "end_line": 803,
+      "focus_line": 801,
+      "snippet_start_line": 799,
+      "snippet_end_line": 803,
+      "symbol_start_line": 616,
+      "symbol_end_line": 1075,
+      "language": "Go",
+      "kind": "method",
+      "symbol_id": "gh/kubernetes/kubernetes:Go:staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_handler.go:method:crdHandler.getOrCreateServingInfoFor",
+      "symbol_name": "getOrCreateServingInfoFor",
+      "qualified_name": "crdHandler.getOrCreateServingInfoFor",
+      "signature": "func (r *crdHandler) getOrCreateServingInfoFor(uid types.UID, name string) (*crdInfo, error)",
+      "signals": [
+        "body",
+        "symbol-usage"
+      ],
+      "snippet": "\t\t\treturn nil, fmt.Errorf(\"the server could not properly serve the CR schema\")\n\t\t}\n\t\tvar internalSchemaProps *apiextensionsinternal.JSONSchemaProps\n\t\tvar internalValidationSchema *apiextensionsinternal.CustomResourceValidation\n\t\tif validationSchema != nil {"
+    },
+    {
+      "rank": 6,
+      "score": 30.1705,
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/test/integration/ratcheting_test.go",
+      "start_line": 65,
+      "end_line": 69,
+      "focus_line": 67,
+      "snippet_start_line": 65,
+      "snippet_end_line": 69,
+      "language": "Go",
+      "signals": [
+        "body",
+        "symbol-usage"
+      ],
+      "snippet": "var stringMapSchema *apiextensionsv1.JSONSchemaProps = \u0026apiextensionsv1.JSONSchemaProps{\n\tType: \"object\",\n\tAdditionalProperties: \u0026apiextensionsv1.JSONSchemaPropsOrBool{\n\t\tSchema: stringSchema,\n\t},"
+    },
+    {
+      "rank": 7,
+      "score": 28.5393,
+      "file_path": "test/integration/controlplane/kube_apiserver_test.go",
+      "start_line": 569,
+      "end_line": 631,
+      "focus_line": 580,
+      "snippet_start_line": 577,
+      "snippet_end_line": 582,
+      "symbol_start_line": 497,
+      "symbol_end_line": 631,
+      "language": "Go",
+      "kind": "function",
+      "symbol_id": "gh/kubernetes/kubernetes:Go:test/integration/controlplane/kube_apiserver_test.go:function:TestOpenAPIApiextensionsOverlapProtection",
+      "symbol_name": "TestOpenAPIApiextensionsOverlapProtection",
+      "qualified_name": "TestOpenAPIApiextensionsOverlapProtection",
+      "signature": "func TestOpenAPIApiextensionsOverlapProtection(t *testing.T)",
+      "signals": [
+        "body",
+        "symbol-name"
+      ],
+      "snippet": "\t// Create a CRD that overlaps OpenAPI definition with the CRD API\n\tcrd = \u0026apiextensionsv1.CustomResourceDefinition{\n\t\tObjectMeta: metav1.ObjectMeta{\n\t\t\tName:        \"customresourcedefinitions.apiextensions.apis.pkg.apiextensions-apiserver.k8s.io\",\n\t\t\tAnnotations: map[string]string{\"api-approved.kubernetes.io\": \"unapproved, test-only\"},\n\t\t},"
+    },
+    {
+      "rank": 8,
+      "score": 0,
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_handler.go",
+      "start_line": 606,
+      "end_line": 612,
+      "focus_line": 606,
+      "snippet_start_line": 606,
+      "snippet_end_line": 606,
+      "kind": "method",
+      "qualified_name": "crdHandler.GetCustomResourceListerCollectionDeleter",
+      "signals": [
+        "related:sibling"
+      ],
+      "section": "related",
+      "snippet": "func (r *crdHandler) GetCustomResourceListerCollectionDeleter(crd *apiextensionsv1.CustomResourceDefinition) (finalizer.ListerCollectionDeleter, error) {"
+    },
+    {
+      "rank": 9,
+      "score": 0,
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_handler.go",
+      "start_line": 589,
+      "end_line": 602,
+      "focus_line": 589,
+      "snippet_start_line": 589,
+      "snippet_end_line": 589,
+      "kind": "method",
+      "qualified_name": "crdHandler.destroy",
+      "signals": [
+        "related:sibling"
+      ],
+      "section": "related",
+      "snippet": "func (r *crdHandler) destroy() {"
+    }
+  ],
+  "verify_command": {
+    "command": "cd staging/src/k8s.io/apiextensions-apiserver \u0026\u0026 go test ./pkg/apiserver",
+    "targets": "staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/customresource_discovery_controller_test.go",
+    "derived_from": "staging/src/k8s.io/apiextensions-apiserver/go.mod module root",
+    "tier": "narrow"
+  },
+  "stats": {
+    "query_constraints_truncated": true,
+    "files_scanned": 30866,
+    "preselection_backend": "git-index-grep+go-content",
+    "preselection_passes": 3,
+    "preselection_files_examined": 31250,
+    "preselection_confidence": 1,
+    "preselection_coverage": 1,
+    "preselection_diversity": 1,
+    "preselection_widened": true,
+    "files_content_read_during_preselection": 381,
+    "files_content_read_during_query": 382,
+    "bytes_content_read_during_query": 19592575,
+    "files_content_read_for_identifier_usage": 1,
+    "bytes_content_read_for_identifier_usage": 2436821,
+    "files_indexed": 381,
+    "symbols_considered": 11626,
+    "lexical_candidates": 14260,
+    "graph_candidates": 0,
+    "identifier_usage_candidates": 32,
+    "sparse_candidates": 0,
+    "sparse_files_content_read": 0,
+    "candidates_selected": 9,
+    "result_bytes": 6546,
+    "related_sites": 2,
+    "verify_command_bytes": 477,
+    "verify_tier": "narrow",
+    "context_block_bytes": 477,
+    "index_cache_hit": false,
+    "index_latency_ms": 12076,
+    "query_latency_ms": 14507,
+    "total_latency_ms": 51813,
+    "search_latency_ms": 51813,
+    "preselect_latency_ms": 25228
+  },
+  "warnings": [
+    {
+      "code": "W_WORKTREE_SNAPSHOT",
+      "severity": "warning",
+      "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested"
+    }
+  ],
+  "partial_failures": [
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "hack/lib/golang.sh",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 657 column 7 near \"kube\"; error ERROR at line 670 column 13 near \"kube\"; error ERROR at line 677 column 9 near \"kube\"; error ERROR at line 786 column 13 near \"kube\"; error ERROR at line 802 column 11 near \"kube\""
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "hack/update-codegen.sh",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 101 column 59 near \"`\""
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/hack/update-codegen.sh",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: missing ` at line 61 column 1 near \"\""
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/apiextensions-apiserver/test/integration/ratcheting_test_cases/crds/standard-install.yaml",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"# Copyright 2023 The Kubernetes Authors.\\n#\\n# Licensed under the Apache License, ...\""
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1beta1.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/dynamic-resource-allocation/cel/compile_test.go",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: missing ) at line 173 column 107 near \"attributes:       map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{\\\"nam...\"; error ERROR at line 173 column 110 near \")\"; error ERROR at line 189 column 105 near \"\\\"\"; error ERROR at line 189 column 110 near \"\\\"\"; error ERROR at line 264 column 100 near \"\\\"\""
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v1.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v2.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "test/cmd/discovery.sh",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 460 column 69 near \"|| [\""
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "test/integration/apiserver/cel/validatingadmissionpolicy_test.go",
+      "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 3427 column 33 near \"\\\"impersonate:user-\"; error ERROR at line 3427 column 55 near \"\\\"\""
+    }
+  ],
+  "completeness": {
+    "languages": {
+      "Bash": {
+        "files": 17,
+        "symbols": 201
+      },
+      "Dockerfile": {
+        "files": 2,
+        "symbols": 2
+      },
+      "Go": {
+        "files": 287,
+        "symbols": 4978
+      },
+      "JSON": {
+        "files": 25,
+        "symbols": 6159
+      },
+      "Protocol Buffers": {
+        "files": 2,
+        "symbols": 53
+      },
+      "YAML": {
+        "files": 42,
+        "symbols": 233
+      }
+    },
+    "relations": {
+      "CONTAINS": 2509,
+      "DEFINES": 11626
+    }
+  }
+}

@@ -12,5 +12,7 @@
     "run",
     "check"
   ],
-  "verification_scope": "complete repository check in immutable detached checkout"
+  "verification_scope": "complete repository check in immutable detached checkout",
+  "binary_sha256": "bbc6ac58c617f1607a926b53aeb39684716b215c61771047da97cdcb554edb67",
+  "toolchain": "go version go1.26.1 darwin/arm64"
 }
