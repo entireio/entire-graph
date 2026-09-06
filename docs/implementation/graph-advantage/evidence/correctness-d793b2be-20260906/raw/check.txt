@@ -1,0 +1,79 @@
+=== RUN   TestLiveCompilerDirectAndCandidate
+--- PASS: TestLiveCompilerDirectAndCandidate (2.80s)
+=== RUN   TestLiveCompilerMissingDependenciesAndCancellation
+--- PASS: TestLiveCompilerMissingDependenciesAndCancellation (0.13s)
+=== RUN   TestLiveCompilerWorkspaceAliases
+--- PASS: TestLiveCompilerWorkspaceAliases (1.38s)
+=== RUN   TestLiveCompilerTagsReplacementAndClosure
+--- PASS: TestLiveCompilerTagsReplacementAndClosure (4.13s)
+=== RUN   TestLiveCompilerSignatureAndWorkspaceInvalidation
+--- PASS: TestLiveCompilerSignatureAndWorkspaceInvalidation (2.77s)
+=== RUN   TestCapsuleConfinedAndMissingIdentity
+--- PASS: TestCapsuleConfinedAndMissingIdentity (0.00s)
+=== RUN   TestMapLocationExactAndConfined
+--- PASS: TestMapLocationExactAndConfined (0.00s)
+=== RUN   TestRPCRejectsServerEditsAndHandlesConfiguration
+--- PASS: TestRPCRejectsServerEditsAndHandlesConfiguration (0.00s)
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":2,"result":[]}
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":"1","result":[]}
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"private_source_payload"}}
+--- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies (0.00s)
+    --- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":2,"result":[]} (0.00s)
+    --- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":"1","result":[]} (0.00s)
+    --- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"private_source_payload"}} (0.00s)
+=== RUN   TestRPCCancellationBoundsUnresponsiveServer
+--- PASS: TestRPCCancellationBoundsUnresponsiveServer (0.10s)
+=== RUN   TestRPCConfigurationRetainsBuildTags
+--- PASS: TestRPCConfigurationRetainsBuildTags (0.00s)
+=== RUN   TestRPCSendsBoundedCancellationNotification
+--- PASS: TestRPCSendsBoundedCancellationNotification (0.00s)
+=== RUN   TestCompilerRejectsMalformedCapturedOperationIdentity
+--- PASS: TestCompilerRejectsMalformedCapturedOperationIdentity (0.00s)
+=== RUN   TestCompilerContextInvalidationAndEvidence
+--- PASS: TestCompilerContextInvalidationAndEvidence (0.00s)
+=== RUN   TestCompilerContextLengthPrefixAndOrdering
+--- PASS: TestCompilerContextLengthPrefixAndOrdering (0.00s)
+=== RUN   TestLiveCompilerProcessBoundary
+--- PASS: TestLiveCompilerProcessBoundary (0.15s)
+PASS
+ok  	github.com/entireio/entire-graph/internal/compiler	12.478s
+=== RUN   TestCompilerOverlayExactSiteReconciliation
+--- PASS: TestCompilerOverlayExactSiteReconciliation (0.02s)
+=== RUN   TestCompilerOverlayProjectionRefusalAndUnavailable
+--- PASS: TestCompilerOverlayProjectionRefusalAndUnavailable (0.03s)
+=== RUN   TestLiveCompilerSemanticMapping
+--- PASS: TestLiveCompilerSemanticMapping (1.28s)
+=== RUN   TestCompilerOverlayAmbiguousDirectAndClosureRemainUnconfirmed
+--- PASS: TestCompilerOverlayAmbiguousDirectAndClosureRemainUnconfirmed (0.02s)
+=== RUN   TestCompilerEnrichedViewDisputesOnlyExactEvidence
+--- PASS: TestCompilerEnrichedViewDisputesOnlyExactEvidence (0.00s)
+=== RUN   TestCompilerOverlayConversionsAreNotCalls
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/UserID
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/Alias
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/Slice
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/UserID#01
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/Invoke
+--- PASS: TestCompilerOverlayConversionsAreNotCalls (0.03s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/UserID (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/Alias (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/Slice (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/UserID#01 (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/Invoke (0.00s)
+=== RUN   TestLiveCompilerConversionsAreNotCalls
+--- PASS: TestLiveCompilerConversionsAreNotCalls (1.29s)
+PASS
+ok  	github.com/entireio/entire-graph/internal/sem	3.744s
+=== RUN   TestLiveAdvantageCombinationsAndNextQueryFreshness
+--- PASS: TestLiveAdvantageCombinationsAndNextQueryFreshness (6.83s)
+=== RUN   TestLiveReviewCompilerOrdinaryQueries
+    advantage_review_live_test.go:119: static direct callers=1; static transitive callers=1 (retained as observed coverage, not a missing-edge claim)
+--- PASS: TestLiveReviewCompilerOrdinaryQueries (5.18s)
+=== RUN   TestCompilerCLIExplicitFallback
+--- PASS: TestCompilerCLIExplicitFallback (0.03s)
+=== RUN   TestCompilerIndexEvidenceDoesNotEnterStaticCache
+--- PASS: TestCompilerIndexEvidenceDoesNotEnterStaticCache (0.39s)
+=== RUN   TestCompilerNoHitAndNativeHeader
+--- PASS: TestCompilerNoHitAndNativeHeader (0.04s)
+PASS
+ok  	github.com/entireio/entire-graph/internal/cli	13.535s
