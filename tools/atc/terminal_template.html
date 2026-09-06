@@ -72,8 +72,18 @@
   .board-head span{font-family:var(--mono);font-size:11px;color:var(--muted)}
   .brow{display:grid;grid-template-columns:110px 1fr 150px 170px;gap:12px;
         align-items:center;padding:13px 22px;border-bottom:1px solid var(--hair);
-        font-size:14px}
+        font-size:14px;cursor:pointer;transition:background .15s}
+  .brow:hover{background:var(--paper)}
   .brow:last-child{border-bottom:none}
+  @keyframes flashcard{0%,60%{box-shadow:0 0 0 3px var(--sky-deep),var(--shadow)}
+                       100%{box-shadow:var(--shadow)}}
+  .fcard.flash{animation:flashcard 1.6s ease-out}
+  .sheet-ctas{display:flex;gap:10px;margin-top:16px}
+  .sheet-ctas button{flex:1;border:1.5px solid var(--hair);background:var(--card);
+        border-radius:12px;padding:11px;font-size:13.5px;font-weight:600;cursor:pointer;
+        transition:all .15s}
+  .sheet-ctas button:hover{border-color:var(--ink)}
+  .sheet-ctas .primary{background:var(--ink);color:#fff;border-color:var(--ink)}
   .brow .cs{font-family:var(--cond);font-weight:700;font-size:17px;letter-spacing:.05em}
   .brow .rt{font-family:var(--mono);font-size:12px;color:var(--muted)}
   .brow .intent{color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;
@@ -354,23 +364,24 @@ $("#v-home").innerHTML = `
       <h1>Good afternoon.</h1>
       <div class="sub"><b>${DATA.flights.length} flights</b> in the air ·
         <span class="alert">${holdCount} on conflict hold</span> ·
-        1 incident on file · every value below comes from a real run.</div>
+        1 incident on file · all live data.</div>
     </div>
   </div>
   <div class="navcards">
     <button class="navcard" data-v="air"><div class="ic" style="background:#E8F2FA">🛫</div>
-      <h3>Air view</h3><p>Every agent session as a flight card — cargo, plan, status.</p></button>
+      <h3>Air view</h3><p>Each agent as a flight card.</p></button>
     <button class="navcard" data-v="world"><div class="ic" style="background:#FFF6DC">🗺</div>
-      <h3>World view</h3><p>The repo as airspace. Watch two routes converge on one module.</p></button>
+      <h3>World view</h3><p>The repo as airspace.</p></button>
     <button class="navcard" data-v="incident"><div class="ic" style="background:#FFEBE9">📋</div>
-      <h3>Incident report</h3><p>The merge git called clean — and what happened at runtime.</p></button>
+      <h3>Incident report</h3><p>The merge git called clean.</p></button>
     <button class="navcard" data-v="book"><div class="ic" style="background:#E4F7EF">🎫</div>
-      <h3>New flight</h3><p>Book an agent. Clearance check, boarding pass, real launch command.</p></button>
+      <h3>New flight</h3><p>Book an agent, get a boarding pass.</p></button>
   </div>
   <div class="board">
     <div class="board-head"><h2>Departures</h2><span>MAIN INTL · RWY 01</span></div>
     ${DATA.flights.map(fl=>{const st=statusOf(fl);return `
-      <div class="brow">
+      <div class="brow" onclick="gotoFlight('${esc(fl.callsign)}')"
+           title="Open flight card">
         <span class="cs">${esc(fl.callsign)}</span>
         <span class="intent">${esc(fl.intent)}</span>
         <span class="rt">${fl.codes.map(esc).join(" · ")||"—"}</span>
@@ -393,7 +404,7 @@ function flightCard(fl){
            has ${gapsOf(fl)} blind spot(s) on this route (dynamic dispatch / generated
            code). Silence isn't proof here; verify by test.</div>`
         : `<div class="okline">✓ Airspace clear — land in any order.</div>`));
-  return `<article class="fcard">
+  return `<article class="fcard" id="fc-${esc(fl.callsign)}">
     <div class="img" ${A.wing?`style="background-image:url(${A.wing})"`:""}></div>
     <div class="body">
       <div class="toprow"><span class="cs">${esc(fl.callsign)}</span>
@@ -493,7 +504,12 @@ function openSheet(){
       Every receipt above is file:line + confidence from the Entire Graph — verify it
       against source. Exit code ${esc(red.exit_code)} gates CI. Verdict: ${esc(R.verdict)}.
       ${R.analysis ? `Analysis ${R.analysis.complete ? "complete" :
-        `partial — ${(R.analysis.gaps||[]).length} blind spot(s) labelled, never hidden`}.` : ""}</div>`;
+        `partial — ${(R.analysis.gaps||[]).length} blind spot(s) labelled, never hidden`}.` : ""}</div>
+    <div class="sheet-ctas">
+      <button onclick="closeSheet();show('world')">See routes on map</button>
+      <button class="primary" onclick="closeSheet();bookWith('${esc(rw.path||"")}')">
+        Book sequenced follow-up</button>
+    </div>`;
   $("#sheet-wrap").classList.add("on");
 }
 function closeSheet(){ $("#sheet-wrap").classList.remove("on"); }
@@ -636,6 +652,22 @@ $("#copy-btn").onclick=async()=>{
        toast("Launch command copied."); }
   catch{ toast("Select the command text to copy it."); }
 };
+
+/* =============== cross-view links =============== */
+function gotoFlight(cs){
+  show("air");
+  const el = document.getElementById("fc-"+cs);
+  if (!el) return;
+  el.scrollIntoView({behavior:"smooth", block:"center"});
+  el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+}
+function bookWith(file){
+  show("book");
+  if (!file || bk.dest.has(file)) return;
+  const chip = document.querySelector(`.dchip[data-f="${CSS.escape(file)}"]`);
+  if (chip) chip.click();
+  toast(`Route through ${codeOf[file]||file} pre-filled — clearance checked.`);
+}
 
 /* =============== shared =============== */
 let toastTimer;
