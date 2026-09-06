@@ -122,7 +122,7 @@ var commandDocs = []commandDoc{
 	// ── Inspect the graph ────────────────────────────────────────────────
 	{
 		name: "spec", group: groupSetup, summary: "Manage authored GPS specifications",
-		usage:    []string{"entire graph spec init|list|show|validate --repo . [--format json]"},
+		usage:    []string{"entire graph spec init|list|show|validate|relationships --repo . [--format json]"},
 		long:     "Creates and validates strict repository-local GPS intent documents. Specifications are authored YAML; this command never generates requirements.",
 		examples: []string{"entire graph spec init --repo .", "entire graph spec validate --repo . --format json"},
 	},

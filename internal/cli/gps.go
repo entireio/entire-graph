@@ -19,7 +19,7 @@ const gpsSchemaVersion = "1.0"
 
 func runSpec(ctx context.Context, opts Options, args []string) error {
 	if len(args) == 0 {
-		return errors.New("spec requires init, list, show, or validate")
+		return errors.New("spec requires init, list, show, validate, or relationships")
 	}
 	_, flags, err := gpsFlags(args[1:])
 	if err != nil {
@@ -54,6 +54,16 @@ func runSpec(ctx context.Context, opts Options, args []string) error {
 		return fmt.Errorf("specification %q not found", flags.id)
 	case "validate":
 		return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "valid": true, "intent_digest": set.Digest, "specifications": len(set.Specs)})
+	case "relationships":
+		if flags.id == "" {
+			return errors.New("spec relationships requires --id")
+		}
+		for _, spec := range set.Specs {
+			if spec.ID == flags.id {
+				return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "id": spec.ID, "relationships": spec.Relationships})
+			}
+		}
+		return fmt.Errorf("specification %q not found", flags.id)
 	default:
 		return fmt.Errorf("unknown spec command %q", args[0])
 	}
