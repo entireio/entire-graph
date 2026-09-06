@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "599d94a84c93",
+  "strategy": "manual-commit",
+  "branch": "progress",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "BUILDATHON.md",
+    "docs/spidey-sense-architecture.md",
+    "docs/spidey-sense-context.md",
+    "internal/cli/connect_agent.go",
+    "internal/cli/connect_agent_test.go",
+    "internal/cli/coordinate.go",
+    "internal/cli/coordinate_test.go",
+    "internal/cli/help.go",
+    "internal/cli/help_test.go",
+    "internal/cli/root.go",
+    "internal/coordinate/network.go",
+    "internal/coordinate/network_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/59/9d94a84c93/0/metadata.json",
+      "transcript": "/59/9d94a84c93/0/full.jsonl",
+      "compact_transcript": "/59/9d94a84c93/0/transcript.jsonl",
+      "content_hash": "/59/9d94a84c93/0/content_hash.txt",
+      "prompt": "/59/9d94a84c93/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 145979,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 8974336,
+    "output_tokens": 32207,
+    "api_call_count": 65
+  }
+}

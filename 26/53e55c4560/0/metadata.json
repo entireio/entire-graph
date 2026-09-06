@@ -1,0 +1,54 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "2653e55c4560",
+  "session_id": "01a07576-9d98-7953-813f-ac68be2dc69b",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T08:57:07.98796721Z",
+  "branch": "progress",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "artifacts/spidey-sense-demo/.gitignore",
+    "artifacts/spidey-sense-demo/captions.srt",
+    "artifacts/spidey-sense-demo/generate-openai-voiceover.sh",
+    "artifacts/spidey-sense-demo/master-openai-video.sh",
+    "artifacts/spidey-sense-demo/narration.txt",
+    "artifacts/spidey-sense-demo/record-workflow.cjs"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "bb989d271274",
+  "checkpoint_transcript_start": 1687,
+  "transcript_lines_at_start": 1687,
+  "compact_transcript_start": 271,
+  "token_usage": {
+    "input_tokens": 67170,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 7673344,
+    "output_tokens": 13821,
+    "api_call_count": 52
+  },
+  "session_metrics": {
+    "turn_count": 7
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T08:57:07.586442885Z",
+    "agent_lines": 187,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 187,
+    "total_lines_changed": 187,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
