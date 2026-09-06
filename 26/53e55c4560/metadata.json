@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "2653e55c4560",
+  "strategy": "manual-commit",
+  "branch": "progress",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "artifacts/spidey-sense-demo/.gitignore",
+    "artifacts/spidey-sense-demo/captions.srt",
+    "artifacts/spidey-sense-demo/generate-openai-voiceover.sh",
+    "artifacts/spidey-sense-demo/master-openai-video.sh",
+    "artifacts/spidey-sense-demo/narration.txt",
+    "artifacts/spidey-sense-demo/record-workflow.cjs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/26/53e55c4560/0/metadata.json",
+      "transcript": "/26/53e55c4560/0/full.jsonl",
+      "compact_transcript": "/26/53e55c4560/0/transcript.jsonl",
+      "content_hash": "/26/53e55c4560/0/content_hash.txt",
+      "prompt": "/26/53e55c4560/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 67170,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 7673344,
+    "output_tokens": 13821,
+    "api_call_count": 52
+  }
+}
