@@ -112,6 +112,10 @@ dbutils.notebook.exit(json.dumps(receipt))
             if (receipt["run_id"] != run_id or receipt["payload_hash"] != payload_hash
                     or receipt["code_hash"] != code_hash or receipt["original_bundle_hash"] != digest(bundle)):
                 raise ValueError("Databricks receipt identity/hash mismatch")
+            if "evidence_context" in bundle and (
+                    receipt.get("evidence_context_hash") != digest(bundle["evidence_context"])
+                    or digest(receipt.get("evidence_context")) != digest(bundle["evidence_context"])):
+                raise ValueError("Databricks receipt lost or changed selection evidence")
             observations = {s: [Observation.model_validate(o) for o in rows] for s, rows in receipt["observations"].items()}
             from ..evaluator import evaluate
             from ..contracts import Requirement, Scenario

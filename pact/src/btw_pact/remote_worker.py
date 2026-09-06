@@ -90,5 +90,13 @@ def run(envelope, spark, remote_run_id=None):
                "observation_count": len(saved_obs), "assertion_count": len(saved),
                "namespace": ns, "completion_state": "partial" if any(a.status in ("unresolved","not_run") for a in assertions) else "complete",
                "synthetic": True, "data_source": "team-owned 24-case permission fixture"}
+    # Execution completion never upgrades the saved analysis or source context.
+    if "evidence_context" in bundle:
+        context = bundle["evidence_context"]
+        receipt["evidence_context"] = context
+        receipt["evidence_context_hash"] = digest(context)
+        receipt["review_completion_state"] = "partial" if (
+            receipt["completion_state"] == "partial" or context["selection"]["partial_analysis"]
+            or context["source_gaps"]) else "complete"
     persist("pact_runs", [row(run_id,receipt,status=receipt["completion_state"])])
     return receipt

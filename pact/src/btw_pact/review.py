@@ -36,7 +36,10 @@ def review(request: ReviewRequest, output: Path, *, remote=None, run_id=None):
     cases = matrix()
     chosen = {side: cases if request.execution_scope == "full_scenario_matrix" else [s for s in cases if any(
         side in r.applies_to and matches(r, s) for r in selected)] for side in ("base", "head")}
-    bundle_payload = {"commits": commits, "fixtures": fixtures,
+    source_gaps = [r.key for r in selected if not r.source_refs or any(s.association_status in ("unresolved", "synthetic") for s in r.source_refs)]
+    evidence_context = {"schema_version": "1.0", "selection": selection, "source_gaps": source_gaps,
+                        "verification_scope": "registered assertions only; static paths are not runtime traces"}
+    bundle_payload = {"evidence_context": evidence_context, "commits": commits, "fixtures": fixtures,
                       "requirements": [r.model_dump() for r in selected], "scenarios": [s.model_dump() for s in cases]}
     input_hash = digest(bundle_payload)
     execution_start = time.perf_counter()
@@ -68,7 +71,6 @@ def review(request: ReviewRequest, output: Path, *, remote=None, run_id=None):
         results.extend(evaluate(selected, cases, rows, side, run_id))
     execution_ms = (time.perf_counter() - execution_start) * 1000
     findings = classify(results, selected, selection["paths"])
-    source_gaps = [r.key for r in selected if not r.source_refs or any(s.association_status in ("unresolved", "synthetic") for s in r.source_refs)]
     incomplete = selection["partial_analysis"] or bool(source_gaps) or any(a.status in ("unresolved", "not_run") for a in results)
     counts = {}
     for side in ("base", "head"):
@@ -80,7 +82,7 @@ def review(request: ReviewRequest, output: Path, *, remote=None, run_id=None):
               "scenario_set_hash": digest([s.model_dump() for s in cases]), "bundle_hash": input_hash,
               "execution_scope": request.execution_scope, "comparison_id": request.comparison_id,
               "cache_mode": "disabled", "backend": request.runner, "backend_metadata": backend_meta,
-              "selection": selection, "counts": counts, "findings": findings,
+              "selection": selection, "evidence_context": evidence_context, "counts": counts, "findings": findings,
               "observations": {s: [o.model_dump() for o in obs] for s, obs in observations.items()},
               "assertions": [a.model_dump() for a in results], "source_gaps": source_gaps,
               "completion_state": "partial" if incomplete else "complete", "errors": analysis.get("errors", []),

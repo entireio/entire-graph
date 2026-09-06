@@ -1,6 +1,6 @@
 # Noon Curveball — Graph is evidence, not an oracle
 
-Official constraint supplied by Shaurya in screenshots at noon on 6 September 2026: Track 2 requires incomplete relationships never be presented as certain; identify potentially partial analysis; provide safe fallback/verification; preserve resolved behavior; include an incomplete-analysis fixture. The organiser fixture itself has not been supplied. Our dynamic-dispatch fixture is team-authored and must not be described as official.
+Official constraint supplied by Shaurya in screenshots at noon on 6 September 2026: Track 2 requires incomplete relationships never be presented as certain; identify potentially partial analysis; provide safe fallback/verification; preserve resolved behavior; include an incomplete-analysis fixture. Shaurya subsequently confirmed the screenshots are all supplied information, the existing repository should be used, and Track 2 permits any suitably complex open-source repository. Our dynamic-dispatch fixture is team-authored and must not be described as an organiser-supplied fixture.
 
 ## Fresh recovery before implementation
 
@@ -19,3 +19,12 @@ Invalidated assumption: a successfully parsed Graph snapshot with internal CALLS
 Adaptation plan: preserve resolved version-specific structural paths; label heuristic paths and diagnostic source locations; detect unresolved relations and bounded Python dynamic-call patterns; when analysis cannot justify narrow selection, execute all confirmed registered assertions. Keep source gaps and analysis incompleteness separate from executed pass/fail. Carry versioned evidence quality into replay bundles, Databricks payload/Delta receipts, history and UI. The bounded fixture scan is a precaution, not a proof of Python call-graph completeness.
 
 Acceptance: a team-owned unchanged dynamic export caller must still have its guest-export regression executed through the fallback, without inventing a path. B0/H1/H2 resolved behavior and H3/H4 policy semantics must remain. Real cloud execution must preserve selection evidence and match local assertions. Implementation/test results will be appended after they actually run.
+
+
+## Observed adaptation tests
+
+The initial real-Graph dynamic-dispatch test failed before implementation: expected two guest-export failures, observed zero. The Graph-unavailable test selected only R4 instead of all four policies. These are actual reproduced selection failures, not hypothetical risks.
+
+After the adaptation, the five focused Curveball tests pass: dynamic lookup with no fabricated R1 path; Graph unavailable; resolved versus heuristic paths; silent edge omission despite parser success; module configuration precaution. The first full suite passed 18 tests in 10.07 seconds before the last two focused tests were added. Final integrated/cloud verification is still pending.
+
+Source-based diagnostics retain their origin, file, line, side and commit. They are deliberately conservative and do not assert universal Python completeness. Fallback executes all confirmed registered assertions, not unapproved behavior. Original strategy baselines remain visible for comparison; their omissions are not presented as unaffected code. Saved reports retain their original schema and are labelled as unassessed if they predate this evidence-quality version.

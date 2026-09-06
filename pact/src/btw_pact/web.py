@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .checkpoints import read_sources
 from .contracts import ReviewRequest, Source, digest
 from .review import benchmark, review
+from .gitutil import resolve
 from .scenarios import proposed_requirements
 from .storage import Store
 
@@ -42,6 +43,12 @@ def create_app(repo: Path, data: Path | None = None):
     repo = repo.resolve()
     data = data or repo / "pact/runs"
     store = Store(data / "pact.sqlite")
+    versions = {}
+    for tag in ("pact-D0", "pact-D1", "pact-D2"):
+        try:
+            versions[tag] = resolve(repo, tag)
+        except RuntimeError:
+            pass  # Older checkouts can still show and replay their saved evidence.
     if not store.requirements():
         for r in proposed_requirements():
             store.add(r)
@@ -74,7 +81,7 @@ def create_app(repo: Path, data: Path | None = None):
                 "history": [{"run_id": r["run_id"], "created_at": r["created_at"], "backend": r["backend"],
                              "completion_state": r["completion_state"], "counts": r["counts"],
                              "commits": r["commits"]} for r in store.runs()], "jobs": progress,
-                "event": {"track": "E2 · Graph Intelligence", "deadline": "15:00 IST · 6 September 2026"}}
+                "versions": versions, "event": {"track": "E2 · Graph Intelligence", "deadline": "15:00 IST · 6 September 2026"}}
 
     @app.get("/api/requirements/history")
     def history():

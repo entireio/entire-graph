@@ -26,10 +26,15 @@ def replay(bundle):
     for side in ("base", "head"):
         observations = execute(payload["fixtures"][side], cases, run_id, side, payload["commits"][side])
         results.extend(evaluate(requirements, cases, observations, side, run_id))
-    findings = classify(results, requirements, [])
+    context = payload.get("evidence_context")
+    findings = classify(results, requirements, context["selection"]["paths"] if context else [])
     incomplete = any(a.status in ("unresolved", "not_run") for a in results)
     failed = any(a.status == "fail" and a.side == "head" for a in results)
-    return {"findings": findings, "assertions": [a.model_dump() for a in results],
+    partial = incomplete or not context or context["selection"]["partial_analysis"] or bool(context["source_gaps"])
+    return {"evidence_context": context,
+            "review_completion_state": "partial" if partial else "complete",
+            "verification_scope": "Replay checks execution; saved analysis is not recomputed or upgraded.",
+            "findings": findings, "assertions": [a.model_dump() for a in results],
             "exit_code": 2 if incomplete else 1 if failed else 0}
 
 
