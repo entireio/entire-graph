@@ -1,9 +1,16 @@
 {
-  "command": "python3 -m unittest discover -s docs/implementation/graph-advantage/p1-corpus-20260905 -p 'test_*.py'",
-  "tests": 41,
+  "commit": "5957f6040637df87207ba25eb6050041de169555",
+  "command": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "docs/implementation/graph-advantage/p1-corpus-20260905",
+    "-p",
+    "test_*.py"
+  ],
   "exit_code": 0,
-  "seconds": 3.54,
-  "scope": "Unit/subprocess fake harness and supervisor plumbing; no Azure execution or benchmark",
-  "worker_commit": "3b242da7",
-  "as_recorded_utc": "2026-09-06T08:22:49.424233+00:00"
+  "seconds": 4.012224790873006,
+  "scope": "Harness unit/subprocess tests, simulated supervisor; no VM or benchmarks"
 }
