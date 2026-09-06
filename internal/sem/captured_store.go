@@ -86,8 +86,9 @@ func (store *capturedStore) acquireFrom(path string, read contentReader) (source
 	store.active.Add(1)
 	store.mu.Unlock()
 	defer store.active.Done()
+	var fresh capturedSource
 	if !exists {
-		store.capture(path, entry, read)
+		fresh = store.capture(path, entry, read)
 	}
 	select {
 	case <-store.ctx.Done():
@@ -99,6 +100,12 @@ func (store *capturedStore) acquireFrom(path string, read contentReader) (source
 	}
 	if !entry.ok {
 		return capturedSource{}, false, nil
+	}
+	if !exists {
+		// The first consumer already owns the bytes read from the confined source.
+		// A successful spill retains only backing in the store; reading it back
+		// here would duplicate I/O and allocation before parsing those same bytes.
+		return fresh, true, nil
 	}
 	source := entry.source
 	if entry.backing != "" {
@@ -120,7 +127,7 @@ func (store *capturedStore) acquireFrom(path string, read contentReader) (source
 	return source, true, nil
 }
 
-func (store *capturedStore) capture(path string, entry *captureEntry, read contentReader) {
+func (store *capturedStore) capture(path string, entry *captureEntry, read contentReader) (fresh capturedSource) {
 	defer func() {
 		if entry.err != nil {
 			entry.source.content = ""
@@ -137,6 +144,7 @@ func (store *capturedStore) capture(path string, entry *captureEntry, read conte
 		return
 	}
 	entry.source = captureSource(path, content)
+	fresh = entry.source
 	entry.size = int64(len(content))
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -173,6 +181,7 @@ func (store *capturedStore) capture(path string, entry *captureEntry, read conte
 	}
 	entry.backing = name
 	entry.source.content = ""
+	return
 }
 
 func (store *capturedStore) close() error {
