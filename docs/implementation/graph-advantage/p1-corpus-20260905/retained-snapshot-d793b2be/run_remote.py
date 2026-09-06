@@ -219,6 +219,7 @@ def main(argv=None):
     save(root, "environment.json", runtime_environment(corpus_root))
     save(root, "identity.json", identity)
     completed = []
+    started = []
     issue = None
     before = None
     observations = {}
@@ -236,7 +237,6 @@ def main(argv=None):
         if not scenario_script.is_file():
             raise RuntimeError("pinned scenario script is unavailable")
         before = fingerprint(root, scenario_script, corpus_root, args.input_sha256, "before")
-        started = []
         for arm in ("off", "on"):
             observation = run_arm(
                 root,
