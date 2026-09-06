@@ -58,6 +58,8 @@ type extractionCache struct {
 	pendingMu                                                             sync.Mutex
 	pending                                                               []extractionPending
 	pendingBytes                                                          int64
+	publicationOnce                                                       sync.Once
+	publicationGate                                                       chan struct{}
 	admissionMu                                                           sync.Mutex
 	admission                                                             *extractionAdmissionSession
 	inventoryCalls                                                        atomic.Int64
@@ -104,6 +106,10 @@ func (cache *extractionCache) enqueue(entry cacheEntry, bound int64, encoded []b
 	if cache == nil {
 		return
 	}
+	if !cache.acquirePublication(true) {
+		return
+	}
+	defer cache.releasePublication()
 	cache.pendingMu.Lock()
 	cache.pending = append(cache.pending, extractionPending{entry: entry, bound: bound, encoded: encoded})
 	cache.pendingBytes += bound
@@ -125,6 +131,41 @@ func (cache *extractionCache) takePendingLocked() []extractionPending {
 	return batch
 }
 
+func (cache *extractionCache) publicationToken() chan struct{} {
+	cache.publicationOnce.Do(func() {
+		cache.publicationGate = make(chan struct{}, 1)
+		cache.publicationGate <- struct{}{}
+	})
+	return cache.publicationGate
+}
+
+// acquirePublication serializes ownership before an encoded item can join or
+// detach the sole operation-wide pending batch. Producers honor cancellation;
+// flush passes cancellable=false so cleanup always waits for the current owner.
+func (cache *extractionCache) acquirePublication(cancellable bool) bool {
+	gate := cache.publicationToken()
+	if !cancellable || cache.ctx == nil {
+		<-gate
+		return true
+	}
+	select {
+	case <-cache.ctx.Done():
+		return false
+	case <-gate:
+		// Cancellation and the token can become ready together. Once ownership
+		// is acquired, cancellation wins before any pending state is changed.
+		if cache.ctx.Err() != nil {
+			gate <- struct{}{}
+			return false
+		}
+		return true
+	}
+}
+
+func (cache *extractionCache) releasePublication() {
+	cache.publicationToken() <- struct{}{}
+}
+
 // flush publishes the final bounded batch at the operation boundary. The
 // provider calls this after workers have stopped, so no producer can append
 // while the drain is in progress.
@@ -132,7 +173,13 @@ func (cache *extractionCache) flush() {
 	if cache == nil {
 		return
 	}
-	defer cache.releaseAdmission()
+	cache.acquirePublication(false)
+	// Release the held directory and admission lock before another producer can
+	// acquire publication ownership for a later reuse of this cache object.
+	defer func() {
+		cache.releaseAdmission()
+		cache.releasePublication()
+	}()
 	for {
 		cache.pendingMu.Lock()
 		batch := cache.takePendingLocked()
