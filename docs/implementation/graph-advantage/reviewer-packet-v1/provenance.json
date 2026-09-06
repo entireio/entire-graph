@@ -28,5 +28,24 @@
     "fixtures/dynamic/payment.py": "45d0c336499c7a84cb542b23d9445b1c9b7f7256669a3666f08e4f8dd939d719"
   },
   "validation": "Every copied source byte hash matches the existing manifest. No reviewer answer is prefilled.",
-  "limits": "Development fixtures only; not realistic P3 changes, a held-out split, or release adjudication."
+  "limits": "Development fixtures only; not realistic P3 changes, a held-out split, or release adjudication.",
+  "stored_paths": {
+    "fixtures/invoice/charge.go": "fixtures/invoice/charge.go.txt",
+    "fixtures/invoice/charge_test.go": "fixtures/invoice/charge_test.go.txt",
+    "fixtures/invoice/go.mod": "fixtures/invoice/go.mod",
+    "fixtures/retry/delivery.go": "fixtures/retry/delivery.go.txt",
+    "fixtures/retry/go.mod": "fixtures/retry/go.mod",
+    "fixtures/retry/note.go": "fixtures/retry/note.go.txt",
+    "fixtures/retry/retry.go": "fixtures/retry/retry.go.txt",
+    "fixtures/quota/noise.ts": "fixtures/quota/noise.ts",
+    "fixtures/quota/reserve.ts": "fixtures/quota/reserve.ts",
+    "fixtures/quota/validate.ts": "fixtures/quota/validate.ts",
+    "fixtures/route/handler.py": "fixtures/route/handler.py",
+    "fixtures/route/router.py": "fixtures/route/router.py",
+    "fixtures/sparse/go.mod": "fixtures/sparse/go.mod",
+    "fixtures/sparse/hello.go": "fixtures/sparse/hello.go.txt",
+    "fixtures/dynamic/handlers.py": "fixtures/dynamic/handlers.py",
+    "fixtures/dynamic/payment.py": "fixtures/dynamic/payment.py"
+  },
+  "packaging": "Go source bytes are stored with .go.txt suffix so repository gofmt cannot rewrite original reviewer inputs. Logical paths and all original source hashes remain unchanged."
 }

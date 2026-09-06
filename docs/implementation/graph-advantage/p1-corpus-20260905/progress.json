@@ -1,5 +1,5 @@
 {
-  "phase": "p1_remaining_admission_blockers",
+  "phase": "paused_for_laptop_shutdown",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -7,8 +7,8 @@
   "implementation_source_commit": "6cf92c9c",
   "verified_checkpoint": "6cf92c9ccff1882bb2ab63aa9edeb8da0d633cc3",
   "verified_evidence_commit": "see evidence/check-6cf92c9c/verification.json",
-  "current_worktree": "6cf92c9c full687.332s and pinnedLinux76tests passed",
-  "workers_state": "Validation VM confirmed deallocated after corrective raw collection; campaign workers remain off",
+  "current_worktree": "aab356ae harness committed; shutdown commit retains fixture packaging fix, collector draft and proposed ADR0049",
+  "workers_state": "All three Azure VMs confirmed deallocated; no active local check or collector",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
   "correctness": "76pinnedLinuxtests including10live; fullcheck687.332s",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T14:09:00.357124+00:00",
+  "as_of_utc": "2026-09-06T14:44:23.437633+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -31,8 +31,8 @@
   "measured_requests": 116,
   "recorded_unrun_requests": 1434,
   "pending_planned_requests": 15730,
-  "heartbeat_status": "ACTIVE",
-  "pause_reason": "Remaining baseline timeouts and partial-result admission; one corrective pair does not authorize expansion",
+  "heartbeat_status": "PAUSED",
+  "pause_reason": "User requested laptop shutdown pause; prior campaign blockers remain",
   "cache_fix_commits": [
     "f96483ef",
     "9bfafe17"
@@ -43,15 +43,15 @@
   ],
   "remaining_diagnosis": "Three retained query profile mismatches closed. Latest single cold pair within latency/RSS screens. Baseline fast/full snapshot timeouts and frozen partial admission policy remain unresolved.",
   "stopgaps": "77 campaign-control tests passed in7.809s after startup/final-lease/accounting fixes; protocol supersedes old three-failure rule",
-  "full_correctness": "passed6cf92c9c immutablecheckout unchangedHEAD",
-  "campaign": "paused; isolated diagnostic failures retained separately",
+  "full_correctness": "aab356ae command exit0 in705.514s but immutable false due to reviewer fixture gofmt changes; packaging fix requires new immutable check",
+  "campaign": "paused; no automatic restart",
   "stopgap_commits": [
     "dc0ddce7",
     "e5873854",
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Read-only review of retained timeout and partial evidence; resolve concrete issues before a new versioned campaign. No further cold sweeps.",
+  "next_work": "On explicit resume: read shutdown-handoff-20260906.md; verify new immutable integration commit after fixture packaging fix, then re-pin Linux preparation before one full-diagnostics collection.",
   "current_focused_correctness": {
     "commit": "1c0b8e24",
     "correctness_seconds": 0.788,
