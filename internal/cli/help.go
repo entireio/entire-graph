@@ -220,7 +220,7 @@ var commandDocs = []commandDoc{
 		name:    "impact",
 		group:   groupInspect,
 		summary: "One-shot blast radius for changing a symbol",
-		usage:   []string{"entire graph impact --symbol NAME|<file>:<line> --repo . [--depth 1|2] [--limit 15] [--format text|json]"},
+		usage:   []string{"entire graph impact --symbol NAME|<file>:<line> --repo . [--intent] [--depth 1|2] [--limit 15] [--format text|json]"},
 		long: "Everything the graph knows about changing one symbol in a single bounded explanation: direct + transitive callers (depth <=2), callees, type consumers (USES_TYPE/PARAM_TYPE/RETURNS_TYPE), data flows, files that historically co-change with the symbol's file, and same-container siblings. Run this before changing a function/type's behavior.\n\n" +
 			"Ambiguous names return the definition list; rerun with --file/--line/--kind (or --symbol <file>:<line>) to pick one.",
 		flags: []flagDoc{
@@ -231,6 +231,7 @@ var commandDocs = []commandDoc{
 			{name: "--kind", arg: "kind", desc: "Disambiguate by symbol kind"},
 			{name: "--depth", arg: "1|2", def: "2", desc: "Caller-traversal depth"},
 			{name: "--limit", arg: "n", def: "15", desc: "Max entries per section"},
+			{name: "--intent", desc: "Include explicitly bound GPS anchor IDs in JSON output"},
 			{name: "--format", arg: "text|json", desc: "Output format"},
 			{name: "--max-context-bytes", arg: "n", def: "4096", desc: "Total text budget"},
 			{name: "--exclude-tests", desc: "Drop test-only entries"},
