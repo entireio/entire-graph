@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -261,10 +260,13 @@ func (cache *extractionCache) extract(spec profileSpec, language languageSpec, s
 		record := recordExtraction(extraction.entities, extraction.language, extraction.status)
 		record.RelationFamilies = extraction.relationFamilies
 		record.RawImports = cloneExtractionStrings(extraction.rawImports)
-		// Avoid allocating an unbounded serialized derivative of a bounded input.
+		// JSON replaces invalid UTF-8 silently. Admit only lossless records;
+		// exhaustive shape and round-trip tests protect this private contract.
+		if validateExtractionRecord(record) != nil {
+			return extraction, false
+		}
 		payload, encodeErr := json.Marshal(record)
-		var roundTrip extractionRecord
-		if encodeErr != nil || json.Unmarshal(payload, &roundTrip) != nil || !reflect.DeepEqual(record, roundTrip) {
+		if encodeErr != nil {
 			return extraction, false
 		}
 		envelope := extractionEnvelope{Key: key, PayloadDigest: contentHash(payload), Record: record}
