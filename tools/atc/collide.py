@@ -243,7 +243,8 @@ def render(r):
         for d in f["dependents"]:
             conf = f"  (confidence {d['confidence']})" if d.get("confidence") else ""
             L.append(f"     · {d['name']}()  {d['path']}:{d['line']}{conf}")
-        L.append("   Git will merge this cleanly. It will be wrong at runtime.")
+        L.append("   Git merges this cleanly. The merged tree is broken "
+                 "(build error in compiled languages, runtime error in dynamic ones).")
     for f in r["findings"]["advisory"]:
         deps = ", ".join(f"{d['name']}() {d['path']}:{d['line']}" for d in f["dependents"])
         L.append(f"🟡 BEHAVIOR DRIFT  {f['entity']} ({f['path']}) — "
