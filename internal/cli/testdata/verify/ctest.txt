@@ -1,0 +1,9 @@
+Test project /repo/build
+    Start 1: format-test
+1/3 Test #1: format-test ......................   Passed    1.42 sec
+    Start 2: ranges-test
+2/3 Test #2: ranges-test ......................***Failed    0.31 sec
+    Start 3: chrono-test
+3/3 Test #3: chrono-test ......................   Passed    0.88 sec
+
+67% tests passed, 1 tests failed out of 3
