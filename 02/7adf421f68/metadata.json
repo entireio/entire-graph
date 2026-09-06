@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "027adf421f68",
+  "strategy": "manual-commit",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 13,
+  "files_touched": [
+    "GRAPH_PARSER_SYSTEM/00-front-matter.md",
+    "GRAPH_PARSER_SYSTEM/01-problem-and-solution.md",
+    "GRAPH_PARSER_SYSTEM/02-theory-of-evidence.md",
+    "GRAPH_PARSER_SYSTEM/03-architecture-and-data-model.md",
+    "GRAPH_PARSER_SYSTEM/04-decision-workflows.md",
+    "GRAPH_PARSER_SYSTEM/05-implementation-guide.md",
+    "GRAPH_PARSER_SYSTEM/06-user-verification-guide.md",
+    "GRAPH_PARSER_SYSTEM/07-requirement-traceability.md",
+    "GRAPH_PARSER_SYSTEM/08-limitations-and-roadmap.md",
+    "GRAPH_PARSER_SYSTEM/README.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/02/7adf421f68/0/metadata.json",
+      "transcript": "/02/7adf421f68/0/full.jsonl",
+      "compact_transcript": "/02/7adf421f68/0/transcript.jsonl",
+      "content_hash": "/02/7adf421f68/0/content_hash.txt",
+      "prompt": "/02/7adf421f68/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 69824,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1358848,
+    "output_tokens": 10079,
+    "api_call_count": 29
+  }
+}
