@@ -59,9 +59,36 @@ class RetainedDiagnosticTests(unittest.TestCase):
         self.assertIn('GOPROXY=off', script)
         self.assertIn('GOSUMDB=off', script)
         self.assertIn('GOTOOLCHAIN=local', script)
+        self.assertIn('timeout --signal=TERM --kill-after=15s 300s', script)
+        self.assertIn('> "$root/build.log" 2>&1', script)
+        self.assertIn('archive_out="/opt/p1/retained-diagnostics/retained-diagnostic-run-1.tar.gz"', script)
+        self.assertIn('tar -czf "$archive_out" -C "$root" -T "$archive_list"', script)
+        self.assertIn('runtime-environment.json', script)
+        self.assertIn('LANG=C.UTF-8', script)
+        self.assertIn('set +e\n    runuser -u graphcheck -- /usr/bin/python3 - "$root"', script)
+        self.assertNotIn('tar -czf "$archive_out" -C "$root" .', script)
         self.assertNotIn('run_campaign.py', script)
         self.assertNotIn('launch.py', script)
         self.assertNotIn('az vm start', script)
+
+    def test_persisted_script_evidence_redacts_signed_urls(self):
+        script = diagnostic.remote_script(
+            source_url='https://storage/source?sig=secret-source',
+            archive_sha256='a' * 64, expected_digest='b' * 64,
+            artifact_url='https://storage/artifact?sig=secret-artifact',
+            artifact_blob='artifact.tar.gz',
+            remote_root='/opt/p1/retained-diagnostics/run-1', run_id='run-1',
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            diagnostic.persist_script_evidence(
+                output, script, source_blob='source.tgz', artifact_blob='artifact.tar.gz',
+                remote_root='/opt/p1/retained-diagnostics/run-1')
+            record = (output / 'remote-script.json').read_text()
+            self.assertNotIn('https://', record)
+            self.assertNotIn('secret-source', record)
+            self.assertNotIn('secret-artifact', record)
+            self.assertNotIn('remote-script.sh', [path.name for path in output.iterdir()])
 
     def test_run_requires_unique_run_id_and_output(self):
         args = argparse.Namespace(run_id='../escape', output=pathlib.Path('/tmp/nope'),
