@@ -1,5 +1,5 @@
 {
-  "phase": "p1_compressor_correctness",
+  "phase": "p1_corrective_retry_ready_campaign_paused",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -8,7 +8,7 @@
   "verified_checkpoint": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
   "verified_evidence_commit": "see evidence/check-1c0b8e24/verification.json",
   "current_worktree": "1c0b8e24 full676.769s and pinned Linux72tests passed",
-  "workers_state": "campaign paused; validation VM starting for correctness; other two VMs deallocated",
+  "workers_state": "all three task VMs deallocated; no active campaign or diagnostic",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
   "correctness": "72 pinned Linux tests including10live; full repository check676.769s",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T12:59:10.195425+00:00",
+  "as_of_utc": "2026-09-06T13:01:12.837623+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -41,7 +41,7 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Latest retained 0c9e80f5 pair preserves semantics and 194 known partials; OFF56.991s ON66.019s fails 1.10 screen; current lifecycle correction awaits correctness",
+  "remaining_diagnosis": "1c0b8e24 compressor fix correctness verified; performance unmeasured. Latest retained0c9e80f5 pair still fails1.10 cold screen. Campaign-scale parity cases remain open.",
   "stopgaps": "77 campaign-control tests passed in7.809s after startup/final-lease/accounting fixes; protocol supersedes old three-failure rule",
   "full_correctness": "passed1c0b8e24 clean immutable checkout unchangedHEAD",
   "campaign": "paused; isolated diagnostic failures retained separately",
@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Finish fail-closed RSS diagnostic plumbing before any isolated corrective retry; campaign remains paused",
+  "next_work": "One separately versioned corrective pair may check the verified compressor fix with measured RSS; stop on first issue. No campaign expansion while prior findings remain unresolved.",
   "current_focused_correctness": {
     "commit": "1c0b8e24",
     "correctness_seconds": 0.788,
@@ -137,5 +137,12 @@
     "limitations": "single corrective pair; no statistical or release-gate claim"
   },
   "current_product_source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
-  "heartbeat_purpose": "Active implementation monitoring; campaign remains paused"
+  "heartbeat_purpose": "Active implementation monitoring; campaign remains paused",
+  "corrective_resource_runner": {
+    "source_commit": "31cc145dca122729edbc45894b6bcb8560332a6c",
+    "tests": 4,
+    "root_test_seconds": 1.51,
+    "measurements_run": 0,
+    "contract": "exactly one positive bounded RSS reading; malformed or missing reading halts before next arm"
+  }
 }

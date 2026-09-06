@@ -1,0 +1,13 @@
+{
+  "source_commit": "31cc145dca122729edbc45894b6bcb8560332a6c",
+  "command": "python3 -m unittest discover -s docs/implementation/graph-advantage/p1-corpus-20260905/corrective-resource-runner -p 'test_*.py'",
+  "exit_code": 0,
+  "tests": 4,
+  "elapsed_seconds": 1.51,
+  "product_measurements": 0,
+  "sha256": {
+    "run_remote.py": "d0f0c5601c22a0156a8d610b210ef3c3a24b5110278aa8cc1544084072b3b497",
+    "test_run_remote.py": "374b6fb6daf46b6ef612d8844ca2b8a03588130e2111a613d1a930b6fd8f059a",
+    "README.md": "49766d22dfad1838cdb394cac2864abb1e0e20970c4304ebd2a3246101eb3e45"
+  }
+}
