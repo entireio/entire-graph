@@ -265,7 +265,26 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 		if baseSet.Digest != set.Digest {
 			findings = append(findings, map[string]any{"id": "GPS-DELTA-INTENT", "severity": "warning", "subject": "intent", "message": "selected intent differs from base revision"})
 		}
+		currentTests := map[string]bool{}
+		for _, spec := range set.Specs {
+			for _, test := range spec.Tests {
+				currentTests[test.ID] = true
+			}
+		}
+		for _, spec := range baseSet.Specs {
+			for _, test := range spec.Tests {
+				if !currentTests[test.ID] {
+					findings = append(findings, map[string]any{"id": "GPS-DELTA-MAPPING-REMOVED", "severity": "warning", "subject": test.ID, "message": "declared test mapping was removed since base revision"})
+				}
+			}
+		}
+		intentChanged, codeChanged := false, false
 		for _, file := range changed {
+			if strings.HasPrefix(file.Path, intent.Root+"/") || strings.HasPrefix(file.OldPath, intent.Root+"/") {
+				intentChanged = true
+			} else {
+				codeChanged = true
+			}
 			for _, binding := range set.Bindings {
 				if binding.Selector.File == file.Path || binding.Selector.File == file.OldPath {
 					findings = append(findings, map[string]any{"id": "GPS-DELTA-ANCHOR", "severity": "warning", "subject": binding.ID, "message": "anchored implementation changed since base revision"})
@@ -280,6 +299,12 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 					}
 				}
 			}
+		}
+		if intentChanged && !codeChanged {
+			findings = append(findings, map[string]any{"id": "GPS-DELTA-SPEC-ONLY", "severity": "warning", "subject": "intent", "message": "specification changed without implementation changes"})
+		}
+		if codeChanged && !intentChanged {
+			findings = append(findings, map[string]any{"id": "GPS-DELTA-CODE-ONLY", "severity": "warning", "subject": "code", "message": "implementation changed without specification changes"})
 		}
 	}
 	for _, spec := range set.Specs {
