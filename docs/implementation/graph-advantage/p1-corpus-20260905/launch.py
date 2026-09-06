@@ -22,6 +22,7 @@ import supervise
 
 HERE = pathlib.Path(__file__).resolve().parent
 VMS = ["graph-validation-linux", "graph-p1-worker-2", "graph-p1-worker-3"]
+STARTUP_DRAIN_SECONDS = 30
 _DIGEST_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _BLOB_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _RUN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -170,12 +171,21 @@ def persist_transport_response(path, raw):
         f.write("\n")
 
 
-def decode_transport_response(raw, evidence_path):
+def decode_transport_response(raw, evidence_path, expected_ack=None):
     """Retain the response first, then decode the Azure JSON envelope."""
     persist_transport_response(evidence_path, raw)
     if isinstance(raw, str):
-        return json.loads(raw)
-    return raw
+        decoded = json.loads(raw)
+    else:
+        decoded = raw
+    if expected_ack is not None:
+        if not isinstance(decoded, list) or not any(
+            isinstance(message, str)
+            and any(line.strip() == expected_ack for line in message.splitlines())
+            for message in decoded
+        ):
+            raise RuntimeError(f"Azure launch response missing acknowledgement: {expected_ack}")
+    return decoded
 
 
 def prepare_supervisor_output(path):
@@ -260,6 +270,7 @@ def worker_script(
         [
             "set -eu",
             f"test ! -e {shlex.quote(run_dir)}",
+            f"test ! -e {shlex.quote(run_dir + '/STOP')}",
             "if systemctl list-units --state=active --no-legend 'p1-*.service' | grep -q .; then exit 1; fi",
             f"mkdir -p {shlex.quote(scripts_dir)}",
             f"curl --fail --silent --show-error {shlex.quote(script_url)} -o {shlex.quote(archive_path)}",
@@ -269,8 +280,11 @@ def worker_script(
             f"chown -R graphcheck:graphcheck {shlex.quote(run_dir)}",
             f"printf '%s  %s\\n' {shlex.quote(binary_sha256)} {shlex.quote(binary_path)} | sha256sum -c -",
             f"runuser -u graphcheck -- python3 {shlex.quote(scripts_dir + '/verify_inputs.py')} --output {shlex.quote(run_dir + '/input-verification.json')}",
+            f"test ! -e {shlex.quote(run_dir + '/STOP')}",
             supervise.lease_script(run_dir),
             f"systemd-run --unit={shlex.quote(unit)} --uid=graphcheck --collect --property=WorkingDirectory=/opt/p1 --property=MemoryMax=14G --property=TasksMax=512 --property=StandardOutput=append:{shlex.quote(run_dir + '/' + stage + '.log')} --property=StandardError=append:{shlex.quote(run_dir + '/' + stage + '.log')} -- {command_text}",
+            f"test ! -e {shlex.quote(run_dir + '/STOP')}",
+            f"printf 'P1_LAUNCH_OK %s\\n' {shlex.quote(unit)}",
         ]
     ) + "\n"
 
@@ -293,7 +307,7 @@ def _identity(context, frozen_baseline=None):
     return identity
 
 
-def stop_workers(stage, run_id, output):
+def stop_workers(stage, run_id, output, attempt=1):
     """Stop every worker after a startup/transport failure.
 
     Stop responses are retained before any interpretation, just like startup
@@ -304,10 +318,11 @@ def stop_workers(stage, run_id, output):
     results_dir = f"/opt/p1/runs/{run_id}"
     unit = f"p1-{stage}-{run_id}"
     reason = "launcher startup or transport failure; diagnose before retry"
+    suffix = "" if attempt == 1 else f"-retry-{attempt}"
 
     def stop(item):
         index, vm = item
-        path = output / f"launch-worker-{index}-stop.json"
+        path = output / f"launch-worker-{index}-stop{suffix}.json"
         try:
             raw = cloud.run(vm, supervise.stop_script(stage, reason, results_dir, unit))
             persist_transport_response(path, raw)
@@ -393,6 +408,7 @@ def main(argv=None):
         return index, decode_transport_response(
             raw,
             supervisor_output / f"launch-worker-{index}-run-command.json",
+            expected_ack=f"P1_LAUNCH_OK p1-{args.stage}-{args.run_id}",
         )
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(VMS))
@@ -403,6 +419,12 @@ def main(argv=None):
     except BaseException:
         pool.shutdown(wait=False, cancel_futures=True)
         stop_workers(args.stage, args.run_id, supervisor_output)
+        done, _ = concurrent.futures.wait(futures, timeout=STARTUP_DRAIN_SECONDS)
+        if done:
+            # A request that crossed the first stop boundary may have started
+            # its unit just before STOP was written. Re-issue the idempotent
+            # stop after completed startup responses are drained.
+            stop_workers(args.stage, args.run_id, supervisor_output, attempt=2)
         raise
     else:
         pool.shutdown(wait=True)
