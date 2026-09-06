@@ -1,30 +1,23 @@
 # Captured preselection diagnosis — campaign remains paused
 
-The retained 55 unequal pairs identify different selected inputs, not merely
-relation serialization order. The current bounded candidate-pool prototype
-restores selection for the independent 10,020-file fixture, using only captured
-content. It never authorizes a subsequent mutable Git content scan.
+The retained 55 unequal pairs identified different selected inputs. Fixes through
+`5a60fc8f` now preserve the bounded candidate pool using captured source, observe
+oversized tails without widening parser limits, and apply Git binary attributes
+from captured policy. The previously failing binary-attribute fixture now passes.
+C/POSIX folding and matched-file retention were corrected using discriminating
+locale fixtures. Stream, mutation, policy-identity and no-egress regressions pass.
+See `captured-selection-checks.json` for the latest pinned focused check outcome;
+it is not a complete repository check or a comparative measurement.
 
-This prototype is not an accepted parity fix. The independent reduced-match
-fixture fails because Git excludes a text file declared binary by
-`.gitattributes`, while the prototype includes it. The failing test is retained.
-Oversized source observations currently retain only a prefix and digest, so
-complete preselection evidence for those files is also unresolved. Caller-locale
-case folding and later identifier lookup behavior must be checked before the
-55 retained differences can be called resolved.
+Remaining: repository-subdirectory policy capture is explicitly unsupported by
+the new helper; broader locale/platform equivalence is unproven; later identifier
+lookup and the retained corpus request still need end-to-end confirmation.
+The 55 historical mismatches must not be called resolved from narrow fixtures.
 
-The next implementation boundary is capture-time bounded matching: feed the
-same source descriptor to digesting and provisional-match observation, including
-oversized streams, retaining only term presence and bounded line accounting.
-Attribute policy must come from captured attribute inputs with Git-compatible
-classification. A temporary immutable attribute-only index is a candidate;
-handwritten partial attribute parsing is not an exact replacement. Deterministic
-Go case folding must not be assumed equivalent to Git caller-locale matching.
-Any chosen design must preserve the ordinary cache-off selection behavior and
-must not reopen mutable content for later identifier lookups.
+An initial large-fixture run returned a repository/HEAD identity refusal; its
+isolated rerun passed in14.707s. No source change was justified by that isolated
+failure. Recurrence requires diagnosis, not suppressing the identity guard.
 
-Sources: Entire search/capture/gitutil implementation and the user-authorized
-plan; fixtures are independently authored term-presence, line-budget, Unicode,
-binary-attribute and large-pool regressions. No comparative measurement was run.
-No default or release status changes. Campaign expansion remains blocked until
-these correctness findings are fixed, followed by a newly frozen canary.
+Design and provenance: ADR0042, the authorized plan and Entire implementation.
+All new fixtures are independently authored correctness cases. No benchmark
+campaign restarted. Defaults and release status remain unchanged.
