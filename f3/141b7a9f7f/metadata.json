@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "f3141b7a9f7f",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "docs/implementation/graph-advantage/p1-corpus-20260905/canary_admission.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/launch.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_canary_admission.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f3/141b7a9f7f/0/metadata.json",
+      "transcript": "/f3/141b7a9f7f/0/full.jsonl",
+      "compact_transcript": "/f3/141b7a9f7f/0/transcript.jsonl",
+      "content_hash": "/f3/141b7a9f7f/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4921,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1105024,
+    "output_tokens": 3081,
+    "api_call_count": 8
+  }
+}
