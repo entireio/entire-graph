@@ -40,3 +40,27 @@ Sources: requirements plan P1 validation/completion, current
 `internal/sem/extraction_corpus_evaluation_test.go`, frozen baseline archive
 rows, `stopgaps-v2.md`, and retained corrective summaries. No external or
 comparative implementation was consulted.
+
+## Implemented interface
+
+Set `"diagnostics_path": "diagnostics.json"` in the existing corpus request
+manifest. Relative paths resolve against that manifest. The path must differ
+from the observation output even through an existing parent-directory alias.
+The helper rejects invalid output-path configurations before product work and
+checks them again before writing. Existing diagnostic destinations are never
+overwritten. A post-request artifact error makes the saved observation an
+error when its output remains safe; if that output itself becomes unusable,
+the process fails rather than overwriting a conflicting artifact.
+
+The artifact retains the full arrays (including null versus empty arrays),
+their original digests, request options, source/binary identity and observation
+path. The external runner must still bind and collect this file with its
+frozen request and corpus manifests. This change does not launch collection
+or mark any old sampled result fully reviewed.
+
+Eight focused tests include one actual tiny-repository subprocess smoke and
+an aliased-path preflight rejection, complete arrays beyond 32 entries,
+existing-file/final-symlink preservation, post-call error reporting, relative
+manifest paths and byte-identical disabled output. Worker-reported final
+focused test time: 1.191s; race: 3.305s. The graph-requested opt-in test command
+completed in 0.650s without a corpus configured (skip, not corpus evidence).

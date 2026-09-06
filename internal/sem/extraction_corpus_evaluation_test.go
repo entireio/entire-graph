@@ -67,6 +67,7 @@ type extractionCorpusManifest struct {
 	RepositoryID    string   `json:"repository_id"`
 	MutationID      string   `json:"mutation_id"`
 	SourceDigest    string   `json:"source_digest"`
+	DiagnosticsPath string   `json:"diagnostics_path"`
 	Scenario        string   `json:"scenario"`
 	Trial           int      `json:"trial"`
 	Reuse           *bool    `json:"reuse"`
@@ -92,6 +93,7 @@ type extractionCorpusEvaluationConfig struct {
 	Reuse           bool
 	OutputPath      string
 	OutputFormat    string
+	DiagnosticsPath string
 }
 
 type extractionCorpusPhase struct {
@@ -113,8 +115,9 @@ type extractionCorpusFailure struct {
 }
 
 // extractionCorpusObservation is intentionally an observation envelope rather
-// than a second product schema. The full product stats and every explicit
-// failure remain available; semanticDigest is the compact cross-arm identity.
+// than a second product schema. It keeps bounded diagnostic examples plus full
+// counts and digests; semanticDigest is the compact cross-arm identity. An
+// optional diagnostics artifact retains every explicit failure and warning.
 type extractionCorpusObservation struct {
 	FormatVersion         int                       `json:"format_version"`
 	ManifestVersion       int                       `json:"manifest_version,omitempty"`
@@ -157,6 +160,48 @@ type extractionCorpusObservation struct {
 	Warnings              []ProviderWarning         `json:"warnings,omitempty"`
 	Stats                 any                       `json:"stats,omitempty"`
 	Completeness          any                       `json:"completeness,omitempty"`
+}
+
+// extractionCorpusDiagnostics is an optional, unbounded companion to the
+// bounded observation. Its diagnostic arrays use the product types directly
+// so their JSON representation is exactly the input to the recorded digests.
+type extractionCorpusDiagnostics struct {
+	FormatVersion         int               `json:"format_version"`
+	ManifestVersion       int               `json:"manifest_version,omitempty"`
+	ManifestPath          string            `json:"manifest_path,omitempty"`
+	ObservationPath       string            `json:"observation_path"`
+	Repository            string            `json:"repository"`
+	RepositoryID          string            `json:"repository_id,omitempty"`
+	RepositoryPath        string            `json:"repository_path"`
+	Operation             string            `json:"operation"`
+	Mode                  string            `json:"mode"`
+	CacheMode             string            `json:"cache_mode"`
+	CachePath             string            `json:"cache_path,omitempty"`
+	Profile               Profile           `json:"profile"`
+	Query                 string            `json:"query,omitempty"`
+	ProviderVersion       string            `json:"provider_version"`
+	TopK                  int               `json:"top_k,omitempty"`
+	MaxIndexedFiles       int               `json:"max_indexed_files,omitempty"`
+	OnlyFiles             []string          `json:"only_files,omitempty"`
+	MutationID            string            `json:"mutation_id,omitempty"`
+	SourceDigest          string            `json:"source_digest,omitempty"`
+	BinarySHA256          string            `json:"binary_sha256,omitempty"`
+	Scenario              string            `json:"scenario"`
+	Trial                 int               `json:"trial"`
+	Reuse                 bool              `json:"reuse"`
+	Verb                  string            `json:"verb"`
+	Status                string            `json:"status"`
+	Error                 string            `json:"error,omitempty"`
+	StartedAt             string            `json:"started_at,omitempty"`
+	SemanticSHA256        string            `json:"semantic_sha256,omitempty"`
+	SemanticDigest        string            `json:"semantic_digest,omitempty"`
+	SemanticBytes         int               `json:"semantic_bytes,omitempty"`
+	PartialFailuresCount  int               `json:"partial_failures_count"`
+	PartialFailuresSHA256 string            `json:"partial_failures_sha256,omitempty"`
+	PartialFailures       []PartialFailure  `json:"partial_failures"`
+	WarningsCount         int               `json:"warnings_count"`
+	WarningsSHA256        string            `json:"warnings_sha256,omitempty"`
+	Warnings              []ProviderWarning `json:"warnings"`
 }
 
 func corpusFirstNonEmpty(values ...string) string {
@@ -290,6 +335,16 @@ func loadExtractionCorpusEvaluationConfig() (extractionCorpusEvaluationConfig, e
 			return extractionCorpusEvaluationConfig{}, fmt.Errorf("resolve cache path: %w", err)
 		}
 	}
+	diagnosticsPath := strings.TrimSpace(manifest.DiagnosticsPath)
+	if diagnosticsPath != "" {
+		if !filepath.IsAbs(diagnosticsPath) {
+			diagnosticsPath = filepath.Join(filepath.Dir(manifestPath), diagnosticsPath)
+		}
+		diagnosticsPath, err = filepath.Abs(filepath.Clean(diagnosticsPath))
+		if err != nil {
+			return extractionCorpusEvaluationConfig{}, fmt.Errorf("resolve diagnostics path: %w", err)
+		}
+	}
 	profile := Profile(corpusFirstNonEmpty(envFirst(extractionCorpusProfileEnv), string(manifest.Profile), string(ProfileFull)))
 	if profile != ProfileSyntaxOnly && profile != ProfileFast && profile != ProfileFull {
 		return extractionCorpusEvaluationConfig{}, fmt.Errorf("profile must be syntax-only, fast, or full, got %q", profile)
@@ -309,9 +364,10 @@ func loadExtractionCorpusEvaluationConfig() (extractionCorpusEvaluationConfig, e
 		Profile: profile, Query: query, ProviderVersion: providerVersion, TopK: topK,
 		MaxIndexedFiles: manifest.MaxIndexedFiles, OnlyFiles: append([]string(nil), manifest.OnlyFiles...),
 		Scenario: corpusFirstNonEmpty(manifest.Scenario, "unspecified"), Trial: manifest.Trial,
-		Reuse:        cacheMode == "on",
-		OutputPath:   envFirst(extractionCorpusOutputEnv, extractionCorpusP1OutputEnv),
-		OutputFormat: strings.ToLower(corpusFirstNonEmpty(os.Getenv(extractionCorpusOutputFormatEnv), "ndjson")),
+		Reuse:           cacheMode == "on",
+		OutputPath:      envFirst(extractionCorpusOutputEnv, extractionCorpusP1OutputEnv),
+		OutputFormat:    strings.ToLower(corpusFirstNonEmpty(os.Getenv(extractionCorpusOutputFormatEnv), "ndjson")),
+		DiagnosticsPath: diagnosticsPath,
 	}, nil
 }
 
@@ -478,6 +534,158 @@ func writeExtractionCorpusObservation(path, format string, observation extractio
 	return nil
 }
 
+func newExtractionCorpusDiagnostics(config extractionCorpusEvaluationConfig, observation extractionCorpusObservation, failures []PartialFailure, warnings []ProviderWarning) extractionCorpusDiagnostics {
+	var fullFailures []PartialFailure
+	if failures != nil {
+		fullFailures = append([]PartialFailure{}, failures...)
+	}
+	var fullWarnings []ProviderWarning
+	if warnings != nil {
+		fullWarnings = append([]ProviderWarning{}, warnings...)
+	}
+	return extractionCorpusDiagnostics{
+		FormatVersion: 1, ManifestVersion: observation.ManifestVersion, ManifestPath: observation.ManifestPath, ObservationPath: config.OutputPath,
+		Repository: observation.Repository, RepositoryID: config.Manifest.RepositoryID, RepositoryPath: observation.RepositoryPath,
+		Operation: observation.Operation, Mode: observation.Mode, CacheMode: observation.CacheMode, CachePath: observation.CachePath,
+		Profile: observation.Profile, Query: observation.Query, ProviderVersion: observation.ProviderVersion,
+		TopK: config.TopK, MaxIndexedFiles: config.MaxIndexedFiles, OnlyFiles: append([]string(nil), config.OnlyFiles...),
+		MutationID: observation.MutationID, SourceDigest: observation.SourceDigest, BinarySHA256: observation.BinarySHA256,
+		Scenario: observation.Scenario, Trial: observation.Trial, Reuse: observation.Reuse, Verb: observation.Verb,
+		Status: observation.Status, Error: observation.Error, StartedAt: observation.StartedAt,
+		SemanticSHA256: observation.SemanticSHA256, SemanticDigest: observation.SemanticDigest, SemanticBytes: observation.SemanticBytes,
+		PartialFailuresCount: observation.PartialFailuresCount, PartialFailuresSHA256: observation.PartialFailuresSHA256,
+		PartialFailures: fullFailures,
+		WarningsCount:   observation.WarningsCount, WarningsSHA256: observation.WarningsSHA256,
+		Warnings: fullWarnings,
+	}
+}
+
+func writeExtractionCorpusDiagnostics(path string, diagnostics extractionCorpusDiagnostics) error {
+	data, err := json.Marshal(diagnostics)
+	if err != nil {
+		return fmt.Errorf("marshal diagnostics: %w", err)
+	}
+	data = append(data, '\n')
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("create diagnostics output %q: %w", path, err)
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = file.Close()
+			_ = os.Remove(path)
+		}
+	}()
+	written, err := file.Write(data)
+	if err != nil {
+		return fmt.Errorf("write diagnostics output %q: %w", path, err)
+	}
+	if written != len(data) {
+		return fmt.Errorf("write diagnostics output %q: %w", path, io.ErrShortWrite)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close diagnostics output %q: %w", path, err)
+	}
+	complete = true
+	return nil
+}
+
+func canonicalExtractionCorpusArtifactPath(path string) (string, error) {
+	absPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Lstat(absPath); err == nil {
+		return filepath.EvalSymlinks(absPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	missing := make([]string, 0, 2)
+	existing := absPath
+	for {
+		missing = append(missing, filepath.Base(existing))
+		existing = filepath.Dir(existing)
+		if _, err := os.Lstat(existing); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if filepath.Dir(existing) == existing {
+			return "", fmt.Errorf("no existing parent for %q", absPath)
+		}
+	}
+	existing, err = filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", err
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		existing = filepath.Join(existing, missing[i])
+	}
+	return existing, nil
+}
+
+func extractionCorpusArtifactPathsEqual(first, second string) (bool, error) {
+	firstPath, firstErr := canonicalExtractionCorpusArtifactPath(first)
+	secondPath, secondErr := canonicalExtractionCorpusArtifactPath(second)
+	if err := errors.Join(firstErr, secondErr); err != nil {
+		return false, err
+	}
+	return firstPath == secondPath, nil
+}
+
+func validateExtractionCorpusArtifactPaths(config extractionCorpusEvaluationConfig) error {
+	if config.DiagnosticsPath == "" {
+		return nil
+	}
+	pathsEqual, err := extractionCorpusArtifactPathsEqual(config.DiagnosticsPath, config.OutputPath)
+	if err != nil {
+		return fmt.Errorf("resolve diagnostics and observation outputs: %w", err)
+	}
+	if pathsEqual {
+		return errors.New("diagnostics path must differ from observation output path")
+	}
+	return nil
+}
+
+func extractionCorpusObservationPathSafe(config extractionCorpusEvaluationConfig) bool {
+	outputPath, outputErr := canonicalExtractionCorpusArtifactPath(config.OutputPath)
+	if outputErr != nil {
+		return false
+	}
+	diagnosticsPath, diagnosticsErr := canonicalExtractionCorpusArtifactPath(config.DiagnosticsPath)
+	return diagnosticsErr != nil || outputPath != diagnosticsPath
+}
+
+func appendExtractionCorpusError(observation *extractionCorpusObservation, label string, err error) {
+	if observation.Error != "" {
+		observation.Error += "; "
+	}
+	observation.Error += label + ": " + err.Error()
+	observation.Status = "error"
+}
+
+func writeExtractionCorpusArtifacts(config extractionCorpusEvaluationConfig, observation extractionCorpusObservation, failures []PartialFailure, warnings []ProviderWarning) error {
+	var diagnosticsErr error
+	if config.DiagnosticsPath != "" {
+		if validationErr := validateExtractionCorpusArtifactPaths(config); validationErr != nil {
+			if !extractionCorpusObservationPathSafe(config) {
+				return validationErr
+			}
+			appendExtractionCorpusError(&observation, "diagnostics", validationErr)
+			observationErr := writeExtractionCorpusObservation(config.OutputPath, config.OutputFormat, observation)
+			return errors.Join(validationErr, observationErr)
+		}
+		diagnostics := newExtractionCorpusDiagnostics(config, observation, failures, warnings)
+		diagnosticsErr = writeExtractionCorpusDiagnostics(config.DiagnosticsPath, diagnostics)
+		if diagnosticsErr != nil {
+			appendExtractionCorpusError(&observation, "diagnostics", diagnosticsErr)
+		}
+	}
+	observationErr := writeExtractionCorpusObservation(config.OutputPath, config.OutputFormat, observation)
+	return errors.Join(diagnosticsErr, observationErr)
+}
+
 func TestExtractionCorpusMeasurement(t *testing.T) {
 	if envFirst(extractionCorpusManifestEnv, extractionCorpusConfigEnv, extractionCorpusP1ManifestEnv) == "" {
 		t.Skip("set ENTIRE_GRAPH_EXTRACTION_CORPUS_MANIFEST for the opt-in P1 corpus harness")
@@ -488,6 +696,9 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 	}
 	if config.OutputPath == "" {
 		t.Fatal("set ENTIRE_GRAPH_EXTRACTION_CORPUS_OUTPUT for the opt-in P1 corpus harness")
+	}
+	if err := validateExtractionCorpusArtifactPaths(config); err != nil {
+		t.Fatal(err)
 	}
 	if config.Mode == "warm" && config.CacheMode != "on" {
 		t.Fatal("warm mode requires cache=on")
@@ -611,9 +822,12 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 		observation.Error += "serialization: " + serializeErr.Error()
 		observation.Status = "error"
 	}
-	// Request errors are data for the external coordinator. Do not use t.Fatal
-	// after the product call: that would discard the raw failure and its counts.
-	if err := writeExtractionCorpusObservation(config.OutputPath, config.OutputFormat, observation); err != nil {
+	// Request errors are data for the external coordinator. The optional full
+	// artifact is assembled and written after elapsed_ns has stopped, but its
+	// allocation and write can still affect externally collected process RSS.
+	// A diagnostics write failure is copied into the bounded observation before
+	// the harness fails, preserving the request error and raw diagnostic counts.
+	if err := writeExtractionCorpusArtifacts(config, observation, failures, warnings); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -14,6 +14,8 @@ The P1 campaign remains paused. Baseline counts remain 108 requests (69 complete
 
 All 77 campaign-control tests passed; a live fake-service smoke verified that all three active workers stopped after an injected pause. The validation VM is confirmed deallocated after correctness and corrective evidence collection; the two campaign workers remain deallocated. No campaign is running. P2/P3/P4 comparative studies remain deferred, and no complete workstream release gate has passed. Defaults remain extraction reuse off, compiler off, impact depth two and current ranking.
 
+The test-only corpus harness now has an optional `diagnostics_path` artifact containing every failure and warning. Eight focused tests, including tiny-repository subprocess plumbing and race, passed. Required immutable integration checks are pending for this harness addition. Existing campaign admission remains unchanged; no old sampled observation is relabeled fully reviewed. See `p1-corpus-20260905/admission-audit-1058c133/README.md`.
+
 ## Authoritative task status
 
 This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery. Product source `6cf92c9c` passed the full repository and pinned Linux checks, with the three retained query profile paths now verified for exact partial-output parity. Broader evaluation remains paused. Evaluation tasks cannot be declared complete merely because their harness exists; correctness checks do not establish comparative release gates.
