@@ -43,6 +43,7 @@ func addDependentCountsWithProgress(ctx context.Context, repo, head string, resu
 		if options.progress != nil {
 			options.progress(0, 0, "")
 		}
+		setDependentsEvidence(result, nil)
 		return nil
 	}
 
@@ -59,7 +60,45 @@ func addDependentCountsWithProgress(ctx context.Context, repo, head string, resu
 			change.DependentsCount = len(index[name])
 		}
 	}
+	setDependentsEvidence(result, warnings)
 	return nil
+}
+
+// setDependentsEvidence marks every change in result with how much its DependentsCount can
+// be trusted. It runs unconditionally (including the "nothing to scan" early return above),
+// so DependentsEvidence is always one of the three defined states rather than a Go zero value
+// a JSON consumer would have no vocabulary for.
+func setDependentsEvidence(result *Result, warnings []ProviderWarning) {
+	state := dependentsEvidenceState(warnings)
+	for fileIndex := range result.Files {
+		for changeIndex := range result.Files[fileIndex].Changes {
+			result.Files[fileIndex].Changes[changeIndex].DependentsEvidence = state
+		}
+	}
+}
+
+// dependentsEvidenceState reports how much the dependents-count scan behind THIS result can
+// be trusted. The scan is an exact-token text match (see forEachIdentifierToken below), which
+// is why it defaults to Partial even when nothing went wrong: it can miss a caller reached only
+// through an alias, reflection, or a generated binding whose text never spells the changed
+// name, and it is never cross-checked against the resolved call graph the way a `neighbors` or
+// `impact` edge is. It escalates to RequiresVerification when the scan itself additionally hit
+// a real limit — a time budget, an unreadable or too-large candidate file, or a parse failure —
+// meaning some candidate files were never counted at all, which is graver than the scan's
+// ordinary token-matching imprecision.
+//
+// W_DEPENDENTS_PREFILTER_FAILED is deliberately NOT one of the escalating codes: it means the
+// git-grep prefilter failed and the scan fell back to walking every file in the tree, which is a
+// strict superset of the prefiltered candidate set, not a narrower one.
+func dependentsEvidenceState(warnings []ProviderWarning) EvidenceState {
+	for _, warning := range warnings {
+		switch warning.Code {
+		case "W_ANALYSIS_BUDGET_EXCEEDED", "E_FILE_TOO_LARGE", "E_FILE_READ",
+			"E_PARSE_ERROR", "E_PARSE_TIMEOUT", "E_PARSE_DEPTH_EXCEEDED":
+			return EvidenceRequiresVerification
+		}
+	}
+	return EvidencePartial
 }
 
 func changedReferenceNames(result Result) map[string]struct{} {
