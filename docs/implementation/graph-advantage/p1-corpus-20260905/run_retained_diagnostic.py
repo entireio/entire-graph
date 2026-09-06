@@ -284,7 +284,9 @@ archive_list="$root/archive-list.txt"
 for candidate in request-metadata.json before-corpus.json after-corpus.json outcome.json identity.json runtime-environment.json uname.txt go-version.txt binary.sha256 build.log diagnostic.log process.json; do
   if [ -f "$root/$candidate" ]; then printf '%s\\n' "$candidate" >> "$archive_list"; fi
 done
-if [ -d "$root/raw" ]; then printf '%s\\n' raw >> "$archive_list"; fi
+for candidate in raw/off.json raw/on.json raw/digests.json; do
+  if [ -f "$root/$candidate" ]; then printf '%s\\n' "$candidate" >> "$archive_list"; fi
+done
 tar -czf "$archive_out" -C "$root" -T "$archive_list"
 curl --fail --silent --show-error -X PUT -H "x-ms-blob-type: BlockBlob" \\
   --upload-file "$archive_out" {artifact_url_q}
