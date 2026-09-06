@@ -1,0 +1,51 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "2b46811a4f54",
+  "session_id": "01a07576-9d98-7953-813f-ac68be2dc69b",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T09:30:04.473028398Z",
+  "branch": "codex/spidey-pitch-deck",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "artifacts/spidey-sense-pitch/README.md",
+    "artifacts/spidey-sense-pitch/build-deck.cjs",
+    "artifacts/spidey-sense-pitch/rendered/.gitignore"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "c430746670f6",
+  "checkpoint_transcript_start": 2280,
+  "transcript_lines_at_start": 2280,
+  "compact_transcript_start": 371,
+  "token_usage": {
+    "input_tokens": 37654,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2340608,
+    "output_tokens": 11191,
+    "api_call_count": 20
+  },
+  "session_metrics": {
+    "turn_count": 10
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T09:30:03.976656034Z",
+    "agent_lines": 202,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 202,
+    "total_lines_changed": 202,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
