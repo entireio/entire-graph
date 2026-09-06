@@ -29,9 +29,12 @@ func runSpec(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	if args[0] == "init" {
+		if flags.head {
+			return errors.New("spec init cannot write a --head view")
+		}
 		return intent.Init(repo)
 	}
-	set, err := intent.Load(repo)
+	set, err := gpsIntent(ctx, repo, flags.head)
 	if err != nil {
 		return err
 	}
@@ -68,7 +71,7 @@ func runAnchor(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	set, err := intent.Load(repo)
+	set, err := gpsIntent(ctx, repo, flags.head)
 	if err != nil {
 		return err
 	}
@@ -76,10 +79,13 @@ func runAnchor(ctx context.Context, opts Options, args []string) error {
 		return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "anchors": set.Bindings})
 	}
 	if args[0] == "bind" {
+		if flags.head {
+			return errors.New("anchor bind cannot write a --head view")
+		}
 		if flags.id == "" || flags.symbol == "" {
 			return errors.New("anchor bind requires --id and --symbol")
 		}
-		snapshot, err := gpsSnapshot(ctx, opts, repo)
+		snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)
 		if err != nil {
 			return err
 		}
@@ -97,7 +103,7 @@ func runAnchor(ctx context.Context, opts Options, args []string) error {
 		if flags.id == "" {
 			return errors.New("anchor resolve requires --id")
 		}
-		snapshot, err := gpsSnapshot(ctx, opts, repo)
+		snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)
 		if err != nil {
 			return err
 		}
@@ -123,7 +129,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	set, err := intent.Load(repo)
+	set, err := gpsIntent(ctx, repo, flags.head)
 	if err != nil {
 		return err
 	}
@@ -134,7 +140,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 		response["gaps"] = []string{"NO_SPECS"}
 		return gpsEncode(opts, flags.format, response)
 	}
-	snapshot, err := gpsSnapshot(ctx, opts, repo)
+	snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)
 	if err != nil {
 		return err
 	}
@@ -198,14 +204,14 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	set, err := intent.Load(repo)
+	set, err := gpsIntent(ctx, repo, flags.head)
 	if err != nil {
 		return err
 	}
 	if len(set.Specs) == 0 {
 		return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "disposition": "NOT_CONFIGURED", "findings": []any{}})
 	}
-	snapshot, err := gpsSnapshot(ctx, opts, repo)
+	snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)
 	if err != nil {
 		return err
 	}
@@ -253,6 +259,7 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 type gpsOptions struct {
 	repo, format, id, symbol, file, query string
 	update                                bool
+	head                                  bool
 	maxBytes                              int
 }
 
@@ -290,6 +297,8 @@ func gpsFlags(args []string) (string, gpsOptions, error) {
 					return "", flags, errors.New("--max-context-bytes requires a positive integer")
 				}
 			}
+		case "--head":
+			flags.head = true
 		case "--update":
 			flags.update = true
 		case "--json":
@@ -303,8 +312,15 @@ func gpsFlags(args []string) (string, gpsOptions, error) {
 	}
 	return "", flags, nil
 }
-func gpsSnapshot(ctx context.Context, opts Options, repo string) (sem.ProviderSnapshot, error) {
-	snapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{NoNetwork: true, Worktree: true, Profile: sem.ProfileFull}, "", true)
+func gpsIntent(ctx context.Context, repo string, head bool) (intent.Set, error) {
+	if head {
+		return intent.LoadRevision(ctx, repo, "HEAD")
+	}
+	return intent.Load(repo)
+}
+
+func gpsSnapshot(ctx context.Context, opts Options, repo string, head bool) (sem.ProviderSnapshot, error) {
+	snapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{NoNetwork: true, Worktree: !head, Profile: sem.ProfileFull}, "", true)
 	return snapshot, err
 }
 func matchingSymbols(symbols []sem.SymbolRecord, name, file string) []sem.SymbolRecord {

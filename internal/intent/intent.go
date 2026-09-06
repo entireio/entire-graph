@@ -3,6 +3,7 @@ package intent
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/entireio/entire-graph/internal/gitutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -164,6 +166,44 @@ func Load(repo string) (Set, error) {
 	}{set.Policy, set.Specs, set.Bindings})
 	set.Digest = digest(data)
 	return set, nil
+}
+
+// LoadRevision reads only GPS inputs from one committed tree and reuses the
+// regular strict loader, keeping code and intent selection in the same view.
+func LoadRevision(ctx context.Context, repo, rev string) (Set, error) {
+	paths, err := gitutil.ListFiles(ctx, repo, rev)
+	if err != nil {
+		return Set{}, err
+	}
+	tmp, err := os.MkdirTemp("", "entire-graph-intent-")
+	if err != nil {
+		return Set{}, err
+	}
+	defer os.RemoveAll(tmp)
+	prefix := Root + "/"
+	for _, path := range paths {
+		if path != Root+"/intent.yaml" && !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		if !safeRelative(path) {
+			return Set{}, fmt.Errorf("unsafe intent path %q", path)
+		}
+		content, ok, err := gitutil.ShowFile(ctx, repo, rev, path)
+		if err != nil {
+			return Set{}, err
+		}
+		if !ok {
+			continue
+		}
+		target := filepath.Join(tmp, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return Set{}, err
+		}
+		if err := os.WriteFile(target, []byte(content), 0o600); err != nil {
+			return Set{}, err
+		}
+	}
+	return Load(tmp)
 }
 
 func SaveBinding(repo string, binding Binding, update bool) error {
