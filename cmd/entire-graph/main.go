@@ -5,6 +5,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -16,6 +17,13 @@ var version = "dev"
 
 func main() {
 	if err := cli.Execute(version, os.Args[1:]); err != nil {
+		// A command that reached a decision reports it through its own stdout
+		// report and carries only the exit status here. Printing its verdict to
+		// stderr as if it were a failure would misreport a successful run.
+		var coded *cli.ExitCodeError
+		if errors.As(err, &coded) {
+			os.Exit(coded.Code)
+		}
 		// Escape by VALUE, not by wrapping os.Stderr. Error text is not
 		// tool-authored - it carries pathnames from `git diff -z`, Git's own
 		// stderr, and the argv gitutil's run() echoes back, and a Git pathname

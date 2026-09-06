@@ -342,6 +342,29 @@ var commandDocs = []commandDoc{
 		hidden:  true,
 	},
 	{
+		name:    "gate",
+		group:   groupAnalyze,
+		summary: "Keep/continue/revert verdict on a checkpoint or commit range",
+		usage: []string{
+			"entire graph gate --repo . [--base <ref>] [--head <ref>] [--json] [--hops 1|2] [--all]",
+			"entire graph gate --repo . --checkpoint <id> [--json]",
+		},
+		long: "Decides whether a change is safe to keep, using only evidence the author did not write: the code graph for what depends on the change, and the test tree for what covers it. Reports a ranked review order so a large change set can be read shortest-path-first, and exits 0 keep, 1 continue, 2 revert, 5 unusable so it can run as a pre-push hook or CI step unchanged. A dimension that could not run is reported as not-run and can never push the verdict upward.",
+		flags: []flagDoc{
+			{name: "--base", arg: "ref", desc: "Range start (default: HEAD~1)"},
+			{name: "--head", arg: "ref", desc: "Range end (default: HEAD)"},
+			{name: "--checkpoint", arg: "id", desc: "Analyze the commit behind an Entire-Checkpoint trailer instead of a range"},
+			{name: "--hops", arg: "1|2", desc: "Dependency walk depth (default: 2)"},
+			{name: "--all", desc: "List every changed entity instead of the top of the review order"},
+			{name: "--json", desc: "Emit the report as JSON"},
+			{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
+		},
+		examples: []string{
+			"entire graph gate --repo . --base main --head HEAD",
+			"entire graph gate --repo . --checkpoint abc123 --json",
+		},
+	},
+	{
 		name:    "checkpoint",
 		group:   groupAnalyze,
 		summary: "Analyze the commit behind an Entire-Checkpoint trailer",

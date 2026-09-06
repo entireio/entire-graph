@@ -73,6 +73,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runDiff(ctx, opts, args[1:])
 	case "commit":
 		return runCommit(ctx, opts, args[1:])
+	case "gate":
+		return runGate(ctx, opts, args[1:])
 	case "checkpoint":
 		return runCheckpoint(ctx, opts, args[1:])
 	case "analyze":

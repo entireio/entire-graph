@@ -1,0 +1,153 @@
+VERDICT  revert
+         432 entities changed · 34 verified · 235 unchecked · 163 no-resolver
+         HEAD~3..HEAD
+
+REVIEW ORDER — 432 entities changed, read these 5 first
+
+ 1. runStats                 @ internal/cli/stats.go:189
+    body_changed · 156 dependents · unchecked
+ 2. AnalyzeGitRangeWithOptions @ internal/sem/analyze.go:72
+    body_changed · 77 dependents · verified (TestAnalyzeGitRangeBudgetExceededEmitsPartialResult)
+ 3. statsResponse            @ internal/cli/stats.go:132
+    signature_changed · 39 dependents · verified (runStatsJSON)
+ 4. streamSnapshotWithWorkerCount @ internal/sem/provider.go:1105
+    body_changed · 36 dependents · verified (BenchmarkStreamSnapshotWorkerCounts)
+ 5. newPathMountGuard        @ internal/sem/path_mount_guard_aix.go:94
+    body_changed · 28 dependents · unchecked
+
+ The remaining 427 entities: 233 still unchecked, none with dependents
+ Full list: --all
+
+RISK — breaking changes with dependents
+  newStatsCollector @ internal/cli/stats.go:818
+    function signature_changed has 6 dependent(s) within 2 hop(s)
+      - unexpectedArgumentsError @ internal/cli/help.go:483
+      - Run @ internal/cli/root.go:43
+      - resolveRepo @ internal/cli/root.go:943
+      - listTranscriptFiles @ internal/cli/stats.go:897
+      - runStats @ internal/cli/stats.go:189
+      - ... and 1 more
+  sessionAcc @ internal/cli/stats.go:610
+    type signature_changed has 8 dependent(s) within 2 hop(s)
+      - finish @ internal/cli/stats.go:1129
+      - locateTotals @ internal/cli/stats.go:748
+      - merge @ internal/cli/stats.go:640
+      - newSessionAcc @ internal/cli/stats.go:624
+      - run @ internal/cli/stats.go:844
+      - ... and 3 more
+  statsCollector @ internal/cli/stats.go:809
+    type signature_changed has 12 dependent(s) within 2 hop(s)
+      - finish @ internal/cli/stats.go:1129
+      - newSessionAcc @ internal/cli/stats.go:624
+      - newStatsCollector @ internal/cli/stats.go:818
+      - run @ internal/cli/stats.go:844
+      - runStats @ internal/cli/stats.go:189
+      - ... and 7 more
+  statsFlags @ internal/cli/stats.go:103
+    type signature_changed has 6 dependent(s) within 2 hop(s)
+      - local/entire-graph:file:internal/cli/preflight.go (unresolved)
+      - parserAcceptsFlag @ internal/cli/agentguide_test.go:296
+      - resolveCacheDir @ internal/cli/env.go:55
+      - parseStatsFlags @ internal/cli/stats.go:283
+      - runStats @ internal/cli/stats.go:189
+      - ... and 1 more
+  statsResponse @ internal/cli/stats.go:132
+    type signature_changed has 39 dependent(s) within 2 hop(s)
+      - finish @ internal/cli/stats.go:1129
+      - runStats @ internal/cli/stats.go:189
+      - writeStatsSummary @ internal/cli/stats.go:1290
+      - writeStatsText @ internal/cli/stats.go:1316
+      - TestStatsCacheDropsEntriesForDeletedTranscripts @ internal/cli/stats_cache_test.go:199
+      - ... and 34 more
+  forEachRelation @ internal/sem/provider.go:4509
+    function signature_changed has 16 dependent(s) within 2 hop(s)
+      - StreamSnapshot @ internal/sem/provider.go:1098
+      - buildRelations @ internal/sem/provider.go:4330
+      - dedupeRelations @ internal/sem/provider.go:27160
+      - streamSnapshotWithWorkerCount @ internal/sem/provider.go:1105
+      - processProviderFile @ internal/sem/provider_parallel.go:43
+      - ... and 11 more
+  receiverCallRelations @ internal/sem/provider.go:6936
+    function signature_changed has 6 dependent(s) within 2 hop(s)
+      - appendGoInterfaceImplementationCalls @ internal/sem/provider.go:8930
+      - buildRelations @ internal/sem/provider.go:4330
+      - forEachRelation @ internal/sem/provider.go:4509
+      - forEachRelation @ internal/sem/provider.go:4509
+      - streamSnapshotWithWorkerCount @ internal/sem/provider.go:1105
+      - ... and 1 more
+  asyncCallNames @ internal/sem/types.go:947
+    function signature_changed has 11 dependent(s) within 2 hop(s)
+      - buildRelations @ internal/sem/provider.go:4330
+      - forEachRelation @ internal/sem/provider.go:4509
+      - forEachRelation @ internal/sem/provider.go:4509
+      - streamSnapshotWithWorkerCount @ internal/sem/provider.go:1105
+      - selectiveSearchSnapshotFromFull @ internal/sem/search_cache.go:522
+      - ... and 6 more
+  returnFlowCallNames @ internal/sem/types.go:963
+    function signature_changed has 10 dependent(s) within 2 hop(s)
+      - TestReturnFlowCallsOrderIsTotal @ internal/sem/golden_test.go:98
+      - forEachRelation @ internal/sem/provider.go:4509
+      - forEachRelation @ internal/sem/provider.go:4509
+      - asyncCallNames @ internal/sem/types.go:947
+      - branchCallAssignments @ internal/sem/types.go:1432
+      - ... and 5 more
+  returnFlowCalls @ internal/sem/types.go:1022
+    function signature_changed has 6 dependent(s) within 2 hop(s)
+      - TestReturnFlowCallsOrderIsTotal @ internal/sem/golden_test.go:98
+      - buildRelations @ internal/sem/provider.go:4330
+      - forEachRelation @ internal/sem/provider.go:4509
+      - forEachRelation @ internal/sem/provider.go:4509
+      - streamSnapshotWithWorkerCount @ internal/sem/provider.go:1105
+      - ... and 1 more
+
+COVERAGE — changed and unchecked
+  addBytes @ internal/cli/stats.go:724
+    function added is unchecked: no test covers it (2 dependents)
+  addCounts @ internal/cli/stats.go:718
+    function added is unchecked: no test covers it (2 dependents)
+  classifyToolUse @ internal/cli/stats.go:556
+    function added is unchecked: no test covers it (2 dependents)
+  fileScanner @ internal/cli/stats.go:463
+    type added is unchecked: no test covers it (6 dependents)
+  fileSummary @ internal/cli/stats.go:450
+    type added is unchecked: no test covers it (7 dependents)
+  newFileScanner @ internal/cli/stats.go:470
+    function added is unchecked: no test covers it (2 dependents)
+  newSessionAcc @ internal/cli/stats.go:624
+    function signature_changed is unchecked: no test covers it (2 dependents)
+  runStats @ internal/cli/stats.go:189
+    function body_changed is unchecked: no test covers it (156 dependents)
+  sessionAcc @ internal/cli/stats.go:610
+    type signature_changed is unchecked: no test covers it (8 dependents)
+  statsCollector @ internal/cli/stats.go:809
+    type signature_changed is unchecked: no test covers it (12 dependents)
+
+VERIFY
+  go test ./...
+
+WARNING  W_MOVE_AMBIGUOUS internal/cli/stats.go (symbol move could not be reconciled unambiguously; reported as remove/add)
+
+WARNING  W_MOVE_AMBIGUOUS internal/sem/provider_parallel.go (symbol move could not be reconciled unambiguously; reported as remove/add)
+
+WARNING  E_PARSE_ERROR internal/sem/grammars/csharp/tree_sitter/array.h (dependent references in this file may be undercounted because it failed to parse cleanly)
+
+WARNING  E_PARSE_ERROR internal/sem/grammars/erlang/tree_sitter/array.h (dependent references in this file may be undercounted because it failed to parse cleanly)
+
+WARNING  E_PARSE_ERROR internal/sem/grammars/fsharp/tree_sitter/array.h (dependent references in this file may be undercounted because it failed to parse cleanly)
+
+WARNING  E_PARSE_ERROR internal/sem/grammars/haskell/tree_sitter/array.h (dependent references in this file may be undercounted because it failed to parse cleanly)
+
+WARNING  E_PARSE_ERROR internal/sem/grammars/perl/tree_sitter/array.h (dependent references in this file may be undercounted because it failed to parse cleanly)
+
+RULE  revert   = a breaking change with >=1 dependent AND no covering test
+      continue = a breaking change with dependents, OR any entity left unchecked,
+                 OR a companion gap, OR a clone left undrifted
+      keep     = none of the above
+      unusable = no dimension produced evidence
+
+DEGRADATION  a dimension that did not run cannot produce a finding against you.
+             coverage unavailable  -> nothing may reach revert; cap at continue
+             risk unavailable      -> cap at continue
+             both unavailable      -> unusable (exit 5)
+
+exit 2

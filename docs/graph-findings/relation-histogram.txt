@@ -1,0 +1,42 @@
+# Relation histogram — entire-graph @ 3a2a715, --profile full
+# 69,613 records, 17.6s wall. Generated 2026-09-06T05:40:36Z
+# Command: entire graph snapshot --repo . --profile full --format ndjson
+
+   COUNT  RELATION
+   22616  CALLS
+   11397  DEFINES
+    5942  DATA_FLOWS
+    3479  SIMILAR_TO
+    2983  CONTAINS
+    2853  USES_TYPE
+    2286  IMPORTS
+    1592  READS_FIELD
+    1504  PARAM_TYPE
+     993  RETURNS_TYPE
+     380  WRITES_FIELD
+     357  CONFIGURES
+      71  CONSTRUCTS
+      70  HTTP_CALLS
+      57  FILE_CHANGES_WITH
+      55  ACCESSES
+      49  HANDLES_ROUTE
+      18  INHERITS
+      18  EXTENDS
+      17  HANDLES_TOOL
+      10  OVERRIDES
+       9  TESTS
+       8  RESOURCE_DEPENDS_ON
+       7  IMPLEMENTS
+       3  EMITS
+       2  LISTENS_ON
+       2  HANDLES_GRPC
+       2  HANDLES_GRAPHQL
+       1  HANDLES_TRPC
+       1  ASYNC_CALLS
+
+# FINDING: TESTS resolves 9 edges against 11,397 DEFINES in a repo with ~450 test files.
+# Cause: the heuristic maps test NAME to unit under test (TestAnalyzeGitRange -> AnalyzeGitRange).
+# Go test names here (TestGoReceiverMethodResolvesAcrossPackageFiles) name no symbol.
+# capabilities.json also omits TESTS from Go's relation_support_by_language.
+# CONSEQUENCE: coverage signal cannot use TESTS edges. Uses search's covering-test
+# resolver instead. This measurement is why 'unchecked' is a first-class verdict state.
