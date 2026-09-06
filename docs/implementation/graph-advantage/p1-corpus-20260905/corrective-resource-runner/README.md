@@ -20,10 +20,10 @@ filled by the operator:
 ```text
 /usr/bin/python3 run_remote.py \
   --output /opt/graph-validation/corrective-resource-runner/<unique-id> \
-  --binary /opt/graph-validation/correctness-d793b2be-20260906/p1-evaluator \
+  --binary <verified-binary-path> \
   --binary-sha256 <verified-binary-sha256> \
-  --source-root /opt/graph-validation/correctness-d793b2be-20260906 \
-  --source-commit d793b2be \
+  --source-root <verified-source-root> \
+  --source-commit <verified-source-commit> \
   --scenario-script /opt/p1/retained-diagnostics/retained-05ad9842-20260906/corpus-tools/p1_scenario.py \
   --corpus-root /opt/p1/corpus \
   --input-sha256 d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4

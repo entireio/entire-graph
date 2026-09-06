@@ -25,6 +25,10 @@ class ResourceRunnerTests(unittest.TestCase):
             "Maximum resident set size (bytes): 123\n",
             "Maximum resident set size (kbytes): 0\n",
             "Maximum resident set size (kbytes): -1\n",
+            "Maximum resident set size (kbytes): 1\nMaximum resident set size (kbytes): -1\n",
+            "Maximum resident set size (kbytes): 1\nMaximum resident set size (kbytes): malformed\n",
+            "Maximum resident set size (kbytes): 1.5\n",
+            "Maximum resident set size (kbytes): 18446744073709551616\n",
             "Maximum resident set size (kbytes): 1\nMaximum resident set size (kbytes): 2\n",
         ):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
