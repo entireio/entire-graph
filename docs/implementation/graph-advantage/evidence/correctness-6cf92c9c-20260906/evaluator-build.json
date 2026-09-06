@@ -1,0 +1,7 @@
+{
+  "source_commit": "6cf92c9ccff1882bb2ab63aa9edeb8da0d633cc3",
+  "remote_binary": "/opt/graph-validation/correctness-6cf92c9c-20260906/p1-evaluator",
+  "binary_sha256": "70b0ea859509337fb765e8d104f168e03a651cf144fd88c7ce696f8e4cafec02",
+  "command": "go test -c -o p1-evaluator ./internal/sem",
+  "measurements_run": 0
+}
