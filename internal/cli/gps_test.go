@@ -52,4 +52,30 @@ func TestGPSAnchorBindAndResolve(t *testing.T) {
 	if !strings.Contains(out.String(), "\"VALID\"") {
 		t.Fatalf("binding did not resolve as valid: %s", out.String())
 	}
+	out.Reset()
+	if err := Run(t.Context(), opts, []string{"context", "--repo", repo, "--query", "authenticates", "--format", "json"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "approved_anchor") {
+		t.Fatalf("context omitted resolved anchor evidence: %s", out.String())
+	}
+}
+
+func TestGPSCheckReportsUnresolvedDeclaredTest(t *testing.T) {
+	repo := t.TempDir()
+	var out bytes.Buffer
+	opts := Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}
+	if err := Run(t.Context(), opts, []string{"spec", "init", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+	spec := "version: 1\nid: SPEC-1\ntitle: Authentication\nrequirements:\n  - id: REQ-1\n    description: A user authenticates.\nacceptance:\n  - id: ACC-1\n    requirement: REQ-1\n    description: Authentication succeeds.\ntests:\n  - id: TEST-1\n    acceptance: ACC-1\n    selector:\n      name: TestMissing\n"
+	if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "specs", "auth.yaml"), []byte(spec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(t.Context(), opts, []string{"check", "--repo", repo, "--format", "json"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "GPS-MAPPING-UNRESOLVED") {
+		t.Fatalf("check omitted unresolved declared test: %s", out.String())
+	}
 }

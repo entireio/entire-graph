@@ -2,6 +2,7 @@
 package intent
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -16,6 +17,8 @@ import (
 )
 
 const Root = ".entire/graph"
+
+const maxDocumentBytes = 1 << 20
 
 type Policy struct {
 	Version     int    `yaml:"version" json:"version"`
@@ -235,11 +238,25 @@ func validateSpec(s *Spec) error {
 func validateSet(set *Set) error {
 	ids := map[string]bool{}
 	anchors := map[string]bool{}
+	acceptances := map[string]bool{}
+	tests := map[string]bool{}
 	for _, s := range set.Specs {
 		if ids[s.ID] {
 			return fmt.Errorf("duplicate specification id %q", s.ID)
 		}
 		ids[s.ID] = true
+		for _, acceptance := range s.Acceptance {
+			if acceptances[acceptance.ID] {
+				return fmt.Errorf("duplicate acceptance id %q", acceptance.ID)
+			}
+			acceptances[acceptance.ID] = true
+		}
+		for _, test := range s.Tests {
+			if tests[test.ID] {
+				return fmt.Errorf("duplicate test id %q", test.ID)
+			}
+			tests[test.ID] = true
+		}
 		for _, a := range s.Anchors {
 			if anchors[a.ID] {
 				return fmt.Errorf("duplicate anchor id %q", a.ID)
@@ -265,7 +282,21 @@ func decodeFile(path string, dest any) error {
 		return err
 	}
 	defer f.Close()
-	d := yaml.NewDecoder(io.LimitReader(f, 1<<20))
+	data, err := io.ReadAll(io.LimitReader(f, maxDocumentBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxDocumentBytes {
+		return fmt.Errorf("YAML document exceeds %d byte limit", maxDocumentBytes)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	if containsAlias(&document) {
+		return errors.New("YAML aliases are not supported")
+	}
+	d := yaml.NewDecoder(bytes.NewReader(data))
 	d.KnownFields(true)
 	if err := d.Decode(dest); err != nil {
 		return err
@@ -276,23 +307,44 @@ func decodeFile(path string, dest any) error {
 	}
 	return nil
 }
+
+func containsAlias(node *yaml.Node) bool {
+	if node.Kind == yaml.AliasNode {
+		return true
+	}
+	for _, child := range node.Content {
+		if containsAlias(child) {
+			return true
+		}
+	}
+	return false
+}
 func loadYAMLFiles(root string, fn func(string) error) error {
-	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
 	var paths []string
-	for _, e := range entries {
-		if e.IsDir() || e.Type()&os.ModeSymlink != 0 {
-			continue
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, os.ErrNotExist) && path == root {
+			return nil
 		}
-		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
 		if ext == ".yaml" || ext == ".yml" {
-			paths = append(paths, filepath.Join(root, e.Name()))
+			paths = append(paths, path)
 		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	sort.Strings(paths)
 	for _, p := range paths {

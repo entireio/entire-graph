@@ -44,3 +44,17 @@ tests:
 		t.Fatal("accepted undeclared binding")
 	}
 }
+
+func TestLoadRejectsYAMLAliases(t *testing.T) {
+	repo := t.TempDir()
+	if err := Init(repo); err != nil {
+		t.Fatal(err)
+	}
+	spec := "version: 1\nid: SPEC-1\ntitle: Authentication\nrequirements:\n  - &requirement\n    id: REQ-1\n    description: A user authenticates.\n  - *requirement\n"
+	if err := os.WriteFile(filepath.Join(repo, Root, "specs", "auth.yaml"), []byte(spec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(repo); err == nil {
+		t.Fatal("accepted YAML alias")
+	}
+}

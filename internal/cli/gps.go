@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -126,11 +127,65 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "status": "complete", "requirements": matchingRequirements(set, flags.query), "symbols": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
+	requirements := matchingRequirements(set, flags.query)
+	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "status": "complete", "requirements": requirements, "symbols": []any{}, "tests": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
 	if len(set.Specs) == 0 {
 		response["status"] = "complete_with_gaps"
 		response["gaps"] = []string{"NO_SPECS"}
+		return gpsEncode(opts, flags.format, response)
 	}
+	snapshot, err := gpsSnapshot(ctx, opts, repo)
+	if err != nil {
+		return err
+	}
+	selected := make(map[string]bool, len(requirements))
+	for _, requirement := range requirements {
+		selected[requirement["id"]] = true
+	}
+	bindings := make(map[string]intent.Binding, len(set.Bindings))
+	for _, binding := range set.Bindings {
+		bindings[binding.ID] = binding
+	}
+	var symbols []any
+	var tests []any
+	var gaps []string
+	for _, spec := range set.Specs {
+		for _, anchor := range spec.Anchors {
+			if !selected[anchor.Requirement] {
+				continue
+			}
+			binding, ok := bindings[anchor.ID]
+			if !ok {
+				gaps = append(gaps, "UNBOUND_ANCHOR:"+anchor.ID)
+				continue
+			}
+			state := resolveBinding(binding, snapshot.Symbols)
+			if state["state"] != "VALID" {
+				gaps = append(gaps, state["state"].(string)+":"+anchor.ID)
+				continue
+			}
+			symbols = append(symbols, map[string]any{"anchor": anchor.ID, "requirement": anchor.Requirement, "reason": "approved_anchor", "symbol": state["symbol"]})
+		}
+		for _, test := range spec.Tests {
+			if !acceptanceMatchesRequirement(spec, test.Acceptance, selected) {
+				continue
+			}
+			matches := matchingSymbols(snapshot.Symbols, test.Selector.Name, "")
+			if len(matches) == 1 {
+				tests = append(tests, map[string]any{"id": test.ID, "acceptance": test.Acceptance, "reason": "declared_mapping", "symbol": matches[0]})
+			} else {
+				gaps = append(gaps, "DECLARED_TEST_UNRESOLVED:"+test.ID)
+			}
+		}
+	}
+	sort.Strings(gaps)
+	response["symbols"] = symbols
+	response["tests"] = tests
+	response["gaps"] = gaps
+	if len(gaps) > 0 {
+		response["status"] = "complete_with_gaps"
+	}
+	fitGPSContextBudget(response, flags.maxBytes)
 	return gpsEncode(opts, flags.format, response)
 }
 
@@ -177,6 +232,10 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 			for _, test := range spec.Tests {
 				if test.Acceptance == acceptance.ID {
 					mapped = true
+					matches := matchingSymbols(snapshot.Symbols, test.Selector.Name, "")
+					if len(matches) != 1 {
+						findings = append(findings, map[string]any{"id": "GPS-MAPPING-UNRESOLVED", "severity": "warning", "subject": test.ID, "message": "declared test selector does not resolve to exactly one symbol"})
+					}
 				}
 			}
 			if !mapped {
@@ -294,6 +353,46 @@ func matchingRequirements(set intent.Set, query string) []map[string]string {
 	sort.Slice(out, func(i, j int) bool { return out[i]["id"] < out[j]["id"] })
 	return out
 }
+
+func acceptanceMatchesRequirement(spec intent.Spec, acceptanceID string, requirements map[string]bool) bool {
+	for _, acceptance := range spec.Acceptance {
+		if acceptance.ID == acceptanceID {
+			return requirements[acceptance.Requirement]
+		}
+	}
+	return false
+}
+
+// fitGPSContextBudget preserves direct intent first and falls back to an explicit
+// minimal manifest when even that evidence cannot fit the caller's budget.
+func fitGPSContextBudget(response map[string]any, maximum int) {
+	budget := response["budget"].(map[string]any)
+	if renderedGPSJSONBytes(response) <= maximum {
+		budget["rendered_bytes"] = renderedGPSJSONBytes(response)
+		return
+	}
+	response["symbols"] = []any{}
+	response["tests"] = []any{}
+	budget["omitted"] = []string{"symbols", "tests"}
+	if renderedGPSJSONBytes(response) > maximum {
+		response["requirements"] = []map[string]string{}
+		response["status"] = "BUDGET_TOO_SMALL"
+		response["gaps"] = []string{"BUDGET_TOO_SMALL"}
+		budget["omitted"] = []string{"requirements", "symbols", "tests"}
+	}
+	budget["rendered_bytes"] = renderedGPSJSONBytes(response)
+}
+
+func renderedGPSJSONBytes(value any) int {
+	var out bytes.Buffer
+	encoder := json.NewEncoder(termsafe.NewJSONWriter(&out))
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return 0
+	}
+	return out.Len()
+}
+
 func gpsEncode(opts Options, format string, value any) error {
 	if format == "json" {
 		encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
