@@ -25,12 +25,17 @@ and the [plan's evaluation rules](</Users/thomi/Projects/entire-plan/entire-grap
   inclusion/exclusion rules, labels, metric formulas, thresholds, repetitions,
   seeds, interval method, and treatment of failures, partials, and zero
   denominators. Preserve raw failures and incomplete denominators.
-- The full `mise run check` passed at `05ad9842` in 721.029 seconds in a
-  clean immutable checkout. Pinned Linux correctness also passed at that source
-  (28 top-level tests, including 10 live tests). Retained-query parity remains
-  a separate diagnostic requirement. The 56 campaign harness tests and seven
-  diagnostic wrapper tests remain local harness evidence, not live Azure
-  cross-worker stop-propagation verification.
+- Full `mise run check` passed at `d793b2be` in 683.699 seconds in a
+  clean immutable checkout. Pinned Linux passed 28 top-level tests including
+  10 live tests at that source. Encoded-publication `b253e18a` has focused
+  race verification; the related ADR 0046 admission correction is active and
+  requires a new immutable integration check once settled.
+- The 77 campaign-control tests pass locally. They do not establish live
+  cross-worker propagation. A bounded fake-service smoke is being prepared
+  to verify the real supervisor stop path without product queries or corpus
+  measurements. The P1 campaign remains paused after the retained cold-screen
+  failure at `d793b2be`; no gate or default promotion is claimed.
+
 
 ## P2 — optional compiler-backed Go resolution
 
