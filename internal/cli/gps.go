@@ -145,7 +145,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	requirements := matchingRequirements(set, flags.query)
-	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "status": "complete", "requirements": requirements, "symbols": []any{}, "code": []any{}, "dependencies": []any{}, "tests": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
+	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "status": "complete", "requirements": requirements, "symbols": []any{}, "code": []any{}, "dependencies": []any{}, "tests": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
 	if len(set.Specs) == 0 {
 		response["status"] = "complete_with_gaps"
 		response["gaps"] = []string{"NO_SPECS"}
@@ -352,7 +352,7 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 		}
 		disposition = "REVIEW_REQUIRED"
 	}
-	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "disposition": disposition, "findings": findings})
+	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "disposition": disposition, "findings": findings})
 }
 
 func runGPSWhy(ctx context.Context, opts Options, args []string) error {
@@ -544,6 +544,17 @@ func gpsIntent(ctx context.Context, repo string, head bool) (intent.Set, error) 
 		return intent.LoadRevision(ctx, repo, "HEAD")
 	}
 	return intent.Load(repo)
+}
+
+func gpsRepositoryView(ctx context.Context, repo string, head bool) map[string]string {
+	if !head {
+		return map[string]string{"kind": "working_tree"}
+	}
+	commit, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
+	if err != nil {
+		return map[string]string{"kind": "committed", "status": "unavailable"}
+	}
+	return map[string]string{"kind": "committed", "commit": commit, "tree": tree}
 }
 
 func gpsSnapshot(ctx context.Context, opts Options, repo string, head bool) (sem.ProviderSnapshot, error) {
