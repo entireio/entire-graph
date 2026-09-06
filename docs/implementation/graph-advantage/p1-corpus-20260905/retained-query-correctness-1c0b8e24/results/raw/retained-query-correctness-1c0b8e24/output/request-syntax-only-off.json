@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "repository": "kubernetes-kubernetes",
+  "repo_path": "/opt/p1/corpus/kubernetes-kubernetes",
+  "operation": "search",
+  "mode": "measure",
+  "cache": "off",
+  "cache_dir": "/opt/graph-validation/retained-query-correctness-1c0b8e24/cache-off-syntax-only",
+  "profile": "syntax-only",
+  "query": "find the values symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
+  "provider_version": "p1-corpus-20260905",
+  "top_k": 8,
+  "max_indexed_files": 0,
+  "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+  "mutation_id": "cold",
+  "scenario": "cold",
+  "trial": 0
+}

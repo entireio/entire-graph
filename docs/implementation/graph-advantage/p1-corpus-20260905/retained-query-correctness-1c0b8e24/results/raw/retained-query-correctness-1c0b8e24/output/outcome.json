@@ -1,0 +1,877 @@
+{
+  "completed_pairs": [
+    "syntax-only",
+    "fast"
+  ],
+  "issue": "unreviewed partial or warning membership; stop before next arm",
+  "observations": {
+    "fast-off": {
+      "binary_sha256": "b51728ed2c0840081c0921e6ec29931d2b10dce749802fb4f6fb341a60852e37",
+      "cache_bytes": null,
+      "cache_mode": "off",
+      "cache_path": "/opt/graph-validation/retained-query-correctness-1c0b8e24/cache-off-fast",
+      "completeness": {
+        "languages": {
+          "Bash": {
+            "files": 17,
+            "symbols": 201
+          },
+          "Dockerfile": {
+            "files": 2,
+            "symbols": 2
+          },
+          "Go": {
+            "files": 287,
+            "symbols": 4978
+          },
+          "JSON": {
+            "files": 25,
+            "symbols": 6159
+          },
+          "Protocol Buffers": {
+            "files": 2,
+            "symbols": 53
+          },
+          "YAML": {
+            "files": 42,
+            "symbols": 233
+          }
+        },
+        "relations": {
+          "CALLS": 2238,
+          "CONFIGURES": 6374,
+          "CONSTRUCTS": 42,
+          "CONTAINS": 2855,
+          "DEFINES": 11626,
+          "HANDLES_ROUTE": 21,
+          "IMPORTS": 3917,
+          "RESOURCE_DEPENDS_ON": 10
+        }
+      },
+      "elapsed_ns": 59367049574,
+      "extraction": {
+        "unchanged_reparses": null
+      },
+      "format_version": 1,
+      "manifest_path": "/opt/graph-validation/retained-query-correctness-1c0b8e24/output/request-fast-off.json",
+      "manifest_version": 1,
+      "mode": "measure",
+      "mutation_id": "cold",
+      "operation": "search",
+      "partial_failures": [
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 657 column 7 near \"kube\"; error ERROR at line 670 column 13 near \"kube\"; error ERROR at line 677 column 9 near \"kube\"; error ERROR at line 786 column 13 near \"kube\"; error ERROR at line 802 column 11 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/lib/golang.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 101 column 59 near \"`\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-codegen.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ` at line 61 column 1 near \"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/apiextensions-apiserver/hack/update-codegen.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"# Copyright 2023 The Kubernetes Authors.\\n#\\n# Licensed under the Apache License, ...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/apiextensions-apiserver/test/integration/ratcheting_test_cases/crds/standard-install.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1beta1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 173 column 107 near \"attributes:       map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{\\\"nam...\"; error ERROR at line 173 column 110 near \")\"; error ERROR at line 189 column 105 near \"\\\"\"; error ERROR at line 189 column 110 near \"\\\"\"; error ERROR at line 264 column 100 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/dynamic-resource-allocation/cel/compile_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v2.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 460 column 69 near \"|| [\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "test/cmd/discovery.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 3427 column 33 near \"\\\"impersonate:user-\"; error ERROR at line 3427 column 55 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "test/integration/apiserver/cel/validatingadmissionpolicy_test.go",
+          "severity": "warning"
+        }
+      ],
+      "partial_failures_count": 11,
+      "partial_failures_sha256": "02db45f45496f8f384768c9500832619cfcbb2c0bfaba97c6fa9d53085253f86",
+      "peak_rss_bytes": null,
+      "phase_ns": {
+        "index": 21978000000,
+        "preselect": 23175000000,
+        "product": 59366624216,
+        "query": 14211000000,
+        "serialization": 425358,
+        "total": 59367049574
+      },
+      "product_ns": 59366624216,
+      "profile": "fast",
+      "provider_version": "p1-corpus-20260905",
+      "query": "find the values symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
+      "repository": "kubernetes-kubernetes",
+      "repository_path": "/opt/p1/corpus/kubernetes-kubernetes",
+      "reuse": false,
+      "scenario": "cold",
+      "semantic_bytes": 12015,
+      "semantic_digest": "c75702a6ce564243807b06fd2280da6ea75d074b801c3d75cbe616166a2dd8b7",
+      "semantic_sha256": "c75702a6ce564243807b06fd2280da6ea75d074b801c3d75cbe616166a2dd8b7",
+      "serialization_ns": 425358,
+      "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+      "started_at": "2026-09-06T13:28:39.779242947Z",
+      "stats": {
+        "bytes_content_read_during_query": 19592575,
+        "bytes_content_read_for_identifier_usage": 2436821,
+        "caller_boosted_candidates": 354,
+        "candidates_selected": 8,
+        "context_block_bytes": 477,
+        "files_content_read_during_preselection": 381,
+        "files_content_read_during_query": 382,
+        "files_content_read_for_identifier_usage": 1,
+        "files_indexed": 381,
+        "files_scanned": 30866,
+        "graph_candidates": 0,
+        "identifier_usage_candidates": 32,
+        "index_cache_hit": false,
+        "index_latency_ms": 21978,
+        "lexical_candidates": 14260,
+        "preselect_latency_ms": 23175,
+        "preselection_backend": "git-index-grep+go-content",
+        "preselection_confidence": 1,
+        "preselection_coverage": 1,
+        "preselection_diversity": 1,
+        "preselection_files_examined": 31250,
+        "preselection_passes": 3,
+        "preselection_widened": true,
+        "query_constraints_truncated": true,
+        "query_latency_ms": 14211,
+        "related_sites": 1,
+        "result_bytes": 6325,
+        "same_container_neighbor_candidates": 4,
+        "search_latency_ms": 59366,
+        "sparse_candidates": 0,
+        "sparse_files_content_read": 0,
+        "symbols_considered": 11626,
+        "total_latency_ms": 59366,
+        "verify_command_bytes": 477,
+        "verify_tier": "narrow"
+      },
+      "status": "partial",
+      "trial": 0,
+      "verb": "search",
+      "wall_ns": 59367049574,
+      "warnings": [
+        {
+          "code": "W_WORKTREE_SNAPSHOT",
+          "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested",
+          "severity": "warning"
+        }
+      ],
+      "warnings_count": 1,
+      "warnings_sha256": "e0ce85fefeba137c4e41fcfa3bc5f1d62d461bc1f4fc7eff5587bbd52cf50468"
+    },
+    "fast-on": {
+      "binary_sha256": "b51728ed2c0840081c0921e6ec29931d2b10dce749802fb4f6fb341a60852e37",
+      "cache_bytes": null,
+      "cache_mode": "on",
+      "cache_path": "/opt/graph-validation/retained-query-correctness-1c0b8e24/cache-on-fast",
+      "completeness": {
+        "languages": {
+          "Bash": {
+            "files": 17,
+            "symbols": 201
+          },
+          "Dockerfile": {
+            "files": 2,
+            "symbols": 2
+          },
+          "Go": {
+            "files": 287,
+            "symbols": 4978
+          },
+          "JSON": {
+            "files": 25,
+            "symbols": 6159
+          },
+          "Protocol Buffers": {
+            "files": 2,
+            "symbols": 53
+          },
+          "YAML": {
+            "files": 42,
+            "symbols": 233
+          }
+        },
+        "relations": {
+          "CALLS": 2238,
+          "CONFIGURES": 6374,
+          "CONSTRUCTS": 42,
+          "CONTAINS": 2855,
+          "DEFINES": 11626,
+          "HANDLES_ROUTE": 21,
+          "IMPORTS": 3917,
+          "RESOURCE_DEPENDS_ON": 10
+        }
+      },
+      "elapsed_ns": 60306766960,
+      "extraction": {
+        "cache_bytes_read": 0,
+        "cache_bytes_written": 810844,
+        "extraction_ns": 3242217332,
+        "files_parsed": 371,
+        "files_reused": 0,
+        "raw_imports_ns": 42841413,
+        "raw_imports_parsed": 287,
+        "raw_imports_reused": 0,
+        "source_bytes_read": 275900643,
+        "unchanged_reparses": null
+      },
+      "format_version": 1,
+      "manifest_path": "/opt/graph-validation/retained-query-correctness-1c0b8e24/output/request-fast-on.json",
+      "manifest_version": 1,
+      "mode": "measure",
+      "mutation_id": "cold",
+      "operation": "search",
+      "partial_failures": [
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 657 column 7 near \"kube\"; error ERROR at line 670 column 13 near \"kube\"; error ERROR at line 677 column 9 near \"kube\"; error ERROR at line 786 column 13 near \"kube\"; error ERROR at line 802 column 11 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/lib/golang.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 101 column 59 near \"`\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-codegen.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ` at line 61 column 1 near \"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/apiextensions-apiserver/hack/update-codegen.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"# Copyright 2023 The Kubernetes Authors.\\n#\\n# Licensed under the Apache License, ...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/apiextensions-apiserver/test/integration/ratcheting_test_cases/crds/standard-install.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1beta1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 173 column 107 near \"attributes:       map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{\\\"nam...\"; error ERROR at line 173 column 110 near \")\"; error ERROR at line 189 column 105 near \"\\\"\"; error ERROR at line 189 column 110 near \"\\\"\"; error ERROR at line 264 column 100 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/dynamic-resource-allocation/cel/compile_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v2.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 460 column 69 near \"|| [\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "test/cmd/discovery.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 3427 column 33 near \"\\\"impersonate:user-\"; error ERROR at line 3427 column 55 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "test/integration/apiserver/cel/validatingadmissionpolicy_test.go",
+          "severity": "warning"
+        }
+      ],
+      "partial_failures_count": 11,
+      "partial_failures_sha256": "02db45f45496f8f384768c9500832619cfcbb2c0bfaba97c6fa9d53085253f86",
+      "peak_rss_bytes": null,
+      "phase_ns": {
+        "index": 11148000000,
+        "preselect": 34587000000,
+        "product": 60306128074,
+        "query": 3260000000,
+        "serialization": 638886,
+        "total": 60306766960
+      },
+      "product_ns": 60306128074,
+      "profile": "fast",
+      "provider_version": "p1-corpus-20260905",
+      "query": "find the values symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
+      "repository": "kubernetes-kubernetes",
+      "repository_path": "/opt/p1/corpus/kubernetes-kubernetes",
+      "reuse": true,
+      "scenario": "cold",
+      "semantic_bytes": 12015,
+      "semantic_digest": "c75702a6ce564243807b06fd2280da6ea75d074b801c3d75cbe616166a2dd8b7",
+      "semantic_sha256": "c75702a6ce564243807b06fd2280da6ea75d074b801c3d75cbe616166a2dd8b7",
+      "serialization_ns": 638886,
+      "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+      "started_at": "2026-09-06T13:29:40.210131092Z",
+      "stats": {
+        "bytes_content_read_during_query": 19592575,
+        "bytes_content_read_for_identifier_usage": 2436821,
+        "caller_boosted_candidates": 354,
+        "candidates_selected": 8,
+        "context_block_bytes": 477,
+        "extraction": {
+          "cache_bytes_read": 0,
+          "cache_bytes_written": 810844,
+          "extraction_ns": 3242217332,
+          "files_parsed": 371,
+          "files_reused": 0,
+          "raw_imports_ns": 42841413,
+          "raw_imports_parsed": 287,
+          "raw_imports_reused": 0,
+          "source_bytes_read": 275900643
+        },
+        "files_content_read_during_preselection": 31247,
+        "files_content_read_during_query": 382,
+        "files_content_read_for_identifier_usage": 1,
+        "files_indexed": 381,
+        "files_scanned": 30866,
+        "graph_candidates": 0,
+        "identifier_usage_candidates": 32,
+        "index_cache_hit": false,
+        "index_latency_ms": 11148,
+        "lexical_candidates": 14260,
+        "preselect_latency_ms": 34587,
+        "preselection_backend": "captured-index-match+go-content",
+        "preselection_confidence": 1,
+        "preselection_coverage": 1,
+        "preselection_diversity": 1,
+        "preselection_files_examined": 31250,
+        "preselection_passes": 3,
+        "preselection_widened": true,
+        "query_constraints_truncated": true,
+        "query_latency_ms": 3260,
+        "related_sites": 1,
+        "result_bytes": 6325,
+        "same_container_neighbor_candidates": 4,
+        "search_latency_ms": 59799,
+        "sparse_candidates": 0,
+        "sparse_files_content_read": 0,
+        "symbols_considered": 11626,
+        "total_latency_ms": 59799,
+        "verify_command_bytes": 477,
+        "verify_tier": "narrow"
+      },
+      "status": "partial",
+      "trial": 0,
+      "verb": "search",
+      "wall_ns": 60306766960,
+      "warnings": [
+        {
+          "code": "W_WORKTREE_SNAPSHOT",
+          "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested",
+          "severity": "warning"
+        }
+      ],
+      "warnings_count": 1,
+      "warnings_sha256": "e0ce85fefeba137c4e41fcfa3bc5f1d62d461bc1f4fc7eff5587bbd52cf50468"
+    },
+    "syntax-only-off": {
+      "binary_sha256": "b51728ed2c0840081c0921e6ec29931d2b10dce749802fb4f6fb341a60852e37",
+      "cache_bytes": null,
+      "cache_mode": "off",
+      "cache_path": "/opt/graph-validation/retained-query-correctness-1c0b8e24/cache-off-syntax-only",
+      "completeness": {
+        "languages": {
+          "Bash": {
+            "files": 17,
+            "symbols": 201
+          },
+          "Dockerfile": {
+            "files": 2,
+            "symbols": 2
+          },
+          "Go": {
+            "files": 287,
+            "symbols": 4978
+          },
+          "JSON": {
+            "files": 25,
+            "symbols": 6159
+          },
+          "Protocol Buffers": {
+            "files": 2,
+            "symbols": 53
+          },
+          "YAML": {
+            "files": 42,
+            "symbols": 233
+          }
+        },
+        "relations": {
+          "CONTAINS": 2509,
+          "DEFINES": 11626
+        }
+      },
+      "elapsed_ns": 50188953926,
+      "extraction": {
+        "unchanged_reparses": null
+      },
+      "format_version": 1,
+      "manifest_path": "/opt/graph-validation/retained-query-correctness-1c0b8e24/output/request-syntax-only-off.json",
+      "manifest_version": 1,
+      "mode": "measure",
+      "mutation_id": "cold",
+      "operation": "search",
+      "partial_failures": [
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 657 column 7 near \"kube\"; error ERROR at line 670 column 13 near \"kube\"; error ERROR at line 677 column 9 near \"kube\"; error ERROR at line 786 column 13 near \"kube\"; error ERROR at line 802 column 11 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/lib/golang.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 101 column 59 near \"`\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-codegen.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ` at line 61 column 1 near \"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/apiextensions-apiserver/hack/update-codegen.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"# Copyright 2023 The Kubernetes Authors.\\n#\\n# Licensed under the Apache License, ...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/apiextensions-apiserver/test/integration/ratcheting_test_cases/crds/standard-install.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1beta1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 173 column 107 near \"attributes:       map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{\\\"nam...\"; error ERROR at line 173 column 110 near \")\"; error ERROR at line 189 column 105 near \"\\\"\"; error ERROR at line 189 column 110 near \"\\\"\"; error ERROR at line 264 column 100 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/dynamic-resource-allocation/cel/compile_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v2.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 460 column 69 near \"|| [\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "test/cmd/discovery.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 3427 column 33 near \"\\\"impersonate:user-\"; error ERROR at line 3427 column 55 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "test/integration/apiserver/cel/validatingadmissionpolicy_test.go",
+          "severity": "warning"
+        }
+      ],
+      "partial_failures_count": 11,
+      "partial_failures_sha256": "02db45f45496f8f384768c9500832619cfcbb2c0bfaba97c6fa9d53085253f86",
+      "peak_rss_bytes": null,
+      "phase_ns": {
+        "index": 12446000000,
+        "preselect": 23429000000,
+        "product": 50188534685,
+        "query": 14312000000,
+        "serialization": 419241,
+        "total": 50188953926
+      },
+      "product_ns": 50188534685,
+      "profile": "syntax-only",
+      "provider_version": "p1-corpus-20260905",
+      "query": "find the values symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
+      "repository": "kubernetes-kubernetes",
+      "repository_path": "/opt/p1/corpus/kubernetes-kubernetes",
+      "reuse": false,
+      "scenario": "cold",
+      "semantic_bytes": 12137,
+      "semantic_digest": "81d3dc9875d85525486fd75871a38f04ebe605af5907c756c105d83d3e77ff2c",
+      "semantic_sha256": "81d3dc9875d85525486fd75871a38f04ebe605af5907c756c105d83d3e77ff2c",
+      "serialization_ns": 419241,
+      "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+      "started_at": "2026-09-06T13:26:56.202544366Z",
+      "stats": {
+        "bytes_content_read_during_query": 19592575,
+        "bytes_content_read_for_identifier_usage": 2436821,
+        "candidates_selected": 9,
+        "context_block_bytes": 477,
+        "files_content_read_during_preselection": 381,
+        "files_content_read_during_query": 382,
+        "files_content_read_for_identifier_usage": 1,
+        "files_indexed": 381,
+        "files_scanned": 30866,
+        "graph_candidates": 0,
+        "identifier_usage_candidates": 32,
+        "index_cache_hit": false,
+        "index_latency_ms": 12446,
+        "lexical_candidates": 14260,
+        "preselect_latency_ms": 23429,
+        "preselection_backend": "git-index-grep+go-content",
+        "preselection_confidence": 1,
+        "preselection_coverage": 1,
+        "preselection_diversity": 1,
+        "preselection_files_examined": 31250,
+        "preselection_passes": 3,
+        "preselection_widened": true,
+        "query_constraints_truncated": true,
+        "query_latency_ms": 14312,
+        "related_sites": 2,
+        "result_bytes": 6546,
+        "search_latency_ms": 50188,
+        "sparse_candidates": 0,
+        "sparse_files_content_read": 0,
+        "symbols_considered": 11626,
+        "total_latency_ms": 50188,
+        "verify_command_bytes": 477,
+        "verify_tier": "narrow"
+      },
+      "status": "partial",
+      "trial": 0,
+      "verb": "search",
+      "wall_ns": 50188953926,
+      "warnings": [
+        {
+          "code": "W_WORKTREE_SNAPSHOT",
+          "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested",
+          "severity": "warning"
+        }
+      ],
+      "warnings_count": 1,
+      "warnings_sha256": "e0ce85fefeba137c4e41fcfa3bc5f1d62d461bc1f4fc7eff5587bbd52cf50468"
+    },
+    "syntax-only-on": {
+      "binary_sha256": "b51728ed2c0840081c0921e6ec29931d2b10dce749802fb4f6fb341a60852e37",
+      "cache_bytes": null,
+      "cache_mode": "on",
+      "cache_path": "/opt/graph-validation/retained-query-correctness-1c0b8e24/cache-on-syntax-only",
+      "completeness": {
+        "languages": {
+          "Bash": {
+            "files": 17,
+            "symbols": 201
+          },
+          "Dockerfile": {
+            "files": 2,
+            "symbols": 2
+          },
+          "Go": {
+            "files": 287,
+            "symbols": 4978
+          },
+          "JSON": {
+            "files": 25,
+            "symbols": 6159
+          },
+          "Protocol Buffers": {
+            "files": 2,
+            "symbols": 53
+          },
+          "YAML": {
+            "files": 42,
+            "symbols": 233
+          }
+        },
+        "relations": {
+          "CONTAINS": 2509,
+          "DEFINES": 11626
+        }
+      },
+      "elapsed_ns": 51275809898,
+      "extraction": {
+        "cache_bytes_read": 0,
+        "cache_bytes_written": 769632,
+        "extraction_ns": 3301633878,
+        "files_parsed": 371,
+        "files_reused": 0,
+        "raw_imports_ns": 0,
+        "raw_imports_parsed": 0,
+        "raw_imports_reused": 0,
+        "source_bytes_read": 275900643,
+        "unchanged_reparses": null
+      },
+      "format_version": 1,
+      "manifest_path": "/opt/graph-validation/retained-query-correctness-1c0b8e24/output/request-syntax-only-on.json",
+      "manifest_version": 1,
+      "mode": "measure",
+      "mutation_id": "cold",
+      "operation": "search",
+      "partial_failures": [
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 657 column 7 near \"kube\"; error ERROR at line 670 column 13 near \"kube\"; error ERROR at line 677 column 9 near \"kube\"; error ERROR at line 786 column 13 near \"kube\"; error ERROR at line 802 column 11 near \"kube\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/lib/golang.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 101 column 59 near \"`\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "hack/update-codegen.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ` at line 61 column 1 near \"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/apiextensions-apiserver/hack/update-codegen.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 1 column 1 near \"# Copyright 2023 The Kubernetes Authors.\\n#\\n# Licensed under the Apache License, ...\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/apiextensions-apiserver/test/integration/ratcheting_test_cases/crds/standard-install.yaml",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1beta1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: missing ) at line 173 column 107 near \"attributes:       map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{\\\"nam...\"; error ERROR at line 173 column 110 near \")\"; error ERROR at line 189 column 105 near \"\\\"\"; error ERROR at line 189 column 110 near \"\\\"\"; error ERROR at line 264 column 100 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "staging/src/k8s.io/dynamic-resource-allocation/cel/compile_test.go",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v1.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_MINIFIED",
+          "detail": "file appears minified/bundled (very long lines); not analyzed as source",
+          "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+          "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v2.json",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 460 column 69 near \"|| [\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "test/cmd/discovery.sh",
+          "severity": "warning"
+        },
+        {
+          "code": "E_PARSE_ERROR",
+          "detail": "tree-sitter syntax error nodes present: error ERROR at line 3427 column 33 near \"\\\"impersonate:user-\"; error ERROR at line 3427 column 55 near \"\\\"\"",
+          "effect_on_semantic_completeness": "file parsed with syntax errors; semantic facts may be incomplete",
+          "file_path": "test/integration/apiserver/cel/validatingadmissionpolicy_test.go",
+          "severity": "warning"
+        }
+      ],
+      "partial_failures_count": 11,
+      "partial_failures_sha256": "02db45f45496f8f384768c9500832619cfcbb2c0bfaba97c6fa9d53085253f86",
+      "peak_rss_bytes": null,
+      "phase_ns": {
+        "index": 1649000000,
+        "preselect": 34785000000,
+        "product": 51275221403,
+        "query": 3286000000,
+        "serialization": 588495,
+        "total": 51275809898
+      },
+      "product_ns": 51275221403,
+      "profile": "syntax-only",
+      "provider_version": "p1-corpus-20260905",
+      "query": "find the values symbol or entrypoint in staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/values_test.go",
+      "repository": "kubernetes-kubernetes",
+      "repository_path": "/opt/p1/corpus/kubernetes-kubernetes",
+      "reuse": true,
+      "scenario": "cold",
+      "semantic_bytes": 12137,
+      "semantic_digest": "81d3dc9875d85525486fd75871a38f04ebe605af5907c756c105d83d3e77ff2c",
+      "semantic_sha256": "81d3dc9875d85525486fd75871a38f04ebe605af5907c756c105d83d3e77ff2c",
+      "serialization_ns": 588495,
+      "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+      "started_at": "2026-09-06T13:27:47.475075611Z",
+      "stats": {
+        "bytes_content_read_during_query": 19592575,
+        "bytes_content_read_for_identifier_usage": 2436821,
+        "candidates_selected": 9,
+        "context_block_bytes": 477,
+        "extraction": {
+          "cache_bytes_read": 0,
+          "cache_bytes_written": 769632,
+          "extraction_ns": 3301633878,
+          "files_parsed": 371,
+          "files_reused": 0,
+          "raw_imports_ns": 0,
+          "raw_imports_parsed": 0,
+          "raw_imports_reused": 0,
+          "source_bytes_read": 275900643
+        },
+        "files_content_read_during_preselection": 31247,
+        "files_content_read_during_query": 382,
+        "files_content_read_for_identifier_usage": 1,
+        "files_indexed": 381,
+        "files_scanned": 30866,
+        "graph_candidates": 0,
+        "identifier_usage_candidates": 32,
+        "index_cache_hit": false,
+        "index_latency_ms": 1649,
+        "lexical_candidates": 14260,
+        "preselect_latency_ms": 34785,
+        "preselection_backend": "captured-index-match+go-content",
+        "preselection_confidence": 1,
+        "preselection_coverage": 1,
+        "preselection_diversity": 1,
+        "preselection_files_examined": 31250,
+        "preselection_passes": 3,
+        "preselection_widened": true,
+        "query_constraints_truncated": true,
+        "query_latency_ms": 3286,
+        "related_sites": 2,
+        "result_bytes": 6546,
+        "search_latency_ms": 50577,
+        "sparse_candidates": 0,
+        "sparse_files_content_read": 0,
+        "symbols_considered": 11626,
+        "total_latency_ms": 50577,
+        "verify_command_bytes": 477,
+        "verify_tier": "narrow"
+      },
+      "status": "partial",
+      "trial": 0,
+      "verb": "search",
+      "wall_ns": 51275809898,
+      "warnings": [
+        {
+          "code": "W_WORKTREE_SNAPSHOT",
+          "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested",
+          "severity": "warning"
+        }
+      ],
+      "warnings_count": 1,
+      "warnings_sha256": "e0ce85fefeba137c4e41fcfa3bc5f1d62d461bc1f4fc7eff5587bbd52cf50468"
+    }
+  },
+  "processes_started": [
+    "syntax-only-off",
+    "syntax-only-on",
+    "fast-off",
+    "fast-on",
+    "full-off"
+  ],
+  "scope": "one retained correctness pair per profile; no performance score or campaign",
+  "status": "issue",
+  "unrun": [
+    "full-on"
+  ]
+}

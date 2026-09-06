@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -66,6 +67,21 @@ class QueryRunnerTests(unittest.TestCase):
             "cache_mode": config["cache"],
             "reuse": config["cache"] == "on",
         }
+
+    def test_full_profile_historical_warning_is_explicitly_reviewed(self):
+        config = json.loads((CONFIG_DIR / "request-full-off.json").read_text())
+        row = self._observation(config)
+        with tarfile.open(HERE.parent / "paused-raw/worker-3.tar.gz") as archive:
+            for line in archive.extractfile("results/campaign.ndjson"):
+                old = json.loads(line)
+                if old.get("verb") == "search" and old.get("trial") == 0 and old.get("reuse") is False:
+                    break
+        row["warnings"] = old["warnings"]
+        row["warnings_count"] = len(old["warnings"])
+        runner.validate_observation(row, config, runner.EXPECTED_BINARY_SHA256)
+        row["warnings"][1]["detail"] = "new warning detail"
+        with self.assertRaisesRegex(RuntimeError, "unreviewed"):
+            runner.validate_observation(row, config, runner.EXPECTED_BINARY_SHA256)
 
     def test_unknown_partial_and_empty_digest_stop_before_on(self):
         config = json.loads((CONFIG_DIR / "request-syntax-only-off.json").read_text())
