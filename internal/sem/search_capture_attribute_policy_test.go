@@ -84,11 +84,16 @@ func TestCapturedPreselectionBindsAttributePolicyAndDriverDecisions(t *testing.T
 
 func TestCapturedPreselectionRejectsOversizedAttributePolicy(t *testing.T) {
 	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	attribute := strings.Repeat("*.target diff\n", 128)
 	if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte(attribute), 0600); err != nil {
 		t.Fatal(err)
 	}
 	write(t, repo, "src/target.target", "needle\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "oversized captured attribute policy")
 	source, err := prepareSource(context.Background(), repo, ProviderSnapshotOptions{
 		NoNetwork: true, Worktree: true, ExtractionReuse: true, MaxParseBytes: 32,
 	})
