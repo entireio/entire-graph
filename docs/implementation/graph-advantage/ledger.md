@@ -12,7 +12,7 @@ The original implementation checkpoint addressed the review findings: type decla
 
 - **Original implementation commit:** `88dd1dc95a996999ae4e456879b6dd86d8027f71` (historical source checkpoint).
 - **Latest verified checkpoint:** `dc0ddce7`, with the full `mise run check` passing in 621.0947 seconds; evidence is retained by `da3c59ee`.
-- **Pinned Linux correctness:** passed for the verified checkpoint; the current working-tree selection fix is not covered.
+- **Pinned Linux correctness:** passed at `88dd1dc9`; later cache/ordering and captured-selection changes are not covered by that Linux run.
 - **Current working tree:** the captured-preselection worktree changes are unresolved and unverified; its identity changes as diagnosis proceeds, so no current HEAD is treated as final.
 - **Release status:** no workstream's complete release gate has passed; defaults remain unchanged.
 
@@ -157,7 +157,7 @@ are explained. Differing partial-failure membership remains under diagnosis.
 `stopgaps-v2.md` defines first-issue worker pause, cross-worker supervision,
 expiring leases, immutable run directories and canary admission before broad
 measurement. Supervisor and admission tests pass; worker integration passed
-47 Python tests in 6.460 seconds, including the collector. The full repository check against `dc0ddce7` passed in
+56 Python tests in 6.460 seconds, including the collector. The full repository check against `dc0ddce7` passed in
 621.0947 seconds and is retained by `da3c59ee`. No VMs or benchmarks restarted.
 
 Campaign stopgaps complete in `3b242da7` with supervisor/admission commits
@@ -182,3 +182,19 @@ The current uncommitted P1 fix must preserve source capture and default
 selection semantics; committed full-preindex recall behavior is separate and
 is not to be narrowed to fix this working-tree discrepancy. No current
 working-tree claim is release evidence.
+
+## Latest stopgap verification
+
+At `0381ea6d`, 56 harness unit/local subprocess tests passed in 4.561s, with
+unchanged harness source hashes (`p1-corpus-20260905/stopgaps-v3-tests.json`).
+Azure transport was mocked; no campaign restarted. Successful completion now
+requires a successful worker exit. Paused evidence can be collected after a
+verified terminal service state, with upload acknowledgement and no replacement
+of a different local archive. Unknown/garbage-collected units fail closed and
+require separate terminal-state verification before collection.
+
+Captured selection prototype `134c3752` remains explicitly WIP: the independent
+large-pool and mutation tests pass in 16.287s, but binary-attribute parity fails.
+Oversized and locale-sensitive matching remain unresolved. This is a retained
+failing regression, not a release candidate. See `captured-preselection-diagnosis.md`
+in the same evidence directory. No full repository check is claimed for this WIP.
