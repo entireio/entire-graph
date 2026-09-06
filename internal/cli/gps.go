@@ -179,7 +179,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	var symbols []any
 	var dependencies []any
 	var tests []any
-	var gaps []string
+	gaps := response["gaps"].([]string)
 	for _, spec := range set.Specs {
 		for _, anchor := range spec.Anchors {
 			if !selected[anchor.Requirement] {

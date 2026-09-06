@@ -121,3 +121,42 @@ func TestGPSCheckBaseRequiresCommittedView(t *testing.T) {
 		t.Fatalf("check --base error = %v, want committed-view requirement", err)
 	}
 }
+
+func TestGPSContextFallsBackToCodeWithoutSpecs(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "token.go"), []byte("package token\nfunc TokenLifetime() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"context", "--repo", repo, "--query", "token lifetime", "--format", "json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "NO_SPECS") || !strings.Contains(out.String(), "token.go") {
+		t.Fatalf("context did not return code fallback: %s", out.String())
+	}
+}
+
+func TestGPSContextRejectsUnsatisfiableBudget(t *testing.T) {
+	err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: t.TempDir()}}, []string{"context", "--query", "token", "--max-context-bytes", "1"})
+	if err == nil || !strings.Contains(err.Error(), "at least") {
+		t.Fatalf("context budget error = %v", err)
+	}
+}
+
+func TestGPSCheckReportsDeltaNotRequested(t *testing.T) {
+	repo := t.TempDir()
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}}, []string{"spec", "init", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "specs", "token.yaml"), []byte("version: 1\nid: SPEC-1\ntitle: Token\nrequirements:\n  - id: REQ-1\n    description: Token lifetime.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"check", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"change_delta":"not_requested"`) {
+		t.Fatalf("missing no-base delta state: %s", out.String())
+	}
+}
