@@ -108,7 +108,7 @@ func readCapturedFile(file io.Reader, limit int64) (string, *oversizeFile, error
 
 // capturedWorktreeReader is used only by an operation which retains observations.
 // The descriptor and leaf identity are checked before any source bytes are read.
-func capturedWorktreeReader(ctx context.Context, root *os.Root, repo string, limit int64, registry *oversizeRegistry) contentReader {
+func capturedWorktreeReader(ctx context.Context, root *os.Root, repo string, limit int64, registry *oversizeRegistry, observerFactory func(string) (io.Writer, func(error))) contentReader {
 	pinned := pinnedRootIdentity(root)
 	return func(path string) (string, bool) {
 		name := filepath.FromSlash(path)
@@ -135,8 +135,34 @@ func capturedWorktreeReader(ctx context.Context, root *os.Root, repo string, lim
 			}
 		}
 		defer file.Close()
-		content, over, err := readCapturedFile(captureContextReader{ctx, file}, limit)
+		var observer io.Writer
+		var finishObserver func(error)
+		if observerFactory != nil {
+			observer, finishObserver = observerFactory(path)
+		}
+		if finishObserver == nil {
+			finishObserver = func(error) {}
+		}
+		observerFinished := false
+		finish := func(observerErr error) {
+			if observerFinished {
+				return
+			}
+			observerFinished = true
+			finishObserver(observerErr)
+		}
+		defer func() {
+			// The reader reports observer failures through err below. This final
+			// callback is still guaranteed exactly once for successful reads.
+			finish(nil)
+		}()
+		var input io.Reader = file
+		if observer != nil {
+			input = io.TeeReader(input, observer)
+		}
+		content, over, err := readCapturedFile(captureContextReader{ctx, input}, limit)
 		if err != nil {
+			finish(err)
 			return "", false
 		}
 		if over != nil {

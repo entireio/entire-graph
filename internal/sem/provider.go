@@ -431,6 +431,10 @@ type ProviderSnapshotOptions struct {
 	ExtractionCacheDir string
 	captured           *sourceContext
 	captureInputs      bool
+	// captureObserverFactory receives one writer per captured path. The writer
+	// sees the same bytes as the bounded source reader, including bytes consumed
+	// only by an oversized digest. It is private and nil in ordinary builds.
+	captureObserverFactory func(string) (io.Writer, func(error))
 
 	NoNetwork    bool
 	Worktree     bool
@@ -1783,12 +1787,13 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		committedRevision = commit
 	}
 	opened, err := openSource(ctx, absRepo, committedRevision, sourceOptions{
-		ignoreFiles:  options.IgnoreFiles,
-		includeFiles: options.IncludeFiles,
-		cachePolicy:  options.cachePolicy,
-		maxReadBytes: resolveMaxParseBytes(options.MaxParseBytes),
-		maxFiles:     options.MaxFiles,
-		capture:      options.ExtractionReuse || options.Compiler != nil || options.captureInputs,
+		ignoreFiles:            options.IgnoreFiles,
+		includeFiles:           options.IncludeFiles,
+		cachePolicy:            options.cachePolicy,
+		maxReadBytes:           resolveMaxParseBytes(options.MaxParseBytes),
+		maxFiles:               options.MaxFiles,
+		capture:                options.ExtractionReuse || options.Compiler != nil || options.captureInputs,
+		captureObserverFactory: options.captureObserverFactory,
 	})
 	if err != nil {
 		return sourceContext{}, err
@@ -12436,10 +12441,11 @@ func externalParts(id string) (string, string) {
 
 // sourceOptions are the listing and reading bounds openSource enforces.
 type sourceOptions struct {
-	capture      bool
-	ignoreFiles  []string
-	includeFiles []string
-	cachePolicy  *capturedIgnorePolicy
+	capture                bool
+	captureObserverFactory func(string) (io.Writer, func(error))
+	ignoreFiles            []string
+	includeFiles           []string
+	cachePolicy            *capturedIgnorePolicy
 	// maxReadBytes caps how large a file the content reader will materialize.
 	// Zero or negative removes the cap.
 	maxReadBytes int
@@ -12738,7 +12744,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		return string(content), true
 	}
 	if options.capture {
-		read = capturedWorktreeReader(ctx, root, repo, maxReadBytes, registry)
+		read = capturedWorktreeReader(ctx, root, repo, maxReadBytes, registry, options.captureObserverFactory)
 	}
 	readPrefix := func(path string, limit int) (string, bool) {
 		name := filepath.FromSlash(path)
