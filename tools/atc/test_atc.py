@@ -21,6 +21,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 COLLIDE = os.path.join(HERE, "collide.py")
 TELEMETRY = os.path.join(HERE, "telemetry.py")
 FIXTURE_SH = os.path.join(os.path.dirname(HERE), "atc-fixture", "build_fixture.sh")
+PARTIAL_FIXTURE_SH = os.path.join(os.path.dirname(HERE), "atc-fixture",
+                                  "build_partial_fixture.sh")
 
 PASS, FAIL = "\033[32mPASS\033[0m", "\033[31mFAIL\033[0m"
 results = []
@@ -94,6 +96,67 @@ def main():
     check("zero advisories on independent work", r.get("advisories") == 0, "")
     check("verdict CLEARED with exit code 0", r.get("verdict") == "CLEARED" and code == 0,
           f"verdict={r.get('verdict')} exit={code}")
+    check("complete analysis is labelled complete (still authoritative)",
+          r.get("analysis", {}).get("complete") is True
+          and r.get("analysis", {}).get("gaps") == [],
+          json.dumps(r.get("analysis"))[:200])
+
+    # ---------- PARTIAL ANALYSIS (the graph is evidence, not an oracle) ----
+    print("\nPARTIAL ANALYSIS (dynamic dispatch the graph cannot resolve)")
+    pfx = tempfile.mkdtemp(prefix="atc-partial-")
+    os.rmdir(pfx)
+    subprocess.run(["bash", PARTIAL_FIXTURE_SH, pfx], check=True, capture_output=True)
+
+    # the trap exists: git merges clean, runtime breaks through the router
+    subprocess.run(["git", "-C", pfx, "checkout", "-qb", "merge-demo", "main"], check=True)
+    subprocess.run(["git", "-C", pfx, "merge", "-q", "--no-ff", "--no-edit",
+                    "feat-currency"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", pfx, "merge", "-q", "--no-ff", "--no-edit",
+                    "feat-webhooks"], check=True, capture_output=True)
+    broken = subprocess.run(
+        [sys.executable, "-c",
+         "from webhooks import on_stripe_event; on_stripe_event({'amount': 1})"],
+        cwd=pfx, capture_output=True, text=True)
+    check("dynamic-dispatch merge is broken at runtime (the invisible class)",
+          broken.returncode != 0 and "handle_payment" in broken.stderr,
+          broken.stderr[-200:])
+    subprocess.run(["git", "-C", pfx, "checkout", "-q", "main"], check=True)
+    subprocess.run(["git", "-C", pfx, "branch", "-qD", "merge-demo"], check=True)
+
+    code, r = run_collide(pfx, "feat-currency", "feat-webhooks")
+    check("dynamic pair is NOT presented as a bare CLEARED",
+          r.get("verdict") != "CLEARED",
+          f"verdict={r.get('verdict')}")
+    check("verdict CLEARED_PARTIAL with its own exit code 4",
+          r.get("verdict") == "CLEARED_PARTIAL" and code == 4,
+          f"verdict={r.get('verdict')} exit={code}")
+    gaps = r.get("analysis", {}).get("gaps", [])
+    dyn = [g for g in gaps if g.get("kind") == "dynamic_dispatch"]
+    check("blind spot identifies the dynamic call site (dispatch.py, module handlers)",
+          any(g.get("file") == "dispatch.py" and g.get("module") == "handlers"
+              for g in dyn), json.dumps(gaps)[:300])
+    check("analysis marked incomplete with a verification path",
+          r.get("analysis", {}).get("complete") is False
+          and "test" in (r.get("analysis", {}).get("verification") or ""),
+          json.dumps(r.get("analysis", {}))[:200])
+    p = subprocess.run([sys.executable, COLLIDE, "feat-currency", "feat-webhooks",
+                        "--repo", pfx], capture_output=True, text=True)
+    check("card says PARTIAL ANALYSIS / not authoritative, and shows the blind spot",
+          "PARTIAL ANALYSIS" in p.stdout and "not authoritative" in p.stdout
+          and "BLIND SPOT" in p.stdout, p.stdout[-400:])
+
+    # control: fully resolved code in the SAME repo keeps existing behaviour
+    code, r = run_collide(pfx, "feat-refund-sig", "feat-billing")
+    check("static control pair in the same repo is still a red HOLD (exit 2)",
+          r.get("verdict") == "HOLD" and code == 2
+          and any(f["entity"] == "handle_refund"
+                  for f in r.get("findings", {}).get("read_write", [])),
+          f"verdict={r.get('verdict')} exit={code}")
+    deps = [d for f in r.get("findings", {}).get("read_write", [])
+            for d in f.get("dependents", [])]
+    check("resolved dependents carry a confirmed evidence tier",
+          deps and all(d.get("evidence") == "confirmed" for d in deps),
+          json.dumps(deps)[:200])
 
     # ---------- FAIL-CLOSED -------------------------------------------------
     print("\nFAIL-CLOSED (errors must never read as 'clear')")

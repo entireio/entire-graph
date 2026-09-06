@@ -55,12 +55,12 @@ collide.py <a> <b> --json            # machine-readable
 collide.py <a> <b> --record          # send the verdict to the telemetry store
 collide.py <a> <b> --priors          # add historical contention warnings
 telemetry.py hotspots                # contention leaderboard
-test_atc.py                          # 24-check suite
+test_atc.py                          # 33-check suite
 ```
 
 **A side can be a worktree path**, in which case ATC analyses the *uncommitted* work in it — collisions surface before anybody commits. The live tree is sampled with `git stash create`, which writes an object and touches neither the agent's files, its index, nor its stash stack (asserted by tests).
 
-**Exit codes:** `0` cleared · `1` advisory · `2` red · `3` no verdict (error). An error never reads as "clear".
+**Exit codes:** `0` cleared (analysis complete) · `1` advisory · `2` red · `3` no verdict (error) · `4` cleared **on partial analysis only**. Neither an error nor a partial analysis ever reads as "clear".
 
 ## What it reports
 
@@ -71,8 +71,35 @@ test_atc.py                          # 24-check suite
 | **BEHAVIOR DRIFT** | body-only change with cross-side dependents | 🟡 |
 | **PROXIMITY** | same file, different entities | 🟡 |
 | **UNKNOWN** | an edge the graph could not resolve — always listed, never dropped | ❔ |
+| **BLIND SPOT** | a place the graph is structurally blind: dynamic dispatch (`getattr`/reflection) or generated code referencing a shape-changed module, or an inventory-only language | 🕳️ |
 
 Only signature/removal/rename changes go red. False positives are fatal for a tool like this, so advisories never page.
+
+## The graph is evidence, not an oracle
+
+A static graph cannot see through dynamic dispatch, reflection, or generated
+code — on such repos **"no edge" stops proving "no dependency"**. ATC therefore
+never sells silence as safety:
+
+- Every verdict carries an `analysis` block: `complete` plus a `gaps` list with
+  each blind spot's location. A pair with zero findings is only `CLEARED`
+  (exit 0) when analysis is complete; otherwise the verdict is
+  **`CLEARED_PARTIAL`** (exit 4) with a concrete verification path
+  (trial-merge, run both sides' suites, inspect the listed call sites).
+- Every reported dependent is tiered: **confirmed** (structurally resolved
+  edge: `import_resolved`, `same_file`, `type_inferred`, `exact`) vs
+  **heuristic** (`name_only` match — the card says "verify at source").
+- Inventory-only languages are feature-detected via
+  `entire graph capabilities`; executable code in them can't be cleared
+  structurally and is flagged (prose/data formats are exempt — a README edit
+  is not a blind spot).
+
+The blind-spot scan is itself textual and heuristic, which is safe by
+construction: a hit only ever *downgrades* certainty, it never creates a red.
+`tools/atc-fixture/build_partial_fixture.sh` seeds the trap: a `getattr`
+router, a signature change on one branch, a new dynamic caller on the other —
+git merges clean, the tree breaks at runtime, and ATC answers
+`CLEARED_PARTIAL` pointing at `dispatch.py` instead of a false green.
 
 ## Fleet memory (optional, Databricks)
 
@@ -90,4 +117,4 @@ Configure with `DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS
 
 ## Limits
 
-Static, heuristic analysis: dynamic dispatch and reflection are not resolvable and surface as UNKNOWN — verify by test. Dependent resolution prefers `<file>:<line>` selectors because bare names collide across a large polyglot repo. Landing order is a dependency-direction heuristic, not a scheduler. Watch mode is not implemented; run ATC post-commit or on demand.
+Static, heuristic analysis: dynamic dispatch and reflection are not resolvable; they surface as 🕳️ BLIND SPOT lines and downgrade a clean verdict to CLEARED_PARTIAL — verify by test. Dependent resolution prefers `<file>:<line>` selectors because bare names collide across a large polyglot repo. Landing order is a dependency-direction heuristic, not a scheduler. Watch mode is not implemented; run ATC post-commit or on demand.

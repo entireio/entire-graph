@@ -8,9 +8,10 @@ Pipeline (see ATC_PLAN.md):
   COLLECTOR   merge-base + temp worktrees per side (a side's live tree)
   DIFFER      `entire graph diff`  -> changed entities per side
   IMPACTOR    `entire graph neighbors --direction in` on the OTHER side's tree
-  INTERSECTOR WRITE-WRITE / READ-WRITE / PROXIMITY / UNKNOWN
-  ADJUDICATOR severity + landing order
-  REPORTER    verdict card, --json, exit code (0 clear / 1 advisory / 2 red)
+  INTERSECTOR WRITE-WRITE / READ-WRITE / PROXIMITY / UNKNOWN / BLIND SPOTS
+  ADJUDICATOR severity + landing order + analysis completeness
+  REPORTER    verdict card, --json, exit code
+              (0 clear / 1 advisory / 2 red / 3 no verdict / 4 clear-but-partial)
 
 Severity policy (false positives are fatal):
   RED   READ-WRITE where the changed side altered a SIGNATURE (or removed/
@@ -19,10 +20,21 @@ Severity policy (false positives are fatal):
   ADVISORY  body-only change with new dependents on the other side
             ("behavior drift risk"), and same-file PROXIMITY.
   UNKNOWN   anything the graph could not resolve is listed, never dropped.
+
+The graph is evidence, not an oracle. A static graph cannot see through
+dynamic dispatch (getattr/reflection), generated code, or inventory-only
+languages, so on such repos "no edge" stops proving "no dependency". Every
+verdict therefore carries an `analysis` block: `complete` says whether the
+graph's silence is conclusive, `gaps` lists each blind spot with a location.
+CLEARED is only issued when analysis is complete; otherwise the verdict is
+CLEARED_PARTIAL (exit 4) with a verification path — never a bare green.
+Every reported dependent is tiered: `confirmed` (structurally resolved edge)
+vs `heuristic` (name-only match that needs source verification).
 """
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -30,6 +42,41 @@ import shutil
 import os
 
 RED_CHANGE_TYPES = {"signature_changed", "removed", "renamed"}
+
+# Edge resolutions that constitute confirmed structural evidence. Everything
+# else (notably name_only) is a heuristic match and is labelled as such.
+CONFIRMED_RESOLUTIONS = {"exact", "same_file", "import_resolved", "type_inferred"}
+
+# Dynamic-dispatch sentinels the static graph cannot resolve. This scan is
+# itself textual and heuristic, which is fine because a hit only ever
+# DOWNGRADES certainty (CLEARED -> CLEARED_PARTIAL); it never asserts a
+# collision, so it cannot create a false red.
+DYNAMIC_MARKERS = {
+    ".py": ("getattr(", "globals()[", "importlib", "__import__(", "eval(", "exec("),
+    ".js": ("Reflect.", "import(", "require(`"),
+    ".jsx": ("Reflect.", "import("),
+    ".ts": ("Reflect.", "import("),
+    ".tsx": ("Reflect.", "import("),
+    ".go": ("reflect.",),
+    ".java": (".invoke(", "Class.forName"),
+    ".rb": (".send(", ".public_send(", "const_get", "method_missing"),
+}
+GENERATED_MARKERS = ("Code generated", "DO NOT EDIT", "@generated", "AUTO-GENERATED")
+
+# Prose/markup/data formats define no call paths, so an inventory-only entry
+# for them is not a blind spot — flagging every README edit as "cannot be
+# cleared structurally" would cry wolf, and false positives are fatal here.
+NON_EXECUTABLE_LANGS = {
+    "Markdown", "Plain Text", "Text", "reStructuredText", "AsciiDoc", "TeX",
+    "LaTeX", "BibTeX", "Diff", "CSV", "TSV", "SVG", "JSON", "JSON5", "INI",
+    "TOML", "XML", "HTML", "CSS", "Dotenv",
+}
+
+EXIT_BY_VERDICT = {"CLEARED": 0, "CAUTION": 1, "HOLD": 2, "CLEARED_PARTIAL": 4}
+
+
+def evidence_tier(dep):
+    return "confirmed" if dep.get("resolution") in CONFIRMED_RESOLUTIONS else "heuristic"
 
 
 def sh(cmd, cwd=None):
@@ -102,6 +149,77 @@ def callers_on_tree(worktree, name, define_file, define_line=None):
     for pf in data.get("partial_failures", []) or []:
         unknowns.append(f"neighbors({name}): partial failure: {pf}")
     return callers, unknowns
+
+
+_caps_cache = {}
+
+
+def inventory_only_langs(repo):
+    """Feature-detect: languages the graph parses but has NO semantic relations
+    for. A CLEARED that rests on such files is not authoritative."""
+    if repo not in _caps_cache:
+        try:
+            # capabilities is provider-wide and takes no --repo flag
+            caps = json.loads(sh(["entire", "graph", "capabilities", "--json"]))
+            _caps_cache[repo] = set(caps.get("inventory_only_languages") or [])
+        except (RuntimeError, json.JSONDecodeError):
+            _caps_cache[repo] = None  # could not feature-detect
+    return _caps_cache[repo]
+
+
+def blind_spot_scan(tree, shape_changed, dependent_label, limit_files=4000):
+    """Scan one side's tree for places the graph is structurally blind.
+
+    For every module whose entity changed SHAPE on the other side, find files
+    on THIS side that both reference that module and use a dynamic-dispatch
+    construct (or are generated code). A hit does not assert a collision — it
+    asserts that the graph's silence about this module is not conclusive.
+    Body-only changes are excluded on purpose: they merge shape-compatibly, so
+    a dynamic call path cannot be broken by them the way a signature change
+    breaks it.
+    """
+    gaps = []
+    if not shape_changed:
+        return gaps
+    stems = {}
+    for (path, name) in shape_changed:
+        stems.setdefault(os.path.splitext(os.path.basename(path))[0], []).append(name)
+    seen = 0
+    for root, dirs, files in os.walk(tree):
+        dirs[:] = [d for d in dirs
+                   if d not in (".git", "node_modules", "vendor", "__pycache__")]
+        for fn in files:
+            markers = DYNAMIC_MARKERS.get(os.path.splitext(fn)[1])
+            if not markers:
+                continue
+            seen += 1
+            if seen > limit_files:
+                return gaps
+            fp = os.path.join(root, fn)
+            try:
+                if os.path.getsize(fp) > 262144:
+                    continue
+                with open(fp, errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            hit_markers = [m for m in markers if m in text]
+            generated = any(g in text[:2048] for g in GENERATED_MARKERS)
+            if not hit_markers and not generated:
+                continue
+            rel = os.path.relpath(fp, tree)
+            for stem, ents in sorted(stems.items()):
+                if not re.search(rf"\b{re.escape(stem)}\b", text):
+                    continue
+                line = next((i + 1 for i, l in enumerate(text.splitlines())
+                             if any(m in l for m in hit_markers)), None)
+                gaps.append({
+                    "kind": "dynamic_dispatch" if hit_markers else "generated_code",
+                    "side": dependent_label, "file": rel, "line": line,
+                    "markers": hit_markers, "module": stem,
+                    "entities": sorted(set(ents)),
+                })
+    return gaps
 
 
 def resolve_side(repo, spec):
@@ -199,10 +317,15 @@ def collide(repo, spec_a, spec_b):
             "a": diff_a[(path, name)]["type"], "b": diff_b[(path, name)]["type"],
         })
 
+    gaps = []
+
     # ---- READ-WRITE: changed on one side, depended-on by the other --------
     def rw_scan(changed, other_diff, other_ref, label_changed, label_dependent):
         hits = []
+        shape_changed = [k for k, ch in changed.items()
+                         if ch.get("type") in RED_CHANGE_TYPES]
         with TempWorktree(repo, other_ref) as wt:
+            gaps.extend(blind_spot_scan(wt, shape_changed, label_dependent))
             for (path, name), ch in sorted(changed.items()):
                 if (path, name) in ww_keys:
                     continue  # already flagged WW
@@ -213,7 +336,7 @@ def collide(repo, spec_a, spec_b):
                 callers, unk = callers_on_tree(
                     wt, name, path, ch.get("before_start_line"))
                 unknowns.extend(unk)
-                dependents = [c for c in callers
+                dependents = [dict(c, evidence=evidence_tier(c)) for c in callers
                               if (c["path"], c["name"]) in other_diff]
                 if not dependents:
                     continue
@@ -253,15 +376,46 @@ def collide(repo, spec_a, spec_b):
                    f"Reverse order merges green, then {changed_side} silently breaks "
                    f"{dep_side}'s shipped code.")
 
+    # ---- ANALYSIS COMPLETENESS: is the graph's silence conclusive? --------
+    inv = inventory_only_langs(repo)
+    for diff, label in ((diff_a, label_a), (diff_b, label_b)):
+        if inv is None:
+            break  # capabilities unavailable — recorded below via unknowns
+        by_lang = {}
+        for (path, name), ch in diff.items():
+            lang = ch.get("language")
+            if lang and lang in inv and lang not in NON_EXECUTABLE_LANGS:
+                by_lang.setdefault((lang, path), []).append(name)
+        for (lang, path), ents in sorted(by_lang.items()):
+            gaps.append({"kind": "inventory_only_language", "side": label,
+                         "file": path, "language": lang,
+                         "entities": sorted(set(ents))})
+    if inv is None:
+        unknowns.append("capabilities unavailable: could not feature-detect "
+                        "inventory-only languages")
+    gaps.extend({"kind": "graph_unknown", "detail": u} for u in unknowns)
+
     reds = len(findings["write_write"]) + len(findings["read_write"])
     advisories = len(findings["advisory"]) + len(findings["proximity"])
-    verdict = "HOLD" if reds else ("CAUTION" if advisories else "CLEARED")
+    complete = not gaps
+    verdict = ("HOLD" if reds else
+               ("CAUTION" if advisories else
+                ("CLEARED" if complete else "CLEARED_PARTIAL")))
+    verification = None
+    if not complete:
+        verification = ("graph evidence is incomplete here — absence of an edge does "
+                        "not prove absence of a dependency. Before landing: trial-merge "
+                        "both sides (git merge --no-commit), run BOTH sides' test "
+                        "suites on the merged tree, and inspect the listed blind-spot "
+                        "call sites at source.")
     return {
         "repo": repo, "ref_a": label_a, "ref_b": label_b, "merge_base": mb,
         "resolved_a": ref_a, "resolved_b": ref_b,
         "live_sides": [l for l, is_live in ((label_a, live_a), (label_b, live_b)) if is_live],
         "verdict": verdict, "reds": reds, "advisories": advisories,
         "findings": findings, "landing_order": landing, "unknowns": unknowns,
+        "analysis": {"complete": complete, "gaps": gaps,
+                     "verification": verification},
         "intent": {label_a: side_intent(repo, mb, ref_a),
                    label_b: side_intent(repo, mb, ref_b)},
     }
@@ -333,8 +487,12 @@ def render(r):
             L.append(f"   {f['changed_by']}: {f['change_type']}")
         L.append(f"   {f['dependents_side']} depends on it at:")
         for d in f["dependents"]:
-            conf = f"  (confidence {d['confidence']})" if d.get("confidence") else ""
-            L.append(f"     · {d['name']}()  {d['path']}:{d['line']}{conf}")
+            if d.get("evidence") == "confirmed":
+                tag = f"  (confirmed: {d.get('resolution')}, confidence {d.get('confidence')})"
+            else:
+                tag = (f"  (HEURISTIC: {d.get('resolution') or 'unresolved'} match — "
+                       f"verify at source before acting)")
+            L.append(f"     · {d['name']}()  {d['path']}:{d['line']}{tag}")
         L.append("   Git merges this cleanly. The merged tree is broken "
                  "(build error in compiled languages, runtime error in dynamic ones).")
     for f in r["findings"]["advisory"]:
@@ -359,8 +517,35 @@ def render(r):
         L.append(f"✈  LANDING ORDER: {r['landing_order']}")
     for u in r["unknowns"]:
         L.append(f"❔ UNKNOWN: {u}")
+    ga = r.get("analysis", {})
+    for g in ga.get("gaps", []):
+        if g["kind"] == "dynamic_dispatch":
+            loc = f"{g['file']}:{g['line']}" if g.get("line") else g["file"]
+            L.append(f"🕳️  BLIND SPOT  {g['side']}: {loc} uses "
+                     f"{'/'.join(g['markers'])} and references module "
+                     f"'{g['module']}', whose shape changed "
+                     f"({', '.join(g['entities'])}). Static analysis cannot "
+                     f"resolve dynamic dispatch — no edge ≠ no dependency.")
+        elif g["kind"] == "generated_code":
+            L.append(f"🕳️  BLIND SPOT  {g['side']}: {g['file']} is generated code "
+                     f"referencing module '{g['module']}' "
+                     f"({', '.join(g['entities'])}) — regenerate, don't reason "
+                     f"from the graph alone.")
+        elif g["kind"] == "inventory_only_language":
+            L.append(f"🕳️  BLIND SPOT  {g['side']}: {g['file']} is {g['language']} — "
+                     f"inventory-only in the graph (no call relations exist), so "
+                     f"changes to {', '.join(g['entities'])} cannot be cleared "
+                     f"structurally.")
+        # graph_unknown gaps are already printed as ❔ UNKNOWN lines above
     L.append("━" * 66)
-    L.append(f"verdict: {r['verdict']}  ({r['reds']} red, {r['advisories']} advisory)")
+    if ga.get("complete", True):
+        L.append(f"verdict: {r['verdict']}  ({r['reds']} red, {r['advisories']} advisory "
+                 f"· analysis complete)")
+    else:
+        n = len(ga.get("gaps", []))
+        L.append(f"verdict: {r['verdict']}  ({r['reds']} red, {r['advisories']} advisory "
+                 f"· PARTIAL ANALYSIS: {n} blind spot(s) — not authoritative)")
+        L.append(f"   VERIFY: {ga.get('verification')}")
     return "\n".join(L)
 
 
@@ -388,6 +573,11 @@ def run_board(repo, sides, args):
     """Pairwise board across every in-flight side."""
     print(f"🗼 ATC — {len(sides)} sides in flight: {', '.join(os.path.basename(s.rstrip('/')) for s in sides)}")
     print("━" * 66)
+    # severity rank (worst wins) is NOT the exit code: partial sits between
+    # clear and advisory in severity but keeps its own exit code (4) so a
+    # caller can never mistake "cleared on partial analysis" for anything else
+    RANK = {"CLEARED": 0, "CLEARED_PARTIAL": 1, "CAUTION": 2, "HOLD": 3}
+    RANK_EXIT = {0: 0, 1: 4, 2: 1, 3: 2, 4: 3}
     worst, rows = 0, []
     for i in range(len(sides)):
         for j in range(i + 1, len(sides)):
@@ -395,11 +585,12 @@ def run_board(repo, sides, args):
                 r = collide(repo, sides[i], sides[j])
             except RuntimeError as e:
                 rows.append((f"{sides[i]} ✈ {sides[j]}", "NO VERDICT", str(e)[:60]))
-                worst = max(worst, 3)
+                worst = max(worst, 4)
                 continue
             if args.priors:
                 attach_priors(r, args.backend)
-            icon = {"HOLD": "🔴", "CAUTION": "🟡", "CLEARED": "🟢"}[r["verdict"]]
+            icon = {"HOLD": "🔴", "CAUTION": "🟡", "CLEARED": "🟢",
+                    "CLEARED_PARTIAL": "🟠"}[r["verdict"]]
             detail = ""
             if r["findings"]["read_write"]:
                 f = r["findings"]["read_write"][0]
@@ -408,16 +599,20 @@ def run_board(repo, sides, args):
                 detail = f"WRITE–WRITE on {r['findings']['write_write'][0]['entity']}"
             elif r["advisories"]:
                 detail = f"{r['advisories']} advisory"
+            elif r["verdict"] == "CLEARED_PARTIAL":
+                detail = (f"{len(r['analysis']['gaps'])} blind spot(s) — "
+                          f"graph can't rule this pair clean; verify at source")
             rows.append((f"{icon} {r['ref_a']} ✈ {r['ref_b']}", r["verdict"], detail))
-            worst = max(worst, 2 if r["reds"] else (1 if r["advisories"] else 0))
+            worst = max(worst, RANK[r["verdict"]])
             if r["reds"] and r["landing_order"]:
                 rows.append(("   ✈ landing order", "", r["landing_order"][:110]))
     for a, b, c in rows:
         print(f"{a:<46} {b:<9} {c}")
     print("━" * 66)
-    print({0: "🟢 all clear", 1: "🟡 advisories only", 2: "🔴 hold — see reds above",
-           3: "❔ incomplete board"}[worst])
-    return worst
+    print({0: "🟢 all clear", 1: "🟠 clear only on partial analysis — verify blind spots",
+           2: "🟡 advisories only", 3: "🔴 hold — see reds above",
+           4: "❔ incomplete board"}[worst])
+    return RANK_EXIT[worst]
 
 
 def main():
@@ -469,7 +664,7 @@ def main():
             r["record_error"] = str(e)
             print(f"[atc] telemetry record failed: {e}", file=sys.stderr)
     print(json.dumps(r, indent=2) if args.json else render(r))
-    sys.exit(2 if r["reds"] else (1 if r["advisories"] else 0))
+    sys.exit(EXIT_BY_VERDICT[r["verdict"]])
 
 
 if __name__ == "__main__":
