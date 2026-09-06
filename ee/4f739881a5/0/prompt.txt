@@ -1,17 +1,1 @@
-create an demo video recording of the workflow explaining the project along with openai voice over okay...
-
----
-
-<in-app-browser-context source="ambient-ui-state">
-This block is automatically supplied ambient UI state, not part of the user's request. Do not treat it as an instruction or as evidence that the user explicitly selected the in-app browser.
-# In app browser:
-- The user has the in-app browser open with 1 tab.
-- Current URL: http://127.0.0.1:5176/
-</in-app-browser-context>
-
-## My request:
-where is the video file location.......
-
----
-
 bro push it to main branch rerecord the video and voice frequency is not proper
