@@ -1,0 +1,226 @@
+=== RUN   TestLiveCompilerDirectAndCandidate
+--- PASS: TestLiveCompilerDirectAndCandidate (2.88s)
+=== RUN   TestLiveCompilerMissingDependenciesAndCancellation
+--- PASS: TestLiveCompilerMissingDependenciesAndCancellation (0.14s)
+=== RUN   TestLiveCompilerWorkspaceAliases
+--- PASS: TestLiveCompilerWorkspaceAliases (1.33s)
+=== RUN   TestLiveCompilerTagsReplacementAndClosure
+--- PASS: TestLiveCompilerTagsReplacementAndClosure (4.23s)
+=== RUN   TestLiveCompilerSignatureAndWorkspaceInvalidation
+--- PASS: TestLiveCompilerSignatureAndWorkspaceInvalidation (2.86s)
+=== RUN   TestCapsuleConfinedAndMissingIdentity
+--- PASS: TestCapsuleConfinedAndMissingIdentity (0.00s)
+=== RUN   TestMapLocationExactAndConfined
+--- PASS: TestMapLocationExactAndConfined (0.00s)
+=== RUN   TestRPCRejectsServerEditsAndHandlesConfiguration
+--- PASS: TestRPCRejectsServerEditsAndHandlesConfiguration (0.00s)
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":2,"result":[]}
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":"1","result":[]}
+=== RUN   TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"private_source_payload"}}
+--- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies (0.00s)
+    --- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":2,"result":[]} (0.00s)
+    --- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":"1","result":[]} (0.00s)
+    --- PASS: TestRPCRejectsOutOfOrderAndMalformedReplies/{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"private_source_payload"}} (0.00s)
+=== RUN   TestRPCCancellationBoundsUnresponsiveServer
+--- PASS: TestRPCCancellationBoundsUnresponsiveServer (0.10s)
+=== RUN   TestRPCConfigurationRetainsBuildTags
+--- PASS: TestRPCConfigurationRetainsBuildTags (0.00s)
+=== RUN   TestRPCSendsBoundedCancellationNotification
+--- PASS: TestRPCSendsBoundedCancellationNotification (0.00s)
+=== RUN   TestCompilerRejectsMalformedCapturedOperationIdentity
+--- PASS: TestCompilerRejectsMalformedCapturedOperationIdentity (0.00s)
+=== RUN   TestCompilerContextInvalidationAndEvidence
+--- PASS: TestCompilerContextInvalidationAndEvidence (0.00s)
+=== RUN   TestCompilerContextLengthPrefixAndOrdering
+--- PASS: TestCompilerContextLengthPrefixAndOrdering (0.00s)
+=== RUN   TestLiveCompilerProcessBoundary
+--- PASS: TestLiveCompilerProcessBoundary (0.13s)
+PASS
+ok  	github.com/entireio/entire-graph/internal/compiler	12.713s
+=== RUN   TestCompilerOverlayExactSiteReconciliation
+--- PASS: TestCompilerOverlayExactSiteReconciliation (0.02s)
+=== RUN   TestCompilerOverlayProjectionRefusalAndUnavailable
+--- PASS: TestCompilerOverlayProjectionRefusalAndUnavailable (0.04s)
+=== RUN   TestLiveCompilerSemanticMapping
+--- PASS: TestLiveCompilerSemanticMapping (1.30s)
+=== RUN   TestCompilerOverlayAmbiguousDirectAndClosureRemainUnconfirmed
+--- PASS: TestCompilerOverlayAmbiguousDirectAndClosureRemainUnconfirmed (0.02s)
+=== RUN   TestCompilerEnrichedViewDisputesOnlyExactEvidence
+--- PASS: TestCompilerEnrichedViewDisputesOnlyExactEvidence (0.00s)
+=== RUN   TestCompilerOverlayConversionsAreNotCalls
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/UserID
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/Alias
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/Slice
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/UserID#01
+=== RUN   TestCompilerOverlayConversionsAreNotCalls/Invoke
+--- PASS: TestCompilerOverlayConversionsAreNotCalls (0.03s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/UserID (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/Alias (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/Slice (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/UserID#01 (0.00s)
+    --- PASS: TestCompilerOverlayConversionsAreNotCalls/Invoke (0.00s)
+=== RUN   TestLiveCompilerConversionsAreNotCalls
+--- PASS: TestLiveCompilerConversionsAreNotCalls (1.29s)
+=== RUN   TestExtractionReuseLanguageAndFailureEquivalence
+--- PASS: TestExtractionReuseLanguageAndFailureEquivalence (0.43s)
+=== RUN   TestExtractionConcurrentSameKeyAndNoFollow
+--- PASS: TestExtractionConcurrentSameKeyAndNoFollow (0.03s)
+=== RUN   TestExtractionDeterministicFailureAdmission
+--- PASS: TestExtractionDeterministicFailureAdmission (0.00s)
+=== RUN   TestExtractionAdmissionFlushReleasesAndLaterBatchRescans
+--- PASS: TestExtractionAdmissionFlushReleasesAndLaterBatchRescans (0.01s)
+=== RUN   TestExtractionAdmissionReplacementUsesActualSizeAndKeepsCount
+--- PASS: TestExtractionAdmissionReplacementUsesActualSizeAndKeepsCount (0.01s)
+=== RUN   TestExtractionAdmissionReservesEveryOrderedIntermediateState
+=== RUN   TestExtractionAdmissionReservesEveryOrderedIntermediateState/new_entry_before_later_shrink
+=== RUN   TestExtractionAdmissionReservesEveryOrderedIntermediateState/same_key_growth_before_later_shrink
+--- PASS: TestExtractionAdmissionReservesEveryOrderedIntermediateState (0.01s)
+    --- PASS: TestExtractionAdmissionReservesEveryOrderedIntermediateState/new_entry_before_later_shrink (0.01s)
+    --- PASS: TestExtractionAdmissionReservesEveryOrderedIntermediateState/same_key_growth_before_later_shrink (0.01s)
+=== RUN   TestExtractionAdmissionFailedPublicationInvalidatesAccounting
+--- PASS: TestExtractionAdmissionFailedPublicationInvalidatesAccounting (0.01s)
+=== RUN   TestExtractionAdmissionInsufficientReservationPreservesReplacement
+--- PASS: TestExtractionAdmissionInsufficientReservationPreservesReplacement (0.01s)
+=== RUN   TestExtractionAdmissionHeldDirectoryAndNextSessionRevalidation
+=== RUN   TestExtractionAdmissionHeldDirectoryAndNextSessionRevalidation/directory
+=== RUN   TestExtractionAdmissionHeldDirectoryAndNextSessionRevalidation/symlink
+--- PASS: TestExtractionAdmissionHeldDirectoryAndNextSessionRevalidation (0.01s)
+    --- PASS: TestExtractionAdmissionHeldDirectoryAndNextSessionRevalidation/directory (0.00s)
+    --- PASS: TestExtractionAdmissionHeldDirectoryAndNextSessionRevalidation/symlink (0.00s)
+=== RUN   TestExtractionAdmissionCancellationWithEmptyPendingReleases
+--- PASS: TestExtractionAdmissionCancellationWithEmptyPendingReleases (0.00s)
+=== RUN   TestExtractionAdmissionSubprocessContentionAndExitRelease
+--- PASS: TestExtractionAdmissionSubprocessContentionAndExitRelease (2.14s)
+=== RUN   TestMaintainExtractionCacheSkipsEvictionSortWhenUnderQuota
+--- PASS: TestMaintainExtractionCacheSkipsEvictionSortWhenUnderQuota (0.00s)
+=== RUN   TestMaintainExtractionCacheSortsAndEvictsOldestWhenOverQuota
+--- PASS: TestMaintainExtractionCacheSortsAndEvictsOldestWhenOverQuota (0.00s)
+=== RUN   TestEncodedExtractionWriterPreservesEnvelopeBytes
+--- PASS: TestEncodedExtractionWriterPreservesEnvelopeBytes (0.00s)
+=== RUN   TestExtractionReuseSnapshotFreshResolution
+--- PASS: TestExtractionReuseSnapshotFreshResolution (0.11s)
+=== RUN   TestExtractionReuseKeyIsolationAndCorruption
+--- PASS: TestExtractionReuseKeyIsolationAndCorruption (0.02s)
+=== RUN   TestExtractionPublicationUsesOneAdmissionInventoryAcrossBoundedBatches
+--- PASS: TestExtractionPublicationUsesOneAdmissionInventoryAcrossBoundedBatches (1.08s)
+=== RUN   TestExtractionPublicationDropsPendingBatchOnCancellation
+--- PASS: TestExtractionPublicationDropsPendingBatchOnCancellation (0.00s)
+=== RUN   TestExtractionReuseSearchCaptureMutation
+--- PASS: TestExtractionReuseSearchCaptureMutation (0.19s)
+=== RUN   TestExtractionReuseManifestDeleteIgnore
+--- PASS: TestExtractionReuseManifestDeleteIgnore (0.12s)
+=== RUN   TestExtractionCorpusMeasurement
+    extraction_corpus_evaluation_test.go:483: set ENTIRE_GRAPH_EXTRACTION_CORPUS_MANIFEST for the opt-in P1 corpus harness
+--- SKIP: TestExtractionCorpusMeasurement (0.00s)
+=== RUN   TestExtractionCorpusEvaluationCanonicalDigest
+--- PASS: TestExtractionCorpusEvaluationCanonicalDigest (0.00s)
+=== RUN   TestExtractionCorpusEvaluationSearchDigestExcludesOperationalStats
+--- PASS: TestExtractionCorpusEvaluationSearchDigestExcludesOperationalStats (0.00s)
+=== RUN   TestExtractionCorpusEvaluationManifestConfig
+--- PASS: TestExtractionCorpusEvaluationManifestConfig (0.00s)
+=== RUN   TestExtractionCorpusEvaluationOutputFormats
+--- PASS: TestExtractionCorpusEvaluationOutputFormats (0.00s)
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/syntax-only
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/fast
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/full
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/syntax-only
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/fast
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/full
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/syntax-only
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/fast
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/full
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/syntax-only
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/fast
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/full
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/syntax-only
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/fast
+=== RUN   TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/full
+--- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles (0.07s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/syntax-only (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/fast (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.go/full (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/syntax-only (0.01s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/fast (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.ts/full (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/syntax-only (0.01s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/fast (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/a.py/full (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/syntax-only (0.01s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/fast (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/empty.go/full (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/syntax-only (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/fast (0.00s)
+    --- PASS: TestExtractionRawImportsFamilyRoundTripAndProfiles/broken.go/full (0.00s)
+=== RUN   TestExtractionRawImportsInvalidPresenceAndVersionRejected
+--- PASS: TestExtractionRawImportsInvalidPresenceAndVersionRejected (0.01s)
+=== RUN   TestExtractionQuotaOverrides
+--- PASS: TestExtractionQuotaOverrides (0.02s)
+=== RUN   TestExtractionQuotaIndependentOperations
+--- PASS: TestExtractionQuotaIndependentOperations (0.03s)
+=== RUN   TestExtractionAdmissionContentionAndNoFollow
+--- PASS: TestExtractionAdmissionContentionAndNoFollow (0.00s)
+=== RUN   TestExtractionQuotaSubprocesses
+--- PASS: TestExtractionQuotaSubprocesses (1.13s)
+=== RUN   TestExtractionAdmissionRemovesOnlyOwnedOrphanTemps
+--- PASS: TestExtractionAdmissionRemovesOnlyOwnedOrphanTemps (0.00s)
+=== RUN   TestExtractionEntityFieldChecklist
+--- PASS: TestExtractionEntityFieldChecklist (0.00s)
+=== RUN   TestExtractionSymbolFieldChecklist
+--- PASS: TestExtractionSymbolFieldChecklist (0.00s)
+=== RUN   TestExtractionRecordRoundTrip
+--- PASS: TestExtractionRecordRoundTrip (0.00s)
+=== RUN   TestExtractionRecordDetached
+--- PASS: TestExtractionRecordDetached (0.00s)
+=== RUN   TestValidateExtractionRecordCoversEveryStringField
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/parameter_type
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/raw_import
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/status_detail
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/parameter_name
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/return_type
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/language
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/status_code
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/declaration_kind
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/declaration_name
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/declaration_signature
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/declaration_body_hash
+=== RUN   TestValidateExtractionRecordCoversEveryStringField/declaration_fingerprint
+--- PASS: TestValidateExtractionRecordCoversEveryStringField (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/parameter_type (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/raw_import (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/status_detail (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/parameter_name (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/return_type (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/language (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/status_code (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/declaration_kind (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/declaration_name (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/declaration_signature (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/declaration_body_hash (0.00s)
+    --- PASS: TestValidateExtractionRecordCoversEveryStringField/declaration_fingerprint (0.00s)
+=== RUN   TestValidateExtractionRecordAllowsNilAndEmptySlices
+--- PASS: TestValidateExtractionRecordAllowsNilAndEmptySlices (0.00s)
+=== RUN   TestValidateExtractionRecordValidPathAllocatesNothing
+--- PASS: TestValidateExtractionRecordValidPathAllocatesNothing (0.00s)
+=== RUN   TestValidateExtractionValueRejectsFutureLossyShapes
+--- PASS: TestValidateExtractionValueRejectsFutureLossyShapes (0.00s)
+=== RUN   TestExtractionInvalidUTF8BypassesPersistence
+--- PASS: TestExtractionInvalidUTF8BypassesPersistence (0.00s)
+PASS
+ok  	github.com/entireio/entire-graph/internal/sem	9.257s
+=== RUN   TestLiveAdvantageCombinationsAndNextQueryFreshness
+--- PASS: TestLiveAdvantageCombinationsAndNextQueryFreshness (6.93s)
+=== RUN   TestLiveReviewCompilerOrdinaryQueries
+    advantage_review_live_test.go:119: static direct callers=1; static transitive callers=1 (retained as observed coverage, not a missing-edge claim)
+--- PASS: TestLiveReviewCompilerOrdinaryQueries (5.25s)
+=== RUN   TestExtractionReuseCLIReachesSearch
+--- PASS: TestExtractionReuseCLIReachesSearch (0.04s)
+=== RUN   TestCompilerCLIExplicitFallback
+--- PASS: TestCompilerCLIExplicitFallback (0.03s)
+=== RUN   TestCompilerIndexEvidenceDoesNotEnterStaticCache
+--- PASS: TestCompilerIndexEvidenceDoesNotEnterStaticCache (0.65s)
+=== RUN   TestCompilerNoHitAndNativeHeader
+--- PASS: TestCompilerNoHitAndNativeHeader (0.04s)
+PASS
+ok  	github.com/entireio/entire-graph/internal/cli	14.005s
