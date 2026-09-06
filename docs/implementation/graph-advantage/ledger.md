@@ -8,12 +8,12 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 The user authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation is complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is paused for diagnosis; all three jobs and task-owned VMs are stopped/deallocated. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
 
-The original implementation checkpoint addressed the review findings: type declarations no longer become compiler-confirmed calls; ordinary search and every impact depth consume the effective compiler relation view; candidate implementation paths remain separate, including terminal covering tests. That source was verified through `dc0ddce7`. The current working tree contains an additional unverified captured-preselection fix and must not be called final.
+The original implementation checkpoint addressed the review findings: type declarations no longer become compiler-confirmed calls; ordinary search and every impact depth consume the effective compiler relation view; candidate implementation paths remain separate, including terminal covering tests. That source was verified through `dc0ddce7`. Captured-preselection fixes at `5a60fc8f` pass pinned focused race and Git utility checks; compatibility and end-to-end diagnosis remain open, so this is not final.
 
 - **Original implementation commit:** `88dd1dc95a996999ae4e456879b6dd86d8027f71` (historical source checkpoint).
 - **Latest verified checkpoint:** `dc0ddce7`, with the full `mise run check` passing in 621.0947 seconds; evidence is retained by `da3c59ee`.
 - **Pinned Linux correctness:** passed at `88dd1dc9`; later cache/ordering and captured-selection changes are not covered by that Linux run.
-- **Current working tree:** the captured-preselection worktree changes are unresolved and unverified; its identity changes as diagnosis proceeds, so no current HEAD is treated as final.
+- **Current diagnosis checkpoint:** `5a60fc8f`, focused race regressions passed (35.322s) and Git utility tests passed (22.896s), with unchanged source hashes. Full repository verification and remaining compatibility work are pending.
 - **Release status:** no workstream's complete release gate has passed; defaults remain unchanged.
 
 ## Authoritative task status
@@ -198,3 +198,22 @@ large-pool and mutation tests pass in 16.287s, but binary-attribute parity fails
 Oversized and locale-sensitive matching remain unresolved. This is a retained
 failing regression, not a release candidate. See `captured-preselection-diagnosis.md`
 in the same evidence directory. No full repository check is claimed for this WIP.
+
+## Captured selection checkpoint 5a60fc8f
+
+P1.2/P1.4/P1.6 diagnosis progressed: single-descriptor stream observation now
+retains bounded oversized-file match evidence; Git attribute decisions and C/POSIX
+matching preserve the preliminary candidate pool in independent regressions.
+The previously failing binary-attribute fixture passes. First attribute decisions
+are operation-bound and included in input identity. Promisor metadata is refused
+before Git launches. Policy/index/output resource bounds are tested.
+
+Pinned evidence: `p1-corpus-20260905/captured-selection-checks.json` and its two
+raw logs. Focused semantic race suite35.322s and Git utility suite22.896s passed
+at `5a60fc8f`; all recorded source hashes remained unchanged. This is not a full
+repository check and not a benchmark. ADR0042 records the chosen boundary.
+
+Remaining functional work includes repository-subdirectory attribute capture,
+locale/platform coverage and full query parity for the retained corpus request.
+The campaign stays paused, all task VMs stay deallocated, and no release gate or
+implementation-wide completion is claimed from these checks.

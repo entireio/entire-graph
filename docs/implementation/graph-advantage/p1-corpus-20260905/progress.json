@@ -1,5 +1,5 @@
 {
-  "phase": "p1_diagnosis_unverified_worktree_fix",
+  "phase": "p1_captured_selection_compatibility",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -7,7 +7,7 @@
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
   "verified_checkpoint": "dc0ddce7",
   "verified_evidence_commit": "da3c59ee",
-  "current_worktree": "Captured preselection prototype134c3752 is WIP with a known binary-attribute regression; not a release candidate",
+  "current_worktree": "Diagnosis checkpoint5a60fc8f passes pinned focused correctness; not final",
   "workers_state": "all three task-owned VMs deallocated",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T09:27:33.411409+00:00",
+  "as_of_utc": "2026-09-06T09:55:08.449859+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -41,7 +41,7 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Large-pool selection and mutation tests passed16.287s; binary-attribute parity fails; oversized matching and caller-locale compatibility unresolved",
+  "remaining_diagnosis": "Binary attribute, oversized-stream and C/POSIX cases now pass; repository-subdirectory policy capture, broader locale/platform coverage and retained corpus end-to-end replay remain",
   "stopgaps": "56 harness tests passed in4.561s at0381ea6d with unchanged source hashes; no Azure campaign run",
   "full_correctness": "verified at dc0ddce7 in621.0947s; source unchanged; current worktree selection/matcher fix unverified",
   "campaign": "paused; no new measurements",
@@ -51,5 +51,11 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Resolve or discard the unverified reduced Git matcher failure, rerun independent parity/mutation/source-hash checks, then define a separately versioned evaluation"
+  "next_work": "Complete subdirectory compatibility and query parity checks before a frozen full repository check; do not restart campaigns",
+  "current_focused_correctness": {
+    "commit": "5a60fc8f91855387ee7a7e9d341ccd88e74822ca",
+    "source_hashes_unchanged": true,
+    "semantic_race_seconds": 35.322,
+    "gitutil_seconds": 22.896
+  }
 }
