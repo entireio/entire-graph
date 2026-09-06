@@ -6,18 +6,19 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
-The user has now authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation and correctness checks are complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is paused for diagnosis; all three jobs are stopped. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
+The user authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation is complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is paused for diagnosis; all three jobs and task-owned VMs are stopped/deallocated. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
 
-The review findings are addressed in code: type declarations no longer become compiler-confirmed calls; ordinary search and every impact depth consume the effective compiler relation view. Candidate implementation paths remain separate, including terminal covering tests. Source is frozen; immutable integration checks passed.
+The original implementation checkpoint addressed the review findings: type declarations no longer become compiler-confirmed calls; ordinary search and every impact depth consume the effective compiler relation view; candidate implementation paths remain separate, including terminal covering tests. That source was verified through `dc0ddce7`. The current working tree contains an additional unverified captured-preselection fix and must not be called final.
 
-- **Final implementation commit:** 88dd1dc95a996999ae4e456879b6dd86d8027f71
-- **Required repository check:** Passed `mise run check` in 653.107 seconds with unchanged source; see `evidence/review-check-result.json`.
-- **Pinned Linux correctness check:** Passed at the same commit: 10 pinned live tests plus focused race suites; see `evidence/review-linux-result.json` and raw logs.
+- **Original implementation commit:** `88dd1dc95a996999ae4e456879b6dd86d8027f71` (historical source checkpoint).
+- **Latest verified checkpoint:** `dc0ddce7`, with the full `mise run check` passing in 621.0947 seconds; evidence is retained by `da3c59ee`.
+- **Pinned Linux correctness:** passed for the verified checkpoint; the current working-tree selection fix is not covered.
+- **Current working tree:** `HEAD 2014e96b`, with modified `internal/sem/search.go` and untracked `internal/sem/search_captured_matches.go`; the read-count regression is failing. This is unresolved and unverified.
 - **Release status:** no workstream's complete release gate has passed; defaults remain unchanged.
 
 ## Authoritative task status
 
-This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery only. Evaluation tasks cannot be declared complete merely because their harness exists. “Focused” correctness does not replace the final immutable integration check above.
+This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery at the verified implementation checkpoint only. Evaluation tasks cannot be declared complete merely because their harness exists. “Focused” correctness does not verify the unresolved current working tree.
 
 | Task | Implementation | Correctness evidence | Comparative evaluation | Release gate |
 |---|---|---|---|---|
@@ -60,7 +61,7 @@ P1 final focused race passed (49.124s); graph-requested regression passed (0.811
 
 For `57e000a1`, `go test ./internal/cli -run TestImpact -count=1` passed (3.092s); the same under race passed (4.464s). Semantic impact and graph-requested compiler reconciliation regression passed (1.118s); semantic impact race passed (2.599s). The new pinned ordinary-query test passed on Linux with the actual backend; raw responses are retained.
 
-The earlier `0038ef70` full `mise run check` passed in 626.23s, but does **not** verify these subsequent changes. Its logs, earlier schema-golden failure/correction and source freeze remain historical evidence. Final checks must identify the new immutable source commit.
+The earlier `0038ef70` full `mise run check` passed in 626.23s, but does **not** verify subsequent changes. Its logs, earlier schema-golden failure/correction and source freeze remain historical evidence. The `dc0ddce7` check is the latest verified checkpoint; the current captured-preselection fix remains outside that evidence.
 
 ## Retained comparative evidence
 
@@ -95,12 +96,14 @@ Official P2 references remain LSP 3.17, gopls navigation/settings and Go modules
 
 Fixtures derive from the plan and Entire's maintained behavior, with hand-derived expectations or pinned official compiler checks. New review fixtures cover type conversions/aliases/generic conversions, exact-site redirects and ordinary search/impact propagation. The terminal-test fixture combines P2-B candidate distinction with P3-B terminal test semantics. The pinned ordinary-query fixture uses a promoted method through an alias and records observed static coverage without assuming a static gap. No external product supplies expected answers.
 
-Final validation: source commit `88dd1dc9` passed the complete repository check
-and pinned Linux correctness. The initial Linux Git-version prerequisite failure
-is retained; the upgraded run passed without product changes. The validation VM
-was deallocated after correctness; it and two identical workers are now active
-for the separately authorized P1 campaign. Evidence-only commits after the source freeze do not
-change tested code. No comparative campaign ran during implementation. No merge was performed.
+Final validation at the original implementation checkpoint: source commit
+`88dd1dc9` passed the complete repository check and pinned Linux correctness.
+The initial Linux Git-version prerequisite failure is retained; the upgraded
+run passed without product changes. The validation VM and the two identical
+P1 workers were deallocated after correctness/diagnostic work. Evidence-only
+commits after the source freeze do not change tested code; the current
+working-tree fix is explicitly unverified. No comparative campaign ran during
+implementation. No merge was performed.
 
 P1 campaign sources: the user-approved pinned chi, Kubernetes, Zod and Requests
 repositories are evaluation inputs only, alongside frozen Entire source and an
@@ -109,20 +112,21 @@ licenses, selected paths and fixture origins. Official OpenAI model guidance
 was consulted only for the requested cheaper subagent selection.
 
 P1 execution monitoring: heartbeat `monitor-p1-corpus-campaign` checks every
-15 minutes. Three Luna subagents prepared the corpus, harness and protocol;
-the protocol worker monitors the baseline. The full repository check runs
-against commit `039d213b`; `p1-corpus-20260905/correctness.json` records its
-exit status and source-hash stability when finished. No gate pass is claimed
-from an in-progress check or campaign.
+15 minutes. Three Luna subagents prepared the corpus, harness and protocol.
+The earlier check at `039d213b` is historical; the latest verified check is
+`dc0ddce7` and is retained by `da3c59ee`. No gate pass is claimed from an
+unverified working tree or paused campaign.
 
 P1 baseline freeze: `2840a152`, authoritative `frozen-baseline.json`.
 Kubernetes fast/full snapshots each timed out three times at 120 seconds;
 the protocol blocks those two strata and preserves 960 planned unrun cells.
-The remaining 16,320 paired requests retain the original settings. Full
-`mise run check` passed at 039d213b in 1126.765 seconds with source hashes unchanged;
-see `p1-corpus-20260905/correctness.json`. No release gate has passed.
+The remaining 16,320 paired requests retain the original settings. The
+`039d213b` check passed historically in 1126.765 seconds with source hashes
+unchanged; see `p1-corpus-20260905/correctness.json`. The later `dc0ddce7`
+check supersedes it as the latest verified checkpoint. No release gate has
+passed.
 
-Latest P1 monitor (`monitor-20260905T2234.json`): all three workers active;
+Historical P1 monitor (`monitor-20260905T2234.json`): all three workers were active;
 66 measured requests (63 partial, 3 timeouts), 1,434 explicitly unrun, and
 15,780 pending planned cells. Kubernetes syntax-only snapshot cache-on requests
 also hit the 120-second limit three times; its six actual requests are retained
@@ -152,20 +156,25 @@ are explained. Differing partial-failure membership remains under diagnosis.
 
 `stopgaps-v2.md` defines first-issue worker pause, cross-worker supervision,
 expiring leases, immutable run directories and canary admission before broad
-measurement. Supervisor and admission tests pass; worker integration passed all 41 Python tests. A full repository check runs against dc0ddce7 with source hashes
-recorded in fixes-correctness.json when complete. No VMs or benchmarks restarted.
+measurement. Supervisor and admission tests pass; worker integration passed
+all 41 Python tests. The full repository check against `dc0ddce7` passed in
+621.0947 seconds and is retained by `da3c59ee`. No VMs or benchmarks restarted.
 
 Campaign stopgaps complete in `3b242da7` with supervisor/admission commits
-`dc0ddce7`, `e5873854`, `969dc52f`. All 41 harness tests passed. The running
-repository check still must finish before its result is claimed. Remaining
-selective failure-membership diagnosis continues read-only during that check.
-No campaign restarted; task-owned VMs remain deallocated.
+`dc0ddce7`, `e5873854`, `969dc52f`. The stopgap test evidence is preserved by
+`5957f604` and `69268ec4`; all 41 harness tests passed. The latest verified
+repository check is retained by `da3c59ee`. Remaining selective
+failure-membership diagnosis is now represented by an unverified working-tree
+fix; no campaign restarted and task-owned VMs remain deallocated.
 
-Latest integration check: `dc0ddce7` passed `mise run check` in 621.095
-seconds, source hashes unchanged (`fixes-correctness.json`). Retained working-tree
-search evidence identifies 55 off/on pairs with distinct preselection paths:
+Latest integration check: `dc0ddce7` passed `mise run check` in 621.0947
+seconds, source hashes unchanged (`fixes-correctness.json`). Retained evidence
+from the verified checkpoint identifies 55 off/on pairs with distinct
+preselection paths:
 off uses git-index-grep+go-content (381 indexed files,11 partial failures); on
 uses go-content (384 indexed files,10 partial failures). See
-`retained-selection-diagnosis.json`. The P1 fix must preserve source capture and
-default selection semantics; committed full-preindex recall behavior is separate
-and is not to be narrowed to fix this working-tree discrepancy.
+`retained-selection-diagnosis.json`. The current uncommitted P1 fix must
+preserve source capture and default selection semantics; its read-count
+regression currently fails. Committed full-preindex recall behavior is separate
+and is not to be narrowed to fix this working-tree discrepancy. No current
+working-tree claim is release evidence.
