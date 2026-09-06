@@ -1,17 +1,17 @@
 {
-  "phase": "p1_admission_integration_verification",
+  "phase": "p1_single_corrective_revalidation",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
   "subagent_model": "gpt-5.6-luna",
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
-  "verified_checkpoint": "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
-  "verified_evidence_commit": "see evidence/check-d793b2be/verification.json",
-  "current_worktree": "0c9e80f5 admission session and transientreservation fixes implemented; focusedcorrectness/racepassed; immutablefullcheckrunning",
+  "verified_checkpoint": "0c9e80f523ed433cb81ccdaa87b3f8f0c3e6d0dd",
+  "verified_evidence_commit": "see evidence/check-0c9e80f5/verification.json",
+  "current_worktree": "0c9e80f5 full693.532s and pinnedLinux69tests passed; livefake-service stop verified",
   "workers_state": "three taskVMs active only forfake-service stop smoke; no productcampaign",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
-  "correctness": "d793b2be full check683.699s;28pinned Linux tests including10live",
+  "correctness": "69pinnedLinuxtests including10live; fullrepositorycheck693.532s",
   "release_gate": "not passed",
   "defaults": "unchanged; experimental features off",
   "transport": "AppleDouble sidecars removed before verified fixture digests; clean archive retained",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T12:21:54.098921+00:00",
+  "as_of_utc": "2026-09-06T12:33:54.666745+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -43,7 +43,7 @@
   ],
   "remaining_diagnosis": "Exact semantics and known194 partials preserved; OFF53.5s ON73.5s; remaining cold cost needs attribution",
   "stopgaps": "77 campaign-control tests passed in7.809s after startup/final-lease/accounting fixes; protocol supersedes old three-failure rule",
-  "full_correctness": "passed d793b2be in683.699s; clean immutable checkout and unchanged HEAD",
+  "full_correctness": "passed0c9e80f5 cleanimmutablecheckout unchangedHEAD",
   "campaign": "paused; isolated diagnostic failures retained separately",
   "stopgap_commits": [
     "dc0ddce7",
@@ -59,10 +59,10 @@
     "gitutil_seconds": 22.896
   },
   "linux_correctness": {
-    "source_commit": "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
-    "top_level_tests_passed": 28,
+    "source_commit": "0c9e80f523ed433cb81ccdaa87b3f8f0c3e6d0dd",
+    "top_level_tests_passed": 69,
     "live_tests_passed": 10,
-    "evidence": "evidence/correctness-d793b2be-20260906"
+    "evidence": "evidence/correctness-0c9e80f5-20260906"
   },
   "retained_linux_search": {
     "source_commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
@@ -115,5 +115,11 @@
   "subagent_models": [
     "gpt-5.6-luna",
     "gpt-5.6-sol"
-  ]
+  ],
+  "live_stop_smoke": {
+    "status": "passed",
+    "workers_verified_inactive": 3,
+    "product_queries": 0,
+    "evidence": "stopgap-live-smoke/run-0c9e80f5"
+  }
 }
