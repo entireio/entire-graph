@@ -4,7 +4,7 @@
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
   "subagent_model": "gpt-5.6-luna",
-  "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
+  "implementation_source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
   "verified_checkpoint": "0c9e80f523ed433cb81ccdaa87b3f8f0c3e6d0dd",
   "verified_evidence_commit": "see evidence/check-0c9e80f5/verification.json",
   "current_worktree": "1c0b8e24; focused correctness and race passed; immutable full check running; pinned Linux pending",
@@ -136,5 +136,6 @@
     "rss": "unavailable",
     "limitations": "single corrective pair; no statistical or release-gate claim"
   },
-  "current_product_source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782"
+  "current_product_source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
+  "heartbeat_purpose": "Active implementation monitoring; campaign remains paused"
 }
