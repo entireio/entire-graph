@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "e671d4a384fc",
+  "session_id": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T06:38:13.814599864Z",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "internal/cli/gps.go",
+    "internal/cli/gps_test.go",
+    "internal/intent/intent.go",
+    "internal/intent/intent_test.go"
+  ],
+  "agent": "OpenCode",
+  "model": "gpt-5.6-terra-fast",
+  "turn_id": "b5d48d2019ec",
+  "checkpoint_transcript_start": 61,
+  "transcript_lines_at_start": 61,
+  "compact_transcript_start": 61,
+  "token_usage": {
+    "input_tokens": 24433,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1611264,
+    "output_tokens": 5258,
+    "api_call_count": 18
+  },
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T06:38:13.730237469Z",
+    "agent_lines": 204,
+    "agent_removed": 13,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 204,
+    "total_lines_changed": 217,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
