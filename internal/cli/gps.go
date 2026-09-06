@@ -98,7 +98,7 @@ func runAnchor(ctx context.Context, opts Options, args []string) error {
 			return fmt.Errorf("symbol %q is ambiguous; pass --file", flags.symbol)
 		}
 		s := matches[0]
-		return intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash}}, flags.update)
+		return intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash, FileBlob: snapshotFileBlob(snapshot, s.FilePath)}}, flags.update)
 	}
 	if args[0] == "resolve" {
 		if flags.id == "" {
@@ -231,6 +231,9 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	findings := make([]map[string]any, 0)
+	if len(snapshot.Header.PartialFailures) != 0 || snapshot.Header.Stats.CompletenessLevel != "ok" {
+		findings = append(findings, map[string]any{"id": "GPS-COMPLETENESS-INCOMPLETE", "severity": "incomplete", "subject": "graph", "message": "selected graph has partial or incomplete analysis"})
+	}
 	if flags.base != "" {
 		baseSet, err := intent.LoadRevision(ctx, repo, flags.base)
 		if err != nil {
@@ -285,7 +288,15 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 		}
 	}
 	disposition := "PASS"
-	if len(findings) > 0 {
+	for _, finding := range findings {
+		if finding["severity"] == "incomplete" {
+			disposition = "INCOMPLETE"
+			break
+		}
+		if finding["severity"] == "error" {
+			disposition = "FAIL"
+			break
+		}
 		disposition = "REVIEW_REQUIRED"
 	}
 	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "disposition": disposition, "findings": findings})
@@ -377,6 +388,8 @@ func resolveBinding(binding intent.Binding, snapshot sem.ProviderSnapshot) map[s
 		state := "VALID"
 		if binding.Baseline.SignatureHash != intent.Hash(s.Signature) || binding.Baseline.ContainerID != s.ContainerID {
 			state = "STRUCTURAL_DRIFT"
+		} else if binding.Selector.File != s.FilePath || binding.Selector.Kind != s.Kind {
+			state = "STRUCTURAL_DRIFT"
 		} else if binding.Baseline.BodyHash != s.BodyHash {
 			state = "CONTENT_DRIFT"
 		}
@@ -392,6 +405,15 @@ func resolveBinding(binding intent.Binding, snapshot sem.ProviderSnapshot) map[s
 		state = "UNVERIFIABLE"
 	}
 	return map[string]any{"id": binding.ID, "state": state, "candidates": candidates}
+}
+
+func snapshotFileBlob(snapshot sem.ProviderSnapshot, path string) string {
+	for _, file := range snapshot.Files {
+		if file.Path == path {
+			return file.Blob
+		}
+	}
+	return ""
 }
 
 func incompleteAnchorPath(path string, failures []sem.PartialFailure) bool {
