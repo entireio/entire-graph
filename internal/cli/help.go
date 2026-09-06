@@ -396,7 +396,7 @@ var commandDocs = []commandDoc{
 		name:    "verify",
 		group:   groupAnalyze,
 		summary: "Run a test command and return an adjudicated verdict, not test output",
-		usage:   []string{`entire graph verify --test "<cmd>" --repo . [--setup "<cmd>"] [--record-baseline path | --pre-edit-baseline path] [--max-bytes 2048]`},
+		usage:   []string{`entire graph verify --test "<cmd>" --repo . [--setup "<cmd>"] [--scope id] [--record-baseline path | --pre-edit-baseline path] [--max-bytes 2048]`},
 		long: "verify runs your test command and reports WHICH TESTS CHANGED rather than what the runner printed: which newly pass, which newly fail, and which were ALREADY failing before the edit (labelled PRE-EXISTING). Raw runner output is never forwarded — ids are, text is not — and id lists cap at 20 with a count.\n\n" +
 			"Record a baseline on the pristine tree first (--record-baseline), then pass that file as --pre-edit-baseline after editing. Without a baseline the verdict is a state rather than a delta, so a failure that predates the change cannot be labelled as one.\n\n" +
 			"Parsers: pytest, jest/vitest, cargo test, go test, phpunit, rspec, minitest, maven/gradle surefire, ctest. An unrecognised format degrades to an exit-code-only verdict and says so.",

@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
+	"github.com/entireio/entire-graph/internal/intent"
 )
 
 // `entire graph verify` — an ADJUDICATED verdict, not test output
@@ -56,6 +60,12 @@ type verifyBaseline struct {
 	FormatVersion int           `json:"format_version"`
 	RecordedAt    string        `json:"recorded_at"`
 	Repo          string        `json:"repo"`
+	Commit        string        `json:"commit,omitempty"`
+	Tree          string        `json:"tree,omitempty"`
+	IntentDigest  string        `json:"intent_digest,omitempty"`
+	Scope         string        `json:"scope,omitempty"`
+	Platform      string        `json:"platform"`
+	TimeoutMillis int64         `json:"timeout_millis"`
 	TestCommand   string        `json:"test_command"`
 	Parser        string        `json:"parser"`
 	ExitCode      int           `json:"exit_code"`
@@ -69,6 +79,7 @@ type verifyFlags struct {
 	PreEditBaseline string
 	RecordBaseline  string
 	MaxBytes        int
+	Scope           string
 }
 
 func parseVerifyFlags(args []string) (verifyFlags, error) {
@@ -102,6 +113,8 @@ func parseVerifyFlags(args []string) (verifyFlags, error) {
 					return flags, fmt.Errorf("verify --max-bytes requires a positive integer, got %q", raw)
 				}
 			}
+		case "--scope":
+			flags.Scope, err = value()
 		default:
 			return flags, fmt.Errorf("verify received unexpected argument %q", arg)
 		}
@@ -142,6 +155,12 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	baseline, err := readVerifyBaseline(flags.PreEditBaseline)
 	if err != nil {
 		return err
+	}
+	if baseline.Repo != repo || baseline.TestCommand != flags.Test || baseline.Scope != flags.Scope {
+		return fmt.Errorf("verify baseline is incompatible with the selected repository, command, or scope")
+	}
+	if parsed && baseline.Parser != "exit-code-only" && baseline.Parser != parser {
+		return fmt.Errorf("verify baseline parser %q is incompatible with current parser %q", baseline.Parser, parser)
 	}
 	_, writeErr := opts.Stdout.Write(renderVerifyVerdict(
 		verifyVerdictInput{
@@ -221,10 +240,19 @@ func writeVerifyBaseline(
 		FormatVersion: 1,
 		RecordedAt:    time.Now().UTC().Format(time.RFC3339),
 		Repo:          repo,
+		Scope:         flags.Scope,
+		Platform:      runtime.GOOS + "/" + runtime.GOARCH,
+		TimeoutMillis: verifyTimeout(flags.Test).Milliseconds(),
 		TestCommand:   flags.Test,
 		Parser:        parser,
 		ExitCode:      exitCode,
 		Results:       results,
+	}
+	if commit, tree, err := gitutil.HeadCommitAndTree(ctx, repo); err == nil {
+		baseline.Commit, baseline.Tree = commit, tree
+	}
+	if set, err := intent.Load(repo); err == nil {
+		baseline.IntentDigest = set.Digest
 	}
 	if !parsed {
 		baseline.Parser = "exit-code-only"
@@ -252,6 +280,13 @@ func writeVerifyBaseline(
 	fmt.Fprintf(opts.Stdout, "BASELINE RECORDED: %s (%s; %d passing, %d failing, exit %d)\n",
 		flags.RecordBaseline, baseline.Parser, passed, failed, exitCode)
 	return nil
+}
+
+func verifyTimeout(command string) time.Duration {
+	if verifyCompiledCommand(command) {
+		return verifyCompiledTimeout
+	}
+	return verifyInterpretedTimeout
 }
 
 func readVerifyBaseline(path string) (verifyBaseline, error) {
