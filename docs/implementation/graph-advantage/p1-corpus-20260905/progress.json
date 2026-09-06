@@ -1,5 +1,5 @@
 {
-  "phase": "p1_cold_cost_diagnosis",
+  "phase": "p1_remaining_cold_cost_diagnosis",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T11:39:51.484668+00:00",
+  "as_of_utc": "2026-09-06T11:45:29.583195+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -32,7 +32,7 @@
   "recorded_unrun_requests": 1434,
   "pending_planned_requests": 15730,
   "heartbeat_status": "ACTIVE",
-  "pause_reason": "single current syntax-only snapshot exceeds cold regression screen",
+  "pause_reason": "corrective d793b2be single pair still exceeds cold latency screen",
   "cache_fix_commits": [
     "f96483ef",
     "9bfafe17"
@@ -41,7 +41,7 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Search and syntax-only snapshot semantic parity verified on single Linux pairs. Snapshot coldON86.3s vsOFF56.9s triggersscreen; costdiagnosisrequired beforecampaign.",
+  "remaining_diagnosis": "Exact semantics and known194 partials preserved; OFF53.5s ON73.5s; remaining cold cost needs attribution",
   "stopgaps": "77 campaign-control tests passed in7.809s after startup/final-lease/accounting fixes; protocol supersedes old three-failure rule",
   "full_correctness": "passed d793b2be in683.699s; clean immutable checkout and unchanged HEAD",
   "campaign": "paused; isolated diagnostic failures retained separately",
@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Collect immutable correctness; one bounded cold snapshot revalidation only after checks; pause on new issue",
+  "next_work": "Retain failed screen; diagnose remaining cost without expansion or threshold tuning",
   "current_focused_correctness": {
     "commit": "5a60fc8f91855387ee7a7e9d341ccd88e74822ca",
     "source_hashes_unchanged": true,
@@ -86,5 +86,20 @@
     "ratio": 1.5162146603143505,
     "limitations": "one pair only; no RSS measurement; no statistical or release-gate claim",
     "next": "source-level cold-cost diagnosis; no campaign restart"
+  },
+  "retained_snapshot_d793b2be": {
+    "source_commit": "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
+    "binary_sha256": "0fe77d0819c4e3d5b279db68403eb8fe5d715d54847f985d61edb43b1cd4f599",
+    "semantic_equal": true,
+    "known_partial_failures_per_arm": 194,
+    "known_partial_and_warning_digests_checked": true,
+    "corpus_before_between_after_equal": true,
+    "off_wall_seconds": 53.491581566,
+    "on_wall_seconds": 73.461632237,
+    "cold_screen_ratio": 1.3733307202061351,
+    "cold_screen": "failed; campaign remains paused",
+    "rss": "unavailable",
+    "limitations": "single corrective pair; no statistical or release-gate claim",
+    "next": "attribute remaining cold-path cost before further changes or comparisons"
   }
 }

@@ -14,7 +14,7 @@ The latest fully verified product source is `d793b2be`, including ADR 0044 cold-
 - **Linux correctness:** passed at `d793b2be`, including process-boundary, missing-dependency, conversion, ordinary-query, opt-in combination and freshness checks.
 - **Interrupted check:** `6102b209` was deliberately stopped after review found additional cancellation gaps; it is not a pass. Those findings were addressed by `05ad9842`.
 - **Retained query:** Darwin OFF exceeded its deadline; ON unrun. Linux parity passed for this one retained request at `05ad9842`: both arms381files/11identical partials and identical semantic digest; unchanged corpus. The syntax-only snapshot pair also completes with exact semantics/194identical partials, but its coldON86.3s versusOFF56.9s triggers a screening pause. One pair is not statistical evidence.
-- **Execution:** validation VM was restarted only for current correctness; two campaign workers remain off. No campaign is running. A bounded corrective cold-screen retry is being prepared, contingent on correctness.
+- **Execution:** validation VM was restarted only for current correctness; two campaign workers remain off. No campaign is running. The bounded corrective retry at `d793b2be` preserved exact semantics and known partials, but still failed the cold screen (OFF53.5s/ON73.5s). Campaign remains paused for remaining-cost attribution.
 - **Current follow-up:** ADR 0044 cold-path fixes are integrated at `d793b2be`: first-consumer spill reuse, under-quota sort avoidance and lossless UTF-8 admission without JSON round-trip. Focused extraction/capture/quota race checks passed (6.360s), and the invalid-UTF-8 persistence regression passed (1.879s). Pinned Linux passed 28 top-level tests including 10 live; the immutable full check passed (683.699s). All 77 campaign-control tests passed (7.809s) after startup, final-lease and accounting fixes. No campaign restart is admitted.
 - **Release status:** no workstream's complete release gate has passed; defaults remain unchanged.
 
@@ -196,3 +196,9 @@ above.
   matcher contract still failed because a `.gitattributes` binary-classified
   file was included; this remains historical diagnosis, not current release
   evidence.
+
+Corrective diagnostic `retained-snapshot-d793b2be/`: one pair at fully verified
+source, identical semantic/partial/warning digests and unchanged corpus before,
+between and after requests. OFF53.492s and ON73.462s exceed the 1.10 cold
+screen. RSS is unavailable. This failed screen is retained without a statistical
+claim or campaign expansion; prior failures remain untouched.

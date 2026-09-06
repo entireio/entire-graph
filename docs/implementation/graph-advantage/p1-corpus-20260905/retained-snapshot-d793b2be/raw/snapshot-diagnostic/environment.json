@@ -1,0 +1,14 @@
+{
+  "GIT_CONFIG_GLOBAL": "/dev/null",
+  "GIT_CONFIG_SYSTEM": "/dev/null",
+  "GOMAXPROCS": "4",
+  "GOPROXY": "off",
+  "GOSUMDB": "off",
+  "GOTELEMETRY": "off",
+  "GOTOOLCHAIN": "local",
+  "LANG": "C.UTF-8",
+  "LC_ALL": "C.UTF-8",
+  "LC_CTYPE": "C.UTF-8",
+  "P1_CORPUS_ROOT": "/opt/p1/corpus",
+  "PATH": "/usr/local/go/bin:/usr/bin:/bin"
+}

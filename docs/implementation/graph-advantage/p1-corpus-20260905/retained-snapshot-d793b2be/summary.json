@@ -1,0 +1,15 @@
+{
+  "source_commit": "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
+  "binary_sha256": "0fe77d0819c4e3d5b279db68403eb8fe5d715d54847f985d61edb43b1cd4f599",
+  "semantic_equal": true,
+  "known_partial_failures_per_arm": 194,
+  "known_partial_and_warning_digests_checked": true,
+  "corpus_before_between_after_equal": true,
+  "off_wall_seconds": 53.491581566,
+  "on_wall_seconds": 73.461632237,
+  "cold_screen_ratio": 1.3733307202061351,
+  "cold_screen": "failed; campaign remains paused",
+  "rss": "unavailable",
+  "limitations": "single corrective pair; no statistical or release-gate claim",
+  "next": "attribute remaining cold-path cost before further changes or comparisons"
+}

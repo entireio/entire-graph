@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/opt/graph-validation/correctness-d793b2be-20260906/p1-evaluator",
+    "-test.run=^TestExtractionCorpusMeasurement$",
+    "-test.count=1",
+    "-test.v",
+    "-test.timeout=130s"
+  ],
+  "exit_code": 0,
+  "peak_rss_bytes": null,
+  "rss_status": "unavailable; no isolated wait4 measurement claimed",
+  "timed_out": false,
+  "timeout_seconds": 120
+}

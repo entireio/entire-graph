@@ -1,0 +1,25 @@
+{
+  "source_commit": "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
+  "runner_blob": "p1-snapshot-d793b2be-runner-504ad6b04300956da1475ab63c2c1f7071e56db09011be6223ed2525d2f36f64.py",
+  "result_blob": "p1-snapshot-d793b2be-results.tar.gz",
+  "command": [
+    "python3",
+    "/opt/graph-validation/correctness-d793b2be-20260906/snapshot-runner.py",
+    "--output",
+    "/opt/graph-validation/correctness-d793b2be-20260906/snapshot-diagnostic",
+    "--binary",
+    "/opt/graph-validation/correctness-d793b2be-20260906/p1-evaluator",
+    "--binary-sha256",
+    "0fe77d0819c4e3d5b279db68403eb8fe5d715d54847f985d61edb43b1cd4f599",
+    "--source-root",
+    "/opt/graph-validation/correctness-d793b2be-20260906",
+    "--source-commit",
+    "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
+    "--scenario-script",
+    "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/corpus-tools/p1_scenario.py",
+    "--input-sha256",
+    "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4"
+  ],
+  "script_sha256": "e9e5767645ef74e7866f357afbc7561339e246aeac979edd2dfef509b994ab80",
+  "signed_urls": "not persisted"
+}
