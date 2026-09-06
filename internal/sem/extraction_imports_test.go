@@ -30,6 +30,7 @@ func TestExtractionRawImportsFamilyRoundTripAndProfiles(t *testing.T) {
 				if hit {
 					t.Fatal("cold hit")
 				}
+				cache.flush()
 				second, hit := cache.extract(spec, language, source, 4096)
 				if !hit || !reflect.DeepEqual(first, second) {
 					t.Fatalf("raw imports not exactly reused: hit=%t first=%+v second=%+v", hit, first, second)
@@ -64,6 +65,7 @@ func TestExtractionRawImportsInvalidPresenceAndVersionRejected(t *testing.T) {
 	language, _ := languageForPath("a.go")
 	source := captureSource("a.go", "package p\nfunc A(){}\n")
 	cache.extract(spec, language, source, 4096)
+	cache.flush()
 	entry, key, _ := cache.entry(spec, language, source, 4096)
 	record, ok := loadExtraction(entry, key, cache)
 	if !ok {
@@ -92,6 +94,7 @@ func TestExtractionQuotaOverrides(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		last = captureSource("a.go", fmt.Sprintf("package p\nfunc A() int { return %d }\n", i))
 		cache.extract(spec, language, last, 4096)
+		cache.flush()
 		entry, _, _ := cache.entry(spec, language, last, 4096)
 		entries, err := os.ReadDir(filepath.Join(entry.root, filepath.Dir(entry.relative)))
 		if err != nil {
@@ -110,6 +113,7 @@ func TestExtractionQuotaOverrides(t *testing.T) {
 	t.Setenv("ENTIRE_GRAPH_EXTRACTION_CACHE_MAX_BYTES", "1")
 	tiny := &extractionCache{directory: t.TempDir(), repository: "tiny-fixture", build: "fixture-build"}
 	tiny.extract(spec, language, last, 4096)
+	tiny.flush()
 	if _, hit := tiny.extract(spec, language, last, 4096); hit {
 		t.Fatal("oversize entry stored despite byte quota")
 	}

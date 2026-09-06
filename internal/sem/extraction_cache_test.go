@@ -3,6 +3,7 @@ package sem
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,6 +31,9 @@ func TestExtractionReuseSnapshotFreshResolution(t *testing.T) {
 	first := build(options)
 	if got := first.Header.Stats.Extraction; got == nil || got.FilesParsed != 3 || got.FilesReused != 0 {
 		t.Fatalf("cold %#v", got)
+	}
+	if got := first.Header.Stats.Extraction; got.CacheBytesWritten <= 0 {
+		t.Fatalf("cold cache publication was missing from summary stats: %#v", got)
 	}
 	second := build(options)
 	if got := second.Header.Stats.Extraction; got == nil || got.FilesParsed != 0 || got.FilesReused != 3 {
@@ -78,6 +82,7 @@ func TestExtractionReuseKeyIsolationAndCorruption(t *testing.T) {
 	if hit {
 		t.Fatal("cold hit")
 	}
+	cache.flush()
 	second, hit := cache.extract(spec, language, source, 1024)
 	if !hit || !reflect.DeepEqual(first, second) {
 		t.Fatal("missing exact reuse")
@@ -95,6 +100,7 @@ func TestExtractionReuseKeyIsolationAndCorruption(t *testing.T) {
 		if _, hit := other.extract(spec, language, changed, limit); hit {
 			t.Fatal("changed identity hit")
 		}
+		other.flush()
 	}
 	entry, _, _ := cache.entry(spec, language, source, 1024)
 	if err := os.WriteFile(filepath.Join(entry.root, entry.relative), []byte("corrupt"), 0600); err != nil {
@@ -103,6 +109,60 @@ func TestExtractionReuseKeyIsolationAndCorruption(t *testing.T) {
 	recovered, hit := cache.extract(spec, language, source, 1024)
 	if hit || !reflect.DeepEqual(first, recovered) {
 		t.Fatal("corruption was not a transparent miss")
+	}
+}
+
+func TestExtractionPublicationUsesBoundedBatches(t *testing.T) {
+	cache := &extractionCache{
+		ctx:         context.Background(),
+		directory:   t.TempDir(),
+		repository:  "fixture/repo",
+		build:       "fixture-build",
+		maxBytes:    1 << 30,
+		maxEntries:  extractionEntryLimit,
+		limitsReady: true,
+	}
+	spec := resolveProfile(ProfileFull)
+	language, _ := languageForPath("fixture.go")
+	count := extractionPublishBatchEntries*3 + 7
+	for index := 0; index < count; index++ {
+		source := captureSource(fmt.Sprintf("fixture-%d.go", index), "package p\nfunc A() {}\n")
+		if _, hit := cache.extract(spec, language, source, 4096); hit {
+			t.Fatal("cold publication unexpectedly hit")
+		}
+	}
+	cache.flush()
+	if got := cache.maintenanceCalls.Load(); got != 4 {
+		t.Fatalf("maintenance calls = %d, want four bounded batches for %d files", got, count)
+	}
+}
+
+func TestExtractionPublicationDropsPendingBatchOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cache := &extractionCache{
+		ctx:         ctx,
+		directory:   t.TempDir(),
+		repository:  "fixture/repo",
+		build:       "fixture-build",
+		maxBytes:    1 << 20,
+		maxEntries:  extractionEntryLimit,
+		limitsReady: true,
+	}
+	spec := resolveProfile(ProfileFull)
+	language, _ := languageForPath("fixture.go")
+	source := captureSource("fixture.go", "package p\nfunc A() {}\n")
+	if _, hit := cache.extract(spec, language, source, 4096); hit {
+		t.Fatal("cold publication unexpectedly hit")
+	}
+	cancel()
+	cache.flush()
+	entry, _, err := cache.entry(spec, language, source, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(entry.root, entry.relative)); !os.IsNotExist(err) {
+		t.Fatalf("cancelled publication wrote cache entry: %v", err)
 	}
 }
 
