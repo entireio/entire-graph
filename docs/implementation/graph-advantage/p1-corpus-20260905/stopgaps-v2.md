@@ -2,7 +2,7 @@
 
 This user-directed policy supersedes the historical three-failure stratum rule
 for new runs. Prior data and the original protocol remain unchanged. The old
-campaign stays paused. No VMs or measurements were started to validate this code.
+campaign stays paused. Initial validation was local. The later three-worker fake-service stop smoke passed; see `stopgap-live-smoke/run-0c9e80f5/`. It ran no product queries.
 
 A worker pauses the entire local run on the first timeout, process or output
 failure, unreviewed partial result, source identity drift, missing semantic or
