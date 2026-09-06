@@ -28,7 +28,9 @@ TIMEOUT_SECONDS = 120
 FINGERPRINT_TIMEOUT_SECONDS = 60
 GO_TEST_TIMEOUT_SECONDS = 130
 TIME_BINARY = "/usr/bin/time"
-_RSS_RE = re.compile(r"^Maximum resident set size \(kbytes\): ([0-9]+)$")
+_RSS_PREFIX = "Maximum resident set size (kbytes):"
+_RSS_VALUE_RE = re.compile(r"^[0-9]+$")
+_MAX_RSS_BYTES = (1 << 64) - 1
 
 
 def sha256(path):
@@ -46,14 +48,20 @@ def save(root, name, value):
 
 def parse_peak_rss_bytes(raw_time):
     """Parse exactly one GNU time RSS line and convert kbytes to bytes."""
-    matches = []
+    labelled = []
     for line in raw_time.splitlines():
-        match = _RSS_RE.fullmatch(line.strip())
-        if match:
-            matches.append(int(match.group(1)))
-    if len(matches) != 1 or matches[0] <= 0:
+        stripped = line.strip()
+        if stripped.startswith(_RSS_PREFIX):
+            value = stripped[len(_RSS_PREFIX):].strip()
+            if not _RSS_VALUE_RE.fullmatch(value):
+                raise ValueError("malformed GNU time peak RSS")
+            labelled.append(int(value))
+    if len(labelled) != 1 or labelled[0] <= 0:
         raise ValueError("missing or invalid GNU time peak RSS")
-    return matches[0] * 1024
+    rss_bytes = labelled[0] * 1024
+    if rss_bytes > _MAX_RSS_BYTES:
+        raise ValueError("GNU time peak RSS exceeds representable range")
+    return rss_bytes
 
 
 def fingerprint(root, scenario_script, corpus_root, input_sha256, stage):
