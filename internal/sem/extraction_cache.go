@@ -312,6 +312,24 @@ func loadExtraction(entry cacheEntry, key string, cache *extractionCache) (extra
 
 var extractionMaintenance sync.Mutex
 
+type extractionMaintenanceItem struct {
+	name     string
+	size     int64
+	modified int64
+}
+
+// extractionMaintenanceSort is a narrow test seam for proving that the
+// eviction ordering work is skipped while a cache remains below both quota
+// thresholds. Production always uses the deterministic age/name ordering.
+var extractionMaintenanceSort = func(items []extractionMaintenanceItem) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].modified != items[j].modified {
+			return items[i].modified < items[j].modified
+		}
+		return items[i].name < items[j].name
+	})
+}
+
 // Maintenance follows held directory capabilities, and removes only internally
 // named regular entries. Admission fails closed when bounded scanning is exceeded.
 func maintainExtractionCache(entry cacheEntry, incomingBytes int64, incomingEntries int, maxBytes int64, maxEntries int) (int64, int, bool) {
@@ -340,12 +358,7 @@ func maintainExtractionCache(entry cacheEntry, incomingBytes int64, incomingEntr
 	if len(entries) > extractionEntryLimit+1 {
 		return 0, 0, false
 	}
-	type item struct {
-		name     string
-		size     int64
-		modified int64
-	}
-	var items []item
+	var items []extractionMaintenanceItem
 	var total int64
 	for _, entry := range entries {
 		name := entry.Name()
@@ -366,15 +379,13 @@ func maintainExtractionCache(entry cacheEntry, incomingBytes int64, incomingEntr
 			}
 			continue
 		}
-		items = append(items, item{name, info.Size(), info.ModTime().UnixNano()})
+		items = append(items, extractionMaintenanceItem{name, info.Size(), info.ModTime().UnixNano()})
 		total += info.Size()
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].modified != items[j].modified {
-			return items[i].modified < items[j].modified
-		}
-		return items[i].name < items[j].name
-	})
+	needsEviction := total+incomingBytes > maxBytes*9/10 || len(items)+incomingEntries >= max(1, maxEntries*9/10)
+	if needsEviction {
+		extractionMaintenanceSort(items)
+	}
 	remaining := len(items)
 	for _, item := range items {
 		if total+incomingBytes <= maxBytes*9/10 && remaining+incomingEntries < max(1, maxEntries*9/10) {
