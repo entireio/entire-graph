@@ -1,1 +1,1 @@
-Complete until you are done with MVP and if error occurs fix it until the goal is achieved
+Proceed and plan other features implementation also and proceed to complete all the features in the gps design
