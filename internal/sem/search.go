@@ -2014,9 +2014,18 @@ func preselectSearchFiles(
 	matcher := newSearchTermMatcher(q.terms)
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
-	if !options.ExtractionReuse && options.Compiler == nil && options.Ranking != "experimental-graph" && !options.rankingEvaluationCapture && shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
-		matches, grepErr := gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
+	capturedPreselectionReads := 0
+	if options.Compiler == nil && options.Ranking != "experimental-graph" && !options.rankingEvaluationCapture && shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
 		tracked, trackedErr := gitutil.ListIndexFiles(ctx, source.absRepo)
+		var matches []gitutil.GrepMatch
+		var grepErr error
+		if options.ExtractionReuse {
+			if trackedErr == nil {
+				matches, capturedPreselectionReads, grepErr = capturedPreselectionMatches(ctx, source, tracked, searchGitGrepPreselectionPatterns(q), 32)
+			}
+		} else {
+			matches, grepErr = gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
+		}
 		if grepErr == nil && trackedErr == nil {
 			usedGitIndexPreselection = true
 			allowed := make(map[string]bool, len(source.paths))
@@ -2234,11 +2243,14 @@ func preselectSearchFiles(
 		}
 		selection.preselectionPasses = 1
 	}
-	selection.filesContentRead = contentReads
+	selection.filesContentRead = contentReads + capturedPreselectionReads
 	selection.preselectionBackend = "go-content"
 	selection.preselectionFilesExamined = len(scanPaths)
 	if usedGitIndexPreselection {
 		selection.preselectionBackend = "git-index-grep+go-content"
+		if options.ExtractionReuse {
+			selection.preselectionBackend = "captured-index-match+go-content"
+		}
 		if !progressive {
 			selection.preselectionPasses++
 		}
@@ -2247,7 +2259,7 @@ func preselectSearchFiles(
 		// the corpus. Discard them rather than let a block compute a repository-wide total from a
 		// subset — Git is here, so the exact answer is one grep away.
 		selection.termPostings = newSearchTermPostings()
-		selection.gitGrepUsable = true
+		selection.gitGrepUsable = !options.ExtractionReuse
 		selection.gitGrepTreeish = ""
 	}
 	return selection, nil
