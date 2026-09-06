@@ -3,7 +3,7 @@
   "checkpoint_id": "d86085fbb346",
   "strategy": "manual-commit",
   "branch": "docs/gps-design",
-  "checkpoints_count": 4,
+  "checkpoints_count": 5,
   "files_touched": [
     "docs/GPS/README.md",
     "docs/GPS/theory-and-implementation.md"
@@ -35,6 +35,13 @@
       "transcript": "/d8/6085fbb346/3/full.jsonl",
       "compact_transcript": "/d8/6085fbb346/3/transcript.jsonl",
       "content_hash": "/d8/6085fbb346/3/content_hash.txt",
+      "prompt": ""
+    },
+    {
+      "metadata": "/d8/6085fbb346/4/metadata.json",
+      "transcript": "/d8/6085fbb346/4/full.jsonl",
+      "compact_transcript": "/d8/6085fbb346/4/transcript.jsonl",
+      "content_hash": "/d8/6085fbb346/4/content_hash.txt",
       "prompt": ""
     }
   ],
