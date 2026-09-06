@@ -178,6 +178,8 @@ repository, successful counts, retained failures/timeouts, zero denominators,
 and phase classification. The one-edit gain and cold/RSS comparisons are
 never reported only for a favorable subset.
 
+**Historical execution rule:** the paragraph below documents the original run. For every new run, [stopgaps-v2.md](stopgaps-v2.md) supersedes it with a first-issue whole-run pause and all-worker supervision. The original observations and release thresholds remain unchanged.
+
 The runner has a safety circuit breaker for operational failure. In each
 repository/profile/verb stratum it tracks consecutive timeout/process-failure
 counts separately for the `reuse=false` and `reuse=true` measured arms, plus a
