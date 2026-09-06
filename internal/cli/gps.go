@@ -135,7 +135,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	requirements := matchingRequirements(set, flags.query)
-	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "status": "complete", "requirements": requirements, "symbols": []any{}, "dependencies": []any{}, "tests": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
+	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "status": "complete", "requirements": requirements, "symbols": []any{}, "code": []any{}, "dependencies": []any{}, "tests": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
 	if len(set.Specs) == 0 {
 		response["status"] = "complete_with_gaps"
 		response["gaps"] = []string{"NO_SPECS"}
@@ -145,6 +145,15 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	search, err := sem.SearchRepository(ctx, repo, opts.Version, flags.query, sem.SearchOptions{Worktree: !flags.head, Profile: sem.ProfileFull, TopK: 5, MaxContextBytes: flags.maxBytes, DisableCache: true})
+	if err != nil {
+		return err
+	}
+	code := make([]any, 0, len(search.Results))
+	for _, result := range search.Results {
+		code = append(code, map[string]any{"reason": "ranked_code_search", "rank": result.Rank, "score": result.Score, "citation": fmt.Sprintf("%s:%d", result.FilePath, result.FocusLine), "symbol_id": result.SymbolID})
+	}
+	response["code"] = code
 	selected := make(map[string]bool, len(requirements))
 	for _, requirement := range requirements {
 		selected[requirement["id"]] = true
@@ -460,14 +469,15 @@ func fitGPSContextBudget(response map[string]any, maximum int) {
 		return
 	}
 	response["symbols"] = []any{}
+	response["code"] = []any{}
 	response["dependencies"] = []any{}
 	response["tests"] = []any{}
-	budget["omitted"] = []string{"symbols", "dependencies", "tests"}
+	budget["omitted"] = []string{"symbols", "code", "dependencies", "tests"}
 	if renderedGPSJSONBytes(response) > maximum {
 		response["requirements"] = []map[string]string{}
 		response["status"] = "BUDGET_TOO_SMALL"
 		response["gaps"] = []string{"BUDGET_TOO_SMALL"}
-		budget["omitted"] = []string{"requirements", "symbols", "dependencies", "tests"}
+		budget["omitted"] = []string{"requirements", "symbols", "code", "dependencies", "tests"}
 	}
 	budget["rendered_bytes"] = renderedGPSJSONBytes(response)
 }
