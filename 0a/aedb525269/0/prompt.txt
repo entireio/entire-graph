@@ -1,1 +1,1 @@
-complete it now
+iterate until you complete the MVP
