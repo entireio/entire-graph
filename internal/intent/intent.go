@@ -48,17 +48,31 @@ type TestRef struct {
 		Name string `yaml:"name" json:"name"`
 	} `yaml:"selector" json:"selector"`
 }
+type Relationship struct {
+	Type   string `yaml:"type" json:"type"`
+	Target string `yaml:"target" json:"target"`
+}
+type Decision struct {
+	Version  int      `yaml:"version" json:"version"`
+	ID       string   `yaml:"id" json:"id"`
+	Title    string   `yaml:"title" json:"title"`
+	Decision string   `yaml:"decision" json:"decision"`
+	Affects  []string `yaml:"affects" json:"affects"`
+	Anchors  []string `yaml:"anchors" json:"anchors"`
+	Path     string   `yaml:"-" json:"path"`
+}
 type Spec struct {
-	Version      int           `yaml:"version" json:"version"`
-	ID           string        `yaml:"id" json:"id"`
-	Title        string        `yaml:"title" json:"title"`
-	Intent       string        `yaml:"intent" json:"intent"`
-	Status       string        `yaml:"status,omitempty" json:"status,omitempty"`
-	Requirements []Requirement `yaml:"requirements" json:"requirements"`
-	Acceptance   []Acceptance  `yaml:"acceptance" json:"acceptance"`
-	Anchors      []AnchorRef   `yaml:"anchors" json:"anchors"`
-	Tests        []TestRef     `yaml:"tests" json:"tests"`
-	Path         string        `yaml:"-" json:"path"`
+	Version       int            `yaml:"version" json:"version"`
+	ID            string         `yaml:"id" json:"id"`
+	Title         string         `yaml:"title" json:"title"`
+	Intent        string         `yaml:"intent" json:"intent"`
+	Status        string         `yaml:"status,omitempty" json:"status,omitempty"`
+	Requirements  []Requirement  `yaml:"requirements" json:"requirements"`
+	Acceptance    []Acceptance   `yaml:"acceptance" json:"acceptance"`
+	Anchors       []AnchorRef    `yaml:"anchors" json:"anchors"`
+	Tests         []TestRef      `yaml:"tests" json:"tests"`
+	Relationships []Relationship `yaml:"relationships,omitempty" json:"relationships,omitempty"`
+	Path          string         `yaml:"-" json:"path"`
 }
 
 type Baseline struct {
@@ -84,11 +98,12 @@ type BindingFile struct {
 	Path    string    `yaml:"-" json:"path"`
 }
 type Set struct {
-	Policy      Policy    `json:"policy"`
-	Specs       []Spec    `json:"specifications"`
-	Bindings    []Binding `json:"bindings"`
-	Diagnostics []string  `json:"diagnostics,omitempty"`
-	Digest      string    `json:"digest"`
+	Policy      Policy     `json:"policy"`
+	Specs       []Spec     `json:"specifications"`
+	Bindings    []Binding  `json:"bindings"`
+	Decisions   []Decision `json:"decisions"`
+	Diagnostics []string   `json:"diagnostics,omitempty"`
+	Digest      string     `json:"digest"`
 }
 
 func Init(repo string) error {
@@ -154,16 +169,32 @@ func Load(repo string) (Set, error) {
 	}); err != nil {
 		return set, err
 	}
+	if err := loadYAMLFiles(filepath.Join(repo, Root, "decisions"), func(path string) error {
+		var decision Decision
+		if err := decodeFile(path, &decision); err != nil {
+			return err
+		}
+		decision.Path = rel(repo, path)
+		if decision.Version != 1 || decision.ID == "" || decision.Title == "" || decision.Decision == "" {
+			return fmt.Errorf("%s: decision requires version 1, id, title, and decision", decision.Path)
+		}
+		set.Decisions = append(set.Decisions, decision)
+		return nil
+	}); err != nil {
+		return set, err
+	}
 	if err := validateSet(&set); err != nil {
 		return set, err
 	}
 	sort.Slice(set.Specs, func(i, j int) bool { return set.Specs[i].ID < set.Specs[j].ID })
 	sort.Slice(set.Bindings, func(i, j int) bool { return set.Bindings[i].ID < set.Bindings[j].ID })
+	sort.Slice(set.Decisions, func(i, j int) bool { return set.Decisions[i].ID < set.Decisions[j].ID })
 	data, _ := yaml.Marshal(struct {
-		Policy   Policy
-		Specs    []Spec
-		Bindings []Binding
-	}{set.Policy, set.Specs, set.Bindings})
+		Policy    Policy
+		Specs     []Spec
+		Bindings  []Binding
+		Decisions []Decision
+	}{set.Policy, set.Specs, set.Bindings, set.Decisions})
 	set.Digest = digest(data)
 	return set, nil
 }
@@ -268,6 +299,11 @@ func validateSpec(s *Spec) error {
 			return errors.New("anchors need ids and known requirements")
 		}
 	}
+	for _, relationship := range s.Relationships {
+		if relationship.Target == "" || (relationship.Type != "parent_of" && relationship.Type != "depends_on" && relationship.Type != "related_to" && relationship.Type != "supersedes" && relationship.Type != "conflicts_with") {
+			return errors.New("relationships need a supported type and target")
+		}
+	}
 	for _, t := range s.Tests {
 		if t.ID == "" || t.Selector.Name == "" || !accepts[t.Acceptance] {
 			return errors.New("tests need ids, selectors, and known acceptance criteria")
@@ -280,6 +316,7 @@ func validateSet(set *Set) error {
 	anchors := map[string]bool{}
 	acceptances := map[string]bool{}
 	tests := map[string]bool{}
+	decisions := map[string]bool{}
 	for _, s := range set.Specs {
 		if ids[s.ID] {
 			return fmt.Errorf("duplicate specification id %q", s.ID)
@@ -302,6 +339,29 @@ func validateSet(set *Set) error {
 				return fmt.Errorf("duplicate anchor id %q", a.ID)
 			}
 			anchors[a.ID] = true
+		}
+	}
+	for _, decision := range set.Decisions {
+		if decisions[decision.ID] {
+			return fmt.Errorf("duplicate decision id %q", decision.ID)
+		}
+		decisions[decision.ID] = true
+		for _, spec := range decision.Affects {
+			if !ids[spec] {
+				return fmt.Errorf("decision %q affects unknown specification %q", decision.ID, spec)
+			}
+		}
+		for _, anchor := range decision.Anchors {
+			if !anchors[anchor] {
+				return fmt.Errorf("decision %q references unknown anchor %q", decision.ID, anchor)
+			}
+		}
+	}
+	for _, spec := range set.Specs {
+		for _, relationship := range spec.Relationships {
+			if !ids[relationship.Target] {
+				return fmt.Errorf("specification %q references unknown relationship target %q", spec.ID, relationship.Target)
+			}
 		}
 	}
 	seen := map[string]bool{}

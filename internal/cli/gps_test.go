@@ -45,6 +45,13 @@ func TestGPSAnchorBindAndResolve(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "auth.go"), []byte("package auth\nfunc Authenticate() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(repo, ".entire", "graph", "decisions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	decision := "version: 1\nid: ADR-1\ntitle: Authentication policy\ndecision: Use explicit authentication.\naffects:\n  - SPEC-1\nanchors:\n  - ANCHOR-1\n"
+	if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "decisions", "auth.yaml"), []byte(decision), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := Run(t.Context(), opts, []string{"anchor", "bind", "--repo", repo, "--id", "ANCHOR-1", "--symbol", "Authenticate", "--file", "auth.go"}); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +73,7 @@ func TestGPSAnchorBindAndResolve(t *testing.T) {
 	if err := Run(t.Context(), opts, []string{"why", "--repo", repo, "--symbol", "Authenticate", "--file", "auth.go", "--format", "json"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "REQ-1") {
+	if !strings.Contains(out.String(), "REQ-1") || !strings.Contains(out.String(), "ADR-1") {
 		t.Fatalf("why omitted declared requirement: %s", out.String())
 	}
 }

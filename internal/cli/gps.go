@@ -347,6 +347,7 @@ func runGPSWhy(ctx context.Context, opts Options, args []string) error {
 	}
 	var requirements []map[string]string
 	var tests []map[string]string
+	var decisions []intent.Decision
 	for _, spec := range set.Specs {
 		for _, anchor := range spec.Anchors {
 			if bindings[anchor.ID] {
@@ -366,12 +367,20 @@ func runGPSWhy(ctx context.Context, opts Options, args []string) error {
 			}
 		}
 	}
+	for _, decision := range set.Decisions {
+		for _, anchor := range decision.Anchors {
+			if bindings[anchor] {
+				decisions = append(decisions, decision)
+				break
+			}
+		}
+	}
 	status := "complete"
 	gaps := []string{}
 	if len(requirements) == 0 {
 		status, gaps = "complete_with_gaps", []string{"NO_INTENT_LINK"}
 	}
-	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "status": status, "symbol": symbol, "requirements": requirements, "tests": tests, "gaps": gaps})
+	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "status": status, "symbol": symbol, "requirements": requirements, "tests": tests, "decisions": decisions, "gaps": gaps})
 }
 
 type gpsOptions struct {
