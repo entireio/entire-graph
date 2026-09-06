@@ -65,6 +65,8 @@ class LaunchContracts(unittest.TestCase):
         self.assertIn("/opt/p1/runs/run-a/p1-evaluator", script)
         self.assertIn("/opt/p1/runs/run-a/scripts", script)
         self.assertIn("test ! -e /opt/p1/runs/run-a", script)
+        self.assertIn("P1_LAUNCH_OK %s", script)
+        self.assertIn("/opt/p1/runs/run-a/STOP", script)
         self.assertNotIn("/opt/p1/p1-evaluator", script)
 
     def test_default_manifest_resolution_keeps_historical_path(self):
@@ -104,6 +106,25 @@ class LaunchContracts(unittest.TestCase):
             "https://storage/blob?sig=secret?secondary=also-secret"
         )
         self.assertEqual(redacted, "https://storage/blob?<redacted-sas>")
+
+    def test_valid_azure_envelope_without_launch_ack_is_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            evidence = pathlib.Path(d) / "transport.json"
+            with self.assertRaises(RuntimeError):
+                launch.decode_transport_response(
+                    json.dumps(["status only"]), evidence, expected_ack="P1_LAUNCH_OK unit"
+                )
+            self.assertTrue(evidence.exists())
+
+    def test_launch_ack_is_required_after_remote_script(self):
+        with tempfile.TemporaryDirectory() as d:
+            evidence = pathlib.Path(d) / "transport.json"
+            decoded = launch.decode_transport_response(
+                json.dumps(["P1_LEASE renewed\nP1_LAUNCH_OK unit"]),
+                evidence,
+                expected_ack="P1_LAUNCH_OK unit",
+            )
+            self.assertEqual(decoded[0].splitlines()[-1], "P1_LAUNCH_OK unit")
 
     def test_frozen_baseline_identity_changes_when_baseline_changes(self):
         root, first, _ = self.fixture()
