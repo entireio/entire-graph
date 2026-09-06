@@ -1,3 +1,6 @@
+<img width="504" height="853" alt="image" src="https://github.com/user-attachments/assets/47a67d4a-82a0-4873-9ee6-2fae704b53bb" />
+
+#Demo 
 ![entire-graph theme](docs/images/gh-repo-cover.png "entire-graph cover image")
 
 # Entire Graph
