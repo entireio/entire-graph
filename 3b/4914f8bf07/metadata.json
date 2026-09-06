@@ -1,0 +1,55 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "3b4914f8bf07",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 8,
+  "files_touched": [
+    "docs/adr/0049-reviewed-partial-evaluation-strata.md",
+    "docs/implementation/graph-advantage/evidence/check-aab356ae/check.log",
+    "docs/implementation/graph-advantage/evidence/check-aab356ae/controller.py",
+    "docs/implementation/graph-advantage/evidence/check-aab356ae/failure-analysis.md",
+    "docs/implementation/graph-advantage/evidence/check-aab356ae/formatter-mutation.patch",
+    "docs/implementation/graph-advantage/evidence/check-aab356ae/verification.json",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-aab356ae/controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-aab356ae/manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-aab356ae/setup-note.txt",
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/full-diagnostics-collector/README.md",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/full-diagnostics-collector/run_remote.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/full-diagnostics-collector/test_run_remote.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/progress.json",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/README.md",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge.go",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge.go.txt",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge_test.go",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/invoice/charge_test.go.txt",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/delivery.go",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/delivery.go.txt",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/note.go",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/note.go.txt",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/retry.go",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/retry/retry.go.txt",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/sparse/hello.go",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/fixtures/sparse/hello.go.txt",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/provenance.json",
+    "docs/implementation/graph-advantage/reviewer-packet-v1/tasks.json",
+    "docs/implementation/graph-advantage/shutdown-handoff-20260906.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3b/4914f8bf07/0/metadata.json",
+      "transcript": "/3b/4914f8bf07/0/full.jsonl",
+      "compact_transcript": "/3b/4914f8bf07/0/transcript.jsonl",
+      "content_hash": "/3b/4914f8bf07/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2022715,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 96977152,
+    "output_tokens": 285746,
+    "api_call_count": 894
+  }
+}
