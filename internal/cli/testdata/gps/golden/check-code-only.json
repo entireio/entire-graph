@@ -1,0 +1,6 @@
+{
+  "schema_version": "1.0",
+  "change_delta": "compared",
+  "disposition": "REVIEW_REQUIRED",
+  "finding_ids": ["GPS-DELTA-CODE-ONLY"]
+}

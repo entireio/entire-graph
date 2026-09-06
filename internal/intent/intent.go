@@ -107,6 +107,14 @@ type Set struct {
 	Digest      string     `json:"digest"`
 }
 
+// Diagnostic describes one invalid GPS authoring input. Validation collects
+// independent document errors so an editor can fix a batch in one pass.
+type Diagnostic struct {
+	Path    string `json:"path"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 func Init(repo string) error {
 	root := filepath.Join(repo, Root)
 	for _, part := range []string{"specs", "anchors"} {
@@ -198,6 +206,94 @@ func Load(repo string) (Set, error) {
 	}{set.Policy, set.Specs, set.Bindings, set.Decisions})
 	set.Digest = digest(data)
 	return set, nil
+}
+
+// Validate checks all independently readable intent documents. It deliberately
+// does not replace Load: commands that consume intent continue to reject an
+// incomplete set, while `spec validate` can return useful aggregate feedback.
+func Validate(repo string) ([]Diagnostic, error) {
+	policyPath := filepath.Join(repo, Root, "intent.yaml")
+	if _, err := os.Stat(policyPath); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	var policy Policy
+	if err := decodeFile(policyPath, &policy); err != nil {
+		return []Diagnostic{{Path: filepath.ToSlash(filepath.Join(Root, "intent.yaml")), Code: "E_POLICY_INVALID", Message: err.Error()}}, nil
+	}
+	if policy.Version != 1 || !safeRelative(policy.SpecsRoot) || !safeRelative(policy.AnchorsRoot) {
+		return []Diagnostic{{Path: filepath.ToSlash(filepath.Join(Root, "intent.yaml")), Code: "E_POLICY_INVALID", Message: "intent policy must use version 1 and relative roots"}}, nil
+	}
+	var diagnostics []Diagnostic
+	set := Set{Policy: policy}
+	collect := func(root, code string, fn func(string) error) error {
+		return loadYAMLFiles(root, func(path string) error {
+			if err := fn(path); err != nil {
+				diagnostics = append(diagnostics, Diagnostic{Path: rel(repo, path), Code: code, Message: err.Error()})
+			}
+			return nil
+		})
+	}
+	if err := collect(filepath.Join(repo, Root, policy.SpecsRoot), "E_SPEC_INVALID", func(path string) error {
+		var spec Spec
+		if err := decodeFile(path, &spec); err != nil {
+			return err
+		}
+		spec.Path = rel(repo, path)
+		if err := validateSpec(&spec); err != nil {
+			return err
+		}
+		set.Specs = append(set.Specs, spec)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if err := collect(filepath.Join(repo, Root, policy.AnchorsRoot), "E_BINDING_INVALID", func(path string) error {
+		var bindings BindingFile
+		if err := decodeFile(path, &bindings); err != nil {
+			return err
+		}
+		if bindings.Version != 1 {
+			return errors.New("unsupported binding version")
+		}
+		for _, binding := range bindings.Anchors {
+			if binding.ID == "" || binding.SymbolID == "" {
+				return errors.New("binding requires id and symbol_id")
+			}
+			set.Bindings = append(set.Bindings, binding)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if err := collect(filepath.Join(repo, Root, "decisions"), "E_DECISION_INVALID", func(path string) error {
+		var decision Decision
+		if err := decodeFile(path, &decision); err != nil {
+			return err
+		}
+		decision.Path = rel(repo, path)
+		if decision.Version != 1 || decision.ID == "" || decision.Title == "" || decision.Decision == "" {
+			return errors.New("decision requires version 1, id, title, and decision")
+		}
+		set.Decisions = append(set.Decisions, decision)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if err := validateSet(&set); err != nil {
+		diagnostics = append(diagnostics, Diagnostic{Path: filepath.ToSlash(Root), Code: "E_REFERENCE_INVALID", Message: err.Error()})
+	}
+	sort.Slice(diagnostics, func(i, j int) bool {
+		if diagnostics[i].Path != diagnostics[j].Path {
+			return diagnostics[i].Path < diagnostics[j].Path
+		}
+		if diagnostics[i].Code != diagnostics[j].Code {
+			return diagnostics[i].Code < diagnostics[j].Code
+		}
+		return diagnostics[i].Message < diagnostics[j].Message
+	})
+	return diagnostics, nil
 }
 
 // LoadRevision reads only GPS inputs from one committed tree and reuses the

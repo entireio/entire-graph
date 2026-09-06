@@ -44,6 +44,7 @@ deterministic inference is still an inference.
 | [Context and Impact](context-and-impact.md) | Request-to-context assembly, intent explanations, test selection, and blast radius. |
 | [Verification](verification.md) | Static checks, test execution boundary, result contracts, and review. |
 | [Feature Roadmap](feature-roadmap.md) | Comments, history, agent integration, MCP, storage, and external evaluation. |
+| [Token/Auth MVP Demo](token-auth-demo.md) | Runnable fixture, Git-backed check contract, invalid-input diagnostics, and budget behavior. |
 
 The documents deliberately separate a buildable first slice from later features.
 Examples of new commands and schemas are **proposed contracts**, not current CLI

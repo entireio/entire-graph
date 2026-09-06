@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,15 @@ import (
 	"github.com/entireio/entire-graph/internal/intent"
 	"github.com/entireio/entire-graph/internal/sem"
 )
+
+func copyGPSFixture(t *testing.T, name string) string {
+	t.Helper()
+	repo := t.TempDir()
+	if err := os.CopyFS(repo, os.DirFS(filepath.Join("testdata", "gps", name))); err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
 
 func gpsGit(t *testing.T, repo string, args ...string) {
 	t.Helper()
@@ -203,5 +213,138 @@ func TestGPSCheckCommittedBaseReportsSpecOnlyDelta(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "GPS-DELTA-SPEC-ONLY") {
 		t.Fatalf("missing spec-only delta: %s", out.String())
+	}
+}
+
+func TestGPSSpecValidateAggregatesStructuredDiagnostics(t *testing.T) {
+	repo := t.TempDir()
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}}, []string{"spec", "init", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"missing-title.yaml": "version: 1\nid: SPEC-1\nrequirements:\n  - id: REQ-1\n    description: valid\n",
+		"unknown-field.yaml": "version: 1\nid: SPEC-2\ntitle: Invalid\nrequirements:\n  - id: REQ-2\n    description: valid\nunknown: true\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "specs", name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"spec", "validate", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Valid       bool `json:"valid"`
+		Diagnostics []struct {
+			Path string `json:"path"`
+			Code string `json:"code"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Valid || len(response.Diagnostics) != 2 || response.Diagnostics[0].Path >= response.Diagnostics[1].Path {
+		t.Fatalf("unexpected aggregate response: %s", out.String())
+	}
+	golden, err := os.ReadFile(filepath.Join("testdata", "gps", "golden", "spec-validate-invalid.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract struct {
+		SchemaVersion   string   `json:"schema_version"`
+		Valid           bool     `json:"valid"`
+		DiagnosticCodes []string `json:"diagnostic_codes"`
+	}
+	if err := json.Unmarshal(golden, &contract); err != nil {
+		t.Fatal(err)
+	}
+	if contract.SchemaVersion != "1.0" || contract.Valid || len(contract.DiagnosticCodes) != len(response.Diagnostics) || response.Diagnostics[0].Code != contract.DiagnosticCodes[0] || response.Diagnostics[1].Code != contract.DiagnosticCodes[1] {
+		t.Fatalf("validation contract changed: %s", out.String())
+	}
+}
+
+func TestGPSGitFixtureCodeOnlyGoldenContract(t *testing.T) {
+	repo := copyGPSFixture(t, "token-auth")
+	gpsGit(t, repo, "init")
+	gpsGit(t, repo, "config", "user.email", "gps@example.invalid")
+	gpsGit(t, repo, "config", "user.name", "GPS Test")
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "token auth fixture")
+	baseOutput, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "auth.go"), []byte("package auth\nfunc Authenticate(user, password string) (string, bool) { return \"\", false }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", "auth.go")
+	gpsGit(t, repo, "commit", "-m", "change authentication")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"check", "--repo", repo, "--head", "--base", strings.TrimSpace(string(baseOutput))}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "GPS-DELTA-CODE-ONLY") {
+		t.Fatalf("code-only finding missing: %s", out.String())
+	}
+	golden, err := os.ReadFile(filepath.Join("testdata", "gps", "golden", "check-code-only.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		SchemaVersion string `json:"schema_version"`
+		ChangeDelta   string `json:"change_delta"`
+		Disposition   string `json:"disposition"`
+		Findings      []struct {
+			ID string `json:"id"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	var contract struct {
+		SchemaVersion string   `json:"schema_version"`
+		ChangeDelta   string   `json:"change_delta"`
+		Disposition   string   `json:"disposition"`
+		FindingIDs    []string `json:"finding_ids"`
+	}
+	if err := json.Unmarshal(golden, &contract); err != nil {
+		t.Fatal(err)
+	}
+	if response.SchemaVersion != contract.SchemaVersion || response.ChangeDelta != contract.ChangeDelta || response.Disposition != contract.Disposition || len(response.Findings) != len(contract.FindingIDs) || response.Findings[0].ID != contract.FindingIDs[0] {
+		t.Fatalf("code-only contract changed: %s", out.String())
+	}
+}
+
+func TestGPSContextQuotaPreservesSnippetAndInferredTest(t *testing.T) {
+	repo := copyGPSFixture(t, "token-auth")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"context", "--repo", repo, "--query", "token", "--max-context-bytes", "1600"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Bytes()) > 1600 || !bytes.Contains(out.Bytes(), []byte(`"snippet"`)) || !bytes.Contains(out.Bytes(), []byte(`"inferred_tests"`)) || !bytes.Contains(out.Bytes(), []byte("TestAuthenticateReturnsToken")) {
+		t.Fatalf("quota did not preserve bounded source and inferred tests: %s", out.String())
+	}
+}
+
+func TestGPSContextSerializedUTF8StaysWithinMinimumBudget(t *testing.T) {
+	repo := t.TempDir()
+	var out bytes.Buffer
+	query := strings.Repeat("token \u00e9 ", 200)
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"context", "--repo", repo, "--query", query, "--max-context-bytes", "512"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Bytes()) > minimumGPSContextBytes || !json.Valid(out.Bytes()) {
+		t.Fatalf("serialized context is not within its UTF-8 budget: %d bytes: %s", len(out.Bytes()), out.String())
+	}
+	var response struct {
+		Budget struct {
+			RenderedBytes int `json:"rendered_bytes"`
+		} `json:"budget"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Budget.RenderedBytes != len(out.Bytes()) {
+		t.Fatalf("reported bytes = %d, serialized bytes = %d", response.Budget.RenderedBytes, len(out.Bytes()))
 	}
 }

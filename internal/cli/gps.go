@@ -37,6 +37,21 @@ func runSpec(ctx context.Context, opts Options, args []string) error {
 		}
 		return intent.Init(repo)
 	}
+	switch args[0] {
+	case "validate":
+		if flags.head {
+			set, err := gpsIntent(ctx, repo, true)
+			if err != nil {
+				return err
+			}
+			return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "valid": true, "intent_digest": set.Digest, "specifications": len(set.Specs), "diagnostics": []intent.Diagnostic{}})
+		}
+		diagnostics, err := intent.Validate(repo)
+		if err != nil {
+			return err
+		}
+		return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "valid": len(diagnostics) == 0, "diagnostics": diagnostics})
+	}
 	set, err := gpsIntent(ctx, repo, flags.head)
 	if err != nil {
 		return err
@@ -54,8 +69,6 @@ func runSpec(ctx context.Context, opts Options, args []string) error {
 			}
 		}
 		return fmt.Errorf("specification %q not found", flags.id)
-	case "validate":
-		return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "valid": true, "intent_digest": set.Digest, "specifications": len(set.Specs)})
 	case "relationships":
 		if flags.id == "" {
 			return errors.New("spec relationships requires --id")
@@ -165,7 +178,9 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	}
 	code := make([]any, 0, len(search.Results))
 	for _, result := range search.Results {
-		code = append(code, map[string]any{"reason": "ranked_code_search", "rank": result.Rank, "score": result.Score, "citation": fmt.Sprintf("%s:%d", result.FilePath, result.FocusLine), "symbol_id": result.SymbolID, "snippet": result.Snippet, "snippet_start_line": result.SnippetStartLine, "snippet_end_line": result.SnippetEndLine})
+		// A bounded snippet leaves quota for inferred tests instead of letting one
+		// search result consume the entire source-evidence section.
+		code = append(code, map[string]any{"reason": "ranked_code_search", "rank": result.Rank, "score": result.Score, "citation": fmt.Sprintf("%s:%d", result.FilePath, result.FocusLine), "symbol_id": result.SymbolID, "snippet": trimUTF8(result.Snippet, 160), "snippet_start_line": result.SnippetStartLine, "snippet_end_line": result.SnippetEndLine})
 	}
 	response["code"] = code
 	selected := make(map[string]bool, len(requirements))
@@ -223,7 +238,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 		if !strings.HasPrefix(symbol.Name, "Test") || !queryMatchesText(flags.query, symbol.Name) {
 			continue
 		}
-		inferredTests = append(inferredTests, map[string]any{"reason": "name_match_candidate", "fulfills_mapping": false, "citation": fmt.Sprintf("%s:%d", symbol.FilePath, symbol.StartLine), "symbol": symbol})
+		inferredTests = append(inferredTests, map[string]any{"reason": "name_match_candidate", "fulfills_mapping": false, "citation": fmt.Sprintf("%s:%d", symbol.FilePath, symbol.StartLine), "symbol_id": symbol.ID, "name": symbol.QualifiedName})
 	}
 	sort.Strings(gaps)
 	response["symbols"] = symbols
@@ -702,29 +717,149 @@ func acceptanceMatchesRequirement(spec intent.Spec, acceptanceID string, require
 	return false
 }
 
-// fitGPSContextBudget preserves direct intent first and falls back to an explicit
-// minimal manifest when even that evidence cannot fit the caller's budget.
+var gpsContextSectionQuotas = []struct {
+	name    string
+	percent int
+}{
+	{"requirements", 25},
+	{"symbols", 10},
+	{"code", 35},
+	{"dependencies", 5},
+	{"tests", 10},
+	{"inferred_tests", 15},
+}
+
+// fitGPSContextBudget assigns the available evidence space in priority order.
+// Unused capacity carries only to later sections, so the same inputs always
+// retain the same requirements, snippets, and test candidates.
 func fitGPSContextBudget(response map[string]any, maximum int) {
 	budget := response["budget"].(map[string]any)
-	if renderedGPSJSONBytes(response) <= maximum {
-		budget["rendered_bytes"] = renderedGPSJSONBytes(response)
+	quotas := map[string]int{}
+	for _, quota := range gpsContextSectionQuotas {
+		quotas[quota.name] = quota.percent
+	}
+	budget["section_quotas"] = quotas
+	if setGPSRenderedBytes(response) <= maximum {
 		return
 	}
-	response["symbols"] = []any{}
-	response["code"] = []any{}
-	response["dependencies"] = []any{}
-	response["tests"] = []any{}
-	response["inferred_tests"] = []any{}
-	budget["omitted"] = []string{"symbols", "code", "dependencies", "tests", "inferred_tests"}
-	response["status"] = "complete_with_gaps"
-	response["gaps"] = append(response["gaps"].([]string), "CONTEXT_OMITTED_FOR_BUDGET")
-	if renderedGPSJSONBytes(response) > maximum {
-		response["requirements"] = []map[string]string{}
-		response["status"] = "BUDGET_TOO_SMALL"
-		response["gaps"] = []string{"BUDGET_TOO_SMALL"}
-		budget["omitted"] = []string{"requirements", "symbols", "code", "dependencies", "tests", "inferred_tests"}
+
+	candidates := map[string][]any{}
+	for _, quota := range gpsContextSectionQuotas {
+		candidates[quota.name] = gpsAnySlice(response[quota.name])
+		response[quota.name] = []any{}
 	}
-	budget["rendered_bytes"] = renderedGPSJSONBytes(response)
+	originalGaps := append([]string(nil), response["gaps"].([]string)...)
+	response["status"] = "complete_with_gaps"
+	response["gaps"] = append(originalGaps, "CONTEXT_OMITTED_FOR_BUDGET")
+	allNames := make([]string, 0, len(gpsContextSectionQuotas))
+	for _, quota := range gpsContextSectionQuotas {
+		allNames = append(allNames, quota.name)
+	}
+	budget["omitted"] = allNames
+	base := setGPSRenderedBytes(response)
+	if base > maximum {
+		fitGPSMinimalManifest(response, maximum)
+		return
+	}
+
+	available := maximum - base
+	carry := 0
+	selected := map[string]int{}
+	for _, quota := range gpsContextSectionQuotas {
+		allowance := available*quota.percent/100 + carry
+		used := 0
+		for _, item := range candidates[quota.name] {
+			section := response[quota.name].([]any)
+			before := setGPSRenderedBytes(response)
+			response[quota.name] = append(section, item)
+			now := setGPSRenderedBytes(response)
+			delta := now - before
+			if used+delta > allowance || now > maximum {
+				response[quota.name] = section
+				setGPSRenderedBytes(response)
+				continue
+			}
+			used += delta
+			selected[quota.name]++
+		}
+		carry = allowance - used
+	}
+	omitted := make([]string, 0, len(gpsContextSectionQuotas))
+	for _, quota := range gpsContextSectionQuotas {
+		if selected[quota.name] != len(candidates[quota.name]) {
+			omitted = append(omitted, quota.name)
+		}
+	}
+	budget["omitted"] = omitted
+	if len(omitted) == 0 {
+		response["gaps"] = originalGaps
+		if len(originalGaps) == 0 {
+			response["status"] = "complete"
+		}
+	}
+	if setGPSRenderedBytes(response) > maximum {
+		fitGPSMinimalManifest(response, maximum)
+	}
+}
+
+func gpsAnySlice(value any) []any {
+	switch values := value.(type) {
+	case []any:
+		return values
+	case []map[string]string:
+		out := make([]any, len(values))
+		for i := range values {
+			out[i] = values[i]
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func fitGPSMinimalManifest(response map[string]any, maximum int) {
+	budget := response["budget"].(map[string]any)
+	// The quota declaration is useful only when there is room for evidence. Drop
+	// it in the emergency manifest so the advertised minimum remains achievable.
+	delete(budget, "section_quotas")
+	for _, quota := range gpsContextSectionQuotas {
+		response[quota.name] = []any{}
+	}
+	response["status"] = "BUDGET_TOO_SMALL"
+	response["gaps"] = []string{"BUDGET_TOO_SMALL"}
+	omitted := make([]string, 0, len(gpsContextSectionQuotas))
+	for _, quota := range gpsContextSectionQuotas {
+		omitted = append(omitted, quota.name)
+	}
+	budget["omitted"] = omitted
+	for len(response["request"].(string)) > 0 && setGPSRenderedBytes(response) > maximum {
+		response["request"] = trimUTF8(response["request"].(string), len(response["request"].(string))-1)
+	}
+	setGPSRenderedBytes(response)
+}
+
+func trimUTF8(value string, maximum int) string {
+	if len(value) <= maximum {
+		return value
+	}
+	for maximum > 0 && (value[maximum]&0xc0) == 0x80 {
+		maximum--
+	}
+	return value[:maximum]
+}
+
+// setGPSRenderedBytes reaches the stable serialized size after adding the size
+// field itself. JSON is the context command's integration contract.
+func setGPSRenderedBytes(response map[string]any) int {
+	budget := response["budget"].(map[string]any)
+	for range 8 {
+		n := renderedGPSJSONBytes(response)
+		if previous, ok := budget["rendered_bytes"].(int); ok && previous == n {
+			return n
+		}
+		budget["rendered_bytes"] = n
+	}
+	return renderedGPSJSONBytes(response)
 }
 
 func renderedGPSJSONBytes(value any) int {

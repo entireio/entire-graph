@@ -88,6 +88,11 @@ manifest rather than silently returning incomplete prose. Existing search budget
 are not automatically sufficient because some current sections use independent
 caps; the new command owns its full-package accounting.
 
+The implemented JSON quotas are requirements 25%, approved symbols 10%, ranked
+source snippets 35%, dependencies 5%, declared tests 10%, and inferred tests
+15%. `budget.section_quotas` records those values, and `rendered_bytes` is the
+final serialized UTF-8 JSON size.
+
 ## Why and Impact
 
 Future commands use the same join:
