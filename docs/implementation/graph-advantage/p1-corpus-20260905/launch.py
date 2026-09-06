@@ -6,7 +6,7 @@ prepared corpus on each worker and the shared evaluator blob. Baselines must
 finish and be frozen locally before launching the campaign stage.
 """
 import argparse,concurrent.futures,hashlib,json,pathlib,shlex,tarfile,tempfile
-import cloud,supervise,canary_admission,re
+import cloud,supervise,canary_admission,re,subprocess
 HERE=pathlib.Path(__file__).resolve().parent
 VMS=['graph-validation-linux','graph-p1-worker-2','graph-p1-worker-3']
 def main():
@@ -16,7 +16,10 @@ def main():
  if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',args.run_id):raise SystemExit('Invalid isolated run id')
  results_dir='/opt/p1/runs/'+args.run_id
  unit='p1-'+args.stage+'-'+args.run_id
- expected=json.loads((HERE/'build.json').read_text())['binary_sha256']
+ build=json.loads((HERE/'build.json').read_text());expected=build['binary_sha256']
+ root=HERE.parents[3]
+ current_files=subprocess.check_output(['git','ls-files','--cached','--others','--exclude-standard','--','internal','cmd','go.mod','go.sum'],cwd=root,text=True).splitlines()
+ canary_admission.verify_build_sources(root,root/build['source_file_hash_manifest'],build['source_file_hash_manifest_sha256'],current_files)
  identities={'binary_sha256':expected,'input_manifest_sha256':canary_admission.sha(HERE.parent/'corpus/corpus-manifest.json'),'runner_sha256':canary_admission.sha(HERE/'run_campaign.py'),'scenario_sha256':canary_admission.sha(HERE.parent/'corpus/p1_scenario.py'),'gate_sha256':canary_admission.sha(HERE/'campaign_gate.py')}
  if args.frozen_baseline:identities['frozen_baseline_sha256']=canary_admission.sha(args.frozen_baseline)
  if args.stage=='campaign' and not args.canary:
