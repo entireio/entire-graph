@@ -62,13 +62,13 @@ Verdict card = the whole product surface: ≤15-second read, every claim with fi
 
 | Rung | What | Proof | Time box |
 |---|---|---|---|
-| **S0** | This plan + seeded fixture repo (§7) | fixture's clean-merge RW conflict demonstrated with plain git | pre-noon |
-| **S1** | Two committed refs → verdict card (WW + RW detection) | catches ≥2 planted seeds; zero reds on independent branches | first build block |
-| **S2** | Checkpoint-intent enrichment (one line per side: what the session *tried* to do, from checkpoint metadata) | card shows intent lines | after S1 |
-| **S3** | `--watch` + shadow refs (live pre-commit radar) | live demo: two sessions, collision flagged before either commits | stretch |
-| **S4** | Landing-order refinement, `--all`, PROXIMITY via co-change | fixture seeds 4–5 caught | stretch |
+| **S0** ✅ | This plan + seeded fixture repo (§7) | clean-merge RW trap demonstrated with plain git | done 11:12 |
+| **S1** ✅ | Two refs → verdict card (WW + RW detection) | all seeds caught; CLEARED on control pair | done 11:12 |
+| **S2** ✅ | Intent enrichment, tiered + source-labelled | intent lines render on every card | done 11:25 |
+| **S3** ✅ | Live UNCOMMITTED worktrees via `git stash create` (watch mode NOT done) | collision caught pre-commit; agent's tree/index/stash untouched (tested) | done 11:33 |
+| **S4** ✅ | `--all` board auto-discovering worktrees | board flags the red pair, exits worst-of | done 11:35 |
 
-**S1 alone is a complete Track 2 submission.** Do not start S3 until S1+S2 are tested and checkpointed.
+**Status: S0–S4 and D1–D3 shipped, 24/24 tests passing, verified on both the fixture and this Go repo.** Remaining: watch mode, shadow-branch reads, live Databricks workspace screenshots.
 
 ## 7. Seeded fixture (build FIRST — it is both test-bed and demo)
 
