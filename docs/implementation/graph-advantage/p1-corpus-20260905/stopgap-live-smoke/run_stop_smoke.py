@@ -11,15 +11,19 @@ import json
 import pathlib
 import re
 import shlex
+import sys
 import threading
 import time
 
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
 import cloud
 import supervise
 
 VMS = ["graph-validation-linux", "graph-p1-worker-2", "graph-p1-worker-3"]
 SERVICE_RUNTIME_SECONDS = 300
 DEFAULT_DEADLINE_SECONDS = 360
+EMERGENCY_CLEANUP_SECONDS = 30
 _ACK_RE = re.compile(r"^P1_SMOKE_READY [a-z0-9][a-z0-9-]{0,63}$")
 
 
@@ -109,7 +113,7 @@ def record_call(output, name, vm, script, ack=None):
     return decode(raw, pathlib.Path(output) / f"{name}-{vm}.json", ack=ack)
 
 
-def parallel_calls(output, name, calls):
+def parallel_calls(output, name, calls, timeout=None):
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(calls))
     futures = {
         pool.submit(record_call, output, name, vm, script, ack): vm
@@ -117,7 +121,7 @@ def parallel_calls(output, name, calls):
     }
     try:
         results = {}
-        for future in concurrent.futures.as_completed(futures):
+        for future in concurrent.futures.as_completed(futures, timeout=timeout):
             results[futures[future]] = future.result()
     except BaseException:
         pool.shutdown(wait=False, cancel_futures=True)
@@ -127,7 +131,7 @@ def parallel_calls(output, name, calls):
         return results
 
 
-def stop_all(output, stage, run_id, attempt=1):
+def stop_all(output, stage, run_id, attempt=1, timeout=None):
     suffix = "" if attempt == 1 else f"-retry-{attempt}"
     reason = "live stop smoke cleanup"
     calls = [
@@ -138,16 +142,27 @@ def stop_all(output, stage, run_id, attempt=1):
         )
         for vm in VMS
     ]
-    return parallel_calls(output, "stop" + suffix, calls)
+    return parallel_calls(output, "stop" + suffix, calls, timeout=timeout)
 
 
-def status_all(output, name, run_id):
-    calls = [
-        (vm, supervise.status_script("campaign", run_dir(run_id), unit_name(run_id)), None)
-        for vm in VMS
-    ]
-    decoded = parallel_calls(output, name, calls)
-    return {vm: supervise.parse_status(messages) for vm, messages in decoded.items()}
+def status_all(output, name, run_id, timeout=None):
+    def query(vm):
+        raw = cloud.run(vm, supervise.status_script("campaign", run_dir(run_id), unit_name(run_id)))
+        save_raw(pathlib.Path(output) / f"{name}-{vm}.json", raw)
+        return supervise.parse_status(raw)
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(VMS))
+    futures = {pool.submit(query, vm): vm for vm in VMS}
+    try:
+        states = {}
+        for future in concurrent.futures.as_completed(futures, timeout=timeout):
+            states[futures[future]] = future.result()
+    except BaseException:
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        pool.shutdown(wait=True)
+        return states
 
 
 def assert_active(states):
@@ -177,6 +192,7 @@ def main(argv=None):
         raise SystemExit("output must be empty; refusing overwrite")
     output.mkdir(parents=True, exist_ok=True)
     env = cloud.environment()
+    deadline = time.monotonic() + args.deadline_seconds
     issue = None
     supervisor_result = None
     states = {}
@@ -186,10 +202,21 @@ def main(argv=None):
             output,
             "setup",
             [(vm, setup_script(args.run_id), f"P1_SMOKE_READY {args.run_id}") for vm in VMS],
+            timeout=max(0.0, deadline - time.monotonic()),
         )
-        states = status_all(output, "initial-status", args.run_id)
+        states = status_all(
+            output,
+            "initial-status",
+            args.run_id,
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
         assert_active(states)
-        record_call(output, "pause", VMS[0], pause_script(args.run_id))
+        parallel_calls(
+            output,
+            "pause",
+            [(VMS[0], pause_script(args.run_id), "P1_SMOKE_PAUSED")],
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
         response_lock = threading.Lock()
         response_number = 0
 
@@ -213,11 +240,23 @@ def main(argv=None):
             unit_name=unit_name(args.run_id),
         )
         try:
-            supervisor_result = future.result(timeout=args.deadline_seconds)
+            supervisor_result = future.result(timeout=max(0.0, deadline - time.monotonic()))
         except concurrent.futures.TimeoutError:
             supervisor_pool.shutdown(wait=False, cancel_futures=True)
-            stop_all(output, "campaign", args.run_id, attempt=1)
-            stop_all(output, "campaign", args.run_id, attempt=2)
+            stop_all(
+                output,
+                "campaign",
+                args.run_id,
+                attempt=1,
+                timeout=EMERGENCY_CLEANUP_SECONDS,
+            )
+            stop_all(
+                output,
+                "campaign",
+                args.run_id,
+                attempt=2,
+                timeout=EMERGENCY_CLEANUP_SECONDS,
+            )
             raise RuntimeError("whole-smoke deadline expired")
         except BaseException:
             supervisor_pool.shutdown(wait=False, cancel_futures=True)
@@ -226,12 +265,23 @@ def main(argv=None):
             supervisor_pool.shutdown(wait=True)
         if supervisor_result is not False:
             raise RuntimeError("supervisor did not fail closed after injected pause")
-        states = status_all(output, "terminal-status", args.run_id)
+        states = status_all(
+            output,
+            "terminal-status",
+            args.run_id,
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
         assert_stopped(states, args.run_id)
     except BaseException as error:
         issue = str(error)
         try:
-            stop_all(output, "campaign", args.run_id, attempt=3)
+            stop_all(
+                output,
+                "campaign",
+                args.run_id,
+                attempt=3,
+                timeout=EMERGENCY_CLEANUP_SECONDS,
+            )
         except BaseException as cleanup_error:
             issue += "; cleanup: " + type(cleanup_error).__name__
     finally:
