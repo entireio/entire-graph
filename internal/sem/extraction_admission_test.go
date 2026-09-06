@@ -16,6 +16,18 @@ func pendingWithEncoded(entry cacheEntry, encoded []byte) extractionPending {
 	return extractionPending{entry: entry, bound: bound, encoded: encoded}
 }
 
+func deterministicAdmissionBytes(size int, seed uint64) []byte {
+	data := make([]byte, size)
+	state := seed
+	for index := range data {
+		state ^= state << 13
+		state ^= state >> 7
+		state ^= state << 17
+		data[index] = byte(state)
+	}
+	return data
+}
+
 func TestExtractionAdmissionFlushReleasesAndLaterBatchRescans(t *testing.T) {
 	cache := &extractionCache{
 		ctx:         context.Background(),
@@ -70,6 +82,79 @@ func TestExtractionAdmissionReplacementUsesActualSizeAndKeepsCount(t *testing.T)
 	}
 	if len(session.items) != 1 || session.totalBytes != secondSize {
 		t.Fatalf("replacement accounting = entries %d, bytes %d; want 1, %d", len(session.items), session.totalBytes, secondSize)
+	}
+}
+
+func TestExtractionAdmissionReservesEveryOrderedIntermediateState(t *testing.T) {
+	for _, fixture := range []struct {
+		name      string
+		firstPath string
+	}{
+		{name: "new entry before later shrink", firstPath: "new"},
+		{name: "same key growth before later shrink", firstPath: "old"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			root := t.TempDir()
+			oldEntry, err := newCacheEntry(root, "extraction-ordered-peak", "v1", strings.Repeat("1", 64))
+			if err != nil {
+				t.Fatal(err)
+			}
+			newEntry, err := newCacheEntry(root, "extraction-ordered-peak", "v1", strings.Repeat("2", 64))
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldEncoded := deterministicAdmissionBytes(5000, 1)
+			if err := oldEntry.writeEncoded("extract", oldEncoded); err != nil {
+				t.Fatal(err)
+			}
+			oldPath := filepath.Join(oldEntry.root, oldEntry.relative)
+			oldBefore, err := os.ReadFile(oldPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldInfo, err := os.Stat(oldPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstEntry := newEntry
+			if fixture.firstPath == "old" {
+				firstEntry = oldEntry
+			}
+			first := pendingWithEncoded(firstEntry, deterministicAdmissionBytes(3000, 2))
+			shrink := pendingWithEncoded(oldEntry, deterministicAdmissionBytes(32, 3))
+			quota := max(oldInfo.Size(), first.bound+shrink.bound)
+			if fixture.firstPath == "old" {
+				quota = max(oldInfo.Size(), first.bound, shrink.bound)
+			}
+			reservedPeak := oldInfo.Size() + first.bound + shrink.bound
+			if quota >= reservedPeak {
+				t.Fatalf("invalid fixture reservations: quota=%d peak=%d", quota, reservedPeak)
+			}
+			session, err := beginExtractionAdmissionSession(context.Background(), oldEntry, quota, extractionEntryLimit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			writtenBytes, written, err := session.publishBatch(context.Background(), []extractionPending{first, shrink})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if written != 0 || writtenBytes != 0 {
+				t.Fatalf("over-quota intermediate state published: entries=%d bytes=%d", written, writtenBytes)
+			}
+			oldAfter, err := os.ReadFile(oldPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(oldBefore, oldAfter) {
+				t.Fatal("refused ordered batch changed existing entry")
+			}
+			if fixture.firstPath == "new" {
+				if _, err := os.Stat(filepath.Join(newEntry.root, newEntry.relative)); !os.IsNotExist(err) {
+					t.Fatalf("new entry was written before future shrink: %v", err)
+				}
+			}
+		})
 	}
 }
 

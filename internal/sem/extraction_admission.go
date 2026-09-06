@@ -125,7 +125,7 @@ func (session *extractionAdmissionSession) publishBatch(ctx context.Context, pen
 	if session == nil || session.held == nil {
 		return 0, 0, os.ErrInvalid
 	}
-	reservations := make(map[string]int64, len(pending))
+	targets := make(map[string]struct{}, len(pending))
 	for _, item := range pending {
 		if !session.held.holds(item.entry) {
 			return 0, 0, os.ErrInvalid
@@ -134,23 +134,29 @@ func (session *extractionAdmissionSession) publishBatch(ctx context.Context, pen
 		if !validExtractionCacheFilename(name) || item.bound <= 0 || item.bound > session.maxBytes {
 			return 0, 0, nil
 		}
-		reservations[name] = max(reservations[name], item.bound)
+		targets[name] = struct{}{}
 	}
+	// Reserve every pending gzip bound on top of current persistent occupancy.
+	// Atomic replacement temporarily holds both the old entry and its new temp,
+	// so a later shrink cannot fund an earlier write. Summing duplicate-key
+	// bounds is deliberately conservative for the same reason. Entry quota
+	// counts only distinct new persistent names; temporary files are covered by
+	// the byte reservation and removed or renamed before the next write.
 	prospectiveBytes := session.totalBytes
 	prospectiveEntries := len(session.items)
-	for name, bound := range reservations {
-		if previous, replacing := session.items[name]; replacing {
-			if previous.size < 0 || previous.size > prospectiveBytes {
-				return 0, 0, os.ErrInvalid
-			}
-			prospectiveBytes -= previous.size
-		} else {
-			prospectiveEntries++
-		}
-		if prospectiveBytes > math.MaxInt64-bound {
+	newNames := make(map[string]struct{}, len(targets))
+	for _, item := range pending {
+		name := filepath.Base(item.entry.relative)
+		if prospectiveBytes > math.MaxInt64-item.bound {
 			return 0, 0, os.ErrInvalid
 		}
-		prospectiveBytes += bound
+		prospectiveBytes += item.bound
+		if _, exists := session.items[name]; !exists {
+			if _, counted := newNames[name]; !counted {
+				newNames[name] = struct{}{}
+				prospectiveEntries++
+			}
+		}
 	}
 	byteTarget := session.maxBytes * 9 / 10
 	entryTarget := max(1, session.maxEntries*9/10)
@@ -158,7 +164,7 @@ func (session *extractionAdmissionSession) publishBatch(ctx context.Context, pen
 	if needsEviction {
 		candidates := make([]extractionMaintenanceItem, 0, len(session.items))
 		for candidateName, item := range session.items {
-			if _, replacing := reservations[candidateName]; replacing {
+			if _, targeted := targets[candidateName]; targeted {
 				continue
 			}
 			candidates = append(candidates, extractionMaintenanceItem{name: candidateName, size: item.size, modified: item.modified})
