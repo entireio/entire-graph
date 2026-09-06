@@ -205,8 +205,8 @@ Remaining-cost diagnosis: `cold-profile-d793b2be/` retains one ON-only CPU
 profile with exact semantic digest/194 partials. Publication accounts for20.86
 cumulative CPU-seconds, including11.27 in quota maintenance; these samples
 are not a wall-time comparison. Two collection failures and their recovery
-are retained; the product request was not rerun. The next change under review
-removes duplicate envelope encoding within existing bounded publication.
+are retained; the product request was not rerun. The subsequent encoded-envelope correction removed duplicate encoding
+within existing bounded publication.
 Quota-scan alternatives require explicit correctness review; no quota limit,
 corpus, threshold or default is being tuned.
 
@@ -215,6 +215,8 @@ locking/accounting, one bounded inventory per session, exact installed sizes,
 idempotent final/cancel release and fresh reacquisition are implemented.
 Root review caught future-shrink reservation undercounting; the follow-up
 reserves existing bytes plus all pending bounds, including temporary overlap.
-Focused correctness/subprocess quota and race fixtures pass. An immutable
-full check at `0c9e80f5` is running; the latest completed full check remains
-`d793b2be`. A separate fake-service live stop test contains no product queries.
+Focused correctness/subprocess quota and race fixtures passed, followed by
+the immutable full check and pinned Linux checks at `0c9e80f5`. The current
+compressor follow-up at `1c0b8e24` is under full and pinned correctness
+verification. The separate live stop smoke passed with all three fake services
+stopped; it ran no product queries.
