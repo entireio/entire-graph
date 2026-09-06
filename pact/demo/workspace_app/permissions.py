@@ -1,6 +1,7 @@
 def can_access(request):
-    """H1: deliberately seeded overly broad guest-public exception."""
-    if request["role"] == "guest" and request["visibility"] == "public":
+    """H2: public preview is allowed without allowing guest exports."""
+    if (request["role"] == "guest" and request["visibility"] == "public"
+            and request["operation"] == "preview"):
         return True
     if request["role"] == "guest":
         return False
