@@ -160,3 +160,12 @@ Campaign stopgaps complete in `3b242da7` with supervisor/admission commits
 repository check still must finish before its result is claimed. Remaining
 selective failure-membership diagnosis continues read-only during that check.
 No campaign restarted; task-owned VMs remain deallocated.
+
+Latest integration check: `dc0ddce7` passed `mise run check` in 621.095
+seconds, source hashes unchanged (`fixes-correctness.json`). Retained working-tree
+search evidence identifies 55 off/on pairs with distinct preselection paths:
+off uses git-index-grep+go-content (381 indexed files,11 partial failures); on
+uses go-content (384 indexed files,10 partial failures). See
+`retained-selection-diagnosis.json`. The P1 fix must preserve source capture and
+default selection semantics; committed full-preindex recall behavior is separate
+and is not to be narrowed to fix this working-tree discrepancy.

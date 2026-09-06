@@ -1,0 +1,56 @@
+{
+  "source": "paused-raw worker archives; no new measurements",
+  "observations": 110,
+  "rows": [
+    {
+      "profile": "fast",
+      "reuse": false,
+      "preselection_backend": "git-index-grep+go-content",
+      "files_indexed": 381,
+      "partial_failures_count": 11,
+      "observations": 20
+    },
+    {
+      "profile": "fast",
+      "reuse": true,
+      "preselection_backend": "go-content",
+      "files_indexed": 384,
+      "partial_failures_count": 10,
+      "observations": 20
+    },
+    {
+      "profile": "full",
+      "reuse": false,
+      "preselection_backend": "git-index-grep+go-content",
+      "files_indexed": 381,
+      "partial_failures_count": 11,
+      "observations": 15
+    },
+    {
+      "profile": "full",
+      "reuse": true,
+      "preselection_backend": "go-content",
+      "files_indexed": 384,
+      "partial_failures_count": 10,
+      "observations": 15
+    },
+    {
+      "profile": "syntax-only",
+      "reuse": false,
+      "preselection_backend": "git-index-grep+go-content",
+      "files_indexed": 381,
+      "partial_failures_count": 11,
+      "observations": 20
+    },
+    {
+      "profile": "syntax-only",
+      "reuse": true,
+      "preselection_backend": "go-content",
+      "files_indexed": 384,
+      "partial_failures_count": 10,
+      "observations": 20
+    }
+  ],
+  "harness_semantics": "Worktree true in both snapshot and search; DisableCache is true only in off arm",
+  "finding": "ExtractionReuse disables Git-index preselection and selects a different input set; committed full-preindex retrieval is a separate intended path"
+}
