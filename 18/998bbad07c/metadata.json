@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "18998bbad07c",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "docs/implementation/graph-advantage/p1-corpus-20260905/canary_admission.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/launch.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/stopgaps-v2.md",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/supervise.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_canary_admission.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_supervise.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/verify_inputs.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/18/998bbad07c/0/metadata.json",
+      "transcript": "/18/998bbad07c/0/full.jsonl",
+      "compact_transcript": "/18/998bbad07c/0/transcript.jsonl",
+      "content_hash": "/18/998bbad07c/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8210,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 988800,
+    "output_tokens": 5929,
+    "api_call_count": 8
+  }
+}

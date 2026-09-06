@@ -1,0 +1,46 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "18998bbad07c",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T08:13:02.149733Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "docs/implementation/graph-advantage/p1-corpus-20260905/canary_admission.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/launch.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/stopgaps-v2.md",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/supervise.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_canary_admission.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_supervise.py",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/verify_inputs.py"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "43418dccb81b",
+  "checkpoint_transcript_start": 4686,
+  "transcript_lines_at_start": 4686,
+  "compact_transcript_start": 597,
+  "token_usage": {
+    "input_tokens": 8210,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 988800,
+    "output_tokens": 5929,
+    "api_call_count": 8
+  },
+  "session_metrics": {
+    "turn_count": 8
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T08:13:01.727592Z",
+    "agent_lines": 293,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 293,
+    "total_lines_changed": 293,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
