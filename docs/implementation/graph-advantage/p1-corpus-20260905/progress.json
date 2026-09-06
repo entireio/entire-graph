@@ -1,5 +1,5 @@
 {
-  "phase": "p1_enumeration_cancellation_diagnosis",
+  "phase": "p1_cold_cost_diagnosis",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -7,8 +7,8 @@
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
   "verified_checkpoint": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
   "verified_evidence_commit": "97532b0a",
-  "current_worktree": "Product source05ad9842 fully checked; single retained Linux search pair parity verified",
-  "workers_state": "graph-validation-linux start requested for pinned correctness and one diagnostic; two campaign workers remain deallocated",
+  "current_worktree": "ADR 0044 cold-path fixes in progress; latest fully verified source remains 05ad9842",
+  "workers_state": "all three task VMs deallocated",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
   "correctness": "05ad9842 full mise check passed721.029s in clean immutable checkout;28 pinned Linux tests passed including10live",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T10:38:12.622028+00:00",
+  "as_of_utc": "2026-09-06T11:21:16.299989+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -32,7 +32,7 @@
   "recorded_unrun_requests": 1434,
   "pending_planned_requests": 15730,
   "heartbeat_status": "ACTIVE",
-  "pause_reason": "Diagnose cache-on timeouts and partial-result validity before any further measurement",
+  "pause_reason": "single current syntax-only snapshot exceeds cold regression screen",
   "cache_fix_commits": [
     "f96483ef",
     "9bfafe17"
@@ -41,7 +41,7 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Historical syntax-only snapshot timeout not yet revalidated; wider corpus parity/canary and locale/platform coverage remain",
+  "remaining_diagnosis": "Search and syntax-only snapshot semantic parity verified on single Linux pairs. Snapshot coldON86.3s vsOFF56.9s triggersscreen; costdiagnosisrequired beforecampaign.",
   "stopgaps": "56 harness tests passed in4.561s at0381ea6d with unchanged source hashes; no Azure campaign run",
   "full_correctness": "passed at05ad9842; clean detached checkout, HEAD unchanged",
   "campaign": "paused; isolated diagnostic failures retained separately",
@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Bounded revalidation of historical snapshot timeout using existing binary; stop on first issue before campaign restart",
+  "next_work": "Finish UTF-8 admission and launcher stopgap review; focused correctness then immutable integration checks; no campaign restart",
   "current_focused_correctness": {
     "commit": "5a60fc8f91855387ee7a7e9d341ccd88e74822ca",
     "source_hashes_unchanged": true,
@@ -70,5 +70,21 @@
     "partial_failures_per_arm": 11,
     "semantic_digest": "81d3dc9875d85525486fd75871a38f04ebe605af5907c756c105d83d3e77ff2c",
     "corpus_unchanged": true
+  },
+  "retained_linux_snapshot": {
+    "source_commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
+    "binary_sha256": "e8c11700f7b989319ecd0c42e7bdc876c71778f4161df3bf5d0f2f6c0309d8d9",
+    "semantic_equal": true,
+    "warnings_equal": true,
+    "partial_failures_equal": true,
+    "partial_failures_per_arm": 194,
+    "source_inputs_unchanged": true,
+    "timeout": false,
+    "off_wall_seconds": 56.889473422,
+    "on_wall_seconds": 86.25665362,
+    "cold_screen": "pause; single observed ON/OFF latency ratio exceeds1.10",
+    "ratio": 1.5162146603143505,
+    "limitations": "one pair only; no RSS measurement; no statistical or release-gate claim",
+    "next": "source-level cold-cost diagnosis; no campaign restart"
   }
 }

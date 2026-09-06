@@ -1,0 +1,6 @@
+{
+  "source_commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
+  "binary": "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/diagnostic",
+  "expected_binary_sha256": "e8c11700f7b989319ecd0c42e7bdc876c71778f4161df3bf5d0f2f6c0309d8d9",
+  "expected_input": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4"
+}

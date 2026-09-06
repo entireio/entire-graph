@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/diagnostic",
+    "-test.run=^TestExtractionCorpusMeasurement$",
+    "-test.count=1",
+    "-test.v",
+    "-test.timeout=130s"
+  ],
+  "exit_code": 0,
+  "timed_out": false
+}

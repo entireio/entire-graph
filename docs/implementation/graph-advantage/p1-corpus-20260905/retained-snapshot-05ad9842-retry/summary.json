@@ -1,0 +1,16 @@
+{
+  "source_commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
+  "binary_sha256": "e8c11700f7b989319ecd0c42e7bdc876c71778f4161df3bf5d0f2f6c0309d8d9",
+  "semantic_equal": true,
+  "warnings_equal": true,
+  "partial_failures_equal": true,
+  "partial_failures_per_arm": 194,
+  "source_inputs_unchanged": true,
+  "timeout": false,
+  "off_wall_seconds": 56.889473422,
+  "on_wall_seconds": 86.25665362,
+  "cold_screen": "pause; single observed ON/OFF latency ratio exceeds1.10",
+  "ratio": 1.5162146603143505,
+  "limitations": "one pair only; no RSS measurement; no statistical or release-gate claim",
+  "next": "source-level cold-cost diagnosis; no campaign restart"
+}

@@ -1,0 +1,8 @@
+{
+  "script_sha256": "dc87f1b1cbe06b971fc444839ad21b1cdde2469cd98f2c06f3cd4605c8861b0f",
+  "python_sha256": "a4873057fcfcf9c44f45b745cb38811763e217a5b229f52e8c03de0080c93ea4",
+  "blob": "p1-snapshot-05ad9842-setup-retry.tar.gz",
+  "remote_root": "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/snapshot-syntax-only-retry",
+  "signed_urls": "not persisted",
+  "purpose": "setup retry; prior attempt never analyzed source"
+}

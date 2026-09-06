@@ -1,0 +1,10 @@
+{
+  "status": "pair_semantics_equal",
+  "issue": null,
+  "processes_started": [
+    "off",
+    "on"
+  ],
+  "unrun": [],
+  "scope": "isolated diagnostic; partial status preserved; no campaign or release gate"
+}

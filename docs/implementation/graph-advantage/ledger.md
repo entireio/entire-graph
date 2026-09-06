@@ -6,15 +6,16 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
-The user authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation is complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is paused for diagnosis; all campaign jobs are stopped; the validation VM is temporarily running for correctness while two worker VMs remain deallocated. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
+The user authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation is complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is paused for diagnosis; all campaign jobs are stopped; all three VMs are deallocated after diagnostics. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
 
-The current product source is `05ad9842`, including captured subdirectory policy and cancellation through enumeration/final filtering. Focused race and filesystem regressions passed. The full repository check passed in 721.029 seconds in a clean detached checkout pinned to that commit. Pinned Linux correctness has passed at the same source: 28 top-level tests, including 10 live tests with the expected gopls v0.20.0 hash. Raw logs, responses and tool identities are retained in `evidence/correctness-05ad9842-20260906/`.
+The latest fully verified product source is `05ad9842`, including captured subdirectory policy and cancellation through enumeration/final filtering. Focused race and filesystem regressions passed. The full repository check passed in 721.029 seconds in a clean detached checkout pinned to that commit. Pinned Linux correctness has passed at the same source: 28 top-level tests, including 10 live tests with the expected gopls v0.20.0 hash. Raw logs, responses and tool identities are retained in `evidence/correctness-05ad9842-20260906/`.
 
 - **Latest completed full check:** `05ad9842`, passing in 721.029 seconds; immutable HEAD and clean status confirmed. Evidence: `evidence/check-05ad9842/`.
 - **Linux correctness:** passed at `05ad9842`, including process-boundary, missing-dependency, conversion, ordinary-query, opt-in combination and freshness checks.
 - **Interrupted check:** `6102b209` was deliberately stopped after review found additional cancellation gaps; it is not a pass. Those findings were addressed by `05ad9842`.
-- **Retained query:** Darwin OFF exceeded its deadline; ON unrun. Linux parity passed for this one retained request at `05ad9842`: both arms381files/11identical partials and identical semantic digest; unchanged corpus. Wider canary and snapshot timeout verification remain open.
-- **Execution:** only the validation VM is running for correctness/diagnosis; two campaign workers remain deallocated. Campaign remains paused.
+- **Retained query:** Darwin OFF exceeded its deadline; ON unrun. Linux parity passed for this one retained request at `05ad9842`: both arms381files/11identical partials and identical semantic digest; unchanged corpus. The syntax-only snapshot pair also completes with exact semantics/194identical partials, but its coldON86.3s versusOFF56.9s triggers a screening pause. One pair is not statistical evidence.
+- **Execution:** validation VM confirmed deallocated; two campaign workers remain off. Campaign remains paused for cold-cost diagnosis.
+- **Current follow-up:** ADR 0044 records three bounded cold-path changes. Fresh-spill reuse (`f1b097c3`) passed focused capture/source race checks (2.862s); under-quota eviction-sort avoidance (`6fbca00d`) passed focused quota and subprocess race checks. The new UTF-8 validator is under review and not yet integrated. These changes do not inherit the full check at `05ad9842`. Launcher identity/failure handling is also under review; no campaign restart is admitted.
 - **Release status:** no workstream's complete release gate has passed; defaults remain unchanged.
 
 ## Authoritative task status
@@ -156,8 +157,8 @@ ten-second stack diagnostic is retained under
 listed Git-directory observation. It is not a campaign observation and does
 not establish semantic equivalence or a performance result.
 
-All campaign services remain stopped. The validation VM is temporarily up for
-correctness and one retained diagnostic; both campaign worker VMs remain off. No
+All campaign services remain stopped. Validation VM deallocation was requested after collecting the diagnostics;
+both campaign worker VMs remain off. No
 campaign has resumed. Historical campaign counts remain 116 measured requests
 (113 partial, 3 timeouts), 1,434 protocol-unrun cells, and 15,730 remaining
 planned cells; interrupted requests remain separate evidence. No release gate
