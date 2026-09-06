@@ -1,1 +1,1 @@
-iterate until you complete the MVP
+Find a fix for it and do it
