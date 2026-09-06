@@ -258,11 +258,19 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 		findings = append(findings, map[string]any{"id": "GPS-COMPLETENESS-INCOMPLETE", "severity": "incomplete", "subject": "graph", "message": "selected graph has partial or incomplete analysis"})
 	}
 	if flags.base != "" {
-		baseSet, err := intent.LoadRevision(ctx, repo, flags.base)
+		baseRevision, err := gitutil.RevParse(ctx, repo, flags.base)
+		if err != nil {
+			return fmt.Errorf("resolve base revision: %w", err)
+		}
+		headRevision, err := gitutil.RevParse(ctx, repo, "HEAD")
+		if err != nil {
+			return fmt.Errorf("resolve current revision: %w", err)
+		}
+		baseSet, err := intent.LoadRevision(ctx, repo, baseRevision)
 		if err != nil {
 			return fmt.Errorf("load base intent: %w", err)
 		}
-		changed, err := gitutil.ChangedFiles(ctx, repo, flags.base, "HEAD", nil)
+		changed, err := gitutil.ChangedFiles(ctx, repo, baseRevision, headRevision, nil)
 		if err != nil {
 			return fmt.Errorf("compare base revision: %w", err)
 		}
