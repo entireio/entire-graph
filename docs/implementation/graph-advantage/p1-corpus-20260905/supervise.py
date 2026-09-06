@@ -14,7 +14,8 @@ def status_script(stage,results_dir="/opt/p1/results",unit_name=None):
 p=pathlib.Path("""+repr(results_dir)+""")
 progress=json.loads((p/'progress.json').read_text()) if (p/'progress.json').exists() else {}
 state=subprocess.check_output(['systemctl','show',"""+repr(unit_name)+""",'--property=ActiveState','--value'],text=True).strip()
-print('P1_STATUS '+json.dumps({'state':state,'progress':progress,'paused':(p/'pause.json').exists(),'stop':(p/'STOP').exists()}))
+exit_code=int(subprocess.check_output(['systemctl','show',"""+repr(unit_name)+""",'--property=ExecMainStatus','--value'],text=True).strip())
+print('P1_STATUS '+json.dumps({'state':state,'exit_code':exit_code,'progress':progress,'paused':(p/'pause.json').exists(),'stop':(p/'STOP').exists()}))
 """)
 
 def parse_status(raw):
@@ -50,16 +51,19 @@ def run_parallel(vms,fn):
    except Exception as exc:errors[vm]=type(exc).__name__
  return results,errors
 
+def completed(state,stage):
+ return state.get('state')=='inactive' and type(state.get('exit_code')) is int and state['exit_code']==0 and state.get('progress',{}).get('done') is True and state.get('progress',{}).get('stage')==stage
+
 def supervise(vms,stage,output,run=cloud.run,sleep=time.sleep,results_dir="/opt/p1/results",unit_name=None):
  output=pathlib.Path(output);output.mkdir(parents=True,exist_ok=True)
  try:
   while True:
    states,errors=run_parallel(vms,lambda vm:parse_status(run(vm,status_script(stage,results_dir,unit_name))))
-   bad={vm:s for vm,s in states.items() if s.get('paused') or s.get('stop') or (s.get('state')!='active' and not (s.get('progress',{}).get('done') and s.get('progress',{}).get('stage')==stage))}
+   bad={vm:s for vm,s in states.items() if s.get('paused') or s.get('stop') or (s.get('state')!='active' and not completed(s,stage))}
    with (output/'supervisor.ndjson').open('a') as f:f.write(json.dumps({'time':time.time(),'states':states,'errors':errors})+'\n')
    if errors or bad:raise RuntimeError('Worker pause, failure, or control-plane status unavailable')
-   if all(s.get('progress',{}).get('done') and s.get('progress',{}).get('stage')==stage for s in states.values()):return True
-   active=[vm for vm,s in states.items() if not (s.get('progress',{}).get('done') and s.get('progress',{}).get('stage')==stage)]
+   if all(completed(s,stage) for s in states.values()):return True
+   active=[vm for vm,s in states.items() if not completed(s,stage)]
    _,errors=run_parallel(active,lambda vm:renew(vm,run,results_dir))
    if errors:raise RuntimeError('Supervisor lease renewal failed')
    sleep(POLL_SECONDS)

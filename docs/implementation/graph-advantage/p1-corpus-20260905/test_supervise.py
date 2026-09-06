@@ -28,8 +28,15 @@ class SupervisorTests(unittest.TestCase):
   result,paused,calls=self.exercise({'a':RuntimeError('unreachable'),'b':{'state':'active'}})
   self.assertFalse(result);self.assertTrue(paused)
  def test_completed_workers_exit_without_renewal(self):
-  result,paused,calls=self.exercise({'a':{'state':'inactive','progress':{'stage':'campaign','done':True}}})
+  result,paused,calls=self.exercise({'a':{'state':'inactive','exit_code':0,'progress':{'stage':'campaign','done':True}}})
   self.assertTrue(result);self.assertFalse(paused);self.assertEqual(len(calls),1)
+ def test_done_flag_cannot_hide_failed_service(self):
+  for state,code in [('failed',1),('inactive',1),('inactive',None)]:
+   with self.subTest(state=state,code=code):
+    result,paused,calls=self.exercise({'a':{'state':state,'exit_code':code,'progress':{'stage':'campaign','done':True}}})
+    self.assertFalse(result);self.assertTrue(paused)
+ def test_done_flag_waits_for_successful_process_exit(self):
+  self.assertFalse(supervise.completed({'state':'active','exit_code':0,'progress':{'stage':'campaign','done':True}},'campaign'))
  def test_invalid_status_is_not_health(self):
   with self.assertRaises(RuntimeError):supervise.parse_status(json.dumps(['Enable succeeded']))
  def test_renewal_requires_positive_acknowledgement(self):
