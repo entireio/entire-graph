@@ -24,6 +24,7 @@ import argparse
 import http.server
 import json
 import os
+import re
 import shutil
 import socketserver
 import subprocess
@@ -199,7 +200,10 @@ def snapshot_sides(repo):
     It is included only when it has something in flight (uncommitted work or a
     live session), so a clean checkout does not clutter the board.
     """
-    candidates = list(collide.discover_sides(repo))
+    # ATC's own scratch worktrees (created per analysis, occasionally orphaned
+    # by an interrupted run) are not agents — never show them as flights.
+    candidates = [p for p in collide.discover_sides(repo)
+                  if not re.match(r"atc-[0-9a-f]{40}-", os.path.basename(p.rstrip("/")))]
     if uncommitted_stat(repo)[0] or live_prompt(repo):
         candidates.insert(0, repo)
     sides = []
@@ -372,10 +376,10 @@ def serve(state, page, port):
                                        "current": state.repo}), "application/json")
             elif self.path.startswith("/live.json"):
                 self._send(state.snapshot(), "application/json")
-            elif self.path in ("/", "/index.html", "/console", "/console.html"):
+            elif self.path in ("/console", "/console.html"):
                 with open(os.path.join(HERE, "console.html"), encoding="utf-8") as f:
                     self._send(f.read(), "text/html; charset=utf-8")
-            elif self.path in ("/terminal", "/terminal.html"):
+            elif self.path in ("/", "/index.html", "/terminal", "/terminal.html"):
                 with open(page, encoding="utf-8") as f:
                     self._send(f.read(), "text/html; charset=utf-8")
             else:

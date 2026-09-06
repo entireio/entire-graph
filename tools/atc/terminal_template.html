@@ -424,7 +424,7 @@ function flightCard(fl){
   const k = flightKey(fl);
   const other = k===red.a ? red.b : red.a;
   const alertBit = conflictBranches.has(k)
-    ? `<button class="tcas" onclick="openSheet()">⚠ TCAS — loss of separation predicted
+    ? `<button class="tcas" onclick="event.stopPropagation();openSheet()">⚠ TCAS — loss of separation predicted
         with <b>${esc(other)}</b>. Tap for resolution.</button>`
     : (prior && k===prior.a && priors.length
       ? `<div class="okline">✓ No overlap today — but route crosses charted turbulence
@@ -434,7 +434,8 @@ function flightCard(fl){
            has ${gapsOf(fl)} blind spot(s) on this route (dynamic dispatch / generated
            code). Silence isn't proof here; verify by test.</div>`
         : `<div class="okline">✓ Airspace clear — land in any order.</div>`));
-  return `<article class="fcard" id="fc-${esc(fl.callsign)}">
+  return `<article class="fcard" id="fc-${esc(fl.callsign)}"
+      onclick="openCockpit('${esc(fl.callsign)}')" style="cursor:pointer">
     <div class="img" ${A.wing?`style="background-image:url(${A.wing})"`:""}></div>
     <div class="body">
       <div class="toprow"><span class="cs">${esc(fl.callsign)}</span>
@@ -555,6 +556,59 @@ function openSheet(){
   $("#sheet-wrap").classList.add("on");
 }
 function closeSheet(){ $("#sheet-wrap").classList.remove("on"); }
+
+/* Cockpit — one agent's own view: its live prompt, the files it has written
+   (from its transcript's Edit/Write calls) and its trajectory. */
+function openCockpit(cs){
+  const fl = DB.flights.find(f=>f.callsign===cs); if(!fl) return;
+  const t = fl.trajectory || {};
+  const st = statusOf(fl), p = pairOf(fl);
+  const confPaths = new Set([...(R.findings.read_write||[]),
+                             ...(R.findings.write_write||[])].map(f=>f.path));
+  const wrote = (t.wrote||[]).map(w=>{
+    const hot=[...confPaths].some(h=>w.path.endsWith(h)||h.endsWith(w.path));
+    return `<div class="rcpt" style="display:flex;gap:10px;padding:5px 0;
+      border-bottom:1px solid var(--hair);${hot?"color:#C4372C":""}">
+      <span style="flex:1">${esc(w.path)}</span>
+      <span class="loc">${hot?"conflict · ":""}×${w.edits} · ${esc(w.last)}</span></div>`;
+  }).join("") || `<div class="rcpt">No files written yet.</div>`;
+  const steps = (t.steps||[]).slice().reverse().slice(0,14).map(x=>
+    `<div class="rcpt" style="padding:3px 0">
+      <span class="loc">${esc(x.at)}</span>
+      ${x.kind==="write"?"wrote ":x.kind==="run"?"ran ":""}${esc(x.text)}</div>`
+  ).join("") || `<div class="rcpt">No trajectory recorded.</div>`;
+  const tools = Object.entries(t.tool_counts||{}).map(([k,v])=>`${k}×${v}`).join(" · ");
+  const confs = (p && p.result ? [...(p.result.findings.read_write||[]),
+                                  ...(p.result.findings.write_write||[])] : []).map(x=>
+    `<div class="finding red"><span class="cls">${x.dependents?"READ–WRITE":"WRITE–WRITE"}</span>
+      <div><span class="ent">${esc(x.entity)}</span> <span class="rcpt">${esc(x.path)}</span></div>
+      ${x.old_signature?`<div class="sig">${esc(x.old_signature)} <b>→</b> ${esc(x.new_signature)}</div>`:""}
+      ${(x.dependents||[]).map(d=>`<div class="rcpt">↳ ${esc(d.name)}()
+        <span class="loc">${esc(d.path)}:${esc(d.line)}</span> · conf ${esc(d.confidence)}</div>`).join("")}
+    </div>`).join("");
+
+  $("#sheet").innerHTML = `
+    <div class="grab"></div>
+    <button class="close" onclick="closeSheet()">✕</button>
+    <h2>✈ ${esc(fl.callsign)} <span class="chip ${st.cls}" style="margin-left:auto">
+      <i></i>${st.label}</span></h2>
+    <div class="finding info" style="border-left-color:var(--sky-deep)">
+      <span class="cls" style="color:var(--sky-deep)">What it's doing</span>
+      <div>${esc(fl.intent)}</div>
+      <div class="rcpt">${esc(fl.intent_source||"unknown")}${
+        fl.idle_seconds!=null?` · updated ${fl.idle_seconds}s ago`:""} · branch ${esc(fl.branch)}</div>
+    </div>
+    <div style="margin-top:14px"><div class="cls" style="font-family:var(--cond);
+      font-weight:600;letter-spacing:.12em;font-size:11px;text-transform:uppercase;
+      color:var(--muted);margin-bottom:6px">Files written</div>${wrote}</div>
+    ${confs?`<div style="margin-top:14px">${confs}</div>`:""}
+    <div style="margin-top:14px"><div class="cls" style="font-family:var(--cond);
+      font-weight:600;letter-spacing:.12em;font-size:11px;text-transform:uppercase;
+      color:var(--muted);margin-bottom:6px">Trajectory</div>
+      ${tools?`<div class="rcpt" style="margin-bottom:6px">${esc(tools)} · ${t.read_count||0} reads</div>`:""}
+      ${steps}</div>`;
+  $("#sheet-wrap").classList.add("on");
+}
 addEventListener("keydown",e=>{ if(e.key==="Escape") closeSheet(); });
 
 /* =============== INCIDENT =============== */
@@ -685,6 +739,7 @@ $("#bk-issue").onclick=()=>{
   const branch=($("#bk-branch").value.trim()||"feat-new").replace(/\s+/g,"-");
   bk.intent=$("#bk-intent").value.trim()||"(no flight plan filed)";
   const cs=branch.replace(/^feat-/,"").toUpperCase().slice(0,5)+"-"+String(DATA.flights.length+1).padStart(2,"0");
+  bk.branchName = branch;
   const cmd=`git worktree add ../wt-${branch} -b ${branch} && cd ../wt-${branch} && claude "${bk.intent.replace(/"/g,"'")}"`;
   $("#pass-cs").textContent=cs;
   $("#pass-class").textContent=KLASSES.find(k=>k[3]===bk.klass)[1].toUpperCase();
@@ -695,9 +750,26 @@ $("#bk-issue").onclick=()=>{
   $("#cmd").classList.add("on");
   toast(`Boarding pass issued — ${cs}. Tear the stub to depart.`);
 };
-$("#stub").onclick=()=>{
+$("#stub").onclick=async ()=>{
   if(!$("#pass").classList.contains("issued")) return;
   $("#pass").classList.add("torn");
+  // tearing the stub is the departure: with a live watcher this starts a real
+  // Claude session in a fresh worktree; without one it stays a printed pass.
+  if (DB.live){
+    toast("Requesting takeoff clearance…");
+    try{
+      const r = await fetch("/launch",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({prompt: bk.intent, branch: bk.branchName || null})});
+      const j = await r.json();
+      if(!j.ok) throw new Error(j.error||"refused");
+      toast(j.mode==="manual"
+        ? `Worktree ready at ${j.worktree.split("/").pop()} — run the command below.`
+        : `✈ ${j.branch} airborne — it will appear on the board shortly.`);
+      if(j.command) $("#cmd-text").textContent = j.command;
+    }catch(e){ toast(`Takeoff refused: ${e.message}`); }
+    return;
+  }
   toast(`✈ ${$("#pass-cs").textContent} cleared for departure — command is below, copy &amp; fly.`.replace("&amp;","&"));
 };
 $("#copy-btn").onclick=async()=>{
