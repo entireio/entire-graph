@@ -1,0 +1,5 @@
+The benchmark campaign should have stopgaps that pause it again when failures or other issues appear. Fix those first, then continue.
+
+---
+
+We need to pause this as the laptop will shut down. Find a good spot to wrap the work for now and commit/push.
