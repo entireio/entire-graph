@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "16ce4f58f28c",
+  "strategy": "manual-commit",
+  "branch": "progress",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "BUILDATHON.md",
+    "docs/spidey-sense-architecture.md",
+    "internal/cli/coordinate.go",
+    "internal/coordinate/coordinate.go",
+    "internal/coordinate/coordinate_test.go",
+    "web/spidey-sense/src/api.test.ts",
+    "web/spidey-sense/src/api.ts",
+    "web/spidey-sense/src/components/Dashboard.test.tsx",
+    "web/spidey-sense/src/components/EvidencePath.tsx",
+    "web/spidey-sense/src/components/RiskConsole.tsx",
+    "web/spidey-sense/src/components/SystemPanels.tsx",
+    "web/spidey-sense/src/domain.ts",
+    "web/spidey-sense/src/fixtures/syntheticDashboardFixture.ts",
+    "web/spidey-sense/src/styles.css"
+  ],
+  "sessions": [
+    {
+      "metadata": "/16/ce4f58f28c/0/metadata.json",
+      "transcript": "/16/ce4f58f28c/0/full.jsonl",
+      "compact_transcript": "/16/ce4f58f28c/0/transcript.jsonl",
+      "content_hash": "/16/ce4f58f28c/0/content_hash.txt",
+      "prompt": "/16/ce4f58f28c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 153163,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 5121408,
+    "output_tokens": 21683,
+    "api_call_count": 51
+  }
+}

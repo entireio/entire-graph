@@ -1,0 +1,24 @@
+they gave us new task see if we are already solving this??if not integrate in our plan okay....and also this session please track via check point...
+
+# TRACK 2: GRAPH IS EVIDENCE, NOT AN ORACLE
+
+Your **Graph-powered experience** has encountered a repository using dynamic dispatch, generated code, reflection, or another pattern that static analysis cannot fully resolve.
+
+The new requirements:
+
+- The product **must not present incomplete Graph relationships as certain.**
+- It must **identify when analysis may be partial.**
+- It must provide a **safe fallback or verification path.**
+- Existing behaviour for fully resolved code must continue to work.
+- You must include **a test or fixture representing incomplete analysis.**
+
+Use **Entire Graph** to identify which parts of your implementation consume relationship, impact, or semantic diff evidence.
+
+Users and agents must be able to tell apart:
+
+- **Confirmed** structural evidence
+- **Heuristic or incomplete** evidence
+- Claims that **require source or test verification**
+
+> A partial analysis repository fixture is attached.\
+>

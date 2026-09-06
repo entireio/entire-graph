@@ -1,0 +1,57 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "16ce4f58f28c",
+  "session_id": "01a07576-9d98-7953-813f-ac68be2dc69b",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T06:59:47.236603454Z",
+  "branch": "progress",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "BUILDATHON.md",
+    "docs/spidey-sense-architecture.md",
+    "internal/cli/coordinate.go",
+    "internal/coordinate/coordinate.go",
+    "internal/coordinate/coordinate_test.go",
+    "web/spidey-sense/src/api.test.ts",
+    "web/spidey-sense/src/api.ts",
+    "web/spidey-sense/src/components/Dashboard.test.tsx",
+    "web/spidey-sense/src/components/EvidencePath.tsx",
+    "web/spidey-sense/src/components/RiskConsole.tsx",
+    "web/spidey-sense/src/components/SystemPanels.tsx",
+    "web/spidey-sense/src/domain.ts",
+    "web/spidey-sense/src/fixtures/syntheticDashboardFixture.ts",
+    "web/spidey-sense/src/styles.css"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "1e6fa8a988d5",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 153163,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 5121408,
+    "output_tokens": 21683,
+    "api_call_count": 51
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T06:59:47.114170712Z",
+    "agent_lines": 358,
+    "agent_removed": 55,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 358,
+    "total_lines_changed": 413,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
