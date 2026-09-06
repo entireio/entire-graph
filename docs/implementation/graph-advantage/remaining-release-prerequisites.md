@@ -25,9 +25,9 @@ and the [plan's evaluation rules](</Users/thomi/Projects/entire-plan/entire-grap
   inclusion/exclusion rules, labels, metric formulas, thresholds, repetitions,
   seeds, interval method, and treatment of failures, partials, and zero
   denominators. Preserve raw failures and incomplete denominators.
-- Full `mise run check` passed at `1c0b8e24` in 676.769 seconds in a
-  clean immutable checkout with unchanged HEAD. Pinned Linux passed 72
-  top-level tests including 10 live tests. This covers ADR 0047 compressor
+- Full `mise run check` passed at `6cf92c9c` in 687.332 seconds in a
+  clean immutable checkout with unchanged HEAD. Pinned Linux passed 76
+  top-level tests including 10 live tests. This covers ADR 0048 operation-wide publication
   ownership and earlier admission/capture corrections. It does not clear the
   failed cold screen or establish a comparative release result.
 - The 77 campaign-control tests pass locally. A live fake-service smoke now verifies the real
@@ -186,3 +186,7 @@ resources, seeds, raw failures, scoring scripts, and review decisions. See
 
 Until these study prerequisites and gates pass, P2/P3/P4 remain opt-in or
 deferred and the current defaults stay in force.
+
+A neutral, unscored development fixture packet is available in
+[reviewer-packet-v1/README.md](reviewer-packet-v1/README.md). All reviewer
+answers are missing; preparation is not adjudication or study completion.

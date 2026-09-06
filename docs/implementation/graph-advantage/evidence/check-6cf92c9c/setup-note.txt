@@ -1,0 +1,1 @@
+First launch was rejected before process creation because its working-directory path contained a typo. No check executed. Retried from the existing verified scratch checkout without source changes.

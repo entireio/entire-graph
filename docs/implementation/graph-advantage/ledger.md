@@ -6,7 +6,7 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
-Current implementation source is `6cf92c9c`: ADR 0048 adds cancellation-aware ownership before batch detachment, permitting only one detached publication batch operation-wide. Focused correctness and race checks passed. Pinned Linux passed 76 top-level tests including 10 live compiler tests. Full `mise run check` is running in a clean immutable checkout. The latest completed full repository check remains `1c0b8e24` (676.769 seconds). No previous check is inherited as verification of the new gate.
+Current implementation source is `6cf92c9c`: ADR 0048 adds cancellation-aware ownership before batch detachment, permitting only one detached publication batch operation-wide. Focused correctness and race checks passed. Pinned Linux passed 76 top-level tests including 10 live compiler tests. Full `mise run check` passed in 687.332 seconds with unchanged HEAD and clean status. Evidence: `evidence/check-6cf92c9c/` and `evidence/correctness-6cf92c9c-20260906/`.
 
 The three retained query profile paths are verified at `1c0b8e24`: syntax-only, fast and full all have exact semantic, warning, completeness and full 11-record partial parity, with 381 indexed files per arm and unchanged inputs. These are the three distinct requests behind the 55 historical repeated mismatch pairs. Seven requests ran: two completed pairs, a full OFF stopped on a warning-oracle error, then only the corrected full pair. The warning correction came from the original full-profile baseline. Historical repetitions remain retained, not relabeled as new observations. Evidence: `p1-corpus-20260905/retained-query-correctness-1c0b8e24/summary.json`.
 
@@ -22,10 +22,10 @@ This table supersedes earlier checkpoint/status statements. “Complete” in th
 |---|---|---|---|---|
 | P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Fixed six-repository campaign prepared; baseline complete; paired campaign paused for diagnosis | Not passed: full fixed corpus/RSS matrix incomplete |
 | P1.2 pure extraction | Complete: explicit metadata, shared bounded source/policy capture, manifests and sticky errors | Entity field checklist, malformed/overload/language round trips, reader mutation tests; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
-| P1.3 storage | Implemented through `6cf92c9c`: encoded publication, capability-bound admission, session-owned compression and operation-wide batch gate; full verification pending | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
+| P1.3 storage | Implemented through `6cf92c9c`: encoded publication, capability-bound admission, session-owned compression and operation-wide batch gate; full and pinned verification passed | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.4 entity integration | Implemented; all three retained query profile paths and the diagnostic snapshot have exact partial-output parity; full corpus evaluation incomplete | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.5 relation inputs | Complete for measured raw-import family: Go/TypeScript/Python fast/full; explicit family presence | Exact relation parity and reuse tests; other families deliberately absent | Further profiling deferred; no new family selected by benchmark tuning | Not passed |
-| P1.6 diagnostics/gates | Implemented; local first-issue stops verified, live fake-service smoke passed; ADR 0046 verified and ADR 0047 verified; ADR 0048 focused and pinned checks passed, full check running | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
+| P1.6 diagnostics/gates | Implemented; local first-issue stops verified, live fake-service smoke passed; ADR 0046 verified and ADR 0047 verified; ADR 0048 focused and pinned checks passed, full check passed | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
 | P2.1 feasibility | Complete: pinned gopls v0.20.0 and Linux Bubblewrap execution boundary | Existing positive no-egress/read-only/descendant cancellation checks; historical Linux race passed | Hard-Go comparative quality deferred | Not passed |
 | P2.2 client/capture | Complete: bounded lifecycle, source capsule/context identity, mapping and cancellation | Protocol/UTF-16/malformed reply/context/process tests; historical immutable check passed | Deferred | Not passed |
 | P2.3 positive integration | Complete: direct declarations and separate implementation candidates; conversions excluded | New conversion/alias/generic fixtures and pinned live fixture; signature/workspace invalidation tests; historical Linux race passed | Independent realistic quality evaluation deferred | Not passed |
@@ -96,3 +96,8 @@ Fixtures derive from the plan and Entire's maintained behavior, with hand-derive
 
 Historical checkpoint notes and superseded status text are retained in
 [ledger-checkpoints-through-6ebbb046.md](ledger-checkpoints-through-6ebbb046.md).
+
+`reviewer-packet-v1/` contains all six existing synthetic P4 development
+fixtures with verified source hashes and unanswered reviewer fields. It
+withholds author labels and scores. It is not a realistic P3 change set or a
+held-out split; those human-adjudicated inputs remain required.
