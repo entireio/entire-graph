@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/entireio/entire-graph/internal/intent"
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 func TestGPSSpecAndContextCommands(t *testing.T) {
@@ -77,5 +80,13 @@ func TestGPSCheckReportsUnresolvedDeclaredTest(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "GPS-MAPPING-UNRESOLVED") {
 		t.Fatalf("check omitted unresolved declared test: %s", out.String())
+	}
+}
+
+func TestResolveBindingIsUnverifiableForPartialFile(t *testing.T) {
+	binding := intent.Binding{ID: "ANCHOR-1", SymbolID: "missing", Selector: intent.Selector{File: "auth.go"}}
+	result := resolveBinding(binding, sem.ProviderSnapshot{Header: sem.SnapshotHeader{PartialFailures: []sem.PartialFailure{{FilePath: "auth.go", Code: "E_PARSE_ERROR"}}}})
+	if got := result["state"]; got != "UNVERIFIABLE" {
+		t.Fatalf("state = %v, want UNVERIFIABLE", got)
 	}
 }

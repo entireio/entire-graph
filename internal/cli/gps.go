@@ -103,7 +103,7 @@ func runAnchor(ctx context.Context, opts Options, args []string) error {
 		}
 		for _, binding := range set.Bindings {
 			if binding.ID == flags.id {
-				return gpsEncode(opts, flags.format, resolveBinding(binding, snapshot.Symbols))
+				return gpsEncode(opts, flags.format, resolveBinding(binding, snapshot))
 			}
 		}
 		return fmt.Errorf("anchor %q not found", flags.id)
@@ -159,7 +159,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 				gaps = append(gaps, "UNBOUND_ANCHOR:"+anchor.ID)
 				continue
 			}
-			state := resolveBinding(binding, snapshot.Symbols)
+			state := resolveBinding(binding, snapshot)
 			if state["state"] != "VALID" {
 				gaps = append(gaps, state["state"].(string)+":"+anchor.ID)
 				continue
@@ -218,7 +218,7 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 					continue
 				}
 				found = true
-				state := resolveBinding(binding, snapshot.Symbols)
+				state := resolveBinding(binding, snapshot)
 				if state["state"] != "VALID" {
 					findings = append(findings, map[string]any{"id": "GPS-ANCHOR-" + state["state"].(string), "severity": "warning", "subject": anchor.ID, "message": state["state"]})
 				}
@@ -316,8 +316,8 @@ func matchingSymbols(symbols []sem.SymbolRecord, name, file string) []sem.Symbol
 	}
 	return out
 }
-func resolveBinding(binding intent.Binding, symbols []sem.SymbolRecord) map[string]any {
-	for _, s := range symbols {
+func resolveBinding(binding intent.Binding, snapshot sem.ProviderSnapshot) map[string]any {
+	for _, s := range snapshot.Symbols {
 		if s.ID != binding.SymbolID {
 			continue
 		}
@@ -329,12 +329,23 @@ func resolveBinding(binding intent.Binding, symbols []sem.SymbolRecord) map[stri
 		}
 		return map[string]any{"id": binding.ID, "state": state, "symbol": s}
 	}
-	candidates := matchingSymbols(symbols, binding.Selector.QualifiedName, binding.Selector.File)
+	candidates := matchingSymbols(snapshot.Symbols, binding.Selector.QualifiedName, binding.Selector.File)
 	state := "MISSING"
 	if len(candidates) > 1 {
 		state = "AMBIGUOUS"
+	} else if incompleteAnchorPath(binding.Selector.File, snapshot.Header.PartialFailures) {
+		state = "UNVERIFIABLE"
 	}
 	return map[string]any{"id": binding.ID, "state": state, "candidates": candidates}
+}
+
+func incompleteAnchorPath(path string, failures []sem.PartialFailure) bool {
+	for _, failure := range failures {
+		if failure.FilePath == path || failure.FilePath == "" {
+			return true
+		}
+	}
+	return false
 }
 func matchingRequirements(set intent.Set, query string) []map[string]string {
 	words := strings.Fields(strings.ToLower(query))
