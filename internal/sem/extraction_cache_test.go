@@ -164,7 +164,7 @@ func TestExtractionReuseKeyIsolationAndCorruption(t *testing.T) {
 	}
 }
 
-func TestExtractionPublicationUsesBoundedBatches(t *testing.T) {
+func TestExtractionPublicationUsesOneAdmissionInventoryAcrossBoundedBatches(t *testing.T) {
 	cache := &extractionCache{
 		ctx:         context.Background(),
 		directory:   t.TempDir(),
@@ -184,8 +184,8 @@ func TestExtractionPublicationUsesBoundedBatches(t *testing.T) {
 		}
 	}
 	cache.flush()
-	if got := cache.maintenanceCalls.Load(); got != 4 {
-		t.Fatalf("maintenance calls = %d, want four bounded batches for %d files", got, count)
+	if got := cache.inventoryCalls.Load(); got != 1 {
+		t.Fatalf("inventory calls = %d, want one admission inventory across bounded batches for %d files", got, count)
 	}
 }
 

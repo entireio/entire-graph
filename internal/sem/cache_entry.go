@@ -177,9 +177,23 @@ func (entry cacheEntry) writeEncoded(temporaryPrefix string, encoded []byte) err
 		return err
 	}
 	defer directory.Close()
+	_, _, err = entry.writeEncodedHeld(directory, temporaryPrefix, encoded, 0)
+	return err
+}
+
+// writeEncodedHeld publishes through a caller-held, already validated family
+// directory. maxSize is an admission reservation; when positive, the encoded
+// artifact is measured from the held temporary file and rejected before rename
+// if the reservation was insufficient. The returned size and modification time
+// describe the installed inode without reopening its pathname.
+func (entry cacheEntry) writeEncodedHeld(directory *os.Root, temporaryPrefix string, encoded []byte, maxSize int64) (int64, int64, error) {
+	name := filepath.Base(entry.relative)
+	if !strings.HasSuffix(name, ".json.gz") || !validSHA256Hex(strings.TrimSuffix(name, ".json.gz")) {
+		return 0, 0, os.ErrInvalid
+	}
 	temporary, temporaryName, err := createRootTemp(directory, temporaryPrefix)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	removeTemporary := true
 	defer func() {
@@ -189,26 +203,35 @@ func (entry cacheEntry) writeEncoded(temporaryPrefix string, encoded []byte) err
 	}()
 	if err := temporary.Chmod(0o600); err != nil {
 		_ = temporary.Close()
-		return err
+		return 0, 0, err
 	}
 	writer := gzip.NewWriter(temporary)
 	if _, err := writer.Write(encoded); err != nil {
 		_ = writer.Close()
 		_ = temporary.Close()
-		return err
+		return 0, 0, err
 	}
 	if err := writer.Close(); err != nil {
 		_ = temporary.Close()
-		return err
+		return 0, 0, err
+	}
+	info, err := temporary.Stat()
+	if err != nil {
+		_ = temporary.Close()
+		return 0, 0, err
+	}
+	if maxSize > 0 && info.Size() > maxSize {
+		_ = temporary.Close()
+		return 0, 0, fmt.Errorf("encoded cache entry is %d bytes, exceeds %d-byte admission reservation", info.Size(), maxSize)
 	}
 	if err := temporary.Close(); err != nil {
-		return err
+		return 0, 0, err
 	}
-	if err := directory.Rename(temporaryName, filepath.Base(entry.relative)); err != nil {
-		return err
+	if err := directory.Rename(temporaryName, name); err != nil {
+		return 0, 0, err
 	}
 	removeTemporary = false
-	return nil
+	return info.Size(), info.ModTime().UnixNano(), nil
 }
 
 // openCacheDirectory creates and opens each component of the entry's directory beneath root,

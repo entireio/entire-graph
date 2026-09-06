@@ -26,6 +26,9 @@ func extractionMaintenanceSortCounter(t *testing.T) *atomic.Int64 {
 func writeExtractionMaintenanceEntries(t *testing.T, entry cacheEntry, count int, size int) []string {
 	t.Helper()
 	directory := filepath.Join(entry.root, filepath.Dir(entry.relative))
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	keys := make([]string, count)
 	for index := range keys {
 		keys[index] = fmt.Sprintf("%064x", index+1)
@@ -40,20 +43,29 @@ func writeExtractionMaintenanceEntries(t *testing.T, entry cacheEntry, count int
 	return keys
 }
 
+func extractionMaintenancePending(t *testing.T, entry cacheEntry, key string) extractionPending {
+	t.Helper()
+	other, err := newCacheEntry(entry.root, filepath.Base(filepath.Dir(filepath.Dir(entry.relative))), filepath.Base(filepath.Dir(entry.relative)), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return extractionPending{entry: other, bound: 100, encoded: []byte("fixture envelope")}
+}
+
 func TestMaintainExtractionCacheSkipsEvictionSortWhenUnderQuota(t *testing.T) {
 	entry, err := newCacheEntry(t.TempDir(), "extraction-maintenance", "v1", strings.Repeat("a", 64))
 	if err != nil {
 		t.Fatal(err)
 	}
-	lock, err := lockExtractionAdmission(entry)
+	writeExtractionMaintenanceEntries(t, entry, 3, 10)
+	session, err := beginExtractionAdmissionSession(nil, entry, 1000, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
-	writeExtractionMaintenanceEntries(t, entry, 3, 10)
+	defer session.Close()
 	calls := extractionMaintenanceSortCounter(t)
 
-	if _, _, ok := maintainExtractionCache(entry, 1, 1, 1000, 100); !ok {
+	if _, ok, err := session.publish(nil, extractionMaintenancePending(t, entry, strings.Repeat("c", 64))); err != nil || !ok {
 		t.Fatal("under-quota publication was rejected")
 	}
 	if got := calls.Load(); got != 0 {
@@ -66,15 +78,16 @@ func TestMaintainExtractionCacheSortsAndEvictsOldestWhenOverQuota(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	lock, err := lockExtractionAdmission(entry)
+	keys := writeExtractionMaintenanceEntries(t, entry, 4, 10)
+	session, err := beginExtractionAdmissionSession(nil, entry, 1000, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
-	keys := writeExtractionMaintenanceEntries(t, entry, 4, 10)
+	defer session.Close()
 	calls := extractionMaintenanceSortCounter(t)
 
-	if _, _, ok := maintainExtractionCache(entry, 1, 1, 1000, 4); !ok {
+	newKey := strings.Repeat("c", 64)
+	if _, ok, err := session.publish(nil, extractionMaintenancePending(t, entry, newKey)); err != nil || !ok {
 		t.Fatal("over-quota publication was rejected after eviction")
 	}
 	if got := calls.Load(); got != 1 {
@@ -89,5 +102,8 @@ func TestMaintainExtractionCacheSortsAndEvictsOldestWhenOverQuota(t *testing.T) 
 		if index == len(keys)-1 && statErr != nil {
 			t.Fatalf("newest entry %s was evicted: %v", key, statErr)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(directory, newKey+".json.gz")); err != nil {
+		t.Fatalf("new entry was not published: %v", err)
 	}
 }
