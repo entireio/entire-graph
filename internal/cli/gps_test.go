@@ -90,3 +90,20 @@ func TestResolveBindingIsUnverifiableForPartialFile(t *testing.T) {
 		t.Fatalf("state = %v, want UNVERIFIABLE", got)
 	}
 }
+
+func TestResolveBindingProposesButDoesNotApplyRebind(t *testing.T) {
+	binding := intent.Binding{ID: "ANCHOR-1", SymbolID: "old", Selector: intent.Selector{QualifiedName: "Authenticate", File: "auth.go"}}
+	snapshot := sem.ProviderSnapshot{Symbols: []sem.SymbolRecord{{ID: "new", QualifiedName: "Authenticate", FilePath: "auth.go"}}}
+	result := resolveBinding(binding, snapshot)
+	if got := result["state"]; got != "CANDIDATE_REBIND" {
+		t.Fatalf("state = %v, want CANDIDATE_REBIND", got)
+	}
+}
+
+func TestGPSCheckBaseRequiresCommittedView(t *testing.T) {
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: t.TempDir()}, Stdout: &out}, []string{"check", "--base", "HEAD"})
+	if err == nil || !strings.Contains(err.Error(), "requires --head") {
+		t.Fatalf("check --base error = %v, want committed-view requirement", err)
+	}
+}

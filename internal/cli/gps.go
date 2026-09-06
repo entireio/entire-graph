@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/entireio/entire-graph/internal/gitutil"
 	"github.com/entireio/entire-graph/internal/intent"
 	"github.com/entireio/entire-graph/internal/sem"
 	"github.com/entireio/entire-graph/internal/termsafe"
@@ -134,7 +135,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	requirements := matchingRequirements(set, flags.query)
-	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "status": "complete", "requirements": requirements, "symbols": []any{}, "tests": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
+	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "status": "complete", "requirements": requirements, "symbols": []any{}, "dependencies": []any{}, "tests": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
 	if len(set.Specs) == 0 {
 		response["status"] = "complete_with_gaps"
 		response["gaps"] = []string{"NO_SPECS"}
@@ -153,6 +154,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 		bindings[binding.ID] = binding
 	}
 	var symbols []any
+	var dependencies []any
 	var tests []any
 	var gaps []string
 	for _, spec := range set.Specs {
@@ -170,7 +172,16 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 				gaps = append(gaps, state["state"].(string)+":"+anchor.ID)
 				continue
 			}
-			symbols = append(symbols, map[string]any{"anchor": anchor.ID, "requirement": anchor.Requirement, "reason": "approved_anchor", "symbol": state["symbol"]})
+			symbol := state["symbol"].(sem.SymbolRecord)
+			symbols = append(symbols, map[string]any{"anchor": anchor.ID, "requirement": anchor.Requirement, "reason": "approved_anchor", "citation": fmt.Sprintf("%s:%d", symbol.FilePath, symbol.StartLine), "symbol": symbol})
+			for _, relation := range snapshot.Relations {
+				if relation.FromID == symbol.ID {
+					dependencies = append(dependencies, map[string]any{"reason": "anchor_callee", "type": relation.Type, "symbol_id": relation.ToID})
+				}
+				if relation.ToID == symbol.ID {
+					dependencies = append(dependencies, map[string]any{"reason": "anchor_caller", "type": relation.Type, "symbol_id": relation.FromID})
+				}
+			}
 		}
 		for _, test := range spec.Tests {
 			if !acceptanceMatchesRequirement(spec, test.Acceptance, selected) {
@@ -186,6 +197,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	}
 	sort.Strings(gaps)
 	response["symbols"] = symbols
+	response["dependencies"] = dependencies
 	response["tests"] = tests
 	response["gaps"] = gaps
 	if len(gaps) > 0 {
@@ -199,6 +211,9 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 	_, flags, err := gpsFlags(args)
 	if err != nil {
 		return err
+	}
+	if flags.base != "" && !flags.head {
+		return errors.New("check --base requires --head so code and intent use one committed view")
 	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.repo)
 	if err != nil {
@@ -216,6 +231,26 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	findings := make([]map[string]any, 0)
+	if flags.base != "" {
+		baseSet, err := intent.LoadRevision(ctx, repo, flags.base)
+		if err != nil {
+			return fmt.Errorf("load base intent: %w", err)
+		}
+		changed, err := gitutil.ChangedFiles(ctx, repo, flags.base, "HEAD", nil)
+		if err != nil {
+			return fmt.Errorf("compare base revision: %w", err)
+		}
+		if baseSet.Digest != set.Digest {
+			findings = append(findings, map[string]any{"id": "GPS-DELTA-INTENT", "severity": "warning", "subject": "intent", "message": "selected intent differs from base revision"})
+		}
+		for _, file := range changed {
+			for _, binding := range set.Bindings {
+				if binding.Selector.File == file.Path || binding.Selector.File == file.OldPath {
+					findings = append(findings, map[string]any{"id": "GPS-DELTA-ANCHOR", "severity": "warning", "subject": binding.ID, "message": "anchored implementation changed since base revision"})
+				}
+			}
+		}
+	}
 	for _, spec := range set.Specs {
 		for _, anchor := range spec.Anchors {
 			found := false
@@ -257,10 +292,10 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 }
 
 type gpsOptions struct {
-	repo, format, id, symbol, file, query string
-	update                                bool
-	head                                  bool
-	maxBytes                              int
+	repo, format, id, symbol, file, query, base string
+	update                                      bool
+	head                                        bool
+	maxBytes                                    int
 }
 
 func gpsFlags(args []string) (string, gpsOptions, error) {
@@ -274,7 +309,7 @@ func gpsFlags(args []string) (string, gpsOptions, error) {
 			return args[i], nil
 		}
 		switch args[i] {
-		case "--repo", "--format", "--id", "--symbol", "--file", "--query", "--max-context-bytes":
+		case "--repo", "--format", "--id", "--symbol", "--file", "--query", "--base", "--max-context-bytes":
 			v, err := value()
 			if err != nil {
 				return "", flags, err
@@ -292,6 +327,8 @@ func gpsFlags(args []string) (string, gpsOptions, error) {
 				flags.file = v
 			case "--query":
 				flags.query = v
+			case "--base":
+				flags.base = v
 			default:
 				if _, err := fmt.Sscan(v, &flags.maxBytes); err != nil || flags.maxBytes < 1 {
 					return "", flags, errors.New("--max-context-bytes requires a positive integer")
@@ -349,6 +386,8 @@ func resolveBinding(binding intent.Binding, snapshot sem.ProviderSnapshot) map[s
 	state := "MISSING"
 	if len(candidates) > 1 {
 		state = "AMBIGUOUS"
+	} else if len(candidates) == 1 {
+		state = "CANDIDATE_REBIND"
 	} else if incompleteAnchorPath(binding.Selector.File, snapshot.Header.PartialFailures) {
 		state = "UNVERIFIABLE"
 	}
@@ -399,13 +438,14 @@ func fitGPSContextBudget(response map[string]any, maximum int) {
 		return
 	}
 	response["symbols"] = []any{}
+	response["dependencies"] = []any{}
 	response["tests"] = []any{}
-	budget["omitted"] = []string{"symbols", "tests"}
+	budget["omitted"] = []string{"symbols", "dependencies", "tests"}
 	if renderedGPSJSONBytes(response) > maximum {
 		response["requirements"] = []map[string]string{}
 		response["status"] = "BUDGET_TOO_SMALL"
 		response["gaps"] = []string{"BUDGET_TOO_SMALL"}
-		budget["omitted"] = []string{"requirements", "symbols", "tests"}
+		budget["omitted"] = []string{"requirements", "symbols", "dependencies", "tests"}
 	}
 	budget["rendered_bytes"] = renderedGPSJSONBytes(response)
 }
