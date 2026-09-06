@@ -7,7 +7,7 @@
   "implementation_source_commit": "6cf92c9c",
   "verified_checkpoint": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
   "verified_evidence_commit": "see evidence/check-1c0b8e24/verification.json",
-  "current_worktree": "6cf92c9c publication gate focused correctness and race passed; full and pinned verification next;1c0b8e24 remains latestfullyverified",
+  "current_worktree": "6cf92c9c focused and pinned76tests passed; full immutablecheck running",
   "workers_state": "validation VM available for focused correctness; campaign workers off",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T13:44:23.813147+00:00",
+  "as_of_utc": "2026-09-06T13:48:47.597766+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Run immutable and pinned correctness for6cf92c9c; no new performance campaign",
+  "next_work": "Finish immutablecheck6cf92c9c and retain evidence; no campaign expansion or RSSclaim",
   "current_focused_correctness": {
     "commit": "1c0b8e24",
     "correctness_seconds": 0.788,
@@ -59,10 +59,10 @@
     "source": "worker executed focused compressor/session tests; root reviewed patch"
   },
   "linux_correctness": {
-    "source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
-    "top_level_tests_passed": 72,
+    "source_commit": "6cf92c9ccff1882bb2ab63aa9edeb8da0d633cc3",
+    "top_level_tests_passed": 76,
     "live_tests_passed": 10,
-    "evidence": "evidence/correctness-1c0b8e24-20260906"
+    "evidence": "evidence/correctness-6cf92c9c-20260906"
   },
   "retained_linux_search": {
     "source_commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
