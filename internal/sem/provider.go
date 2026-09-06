@@ -17730,9 +17730,18 @@ func gitMetadataRefusalError(repo string) error {
 // describeGitMetadataRefusal returns a human-readable cause, or "" when none of
 // the recognised conditions explains the refusal.
 //
-// It reads the config through the same resolver the predicate uses, rather than
-// opening it directly, so the bytes described here are the bytes that were
-// rejected -- a second, independent read could resolve to a different file.
+// It reads the config the same way the predicate does -- through a resolver,
+// never a direct open -- so it applies the same path, mount and special-file
+// policy rather than a looser one of its own.
+//
+// It is nonetheless a second observation, taken after the predicate has already
+// refused. Nothing pins the two reads to one inode, so a config replaced in
+// between yields a cause that is true of the file now and may not be the cause
+// that fired. Pinning them would mean carrying evidence out of the predicate
+// itself, which is a safety boundary this diagnosis is not worth restructuring;
+// the cost of the race is a misattributed sentence in an error, never a
+// different accept/reject decision. Read the cause as "this is what the config
+// says", not as a receipt from the refusal.
 //
 // It is deliberately narrower than the predicate. The predicate also supports
 // Git discovery in ancestor directories, bare repositories, and `.git` gitfiles;
