@@ -1,0 +1,3 @@
+[
+  "Enable succeeded: \n[stdout]\nP1_UPLOAD_OK p1-retained-snapshot-result-retained-snapshot-05ad9842-20260906.tar.gz\n\n[stderr]\n/var/lib/waagent/run-command/download/50/script.sh: 15: {config_heredocs}: not found\n"
+]

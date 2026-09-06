@@ -1,0 +1,4 @@
+=== RUN   TestExtractionCorpusMeasurement
+    extraction_corpus_evaluation_test.go:487: open corpus manifest "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/snapshot-syntax-only/request-off.json": open /opt/p1/retained-diagnostics/retained-05ad9842-20260906/snapshot-syntax-only/request-off.json: no such file or directory
+--- FAIL: TestExtractionCorpusMeasurement (0.00s)
+FAIL

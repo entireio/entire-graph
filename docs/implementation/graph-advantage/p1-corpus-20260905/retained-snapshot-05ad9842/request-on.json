@@ -1,0 +1,16 @@
+{
+  "cache": "on",
+  "cache_path": "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/snapshot-syntax-only/cache-on",
+  "input_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+  "mode": "measure",
+  "mutation_id": "retained-snapshot-syntax-only",
+  "operation": "snapshot",
+  "profile": "syntax-only",
+  "provider_version": "p1-corpus-20260905",
+  "repo_path": "/opt/p1/corpus/kubernetes-kubernetes",
+  "repository": "kubernetes-kubernetes",
+  "scenario": "diagnostic",
+  "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+  "trial": 0,
+  "version": 1
+}

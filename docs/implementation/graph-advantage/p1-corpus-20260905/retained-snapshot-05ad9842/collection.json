@@ -1,0 +1,9 @@
+{
+  "archive_blob": "p1-retained-snapshot-result-retained-snapshot-05ad9842-20260906.tar.gz",
+  "archive_sha256": "f1917a790d3b3d9eb691f6c7f67082e01c92f418e2a14c9ca0289e976db85621",
+  "run_id": "retained-snapshot-05ad9842-20260906",
+  "script_sha256": "a5cbede56635494a0b8e059440eec62deeac1d705f1774d5ad12ebc3a20ae65a",
+  "signed_urls": "not persisted",
+  "upload_acknowledged": true,
+  "vm": "graph-validation-linux"
+}
