@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -61,9 +62,9 @@ type extractionCache struct {
 }
 
 type extractionPending struct {
-	entry    cacheEntry
-	bound    int64
-	envelope extractionEnvelope
+	entry   cacheEntry
+	bound   int64
+	encoded []byte
 }
 type ExtractionStats struct {
 	RawImportsParsed  int64 `json:"raw_imports_parsed"`
@@ -97,12 +98,12 @@ func (cache *extractionCache) limits() (int64, int) {
 	return cache.maxBytes, cache.maxEntries
 }
 
-func (cache *extractionCache) enqueue(entry cacheEntry, bound int64, envelope extractionEnvelope) {
+func (cache *extractionCache) enqueue(entry cacheEntry, bound int64, encoded []byte) {
 	if cache == nil {
 		return
 	}
 	cache.pendingMu.Lock()
-	cache.pending = append(cache.pending, extractionPending{entry: entry, bound: bound, envelope: envelope})
+	cache.pending = append(cache.pending, extractionPending{entry: entry, bound: bound, encoded: encoded})
 	cache.pendingBytes += bound
 	flush := len(cache.pending) >= extractionPublishBatchEntries || cache.pendingBytes >= extractionPublishBatchBytes
 	var batch []extractionPending
@@ -194,7 +195,7 @@ func (cache *extractionCache) publishBatch(batch []extractionPending) {
 			continue
 		}
 		for _, item := range chunk {
-			if err := item.entry.write("extract", item.envelope); err != nil {
+			if err := item.entry.writeEncoded("extract", item.encoded); err != nil {
 				continue
 			}
 			if file, err := item.entry.open(); err == nil {
@@ -211,6 +212,16 @@ type extractionEnvelope struct {
 	Key           string
 	PayloadDigest string
 	Record        extractionRecord
+}
+
+func marshalCacheJSON(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
 }
 
 func extractionIdentity(parts ...string) string {
@@ -270,15 +281,15 @@ func (cache *extractionCache) extract(spec profileSpec, language languageSpec, s
 			return extraction, false
 		}
 		envelope := extractionEnvelope{Key: key, PayloadDigest: contentHash(payload), Record: record}
-		bytes, marshalErr := json.Marshal(envelope)
+		encoded, marshalErr := marshalCacheJSON(envelope)
 		if encodeErr == nil {
 			encodeErr = marshalErr
 		}
-		if encodeErr == nil && len(bytes) < extractionDecodeLimit {
+		if encodeErr == nil && len(encoded) < extractionDecodeLimit {
 			// DEFLATE can expand incompressible data; include block and framing
 			// overhead rather than assuming gzip is always smaller than JSON.
-			bound := int64(len(bytes) + len(bytes)/16384*5 + 1024)
-			cache.enqueue(entry, bound, envelope)
+			bound := int64(len(encoded) + len(encoded)/16384*5 + 1024)
+			cache.enqueue(entry, bound, encoded)
 		}
 	}
 	return extraction, false

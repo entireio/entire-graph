@@ -1,15 +1,67 @@
 package sem
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestEncodedExtractionWriterPreservesEnvelopeBytes(t *testing.T) {
+	key := strings.Repeat("a", 64)
+	record := extractionRecord{
+		Version:      extractionFormatVersion,
+		Language:     "Go",
+		Declarations: []extractedDeclaration{},
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := extractionEnvelope{Key: key, PayloadDigest: contentHash(payload), Record: record}
+	encoded, err := marshalCacheJSON(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := newCacheEntry(t.TempDir(), "extraction-fixture", "v1", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := entry.writeEncoded("extract", encoded); err != nil {
+		t.Fatal(err)
+	}
+	file, err := entry.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decompressed, err := gzip.NewReader(file)
+	if err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	got, readErr := io.ReadAll(decompressed)
+	closeErr := decompressed.Close()
+	fileErr := file.Close()
+	if err := errors.Join(readErr, closeErr, fileErr); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, encoded) {
+		t.Fatalf("encoded cache bytes changed: got %d bytes, want %d", len(got), len(encoded))
+	}
+	cache := &extractionCache{}
+	loaded, ok := loadExtraction(entry, key, cache)
+	if !ok || !reflect.DeepEqual(loaded, record) {
+		t.Fatalf("encoded envelope load = ok %v, %#v; want %#v", ok, loaded, record)
+	}
+}
 
 func TestExtractionReuseSnapshotFreshResolution(t *testing.T) {
 	repo, dir := t.TempDir(), t.TempDir()

@@ -159,6 +159,58 @@ func (entry cacheEntry) write(temporaryPrefix string, value any) error {
 	return nil
 }
 
+// writeEncoded installs already encoded JSON using the same gzip, atomic
+// rename, and no-follow filesystem lifecycle as write. It is private to the
+// extraction publisher, whose quota admission needs the final encoded size
+// before publication. Generic cache consumers continue to use write.
+func (entry cacheEntry) writeEncoded(temporaryPrefix string, encoded []byte) error {
+	if err := os.MkdirAll(entry.root, 0o700); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(entry.root)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	directory, err := openCacheDirectory(root, filepath.Dir(entry.relative))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	temporary, temporaryName, err := createRootTemp(directory, temporaryPrefix)
+	if err != nil {
+		return err
+	}
+	removeTemporary := true
+	defer func() {
+		if removeTemporary {
+			_ = directory.Remove(temporaryName)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	writer := gzip.NewWriter(temporary)
+	if _, err := writer.Write(encoded); err != nil {
+		_ = writer.Close()
+		_ = temporary.Close()
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := directory.Rename(temporaryName, filepath.Base(entry.relative)); err != nil {
+		return err
+	}
+	removeTemporary = false
+	return nil
+}
+
 // openCacheDirectory creates and opens each component of the entry's directory beneath root,
 // refusing a symlinked one. Descending through an opened handle rather than re-walking the path
 // means the create and the rename that follow act on the directory object this loop actually
