@@ -10,7 +10,7 @@ The latest fully verified implementation source is `1c0b8e24`: ADR 0047 adds one
 
 The P1 campaign remains paused. Its 108 baseline requests completed (69 complete, 33 partial, 6 timeouts); the paired campaign recorded 116 requests before stopping. The latest isolated corrective snapshot pair at `0c9e80f5` preserved exact semantics and all 194 known partials, but OFF 56.991 seconds versus ON 66.019 seconds failed the 1.10 cold screening limit. RSS was unavailable. This one pair is not statistical or release evidence. Earlier failures and the unresolved campaign-scale parity cases remain retained.
 
-All 77 campaign-control tests passed. A live fake-service smoke verified the real supervisor pause path: all three services were active before injection and stopped with STOP markers afterward. It executed no product queries. No campaign is running; only the validation VM is being started for pinned correctness. Two campaign VMs remain deallocated.
+All 77 campaign-control tests passed. A live fake-service smoke verified the real supervisor pause path: all three services were active before injection and stopped with STOP markers afterward. It executed no product queries. No campaign is running; all three task VMs are deallocated after correctness.
 
 No wider measurement campaign is admitted while these findings remain open. P2/P3/P4 comparative studies remain deferred. No complete workstream release gate has passed; extraction reuse and compiler remain off, impact depth remains two, and current ranking remains the default.
 
@@ -218,3 +218,10 @@ the immutable full check and pinned Linux checks at `0c9e80f5`. The current
 compressor follow-up at `1c0b8e24` passed full and pinned correctness
 verification. The separate live stop smoke passed with all three fake services
 stopped; it ran no product queries.
+
+Corrective measurement plumbing `31cc145d` adds Linux peak RSS to a new
+versioned diagnostic runner without changing old artifacts. Root review fixed
+acceptance of a valid plus malformed duplicate RSS line. Four fake-process/
+parser tests passed (1.510 seconds); no product measurement was run. Missing,
+malformed, nonpositive, duplicate or overflowing values stop before the next
+arm. The campaign remains paused; this is plumbing evidence only.
