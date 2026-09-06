@@ -1,8 +1,7 @@
 def can_access(request):
-    """H2: public preview is allowed without allowing guest exports."""
-    if (request["role"] == "guest" and request["visibility"] == "public"
-            and request["operation"] == "preview"):
-        return True
-    if request["role"] == "guest":
-        return False
+    """H3: equivalent refactor; a guest can only preview public content."""
+    guest = request["role"] == "guest"
+    public_preview = request["visibility"] == "public" and request["operation"] == "preview"
+    if guest:
+        return public_preview
     return request["same_workspace"]
