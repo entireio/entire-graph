@@ -54,7 +54,7 @@ class Store:
             data = old.model_dump()
             data.update(amendments or {})
             data.update(revision=latest + 1, status="confirmed_active", confirmed_by=actor.strip(),
-                        confirmed_at=now(), supersedes=old.key)
+                        confirmed_at=now(), supersedes=old.key, policy_changed=bool(amendments))
             new = Requirement.model_validate(data)
             db.execute("INSERT INTO requirements VALUES (?, ?, ?)", (rid, new.revision, canonical(new)))
             return new

@@ -56,6 +56,7 @@ class Requirement(Record):
     confirmed_by: str | None = None
     confirmed_at: str | None = None
     supersedes: str | None = None
+    policy_changed: bool = False
     proposal_mode: Literal["agent_prepared", "model", "manual", "synthetic_test"] = "agent_prepared"
 
     @property
