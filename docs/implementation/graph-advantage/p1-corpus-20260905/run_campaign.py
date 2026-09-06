@@ -158,6 +158,7 @@ def main():
         ap.add_argument(f'--{name}', type=pathlib.Path, required=True)
     ap.add_argument('--stage', choices=['baseline', 'campaign'], required=True)
     ap.add_argument('--trials', type=int, default=30)
+    ap.add_argument('--build-manifest', type=pathlib.Path)
     ap.add_argument('--frozen-baseline', type=pathlib.Path)
     ap.add_argument('--stop-file', type=pathlib.Path)
     ap.add_argument('--supervisor-lease', type=pathlib.Path)
@@ -187,6 +188,21 @@ def main():
                 'page_cache': 'ordered whole-file prime before each request; no disk-cold claim',
                 'rss': 'Linux wait4 whole child including verification; harness overhead included',
                 'trials': args.trials, 'require_supervisor': args.require_supervisor}
+    if args.build_manifest:
+        try:
+            build_manifest = json.loads(args.build_manifest.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f'Cannot read build manifest: {exc}')
+        if not isinstance(build_manifest, dict):
+            raise SystemExit('Build manifest must be a JSON object')
+        if build_manifest.get('binary_sha256') != binary_digest:
+            raise SystemExit('Build manifest/binary identity mismatch')
+        metadata['build_manifest_sha256'] = sha(args.build_manifest)
+        metadata['source_file_hash_manifest_sha256'] = build_manifest.get(
+            'source_file_hash_manifest_sha256')
+        for field in ('frozen_source_commit', 'code_commit_at_build'):
+            if build_manifest.get(field):
+                metadata[field] = build_manifest[field]
     frozen = json.loads(args.frozen_baseline.read_text()) if args.frozen_baseline else {}
     if args.stage == 'campaign' and args.trials == 30 and not frozen:
         raise SystemExit('Full campaign requires frozen baseline manifest')
