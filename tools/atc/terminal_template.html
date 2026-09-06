@@ -22,7 +22,10 @@
       backdrop-filter:blur(14px);border-bottom:1px solid var(--hair)}
   .nav-in{display:flex;align-items:center;gap:6px;height:60px}
   .wordmark{font-family:var(--cond);font-weight:700;font-size:21px;
-            letter-spacing:.04em;margin-right:18px;display:flex;align-items:center;gap:8px}
+            letter-spacing:.04em;margin-right:18px;display:flex;align-items:center;gap:8px;
+            border:none;background:none;color:inherit;cursor:pointer;padding:6px 2px}
+  .wordmark:hover{opacity:.72}
+  .wordmark:focus-visible{outline:2px solid var(--sky-deep);outline-offset:3px;border-radius:6px}
   .wordmark .tail{color:var(--sky-deep)}
   .tab{border:none;background:none;padding:8px 14px;border-radius:99px;cursor:pointer;
        font-size:14px;font-weight:500;color:var(--muted);transition:all .18s}
@@ -58,10 +61,11 @@
            border:1px solid var(--hair);box-shadow:var(--shadow);text-align:left;
            transition:transform .18s,box-shadow .18s}
   .navcard:hover{transform:translateY(-3px);box-shadow:0 16px 40px rgba(23,27,33,.11)}
-  .navcard .ic{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;
-               margin-bottom:12px;font-size:18px}
-  .navcard h3{font-size:16px;margin-bottom:3px}
-  .navcard p{margin:0;color:var(--muted);font-size:13px}
+  .navcard{display:flex;align-items:center;gap:13px;padding:16px 18px}
+  .navcard .ic{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;
+               font-size:17px;flex:none}
+  .navcard h3{font-size:15px}
+  .navcard::after{content:"→";margin-left:auto;color:var(--muted);font-size:15px}
 
   .board{margin-top:26px;background:var(--card);border-radius:var(--r);
          border:1px solid var(--hair);box-shadow:var(--shadow);overflow:hidden}
@@ -284,13 +288,39 @@
   .livedot i{width:7px;height:7px;border-radius:50%;background:var(--mint);
              animation:pulse 1.5s infinite}
   .livedot.warn{color:#8A6D00}.livedot.warn i{background:var(--yellow)}
+  .ckblk{margin-top:18px}
+  .ckblk h4{font-family:var(--cond);font-weight:600;letter-spacing:.14em;font-size:11px;
+            text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+  .frow{display:grid;grid-template-columns:auto 1fr auto;gap:11px;align-items:center;
+        padding:8px 10px;border-radius:10px;background:var(--paper);margin-bottom:5px}
+  .frow.hot{background:#FFECEA}
+  .frow .fi{font-size:15px;line-height:1}
+  .frow .fp{min-width:0;display:flex;flex-direction:column;line-height:1.25}
+  .frow .fp b{font-family:var(--mono);font-size:12.5px;font-weight:500;
+              overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .frow .fd{font-family:var(--mono);font-size:10px;color:var(--muted);
+            overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .frow .fm{font-family:var(--mono);font-size:10.5px;color:var(--muted);
+            white-space:nowrap;display:flex;align-items:center;gap:7px}
+  .frow.hot .fm{color:#C4372C}
+  .frow .fx{background:var(--coral);color:#fff;border-radius:5px;padding:1px 6px;
+            font-size:9px;letter-spacing:.08em;text-transform:uppercase}
+  .tl2{display:flex;flex-direction:column}
+  .tr2{display:grid;grid-template-columns:16px 1fr auto;gap:9px;align-items:baseline;
+       padding:5px 0;border-bottom:1px solid var(--hair)}
+  .tr2 .k{color:var(--muted);font-size:11px;text-align:center}
+  .tr2 .t{font-family:var(--mono);font-size:11.5px;color:var(--muted);word-break:break-word}
+  .tr2.prompt .t{font-family:var(--body);font-size:13px;color:var(--ink)}
+  .tr2.prompt .k{color:var(--sky-deep)}
+  .tr2.write .t{color:var(--ink)} .tr2.write .k{color:var(--yellow)}
+  .tr2 .a{font-family:var(--mono);font-size:10px;color:var(--muted)}
   .sec-h{margin:34px 0 14px;display:flex;align-items:baseline;gap:12px}
   .sec-h h2{font-size:20px;font-weight:700;letter-spacing:-.01em}
   .sec-h span{color:var(--muted);font-size:13px}
 </style>
 
 <nav><div class="wrap nav-in">
-  <span class="wordmark">✈<span> ATC</span><span class="tail">TERMINAL</span></span>
+  <button class="wordmark" data-v="home" title="Back to tower">✈<span> ATC</span><span class="tail">TERMINAL</span></button>
   <button class="tab on" data-v="home">Tower</button>
   <button class="tab" data-v="air">Air</button>
   <button class="tab" data-v="world">World</button>
@@ -396,13 +426,13 @@ function renderHome(){ $("#v-home").innerHTML = `
   </div>
   <div class="navcards">
     <button class="navcard" data-v="air"><div class="ic" style="background:#E8F2FA">🛫</div>
-      <h3>Air view</h3><p>Each agent as a flight card.</p></button>
+      <h3>Air view</h3></button>
     <button class="navcard" data-v="world"><div class="ic" style="background:#FFF6DC">🗺</div>
-      <h3>World view</h3><p>The repo as airspace.</p></button>
+      <h3>World view</h3></button>
     <button class="navcard" data-v="incident"><div class="ic" style="background:#FFEBE9">📋</div>
-      <h3>Incident report</h3><p>The merge git called clean.</p></button>
+      <h3>Incident report</h3></button>
     <button class="navcard" data-v="book"><div class="ic" style="background:#E4F7EF">🎫</div>
-      <h3>New flight</h3><p>Book an agent, get a boarding pass.</p></button>
+      <h3>New flight</h3></button>
   </div>
   <div class="board">
     <div class="board-head"><h2>Departures</h2>
@@ -458,8 +488,7 @@ function flightCard(fl){
 }
 function renderAir(){ $("#v-air").innerHTML = `
   <div class="sec-h"><h2>${DB.live?"Agents in flight, right now":"Flights in the air"}</h2>
-    <span>${DB.live?"live prompt + uncommitted work, sampled without touching their trees"
-      :`each card is one agent session · branch ${esc(DB.flights.map(f=>f.branch).join(", "))}`}</span></div>
+    <span>${DB.flights.length} in flight</span></div>
   <div class="grid2">${DB.flights.map(flightCard).join("")}</div>`; }
 
 /* =============== WORLD =============== */
@@ -559,6 +588,14 @@ function closeSheet(){ $("#sheet-wrap").classList.remove("on"); }
 
 /* Cockpit — one agent's own view: its live prompt, the files it has written
    (from its transcript's Edit/Write calls) and its trajectory. */
+const FILE_ICONS={py:"🐍",js:"🟨",ts:"🔷",tsx:"🔷",jsx:"🟨",go:"🐹",rs:"🦀",rb:"💎",
+  java:"☕",json:"⚙️",yml:"⚙️",yaml:"⚙️",toml:"⚙️",cfg:"⚙️",ini:"⚙️",
+  md:"📄",rst:"📄",txt:"📄",html:"🌐",css:"🎨",sh:"⌘",sql:"🗄️"};
+function fileIcon(path){
+  const ext=(path.split(".").pop()||"").toLowerCase();
+  if (/(^|\/)test|_test\.|test_/.test(path)) return "🧪";
+  return FILE_ICONS[ext] || "📁";
+}
 function openCockpit(cs){
   const fl = DB.flights.find(f=>f.callsign===cs); if(!fl) return;
   const t = fl.trajectory || {};
@@ -567,15 +604,18 @@ function openCockpit(cs){
                              ...(R.findings.write_write||[])].map(f=>f.path));
   const wrote = (t.wrote||[]).map(w=>{
     const hot=[...confPaths].some(h=>w.path.endsWith(h)||h.endsWith(w.path));
-    return `<div class="rcpt" style="display:flex;gap:10px;padding:5px 0;
-      border-bottom:1px solid var(--hair);${hot?"color:#C4372C":""}">
-      <span style="flex:1">${esc(w.path)}</span>
-      <span class="loc">${hot?"conflict · ":""}×${w.edits} · ${esc(w.last)}</span></div>`;
+    const dir = w.path.includes("/") ? w.path.slice(0, w.path.lastIndexOf("/")+1) : "";
+    const base = w.path.slice(dir.length);
+    return `<div class="frow ${hot?"hot":""}">
+      <span class="fi">${fileIcon(w.path)}</span>
+      <span class="fp"><b>${esc(base)}</b>${dir?`<span class="fd">${esc(dir)}</span>`:""}</span>
+      <span class="fm">${hot?`<span class="fx">conflict</span>`:""}${w.edits} edit${w.edits===1?"":"s"}
+        · ${esc(w.last)}</span></div>`;
   }).join("") || `<div class="rcpt">No files written yet.</div>`;
+  const KIND={prompt:"◆",write:"✎",run:"›"};
   const steps = (t.steps||[]).slice().reverse().slice(0,14).map(x=>
-    `<div class="rcpt" style="padding:3px 0">
-      <span class="loc">${esc(x.at)}</span>
-      ${x.kind==="write"?"wrote ":x.kind==="run"?"ran ":""}${esc(x.text)}</div>`
+    `<div class="tr2 ${esc(x.kind)}"><span class="k">${KIND[x.kind]||"·"}</span>
+      <span class="t">${esc(x.text)}</span><span class="a">${esc(x.at)}</span></div>`
   ).join("") || `<div class="rcpt">No trajectory recorded.</div>`;
   const tools = Object.entries(t.tool_counts||{}).map(([k,v])=>`${k}×${v}`).join(" · ");
   const confs = (p && p.result ? [...(p.result.findings.read_write||[]),
@@ -598,15 +638,11 @@ function openCockpit(cs){
       <div class="rcpt">${esc(fl.intent_source||"unknown")}${
         fl.idle_seconds!=null?` · updated ${fl.idle_seconds}s ago`:""} · branch ${esc(fl.branch)}</div>
     </div>
-    <div style="margin-top:14px"><div class="cls" style="font-family:var(--cond);
-      font-weight:600;letter-spacing:.12em;font-size:11px;text-transform:uppercase;
-      color:var(--muted);margin-bottom:6px">Files written</div>${wrote}</div>
-    ${confs?`<div style="margin-top:14px">${confs}</div>`:""}
-    <div style="margin-top:14px"><div class="cls" style="font-family:var(--cond);
-      font-weight:600;letter-spacing:.12em;font-size:11px;text-transform:uppercase;
-      color:var(--muted);margin-bottom:6px">Trajectory</div>
-      ${tools?`<div class="rcpt" style="margin-bottom:6px">${esc(tools)} · ${t.read_count||0} reads</div>`:""}
-      ${steps}</div>`;
+    <div class="ckblk"><h4>Files written</h4>${wrote}</div>
+    ${confs?`<div class="ckblk"><h4>Conflicts</h4>${confs}</div>`:""}
+    <div class="ckblk"><h4>Trajectory</h4>
+      ${tools?`<div class="rcpt" style="margin-bottom:8px">${esc(tools)} · ${t.read_count||0} reads</div>`:""}
+      <div class="tl2">${steps}</div></div>`;
   $("#sheet-wrap").classList.add("on");
 }
 addEventListener("keydown",e=>{ if(e.key==="Escape") closeSheet(); });
@@ -804,7 +840,10 @@ function show(v){
   document.querySelectorAll("nav .tab").forEach(t=>t.classList.toggle("on",t.dataset.v===v));
   history.replaceState(null,"","#"+v); scrollTo({top:0});
 }
-document.querySelectorAll("[data-v]").forEach(el=>el.addEventListener("click",()=>show(el.dataset.v)));
+document.addEventListener("click", e=>{
+  const el = e.target.closest("[data-v]");
+  if (el) show(el.dataset.v);
+});
 if(location.hash) show(location.hash.slice(1)||"home");
 
 /* =============== LIVE =============== */
