@@ -13,27 +13,26 @@ spec.loader.exec_module(retry)
 
 class RetryRunnerTests(unittest.TestCase):
     def test_observation_must_preserve_prior_partial_and_warning_identities(self):
-        observation = {
-            "repository": retry.EXPECTED_REPOSITORY,
-            "operation": retry.EXPECTED_OPERATION,
-            "profile": retry.EXPECTED_PROFILE,
-            "provider_version": retry.EXPECTED_PROVIDER,
-            "status": "partial",
-            "source_digest": "s" * 64,
-            "binary_sha256": "b" * 64,
-            "semantic_sha256": retry.EXPECTED_SEMANTIC_SHA256,
-            "semantic_digest": retry.EXPECTED_SEMANTIC_SHA256,
-            "partial_failures_count": retry.EXPECTED_PARTIAL_FAILURES_COUNT,
-            "partial_failures_sha256": retry.EXPECTED_PARTIAL_FAILURES_SHA256,
-            "warnings_count": retry.EXPECTED_WARNINGS_COUNT,
-            "warnings_sha256": retry.EXPECTED_WARNINGS_SHA256,
-            "cache_mode": "off",
-            "reuse": False,
-        }
-        self.assertIs(retry.validate_observation(observation, "off", "b" * 64, "s" * 64), observation)
+        observation = json.loads(
+            (HERE.parent / "retained-snapshot-05ad9842-retry" / "raw" / "observation-off.ndjson").read_text()
+        )
+        self.assertIs(
+            retry.validate_observation(
+                observation,
+                "off",
+                observation["binary_sha256"],
+                observation["source_digest"],
+            ),
+            observation,
+        )
         observation["warnings_sha256"] = "changed"
         with self.assertRaises(RuntimeError):
-            retry.validate_observation(observation, "off", "b" * 64, "s" * 64)
+            retry.validate_observation(
+                observation,
+                "off",
+                observation["binary_sha256"],
+                observation["source_digest"],
+            )
 
     def test_fake_process_plumbing_retains_null_rss(self):
         with tempfile.TemporaryDirectory() as directory:
