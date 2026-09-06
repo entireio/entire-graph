@@ -1,0 +1,469 @@
+<title>ATC Tower</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --ground:#0a0f0d; --panel:#101815; --panel-2:#0d1411; --line:#1e3328;
+    --phos:#52e09c; --phos-dim:#2a5c44; --phos-faint:#16281f;
+    --amber:#e8b04b; --red:#ff5c66; --cyan:#6fd3e0;
+    --ink:#cfe3d6; --ink-dim:#7fa08d;
+    --disp:'Chakra Petch',system-ui,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--ground);color:var(--ink);font-family:var(--mono);
+       font-size:13px;line-height:1.55;margin:0;padding:0 0 48px}
+  ::selection{background:var(--phos-dim);color:#fff}
+
+  .wrap{max-width:1180px;margin:0 auto;padding:0 20px}
+  h1,h2{font-family:var(--disp);text-wrap:balance;margin:0}
+  a{color:var(--cyan)}
+
+  /* ---- status bar ---- */
+  header{border-bottom:1px solid var(--line);background:var(--panel-2);
+         position:sticky;top:0;z-index:5}
+  .bar{display:flex;align-items:center;gap:16px;padding:10px 0;flex-wrap:wrap}
+  .tower-id{font-family:var(--disp);font-weight:700;font-size:17px;
+            letter-spacing:.12em;color:var(--phos)}
+  .bar .sep{color:var(--phos-dim)}
+  .bar .meta{color:var(--ink-dim);font-size:11.5px}
+  .live{margin-left:auto;display:flex;align-items:center;gap:7px;
+        border:1px solid var(--phos-dim);border-radius:2px;padding:3px 10px;
+        font-size:11px;letter-spacing:.1em;color:var(--phos)}
+  .live i{width:7px;height:7px;border-radius:50%;background:var(--phos);
+          animation:blink 1.6s infinite}
+  @keyframes blink{50%{opacity:.25}}
+
+  /* ---- section chrome ---- */
+  section{margin-top:34px}
+  .sec-label{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .sec-label h2{font-size:13px;font-weight:600;letter-spacing:.22em;
+                color:var(--phos);text-transform:uppercase}
+  .sec-label .rule{flex:1;height:1px;background:var(--line)}
+  .sec-label .note{color:var(--ink-dim);font-size:11px}
+
+  /* ---- radar + strips ---- */
+  .scope-row{display:grid;grid-template-columns:minmax(300px,460px) 1fr;gap:22px}
+  @media(max-width:860px){.scope-row{grid-template-columns:1fr}}
+  .scope{background:radial-gradient(circle at 50% 50%,#0e1a14 0%,var(--ground) 78%);
+         border:1px solid var(--line);position:relative;aspect-ratio:1;
+         overflow:hidden}
+  .scope svg{width:100%;height:100%;display:block}
+  .sweep{transform-origin:260px 260px;animation:sweep 5.2s linear infinite}
+  @media(prefers-reduced-motion:reduce){.sweep{animation:none;opacity:.25}}
+  @keyframes sweep{to{transform:rotate(360deg)}}
+  .blip-label{font-family:var(--mono);font-size:10px;fill:var(--ink)}
+  .blip-sub{font-size:8.5px;fill:var(--ink-dim)}
+  .scope-corner{position:absolute;font-size:10px;color:var(--ink-dim);
+                letter-spacing:.08em}
+  .scope-corner.tl{top:8px;left:10px}.scope-corner.br{bottom:8px;right:10px}
+
+  .strips{display:flex;flex-direction:column;gap:12px}
+  .strip{background:var(--panel);border:1px solid var(--line);
+         border-left:4px solid var(--amber);padding:12px 14px;
+         display:grid;grid-template-columns:auto 1fr;gap:4px 16px}
+  .strip .callsign{font-family:var(--disp);font-weight:700;font-size:15px;
+                   letter-spacing:.06em;color:var(--amber)}
+  .strip .k{color:var(--ink-dim);font-size:11px}
+  .strip .v{font-size:12px}
+  .strip .v .src{color:var(--ink-dim);font-size:10.5px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:11px;color:var(--ink-dim);
+          margin-top:2px}
+  .legend b{font-weight:500}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+       vertical-align:-1px;margin-right:5px}
+
+  /* ---- simulation ---- */
+  .sim{background:var(--panel-2);border:1px solid var(--line)}
+  .sim-tabs{display:flex;border-bottom:1px solid var(--line);overflow-x:auto}
+  .sim-tab{flex:1;min-width:120px;padding:10px 12px;background:none;border:none;
+           border-right:1px solid var(--line);color:var(--ink-dim);
+           font-family:var(--mono);font-size:11px;text-align:left;cursor:pointer}
+  .sim-tab:last-child{border-right:none}
+  .sim-tab .n{font-family:var(--disp);font-weight:700;font-size:14px;display:block;
+              color:var(--phos-dim)}
+  .sim-tab.active{background:var(--panel);color:var(--ink)}
+  .sim-tab.active .n{color:var(--phos)}
+  .sim-tab:focus-visible{outline:1px solid var(--phos);outline-offset:-1px}
+  .sim-body{padding:20px;min-height:300px}
+  .sim-nav{display:flex;gap:10px;padding:0 20px 18px;align-items:center}
+  .btn{background:var(--phos-faint);border:1px solid var(--phos-dim);
+       color:var(--phos);font-family:var(--disp);font-weight:600;font-size:12px;
+       letter-spacing:.1em;padding:8px 20px;cursor:pointer}
+  .btn:hover{background:var(--phos-dim)}
+  .btn:focus-visible{outline:1px solid var(--phos);outline-offset:2px}
+  .btn[disabled]{opacity:.35;cursor:default}
+  .sim-nav .hint{color:var(--ink-dim);font-size:11px;margin-left:auto}
+
+  .term{background:#060a08;border:1px solid var(--line);padding:12px 14px;
+        white-space:pre-wrap;overflow-x:auto;font-size:12px;margin:10px 0 0}
+  .term .prompt{color:var(--phos)}
+  .banner{font-family:var(--disp);font-weight:700;font-size:20px;
+          letter-spacing:.08em;margin-top:14px}
+  .banner.ok{color:var(--phos)} .banner.bad{color:var(--red)}
+  .banner.warn{color:var(--amber)}
+  .sim-copy{max-width:64ch;color:var(--ink)}
+  .sim-copy .dim{color:var(--ink-dim)}
+
+  /* ---- verdict cards ---- */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);display:flex;
+        flex-direction:column}
+  .card-head{display:flex;align-items:center;gap:10px;padding:11px 14px;
+             border-bottom:1px solid var(--line)}
+  .card-head .pair{font-family:var(--disp);font-weight:600;font-size:13px}
+  .pill{margin-left:auto;font-family:var(--disp);font-weight:700;font-size:11px;
+        letter-spacing:.14em;padding:3px 10px;border:1px solid}
+  .pill.HOLD{color:var(--red);border-color:var(--red)}
+  .pill.CAUTION{color:var(--amber);border-color:var(--amber)}
+  .pill.CLEARED{color:var(--phos);border-color:var(--phos-dim)}
+  .card-body{padding:12px 14px;display:flex;flex-direction:column;gap:10px;flex:1}
+  .finding{border-left:3px solid var(--red);padding:6px 10px;background:var(--panel-2)}
+  .finding.adv{border-left-color:var(--amber)}
+  .finding.info{border-left-color:var(--cyan)}
+  .finding .cls{font-family:var(--disp);font-weight:600;font-size:11px;
+                letter-spacing:.12em}
+  .finding.red .cls{color:var(--red)} .finding.adv .cls{color:var(--amber)}
+  .finding.info .cls{color:var(--cyan)}
+  .finding .ent{color:var(--ink);font-weight:500}
+  .sig{color:var(--ink-dim);font-size:11.5px;overflow-x:auto;white-space:nowrap}
+  .sig b{color:var(--cyan);font-weight:500}
+  .rcpt{font-size:11.5px;color:var(--ink-dim)}
+  .rcpt .loc{color:var(--cyan)}
+  .landing{border:1px dashed var(--phos-dim);padding:8px 10px;font-size:12px;
+           color:var(--phos)}
+  .landing b{letter-spacing:.1em}
+  .exitcode{margin-top:auto;padding-top:6px;color:var(--ink-dim);font-size:11px;
+            border-top:1px solid var(--line)}
+  .exitcode b{color:var(--ink)}
+
+  /* ---- fleet / board ---- */
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:860px){.two-col{grid-template-columns:1fr}}
+  .panel-block{background:var(--panel);border:1px solid var(--line);padding:14px}
+  .panel-block h3{font-family:var(--disp);font-size:12px;font-weight:600;
+                  letter-spacing:.18em;color:var(--phos);margin:0 0 8px;
+                  text-transform:uppercase}
+  .panel-block .sub{color:var(--ink-dim);font-size:11px;margin-bottom:8px}
+
+  footer{margin-top:40px;border-top:1px solid var(--line);padding-top:18px}
+  .rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+  .rule-card .t{font-family:var(--disp);font-weight:600;font-size:11px;
+                letter-spacing:.16em;color:var(--amber);margin-bottom:4px}
+  .rule-card .b{color:var(--ink-dim);font-size:11.5px}
+  .footnote{margin-top:20px;color:var(--ink-dim);font-size:11px}
+</style>
+
+<header><div class="wrap bar">
+  <span class="tower-id">🗼 ATC TOWER</span>
+  <span class="sep">│</span>
+  <span class="meta">AGENT TRAFFIC CONTROL · powered by Entire Graph</span>
+  <span class="sep">│</span>
+  <span class="meta" id="gen-meta"></span>
+  <span class="live"><i></i>LIVE DATA — every value harvested from a real run</span>
+</div></header>
+
+<div class="wrap">
+
+<section>
+  <div class="sec-label"><h2>Scope · sides in flight</h2><div class="rule"></div>
+    <span class="note">two agent sessions, one repo, zero textual overlap</span></div>
+  <div class="scope-row">
+    <div class="scope">
+      <span class="scope-corner tl">RNG 5NM · SEMANTIC SEPARATION</span>
+      <span class="scope-corner br" id="scope-status"></span>
+      <svg viewBox="0 0 520 520" id="radar" role="img"
+           aria-label="Radar scope showing both sessions' changed entities and the collision edge between them"></svg>
+    </div>
+    <div class="strips" id="strips"></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-label"><h2>Simulation · the trap, replayed</h2><div class="rule"></div>
+    <span class="note">outputs below are captured verbatim, not typed in</span></div>
+  <div class="sim">
+    <div class="sim-tabs" id="sim-tabs" role="tablist"></div>
+    <div class="sim-body" id="sim-body"></div>
+    <div class="sim-nav">
+      <button class="btn" id="prev">◀ PREV</button>
+      <button class="btn" id="next">NEXT ▶</button>
+      <span class="hint">←/→ keys work too</span>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-label"><h2>Verdict board · every pair, judged</h2><div class="rule"></div>
+    <span class="note">recall on the seeded pair · precision on the control pair</span></div>
+  <div class="cards" id="cards"></div>
+</section>
+
+<section>
+  <div class="sec-label"><h2>Fleet memory · contention priors</h2><div class="rule"></div>
+    <span class="note">history warns before any overlap exists</span></div>
+  <div class="two-col">
+    <div class="panel-block"><h3>Board — all sides in flight</h3>
+      <div class="sub">auto-discovered worktrees, pairwise, worst-of exit code</div>
+      <pre class="term" id="board-term"></pre></div>
+    <div class="panel-block"><h3>Hotspot leaderboard</h3>
+      <div class="sub">which paths keep eating parallel sessions</div>
+      <pre class="term" id="hotspot-term"></pre></div>
+  </div>
+</section>
+
+<footer>
+  <div class="rules">
+    <div class="rule-card"><div class="t">False positives are fatal</div>
+      <div class="b">Only signature / removal / rename changes with cross-side
+      dependents go red. Body-only drift and same-file proximity advise, never page.</div></div>
+    <div class="rule-card"><div class="t">Degrade, never die</div>
+      <div class="b">Unresolved edges print as ❔ UNKNOWN. Errors exit 3 — “no verdict”.
+      A partial scan never reads as clean.</div></div>
+    <div class="rule-card"><div class="t">Evidence, not oracle</div>
+      <div class="b">Every dependent carries file:line, confidence and resolution
+      so a human can verify the claim against source.</div></div>
+    <div class="rule-card"><div class="t">Exit codes</div>
+      <div class="b">0 CLEARED · 1 advisory · 2 red (HOLD) · 3 no verdict.
+      Wire it straight into CI.</div></div>
+  </div>
+  <div class="footnote" id="foot-meta"></div>
+</footer>
+
+</div>
+
+<script>
+const DATA = /*__ATC_DATA__*/null;
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+const red = DATA.pairs.find(p => p.id === "red");
+const clean = DATA.pairs.find(p => p.id === "clean");
+const prior = DATA.pairs.find(p => p.id === "prior");
+const R = red.result;
+
+$("#gen-meta").textContent =
+  `fixture: ${DATA.fixture.split("/").pop()} · generated ${DATA.generated.replace("T"," ").slice(0,16)}`;
+$("#foot-meta").textContent =
+  `Generated by tools/atc/tower.py on ${DATA.generated} from ${DATA.fixture}. ` +
+  `Regenerate any time: python3 tools/atc/tower.py`;
+
+/* ---------- flight strips ---------- */
+function stripHTML(side, intent, entities){
+  const it = intent || {};
+  const src = {checkpoint:"checkpoint intent","commit-message":"commit msg"}[it.source] || it.source;
+  return `<div class="strip">
+    <div class="callsign" style="grid-column:1/-1">✈ ${esc(side)}</div>
+    <span class="k">INTENT</span>
+    <span class="v">${esc(it.text || "—")} <span class="src">[${esc(src||"none")}]</span></span>
+    <span class="k">CHANGED</span>
+    <span class="v">${entities.map(e=>esc(e)).join(" · ") || "—"}</span>
+  </div>`;
+}
+function changedEntities(sideLabel){
+  const ents = new Set();
+  for (const f of R.findings.write_write) ents.add(`${f.entity} (${f.path})`);
+  for (const f of [...R.findings.read_write, ...R.findings.advisory]){
+    if (f.changed_by === sideLabel) ents.add(`${f.entity} (${f.path})`);
+  }
+  for (const f of R.findings.proximity){
+    const names = sideLabel === R.ref_a ? f.a : f.b;
+    for (const n of names) ents.add(`${n} (${f.path})`);
+  }
+  return [...ents];
+}
+$("#strips").innerHTML =
+  stripHTML(R.ref_a, R.intent[R.ref_a], changedEntities(R.ref_a)) +
+  stripHTML(R.ref_b, R.intent[R.ref_b], changedEntities(R.ref_b)) +
+  `<div class="legend">
+     <span><i class="dot" style="background:var(--red)"></i><b>red edge</b> — collision (WW / RW)</span>
+     <span><i class="dot" style="background:var(--amber)"></i><b>amber</b> — drift / proximity</span>
+     <span><i class="dot" style="background:var(--phos)"></i><b>blip</b> — changed entity</span>
+   </div>`;
+
+/* ---------- radar scope ---------- */
+(function radar(){
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = $("#radar"), C = 260;
+  const el = (t, at) => { const n = document.createElementNS(NS, t);
+    for (const k in at) n.setAttribute(k, at[k]); svg.appendChild(n); return n; };
+  for (const r of [70, 130, 190, 244])
+    el("circle", {cx:C, cy:C, r, fill:"none", stroke:"#1e3328", "stroke-width":1});
+  el("line", {x1:C, y1:16, x2:C, y2:504, stroke:"#16281f"});
+  el("line", {x1:16, y1:C, x2:504, y2:C, stroke:"#16281f"});
+  // sweep wedge
+  const g = document.createElementNS(NS, "g"); g.setAttribute("class","sweep");
+  const wedge = document.createElementNS(NS, "path");
+  wedge.setAttribute("d", `M${C},${C} L${C},16 A244,244 0 0 1 ${C+96},${C-224} Z`);
+  wedge.setAttribute("fill", "rgba(82,224,156,0.10)");
+  g.appendChild(wedge); svg.appendChild(g);
+
+  // blips: side A on the left semicircle, side B on the right
+  const pos = {}, put = (key, side, i, n) => {
+    const spread = Math.PI * 0.7, base = side === "a" ? Math.PI : 0;
+    const ang = base - spread/2 + spread * ((i + 1) / (n + 1));
+    const rr = 120 + (i % 3) * 45;
+    pos[key] = [C + rr * Math.cos(ang), C - rr * Math.sin(ang) * (side==="a"?1:-1)];
+    return pos[key];
+  };
+  const entsA = changedEntities(R.ref_a), entsB = changedEntities(R.ref_b);
+  // collision edges from findings (entity -> dependent call sites)
+  const edges = [];
+  for (const f of R.findings.read_write){
+    const eKey = "E:"+f.entity;
+    for (const d of f.dependents) edges.push([eKey, "D:"+d.name, "var(--red)"]);
+  }
+  for (const f of R.findings.advisory){
+    for (const d of f.dependents) edges.push(["E:"+f.entity, "D:"+d.name, "var(--amber)"]);
+  }
+  const aNames = entsA.map(e => e.split(" ")[0]);
+  const bDeps = [...new Set([...R.findings.read_write, ...R.findings.advisory]
+                  .flatMap(f => f.dependents.map(d => d.name)))];
+  aNames.forEach((n,i) => put("E:"+n, "a", i, aNames.length));
+  bDeps.forEach((n,i) => put("D:"+n, "b", i, bDeps.length));
+  for (const [from,to,color] of edges){
+    if (!pos[from] || !pos[to]) continue;
+    el("line", {x1:pos[from][0], y1:pos[from][1], x2:pos[to][0], y2:pos[to][1],
+      stroke:color, "stroke-width":1.4, "stroke-dasharray":"5 4", opacity:.85});
+  }
+  const drawBlip = (key, label, sub, color, alignEnd) => {
+    if (!pos[key]) return; const [x,y] = pos[key];
+    el("circle", {cx:x, cy:y, r:4, fill:color});
+    el("circle", {cx:x, cy:y, r:8, fill:"none", stroke:color, opacity:.35});
+    const tx = alignEnd ? x-11 : x+11, anchor = alignEnd ? "end" : "start";
+    const t = el("text", {x:tx, y:y+3, "class":"blip-label", "text-anchor":anchor});
+    t.textContent = label;
+    const s = el("text", {x:tx, y:y+15, "class":"blip-sub", "text-anchor":anchor});
+    s.textContent = sub;
+  };
+  const redEnts = new Set([...R.findings.read_write, ...R.findings.write_write].map(f=>f.entity));
+  aNames.forEach(n => drawBlip("E:"+n, n+"()",
+      R.ref_a, redEnts.has(n) ? "var(--red)" : "var(--phos)"));
+  bDeps.forEach(n => {
+    const dep = [...R.findings.read_write, ...R.findings.advisory]
+      .flatMap(f=>f.dependents).find(d=>d.name===n);
+    drawBlip("D:"+n, n+"()", dep ? `${dep.path}:${dep.line}` : R.ref_b,
+             "var(--cyan)", true);
+  });
+  // side labels
+  const la = el("text", {x:30, y:38, "class":"blip-label", fill:"var(--amber)"});
+  la.textContent = "◤ " + R.ref_a;
+  const lb = el("text", {x:490, y:38, "class":"blip-label", fill:"var(--amber)",
+                         "text-anchor":"end"});
+  lb.textContent = R.ref_b + " ◢";
+  $("#scope-status").textContent =
+    `${R.reds} LOSS-OF-SEPARATION · ${R.advisories} ADVISORY`;
+})();
+
+/* ---------- simulation ---------- */
+const rw = R.findings.read_write[0] || {};
+const firstDep = (rw.dependents || [])[0] || {};
+const steps = [
+  { tag:"BRIEFING", title:"Two agents, one repo",
+    html:`<div class="sim-copy"><p>Session <b style="color:var(--amber)">${esc(R.ref_a)}</b>
+      and session <b style="color:var(--amber)">${esc(R.ref_b)}</b> are working the same
+      repository in parallel worktrees. Their diffs share <b>zero lines</b> — git's view
+      of this pair is total safety.</p>
+      <p class="dim">Merge-base ${esc(R.merge_base.slice(0,7))}. Step through what actually
+      happens — every terminal below is captured output, not copy.</p></div>` },
+  { tag:"MERGE", title:"git merges it clean",
+    html:`<div class="sim-copy"><p>Merge both sessions onto main:</p></div>
+      <pre class="term"><span class="prompt">$ git merge --no-ff feat-auth && git merge --no-ff feat-checkout</span>\n${esc(DATA.trap.merge_out)}</pre>
+      <div class="banner ok">MERGE: CLEAN — 0 CONFLICTS</div>
+      <div class="sim-copy"><p class="dim">Git compared lines. No lines overlap.
+      As far as version control is concerned, this landing is complete.</p></div>` },
+  { tag:"IMPACT", title:"the runtime disagrees",
+    html:`<div class="sim-copy"><p>Now run the merged tree:</p></div>
+      <pre class="term"><span class="prompt">$ python3 run_tests.py</span>\n${esc(DATA.trap.tests_pass_out)}\n<span class="prompt">$ python3 tests_checkout.py</span>\n${esc(DATA.trap.tests_fail_out)}</pre>
+      <div class="banner bad">IMPACT — exit ${esc(DATA.trap.tests_fail_code)}</div>
+      <div class="sim-copy"><p class="dim">${esc(R.ref_a)} changed
+      <b>${esc(rw.entity)}</b>'s signature; ${esc(R.ref_b)} built new call sites on the
+      old shape. The collision was invisible to git because no line was touched twice.</p></div>` },
+  { tag:"ATC CALL", title:"the tower saw it first",
+    html:`<div class="sim-copy"><p>Rewind to <i>before</i> any merge. One command:</p></div>
+      <pre class="term"><span class="prompt">$ python3 tools/atc/collide.py ${esc(red.a)} ${esc(red.b)} --repo .</span>\n${esc(red.terminal)}</pre>
+      <div class="banner warn">ATC CALLED IT — exit ${esc(red.exit_code)}, PRE-MERGE</div>
+      <div class="sim-copy"><p class="dim">The exact edge: <b>${esc(rw.entity)}</b>
+      ${esc(rw.old_signature||"")} → ${esc(rw.new_signature||"")}, consumed at
+      ${esc(firstDep.path)}:${esc(firstDep.line)} (confidence ${esc(firstDep.confidence)}).</p></div>` },
+  { tag:"SEQUENCE", title:"cleared to land, in order",
+    html:`<div class="sim-copy"><p>ATC doesn't just warn — it sequences the landing:</p></div>
+      <div class="landing"><b>✈ LANDING ORDER</b><br>${esc(R.landing_order || "disjoint — any order")}</div>
+      <div class="sim-copy" style="margin-top:12px"><p>And the precision proof — a genuinely
+      independent pair stays green:</p></div>
+      <pre class="term"><span class="prompt">$ python3 tools/atc/collide.py ${esc(clean.a)} ${esc(clean.b)} --repo .</span>\nverdict: ${esc(clean.result.verdict)}  (${esc(clean.result.reds)} red, ${esc(clean.result.advisories)} advisory) — exit ${esc(clean.exit_code)}</pre>
+      <div class="banner ok">CONTROL PAIR: ${esc(clean.result.verdict)} — NO FALSE ALARMS</div>` },
+];
+let cur = 0;
+const tabs = $("#sim-tabs");
+steps.forEach((s,i) => {
+  const b = document.createElement("button");
+  b.className = "sim-tab"; b.role = "tab"; b.dataset.i = i;
+  b.innerHTML = `<span class="n">${String(i+1).padStart(2,"0")}</span>${esc(s.tag)} — ${esc(s.title)}`;
+  b.onclick = () => go(i); tabs.appendChild(b);
+});
+function go(i){
+  cur = Math.max(0, Math.min(steps.length-1, i));
+  document.querySelectorAll(".sim-tab").forEach((t,j)=>t.classList.toggle("active", j===cur));
+  $("#sim-body").innerHTML = steps[cur].html;
+  $("#prev").disabled = cur===0; $("#next").disabled = cur===steps.length-1;
+}
+$("#prev").onclick = () => go(cur-1);
+$("#next").onclick = () => go(cur+1);
+addEventListener("keydown", e => {
+  if (e.key === "ArrowRight") go(cur+1);
+  if (e.key === "ArrowLeft") go(cur-1);
+});
+go(0);
+
+/* ---------- verdict cards ---------- */
+function cardHTML(p){
+  const r = p.result, F = r.findings;
+  let rows = "";
+  for (const f of F.write_write)
+    rows += `<div class="finding red"><span class="cls">WRITE–WRITE</span>
+      <div><span class="ent">${esc(f.entity)}</span>
+      <span class="rcpt">(${esc(f.path)}) — ${esc(r.ref_a)}: ${esc(f.a)} · ${esc(r.ref_b)}: ${esc(f.b)}</span></div></div>`;
+  for (const f of F.read_write){
+    const deps = f.dependents.map(d =>
+      `<div class="rcpt">· ${esc(d.name)}() <span class="loc">${esc(d.path)}:${esc(d.line)}</span> — conf ${esc(d.confidence)} (${esc(d.resolution)})</div>`).join("");
+    rows += `<div class="finding red"><span class="cls">READ–WRITE</span>
+      <div><span class="ent">${esc(f.entity)}</span></div>
+      ${f.old_signature ? `<div class="sig">${esc(f.old_signature)} <b>→</b> ${esc(f.new_signature)}</div>` : ""}
+      ${deps}</div>`;
+  }
+  for (const f of F.advisory){
+    const deps = f.dependents.map(d=>`${esc(d.name)}() ${esc(d.path)}:${esc(d.line)}`).join(", ");
+    rows += `<div class="finding adv"><span class="cls">BEHAVIOR DRIFT</span>
+      <div><span class="ent">${esc(f.entity)}</span> <span class="rcpt">body changed by
+      ${esc(f.changed_by)}; dependents: ${deps}</span></div></div>`;
+  }
+  for (const f of F.proximity)
+    rows += `<div class="finding adv"><span class="cls">PROXIMITY</span>
+      <div><span class="rcpt">${esc(f.path)} — ${esc(r.ref_a)}: ${esc(f.a.join(", "))} ·
+      ${esc(r.ref_b)}: ${esc(f.b.join(", "))}</span></div></div>`;
+  for (const pr of (r.priors || []))
+    rows += `<div class="finding info"><span class="cls">HOTSPOT PRIOR</span>
+      <div><span class="ent">${esc(pr.path)}</span> <span class="rcpt">${esc(pr.red_findings)}
+      red across ${esc(pr.runs_touching)} prior runs (rate ${esc(pr.rate)}) —
+      scope: ${esc(r.priors_scope||"?")} [${esc(r.priors_backend||"?")}]</span></div></div>`;
+  if (!rows) rows = `<div class="finding info" style="border-left-color:var(--phos)">
+    <span class="cls" style="color:var(--phos)">NO OVERLAP</span>
+    <div><span class="rcpt">write-sets and read-sets are disjoint — land in any order.</span></div></div>`;
+  const landing = r.landing_order ?
+    `<div class="landing"><b>✈</b> ${esc(r.landing_order)}</div>` : "";
+  return `<div class="card"><div class="card-head">
+      <span class="pair">${esc(r.ref_a)} ✈ ${esc(r.ref_b)}</span>
+      <span class="pill ${esc(r.verdict)}">${esc(r.verdict)}</span></div>
+    <div class="card-body">${rows}${landing}
+      <div class="exitcode">exit <b>${esc(p.exit_code)}</b> ·
+      ${r.reds} red · ${r.advisories} advisory ·
+      ${(r.unknowns||[]).length} unknown</div></div></div>`;
+}
+$("#cards").innerHTML = DATA.pairs.map(cardHTML).join("");
+
+/* ---------- fleet ---------- */
+$("#board-term").textContent = DATA.board_text || "(board unavailable)";
+$("#hotspot-term").textContent = DATA.hotspots_text || "(no telemetry)";
+</script>
