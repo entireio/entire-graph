@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  printf '%s\n' "Usage: $0 --source FASTAPI_CHECKOUT --task-file TASK.md [--ref REV] [--output DIR] [--model PROVIDER/MODEL]"
+  printf '%s\n' "Usage: $0 --source FASTAPI_CHECKOUT --task-file TASK.md [--ref REV] [--output DIR] [--graph-bin PATH] [--model PROVIDER/MODEL]"
 }
 
 source_repo=""
@@ -11,6 +11,7 @@ task_file=""
 ref="HEAD"
 output_dir=""
 model=""
+graph_bin="$(cd "$(dirname "$0")/.." && pwd)/entire-graph"
 
 while (($#)); do
   case "$1" in
@@ -18,13 +19,14 @@ while (($#)); do
     --task-file) task_file="$2"; shift 2 ;;
     --ref) ref="$2"; shift 2 ;;
     --output) output_dir="$2"; shift 2 ;;
+    --graph-bin) graph_bin="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
     --help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
 done
 
-if [[ -z "$source_repo" || -z "$task_file" || ! -d "$source_repo/.git" || ! -f "$task_file" ]]; then
+if [[ -z "$source_repo" || -z "$task_file" || ! -d "$source_repo/.git" || ! -f "$task_file" || ! -x "$graph_bin" ]]; then
   usage
   exit 2
 fi
@@ -41,12 +43,12 @@ task="$(<"$task_file")"
 git -C "$source_repo" worktree add --detach "$code_repo" "$ref"
 git -C "$source_repo" worktree add --detach "$gps_repo" "$ref"
 
-common=(run --format json)
+common=(opencode run --auto --format json)
 if [[ -n "$model" ]]; then common+=(--model "$model"); fi
 
 code_prompt=$(printf '%s\n' \
   "Investigate this FastAPI task without GPS:" "" "$task" "" \
-  "Use only code-oriented Entire Graph commands: search, def, neighbors, impact, diff." \
+  "Use only code-oriented Entire Graph commands through $graph_bin: search, def, neighbors, impact, diff." \
   "Do not call spec, anchor, context, check, why, review, or verify." \
   "Do not modify application code, tests, or Git state." \
   "Write a JSON report to $code_repo/code-only-report.json with implementation symbols, relevant tests, graph facts, uncertainty, commands run, and elapsed time." \
@@ -54,7 +56,7 @@ code_prompt=$(printf '%s\n' \
 
 gps_prompt=$(printf '%s\n' \
   "Investigate this FastAPI task with Entire Graph GPS:" "" "$task" "" \
-  "Create the minimum repository-local GPS intent needed for this task, then use spec validate, anchor bind/resolve, context, check, why, review, and impact --intent where useful." \
+  "Create the minimum repository-local GPS intent needed for this task, then use $graph_bin for spec validate, anchor bind/resolve, context, check, why, review, and impact --intent where useful." \
   "Do not modify FastAPI application code or tests and do not execute test commands." \
   "Write a JSON report to $gps_repo/gps-report.json with requirements, acceptance criteria, anchors, declared and inferred tests, graph facts, gaps, commands run, and elapsed time." \
   "Label each conclusion confirmed_structural, heuristic_or_incomplete, or requires_verification.")
