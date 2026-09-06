@@ -23,6 +23,26 @@ from campaign_gate import (atomic_json as gate_atomic_json,
                            validate_observation as gate_validate_observation)
 
 SCENARIOS = ['cold', 'unchanged', 'one-edit', 'ten-edit', 'rename', 'delete', 'branch-switch', 'manifest-edit']
+
+
+class WalkAbort(RuntimeError):
+    def __init__(self, reason_code, message):
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
+def walk_guard(stop_path=None, lease_path=None):
+    if stop_path is not None and pathlib.Path(stop_path).exists():
+        raise WalkAbort('manual_stop_requested', 'STOP file appeared during runner accounting')
+    if lease_path is not None and not gate_lease_ok(pathlib.Path(lease_path)):
+        raise WalkAbort('supervisor_lease_missing_or_expired',
+                        'supervisor lease is absent or expired during runner accounting')
+
+
+def walk_error(error):
+    raise error
+
+
 def sha(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 
@@ -34,17 +54,20 @@ def load_module(path):
     return mod
 
 
-def prime(root):
+def prime(root, stop_path=None, lease_path=None):
     # Fixed ordered whole-readable-file prime, not a claim of disk-cold execution.
     count = total = 0
-    for base, dirs, files in os.walk(root, followlinks=False):
+    for base, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
+        walk_guard(stop_path, lease_path)
         dirs[:] = sorted(d for d in dirs if d != '.git' and not pathlib.Path(base, d).is_symlink())
         for name in sorted(files):
+            walk_guard(stop_path, lease_path)
             path = pathlib.Path(base, name)
             if path.is_symlink() or not path.is_file():
                 continue
             with path.open('rb') as stream:
                 while True:
+                    walk_guard(stop_path, lease_path)
                     block = stream.read(1024 * 1024)
                     if not block:
                         break
@@ -53,15 +76,24 @@ def prime(root):
     return {'files': count, 'bytes': total}
 
 
-def disk_bytes(root):
+def disk_bytes(root, stop_path=None, lease_path=None):
     total = 0
-    for base, dirs, files in os.walk(root, followlinks=False):
+    for base, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
+        walk_guard(stop_path, lease_path)
         dirs[:] = [d for d in dirs if not pathlib.Path(base, d).is_symlink()]
         for name in files:
+            walk_guard(stop_path, lease_path)
             path = pathlib.Path(base, name)
             if not path.is_symlink() and path.is_file():
                 total += path.stat().st_size
     return total
+
+
+def accounting_issue(error):
+    if isinstance(error, WalkAbort):
+        return {'reason_code': error.reason_code, 'message': str(error)}
+    return {'reason_code': 'resource_accounting_error',
+            'message': f'cache accounting failed: {error}'}
 
 
 def child(binary, config, work, timeout, stop_path=None, lease_path=None):
@@ -350,18 +382,26 @@ def main():
                                                   lease_path if args.require_supervisor else None)
                                     warm_after_source = scenario.digest(repo)['effective_tracked_input_sha256']
                                     warm_after_binary, warm_after_manifest = sha(args.binary), sha(args.manifest)
+                                    warm_cache_bytes = None
+                                    warm_accounting_issue = None
+                                    try:
+                                        warm_cache_bytes = disk_bytes(
+                                            cache, stop_path,
+                                            lease_path if args.require_supervisor else None)
+                                    except Exception as exc:
+                                        warm_accounting_issue = accounting_issue(exc)
                                     warm.update(semantic_digest=warm.get('semantic_sha256'),
                                                 source_digest=warm.get('source_digest'),
                                                 source_unchanged=warm_after_source == warm_source,
-                                                cache_bytes=disk_bytes(cache),
+                                                cache_bytes=warm_cache_bytes,
                                                 partial_failures_count=warm.get('partial_failures_count',
                                                                                  len(warm.get('partial_failures', []))),
                                                 extraction=warm.get('extraction') or (warm.get('stats') or {}).get('extraction'))
                                     with (args.output / 'warming.ndjson').open('a') as stream:
                                         stream.write(json.dumps(dict(warm, repository=record['id'], profile=profile,
                                                                      verb=verb, scenario=case, trial=trial), sort_keys=True) + '\n')
-                                    warm_issue = gate_validate_observation(warm, binary_digest, manifest_digest,
-                                                                          warm_source, warm_after_source)
+                                    warm_issue = warm_accounting_issue or gate_validate_observation(
+                                        warm, binary_digest, manifest_digest, warm_source, warm_after_source)
                                     if not warm_issue and (warm_before_binary != binary_digest or warm_after_binary != binary_digest):
                                         warm_issue = {'reason_code': 'binary_identity_drift', 'message': 'binary changed during warm-up'}
                                     if not warm_issue and (warm_before_manifest != manifest_digest or warm_after_manifest != manifest_digest):
@@ -379,7 +419,8 @@ def main():
                                     issue = preflight(current_cell)
                                     if issue:
                                         break
-                                    prep = prime(repo)
+                                    prep = prime(repo, stop_path,
+                                                 lease_path if args.require_supervisor else None)
                                     issue = preflight(current_cell)
                                     if issue:
                                         break
@@ -394,14 +435,24 @@ def main():
                                     except Exception as exc:
                                         after_source, after_binary, after_manifest = source, before_binary, before_manifest
                                         issue = {'reason_code': 'identity_unreadable', 'message': str(exc)}
+                                    cache_size = None
+                                    cache_accounting_issue = None
+                                    try:
+                                        cache_size = disk_bytes(
+                                            cache, stop_path,
+                                            lease_path if args.require_supervisor else None)
+                                    except Exception as exc:
+                                        cache_accounting_issue = accounting_issue(exc)
                                     row.update(repository=record['id'], profile=profile, verb=verb, scenario=case,
                                                trial=trial, reuse=reuse, semantic_digest=row.get('semantic_sha256'),
                                                source_digest=row.get('source_digest'),
-                                               source_unchanged=after_source == source, cache_bytes=disk_bytes(cache),
+                                               source_unchanged=after_source == source, cache_bytes=cache_size,
                                                prime=prep, partial_failures_count=row.get('partial_failures_count',
                                                                                         len(row.get('partial_failures', []))),
                                                extraction=row.get('extraction') or (row.get('stats') or {}).get('extraction'),
                                                runner_binary_sha256=before_binary, runner_manifest_sha256=before_manifest)
+                                    if not issue and cache_accounting_issue:
+                                        issue = cache_accounting_issue
                                     if not issue and (before_binary != binary_digest or after_binary != binary_digest):
                                         issue = {'reason_code': 'binary_identity_drift', 'message': 'binary changed during request'}
                                     if not issue and (before_manifest != manifest_digest or after_manifest != manifest_digest):
@@ -444,6 +495,10 @@ def main():
                         break
                 if paused:
                     break
+    if not paused:
+        final_issue = preflight(None)
+        if final_issue:
+            pause(final_issue)
     if not paused:
         gate_atomic_json(progress, {'stage': args.stage, 'observations': count, 'done': True, 'blocked': blocked})
     cache = args.output / 'request' / 'cache'

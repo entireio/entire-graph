@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -181,6 +182,54 @@ open(os.environ["ENTIRE_GRAPH_EXTRACTION_CORPUS_OUTPUT"], "w").write("{{")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(json.loads((output / 'pause.json').read_text())['reason_code'],
                          'supervisor_lease_missing_or_expired')
+
+    def test_final_lease_loss_pauses_before_marking_done(self):
+        case = self.case()
+        root, fake, manifest, assignment, counter, scenario = case
+        output = root / 'out'
+        output.mkdir()
+        lease = output / 'supervisor-lease.json'
+        lease.write_text(json.dumps({'expires_at': runner.time.time() + 180}))
+        scenario.write_text('''import os, pathlib
+def reset(root, record):
+    if pathlib.Path(os.environ["FAKE_COUNTER"]).exists() and pathlib.Path(os.environ["FAKE_COUNTER"]).read_text() == "6":
+        pathlib.Path(os.environ["FAKE_LEASE"]).unlink(missing_ok=True)
+def apply(root, record, case): pass
+def digest(root): return {"effective_tracked_input_sha256": "fixed-source"}
+''')
+        env = os.environ.copy()
+        env.update({'FAKE_COUNTER': str(counter),
+                    'FAKE_MANIFEST_PATH': str(manifest), 'FAKE_LEASE': str(lease)})
+        result = subprocess.run(self.command(root, fake, manifest, assignment, scenario, output,
+                                             stage='baseline', extra=('--require-supervisor',)),
+                                env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        pause = json.loads((output / 'pause.json').read_text())
+        self.assertEqual(pause['reason_code'], 'supervisor_lease_missing_or_expired')
+        self.assertFalse(json.loads((output / 'progress.json').read_text())['done'])
+
+    def test_post_request_accounting_failure_retains_observation_row(self):
+        case = self.case()
+        root, fake, manifest, assignment, counter, scenario = case
+        output = root / 'out'
+        argv = self.command(root, fake, manifest, assignment, scenario, output, stage='baseline')
+        previous_argv = sys.argv
+        previous_env = os.environ.copy()
+        try:
+            sys.argv = [str(HERE / 'run_campaign.py'), *argv[2:]]
+            os.environ.update({'FAKE_COUNTER': str(counter), 'FAKE_MANIFEST_PATH': str(manifest)})
+            with mock.patch.object(runner, 'disk_bytes', side_effect=OSError('cache disappeared')):
+                result = runner.main()
+        finally:
+            sys.argv = previous_argv
+            os.environ.clear()
+            os.environ.update(previous_env)
+        self.assertEqual(result, 2)
+        rows = [json.loads(line) for line in (output / 'baseline.ndjson').read_text().splitlines()]
+        self.assertEqual(rows[0]['status'], 'ok')
+        self.assertIsNone(rows[0]['cache_bytes'])
+        self.assertEqual(json.loads((output / 'pause.json').read_text())['reason_code'],
+                         'resource_accounting_error')
 
     def test_child_stop_interruption_is_distinct_from_timeout(self):
         case = self.case(mode='slow')
