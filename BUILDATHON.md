@@ -99,7 +99,7 @@ precision pair still labelled analysis-complete). Fixture:
    commit message itself states the invalidated assumption, the design change and the
    safety argument; the session transcript shows `graph impact` running before the edit
    and the failing probe (false `CLEARED` on dynamic dispatch) demonstrated before the fix.
-4. Final implementation and verification — this commit's checkpoint: docs aligned with the
+4. Final implementation and verification — see **Final verification (milestone 4)** below: semantic-diff review, the Flask run, the live link, and the deployment. Earlier note: docs aligned with the
    revised design, full suite re-verified at 33/33, demo cards rendered from the committed
    partial-analysis fixture (`CLEARED_PARTIAL` exit 4 on the dynamic pair; HOLD exit 2
    with confirmed-tier evidence on the static control pair in the same repo).
@@ -169,3 +169,43 @@ Next steps to production: ship as a first-class `entire graph collide` subcomman
 - Pairwise refs first; `--all` pairwise comes later (S4).
 
 **Open risks:** static analysis misses dynamic dispatch (mitigated: UNKNOWN labeling; errors exit 3 — "no verdict ≠ clean"); body-change advisories could be noisy on large repos (mitigated: advisories never page — only signature/removal/rename are red); `neighbors` symbol ambiguity on big codebases (mitigated: `--file` disambiguation retry).
+
+## Final verification (milestone 4)
+
+**Live deployment:** https://atc.omisaur.app — static build of the Flask demo
+(`tools/atc/public` is the bundle). Deployment protection is disabled so it opens
+without a Vercel login.
+
+**Semantic-diff review of the whole submission** (`entire graph diff --base 3a2a715
+--head HEAD`, the upstream fork point): 23 files, **335 entities added, 0 modified,
+0 removed**. No upstream entity was changed or deleted, so the contribution cannot
+regress existing behaviour. Warnings read rather than ignored: `E_FILE_TOO_LARGE` and
+`E_PARSE_ERROR` on vendored tree-sitter `grammars/*/parser.c` (pre-existing, unrelated
+to this work) and `W_UNSUPPORTED_FILE` on the `interface-inspirations/*.jpg` design
+references — images are not code, so being unparsed is correct rather than a defect.
+
+**Verified end to end on pallets/flask** (`tools/atc-demo/setup_flask_demo.sh`):
+`agent-ctx` IS Flask's real commit `6a64969` "pass context through dispatch methods";
+`agent-timing` is a request-timing helper built on the old shape. The feature passes on
+its own branch, `git merge` reports **zero conflicts**, and the merged tree raises
+`TypeError: Flask.full_dispatch_request() missing 1 required positional argument: 'ctx'`.
+ATC returns **HOLD (exit 2) in about 6 seconds** with receipts at `src/flask/timing.py:19`
+and `:26` (`type_inferred`, confidence 0.83) — and simultaneously reports 48 labelled
+blind spots, so the verdict is red *and* honest about what static analysis cannot see.
+The control pair (`agent-docs` x `agent-json`) returns **CLEARED (exit 0)**: precision
+holds on a real codebase, not only on the seeded fixture.
+
+**Live link:** `tools/atc/live.py` reads each session's own Claude Code transcript for its
+live prompt (tier-0 intent — it exists before any commit message does), snapshots
+uncommitted work with `git stash create`, and re-runs the collider. Verified three ways:
+an edit inside a worktree redrew the open page 8 seconds later with no reload; a
+dependency that existed only in the working tree (`Flask.preprocess_request` ->
+`timing.py:42`) was caught before any commit; and pointed at this repository mid-build,
+the board showed the session writing it with the operator's own prompt as the flight plan.
+
+**Suite:** 33/33 checks.
+
+**Defects our own tooling found in itself** (each fixed): bare-name dependent resolution
+producing implausible counts (now `<file>:<line>` selectors); the graph emitting JSON
+`null` for empty sections; `/var` versus `/private/var` worktree comparison; and ATC's own
+scratch worktrees being counted as agents on the live board.
