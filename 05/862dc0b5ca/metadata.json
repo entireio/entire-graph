@@ -1,0 +1,22 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "05862dc0b5ca",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "internal/sem/extraction_acceptance_test.go",
+    "internal/sem/extraction_cache_test.go",
+    "internal/sem/extraction_imports_test.go",
+    "internal/sem/extraction_lock_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/05/862dc0b5ca/0/metadata.json",
+      "transcript": "/05/862dc0b5ca/0/full.jsonl",
+      "compact_transcript": "/05/862dc0b5ca/0/transcript.jsonl",
+      "content_hash": "/05/862dc0b5ca/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
