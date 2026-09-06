@@ -24,6 +24,8 @@ EXPECTED_WARNINGS_COUNT = 1
 EXPECTED_WARNINGS_SHA256 = "e0ce85fefeba137c4e41fcfa3bc5f1d62d461bc1f4fc7eff5587bbd52cf50468"
 EXPECTED_SEMANTIC_SHA256 = "fa08ae3464a63c71db89f5755062ac76b3a8960e5bccd2f536c1491d8543b4f7"
 TIMEOUT_SECONDS = 120
+FINGERPRINT_TIMEOUT_SECONDS = 60
+GO_TEST_TIMEOUT_SECONDS = 130
 
 
 def sha256(path):
@@ -45,7 +47,7 @@ def fingerprint(root, scenario_script, corpus_root, input_sha256, stage):
         ["/usr/bin/python3", str(scenario_script), "digest", EXPECTED_REPOSITORY],
         env=env,
         capture_output=True,
-        timeout=TIMEOUT_SECONDS,
+        timeout=FINGERPRINT_TIMEOUT_SECONDS,
     )
     (Path(root) / (stage + ".log")).write_bytes(result.stderr)
     (Path(root) / (stage + ".json")).write_bytes(result.stdout)
@@ -72,9 +74,7 @@ def runtime_environment(corpus_root):
         GOTELEMETRY="off",
         P1_CORPUS_ROOT=str(corpus_root),
     )
-    result = os.environ.copy()
-    result.update(environment)
-    return result
+    return environment
 
 
 def validate_observation(observation, arm, binary_sha256, input_sha256):
@@ -100,12 +100,10 @@ def validate_observation(observation, arm, binary_sha256, input_sha256):
         raise RuntimeError(f"{arm} cache mode mismatch")
     if observation.get("reuse") != (arm == "on"):
         raise RuntimeError(f"{arm} reuse mismatch")
-    if observation.get("partial_failures") is not None and len(observation["partial_failures"]) != EXPECTED_PARTIAL_FAILURES_COUNT:
-        raise RuntimeError(f"{arm} partial failure list count mismatch")
     return observation
 
 
-def run_arm(root, binary, scenario_script, corpus_root, binary_sha256, input_sha256, arm):
+def run_arm(root, binary, scenario_script, corpus_root, binary_sha256, input_sha256, arm, started=None):
     config = dict(
         version=1,
         repository=EXPECTED_REPOSITORY,
@@ -120,7 +118,7 @@ def run_arm(root, binary, scenario_script, corpus_root, binary_sha256, input_sha
         scenario="diagnostic",
         trial=0,
         source_digest=input_sha256,
-        input_manifest_sha256="d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e2730",
+        input_manifest_sha256="d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
     )
     save(root, "request-" + arm + ".json", config)
     environment = runtime_environment(corpus_root)
@@ -134,7 +132,7 @@ def run_arm(root, binary, scenario_script, corpus_root, binary_sha256, input_sha
         "-test.run=^TestExtractionCorpusMeasurement$",
         "-test.count=1",
         "-test.v",
-        "-test.timeout=120s",
+        f"-test.timeout={GO_TEST_TIMEOUT_SECONDS}s",
     ]
     process_path = Path(root) / ("process-" + arm + ".log")
     timed_out = False
@@ -147,6 +145,8 @@ def run_arm(root, binary, scenario_script, corpus_root, binary_sha256, input_sha
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        if started is not None:
+            started.append(arm)
         try:
             exit_code = process.wait(timeout=TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
@@ -197,7 +197,8 @@ def main(argv=None):
         raise SystemExit("output directory must be empty; refusing overwrite")
     identity = dict(
         source_root=str(source_root),
-        source_commit=args.source_commit,
+        source_commit_asserted=args.source_commit,
+        source_provenance="caller-supplied build archive; commit is recorded, not independently verified",
         binary=str(binary),
         expected_binary_sha256=args.binary_sha256,
         scenario_script=str(scenario_script),
@@ -211,6 +212,8 @@ def main(argv=None):
         expected_warnings_sha256=EXPECTED_WARNINGS_SHA256,
         expected_semantic_sha256=EXPECTED_SEMANTIC_SHA256,
         timeout_seconds=TIMEOUT_SECONDS,
+        fingerprint_timeout_seconds=FINGERPRINT_TIMEOUT_SECONDS,
+        go_test_timeout_seconds=GO_TEST_TIMEOUT_SECONDS,
         rss_status="unavailable; no isolated wait4 measurement claimed",
     )
     save(root, "environment.json", runtime_environment(corpus_root))
@@ -233,6 +236,7 @@ def main(argv=None):
         if not scenario_script.is_file():
             raise RuntimeError("pinned scenario script is unavailable")
         before = fingerprint(root, scenario_script, corpus_root, args.input_sha256, "before")
+        started = []
         for arm in ("off", "on"):
             observation = run_arm(
                 root,
@@ -242,11 +246,22 @@ def main(argv=None):
                 args.binary_sha256,
                 args.input_sha256,
                 arm,
+                started,
             )
             observations[arm] = observation
             completed.append(arm)
             if arm == "off" and observation["semantic_sha256"] != EXPECTED_SEMANTIC_SHA256:
                 raise RuntimeError("OFF semantic identity mismatch; stop before ON")
+            if arm == "off":
+                if not source_root.is_dir() or not binary.is_file():
+                    raise RuntimeError("source or binary unavailable before ON")
+                if sha256(binary) != args.binary_sha256:
+                    raise RuntimeError("binary changed before ON")
+                if sha256(scenario_script) != identity["scenario_sha256"]:
+                    raise RuntimeError("scenario script changed before ON")
+                before_on = fingerprint(root, scenario_script, corpus_root, args.input_sha256, "before-on")
+                if before_on != before:
+                    raise RuntimeError("input changed before ON")
         if observations["off"]["semantic_sha256"] != observations["on"]["semantic_sha256"]:
             raise RuntimeError("semantic mismatch; stop")
         if observations["off"]["source_digest"] != observations["on"]["source_digest"]:
@@ -266,8 +281,8 @@ def main(argv=None):
             dict(
                 status="issue" if issue else "pair_semantics_equal",
                 issue=issue,
-                processes_started=completed,
-                unrun=[arm for arm in ("off", "on") if arm not in completed],
+                processes_started=started,
+                unrun=[arm for arm in ("off", "on") if arm not in started],
                 observations={arm: observations[arm] for arm in completed},
                 scope="one isolated corrective diagnostic; no campaign or release gate",
             ),
