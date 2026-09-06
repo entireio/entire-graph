@@ -2,7 +2,6 @@ package sem
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -59,5 +58,4 @@ func TestCapturedPreselectionLocaleTermPresenceMatchesGit(t *testing.T) {
 			}
 		})
 	}
-	_ = os.Getenv("LC_ALL") // keep the environment import explicit for test setup review
 }

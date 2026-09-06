@@ -84,6 +84,7 @@ type SearchOptions struct {
 	// deliberately unexported and nil in production.
 	afterPreindexLoad    func()
 	afterSourceSelection func()
+	preselectionCapture  *capturePreselectionObserver
 	// afterSnapshotBuild injects deterministic compiler evidence in contract tests.
 	// It is nil in production and runs before any relation-based query stage.
 	afterSnapshotBuild func(*ProviderSnapshot)
@@ -746,6 +747,13 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if options.Ranking != "" && options.Ranking != "current" && options.Ranking != "experimental-graph" {
 		return SearchResponse{}, errors.New("ranking must be current or experimental-graph")
 	}
+	if options.ExtractionReuse && options.Worktree && !options.IndexAllFiles && options.Compiler == nil && options.Ranking != "experimental-graph" && !options.rankingEvaluationCapture {
+		var captureErr error
+		options.preselectionCapture, captureErr = newCapturePreselectionObserver(ctx, searchGitGrepPreselectionPatterns(q), q.terms)
+		if captureErr != nil {
+			return SearchResponse{}, captureErr
+		}
+	}
 	baseSnapshotOptions := ProviderSnapshotOptions{
 		captureInputs:      (options.Ranking == "experimental-graph" || options.rankingEvaluationCapture),
 		Compiler:           options.Compiler,
@@ -757,6 +765,9 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		IncludeFiles:       options.IncludeFiles,
 		MaxParseBytes:      options.MaxParseBytes,
 		Profile:            options.Profile,
+	}
+	if options.preselectionCapture != nil {
+		baseSnapshotOptions.captureObserverFactory = options.preselectionCapture.factory
 	}
 	searchCacheDisabled := options.DisableCache || options.ExtractionReuse || options.Compiler != nil || (options.Ranking == "experimental-graph" || options.rankingEvaluationCapture)
 	if !options.Worktree && !searchCacheDisabled && options.CacheDir != "" {
@@ -2021,7 +2032,7 @@ func preselectSearchFiles(
 		var grepErr error
 		if options.ExtractionReuse {
 			if trackedErr == nil {
-				matches, capturedPreselectionReads, grepErr = capturedPreselectionMatches(ctx, source, tracked, searchGitGrepPreselectionPatterns(q), 32)
+				matches, capturedPreselectionReads, grepErr = capturedPreselectionMatches(ctx, source, tracked, searchGitGrepPreselectionPatterns(q), 32, options.preselectionCapture)
 			}
 		} else {
 			matches, grepErr = gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)

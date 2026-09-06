@@ -13,7 +13,10 @@ import (
 // budget counts matching lines, not substrings; -o selects nonoverlapping,
 // leftmost-longest matches. Only distinct matched strings need be retained for
 // the downstream term-presence reduction.
-func capturedPreselectionMatches(ctx context.Context, source sourceContext, tracked, patterns []string, maxLines int) ([]gitutil.GrepMatch, int, error) {
+func capturedPreselectionMatches(ctx context.Context, source sourceContext, tracked, patterns []string, maxLines int, observers ...*capturePreselectionObserver) ([]gitutil.GrepMatch, int, error) {
+	if len(observers) > 0 && observers[0] != nil {
+		observers[0].activate()
+	}
 	quoted := make([]string, 0, len(patterns))
 	for _, pattern := range patterns {
 		if pattern != "" {
@@ -45,6 +48,20 @@ func capturedPreselectionMatches(ctx context.Context, source sourceContext, trac
 			continue
 		}
 		content, ok := source.read(path)
+		if len(observers) > 0 && observers[0] != nil {
+			if evidence, observed := observers[0].evidence(path); observed {
+				if evidence.err != nil {
+					return nil, reads, evidence.err
+				}
+				reads++
+				if !evidence.binary {
+					for _, term := range evidence.terms {
+						matches = append(matches, gitutil.GrepMatch{Path: path, Text: term})
+					}
+				}
+				continue
+			}
+		}
 		if !ok {
 			continue
 		}
