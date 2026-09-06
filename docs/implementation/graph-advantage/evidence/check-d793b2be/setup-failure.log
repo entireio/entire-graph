@@ -1,0 +1,4 @@
+mise ERROR error parsing config file: /private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-integration-d793b2be-jcmrfujz/source/mise.toml
+mise ERROR Config files in /private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-integration-d793b2be-jcmrfujz/source/mise.toml are not trusted.
+Trust them with `mise trust`. See https://mise.jdx.dev/cli/trust.html for more information.
+mise ERROR Run with --verbose or MISE_VERBOSE=1 for more information

@@ -1,0 +1,18 @@
+{
+  "commit": "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
+  "checkout": "/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-integration-d793b2be-jcmrfujz/source",
+  "output": "/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-integration-d793b2be-jcmrfujz/check.log",
+  "exit_code": 0,
+  "elapsed_seconds": 683.6989461251069,
+  "status": "",
+  "head_after": "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
+  "log_sha256": "d711afc017d47c544c9d9ed4dea51b9832fd0419a4f94201d68ec32833621d7c",
+  "command": [
+    "mise",
+    "run",
+    "check"
+  ],
+  "verification_scope": "complete repository check in immutable detached checkout",
+  "toolchain": "go version go1.26.1 darwin/arm64",
+  "binary_sha256": "c4cdd9bb0167f4107c60074ee68360e253e700f180c0e91c53e663fcdc5568e3"
+}
