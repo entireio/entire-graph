@@ -2,7 +2,7 @@
 
 PACT turns confirmed developer intent into Graph-selected checks, executes them against pinned commits, and produces evidence a reviewer can replay.
 
-**Track:** E2 — Build with Graph Intelligence. **Status:** working local/remote product with implemented Noon Curveball; not yet a complete submission. Fresh Curveball cloud verification, milestone publication, later Checkpoints and submission remain open. Full scope is defined in [PACT_IMPLEMENTATION_GUIDE.md](PACT_IMPLEMENTATION_GUIDE.md).
+**Track:** E2 — Build with Graph Intelligence. **Status:** working local/remote product with implemented Noon Curveball; not yet a complete submission. Post-Curveball cloud verification is complete and the implementation milestones are published. Final-context capture and submission remain open. Full scope is defined in [PACT_IMPLEMENTATION_GUIDE.md](PACT_IMPLEMENTATION_GUIDE.md).
 
 ## Problem, intended user and why it matters
 
@@ -66,7 +66,7 @@ Observed verification: **22 tests passed in 13.08 seconds**, including the origi
 
 A new measured D1 comparison reports 2 candidate scenarios/0 failures for changed-file, 10/2 for Graph with fallback, 10/2 for all-registered, and 24/2 for the separate full-matrix reference. [Full measurement](pact/docs/evidence/curveball-local-comparison.json). No speed advantage or universal coverage is claimed.
 
-The existing Databricks profile is valid. Five concrete Curveball verification jobs are prepared, but automatic approval review blocked their upload/execution pending explicit user authorization. Earlier genuine H1/H2 cloud evidence remains available and is not relabelled as post-Curveball verification.
+All five post-Curveball Databricks jobs completed successfully: changed-file, Graph fallback, all registered, independent full matrix, and corrected D2. Every cloud assertion matches its local counterpart; evidence context and idempotent replay are verified. D1 finds two regressions through fallback; D2 passes all ten candidate assertions. D2 evidence context was recovered from Delta history. See [cloud verification](pact/docs/evidence/curveball-databricks-verification.json). Earlier H1/H2 runs remain separately identified.
 
 ## Checkpoint links and what each checkpoint proves
 
@@ -151,7 +151,7 @@ Upstream boundary: `3a2a715fad1948e83dc7ebe0d307377ba29e065a`. Earlier commits b
 
 - Destination fork lineage is corrected; disclose the earlier workflow deviation and provide accessible Checkpoint links before claiming event compliance.
 - Capture/link the real policy approval and the remaining milestone contexts; current reports intentionally retain partial provenance.
-- Curveball implementation and local preservation tests are verified; finish the prepared post-Curveball cloud checks and final capture.
+- Curveball implementation, local preservation tests and all five post-Curveball cloud checks are verified; finish final-context capture.
 - Finish final semantic review, judge-access check and submission receipt before **15:00 IST**. Two local D1→D2 walkthroughs were performed; the second was genuinely recorded.
 - This is a bounded trusted fixture, not hostile-code isolation, broad-language support, autonomous repair, formal verification or a guarantee that code is safe.
 
@@ -167,12 +167,12 @@ Submission owner, demo owner and Databricks deployment owner must be confirmed b
 | F03 Graph investigation | Versioned snapshots, original structural paths, and saved before-edit impact. Final submitted-SHA review pending. |
 | F04 Selection | Resolved unchanged callers preserved; dynamic-dispatch fallback demonstrated without invented edges. |
 | F05 Local execution | Pinned subprocess execution, 22 passing tests, D1/D2 reports and portable bundles. |
-| F06 Databricks | Original real H1/H2 runs, Delta history and recovery verified. New Curveball jobs prepared; approval pending. |
+| F06 Databricks | Original H1/H2 and five post-Curveball jobs verified, with local parity, preserved evidence, idempotent replay and Delta history. |
 | F07 Verdicts | Baseline/candidate, intentional revisions, execution errors and incomplete analysis remain separate. |
 | F08 Evidence/replay | New bundles retain evidence quality and source gaps; legacy evidence is not upgraded. |
 | F09 UI | Real D1→D2 flow verified, diagnostics and correction visible, zero JS errors. |
-| F10 Comparison | Real local strategy comparison plus independent full matrix. New remote comparison awaits approval. |
+| F10 Comparison | Local and real Databricks strategy comparisons plus independent full matrix verified; identical assertions. |
 | F11 Authentic history | Setup and manually attached fresh recovery available; missing original/pre-noon/final capture remains disclosed. |
-| F12 Delivery | Setup/architecture/limitations/demo docs and genuine backup recording prepared; publication/access/submission receipt pending. |
+| F12 Delivery | Setup/architecture/limitations/demo docs and genuine backup recording published; final evidence publication/access/submission receipt remain. |
 
-Milestone pushes to the existing India mirror were blocked by automatic approval review pending explicit destination/payload approval. Commits remain local and preserved; they are not described as published. See [setup](pact/docs/SETUP.md), [architecture](pact/docs/ARCHITECTURE.md), and [limitations](pact/docs/LIMITATIONS.md).
+Following explicit user authorization, implementation through `21aabb9c3d5262bfa46b32fdf03ef95d0e940ce6`, D0/D1/D2 tags and the existing authentic Checkpoint branch were pushed to the India mirror and remotely verified. No force-push or history rewrite was used. See [setup](pact/docs/SETUP.md), [architecture](pact/docs/ARCHITECTURE.md), and [limitations](pact/docs/LIMITATIONS.md).

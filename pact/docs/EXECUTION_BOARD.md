@@ -68,7 +68,11 @@ Migration verification: 15 tests passed in 7.59 seconds in PACT-fork; original C
 
 - T08 implemented and locally verified in fresh actual session 01a07570-4e5d-7f20-bdc6-75eeb8d46a18. Recovery Checkpoint f899811e4ff1 is genuine manual attachment, not native or pre-noon capture.
 - T09: 22 passing tests, real dynamic-dispatch negative test before fix, original behavior retained, local comparison/full matrix, genuine UI correction and clean installed replay verified.
-- T05: existing cloud backend remains verified at earlier H1/H2 versions. New Curveball evidence preservation implemented; five prepared real cloud checks await explicit approval after automatic review rejection.
+- T05: existing cloud backend remains verified at earlier H1/H2 versions. All five post-Curveball jobs now verified with local parity, evidence preservation, idempotence and Delta history.
 - T10: setup/architecture/limitations docs, D1/D2 reports/bundles, genuine 23.5-second sampled browser recording and two walkthroughs exist. Submission/access/receipt remain open.
-- Local milestones: e9e3634 recovery, c796c88 adaptation, D0/D1/D2 fixture commits, fed2063 omission/low-confidence handling. Publication awaits explicit approval after automatic review rejection. Do not claim these pushes succeeded.
+- Local milestones: e9e3634 recovery, c796c88 adaptation, D0/D1/D2 fixture commits, fed2063 omission/low-confidence handling. These milestones and D0/D1/D2 tags were pushed after explicit user authorization and remotely verified at `21aabb9`.
 - Scope remains all F01–F12. Missing original/pre-noon/final capture cannot be replaced with Git tags or copied transcripts. Deadline remains 15:00 IST.
+
+## Authorized stopping milestone
+
+Post-Curveball cloud verification is complete; see `evidence/curveball-databricks-verification.json`. Authentic final review capture is being performed in user-authorized task `01a075de-fbc5-7b60-b38c-b14cb13816a0`. Stop after that capture is verified and linked. Submission/access and earlier provenance gaps remain open.

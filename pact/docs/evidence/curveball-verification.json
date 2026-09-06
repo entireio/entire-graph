@@ -13,9 +13,15 @@
     "state": "not_run_successfully",
     "reason": "Sandbox denied Go build cache access. No upstream Go source changed; focused Python suite passed."
   },
-  "remote_curveball": "Prepared; automatic approval review requires user approval before upload/execution",
-  "publication": "Local milestones exist; automatic approval review requires user approval before push",
+  "remote_curveball": {
+    "state": "verified",
+    "jobs": 5,
+    "evidence": "curveball-databricks-verification.json",
+    "delta_history_statement_id": "01f1a9ce-b798-1a0a-90c5-4d7ae2b7a3df"
+  },
+  "publication": "Implementation21aabb9, D0/D1/D2 tags and existing Checkpoint branch pushed via India mirror; exact remote refs verified. Final cloud evidence commit follows.",
   "capture": "Genuine manually attached fresh recovery f899811e4ff1; final adaptation Checkpoint unresolved",
   "clean_install": "Isolated 0.2.0 wheel build and clean installed D1/D2 replay passed; see curveball-clean-install.json",
-  "recording": "Genuine 23.512-second sampled browser recording, 44 captured frames; see curveball-recording.json"
+  "recording": "Genuine 23.512-second sampled browser recording, 44 captured frames; see curveball-recording.json",
+  "updated_at": "2026-09-06T08:41:59.911073+00:00"
 }

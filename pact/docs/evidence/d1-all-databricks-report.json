@@ -1,0 +1,1342 @@
+{
+  "assertions": [
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/guest-export-own-public",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-export-own-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/guest-export-own-private",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-export-own-private",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/guest-export-other-public",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-export-other-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/guest-export-other-private",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-export-other-private",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/member-preview-other-private",
+      "requirement_id": "R2",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "member-preview-other-private",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/member-export-other-private",
+      "requirement_id": "R2",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "member-export-other-private",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/admin-export-own-public",
+      "requirement_id": "R3",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "admin-export-own-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/admin-export-own-private",
+      "requirement_id": "R3",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "admin-export-own-private",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": null,
+      "applicability_reason": "Requirement does not apply to this version",
+      "expected_allowed": true,
+      "observation_ref": null,
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-preview-own-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "not_applicable"
+    },
+    {
+      "actual_allowed": null,
+      "applicability_reason": "Requirement does not apply to this version",
+      "expected_allowed": true,
+      "observation_ref": null,
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-preview-other-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "not_applicable"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-export-own-public",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-export-own-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "fail"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-export-own-private",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-export-own-private",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-export-other-public",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-export-other-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "fail"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-export-other-private",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-export-other-private",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/member-preview-other-private",
+      "requirement_id": "R2",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "member-preview-other-private",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/member-export-other-private",
+      "requirement_id": "R2",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "member-export-other-private",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/admin-export-own-public",
+      "requirement_id": "R3",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "admin-export-own-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/admin-export-own-private",
+      "requirement_id": "R3",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "admin-export-own-private",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-preview-own-public",
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-preview-own-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-preview-other-public",
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+      "scenario_id": "guest-preview-other-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    }
+  ],
+  "backend": "databricks",
+  "backend_metadata": {
+    "assertion_count": 20,
+    "assertion_hash": "8259464c6e8671cd80161ba9d3e240aa6510995d97fe35fb72d5c80f68459f65",
+    "assertion_parity": "verified against returned observations",
+    "assertions": [
+      {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/guest-export-own-public",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-own-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/guest-export-own-private",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-own-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/guest-export-other-public",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-other-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/guest-export-other-private",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-other-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/member-preview-other-private",
+        "requirement_id": "R2",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "member-preview-other-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/member-export-other-private",
+        "requirement_id": "R2",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "member-export-other-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": true,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/admin-export-own-public",
+        "requirement_id": "R3",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "admin-export-own-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": true,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/admin-export-own-private",
+        "requirement_id": "R3",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "admin-export-own-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": null,
+        "applicability_reason": "Requirement does not apply to this version",
+        "expected_allowed": true,
+        "observation_ref": null,
+        "requirement_id": "R4",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-preview-own-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "not_applicable"
+      },
+      {
+        "actual_allowed": null,
+        "applicability_reason": "Requirement does not apply to this version",
+        "expected_allowed": true,
+        "observation_ref": null,
+        "requirement_id": "R4",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-preview-other-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "not_applicable"
+      },
+      {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-export-own-public",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "fail"
+      },
+      {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-export-own-private",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-own-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-export-other-public",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-other-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "fail"
+      },
+      {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-export-other-private",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-other-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/member-preview-other-private",
+        "requirement_id": "R2",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "member-preview-other-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/member-export-other-private",
+        "requirement_id": "R2",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "member-export-other-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": true,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/admin-export-own-public",
+        "requirement_id": "R3",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "admin-export-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": true,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/admin-export-own-private",
+        "requirement_id": "R3",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "admin-export-own-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": true,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-preview-own-public",
+        "requirement_id": "R4",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-preview-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": true,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-preview-other-public",
+        "requirement_id": "R4",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-preview-other-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "pass"
+      }
+    ],
+    "code_hash": "07924076fd46bced3ece5dd379275aab16e37c1c02f9f0d09da330314b0a1583",
+    "commits": {
+      "base": "32030ee415285802f847499eef8ae12c6e677a22",
+      "head": "dc177b0ccff06dfe9f13020df23b1caed4b855f5"
+    },
+    "completion_state": "complete",
+    "data_source": "team-owned 24-case permission fixture",
+    "evidence_context": {
+      "schema_version": "1.0",
+      "selection": {
+        "diagnostics": [
+          {
+            "code": "runtime_lookup",
+            "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+            "detail": "getattr may resolve or modify relationships at runtime",
+            "file_path": "pact/demo/workspace_app/export.py",
+            "line": 6,
+            "origin": "source_precaution",
+            "side": "base"
+          },
+          {
+            "code": "indirect_call",
+            "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+            "detail": "Call through check requires source/test verification",
+            "file_path": "pact/demo/workspace_app/export.py",
+            "line": 7,
+            "origin": "source_precaution",
+            "side": "base"
+          },
+          {
+            "code": "runtime_lookup",
+            "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+            "detail": "getattr may resolve or modify relationships at runtime",
+            "file_path": "pact/demo/workspace_app/export.py",
+            "line": 6,
+            "origin": "source_precaution",
+            "side": "head"
+          },
+          {
+            "code": "indirect_call",
+            "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+            "detail": "Call through check requires source/test verification",
+            "file_path": "pact/demo/workspace_app/export.py",
+            "line": 7,
+            "origin": "source_precaution",
+            "side": "head"
+          }
+        ],
+        "evidence_schema_version": "1.0",
+        "fallback": {
+          "added_requirement_ids": [],
+          "mode": "none",
+          "scope": "confirmed registered assertions only; not complete program coverage"
+        },
+        "not_selected_ids": [],
+        "partial_analysis": true,
+        "path_ids": [],
+        "paths": [],
+        "selected_before_fallback": [
+          "R1@2",
+          "R2@2",
+          "R3@2",
+          "R4@2"
+        ],
+        "selected_requirement_ids": [
+          "R1@2",
+          "R2@2",
+          "R3@2",
+          "R4@2"
+        ],
+        "selection_reasons": {
+          "R1@2": [
+            "All registered checks"
+          ],
+          "R2@2": [
+            "All registered checks"
+          ],
+          "R3@2": [
+            "All registered checks"
+          ],
+          "R4@2": [
+            "New or revised requirement needs verification",
+            "All registered checks"
+          ]
+        },
+        "snapshot_hashes": {
+          "base": "831486c34208a9b3c77b641841b5f3ad5d4a608777620a638f01dd8fc7bf4656",
+          "head": "a180e561cdb7854d817601c186f1cc52739b487d7738cab0f2cb07a7905ec955"
+        },
+        "strategy": "all",
+        "traversal_limit": 8,
+        "unresolved_ids": [],
+        "verification": {
+          "analysis": "potentially_partial",
+          "next_steps": [
+            "Inspect the pinned source at diagnostic locations.",
+            "Replay the bundled registered checks and inspect their observed results.",
+            "Add approved checks for behavior outside the registered scenarios."
+          ],
+          "runtime_reachability": "requires_source_or_test_verification"
+        }
+      },
+      "source_gaps": [
+        "R1@2",
+        "R2@2",
+        "R3@2",
+        "R4@2"
+      ],
+      "verification_scope": "registered assertions only; static paths are not runtime traces"
+    },
+    "evidence_context_hash": "8239bc95ff7800a37caaf2a6068e9b4d30bd34de7b52bb2b872f26c718059b2b",
+    "grouped_violations": [
+      {
+        "requirement_ref": "R1@2",
+        "role": "guest",
+        "violations": 2
+      }
+    ],
+    "idempotent_replay_verified": true,
+    "namespace": "workspace.pact",
+    "observation_count": 18,
+    "original_bundle_hash": "199833affdfa18e23f0d5f3cbac8a8b32fd145df0f7001467c0e92d35cf404da",
+    "payload_hash": "8573db76ae12e6f7563fcdb77ad302ccc0b9dc68f6cca86063d03c5dc082fe53",
+    "remote_run_id": 591291185596050,
+    "review_completion_state": "partial",
+    "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+    "run_url": "https://dbc-c3d496ed-7dbd.cloud.databricks.com/?o=7474653723260152#job/814172048197535/run/591291185596050",
+    "synthetic": true
+  },
+  "bundle_hash": "199833affdfa18e23f0d5f3cbac8a8b32fd145df0f7001467c0e92d35cf404da",
+  "cache_mode": "disabled",
+  "commits": {
+    "base": "32030ee415285802f847499eef8ae12c6e677a22",
+    "head": "dc177b0ccff06dfe9f13020df23b1caed4b855f5"
+  },
+  "comparison_id": "50c63f7812f849e78676000d6d4cf9ac",
+  "completion_state": "partial",
+  "counts": {
+    "base": {
+      "fail": 0,
+      "not_applicable": 2,
+      "not_run": 0,
+      "observations": 8,
+      "pass": 8,
+      "unresolved": 0
+    },
+    "head": {
+      "fail": 2,
+      "not_applicable": 0,
+      "not_run": 0,
+      "observations": 10,
+      "pass": 8,
+      "unresolved": 0
+    }
+  },
+  "created_at": "2026-09-06T08:38:20.165508+00:00",
+  "errors": [],
+  "evidence_context": {
+    "schema_version": "1.0",
+    "selection": {
+      "diagnostics": [
+        {
+          "code": "runtime_lookup",
+          "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+          "detail": "getattr may resolve or modify relationships at runtime",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 6,
+          "origin": "source_precaution",
+          "side": "base"
+        },
+        {
+          "code": "indirect_call",
+          "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+          "detail": "Call through check requires source/test verification",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 7,
+          "origin": "source_precaution",
+          "side": "base"
+        },
+        {
+          "code": "runtime_lookup",
+          "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+          "detail": "getattr may resolve or modify relationships at runtime",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 6,
+          "origin": "source_precaution",
+          "side": "head"
+        },
+        {
+          "code": "indirect_call",
+          "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+          "detail": "Call through check requires source/test verification",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 7,
+          "origin": "source_precaution",
+          "side": "head"
+        }
+      ],
+      "evidence_schema_version": "1.0",
+      "fallback": {
+        "added_requirement_ids": [],
+        "mode": "none",
+        "scope": "confirmed registered assertions only; not complete program coverage"
+      },
+      "not_selected_ids": [],
+      "partial_analysis": true,
+      "path_ids": [],
+      "paths": [],
+      "selected_before_fallback": [
+        "R1@2",
+        "R2@2",
+        "R3@2",
+        "R4@2"
+      ],
+      "selected_requirement_ids": [
+        "R1@2",
+        "R2@2",
+        "R3@2",
+        "R4@2"
+      ],
+      "selection_reasons": {
+        "R1@2": [
+          "All registered checks"
+        ],
+        "R2@2": [
+          "All registered checks"
+        ],
+        "R3@2": [
+          "All registered checks"
+        ],
+        "R4@2": [
+          "New or revised requirement needs verification",
+          "All registered checks"
+        ]
+      },
+      "snapshot_hashes": {
+        "base": "831486c34208a9b3c77b641841b5f3ad5d4a608777620a638f01dd8fc7bf4656",
+        "head": "a180e561cdb7854d817601c186f1cc52739b487d7738cab0f2cb07a7905ec955"
+      },
+      "strategy": "all",
+      "traversal_limit": 8,
+      "unresolved_ids": [],
+      "verification": {
+        "analysis": "potentially_partial",
+        "next_steps": [
+          "Inspect the pinned source at diagnostic locations.",
+          "Replay the bundled registered checks and inspect their observed results.",
+          "Add approved checks for behavior outside the registered scenarios."
+        ],
+        "runtime_reachability": "requires_source_or_test_verification"
+      }
+    },
+    "source_gaps": [
+      "R1@2",
+      "R2@2",
+      "R3@2",
+      "R4@2"
+    ],
+    "verification_scope": "registered assertions only; static paths are not runtime traces"
+  },
+  "execution_scope": "selected_applicable_scenarios",
+  "findings": [
+    {
+      "base_result": {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/guest-export-own-public",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-own-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "pass"
+      },
+      "classification": "confirmed_regression",
+      "evidence_hash": "532832f48ce5f1c63bdeabe21d9f793952ace1934b93ced08f3f7972750b5e38",
+      "finding_id": "532832f48ce5f1c63bde",
+      "head_result": {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-export-own-public",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "fail"
+      },
+      "path_refs": [],
+      "provenance_verified": false,
+      "requirement_ref": "R1@2",
+      "scenario_ref": "guest-export-own-public",
+      "source_refs": []
+    },
+    {
+      "base_result": {
+        "actual_allowed": false,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/base/guest-export-other-public",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-other-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "pass"
+      },
+      "classification": "confirmed_regression",
+      "evidence_hash": "9bb12ca1eb1b0be9ac56b5139e5b5a809d7d72f9e6c3de6c751efd9ac7d750d1",
+      "finding_id": "9bb12ca1eb1b0be9ac56",
+      "head_result": {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": false,
+        "observation_ref": "e5c936d084a5434a85fd3ebdf4255eea/head/guest-export-other-public",
+        "requirement_id": "R1",
+        "requirement_revision": 2,
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-other-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "fail"
+      },
+      "path_refs": [],
+      "provenance_verified": false,
+      "requirement_ref": "R1@2",
+      "scenario_ref": "guest-export-other-public",
+      "source_refs": []
+    }
+  ],
+  "limitations": [
+    "Synthetic, seeded pilot; 24 cases are not complete program coverage.",
+    "Static paths show possible influence, not proven runtime execution.",
+    "Runtime is for the registered trusted fixture, not hostile repositories.",
+    "Checkpoint attachment mode and source gaps are reported explicitly."
+  ],
+  "observations": {
+    "base": [
+      {
+        "allowed": true,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0010070000087125663,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "admin-export-own-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0032650000036937854,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "admin-export-own-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0012400000173329317,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "member-preview-other-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.001000999986899842,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "member-export-other-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0010939999981474102,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-other-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0010139999915281805,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-other-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.004019000016342034,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-own-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0015379999922515708,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-own-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      }
+    ],
+    "head": [
+      {
+        "allowed": false,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.00303199999507342,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "member-export-other-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.0015219999909277249,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "admin-export-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.0011529999994763784,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "admin-export-own-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.0030870000102822814,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-preview-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.0009809999994558893,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-other-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.0009519999935037049,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "member-preview-other-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.0015330000167068647,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-preview-other-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.0017109999816966592,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.001095000015993719,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-own-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.0010020000047461508,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+        "scenario_id": "guest-export-other-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      }
+    ]
+  },
+  "request": {
+    "base_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+    "comparison_id": "50c63f7812f849e78676000d6d4cf9ac",
+    "execution_scope": "selected_applicable_scenarios",
+    "head_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+    "repo_path": ".",
+    "requirements": [
+      {
+        "applies_to": [
+          "base",
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.658296+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/export.py:export_document"
+        ],
+        "expected_allowed": false,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R1",
+        "revision": 2,
+        "scenario_filter": {
+          "operation": "export",
+          "role": "guest"
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R1@1",
+        "text": "Any guest export is denied, regardless of workspace or visibility."
+      },
+      {
+        "applies_to": [
+          "base",
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.658810+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/preview.py:preview_document",
+          "pact/demo/workspace_app/export.py:export_document"
+        ],
+        "expected_allowed": false,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R2",
+        "revision": 2,
+        "scenario_filter": {
+          "role": "member",
+          "same_workspace": false,
+          "visibility": "private"
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R2@1",
+        "text": "Members cannot access another workspace's private resources."
+      },
+      {
+        "applies_to": [
+          "base",
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.659474+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/export.py:export_document"
+        ],
+        "expected_allowed": true,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R3",
+        "revision": 2,
+        "scenario_filter": {
+          "operation": "export",
+          "role": "admin",
+          "same_workspace": true
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R3@1",
+        "text": "Admins can export resources in their own workspace."
+      },
+      {
+        "applies_to": [
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.659823+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/preview.py:preview_document"
+        ],
+        "expected_allowed": true,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R4",
+        "revision": 2,
+        "scenario_filter": {
+          "operation": "preview",
+          "role": "guest",
+          "visibility": "public"
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R4@1",
+        "text": "Guests can preview public content in either workspace."
+      }
+    ],
+    "runner": "databricks",
+    "schema_version": "1.0",
+    "scope_prefix": "pact/demo/workspace_app",
+    "strategy": "all"
+  },
+  "requirement_set_hash": "e9ae4d5c5fd6a21ec094a85683dbda1eeca10e2efd750822fecc00dc7f53ec4f",
+  "run_id": "e5c936d084a5434a85fd3ebdf4255eea",
+  "scenario_set_hash": "328e881f1bc472b7d38731e637cb4184d94a4fcd0ed692c5534e9e03c1aeca51",
+  "schema_version": "1.0",
+  "selection": {
+    "diagnostics": [
+      {
+        "code": "runtime_lookup",
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "detail": "getattr may resolve or modify relationships at runtime",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 6,
+        "origin": "source_precaution",
+        "side": "base"
+      },
+      {
+        "code": "indirect_call",
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "detail": "Call through check requires source/test verification",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 7,
+        "origin": "source_precaution",
+        "side": "base"
+      },
+      {
+        "code": "runtime_lookup",
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "detail": "getattr may resolve or modify relationships at runtime",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 6,
+        "origin": "source_precaution",
+        "side": "head"
+      },
+      {
+        "code": "indirect_call",
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "detail": "Call through check requires source/test verification",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 7,
+        "origin": "source_precaution",
+        "side": "head"
+      }
+    ],
+    "evidence_schema_version": "1.0",
+    "fallback": {
+      "added_requirement_ids": [],
+      "mode": "none",
+      "scope": "confirmed registered assertions only; not complete program coverage"
+    },
+    "not_selected_ids": [],
+    "partial_analysis": true,
+    "path_ids": [],
+    "paths": [],
+    "selected_before_fallback": [
+      "R1@2",
+      "R2@2",
+      "R3@2",
+      "R4@2"
+    ],
+    "selected_requirement_ids": [
+      "R1@2",
+      "R2@2",
+      "R3@2",
+      "R4@2"
+    ],
+    "selection_reasons": {
+      "R1@2": [
+        "All registered checks"
+      ],
+      "R2@2": [
+        "All registered checks"
+      ],
+      "R3@2": [
+        "All registered checks"
+      ],
+      "R4@2": [
+        "New or revised requirement needs verification",
+        "All registered checks"
+      ]
+    },
+    "snapshot_hashes": {
+      "base": "831486c34208a9b3c77b641841b5f3ad5d4a608777620a638f01dd8fc7bf4656",
+      "head": "a180e561cdb7854d817601c186f1cc52739b487d7738cab0f2cb07a7905ec955"
+    },
+    "strategy": "all",
+    "traversal_limit": 8,
+    "unresolved_ids": [],
+    "verification": {
+      "analysis": "potentially_partial",
+      "next_steps": [
+        "Inspect the pinned source at diagnostic locations.",
+        "Replay the bundled registered checks and inspect their observed results.",
+        "Add approved checks for behavior outside the registered scenarios."
+      ],
+      "runtime_reachability": "requires_source_or_test_verification"
+    }
+  },
+  "source_gaps": [
+    "R1@2",
+    "R2@2",
+    "R3@2",
+    "R4@2"
+  ],
+  "timing_ms": {
+    "execution": 85564.35570799658,
+    "graph": 767.1459590055747,
+    "total": 86388.95483299711
+  },
+  "version": "0.2.0",
+  "publication_note": "Derived public report: repo_path normalized to dot; personal Databricks artifact folder omitted. Original report SHA-256 is recorded in curveball-databricks-verification.json. Semantic results and hashed evidence context are unchanged."
+}

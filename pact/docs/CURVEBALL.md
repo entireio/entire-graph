@@ -25,7 +25,7 @@ Acceptance: a team-owned unchanged dynamic export caller must still have its gue
 
 The initial real-Graph dynamic-dispatch test failed before implementation: expected two guest-export failures, observed zero. The Graph-unavailable test selected only R4 instead of all four policies. These are actual reproduced selection failures, not hypothetical risks.
 
-After the adaptation, the five focused Curveball tests pass: dynamic lookup with no fabricated R1 path; Graph unavailable; resolved versus heuristic paths; silent edge omission despite parser success; module configuration precaution. The first full suite passed 18 tests in 10.07 seconds before the last two focused tests were added. Final integrated/cloud verification is still pending.
+After the adaptation, the five focused Curveball tests pass: dynamic lookup with no fabricated R1 path; Graph unavailable; resolved versus heuristic paths; silent edge omission despite parser success; module configuration precaution. The first full suite passed 18 tests in 10.07 seconds before the last two focused tests were added. Later integrated and cloud results are recorded below.
 
 Source-based diagnostics retain their origin, file, line, side and commit. They are deliberately conservative and do not assert universal Python completeness. Fallback executes all confirmed registered assertions, not unapproved behavior. Original strategy baselines remain visible for comparison; their omissions are not presented as unaffected code. Saved reports retain their original schema and are labelled as unassessed if they predate this evidence-quality version.
 
@@ -36,4 +36,6 @@ Final integrated suite: 22 passed in 13.08 seconds. Additional failing-before-fi
 
 The real UI D1→D2 interaction was verified twice with no JavaScript errors; the second interaction was captured as 44 actual browser frames over 23.512 seconds. The clean 0.2.0 wheel was installed in a fresh temporary environment and replayed both bundles from a clean directory: D1 exit 1/two failures, D2 exit 0/no failures, both retaining partial review evidence.
 
-Databricks context changes are implemented but the prepared five-job Curveball verification was blocked by automatic approval review pending explicit user permission. Existing pre-Curveball cloud runs remain separately identified. Final capture and publication remain open; local artifacts are not represented as pushed Checkpoints or completed cloud work.
+All five post-Curveball Databricks jobs completed successfully: changed-file, Graph fallback, all registered, independent full matrix, and corrected D2. Every cloud assertion matches its local counterpart; evidence context and idempotent replay are verified. D1 finds two regressions through fallback; D2 passes all ten candidate assertions. D2 evidence context was recovered from Delta history. See [cloud verification](evidence/curveball-databricks-verification.json). Earlier H1/H2 runs remain separately identified.
+
+The user explicitly authorized the cloud execution and milestone push. Implementation through `21aabb9` and D0/D1/D2 tags are published and remotely verified. A separate authentic final verification task is reviewing these results before its supported manual attachment; original/pre-noon capture gaps remain disclosed.

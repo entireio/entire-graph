@@ -36,4 +36,4 @@ If a remote job times out, inspect the preserved job ID instead of blindly resub
 
 `pact/docs/evidence/curveball-live-walkthrough.gif` records the actual localhost D1→D2 interaction at approximately two browser screenshots per second, preserving observed timing. Its manifest records the capture time, duration, implementation and checksum. It is a local execution recording; it does not imply a new Databricks run.
 
-D1/D2 replay files and reports retain partial analysis and missing original policy source links. If showing an earlier cloud receipt, label it as recorded and explain that post-Curveball cloud verification is pending until the prepared jobs run successfully.
+D1/D2 replay files and reports retain partial analysis and missing original policy source links. Five post-Curveball cloud jobs are now verified; use the D1/D2 reports and exact run links in `evidence/curveball-databricks-verification.json`. Label saved receipts as recorded evidence and preserve the partial-analysis labels.
