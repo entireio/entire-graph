@@ -1,0 +1,36 @@
+{
+  "verified_at": "2026-09-06T06:13:25.211097+00:00",
+  "implementation_sha": "41805b7f407e6fe9b732b6e46230700b4ce06325",
+  "milestone_tag": "pact-pre-noon-stable",
+  "tests": {
+    "passed": 15,
+    "duration_seconds": 7.95,
+    "warnings": 2,
+    "command": ".venv/bin/python -m pytest -q -c pact/pyproject.toml pact/tests"
+  },
+  "javascript_syntax": "passed",
+  "package_build_install": "passed",
+  "clean_directory_replay": {
+    "h1": {
+      "exit": 1,
+      "failures": 2
+    },
+    "h2": {
+      "exit": 0,
+      "failures": 0
+    }
+  },
+  "semantic_diff": {
+    "file": "pre-noon-semantic-diff.json",
+    "changed_files": 26,
+    "warning_count": 13,
+    "warning_scope": "upstream generated C parsers; preserve warnings, do not claim complete repository analysis"
+  },
+  "checkpoint": {
+    "existing_id": "7c02a621a7d5",
+    "new_pre_noon_checkpoint": null,
+    "status": "blocked: existing session is ended; attach reuses older setup context"
+  },
+  "fork_status": "awaiting actual fork URL or organiser acceptance",
+  "curveball": "not received; no adaptation started"
+}

@@ -93,3 +93,11 @@ BUILDATHON.md is a truthful draft with working instructions and real resource li
 ## User-requested pause
 
 Stop after the local/remote integration commit and push. This is an implementation milestone, not a newly captured Entire Checkpoint and not final project completion. Leave the local demo server available; no background coding task is running. On resume, address the genuine fork and capture gaps before claiming compliance.
+
+## Pre-noon preservation update
+
+The user resumed work through the noon handoff. Product code remains at implementation SHA `41805b7f407e6fe9b732b6e46230700b4ce06325`. The current preservation commit/tag `pact-pre-noon-stable` adds verification and handoff evidence only. All 15 focused tests passed again in 7.95 seconds; JS syntax, package rebuild/install, and clean-directory H1/H2 replay passed. See `pact/docs/evidence/pre-noon-verification.json`.
+
+A committed-tree semantic diff covers 26 changed PACT files. It retains upstream generated-parser size/parse warnings; this is not a claim of complete repository-wide analysis.
+
+Outstanding hard gates: a genuine GitHub fork (or explicit organiser acceptance), and a distinct authentic pre-noon Checkpoint. The session remains ended in Entire, and supported attachment reuses the old setup Checkpoint. No new Checkpoint or policy source was fabricated. Ask the organiser/mentor about the capture gap. At noon start a fresh captured session in the mirror clone; give it the actual E2 constraint, this handoff and the accessible original Checkpoint context before editing. Do not continue this old session for Curveball implementation.

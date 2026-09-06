@@ -50,3 +50,7 @@ Commit coherent, checked milestones and push them to the user-authorised PACT re
 ## Stable section / user-requested stop
 
 Tag: `pact-local-remote-v1` (resolve after the integration commit). Final focused suite: 15 passed in 8.39 seconds; JS syntax passed. Local/remote reviews and replay are verified. The user requested stopping at the nearest checkpoint/section, so pause after this milestone push. This tag is not an Entire Checkpoint; capture/fork/noon/submission obligations remain open.
+
+## Pre-noon preservation
+
+User resumed through the noon handoff. `pact-pre-noon-stable` preserves the tested product and evidence; 15 tests passed in 7.95 seconds, JS syntax/package install/clean replay passed. Product code unchanged from 41805b7. Semantic diff saved with upstream parser warnings preserved. Fork and authentic pre-noon Checkpoint remain blocked pending real resolution; tag is not a Checkpoint.
