@@ -271,6 +271,15 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 					findings = append(findings, map[string]any{"id": "GPS-DELTA-ANCHOR", "severity": "warning", "subject": binding.ID, "message": "anchored implementation changed since base revision"})
 				}
 			}
+			for _, spec := range set.Specs {
+				for _, test := range spec.Tests {
+					for _, symbol := range matchingSymbols(snapshot.Symbols, test.Selector.Name, "") {
+						if symbol.FilePath == file.Path || symbol.FilePath == file.OldPath {
+							findings = append(findings, map[string]any{"id": "GPS-DELTA-TEST", "severity": "warning", "subject": test.ID, "message": "declared test implementation changed since base revision"})
+						}
+					}
+				}
+			}
 		}
 	}
 	for _, spec := range set.Specs {
