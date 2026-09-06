@@ -36,6 +36,10 @@ GO_TEST_TIMEOUT_SECONDS = 130
 RSS_PREFIX = "Maximum resident set size (kbytes):"
 RSS_VALUE_RE = re.compile(r"^[0-9]+$")
 MAX_RSS_BYTES = (1 << 64) - 1
+# Independently frozen from retained 05ad raw OFF output and verified equal
+# across trial-0 OFF rows in all three original worker archives.
+EXPECTED_PARTIAL_MEMBERSHIP = "80c0639e1409123af9e5b3d6d5e28b1a758e2a18d5a16b7b8d015393655694a0"
+EXPECTED_WARNING_MEMBERSHIP = "f957ba8f80db4c08f9253570abfbbe13ed1188de1f34c3a86f9df505ab695ae9"
 ARM_ORDER = tuple((profile, arm) for profile in EXPECTED_PROFILES for arm in ("off", "on"))
 VOLATILE_FIELDS = (
     "started_at", "elapsed_ns", "wall_ns", "product_ns", "serialization_ns",
@@ -177,6 +181,9 @@ def validate_observation(observation, config, binary_sha256):
             raise RuntimeError("observation identity mismatch: " + field)
     if observation.get("status") not in ("ok", "partial"):
         raise RuntimeError("unexpected observation status")
+    for field in ("semantic_digest", "semantic_sha256", "partial_failures_sha256", "warnings_sha256"):
+        if not isinstance(observation.get(field), str) or re.fullmatch(r"[0-9a-f]{64}", observation[field]) is None:
+            raise RuntimeError("missing or malformed digest: " + field)
     if observation.get("semantic_digest") != observation.get("semantic_sha256"):
         raise RuntimeError("semantic digest mismatch")
     if not observation.get("semantic_digest"):
@@ -185,7 +192,7 @@ def validate_observation(observation, config, binary_sha256):
     count = observation.get("partial_failures_count")
     if not isinstance(partial, list) or not isinstance(count, int) or count < 0:
         raise RuntimeError("missing full partial-failure membership")
-    if count > 20:
+    if count > 32:
         raise RuntimeError("partial-failure membership exceeds retained observation bound")
     if len(partial) != count:
         raise RuntimeError("partial-failure membership/count mismatch")
@@ -197,6 +204,10 @@ def validate_observation(observation, config, binary_sha256):
         raise RuntimeError("warning membership/count mismatch")
     if not isinstance(observation.get("warnings_sha256"), str):
         raise RuntimeError("missing warning digest")
+    for members, expected in ((partial, EXPECTED_PARTIAL_MEMBERSHIP), (warnings, EXPECTED_WARNING_MEMBERSHIP)):
+        actual = hashlib.sha256(json.dumps(members, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        if actual != expected:
+            raise RuntimeError("unreviewed partial or warning membership; stop before next arm")
     if not isinstance(observation.get("completeness"), dict):
         raise RuntimeError("missing completeness fields")
     extraction = observation.get("extraction")

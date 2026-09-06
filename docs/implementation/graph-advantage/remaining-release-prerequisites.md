@@ -35,7 +35,10 @@ and the [plan's evaluation rules](</Users/thomi/Projects/entire-plan/entire-grap
   inactive with STOP markers afterward. Raw responses are retained under
   `p1-corpus-20260905/stopgap-live-smoke/run-0c9e80f5/`. This verifies the injected
   pause path, not every possible control-plane outage or product workload. The P1 campaign remains paused after the retained cold-screen
-  failure at `0c9e80f5`; no gate or default promotion is claimed.
+  failure at `1c0b8e24`: measured RSS rose about 17% in the isolated pair,
+  exceeding the 10% screen. Latency was within the screen, but no gate or
+  default promotion is claimed. The next independent work is three retained
+  profile-specific semantic correctness pairs, not a new performance sweep.
 
 
 ## P2 — optional compiler-backed Go resolution
