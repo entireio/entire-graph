@@ -3,7 +3,7 @@
   "checkpoint_id": "027adf421f68",
   "strategy": "manual-commit",
   "branch": "docs/gps-design",
-  "checkpoints_count": 14,
+  "checkpoints_count": 15,
   "files_touched": [
     "GRAPH_PARSER_SYSTEM/00-front-matter.md",
     "GRAPH_PARSER_SYSTEM/01-problem-and-solution.md",
@@ -30,6 +30,13 @@
       "compact_transcript": "/02/7adf421f68/1/transcript.jsonl",
       "content_hash": "/02/7adf421f68/1/content_hash.txt",
       "prompt": "/02/7adf421f68/1/prompt.txt"
+    },
+    {
+      "metadata": "/02/7adf421f68/2/metadata.json",
+      "transcript": "/02/7adf421f68/2/full.jsonl",
+      "compact_transcript": "/02/7adf421f68/2/transcript.jsonl",
+      "content_hash": "/02/7adf421f68/2/content_hash.txt",
+      "prompt": "/02/7adf421f68/2/prompt.txt"
     }
   ],
   "token_usage": {
