@@ -26,3 +26,13 @@ Root verification: 8 tests passed, 0.460 seconds:
 The initial stricter-digest test failure exposed invalid placeholder hashes
 in the fake evaluator; it was corrected to use the retained-fixture helper.
 No product requests ran during preparation. No latency or RSS score is made.
+
+The first replay completed syntax-only and fast pairs, then correctly paused
+before full ON. Root found an expectation error: full OFF's extra
+`W_DATA_FLOW_EVIDENCE_UNMERGED` warning is byte-for-byte identical to the
+original worker-3 trial-0 OFF row. Warning membership is now frozen per profile;
+partial membership remains identical across all profiles. A new invocation may
+select only unresolved `--profile full`, retaining completed evidence and fresh
+full cache paths. This corrects the oracle from pre-existing evidence; it does
+not accept a new product warning or change the corpus. Nine tests passed in
+0.678 seconds, including rejection of changed full-warning detail.

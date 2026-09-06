@@ -39,7 +39,11 @@ MAX_RSS_BYTES = (1 << 64) - 1
 # Independently frozen from retained 05ad raw OFF output and verified equal
 # across trial-0 OFF rows in all three original worker archives.
 EXPECTED_PARTIAL_MEMBERSHIP = "80c0639e1409123af9e5b3d6d5e28b1a758e2a18d5a16b7b8d015393655694a0"
-EXPECTED_WARNING_MEMBERSHIP = "f957ba8f80db4c08f9253570abfbbe13ed1188de1f34c3a86f9df505ab695ae9"
+EXPECTED_WARNING_MEMBERSHIP = {
+    "syntax-only": "f957ba8f80db4c08f9253570abfbbe13ed1188de1f34c3a86f9df505ab695ae9",
+    "fast": "f957ba8f80db4c08f9253570abfbbe13ed1188de1f34c3a86f9df505ab695ae9",
+    "full": "9163a234130406f483ed978f6ffa69a56ec77e0bbb7416d0529a69faf36d0ef9",
+}
 ARM_ORDER = tuple((profile, arm) for profile in EXPECTED_PROFILES for arm in ("off", "on"))
 VOLATILE_FIELDS = (
     "started_at", "elapsed_ns", "wall_ns", "product_ns", "serialization_ns",
@@ -204,7 +208,7 @@ def validate_observation(observation, config, binary_sha256):
         raise RuntimeError("warning membership/count mismatch")
     if not isinstance(observation.get("warnings_sha256"), str):
         raise RuntimeError("missing warning digest")
-    for members, expected in ((partial, EXPECTED_PARTIAL_MEMBERSHIP), (warnings, EXPECTED_WARNING_MEMBERSHIP)):
+    for members, expected in ((partial, EXPECTED_PARTIAL_MEMBERSHIP), (warnings, EXPECTED_WARNING_MEMBERSHIP[config["profile"]])):
         actual = hashlib.sha256(json.dumps(members, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
         if actual != expected:
             raise RuntimeError("unreviewed partial or warning membership; stop before next arm")
@@ -296,6 +300,7 @@ def run_pair(profile, execute, before_on):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--profile", choices=EXPECTED_PROFILES, help="Replay one unresolved profile only; default runs all three")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config-dir", type=Path, required=True)
     parser.add_argument("--binary", type=Path, required=True)
@@ -312,6 +317,8 @@ def main(argv=None):
     args = parse_args(argv)
     if args.source_commit != EXPECTED_SOURCE_COMMIT or args.binary_sha256 != EXPECTED_BINARY_SHA256 or args.input_sha256 != EXPECTED_INPUT_SHA256:
         raise SystemExit("CLI identity does not match frozen correctness protocol")
+    selected_profiles = (args.profile,) if args.profile else EXPECTED_PROFILES
+    selected_arms = tuple((profile, arm) for profile in selected_profiles for arm in ("off", "on"))
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=True)
     if any(root.iterdir()):
@@ -322,6 +329,7 @@ def main(argv=None):
     scenario_script = args.scenario_script.resolve()
     corpus_root = args.corpus_root.resolve()
     identity = {
+        "selected_profiles": list(selected_profiles),
         "source_commit": EXPECTED_SOURCE_COMMIT, "binary_sha256": EXPECTED_BINARY_SHA256,
         "repository": EXPECTED_REPOSITORY, "repo_path": EXPECTED_REPO_PATH,
         "source_digest": EXPECTED_INPUT_SHA256, "provider_version": EXPECTED_PROVIDER,
@@ -354,7 +362,7 @@ def main(argv=None):
             raise RuntimeError("binary identity mismatch")
         if not Path(TIME_BINARY).is_file():
             raise RuntimeError("/usr/bin/time unavailable")
-        for profile in EXPECTED_PROFILES:
+        for profile in selected_profiles:
             if sha256(binary) != EXPECTED_BINARY_SHA256:
                 raise RuntimeError("binary changed before pair")
             pair_fingerprint = fingerprint(root, scenario_script, corpus_root, f"before-{profile}")
@@ -408,10 +416,10 @@ def main(argv=None):
                 after_issue = str(error)
                 issue = after_issue if issue is None else issue + "; " + after_issue
         save(root, "outcome.json", {
-            "status": "issue" if issue else "all_three_pairs_semantically_equal",
+            "status": "issue" if issue else "selected_pairs_semantically_equal",
             "issue": issue, "processes_started": started,
             "completed_pairs": completed_profiles,
-            "unrun": [f"{profile}-{arm}" for profile, arm in ARM_ORDER if f"{profile}-{arm}" not in started],
+            "unrun": [f"{profile}-{arm}" for profile, arm in selected_arms if f"{profile}-{arm}" not in started],
             "observations": observations,
             "scope": "one retained correctness pair per profile; no performance score or campaign",
         })
