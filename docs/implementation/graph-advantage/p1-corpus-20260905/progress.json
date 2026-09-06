@@ -7,7 +7,7 @@
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
   "verified_checkpoint": "dc0ddce7",
   "verified_evidence_commit": "da3c59ee",
-  "current_worktree": "HEAD 2014e96b; internal/sem/search.go modified; internal/sem/search_captured_matches.go untracked; unverified read-count regression failure",
+  "current_worktree": "captured-preselection diagnosis worktree changes are unresolved and unverified; current HEAD is intentionally not authoritative",
   "workers_state": "all three task-owned VMs deallocated",
   "harness_source_commit": "e4d700f80e3888ea5d4dc919a1af30a86f4282e5",
   "heartbeat": "monitor-p1-corpus-campaign",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T09:17:00Z",
+  "as_of_utc": "2026-09-06T09:20:13Z",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -41,9 +41,9 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Confirmed worktree preselection path divergence (381 vs384 indexed files); uncommitted fix at HEAD 2014e96b is unverified and fails read-count regression",
-  "stopgaps": "Implemented: 41 Python tests pass; supervisor, lease, canary and stale-build admission guards",
-  "full_correctness": "verified at dc0ddce7 in621.0947s; source unchanged; current worktree selection fix unverified",
+  "remaining_diagnosis": "Confirmed worktree preselection path divergence (381 vs384 indexed files); access telemetry now counts selected-pool hydration and combined large parity/mutation passed in16.860s; reduced Git matcher contract still fails on a .gitattributes binary-classified file",
+  "stopgaps": "Implemented: 47 Python tests pass in6.460s including collector; supervisor, lease, canary and stale-build admission guards",
+  "full_correctness": "verified at dc0ddce7 in621.0947s; source unchanged; current worktree selection/matcher fix unverified",
   "campaign": "paused; no new measurements",
   "stopgap_commits": [
     "dc0ddce7",
@@ -51,5 +51,5 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Resolve or discard the unverified captured-preselection fix, rerun independent read-count/source-hash checks, then define a separately versioned evaluation"
+  "next_work": "Resolve or discard the unverified reduced Git matcher failure, rerun independent parity/mutation/source-hash checks, then define a separately versioned evaluation"
 }

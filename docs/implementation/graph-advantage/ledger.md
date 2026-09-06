@@ -13,7 +13,7 @@ The original implementation checkpoint addressed the review findings: type decla
 - **Original implementation commit:** `88dd1dc95a996999ae4e456879b6dd86d8027f71` (historical source checkpoint).
 - **Latest verified checkpoint:** `dc0ddce7`, with the full `mise run check` passing in 621.0947 seconds; evidence is retained by `da3c59ee`.
 - **Pinned Linux correctness:** passed for the verified checkpoint; the current working-tree selection fix is not covered.
-- **Current working tree:** `HEAD 2014e96b`, with modified `internal/sem/search.go` and untracked `internal/sem/search_captured_matches.go`; the read-count regression is failing. This is unresolved and unverified.
+- **Current working tree:** the captured-preselection worktree changes are unresolved and unverified; its identity changes as diagnosis proceeds, so no current HEAD is treated as final.
 - **Release status:** no workstream's complete release gate has passed; defaults remain unchanged.
 
 ## Authoritative task status
@@ -157,12 +157,13 @@ are explained. Differing partial-failure membership remains under diagnosis.
 `stopgaps-v2.md` defines first-issue worker pause, cross-worker supervision,
 expiring leases, immutable run directories and canary admission before broad
 measurement. Supervisor and admission tests pass; worker integration passed
-all 41 Python tests. The full repository check against `dc0ddce7` passed in
+47 Python tests in 6.460 seconds, including the collector. The full repository check against `dc0ddce7` passed in
 621.0947 seconds and is retained by `da3c59ee`. No VMs or benchmarks restarted.
 
 Campaign stopgaps complete in `3b242da7` with supervisor/admission commits
 `dc0ddce7`, `e5873854`, `969dc52f`. The stopgap test evidence is preserved by
-`5957f604` and `69268ec4`; all 41 harness tests passed. The latest verified
+`5957f604` and `69268ec4`; the latest collector-inclusive run passed 47 Python
+tests in 6.460 seconds. The latest verified
 repository check is retained by `da3c59ee`. Remaining selective
 failure-membership diagnosis is now represented by an unverified working-tree
 fix; no campaign restarted and task-owned VMs remain deallocated.
@@ -173,8 +174,11 @@ from the verified checkpoint identifies 55 off/on pairs with distinct
 preselection paths:
 off uses git-index-grep+go-content (381 indexed files,11 partial failures); on
 uses go-content (384 indexed files,10 partial failures). See
-`retained-selection-diagnosis.json`. The current uncommitted P1 fix must
-preserve source capture and default selection semantics; its read-count
-regression currently fails. Committed full-preindex recall behavior is separate
-and is not to be narrowed to fix this working-tree discrepancy. No current
+`retained-selection-diagnosis.json`. The access telemetry test now counts
+accesses, including selected-pool hydration. The combined large parity and
+mutation run passed in 16.860 seconds. The new reduced Git matcher contract
+still fails because a `.gitattributes` binary-classified file is included.
+The current uncommitted P1 fix must preserve source capture and default
+selection semantics; committed full-preindex recall behavior is separate and
+is not to be narrowed to fix this working-tree discrepancy. No current
 working-tree claim is release evidence.
