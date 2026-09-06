@@ -16,6 +16,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--commit", required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--include-extraction-correctness", action="store_true")
     args = parser.parse_args()
     if not args.run_id or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in args.run_id):
         parser.error("run-id must contain lowercase letters, digits and hyphens")
@@ -38,6 +39,8 @@ def main():
     remote = "/opt/graph-validation/" + args.run_id
     q = shlex.quote
     pattern = "Test(Compiler|LiveCompiler|LiveAdvantage|LiveReview|MapLocation|RPC|Capsule)"
+    if args.include_extraction_correctness:
+        pattern = "Test(Compiler|LiveCompiler|LiveAdvantage|LiveReview|MapLocation|RPC|Capsule|Extraction|EncodedExtraction|MaintainExtractionCache|ValidateExtraction)"
     command = ("cd " + q(remote) + " && export PATH=/usr/local/go/bin:/usr/bin:/bin "
                "GOPATH=/opt/graph-validation/gopath GOCACHE=/opt/graph-validation/cache "
                "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "

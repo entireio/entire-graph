@@ -1,0 +1,1 @@
+{"raw_response_redacted": "[\n  \"Enable succeeded: \\n[stdout]\\nP1_STATUS {\\\"state\\\": \\\"active\\\", \\\"exit_code\\\": 0, \\\"progress\\\": {\\\"stage\\\": \\\"campaign\\\", \\\"done\\\": false}, \\\"paused\\\": false, \\\"stop\\\": false}\\n\\n[stderr]\\n\"\n]", "raw_response_sha256": "310fc78ab5a2c24b50f4cfb287a9c8592d7e5fb9ab47da434cc6f8e0af637816"}

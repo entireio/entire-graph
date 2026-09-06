@@ -1,0 +1,48 @@
+{
+  "elapsed_seconds": 202.36975002288818,
+  "issue": null,
+  "run_id": "stop-smoke-20260906-0c9e80f5",
+  "scope": "fake sleeping services only; no evaluator, corpus, or product query",
+  "service_runtime_max_seconds": 300,
+  "status": "pass",
+  "supervisor_result": false,
+  "terminal_states": {
+    "graph-p1-worker-2": {
+      "exit_code": 0,
+      "paused": false,
+      "progress": {
+        "done": false,
+        "stage": "campaign"
+      },
+      "state": "inactive",
+      "stop": true
+    },
+    "graph-p1-worker-3": {
+      "exit_code": 0,
+      "paused": false,
+      "progress": {
+        "done": false,
+        "stage": "campaign"
+      },
+      "state": "inactive",
+      "stop": true
+    },
+    "graph-validation-linux": {
+      "exit_code": 0,
+      "paused": true,
+      "progress": {
+        "done": false,
+        "stage": "campaign"
+      },
+      "state": "inactive",
+      "stop": true
+    }
+  },
+  "unit": "p1-campaign-stop-smoke-20260906-0c9e80f5",
+  "vms": [
+    "graph-validation-linux",
+    "graph-p1-worker-2",
+    "graph-p1-worker-3"
+  ],
+  "whole_deadline_seconds": 360
+}
