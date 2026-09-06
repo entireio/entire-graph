@@ -1,13 +1,17 @@
 {
-  "phase": "fixes_and_stopgaps_correctness",
+  "phase": "p1_diagnosis_unverified_worktree_fix",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
   "subagent_model": "gpt-5.6-luna",
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
+  "verified_checkpoint": "dc0ddce7",
+  "verified_evidence_commit": "da3c59ee",
+  "current_worktree": "HEAD 2014e96b; internal/sem/search.go modified; internal/sem/search_captured_matches.go untracked; unverified read-count regression failure",
+  "workers_state": "all three task-owned VMs deallocated",
   "harness_source_commit": "e4d700f80e3888ea5d4dc919a1af30a86f4282e5",
   "heartbeat": "monitor-p1-corpus-campaign",
-  "correctness": "mise run check passed at039d213b in1126.765s; source unchanged",
+  "correctness": "verified checkpoint dc0ddce7: mise run check passed in621.0947s; evidence retained by da3c59ee; current worktree fix unverified",
   "release_gate": "not passed",
   "defaults": "unchanged; experimental features off",
   "transport": "AppleDouble sidecars removed before verified fixture digests; clean archive retained",
@@ -18,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-05T22:36:42.477258+00:00",
+  "as_of_utc": "2026-09-06T09:17:00Z",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -37,9 +41,9 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Confirmed worktree preselection path divergence (381 vs384 indexed files); fix and independent regression in progress",
+  "remaining_diagnosis": "Confirmed worktree preselection path divergence (381 vs384 indexed files); uncommitted fix at HEAD 2014e96b is unverified and fails read-count regression",
   "stopgaps": "Implemented: 41 Python tests pass; supervisor, lease, canary and stale-build admission guards",
-  "full_correctness": "mise run check passed at dc0ddce7 in621.095s; source unchanged",
+  "full_correctness": "verified at dc0ddce7 in621.0947s; source unchanged; current worktree selection fix unverified",
   "campaign": "paused; no new measurements",
   "stopgap_commits": [
     "dc0ddce7",
@@ -47,5 +51,5 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Read-only diagnosis of remaining selective failure-membership mismatch while immutable repository check runs"
+  "next_work": "Resolve or discard the unverified captured-preselection fix, rerun independent read-count/source-hash checks, then define a separately versioned evaluation"
 }
