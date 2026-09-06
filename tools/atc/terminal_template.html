@@ -1,0 +1,652 @@
+<title>ATC Terminal</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Figtree:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --paper:#F6F7F9; --card:#FFFFFF; --ink:#171B21; --muted:#6B7480;
+    --sky:#A9D2EC; --sky-deep:#5D9FCC; --yellow:#FFD84D; --coral:#FF6257;
+    --mint:#2FBF8F; --dark:#14181D; --hair:#E7EAEF;
+    --cond:'Barlow Condensed',system-ui,sans-serif;
+    --body:'Figtree',system-ui,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+    --r:20px; --shadow:0 10px 34px rgba(23,27,33,.07);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--body);
+       font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 22px}
+  h1,h2,h3{margin:0;text-wrap:balance}
+  button{font-family:inherit}
+
+  /* ---------- nav ---------- */
+  nav{position:sticky;top:0;z-index:20;background:rgba(246,247,249,.85);
+      backdrop-filter:blur(14px);border-bottom:1px solid var(--hair)}
+  .nav-in{display:flex;align-items:center;gap:6px;height:60px}
+  .wordmark{font-family:var(--cond);font-weight:700;font-size:21px;
+            letter-spacing:.04em;margin-right:18px;display:flex;align-items:center;gap:8px}
+  .wordmark .tail{color:var(--sky-deep)}
+  .tab{border:none;background:none;padding:8px 14px;border-radius:99px;cursor:pointer;
+       font-size:14px;font-weight:500;color:var(--muted);transition:all .18s}
+  .tab:hover{color:var(--ink)}
+  .tab.on{background:var(--ink);color:#fff}
+  .tab.book{margin-left:auto;background:var(--yellow);color:var(--ink);font-weight:600}
+  .tab.book:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(255,216,77,.5)}
+  .tab:focus-visible{outline:2px solid var(--sky-deep);outline-offset:2px}
+
+  /* ---------- views ---------- */
+  .view{display:none;opacity:0;transform:translateY(10px);padding:28px 0 70px}
+  .view.on{display:block;animation:vin .38s cubic-bezier(.2,.7,.2,1) forwards}
+  @keyframes vin{to{opacity:1;transform:none}}
+  @media(prefers-reduced-motion:reduce){.view.on{animation:none;opacity:1;transform:none}}
+
+  /* ---------- home ---------- */
+  .hero{position:relative;border-radius:26px;overflow:hidden;box-shadow:var(--shadow);
+        background:linear-gradient(160deg,#BBDCF2,#E8F2FA 70%);min-height:250px;
+        display:flex;align-items:flex-end}
+  .hero .bg{position:absolute;inset:0;background-size:cover;background-position:center}
+  .hero .veil{position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,0) 30%,rgba(255,255,255,.88) 88%)}
+  .hero-in{position:relative;padding:34px 34px 26px;width:100%}
+  .hero .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;
+                 color:var(--muted);text-transform:uppercase}
+  .hero h1{font-size:34px;font-weight:700;letter-spacing:-.02em;margin:4px 0 6px}
+  .hero .sub{color:var(--muted);max-width:56ch}
+  .hero .sub b{color:var(--ink)}
+  .hero .sub .alert{color:var(--coral);font-weight:600}
+
+  .navcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+            gap:16px;margin-top:18px}
+  .navcard{background:var(--card);border-radius:var(--r);padding:20px;cursor:pointer;
+           border:1px solid var(--hair);box-shadow:var(--shadow);text-align:left;
+           transition:transform .18s,box-shadow .18s}
+  .navcard:hover{transform:translateY(-3px);box-shadow:0 16px 40px rgba(23,27,33,.11)}
+  .navcard .ic{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;
+               margin-bottom:12px;font-size:18px}
+  .navcard h3{font-size:16px;margin-bottom:3px}
+  .navcard p{margin:0;color:var(--muted);font-size:13px}
+
+  .board{margin-top:26px;background:var(--card);border-radius:var(--r);
+         border:1px solid var(--hair);box-shadow:var(--shadow);overflow:hidden}
+  .board-head{display:flex;justify-content:space-between;align-items:center;
+              padding:16px 22px;border-bottom:1px solid var(--hair)}
+  .board-head h2{font-family:var(--cond);font-weight:600;font-size:17px;
+                 letter-spacing:.12em;text-transform:uppercase}
+  .board-head span{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .brow{display:grid;grid-template-columns:110px 1fr 150px 170px;gap:12px;
+        align-items:center;padding:13px 22px;border-bottom:1px solid var(--hair);
+        font-size:14px}
+  .brow:last-child{border-bottom:none}
+  .brow .cs{font-family:var(--cond);font-weight:700;font-size:17px;letter-spacing:.05em}
+  .brow .rt{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .brow .intent{color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;
+                white-space:nowrap}
+  @media(max-width:760px){.brow{grid-template-columns:90px 1fr 120px}.brow .intent{display:none}}
+
+  .chip{display:inline-flex;align-items:center;gap:6px;border-radius:99px;
+        padding:4px 12px;font-size:12px;font-weight:600;justify-self:start}
+  .chip i{width:7px;height:7px;border-radius:50%}
+  .chip.hold{background:#FFEBE9;color:#C4372C}.chip.hold i{background:var(--coral);animation:pulse 1.4s infinite}
+  .chip.clear{background:#E4F7EF;color:#177A55}.chip.clear i{background:var(--mint)}
+  .chip.adv{background:#FFF6DC;color:#8A6D00}.chip.adv i{background:var(--yellow)}
+  @keyframes pulse{50%{opacity:.35}}
+
+  /* ---------- air view ---------- */
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:18px}
+  .fcard{background:var(--card);border-radius:var(--r);border:1px solid var(--hair);
+         box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;
+         transition:transform .18s,box-shadow .18s}
+  .fcard:hover{transform:translateY(-3px);box-shadow:0 16px 40px rgba(23,27,33,.11)}
+  .fcard .img{height:120px;background:linear-gradient(160deg,#BBDCF2,#E8F2FA);
+              background-size:cover;background-position:center 55%}
+  .fcard .body{padding:18px 20px 16px;display:flex;flex-direction:column;gap:12px;flex:1}
+  .fcard .toprow{display:flex;align-items:center;gap:10px}
+  .fcard .cs{font-family:var(--cond);font-weight:700;font-size:21px;letter-spacing:.04em}
+  .fcard .toprow .chip{margin-left:auto}
+  .route{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px}
+  .route .code{font-family:var(--cond);font-weight:700;font-size:30px;line-height:1}
+  .route .code small{display:block;font-family:var(--body);font-weight:500;font-size:11px;
+                     color:var(--muted);letter-spacing:.02em;margin-top:3px}
+  .route .mid{color:var(--muted);text-align:center;font-size:12px}
+  .route .line{height:2px;background:repeating-linear-gradient(90deg,var(--hair) 0 6px,transparent 6px 11px);
+               position:relative;margin:4px 0 2px}
+  .route .line b{position:absolute;top:-9px;left:50%;transform:translateX(-50%);font-size:13px}
+  .route .r{text-align:right}
+  .cargo{display:flex;flex-wrap:wrap;gap:6px}
+  .cargo .tag{font-family:var(--mono);font-size:11px;background:var(--paper);
+              border:1px solid var(--hair);border-radius:8px;padding:3px 8px;color:var(--muted)}
+  .cargo .tag b{color:var(--ink);font-weight:500}
+  .fcard .plan{font-size:13px;color:var(--muted);border-left:3px solid var(--hair);
+               padding-left:10px}
+  .tcas{background:#FFEBE9;color:#C4372C;font-size:12.5px;font-weight:600;
+        border-radius:12px;padding:9px 12px;cursor:pointer;border:none;text-align:left;
+        display:flex;gap:8px;align-items:center}
+  .tcas:hover{background:#FFDEDB}
+  .okline{color:#177A55;font-size:12.5px;font-weight:600}
+
+  /* ---------- world ---------- */
+  .map-card{background:linear-gradient(170deg,#AFD6EE,#CBE6F6);border-radius:26px;
+            box-shadow:var(--shadow);overflow:hidden;position:relative}
+  .map-card svg{width:100%;height:auto;display:block}
+  .map-note{position:absolute;top:16px;left:20px;font-family:var(--mono);font-size:11px;
+            letter-spacing:.12em;color:#2C5A78;text-transform:uppercase}
+  .legend{display:flex;gap:20px;flex-wrap:wrap;margin-top:14px;color:var(--muted);
+          font-size:13px;align-items:center}
+  .legend i{width:10px;height:10px;border-radius:50%;display:inline-block;
+            vertical-align:-1px;margin-right:6px}
+  .node-code{font-family:var(--cond);font-weight:700;font-size:22px;fill:#1D3D52}
+  .node-file{font-family:var(--mono);font-size:9.5px;fill:#456F89}
+  .arc{fill:none;stroke-width:2;stroke-dasharray:1 7;stroke-linecap:round}
+  .plane-glyph{font-size:15px}
+  @keyframes ringpulse{0%{r:16;opacity:.85}100%{r:30;opacity:0}}
+  .conflict-ring{animation:ringpulse 1.6s ease-out infinite}
+  @media(prefers-reduced-motion:reduce){.conflict-ring{animation:none;opacity:.5}}
+
+  /* ---------- sheet (conflict details) ---------- */
+  .sheet-wrap{position:fixed;inset:0;z-index:50;display:none}
+  .sheet-wrap.on{display:block}
+  .sheet-veil{position:absolute;inset:0;background:rgba(23,27,33,.4)}
+  .sheet{position:absolute;left:50%;bottom:0;transform:translateX(-50%);
+         width:min(680px,100%);max-height:82vh;overflow-y:auto;background:var(--card);
+         border-radius:24px 24px 0 0;padding:26px 28px 34px;
+         animation:sheetup .32s cubic-bezier(.2,.7,.2,1)}
+  @keyframes sheetup{from{transform:translate(-50%,40px);opacity:0}}
+  .sheet .grab{width:44px;height:5px;border-radius:99px;background:var(--hair);
+               margin:0 auto 18px}
+  .sheet h2{font-size:20px;display:flex;align-items:center;gap:10px}
+  .sheet .close{position:absolute;top:18px;right:18px;border:none;background:var(--paper);
+                width:34px;height:34px;border-radius:50%;cursor:pointer;font-size:15px}
+  .fnd{border-radius:14px;padding:13px 16px;margin-top:12px;font-size:13.5px}
+  .fnd.red{background:#FFEBE9}.fnd.amber{background:#FFF6DC}.fnd.blue{background:#E8F2FA}
+  .fnd .k{font-family:var(--cond);font-weight:700;letter-spacing:.1em;font-size:12px;
+          text-transform:uppercase;display:block;margin-bottom:4px}
+  .fnd.red .k{color:#C4372C}.fnd.amber .k{color:#8A6D00}.fnd.blue .k{color:#2C5A78}
+  .fnd code{font-family:var(--mono);font-size:12px;background:rgba(255,255,255,.7);
+            border-radius:6px;padding:1px 6px}
+  .fnd .rcpt{font-family:var(--mono);font-size:12px;color:#5A626D;margin-top:4px}
+  .landing-strip{margin-top:16px;background:var(--dark);color:#fff;border-radius:14px;
+                 padding:14px 16px;font-size:13.5px}
+  .landing-strip b{color:var(--yellow);font-family:var(--cond);letter-spacing:.1em;
+                   font-size:12px;text-transform:uppercase;display:block;margin-bottom:4px}
+
+  /* ---------- incident ---------- */
+  .inc{background:var(--card);border-radius:var(--r);border:1px solid var(--hair);
+       box-shadow:var(--shadow);padding:30px 32px;position:relative;overflow:hidden}
+  .inc .stamp{position:absolute;top:26px;right:-8px;transform:rotate(8deg);
+              border:3px solid var(--coral);color:var(--coral);font-family:var(--cond);
+              font-weight:700;font-size:17px;letter-spacing:.14em;padding:6px 18px;
+              border-radius:6px;opacity:.9;background:rgba(255,255,255,.7)}
+  .inc .rep{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--muted);
+            text-transform:uppercase}
+  .inc h2{font-size:24px;margin:6px 0 2px}
+  .inc .meta{color:var(--muted);font-size:13.5px;margin-bottom:22px}
+  .tl{border-left:2px solid var(--hair);margin-left:9px;padding-left:24px;
+      display:flex;flex-direction:column;gap:20px}
+  .ev{position:relative}
+  .ev::before{content:"";position:absolute;left:-31px;top:4px;width:12px;height:12px;
+              border-radius:50%;background:var(--mint);border:3px solid #fff;
+              box-shadow:0 0 0 2px var(--mint)}
+  .ev.bad::before{background:var(--coral);box-shadow:0 0 0 2px var(--coral)}
+  .ev h3{font-size:15px}
+  .ev .t{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .term{background:var(--dark);color:#D7E4DC;border-radius:12px;padding:12px 15px;
+        font-family:var(--mono);font-size:12px;white-space:pre-wrap;overflow-x:auto;
+        margin-top:8px;line-height:1.6}
+  .term .p{color:#7BE0AE}
+  .verdict-quote{margin-top:24px;background:var(--paper);border-radius:14px;
+                 padding:16px 20px;border-left:4px solid var(--coral)}
+
+  /* ---------- booking ---------- */
+  .book-grid{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start}
+  @media(max-width:880px){.book-grid{grid-template-columns:1fr}}
+  .steps{display:flex;flex-direction:column;gap:16px}
+  .step{background:var(--card);border-radius:var(--r);border:1px solid var(--hair);
+        box-shadow:var(--shadow);padding:22px 24px}
+  .step .sn{font-family:var(--cond);font-weight:700;color:var(--sky-deep);font-size:13px;
+            letter-spacing:.16em}
+  .step h3{font-size:17px;margin:2px 0 12px}
+  .step label{display:block;font-size:12.5px;font-weight:600;color:var(--muted);
+              margin:12px 0 5px}
+  .step input[type=text],.step textarea{width:100%;border:1.5px solid var(--hair);
+        border-radius:12px;padding:10px 13px;font-family:var(--body);font-size:14px;
+        background:var(--paper);color:var(--ink)}
+  .step textarea{resize:vertical;min-height:64px}
+  .step input:focus,.step textarea:focus{outline:none;border-color:var(--sky-deep)}
+  .dest-chips{display:flex;flex-wrap:wrap;gap:8px}
+  .dchip{border:1.5px solid var(--hair);background:var(--card);border-radius:12px;
+         padding:7px 12px;cursor:pointer;font-family:var(--mono);font-size:12px;
+         transition:all .15s}
+  .dchip b{font-family:var(--cond);font-size:15px;letter-spacing:.05em;font-weight:700}
+  .dchip.on{border-color:var(--ink);background:var(--ink);color:#fff}
+  .classes{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .klass{border:1.5px solid var(--hair);border-radius:14px;padding:12px;cursor:pointer;
+         text-align:center;background:var(--card);transition:all .15s}
+  .klass .em{font-size:20px}
+  .klass h4{margin:4px 0 1px;font-size:13.5px}
+  .klass p{margin:0;font-size:11px;color:var(--muted)}
+  .klass.on{border-color:var(--ink);box-shadow:0 6px 18px rgba(23,27,33,.12)}
+  .clearance{border-radius:12px;padding:12px 15px;font-size:13px;margin-top:6px}
+  .clearance.warn{background:#FFF6DC;color:#6B5500}
+  .clearance.ok{background:#E4F7EF;color:#177A55}
+  .issue{width:100%;margin-top:16px;background:var(--ink);color:#fff;border:none;
+         border-radius:14px;padding:14px;font-size:15px;font-weight:600;cursor:pointer;
+         transition:transform .15s}
+  .issue:hover{transform:translateY(-2px)}
+
+  /* boarding pass */
+  .pass-zone{position:sticky;top:80px}
+  .pass{background:var(--card);border-radius:22px;box-shadow:0 22px 60px rgba(23,27,33,.16);
+        overflow:hidden;opacity:.45;transition:opacity .3s;max-width:460px;margin:0 auto}
+  .pass.issued{opacity:1;animation:passin .5s cubic-bezier(.2,.7,.2,1)}
+  @keyframes passin{from{transform:translateY(26px) rotate(1.5deg);opacity:0}}
+  .pass .strip{height:86px;background:linear-gradient(160deg,#BBDCF2,#E8F2FA);
+               background-size:cover;background-position:center 45%;position:relative}
+  .pass .strip .airline{position:absolute;left:18px;bottom:10px;font-family:var(--cond);
+        font-weight:700;letter-spacing:.14em;color:#fff;font-size:14px;
+        text-shadow:0 1px 8px rgba(0,0,0,.35)}
+  .pass-main{padding:18px 20px 14px}
+  .pass .route .code{font-size:36px}
+  .pass-meta{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px;
+             padding-top:12px;border-top:1px solid var(--hair)}
+  .pm .k{font-size:10px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;
+         font-weight:600}
+  .pm .v{font-family:var(--cond);font-weight:700;font-size:17px;letter-spacing:.03em}
+  .tear{border-top:2px dashed var(--hair);position:relative;margin-top:16px}
+  .tear::before,.tear::after{content:"";position:absolute;top:-11px;width:22px;height:22px;
+        border-radius:50%;background:var(--paper)}
+  .tear::before{left:-11px}.tear::after{right:-11px}
+  .stub{padding:14px 20px 18px;cursor:pointer;transition:all .3s}
+  .stub .hint{font-size:11px;color:var(--muted);text-align:center;margin-top:6px}
+  .stub canvas{width:100%;height:52px;display:block}
+  .pass.torn .stub{transform:translateY(14px) rotate(2deg);opacity:0;pointer-events:none}
+  .cmd{margin-top:16px;background:var(--dark);border-radius:14px;padding:13px 15px;
+       display:none;max-width:460px;margin-left:auto;margin-right:auto}
+  .cmd.on{display:block;animation:vin .3s forwards}
+  .cmd .k{font-family:var(--cond);color:var(--yellow);font-size:11px;letter-spacing:.14em;
+          text-transform:uppercase;display:flex;justify-content:space-between;align-items:center}
+  .cmd pre{margin:8px 0 0;color:#D7E4DC;font-family:var(--mono);font-size:12px;
+           white-space:pre-wrap;word-break:break-all}
+  .copy{background:var(--yellow);border:none;border-radius:8px;padding:4px 12px;
+        font-size:11.5px;font-weight:700;cursor:pointer;font-family:var(--body)}
+  .toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(80px);
+         background:var(--ink);color:#fff;border-radius:99px;padding:11px 22px;
+         font-size:14px;transition:transform .3s;z-index:60}
+  .toast.on{transform:translateX(-50%)}
+  .sec-h{margin:34px 0 14px;display:flex;align-items:baseline;gap:12px}
+  .sec-h h2{font-size:20px;font-weight:700;letter-spacing:-.01em}
+  .sec-h span{color:var(--muted);font-size:13px}
+</style>
+
+<nav><div class="wrap nav-in">
+  <span class="wordmark">✈<span> ATC</span><span class="tail">TERMINAL</span></span>
+  <button class="tab on" data-v="home">Tower</button>
+  <button class="tab" data-v="air">Air</button>
+  <button class="tab" data-v="world">World</button>
+  <button class="tab" data-v="incident">Incident</button>
+  <button class="tab book" data-v="book">＋ New flight</button>
+</div></nav>
+
+<main class="wrap">
+  <section class="view on" id="v-home"></section>
+  <section class="view" id="v-air"></section>
+  <section class="view" id="v-world"></section>
+  <section class="view" id="v-incident"></section>
+  <section class="view" id="v-book"></section>
+</main>
+
+<div class="sheet-wrap" id="sheet-wrap">
+  <div class="sheet-veil" onclick="closeSheet()"></div>
+  <div class="sheet" id="sheet"></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const DATA = /*__ATC_DATA__*/null;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+const red = DATA.pairs.find(p=>p.id==="red"), R = red.result;
+const prior = DATA.pairs.find(p=>p.id==="prior");
+const clean = DATA.pairs.find(p=>p.id==="clean");
+const A = DATA.assets || {};
+const conflictBranches = new Set([red.a, red.b]);
+const priors = prior.result.priors || [];
+const hotPaths = new Set(priors.map(p=>p.path));
+const rw = R.findings.read_write[0] || {};
+const ww = R.findings.write_write[0] || {};
+const conflictPaths = new Set(
+  [...R.findings.read_write, ...R.findings.write_write].map(f=>f.path));
+
+const codeOf = {}, fileOf = {};
+for (const fl of DATA.flights)
+  fl.files.forEach((f,i)=>{ codeOf[f]=fl.codes[i]; fileOf[fl.codes[i]]=f; });
+
+function chipFor(verdict){
+  if (verdict === "HOLD") return {cls:"hold", label:"HOLD · conflict predicted"};
+  if (verdict === "CAUTION") return {cls:"adv", label:"CAUTION · advisories"};
+  if (verdict === "CLEARED_PARTIAL")
+    return {cls:"adv", label:"CLEARED · partial analysis"};
+  if (verdict === "CLEARED") return {cls:"clear", label:"CLEARED"};
+  return {cls:"adv", label:verdict || "UNKNOWN"};
+}
+function pairOf(fl){
+  if (conflictBranches.has(fl.branch)) return red;
+  if (fl.branch === prior.a) return prior;
+  return clean;
+}
+function statusOf(fl){
+  const chip = chipFor(pairOf(fl).result.verdict);
+  if (fl.branch === prior.a && priors.length && chip.cls === "clear")
+    return {cls:"adv", label:chip.label + " · turbulence advisory"};
+  return chip;
+}
+function gapsOf(fl){
+  const an = pairOf(fl).result.analysis;
+  return (an && an.gaps) ? an.gaps.length : 0;
+}
+const holdCount = DATA.flights.filter(f=>conflictBranches.has(f.branch)).length;
+
+/* =============== HOME =============== */
+$("#v-home").innerHTML = `
+  <div class="hero">
+    ${A["sky-hero"] ? `<div class="bg" style="background-image:url(${A["sky-hero"]})"></div>` : ""}
+    <div class="veil"></div>
+    <div class="hero-in">
+      <div class="eyebrow">Tower · ${esc(DATA.generated.slice(0,10))} · live data</div>
+      <h1>Good afternoon.</h1>
+      <div class="sub"><b>${DATA.flights.length} flights</b> in the air ·
+        <span class="alert">${holdCount} on conflict hold</span> ·
+        1 incident on file · every value below comes from a real run.</div>
+    </div>
+  </div>
+  <div class="navcards">
+    <button class="navcard" data-v="air"><div class="ic" style="background:#E8F2FA">🛫</div>
+      <h3>Air view</h3><p>Every agent session as a flight card — cargo, plan, status.</p></button>
+    <button class="navcard" data-v="world"><div class="ic" style="background:#FFF6DC">🗺</div>
+      <h3>World view</h3><p>The repo as airspace. Watch two routes converge on one module.</p></button>
+    <button class="navcard" data-v="incident"><div class="ic" style="background:#FFEBE9">📋</div>
+      <h3>Incident report</h3><p>The merge git called clean — and what happened at runtime.</p></button>
+    <button class="navcard" data-v="book"><div class="ic" style="background:#E4F7EF">🎫</div>
+      <h3>New flight</h3><p>Book an agent. Clearance check, boarding pass, real launch command.</p></button>
+  </div>
+  <div class="board">
+    <div class="board-head"><h2>Departures</h2><span>MAIN INTL · RWY 01</span></div>
+    ${DATA.flights.map(fl=>{const st=statusOf(fl);return `
+      <div class="brow">
+        <span class="cs">${esc(fl.callsign)}</span>
+        <span class="intent">${esc(fl.intent)}</span>
+        <span class="rt">${fl.codes.map(esc).join(" · ")||"—"}</span>
+        <span class="chip ${st.cls}"><i></i>${st.label}</span>
+      </div>`;}).join("")}
+  </div>`;
+
+/* =============== AIR =============== */
+function flightCard(fl){
+  const st = statusOf(fl);
+  const other = fl.branch===red.a ? red.b : red.a;
+  const alertBit = conflictBranches.has(fl.branch)
+    ? `<button class="tcas" onclick="openSheet()">⚠ TCAS — loss of separation predicted
+        with <b>${esc(other)}</b>. Tap for resolution.</button>`
+    : (fl.branch===prior.a && priors.length
+      ? `<div class="okline">✓ No overlap today — but route crosses charted turbulence
+         (${esc(priors[0].path)}). See clearance notes when booking.</div>`
+      : (pairOf(fl).result.verdict === "CLEARED_PARTIAL"
+        ? `<div class="okline" style="color:#8A6D00">◐ No collision found — but the graph
+           has ${gapsOf(fl)} blind spot(s) on this route (dynamic dispatch / generated
+           code). Silence isn't proof here; verify by test.</div>`
+        : `<div class="okline">✓ Airspace clear — land in any order.</div>`));
+  return `<article class="fcard">
+    <div class="img" ${A.wing?`style="background-image:url(${A.wing})"`:""}></div>
+    <div class="body">
+      <div class="toprow"><span class="cs">${esc(fl.callsign)}</span>
+        <span class="chip ${st.cls}"><i></i>${st.label}</span></div>
+      <div class="route">
+        <div class="code">BASE<small>merge-base ${esc(R.merge_base.slice(0,7))}</small></div>
+        <div class="mid"><div class="line"><b>✈</b></div>${fl.commits} commit${fl.commits===1?"":"s"}</div>
+        <div class="code r">MAIN<small>default branch</small></div>
+      </div>
+      <div class="cargo">${fl.files.map((f,i)=>
+        `<span class="tag"><b>${esc(fl.codes[i])}</b> ${esc(f)}</span>`).join("")}</div>
+      <div class="plan">${esc(fl.intent)}</div>
+      ${alertBit}
+    </div></article>`;
+}
+$("#v-air").innerHTML = `
+  <div class="sec-h"><h2>Flights in the air</h2>
+    <span>each card is one agent session · branch ${esc(DATA.flights.map(f=>f.branch).join(", "))}</span></div>
+  <div class="grid2">${DATA.flights.map(flightCard).join("")}</div>`;
+
+/* =============== WORLD =============== */
+(function world(){
+  const W=1080, H=560, NS="http://www.w3.org/2000/svg";
+  const files = [...new Set(DATA.flights.flatMap(f=>f.files))];
+  const nodes = {BASE:[70,H/2], MAIN:[W-80,H/2]};
+  files.forEach((f,i)=>{
+    const t=(i+1)/(files.length+1);
+    nodes[f]=[170+t*(W-360), 120+((i*197)%(H-240))];
+  });
+  const colors=["#2C5A78","#8A6D00","#177A55","#7A4D9E","#C4372C"];
+  let svg=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Repo airspace map: flights as routes through module airports">`;
+  // turbulence patches under everything
+  for (const p of hotPaths){ if(!nodes[p]) continue; const [x,y]=nodes[p];
+    svg+=`<circle cx="${x}" cy="${y}" r="52" fill="#FF6257" opacity="0.10"/>
+          <circle cx="${x}" cy="${y}" r="34" fill="#FF6257" opacity="0.10"/>`; }
+  // arcs per flight
+  DATA.flights.forEach((fl,fi)=>{
+    const pts=[nodes.BASE, ...fl.files.map(f=>nodes[f]), nodes.MAIN];
+    let d=`M${pts[0][0]},${pts[0][1]}`;
+    for(let i=1;i<pts.length;i++){
+      const [x0,y0]=pts[i-1],[x1,y1]=pts[i];
+      d+=` Q${(x0+x1)/2},${Math.min(y0,y1)-46} ${x1},${y1}`;
+    }
+    svg+=`<path class="arc" d="${d}" stroke="${colors[fi%colors.length]}" opacity="0.8"/>`;
+    const mid=pts[Math.floor(pts.length/2)];
+    svg+=`<text class="plane-glyph" x="${mid[0]-8}" y="${mid[1]-14}">✈</text>
+          <text class="node-file" x="${mid[0]+10}" y="${mid[1]-16}"
+                fill="${colors[fi%colors.length]}">${esc(fl.callsign)}</text>`;
+  });
+  // nodes
+  for (const [key,[x,y]] of Object.entries(nodes)){
+    const isEnd = key==="BASE"||key==="MAIN";
+    const conflict = conflictPaths.has(key);
+    if (conflict)
+      svg+=`<circle class="conflict-ring" cx="${x}" cy="${y}" r="18" fill="none"
+             stroke="#FF6257" stroke-width="3"/>`;
+    svg+=`<circle cx="${x}" cy="${y}" r="${isEnd?13:11}"
+           fill="${isEnd?"#14181D":conflict?"#FF6257":"#FFD84D"}"
+           stroke="#fff" stroke-width="3" style="cursor:${conflict?"pointer":"default"}"
+           ${conflict?`onclick="openSheet()"`:""}/>`;
+    svg+=`<text class="node-code" x="${x+18}" y="${y+7}">${esc(isEnd?key:codeOf[key]||"?")}</text>`;
+    if(!isEnd) svg+=`<text class="node-file" x="${x+18}" y="${y+21}">${esc(key)}</text>`;
+  }
+  svg+=`</svg>`;
+  $("#v-world").innerHTML = `
+    <div class="sec-h"><h2>World view</h2>
+      <span>the repository as airspace · modules are airports · tap a red airport</span></div>
+    <div class="map-card"><span class="map-note">Repo airspace · semantic separation radar</span>${svg}</div>
+    <div class="legend">
+      <span><i style="background:#FFD84D"></i>module airport</span>
+      <span><i style="background:#FF6257"></i>loss of separation — tap it</span>
+      <span><i style="background:#FF6257;opacity:.25"></i>charted turbulence (prior collisions)</span>
+      <span><i style="background:#14181D"></i>BASE / MAIN</span>
+      <span style="font-family:var(--mono);font-size:11px">routes drawn from each branch's real diff</span>
+    </div>`;
+})();
+
+/* =============== SHEET =============== */
+function openSheet(){
+  const deps=(rw.dependents||[]).map(d=>
+    `<div class="rcpt">↳ ${esc(d.name)}() · ${esc(d.path)}:${esc(d.line)} · confidence ${esc(d.confidence)}</div>`).join("");
+  $("#sheet").innerHTML = `
+    <div class="grab"></div>
+    <button class="close" onclick="closeSheet()">✕</button>
+    <h2>⚠ Conflict resolution · ${esc(R.ref_a)} ✈ ${esc(R.ref_b)}</h2>
+    <div class="fnd red"><span class="k">Read–Write · the merge git cannot see</span>
+      <code>${esc(rw.entity)}</code> changed shape on ${esc(rw.changed_by)}:<br>
+      <code>${esc(rw.old_signature||"")}</code> → <code>${esc(rw.new_signature||"")}</code>
+      ${deps}</div>
+    ${ww.entity?`<div class="fnd red"><span class="k">Write–Write</span>
+      Both flights modified <code>${esc(ww.entity)}</code> (${esc(ww.path)}). Review together.</div>`:""}
+    ${R.findings.advisory.map(f=>`<div class="fnd amber"><span class="k">Behavior drift · advisory</span>
+      <code>${esc(f.entity)}</code> body changed by ${esc(f.changed_by)}; dependents:
+      ${f.dependents.map(d=>`${esc(d.name)}() ${esc(d.path)}:${esc(d.line)}`).join(", ")}</div>`).join("")}
+    <div class="landing-strip"><b>✈ Landing order</b>${esc(R.landing_order||"")}</div>
+    <div class="fnd blue" style="margin-top:12px"><span class="k">Why trust this</span>
+      Every receipt above is file:line + confidence from the Entire Graph — verify it
+      against source. Exit code ${esc(red.exit_code)} gates CI. Verdict: ${esc(R.verdict)}.
+      ${R.analysis ? `Analysis ${R.analysis.complete ? "complete" :
+        `partial — ${(R.analysis.gaps||[]).length} blind spot(s) labelled, never hidden`}.` : ""}</div>`;
+  $("#sheet-wrap").classList.add("on");
+}
+function closeSheet(){ $("#sheet-wrap").classList.remove("on"); }
+addEventListener("keydown",e=>{ if(e.key==="Escape") closeSheet(); });
+
+/* =============== INCIDENT =============== */
+$("#v-incident").innerHTML = `
+  <div class="inc">
+    <div class="stamp">PREDICTED PRE-MERGE</div>
+    <div class="rep">Incident report · IR-001 · runway MAIN</div>
+    <h2>Clean merge, broken runtime</h2>
+    <div class="meta">${esc(red.a)} × ${esc(red.b)} · merge-base ${esc(R.merge_base.slice(0,7))} ·
+      all output below captured verbatim from the reproduction</div>
+    <div class="tl">
+      <div class="ev"><h3>Both flights land — git reports zero conflicts</h3>
+        <span class="t">git merge --no-ff feat-auth && git merge --no-ff feat-checkout</span>
+        <div class="term"><span class="p">$ git merge …</span>\n${esc(DATA.trap.merge_out)}</div></div>
+      <div class="ev"><h3>${esc(red.a)}'s own tests pass — it is self-consistent</h3>
+        <div class="term"><span class="p">$ python3 run_tests.py</span>\n${esc(DATA.trap.tests_pass_out)}</div></div>
+      <div class="ev bad"><h3>${esc(red.b)}'s features explode on the merged tree</h3>
+        <div class="term"><span class="p">$ python3 tests_checkout.py</span>\n${esc(DATA.trap.tests_fail_out)}</div></div>
+    </div>
+    <div class="verdict-quote"><b>Probable cause:</b> ${esc(rw.changed_by)} changed
+      <code style="font-family:var(--mono)">${esc(rw.entity)}</code>'s signature while
+      ${esc(rw.dependents_side)} built new call sites on the old shape — zero textual overlap,
+      invisible to git. ATC flagged this exact edge <b>before any merge</b>
+      (verdict ${esc(R.verdict)}, exit ${esc(red.exit_code)}) with receipts at
+      ${(rw.dependents||[]).map(d=>`${esc(d.path)}:${esc(d.line)}`).join(", ")}.</div>
+  </div>`;
+
+/* =============== BOOKING =============== */
+const KLASSES=[["🪶","Economy","fast + light","haiku"],["🛋","Business","balanced","sonnet"],["👑","First","deepest reasoning","opus"]];
+let bk={dest:new Set(), klass:"sonnet", branch:"feat-payments-v2", intent:""};
+$("#v-book").innerHTML = `
+  <div class="sec-h"><h2>Book a new flight</h2>
+    <span>an agent session, issued like a ticket — the barcode carries a real command</span></div>
+  <div class="book-grid">
+    <div class="steps">
+      <div class="step"><span class="sn">STEP 01</span><h3>File the flight plan</h3>
+        <label>What should this agent do?</label>
+        <textarea id="bk-intent" placeholder="e.g. add retry logic to payment capture; keep the public API stable"></textarea>
+        <label>Destination modules</label>
+        <div class="dest-chips" id="bk-dests"></div></div>
+      <div class="step"><span class="sn">STEP 02</span><h3>Choose the aircraft</h3>
+        <label>Branch name</label>
+        <input type="text" id="bk-branch" value="feat-payments-v2">
+        <label>Class</label>
+        <div class="classes" id="bk-classes"></div></div>
+      <div class="step"><span class="sn">STEP 03</span><h3>Request clearance</h3>
+        <div id="bk-clearance" class="clearance ok">Select destination modules —
+          the tower checks their contention history before you take off.</div>
+        <button class="issue" id="bk-issue">Issue boarding pass</button></div>
+    </div>
+    <div class="pass-zone">
+      <div class="pass" id="pass">
+        <div class="strip" ${A["iso-airport"]?`style="background-image:url(${A["iso-airport"]})"`:""}>
+          <span class="airline">ATC TERMINAL AIRWAYS</span></div>
+        <div class="pass-main">
+          <div class="route">
+            <div class="code">BASE<small>this repo</small></div>
+            <div class="mid"><div class="line"><b>✈</b></div><span id="pass-dests">—</span></div>
+            <div class="code r">MAIN<small>merge target</small></div>
+          </div>
+          <div class="pass-meta">
+            <div class="pm"><div class="k">Callsign</div><div class="v" id="pass-cs">—</div></div>
+            <div class="pm"><div class="k">Class</div><div class="v" id="pass-class">—</div></div>
+            <div class="pm"><div class="k">Gate</div><div class="v">G1</div></div>
+            <div class="pm"><div class="k">Date</div><div class="v">${esc(DATA.generated.slice(5,10))}</div></div>
+          </div>
+        </div>
+        <div class="tear"></div>
+        <div class="stub" id="stub" title="Tear off to depart">
+          <canvas id="barcode" width="800" height="104"></canvas>
+          <div class="hint">▲ the barcode is the launch command · tap the stub to tear &amp; depart</div>
+        </div>
+      </div>
+      <div class="cmd" id="cmd"><div class="k">Launch command — real, copy it
+        <button class="copy" id="copy-btn">Copy</button></div><pre id="cmd-text"></pre></div>
+    </div>
+  </div>`;
+
+const allDests=[...new Set(DATA.flights.flatMap(f=>f.files))];
+$("#bk-dests").innerHTML = allDests.map(f=>
+  `<button class="dchip" data-f="${esc(f)}"><b>${esc(codeOf[f]||"?")}</b> ${esc(f)}</button>`).join("");
+$("#bk-classes").innerHTML = KLASSES.map(([em,n,d,id])=>
+  `<button class="klass ${id===bk.klass?"on":""}" data-k="${id}"><div class="em">${em}</div>
+   <h4>${n}</h4><p>${d} · ${id}</p></button>`).join("");
+
+function clearanceCheck(){
+  const hot=[...bk.dest].filter(f=>hotPaths.has(f));
+  const el=$("#bk-clearance");
+  if(!bk.dest.size){ el.className="clearance ok";
+    el.textContent="Select destination modules — the tower checks their contention history before you take off."; }
+  else if(hot.length){ const p=priors.find(x=>x.path===hot[0]);
+    el.className="clearance warn";
+    el.innerHTML=`⚠ <b>${esc(codeOf[hot[0]])} is charted turbulence</b> — ${esc(String(p?p.red_findings:"?"))}
+      red finding(s) across ${esc(String(p?p.runs_touching:"?"))} prior runs (rate ${esc(String(p?p.rate:"?"))}).
+      Consider sequencing this flight after traffic clears rather than flying parallel.
+      <span style="opacity:.7">scope: ${esc(prior.result.priors_scope||"?")}</span>`; }
+  else { el.className="clearance ok";
+    el.textContent="✓ Clearance granted — no contention history on this route."; }
+}
+document.querySelectorAll(".dchip").forEach(c=>c.onclick=()=>{
+  const f=c.dataset.f; bk.dest.has(f)?bk.dest.delete(f):bk.dest.add(f);
+  c.classList.toggle("on"); clearanceCheck(); });
+document.querySelectorAll(".klass").forEach(k=>k.onclick=()=>{
+  bk.klass=k.dataset.k;
+  document.querySelectorAll(".klass").forEach(x=>x.classList.toggle("on",x===k)); });
+
+function drawBarcode(canvas, text){
+  const ctx=canvas.getContext("2d"); ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle="#171B21"; let x=8;
+  for(let i=0;i<text.length&&x<canvas.width-8;i++){
+    const c=text.charCodeAt(i);
+    const w=1+(c%4), gap=1+((c>>3)%3);
+    ctx.fillRect(x,6,w*2,92); x+=w*2+gap*2;
+  }
+}
+$("#bk-issue").onclick=()=>{
+  const branch=($("#bk-branch").value.trim()||"feat-new").replace(/\s+/g,"-");
+  bk.intent=$("#bk-intent").value.trim()||"(no flight plan filed)";
+  const cs=branch.replace(/^feat-/,"").toUpperCase().slice(0,5)+"-"+String(DATA.flights.length+1).padStart(2,"0");
+  const cmd=`git worktree add ../wt-${branch} -b ${branch} && cd ../wt-${branch} && claude "${bk.intent.replace(/"/g,"'")}"`;
+  $("#pass-cs").textContent=cs;
+  $("#pass-class").textContent=KLASSES.find(k=>k[3]===bk.klass)[1].toUpperCase();
+  $("#pass-dests").textContent=[...bk.dest].map(f=>codeOf[f]).join(" · ")||"OPEN ROUTE";
+  $("#cmd-text").textContent=cmd;
+  drawBarcode($("#barcode"), cmd);
+  $("#pass").classList.add("issued"); $("#pass").classList.remove("torn");
+  $("#cmd").classList.add("on");
+  toast(`Boarding pass issued — ${cs}. Tear the stub to depart.`);
+};
+$("#stub").onclick=()=>{
+  if(!$("#pass").classList.contains("issued")) return;
+  $("#pass").classList.add("torn");
+  toast(`✈ ${$("#pass-cs").textContent} cleared for departure — command is below, copy &amp; fly.`.replace("&amp;","&"));
+};
+$("#copy-btn").onclick=async()=>{
+  try{ await navigator.clipboard.writeText($("#cmd-text").textContent);
+       toast("Launch command copied."); }
+  catch{ toast("Select the command text to copy it."); }
+};
+
+/* =============== shared =============== */
+let toastTimer;
+function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("on");
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("on"),3200); }
+function show(v){
+  document.querySelectorAll(".view").forEach(x=>x.classList.remove("on"));
+  $("#v-"+v).classList.add("on");
+  document.querySelectorAll("nav .tab").forEach(t=>t.classList.toggle("on",t.dataset.v===v));
+  history.replaceState(null,"","#"+v); scrollTo({top:0});
+}
+document.querySelectorAll("[data-v]").forEach(el=>el.addEventListener("click",()=>show(el.dataset.v)));
+if(location.hash) show(location.hash.slice(1)||"home");
+</script>
