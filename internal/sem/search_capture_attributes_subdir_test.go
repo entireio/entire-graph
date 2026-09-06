@@ -48,7 +48,8 @@ func TestCapturedPreselectionSubdirectoryRetainsAncestorPolicyDecision(t *testin
 		t.Fatal(err)
 	}
 	write(t, root, ".gitattributes", "pkg/**/*.target diff=custom\n")
-	write(t, root, "pkg/src/target.target", "needle\n")
+	write(t, root, "pkg/src/first.target", "needle\n")
+	write(t, root, "pkg/src/second.target", "needle\n")
 	git(t, root, "add", ".")
 	git(t, root, "commit", "-m", "initial subdirectory policy")
 
@@ -58,12 +59,12 @@ func TestCapturedPreselectionSubdirectoryRetainsAncestorPolicyDecision(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, _, err := capturedPreselectionMatches(context.Background(), source, source.paths, []string{"needle"}, 32)
+	first, _, err := capturedPreselectionMatches(context.Background(), source, []string{"src/first.target"}, []string{"needle"}, 32)
 	if err != nil {
 		source.close()
 		t.Fatal(err)
 	}
-	if containsCapturedPath(first, "src/target.target") {
+	if containsCapturedPath(first, "src/first.target") {
 		source.close()
 		t.Fatal("initial ancestor binary policy did not apply")
 	}
@@ -71,12 +72,12 @@ func TestCapturedPreselectionSubdirectoryRetainsAncestorPolicyDecision(t *testin
 	// The operation must keep the first captured ancestor policy even after the
 	// mutable worktree policy changes.
 	write(t, root, ".gitattributes", "pkg/**/*.target diff\n")
-	repeated, _, err := capturedPreselectionMatches(context.Background(), source, source.paths, []string{"needle"}, 32)
+	repeated, _, err := capturedPreselectionMatches(context.Background(), source, []string{"src/second.target"}, []string{"needle"}, 32)
 	if err != nil {
 		source.close()
 		t.Fatal(err)
 	}
-	if containsCapturedPath(repeated, "src/target.target") {
+	if containsCapturedPath(repeated, "src/second.target") {
 		source.close()
 		t.Fatal("repeated operation reread changed ancestor policy")
 	}
@@ -91,11 +92,11 @@ func TestCapturedPreselectionSubdirectoryRetainsAncestorPolicyDecision(t *testin
 		t.Fatal(err)
 	}
 	defer fresh.close()
-	selected, _, err := capturedPreselectionMatches(context.Background(), fresh, fresh.paths, []string{"needle"}, 32)
+	selected, _, err := capturedPreselectionMatches(context.Background(), fresh, []string{"src/second.target"}, []string{"needle"}, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsCapturedPath(selected, "src/target.target") {
+	if !containsCapturedPath(selected, "src/second.target") {
 		t.Fatal("fresh operation did not observe changed ancestor policy")
 	}
 }
