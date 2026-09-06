@@ -3,7 +3,7 @@
   "checkpoint_id": "303ac9263789",
   "strategy": "manual-commit",
   "branch": "docs/gps-design",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": null,
   "sessions": [
     {
@@ -12,6 +12,13 @@
       "compact_transcript": "/30/3ac9263789/0/transcript.jsonl",
       "content_hash": "/30/3ac9263789/0/content_hash.txt",
       "prompt": "/30/3ac9263789/0/prompt.txt"
+    },
+    {
+      "metadata": "/30/3ac9263789/1/metadata.json",
+      "transcript": "/30/3ac9263789/1/full.jsonl",
+      "compact_transcript": "/30/3ac9263789/1/transcript.jsonl",
+      "content_hash": "/30/3ac9263789/1/content_hash.txt",
+      "prompt": "/30/3ac9263789/1/prompt.txt"
     }
   ],
   "token_usage": {
