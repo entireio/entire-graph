@@ -1,0 +1,36 @@
+{
+  "commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
+  "command": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "docs/implementation/graph-advantage/p1-corpus-20260905",
+    "-p",
+    "test_*.py"
+  ],
+  "exit_code": 0,
+  "seconds": 4.653761374996975,
+  "harness_sources_unchanged": true,
+  "source_sha256": {
+    "docs/implementation/graph-advantage/p1-corpus-20260905/campaign_gate.py": "8c07cdac2089a99aae7c338f65472885d3039f223080d60d57978ae08587cae6",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/canary_admission.py": "8bc7c9723a7ddeb64040939ba55a58a0f73066a46fb457f28b77ebe7bb7af3f6",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/cloud.py": "927ff2bc4e7647c88d60c39123477953102391936d38ec2c57d9f44f73dcd548",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/collect.py": "de9e61a50189e7cffad04a78349dee6aecd272d473ef470183feb377620224f5",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/finalize_baseline.py": "fcbd76460d98798b55f9368f49a4f001775aef8a15cf4837d8b045d5244438c1",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/launch.py": "34754610c6e7295648d7858cfdaf4cb222cc2400686c2900cee29252249e630a",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/run_campaign.py": "db4938405d9535bbfad4fd5be42e07acc31a7b64ab6a50c29f52f4c737342ba7",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/summarize.py": "c9f8e5d0ea688657aad904982f60960351f3446d008d27658cee8fc6c0203c31",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/supervise.py": "8cc6d58d3a4bcc0f44ae188cdfbb644ad5604f923a9e2e106f5b7dc061e6e7cf",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_campaign_gate.py": "a09618aa5b3521f1f2543dbec1af50058d95d12fa25f7da993093823486073c6",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_canary_admission.py": "a414ec0a0e9be840ab93a83d75b2b97a69b27d3bc1191f70d60b373e1514af68",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_collect.py": "f6adfe512e76d4cd93436dacb6d6743fa3684972f670855bcf7d02765c2858fb",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_finalize_baseline.py": "7def6826af6ef4f84fc21495c665bccf5c2f47c58778fae6cca7553bae7aae55",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_run_campaign.py": "a1c92c3617a72660c07991dfb0a9327c15b64231030bc5458933116b47a8df30",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_summarize.py": "f656cb3519ee62a6192f5f7f62461b8c3d833e9ec425241c8862e64b545e0042",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/test_supervise.py": "376101e90337eb835dab43b923aaf4c84ab0289986c98603892caa720a52f5eb",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/verify_inputs.py": "9264858a2bfb2bc87d06ea382e249391f4631b22f245bccb50bc97969f1fa961"
+  },
+  "scope": "Harness unit and local subprocess tests only; Azure interactions mocked; no benchmark campaign launched."
+}

@@ -7,9 +7,9 @@
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
   "verified_checkpoint": "dc0ddce7",
   "verified_evidence_commit": "da3c59ee",
-  "current_worktree": "captured-preselection diagnosis worktree changes are unresolved and unverified; current HEAD is intentionally not authoritative",
+  "current_worktree": "Captured preselection prototype134c3752 is WIP with a known binary-attribute regression; not a release candidate",
   "workers_state": "all three task-owned VMs deallocated",
-  "harness_source_commit": "e4d700f80e3888ea5d4dc919a1af30a86f4282e5",
+  "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
   "correctness": "verified checkpoint dc0ddce7: mise run check passed in621.0947s; evidence retained by da3c59ee; current worktree fix unverified",
   "release_gate": "not passed",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T09:20:13Z",
+  "as_of_utc": "2026-09-06T09:27:33.411409+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -31,7 +31,7 @@
   "measured_requests": 116,
   "recorded_unrun_requests": 1434,
   "pending_planned_requests": 15730,
-  "heartbeat_status": "PAUSED",
+  "heartbeat_status": "ACTIVE",
   "pause_reason": "Diagnose cache-on timeouts and partial-result validity before any further measurement",
   "cache_fix_commits": [
     "f96483ef",
@@ -41,8 +41,8 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Confirmed worktree preselection path divergence (381 vs384 indexed files); access telemetry now counts selected-pool hydration and combined large parity/mutation passed in16.860s; reduced Git matcher contract still fails on a .gitattributes binary-classified file",
-  "stopgaps": "Implemented: 47 Python tests pass in6.460s including collector; supervisor, lease, canary and stale-build admission guards",
+  "remaining_diagnosis": "Large-pool selection and mutation tests passed16.287s; binary-attribute parity fails; oversized matching and caller-locale compatibility unresolved",
+  "stopgaps": "56 harness tests passed in4.561s at0381ea6d with unchanged source hashes; no Azure campaign run",
   "full_correctness": "verified at dc0ddce7 in621.0947s; source unchanged; current worktree selection/matcher fix unverified",
   "campaign": "paused; no new measurements",
   "stopgap_commits": [

@@ -1,0 +1,8 @@
+...........{"worker": 1, "vm": "worker-a", "output": ["status", "P1_UPLOAD_OK p1-20260905-baseline-worker-1.tar.gz"]}
+.........{"worker": 1, "vm": "worker-a", "output": ["status", "P1_UPLOAD_OK p1-20260905-baseline-run-7-worker-1.tar.gz"], "run_id": "run-7"}
+.{"worker": 1, "vm": "worker-a", "output": ["active status"]}
+...................................
+----------------------------------------------------------------------
+Ran 56 tests in 4.561s
+
+OK
