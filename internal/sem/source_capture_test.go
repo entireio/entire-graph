@@ -1,13 +1,99 @@
 package sem
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestCapturedWorktreeObserverSeesRegularAndOversizedBytesOnce(t *testing.T) {
+	repo := t.TempDir()
+	small := "small\n"
+	large := strings.Repeat("line\n", 40)
+	if err := os.WriteFile(filepath.Join(repo, "small.go"), []byte(small), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "large.go"), []byte(large), 0600); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]*bytes.Buffer{}
+	finished := map[string]error{}
+	opened, err := openSource(t.Context(), repo, "", sourceOptions{
+		capture: true, maxReadBytes: 12,
+		captureObserverFactory: func(path string) (io.Writer, func(error)) {
+			buffer := new(bytes.Buffer)
+			seen[path] = buffer
+			return buffer, func(err error) { finished[path] = err }
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.close()
+	if got, ok := opened.read("small.go"); !ok || got != small {
+		t.Fatalf("small read = %q, %v", got, ok)
+	}
+	if got, ok := opened.read("large.go"); ok || got != "" {
+		t.Fatalf("oversized read = %q, %v", got, ok)
+	}
+	if got := seen["small.go"].String(); got != small {
+		t.Fatalf("small observer bytes = %q, want original bytes", got)
+	}
+	if got := seen["large.go"].String(); got != large {
+		t.Fatalf("oversized observer bytes = %d, want %d", len(got), len(large))
+	}
+	if finished["small.go"] != nil || finished["large.go"] != nil {
+		t.Fatalf("observer completion errors = %#v", finished)
+	}
+}
+
+type failingObserverWriter struct{}
+
+func (failingObserverWriter) Write([]byte) (int, error) { return 0, errors.New("observer failed") }
+
+func TestCapturedWorktreeObserverReportsWriteErrorAndCancellation(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "file.go"), []byte("package p\nfunc F() {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var observed error
+	opened, err := openSource(t.Context(), repo, "", sourceOptions{
+		capture: true,
+		captureObserverFactory: func(string) (io.Writer, func(error)) {
+			return failingObserverWriter{}, func(err error) { observed = err }
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := opened.read("file.go"); ok || observed == nil {
+		t.Fatalf("observer write error was not reported: ok=%v err=%v", ok, observed)
+	}
+	_ = opened.close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	observed = nil
+	opened, err = openSource(ctx, repo, "", sourceOptions{
+		capture: true,
+		captureObserverFactory: func(string) (io.Writer, func(error)) {
+			return io.Discard, func(err error) { observed = err }
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	_, _ = opened.read("file.go")
+	_ = opened.close()
+	if !errors.Is(observed, context.Canceled) {
+		t.Fatalf("cancellation = %v, want context canceled", observed)
+	}
+}
 
 func TestCaptureOpenedSourceSingleObservation(t *testing.T) {
 	reads := 0
