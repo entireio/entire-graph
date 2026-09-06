@@ -1,0 +1,4097 @@
+{
+  "failed": false,
+  "fixture_origin": "hand-authored plan section 8 combination contract",
+  "responses": {
+    "impact-edited": {
+      "operation_inputs": {
+        "policy_coverage": "captured provider policy bytes including nested/vendor rules; Git listing/configuration and metadata probes are opaque",
+        "id": "b5227e37b26279351e45f5c3109c06f1ad670bd83429fa207b8772cff8c8ecf9",
+        "version": 1,
+        "coverage": "observed-inputs-only; not an atomic revision",
+        "selected_paths_digest": "77f15ff50d48d27ae7a5922abfe1aec817fa0c488a07193e203a9a35c20b9bd2",
+        "selected_paths": 3,
+        "observed_inputs": 21,
+        "unobserved_selected": 0,
+        "unavailable_inputs": 16,
+        "observations_omitted": 0,
+        "observations": [
+          {
+            "path": ".gitignore",
+            "status": "absent-policy"
+          },
+          {
+            "path": ".graphignore",
+            "status": "absent-policy"
+          },
+          {
+            "path": "Cargo.toml",
+            "status": "unavailable"
+          },
+          {
+            "path": "build.gradle",
+            "status": "unavailable"
+          },
+          {
+            "path": "build.gradle.kts",
+            "status": "unavailable"
+          },
+          {
+            "path": "chain.go",
+            "status": "captured",
+            "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+            "bytes": 123
+          },
+          {
+            "path": "composer.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "core.go",
+            "status": "captured",
+            "digest": "25026cb74d824b86a748785630ff32056c3a881c05eaf5573d10f059a202ad6d",
+            "bytes": 162
+          },
+          {
+            "path": "go.mod",
+            "status": "captured",
+            "digest": "89810abf5bfe548ec09a2c7e1c454d02f303a5d38897f779649dbee6bbdc62d1",
+            "bytes": 43
+          },
+          {
+            "path": "go.sum",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.work",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.work.sum",
+            "status": "unavailable"
+          },
+          {
+            "path": "import-map.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "importmap.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "package.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "pom.xml",
+            "status": "unavailable"
+          },
+          {
+            "path": "pyproject.toml",
+            "status": "unavailable"
+          },
+          {
+            "path": "settings.gradle",
+            "status": "unavailable"
+          },
+          {
+            "path": "settings.gradle.kts",
+            "status": "unavailable"
+          },
+          {
+            "path": "setup.cfg",
+            "status": "unavailable"
+          },
+          {
+            "path": "tsconfig.json",
+            "status": "unavailable"
+          }
+        ]
+      },
+      "compiler": {
+        "coverage": {
+          "packages": [
+            "fixture.local/combinations"
+          ],
+          "configuration": [
+            "CGO_ENABLED=0",
+            "GOPROXY=off",
+            "GOSUMDB=off",
+            "GOTOOLCHAIN=local",
+            "GOOS=linux",
+            "GOARCH=amd64"
+          ],
+          "toolchain_id": "17fa9868159a85ec188324c7fdc5ff21441c96e482065b2aa11ff062541c4c0c",
+          "status": "complete",
+          "backend": "gopls/v0.20.0",
+          "context_id": "5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75",
+          "queries": 5,
+          "answers": [
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 25
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 6,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 6,
+                      "character": 11
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 51
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/chain.go",
+                  "range": {
+                    "start": {
+                      "line": 1,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 1,
+                      "character": 10
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 76
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/chain.go",
+                  "range": {
+                    "start": {
+                      "line": 2,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 2,
+                      "character": 10
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 114
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 1,
+                      "character": 24
+                    },
+                    "end": {
+                      "line": 1,
+                      "character": 28
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "path": "chain.go",
+                "offset": 114,
+                "implementation": true
+              },
+              "kind": "textDocument/implementation",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 3,
+                      "character": 11
+                    },
+                    "end": {
+                      "line": 3,
+                      "character": 15
+                    }
+                  }
+                },
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 5,
+                      "character": 11
+                    },
+                    "end": {
+                      "line": 5,
+                      "character": 15
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "calls": [
+          {
+            "call_site_line": 2,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier1",
+            "evidence": {
+              "context_id": "5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 25,
+                "end_byte": 31
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "25026cb74d824b86a748785630ff32056c3a881c05eaf5573d10f059a202ad6d",
+                "start_byte": 126,
+                "end_byte": 132
+              },
+              "target_symbol_id": "local/001:Go:core.go:function:Shared"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:core.go:function:Shared"
+            ]
+          },
+          {
+            "call_site_line": 3,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier2",
+            "evidence": {
+              "context_id": "5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 51,
+                "end_byte": 56
+              },
+              "target": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 15,
+                "end_byte": 20
+              },
+              "target_symbol_id": "local/001:Go:chain.go:function:Tier1"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:chain.go:function:Tier1"
+            ]
+          },
+          {
+            "call_site_line": 4,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier3",
+            "evidence": {
+              "context_id": "5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 76,
+                "end_byte": 81
+              },
+              "target": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 41,
+                "end_byte": 46
+              },
+              "target_symbol_id": "local/001:Go:chain.go:function:Tier2"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:chain.go:function:Tier2"
+            ]
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "25026cb74d824b86a748785630ff32056c3a881c05eaf5573d10f059a202ad6d",
+                "start_byte": 34,
+                "end_byte": 38
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:Worker.Work"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:core.go:method:Worker.Work"
+            ]
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75",
+              "backend_version": "gopls/v0.20.0",
+              "category": "implementation_candidate",
+              "query_kind": "textDocument/implementation",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "25026cb74d824b86a748785630ff32056c3a881c05eaf5573d10f059a202ad6d",
+                "start_byte": 72,
+                "end_byte": 76
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:One.Work"
+            },
+            "reconciliation": "candidate_only"
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75",
+              "backend_version": "gopls/v0.20.0",
+              "category": "implementation_candidate",
+              "query_kind": "textDocument/implementation",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "25026cb74d824b86a748785630ff32056c3a881c05eaf5573d10f059a202ad6d",
+                "start_byte": 111,
+                "end_byte": 115
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:Two.Work"
+            },
+            "reconciliation": "candidate_only"
+          }
+        ]
+      },
+      "traversal": {
+        "path_alternatives_omitted": 8,
+        "policy": "experimental-structural-v1",
+        "limits": {
+          "depth": 0,
+          "max_input_edges": 100000,
+          "max_evidence_bytes": 8388608,
+          "max_nodes": 5000,
+          "max_edges": 20000,
+          "max_frontier": 20000,
+          "max_output_steps": 20000,
+          "max_paths": 2,
+          "min_confidence": 0,
+          "graph_partial": false
+        },
+        "results": [
+          {
+            "id": "local/001:Go:chain.go:function:Tier1",
+            "paths": [
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=25:31 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 1
+              },
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "package",
+                    "confidence": 0.8,
+                    "evidence": [
+                      {
+                        "kind": "call_site",
+                        "file_path": "chain.go",
+                        "start_line": 2,
+                        "end_line": 2,
+                        "detail": "Shared"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 0.8
+              }
+            ]
+          },
+          {
+            "id": "local/001:Go:chain.go:function:Tier2",
+            "paths": [
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=25:31 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier2",
+                    "to_id": "local/001:Go:chain.go:function:Tier1",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=51:56 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 1
+              },
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=25:31 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier2",
+                    "to_id": "local/001:Go:chain.go:function:Tier1",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "exact",
+                    "confidence": 0.92,
+                    "evidence": [
+                      {
+                        "kind": "call_site",
+                        "file_path": "chain.go",
+                        "start_line": 3,
+                        "end_line": 3,
+                        "detail": "Tier1"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 0.92
+              }
+            ]
+          },
+          {
+            "id": "local/001:Go:chain.go:function:Tier3",
+            "paths": [
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=25:31 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier2",
+                    "to_id": "local/001:Go:chain.go:function:Tier1",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=51:56 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier3",
+                    "to_id": "local/001:Go:chain.go:function:Tier2",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=76:81 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 1
+              },
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=25:31 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=5108cc27e9dea7062778a38659d8c985b4575e615047e0f9cbd66f6adafd9a75 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier2",
+                    "to_id": "local/001:Go:chain.go:function:Tier1",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "exact",
+                    "confidence": 0.92,
+                    "evidence": [
+                      {
+                        "kind": "call_site",
+                        "file_path": "chain.go",
+                        "start_line": 3,
+                        "end_line": 3,
+                        "detail": "Tier1"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier3",
+                    "to_id": "local/001:Go:chain.go:function:Tier2",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "exact",
+                    "confidence": 0.92,
+                    "evidence": [
+                      {
+                        "kind": "call_site",
+                        "file_path": "chain.go",
+                        "start_line": 4,
+                        "end_line": 4,
+                        "detail": "Tier2"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 0.92
+              }
+            ]
+          }
+        ],
+        "truncated": false,
+        "visited_nodes": 4,
+        "examined_edges": 14,
+        "admitted_states": 15,
+        "counts_lower_bounds": false
+      },
+      "format_version": 1,
+      "repo_root": "/tmp/TestLiveAdvantageCombinationsAndNextQueryFreshness3767391669/001",
+      "profile": "full",
+      "query": "Shared",
+      "depth": 0,
+      "index_cache_hit": false,
+      "index_cache_disabled": true,
+      "index_latency_ms": 1358,
+      "query_latency_ms": 1,
+      "total_latency_ms": 1359,
+      "focus_matches_total": 1,
+      "disambiguation_required": false,
+      "focus": {
+        "id": "local/001:Go:core.go:function:Shared",
+        "name": "Shared",
+        "qualified_name": "Shared",
+        "kind": "function",
+        "file_path": "core.go",
+        "start_line": 7,
+        "end_line": 7,
+        "language": "Go"
+      },
+      "callers": {
+        "total": 2,
+        "direct": 1,
+        "transitive": 1,
+        "in": 1,
+        "entries": [
+          {
+            "endpoint": {
+              "id": "local/001:Go:chain.go:function:Tier1",
+              "name": "Tier1",
+              "qualified_name": "Tier1",
+              "kind": "function",
+              "file_path": "chain.go",
+              "start_line": 2,
+              "end_line": 2,
+              "language": "Go"
+            },
+            "relation": "CALLS",
+            "direction": "in",
+            "depth": 1,
+            "call_site": {
+              "file_path": "chain.go",
+              "line": 2
+            }
+          },
+          {
+            "endpoint": {
+              "id": "local/001:Go:chain.go:function:Tier2",
+              "name": "Tier2",
+              "qualified_name": "Tier2",
+              "kind": "function",
+              "file_path": "chain.go",
+              "start_line": 3,
+              "end_line": 3,
+              "language": "Go"
+            },
+            "relation": "CALLS",
+            "direction": "in",
+            "depth": 2,
+            "via": "Tier1",
+            "call_site": {
+              "file_path": "chain.go",
+              "line": 3
+            }
+          }
+        ]
+      },
+      "callees": {
+        "total": 0,
+        "entries": []
+      },
+      "type_consumers": {
+        "total": 0,
+        "entries": []
+      },
+      "data_flows": {
+        "total": 0,
+        "entries": []
+      },
+      "co_changes": {
+        "total": 0,
+        "entries": []
+      },
+      "siblings": {
+        "total": 0,
+        "entries": []
+      },
+      "warnings": [
+        {
+          "code": "W_WORKTREE_SNAPSHOT",
+          "severity": "warning",
+          "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested"
+        }
+      ],
+      "partial_failures": [],
+      "stats": {
+        "extraction": {
+          "raw_imports_parsed": 1,
+          "raw_imports_reused": 1,
+          "raw_imports_ns": 52462,
+          "files_parsed": 1,
+          "files_reused": 1,
+          "source_bytes_read": 328,
+          "cache_bytes_read": 616,
+          "cache_bytes_written": 807,
+          "extraction_ns": 894365
+        },
+        "files": 2,
+        "parsed_files": 2,
+        "symbols": 11,
+        "relations": 22,
+        "partial_failures": 0,
+        "completeness_level": "ok"
+      },
+      "completeness": {
+        "languages": {
+          "Go": {
+            "files": 2,
+            "symbols": 11
+          }
+        },
+        "relations": {
+          "CALLS": 4,
+          "CONTAINS": 3,
+          "DEFINES": 11,
+          "PARAM_TYPE": 1,
+          "USES_TYPE": 3
+        }
+      },
+      "completeness_scope": {
+        "language": "Go",
+        "language_files": 2,
+        "worktree_snapshot": true,
+        "level": "ok"
+      }
+    },
+    "impact-reused": {
+      "operation_inputs": {
+        "policy_coverage": "captured provider policy bytes including nested/vendor rules; Git listing/configuration and metadata probes are opaque",
+        "id": "9c3000bafa9f6de95628efd68ec3863155b8d348b2409e1b1a87c96722784fab",
+        "version": 1,
+        "coverage": "observed-inputs-only; not an atomic revision",
+        "selected_paths_digest": "77f15ff50d48d27ae7a5922abfe1aec817fa0c488a07193e203a9a35c20b9bd2",
+        "selected_paths": 3,
+        "observed_inputs": 21,
+        "unobserved_selected": 0,
+        "unavailable_inputs": 16,
+        "observations_omitted": 0,
+        "observations": [
+          {
+            "path": ".gitignore",
+            "status": "absent-policy"
+          },
+          {
+            "path": ".graphignore",
+            "status": "absent-policy"
+          },
+          {
+            "path": "Cargo.toml",
+            "status": "unavailable"
+          },
+          {
+            "path": "build.gradle",
+            "status": "unavailable"
+          },
+          {
+            "path": "build.gradle.kts",
+            "status": "unavailable"
+          },
+          {
+            "path": "chain.go",
+            "status": "captured",
+            "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+            "bytes": 123
+          },
+          {
+            "path": "composer.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "core.go",
+            "status": "captured",
+            "digest": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13",
+            "bytes": 162
+          },
+          {
+            "path": "go.mod",
+            "status": "captured",
+            "digest": "89810abf5bfe548ec09a2c7e1c454d02f303a5d38897f779649dbee6bbdc62d1",
+            "bytes": 43
+          },
+          {
+            "path": "go.sum",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.work",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.work.sum",
+            "status": "unavailable"
+          },
+          {
+            "path": "import-map.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "importmap.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "package.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "pom.xml",
+            "status": "unavailable"
+          },
+          {
+            "path": "pyproject.toml",
+            "status": "unavailable"
+          },
+          {
+            "path": "settings.gradle",
+            "status": "unavailable"
+          },
+          {
+            "path": "settings.gradle.kts",
+            "status": "unavailable"
+          },
+          {
+            "path": "setup.cfg",
+            "status": "unavailable"
+          },
+          {
+            "path": "tsconfig.json",
+            "status": "unavailable"
+          }
+        ]
+      },
+      "compiler": {
+        "coverage": {
+          "packages": [
+            "fixture.local/combinations"
+          ],
+          "configuration": [
+            "CGO_ENABLED=0",
+            "GOPROXY=off",
+            "GOSUMDB=off",
+            "GOTOOLCHAIN=local",
+            "GOOS=linux",
+            "GOARCH=amd64"
+          ],
+          "toolchain_id": "17fa9868159a85ec188324c7fdc5ff21441c96e482065b2aa11ff062541c4c0c",
+          "status": "complete",
+          "backend": "gopls/v0.20.0",
+          "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+          "queries": 5,
+          "answers": [
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 25
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 6,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 6,
+                      "character": 11
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 51
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/chain.go",
+                  "range": {
+                    "start": {
+                      "line": 1,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 1,
+                      "character": 10
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 76
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/chain.go",
+                  "range": {
+                    "start": {
+                      "line": 2,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 2,
+                      "character": 10
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 114
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 1,
+                      "character": 24
+                    },
+                    "end": {
+                      "line": 1,
+                      "character": 28
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "path": "chain.go",
+                "offset": 114,
+                "implementation": true
+              },
+              "kind": "textDocument/implementation",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 3,
+                      "character": 11
+                    },
+                    "end": {
+                      "line": 3,
+                      "character": 15
+                    }
+                  }
+                },
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 5,
+                      "character": 11
+                    },
+                    "end": {
+                      "line": 5,
+                      "character": 15
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "calls": [
+          {
+            "call_site_line": 2,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier1",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 25,
+                "end_byte": 31
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13",
+                "start_byte": 126,
+                "end_byte": 132
+              },
+              "target_symbol_id": "local/001:Go:core.go:function:Shared"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:core.go:function:Shared"
+            ]
+          },
+          {
+            "call_site_line": 3,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier2",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 51,
+                "end_byte": 56
+              },
+              "target": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 15,
+                "end_byte": 20
+              },
+              "target_symbol_id": "local/001:Go:chain.go:function:Tier1"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:chain.go:function:Tier1"
+            ]
+          },
+          {
+            "call_site_line": 4,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier3",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 76,
+                "end_byte": 81
+              },
+              "target": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 41,
+                "end_byte": 46
+              },
+              "target_symbol_id": "local/001:Go:chain.go:function:Tier2"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:chain.go:function:Tier2"
+            ]
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13",
+                "start_byte": 34,
+                "end_byte": 38
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:Worker.Work"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:core.go:method:Worker.Work"
+            ]
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "implementation_candidate",
+              "query_kind": "textDocument/implementation",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13",
+                "start_byte": 72,
+                "end_byte": 76
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:One.Work"
+            },
+            "reconciliation": "candidate_only"
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "implementation_candidate",
+              "query_kind": "textDocument/implementation",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13",
+                "start_byte": 111,
+                "end_byte": 115
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:Two.Work"
+            },
+            "reconciliation": "candidate_only"
+          }
+        ]
+      },
+      "traversal": {
+        "path_alternatives_omitted": 8,
+        "policy": "experimental-structural-v1",
+        "limits": {
+          "depth": 0,
+          "max_input_edges": 100000,
+          "max_evidence_bytes": 8388608,
+          "max_nodes": 5000,
+          "max_edges": 20000,
+          "max_frontier": 20000,
+          "max_output_steps": 20000,
+          "max_paths": 2,
+          "min_confidence": 0,
+          "graph_partial": false
+        },
+        "results": [
+          {
+            "id": "local/001:Go:chain.go:function:Tier1",
+            "paths": [
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=25:31 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 1
+              },
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "package",
+                    "confidence": 0.8,
+                    "evidence": [
+                      {
+                        "kind": "call_site",
+                        "file_path": "chain.go",
+                        "start_line": 2,
+                        "end_line": 2,
+                        "detail": "Shared"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 0.8
+              }
+            ]
+          },
+          {
+            "id": "local/001:Go:chain.go:function:Tier2",
+            "paths": [
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=25:31 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier2",
+                    "to_id": "local/001:Go:chain.go:function:Tier1",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=51:56 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 1
+              },
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=25:31 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier2",
+                    "to_id": "local/001:Go:chain.go:function:Tier1",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "exact",
+                    "confidence": 0.92,
+                    "evidence": [
+                      {
+                        "kind": "call_site",
+                        "file_path": "chain.go",
+                        "start_line": 3,
+                        "end_line": 3,
+                        "detail": "Tier1"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 0.92
+              }
+            ]
+          },
+          {
+            "id": "local/001:Go:chain.go:function:Tier3",
+            "paths": [
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=25:31 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier2",
+                    "to_id": "local/001:Go:chain.go:function:Tier1",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=51:56 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier3",
+                    "to_id": "local/001:Go:chain.go:function:Tier2",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=76:81 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 1
+              },
+              {
+                "category": "structural",
+                "steps": [
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier1",
+                    "to_id": "local/001:Go:core.go:function:Shared",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "compiler_direct_declaration",
+                    "confidence": 1,
+                    "evidence": [
+                      {
+                        "kind": "direct_declaration",
+                        "file_path": "chain.go",
+                        "detail": "bytes=25:31 digest=41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420 context=fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7 backend=gopls/v0.20.0"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier2",
+                    "to_id": "local/001:Go:chain.go:function:Tier1",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "exact",
+                    "confidence": 0.92,
+                    "evidence": [
+                      {
+                        "kind": "call_site",
+                        "file_path": "chain.go",
+                        "start_line": 3,
+                        "end_line": 3,
+                        "detail": "Tier1"
+                      }
+                    ]
+                  },
+                  {
+                    "from_id": "local/001:Go:chain.go:function:Tier3",
+                    "to_id": "local/001:Go:chain.go:function:Tier2",
+                    "relation": "CALLS",
+                    "direction": "in",
+                    "resolution": "exact",
+                    "confidence": 0.92,
+                    "evidence": [
+                      {
+                        "kind": "call_site",
+                        "file_path": "chain.go",
+                        "start_line": 4,
+                        "end_line": 4,
+                        "detail": "Tier2"
+                      }
+                    ]
+                  }
+                ],
+                "weakest_confidence": 0.92
+              }
+            ]
+          }
+        ],
+        "truncated": false,
+        "visited_nodes": 4,
+        "examined_edges": 14,
+        "admitted_states": 15,
+        "counts_lower_bounds": false
+      },
+      "format_version": 1,
+      "repo_root": "/tmp/TestLiveAdvantageCombinationsAndNextQueryFreshness3767391669/001",
+      "profile": "full",
+      "query": "Shared",
+      "depth": 0,
+      "index_cache_hit": false,
+      "index_cache_disabled": true,
+      "index_latency_ms": 1291,
+      "query_latency_ms": 1,
+      "total_latency_ms": 1293,
+      "focus_matches_total": 1,
+      "disambiguation_required": false,
+      "focus": {
+        "id": "local/001:Go:core.go:function:Shared",
+        "name": "Shared",
+        "qualified_name": "Shared",
+        "kind": "function",
+        "file_path": "core.go",
+        "start_line": 7,
+        "end_line": 7,
+        "language": "Go"
+      },
+      "callers": {
+        "total": 2,
+        "direct": 1,
+        "transitive": 1,
+        "in": 1,
+        "entries": [
+          {
+            "endpoint": {
+              "id": "local/001:Go:chain.go:function:Tier1",
+              "name": "Tier1",
+              "qualified_name": "Tier1",
+              "kind": "function",
+              "file_path": "chain.go",
+              "start_line": 2,
+              "end_line": 2,
+              "language": "Go"
+            },
+            "relation": "CALLS",
+            "direction": "in",
+            "depth": 1,
+            "call_site": {
+              "file_path": "chain.go",
+              "line": 2
+            }
+          },
+          {
+            "endpoint": {
+              "id": "local/001:Go:chain.go:function:Tier2",
+              "name": "Tier2",
+              "qualified_name": "Tier2",
+              "kind": "function",
+              "file_path": "chain.go",
+              "start_line": 3,
+              "end_line": 3,
+              "language": "Go"
+            },
+            "relation": "CALLS",
+            "direction": "in",
+            "depth": 2,
+            "via": "Tier1",
+            "call_site": {
+              "file_path": "chain.go",
+              "line": 3
+            }
+          }
+        ]
+      },
+      "callees": {
+        "total": 0,
+        "entries": []
+      },
+      "type_consumers": {
+        "total": 0,
+        "entries": []
+      },
+      "data_flows": {
+        "total": 0,
+        "entries": []
+      },
+      "co_changes": {
+        "total": 0,
+        "entries": []
+      },
+      "siblings": {
+        "total": 0,
+        "entries": []
+      },
+      "warnings": [
+        {
+          "code": "W_WORKTREE_SNAPSHOT",
+          "severity": "warning",
+          "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested"
+        }
+      ],
+      "partial_failures": [],
+      "stats": {
+        "extraction": {
+          "raw_imports_parsed": 0,
+          "raw_imports_reused": 2,
+          "raw_imports_ns": 0,
+          "files_parsed": 0,
+          "files_reused": 2,
+          "source_bytes_read": 328,
+          "cache_bytes_read": 1422,
+          "cache_bytes_written": 0,
+          "extraction_ns": 0
+        },
+        "files": 2,
+        "parsed_files": 2,
+        "symbols": 11,
+        "relations": 22,
+        "partial_failures": 0,
+        "completeness_level": "ok"
+      },
+      "completeness": {
+        "languages": {
+          "Go": {
+            "files": 2,
+            "symbols": 11
+          }
+        },
+        "relations": {
+          "CALLS": 4,
+          "CONTAINS": 3,
+          "DEFINES": 11,
+          "PARAM_TYPE": 1,
+          "USES_TYPE": 3
+        }
+      },
+      "completeness_scope": {
+        "language": "Go",
+        "language_files": 2,
+        "worktree_snapshot": true,
+        "level": "ok"
+      }
+    },
+    "search-cold": {
+      "operation_inputs": {
+        "policy_coverage": "captured provider policy bytes including nested/vendor rules; Git listing/configuration and metadata probes are opaque",
+        "id": "b830193606f2d530f0d855c3b4b83f1c59a0bda2e397628dcc9e8a10fa9e163e",
+        "version": 1,
+        "coverage": "observed-inputs-only; not an atomic revision",
+        "selected_paths_digest": "77f15ff50d48d27ae7a5922abfe1aec817fa0c488a07193e203a9a35c20b9bd2",
+        "selected_paths": 3,
+        "observed_inputs": 87,
+        "unobserved_selected": 0,
+        "unavailable_inputs": 82,
+        "observations_omitted": 0,
+        "observations": [
+          {
+            "path": ".gitignore",
+            "status": "absent-policy"
+          },
+          {
+            "path": ".graphignore",
+            "status": "absent-policy"
+          },
+          {
+            "path": "Cargo.toml",
+            "status": "unavailable"
+          },
+          {
+            "path": "TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "build.gradle",
+            "status": "unavailable"
+          },
+          {
+            "path": "build.gradle.kts",
+            "status": "unavailable"
+          },
+          {
+            "path": "chain.go",
+            "status": "captured",
+            "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+            "bytes": 123
+          },
+          {
+            "path": "composer.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core.go",
+            "status": "captured",
+            "digest": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc",
+            "bytes": 162
+          },
+          {
+            "path": "core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.mod",
+            "status": "captured",
+            "digest": "89810abf5bfe548ec09a2c7e1c454d02f303a5d38897f779649dbee6bbdc62d1",
+            "bytes": 43
+          },
+          {
+            "path": "go.sum",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.work",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.work.sum",
+            "status": "unavailable"
+          },
+          {
+            "path": "import-map.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "importmap.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "package.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "pom.xml",
+            "status": "unavailable"
+          },
+          {
+            "path": "pyproject.toml",
+            "status": "unavailable"
+          },
+          {
+            "path": "settings.gradle",
+            "status": "unavailable"
+          },
+          {
+            "path": "settings.gradle.kts",
+            "status": "unavailable"
+          },
+          {
+            "path": "setup.cfg",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tsconfig.json",
+            "status": "unavailable"
+          }
+        ]
+      },
+      "compiler": {
+        "coverage": {
+          "packages": [
+            "fixture.local/combinations"
+          ],
+          "configuration": [
+            "CGO_ENABLED=0",
+            "GOPROXY=off",
+            "GOSUMDB=off",
+            "GOTOOLCHAIN=local",
+            "GOOS=linux",
+            "GOARCH=amd64"
+          ],
+          "toolchain_id": "17fa9868159a85ec188324c7fdc5ff21441c96e482065b2aa11ff062541c4c0c",
+          "status": "complete",
+          "backend": "gopls/v0.20.0",
+          "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+          "queries": 5,
+          "answers": [
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 25
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 6,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 6,
+                      "character": 11
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 51
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/chain.go",
+                  "range": {
+                    "start": {
+                      "line": 1,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 1,
+                      "character": 10
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 76
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/chain.go",
+                  "range": {
+                    "start": {
+                      "line": 2,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 2,
+                      "character": 10
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 114
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 1,
+                      "character": 24
+                    },
+                    "end": {
+                      "line": 1,
+                      "character": 28
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "path": "chain.go",
+                "offset": 114,
+                "implementation": true
+              },
+              "kind": "textDocument/implementation",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 3,
+                      "character": 11
+                    },
+                    "end": {
+                      "line": 3,
+                      "character": 15
+                    }
+                  }
+                },
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 5,
+                      "character": 11
+                    },
+                    "end": {
+                      "line": 5,
+                      "character": 15
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "calls": [
+          {
+            "call_site_line": 2,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier1",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 25,
+                "end_byte": 31
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc",
+                "start_byte": 126,
+                "end_byte": 132
+              },
+              "target_symbol_id": "local/001:Go:core.go:function:Shared"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:core.go:function:Shared"
+            ]
+          },
+          {
+            "call_site_line": 3,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier2",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 51,
+                "end_byte": 56
+              },
+              "target": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 15,
+                "end_byte": 20
+              },
+              "target_symbol_id": "local/001:Go:chain.go:function:Tier1"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:chain.go:function:Tier1"
+            ]
+          },
+          {
+            "call_site_line": 4,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier3",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 76,
+                "end_byte": 81
+              },
+              "target": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 41,
+                "end_byte": 46
+              },
+              "target_symbol_id": "local/001:Go:chain.go:function:Tier2"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:chain.go:function:Tier2"
+            ]
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc",
+                "start_byte": 34,
+                "end_byte": 38
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:Worker.Work"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:core.go:method:Worker.Work"
+            ]
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "implementation_candidate",
+              "query_kind": "textDocument/implementation",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc",
+                "start_byte": 72,
+                "end_byte": 76
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:One.Work"
+            },
+            "reconciliation": "candidate_only"
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "implementation_candidate",
+              "query_kind": "textDocument/implementation",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc",
+                "start_byte": 111,
+                "end_byte": 115
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:Two.Work"
+            },
+            "reconciliation": "candidate_only"
+          }
+        ]
+      },
+      "format_version": 1,
+      "query": "Shared",
+      "repo_root": "/tmp/TestLiveAdvantageCombinationsAndNextQueryFreshness3767391669/001",
+      "profile": "full",
+      "results": [
+        {
+          "rank": 1,
+          "score": 48.6597,
+          "file_path": "core.go",
+          "start_line": 7,
+          "end_line": 7,
+          "focus_line": 7,
+          "snippet_start_line": 7,
+          "snippet_end_line": 7,
+          "symbol_start_line": 7,
+          "symbol_end_line": 7,
+          "language": "Go",
+          "kind": "function",
+          "symbol_id": "local/001:Go:core.go:function:Shared",
+          "symbol_name": "Shared",
+          "qualified_name": "Shared",
+          "signature": "func Shared() string",
+          "signals": [
+            "body",
+            "exact-symbol",
+            "symbol-name",
+            "graph:callers"
+          ],
+          "snippet": "func Shared() string { return \"before\" }"
+        },
+        {
+          "rank": 2,
+          "score": 43.7938,
+          "file_path": "chain.go",
+          "start_line": 1,
+          "end_line": 4,
+          "focus_line": 2,
+          "snippet_start_line": 1,
+          "snippet_end_line": 4,
+          "symbol_start_line": 2,
+          "symbol_end_line": 2,
+          "language": "Go",
+          "kind": "function",
+          "symbol_id": "local/001:Go:chain.go:function:Tier1",
+          "symbol_name": "Tier1",
+          "qualified_name": "Tier1",
+          "signature": "func Tier1()",
+          "signals": [
+            "body",
+            "symbol-usage"
+          ],
+          "snippet": "package p\nfunc Tier1() { Shared() }\nfunc Tier2() { Tier1() }\nfunc Tier3() { Tier2() }"
+        }
+      ],
+      "verify_command": {
+        "command": "go test .",
+        "targets": "package ./.",
+        "derived_from": "go.mod module root",
+        "tier": "narrow"
+      },
+      "stats": {
+        "ranking": {
+          "input_relations": 0,
+          "examined_relations": 0,
+          "connected_nodes": 0,
+          "nodes": 0,
+          "transitions": 0,
+          "iterations": 0,
+          "residual": 0,
+          "fallback": "exact_match_preserved"
+        },
+        "extraction": {
+          "raw_imports_parsed": 2,
+          "raw_imports_reused": 0,
+          "raw_imports_ns": 332716,
+          "files_parsed": 2,
+          "files_reused": 0,
+          "source_bytes_read": 328,
+          "cache_bytes_read": 0,
+          "cache_bytes_written": 1423,
+          "extraction_ns": 1440043
+        },
+        "files_scanned": 3,
+        "preselection_backend": "inventory",
+        "preselection_passes": 1,
+        "preselection_files_examined": 3,
+        "files_content_read_during_preselection": 0,
+        "files_content_read_during_query": 3,
+        "bytes_content_read_during_query": 328,
+        "files_indexed": 3,
+        "symbols_considered": 11,
+        "lexical_candidates": 2,
+        "graph_candidates": 3,
+        "caller_boosted_candidates": 4,
+        "identifier_usage_candidates": 1,
+        "sparse_candidates": 0,
+        "sparse_files_content_read": 0,
+        "candidates_selected": 2,
+        "result_bytes": 940,
+        "context_budget_bytes": 24576,
+        "verify_command_bytes": 282,
+        "verify_tier": "narrow",
+        "context_block_bytes": 282,
+        "index_cache_hit": false,
+        "index_latency_ms": 1296,
+        "query_latency_ms": 7,
+        "total_latency_ms": 1642,
+        "search_latency_ms": 1642,
+        "preselect_latency_ms": 217
+      },
+      "warnings": [
+        {
+          "code": "W_WORKTREE_SNAPSHOT",
+          "severity": "warning",
+          "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested"
+        }
+      ],
+      "partial_failures": [],
+      "completeness": {
+        "languages": {
+          "Go": {
+            "files": 2,
+            "symbols": 11
+          }
+        },
+        "relations": {
+          "CALLS": 4,
+          "CONTAINS": 3,
+          "DEFINES": 11,
+          "PARAM_TYPE": 1,
+          "USES_TYPE": 3
+        }
+      }
+    },
+    "search-edited": {
+      "operation_inputs": {
+        "policy_coverage": "captured provider policy bytes including nested/vendor rules; Git listing/configuration and metadata probes are opaque",
+        "id": "cd65b8d2cf9514cf005a90d525235ddf9723a5bf9479c799da11584abd166c4f",
+        "version": 1,
+        "coverage": "observed-inputs-only; not an atomic revision",
+        "selected_paths_digest": "77f15ff50d48d27ae7a5922abfe1aec817fa0c488a07193e203a9a35c20b9bd2",
+        "selected_paths": 3,
+        "observed_inputs": 87,
+        "unobserved_selected": 0,
+        "unavailable_inputs": 82,
+        "observations_omitted": 0,
+        "observations": [
+          {
+            "path": ".gitignore",
+            "status": "absent-policy"
+          },
+          {
+            "path": ".graphignore",
+            "status": "absent-policy"
+          },
+          {
+            "path": "Cargo.toml",
+            "status": "unavailable"
+          },
+          {
+            "path": "TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "build.gradle",
+            "status": "unavailable"
+          },
+          {
+            "path": "build.gradle.kts",
+            "status": "unavailable"
+          },
+          {
+            "path": "chain.go",
+            "status": "captured",
+            "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+            "bytes": 123
+          },
+          {
+            "path": "composer.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core.go",
+            "status": "captured",
+            "digest": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13",
+            "bytes": 162
+          },
+          {
+            "path": "core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.mod",
+            "status": "captured",
+            "digest": "89810abf5bfe548ec09a2c7e1c454d02f303a5d38897f779649dbee6bbdc62d1",
+            "bytes": 43
+          },
+          {
+            "path": "go.sum",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.work",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.work.sum",
+            "status": "unavailable"
+          },
+          {
+            "path": "import-map.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "importmap.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "package.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "pom.xml",
+            "status": "unavailable"
+          },
+          {
+            "path": "pyproject.toml",
+            "status": "unavailable"
+          },
+          {
+            "path": "settings.gradle",
+            "status": "unavailable"
+          },
+          {
+            "path": "settings.gradle.kts",
+            "status": "unavailable"
+          },
+          {
+            "path": "setup.cfg",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tsconfig.json",
+            "status": "unavailable"
+          }
+        ]
+      },
+      "compiler": {
+        "coverage": {
+          "packages": [
+            "fixture.local/combinations"
+          ],
+          "configuration": [
+            "CGO_ENABLED=0",
+            "GOPROXY=off",
+            "GOSUMDB=off",
+            "GOTOOLCHAIN=local",
+            "GOOS=linux",
+            "GOARCH=amd64"
+          ],
+          "toolchain_id": "17fa9868159a85ec188324c7fdc5ff21441c96e482065b2aa11ff062541c4c0c",
+          "status": "complete",
+          "backend": "gopls/v0.20.0",
+          "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+          "queries": 5,
+          "answers": [
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 25
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 6,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 6,
+                      "character": 11
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 51
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/chain.go",
+                  "range": {
+                    "start": {
+                      "line": 1,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 1,
+                      "character": 10
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 76
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/chain.go",
+                  "range": {
+                    "start": {
+                      "line": 2,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 2,
+                      "character": 10
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 114
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 1,
+                      "character": 24
+                    },
+                    "end": {
+                      "line": 1,
+                      "character": 28
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "path": "chain.go",
+                "offset": 114,
+                "implementation": true
+              },
+              "kind": "textDocument/implementation",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 3,
+                      "character": 11
+                    },
+                    "end": {
+                      "line": 3,
+                      "character": 15
+                    }
+                  }
+                },
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 5,
+                      "character": 11
+                    },
+                    "end": {
+                      "line": 5,
+                      "character": 15
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "calls": [
+          {
+            "call_site_line": 2,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier1",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 25,
+                "end_byte": 31
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13",
+                "start_byte": 126,
+                "end_byte": 132
+              },
+              "target_symbol_id": "local/001:Go:core.go:function:Shared"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:core.go:function:Shared"
+            ]
+          },
+          {
+            "call_site_line": 3,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier2",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 51,
+                "end_byte": 56
+              },
+              "target": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 15,
+                "end_byte": 20
+              },
+              "target_symbol_id": "local/001:Go:chain.go:function:Tier1"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:chain.go:function:Tier1"
+            ]
+          },
+          {
+            "call_site_line": 4,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier3",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 76,
+                "end_byte": 81
+              },
+              "target": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 41,
+                "end_byte": 46
+              },
+              "target_symbol_id": "local/001:Go:chain.go:function:Tier2"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:chain.go:function:Tier2"
+            ]
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13",
+                "start_byte": 34,
+                "end_byte": 38
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:Worker.Work"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:core.go:method:Worker.Work"
+            ]
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "implementation_candidate",
+              "query_kind": "textDocument/implementation",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13",
+                "start_byte": 72,
+                "end_byte": 76
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:One.Work"
+            },
+            "reconciliation": "candidate_only"
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "fdb1ca374ee47d28cc557ca8bcf6795d6c1380cd511dd146d7cabfad0a0623b7",
+              "backend_version": "gopls/v0.20.0",
+              "category": "implementation_candidate",
+              "query_kind": "textDocument/implementation",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13",
+                "start_byte": 111,
+                "end_byte": 115
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:Two.Work"
+            },
+            "reconciliation": "candidate_only"
+          }
+        ]
+      },
+      "format_version": 1,
+      "query": "Shared",
+      "repo_root": "/tmp/TestLiveAdvantageCombinationsAndNextQueryFreshness3767391669/001",
+      "profile": "full",
+      "results": [
+        {
+          "rank": 1,
+          "score": 48.6597,
+          "file_path": "core.go",
+          "start_line": 7,
+          "end_line": 7,
+          "focus_line": 7,
+          "snippet_start_line": 7,
+          "snippet_end_line": 7,
+          "symbol_start_line": 7,
+          "symbol_end_line": 7,
+          "language": "Go",
+          "kind": "function",
+          "symbol_id": "local/001:Go:core.go:function:Shared",
+          "symbol_name": "Shared",
+          "qualified_name": "Shared",
+          "signature": "func Shared() string",
+          "signals": [
+            "body",
+            "exact-symbol",
+            "symbol-name",
+            "graph:callers"
+          ],
+          "snippet": "func Shared() string { return \"after!\" }"
+        },
+        {
+          "rank": 2,
+          "score": 43.7938,
+          "file_path": "chain.go",
+          "start_line": 1,
+          "end_line": 4,
+          "focus_line": 2,
+          "snippet_start_line": 1,
+          "snippet_end_line": 4,
+          "symbol_start_line": 2,
+          "symbol_end_line": 2,
+          "language": "Go",
+          "kind": "function",
+          "symbol_id": "local/001:Go:chain.go:function:Tier1",
+          "symbol_name": "Tier1",
+          "qualified_name": "Tier1",
+          "signature": "func Tier1()",
+          "signals": [
+            "body",
+            "symbol-usage"
+          ],
+          "snippet": "package p\nfunc Tier1() { Shared() }\nfunc Tier2() { Tier1() }\nfunc Tier3() { Tier2() }"
+        }
+      ],
+      "verify_command": {
+        "command": "go test .",
+        "targets": "package ./.",
+        "derived_from": "go.mod module root",
+        "tier": "narrow"
+      },
+      "stats": {
+        "ranking": {
+          "input_relations": 0,
+          "examined_relations": 0,
+          "connected_nodes": 0,
+          "nodes": 0,
+          "transitions": 0,
+          "iterations": 0,
+          "residual": 0,
+          "fallback": "exact_match_preserved"
+        },
+        "extraction": {
+          "raw_imports_parsed": 1,
+          "raw_imports_reused": 1,
+          "raw_imports_ns": 78898,
+          "files_parsed": 1,
+          "files_reused": 1,
+          "source_bytes_read": 328,
+          "cache_bytes_read": 616,
+          "cache_bytes_written": 806,
+          "extraction_ns": 1040974
+        },
+        "files_scanned": 3,
+        "preselection_backend": "inventory",
+        "preselection_passes": 1,
+        "preselection_files_examined": 3,
+        "files_content_read_during_preselection": 0,
+        "files_content_read_during_query": 3,
+        "bytes_content_read_during_query": 328,
+        "files_indexed": 3,
+        "symbols_considered": 11,
+        "lexical_candidates": 2,
+        "graph_candidates": 3,
+        "caller_boosted_candidates": 4,
+        "identifier_usage_candidates": 1,
+        "sparse_candidates": 0,
+        "sparse_files_content_read": 0,
+        "candidates_selected": 2,
+        "result_bytes": 940,
+        "context_budget_bytes": 24576,
+        "verify_command_bytes": 282,
+        "verify_tier": "narrow",
+        "context_block_bytes": 282,
+        "index_cache_hit": false,
+        "index_latency_ms": 1295,
+        "query_latency_ms": 6,
+        "total_latency_ms": 1315,
+        "search_latency_ms": 1315,
+        "preselect_latency_ms": 0
+      },
+      "warnings": [
+        {
+          "code": "W_WORKTREE_SNAPSHOT",
+          "severity": "warning",
+          "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested"
+        }
+      ],
+      "partial_failures": [],
+      "completeness": {
+        "languages": {
+          "Go": {
+            "files": 2,
+            "symbols": 11
+          }
+        },
+        "relations": {
+          "CALLS": 4,
+          "CONTAINS": 3,
+          "DEFINES": 11,
+          "PARAM_TYPE": 1,
+          "USES_TYPE": 3
+        }
+      }
+    },
+    "search-reused": {
+      "operation_inputs": {
+        "policy_coverage": "captured provider policy bytes including nested/vendor rules; Git listing/configuration and metadata probes are opaque",
+        "id": "b830193606f2d530f0d855c3b4b83f1c59a0bda2e397628dcc9e8a10fa9e163e",
+        "version": 1,
+        "coverage": "observed-inputs-only; not an atomic revision",
+        "selected_paths_digest": "77f15ff50d48d27ae7a5922abfe1aec817fa0c488a07193e203a9a35c20b9bd2",
+        "selected_paths": 3,
+        "observed_inputs": 87,
+        "unobserved_selected": 0,
+        "unavailable_inputs": 82,
+        "observations_omitted": 0,
+        "observations": [
+          {
+            "path": ".gitignore",
+            "status": "absent-policy"
+          },
+          {
+            "path": ".graphignore",
+            "status": "absent-policy"
+          },
+          {
+            "path": "Cargo.toml",
+            "status": "unavailable"
+          },
+          {
+            "path": "TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "__tests__/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "build.gradle",
+            "status": "unavailable"
+          },
+          {
+            "path": "build.gradle.kts",
+            "status": "unavailable"
+          },
+          {
+            "path": "chain.go",
+            "status": "captured",
+            "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+            "bytes": 123
+          },
+          {
+            "path": "composer.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core.go",
+            "status": "captured",
+            "digest": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc",
+            "bytes": 162
+          },
+          {
+            "path": "core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.mod",
+            "status": "captured",
+            "digest": "89810abf5bfe548ec09a2c7e1c454d02f303a5d38897f779649dbee6bbdc62d1",
+            "bytes": 43
+          },
+          {
+            "path": "go.sum",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.work",
+            "status": "unavailable"
+          },
+          {
+            "path": "go.work.sum",
+            "status": "unavailable"
+          },
+          {
+            "path": "import-map.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "importmap.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "package.json",
+            "status": "unavailable"
+          },
+          {
+            "path": "pom.xml",
+            "status": "unavailable"
+          },
+          {
+            "path": "pyproject.toml",
+            "status": "unavailable"
+          },
+          {
+            "path": "settings.gradle",
+            "status": "unavailable"
+          },
+          {
+            "path": "settings.gradle.kts",
+            "status": "unavailable"
+          },
+          {
+            "path": "setup.cfg",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/TestCore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/Testcore.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core-test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core.spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core.test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/coreSpec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/coreTest.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core_spec.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/core_test.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/spec-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/spec_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/test-core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tests/test_core.go",
+            "status": "unavailable"
+          },
+          {
+            "path": "tsconfig.json",
+            "status": "unavailable"
+          }
+        ]
+      },
+      "compiler": {
+        "coverage": {
+          "packages": [
+            "fixture.local/combinations"
+          ],
+          "configuration": [
+            "CGO_ENABLED=0",
+            "GOPROXY=off",
+            "GOSUMDB=off",
+            "GOTOOLCHAIN=local",
+            "GOOS=linux",
+            "GOARCH=amd64"
+          ],
+          "toolchain_id": "17fa9868159a85ec188324c7fdc5ff21441c96e482065b2aa11ff062541c4c0c",
+          "status": "complete",
+          "backend": "gopls/v0.20.0",
+          "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+          "queries": 5,
+          "answers": [
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 25
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 6,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 6,
+                      "character": 11
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 51
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/chain.go",
+                  "range": {
+                    "start": {
+                      "line": 1,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 1,
+                      "character": 10
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 76
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/chain.go",
+                  "range": {
+                    "start": {
+                      "line": 2,
+                      "character": 5
+                    },
+                    "end": {
+                      "line": 2,
+                      "character": 10
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "include_candidates": true,
+                "path": "chain.go",
+                "offset": 114
+              },
+              "kind": "textDocument/definition",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 1,
+                      "character": 24
+                    },
+                    "end": {
+                      "line": 1,
+                      "character": 28
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "query": {
+                "path": "chain.go",
+                "offset": 114,
+                "implementation": true
+              },
+              "kind": "textDocument/implementation",
+              "targets": [
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 3,
+                      "character": 11
+                    },
+                    "end": {
+                      "line": 3,
+                      "character": 15
+                    }
+                  }
+                },
+                {
+                  "uri": "file:///workspace/core.go",
+                  "range": {
+                    "start": {
+                      "line": 5,
+                      "character": 11
+                    },
+                    "end": {
+                      "line": 5,
+                      "character": 15
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "calls": [
+          {
+            "call_site_line": 2,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier1",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 25,
+                "end_byte": 31
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc",
+                "start_byte": 126,
+                "end_byte": 132
+              },
+              "target_symbol_id": "local/001:Go:core.go:function:Shared"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:core.go:function:Shared"
+            ]
+          },
+          {
+            "call_site_line": 3,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier2",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 51,
+                "end_byte": 56
+              },
+              "target": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 15,
+                "end_byte": 20
+              },
+              "target_symbol_id": "local/001:Go:chain.go:function:Tier1"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:chain.go:function:Tier1"
+            ]
+          },
+          {
+            "call_site_line": 4,
+            "source_symbol_id": "local/001:Go:chain.go:function:Tier3",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 76,
+                "end_byte": 81
+              },
+              "target": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 41,
+                "end_byte": 46
+              },
+              "target_symbol_id": "local/001:Go:chain.go:function:Tier2"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:chain.go:function:Tier2"
+            ]
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "direct_declaration",
+              "query_kind": "textDocument/definition",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc",
+                "start_byte": 34,
+                "end_byte": 38
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:Worker.Work"
+            },
+            "reconciliation": "confirmed",
+            "static_target_ids": [
+              "local/001:Go:core.go:method:Worker.Work"
+            ]
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "implementation_candidate",
+              "query_kind": "textDocument/implementation",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc",
+                "start_byte": 72,
+                "end_byte": 76
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:One.Work"
+            },
+            "reconciliation": "candidate_only"
+          },
+          {
+            "call_site_line": 5,
+            "source_symbol_id": "local/001:Go:chain.go:function:Dispatch",
+            "evidence": {
+              "context_id": "ec531e8cb0a95673e819f3c89f5ebe504610f8e66577021e0258cb746f16f9b4",
+              "backend_version": "gopls/v0.20.0",
+              "category": "implementation_candidate",
+              "query_kind": "textDocument/implementation",
+              "caller": {
+                "path": "chain.go",
+                "digest": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+                "start_byte": 114,
+                "end_byte": 118
+              },
+              "target": {
+                "path": "core.go",
+                "digest": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc",
+                "start_byte": 111,
+                "end_byte": 115
+              },
+              "target_symbol_id": "local/001:Go:core.go:method:Two.Work"
+            },
+            "reconciliation": "candidate_only"
+          }
+        ]
+      },
+      "format_version": 1,
+      "query": "Shared",
+      "repo_root": "/tmp/TestLiveAdvantageCombinationsAndNextQueryFreshness3767391669/001",
+      "profile": "full",
+      "results": [
+        {
+          "rank": 1,
+          "score": 48.6597,
+          "file_path": "core.go",
+          "start_line": 7,
+          "end_line": 7,
+          "focus_line": 7,
+          "snippet_start_line": 7,
+          "snippet_end_line": 7,
+          "symbol_start_line": 7,
+          "symbol_end_line": 7,
+          "language": "Go",
+          "kind": "function",
+          "symbol_id": "local/001:Go:core.go:function:Shared",
+          "symbol_name": "Shared",
+          "qualified_name": "Shared",
+          "signature": "func Shared() string",
+          "signals": [
+            "body",
+            "exact-symbol",
+            "symbol-name",
+            "graph:callers"
+          ],
+          "snippet": "func Shared() string { return \"before\" }"
+        },
+        {
+          "rank": 2,
+          "score": 43.7938,
+          "file_path": "chain.go",
+          "start_line": 1,
+          "end_line": 4,
+          "focus_line": 2,
+          "snippet_start_line": 1,
+          "snippet_end_line": 4,
+          "symbol_start_line": 2,
+          "symbol_end_line": 2,
+          "language": "Go",
+          "kind": "function",
+          "symbol_id": "local/001:Go:chain.go:function:Tier1",
+          "symbol_name": "Tier1",
+          "qualified_name": "Tier1",
+          "signature": "func Tier1()",
+          "signals": [
+            "body",
+            "symbol-usage"
+          ],
+          "snippet": "package p\nfunc Tier1() { Shared() }\nfunc Tier2() { Tier1() }\nfunc Tier3() { Tier2() }"
+        }
+      ],
+      "verify_command": {
+        "command": "go test .",
+        "targets": "package ./.",
+        "derived_from": "go.mod module root",
+        "tier": "narrow"
+      },
+      "stats": {
+        "ranking": {
+          "input_relations": 0,
+          "examined_relations": 0,
+          "connected_nodes": 0,
+          "nodes": 0,
+          "transitions": 0,
+          "iterations": 0,
+          "residual": 0,
+          "fallback": "exact_match_preserved"
+        },
+        "extraction": {
+          "raw_imports_parsed": 0,
+          "raw_imports_reused": 2,
+          "raw_imports_ns": 0,
+          "files_parsed": 0,
+          "files_reused": 2,
+          "source_bytes_read": 328,
+          "cache_bytes_read": 1423,
+          "cache_bytes_written": 0,
+          "extraction_ns": 0
+        },
+        "files_scanned": 3,
+        "preselection_backend": "inventory",
+        "preselection_passes": 1,
+        "preselection_files_examined": 3,
+        "files_content_read_during_preselection": 0,
+        "files_content_read_during_query": 3,
+        "bytes_content_read_during_query": 328,
+        "files_indexed": 3,
+        "symbols_considered": 11,
+        "lexical_candidates": 2,
+        "graph_candidates": 3,
+        "caller_boosted_candidates": 4,
+        "identifier_usage_candidates": 1,
+        "sparse_candidates": 0,
+        "sparse_files_content_read": 0,
+        "candidates_selected": 2,
+        "result_bytes": 940,
+        "context_budget_bytes": 24576,
+        "verify_command_bytes": 282,
+        "verify_tier": "narrow",
+        "context_block_bytes": 282,
+        "index_cache_hit": false,
+        "index_latency_ms": 1281,
+        "query_latency_ms": 5,
+        "total_latency_ms": 1300,
+        "search_latency_ms": 1300,
+        "preselect_latency_ms": 0
+      },
+      "warnings": [
+        {
+          "code": "W_WORKTREE_SNAPSHOT",
+          "severity": "warning",
+          "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested"
+        }
+      ],
+      "partial_failures": [],
+      "completeness": {
+        "languages": {
+          "Go": {
+            "files": 2,
+            "symbols": 11
+          }
+        },
+        "relations": {
+          "CALLS": 4,
+          "CONTAINS": 3,
+          "DEFINES": 11,
+          "PARAM_TYPE": 1,
+          "USES_TYPE": 3
+        }
+      }
+    }
+  },
+  "sources_by_stage": {
+    "impact-edited": {
+      "chain.go": "package p\nfunc Tier1() { Shared() }\nfunc Tier2() { Tier1() }\nfunc Tier3() { Tier2() }\nfunc Dispatch(w Worker) { w.Work() }\n",
+      "chain.go.sha256": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+      "core.go": "package p\ntype Worker interface { Work() }\ntype One struct{}\nfunc (One) Work() {}\ntype Two struct{}\nfunc (Two) Work() {}\nfunc Shared() string { return \"third!\" }\n",
+      "core.go.sha256": "25026cb74d824b86a748785630ff32056c3a881c05eaf5573d10f059a202ad6d"
+    },
+    "impact-reused": {
+      "chain.go": "package p\nfunc Tier1() { Shared() }\nfunc Tier2() { Tier1() }\nfunc Tier3() { Tier2() }\nfunc Dispatch(w Worker) { w.Work() }\n",
+      "chain.go.sha256": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+      "core.go": "package p\ntype Worker interface { Work() }\ntype One struct{}\nfunc (One) Work() {}\ntype Two struct{}\nfunc (Two) Work() {}\nfunc Shared() string { return \"after!\" }\n",
+      "core.go.sha256": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13"
+    },
+    "search-cold": {
+      "chain.go": "package p\nfunc Tier1() { Shared() }\nfunc Tier2() { Tier1() }\nfunc Tier3() { Tier2() }\nfunc Dispatch(w Worker) { w.Work() }\n",
+      "chain.go.sha256": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+      "core.go": "package p\ntype Worker interface { Work() }\ntype One struct{}\nfunc (One) Work() {}\ntype Two struct{}\nfunc (Two) Work() {}\nfunc Shared() string { return \"before\" }\n",
+      "core.go.sha256": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc"
+    },
+    "search-edited": {
+      "chain.go": "package p\nfunc Tier1() { Shared() }\nfunc Tier2() { Tier1() }\nfunc Tier3() { Tier2() }\nfunc Dispatch(w Worker) { w.Work() }\n",
+      "chain.go.sha256": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+      "core.go": "package p\ntype Worker interface { Work() }\ntype One struct{}\nfunc (One) Work() {}\ntype Two struct{}\nfunc (Two) Work() {}\nfunc Shared() string { return \"after!\" }\n",
+      "core.go.sha256": "71ca94789937dd2a789b174736ba2d13dbf0d682da5ec297a5ac793329ed3c13"
+    },
+    "search-reused": {
+      "chain.go": "package p\nfunc Tier1() { Shared() }\nfunc Tier2() { Tier1() }\nfunc Tier3() { Tier2() }\nfunc Dispatch(w Worker) { w.Work() }\n",
+      "chain.go.sha256": "41773888e1f1261930b3346aa086100b8843f7076a626bc94b6d0d7fcac56420",
+      "core.go": "package p\ntype Worker interface { Work() }\ntype One struct{}\nfunc (One) Work() {}\ntype Two struct{}\nfunc (Two) Work() {}\nfunc Shared() string { return \"before\" }\n",
+      "core.go.sha256": "8a1a33a7e13563bdc7f932f3e1bf26586bb6f75ced0f39645c8d6a5808c5b5fc"
+    }
+  }
+}
