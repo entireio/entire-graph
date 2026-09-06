@@ -76,6 +76,7 @@ type Spec struct {
 }
 
 type Baseline struct {
+	Version       int    `yaml:"version" json:"version"`
 	SignatureHash string `yaml:"signature_hash" json:"signature_hash"`
 	ContainerID   string `yaml:"container_id,omitempty" json:"container_id,omitempty"`
 	BodyHash      string `yaml:"body_hash" json:"body_hash"`

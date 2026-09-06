@@ -17,6 +17,8 @@ import (
 
 const gpsSchemaVersion = "1.0"
 
+const minimumGPSContextBytes = 512
+
 func runSpec(ctx context.Context, opts Options, args []string) error {
 	if len(args) == 0 {
 		return errors.New("spec requires init, list, show, validate, or relationships")
@@ -108,7 +110,7 @@ func runAnchor(ctx context.Context, opts Options, args []string) error {
 			return fmt.Errorf("symbol %q is ambiguous; pass --file", flags.symbol)
 		}
 		s := matches[0]
-		return intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash, FileBlob: snapshotFileBlob(snapshot, s.FilePath)}}, flags.update)
+		return intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{Version: 1, SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash, FileBlob: snapshotFileBlob(snapshot, s.FilePath)}}, flags.update)
 	}
 	if args[0] == "resolve" {
 		if flags.id == "" {
@@ -136,6 +138,9 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	if flags.query == "" {
 		return errors.New("context requires --query")
 	}
+	if flags.maxBytes < minimumGPSContextBytes {
+		return fmt.Errorf("context --max-context-bytes must be at least %d", minimumGPSContextBytes)
+	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.repo)
 	if err != nil {
 		return err
@@ -149,7 +154,6 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	if len(set.Specs) == 0 {
 		response["status"] = "complete_with_gaps"
 		response["gaps"] = []string{"NO_SPECS"}
-		return gpsEncode(opts, flags.format, response)
 	}
 	snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)
 	if err != nil {
@@ -352,7 +356,11 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 		}
 		disposition = "REVIEW_REQUIRED"
 	}
-	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "disposition": disposition, "findings": findings})
+	changeDelta := "not_requested"
+	if flags.base != "" {
+		changeDelta = "compared"
+	}
+	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "change_delta": changeDelta, "disposition": disposition, "findings": findings})
 }
 
 func runGPSWhy(ctx context.Context, opts Options, args []string) error {
@@ -585,7 +593,9 @@ func resolveBinding(binding intent.Binding, snapshot sem.ProviderSnapshot) map[s
 		}
 		return map[string]any{"id": binding.ID, "state": state, "symbol": s}
 	}
-	candidates := matchingSymbols(snapshot.Symbols, binding.Selector.QualifiedName, binding.Selector.File)
+	// A missing stable symbol ID may be a rename or move. Locate candidates by
+	// qualified name across paths, but never write a rebind without review.
+	candidates := matchingSymbols(snapshot.Symbols, binding.Selector.QualifiedName, "")
 	state := "MISSING"
 	if len(candidates) > 1 {
 		state = "AMBIGUOUS"
