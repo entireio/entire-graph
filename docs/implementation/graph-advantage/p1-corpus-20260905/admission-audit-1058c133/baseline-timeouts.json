@@ -1,0 +1,210 @@
+{
+  "source_commit": "1058c133",
+  "purpose": "Read-only extraction of original timeout evidence, no new product requests",
+  "rows": [
+    {
+      "archive": "baseline-raw/worker-2.tar.gz",
+      "archive_sha256": "520715ec788d622b9fd39d03a9f4a483af254130a19fb6b49968f8c5eb3e1fce",
+      "member": "results/baseline.ndjson",
+      "line": 1,
+      "row": {
+        "cache_bytes": 0,
+        "error": "preregistered 120 second deadline",
+        "extraction": {
+          "stale_source": null
+        },
+        "paired_freshness_basis": "unverified",
+        "partial_failures_count": 0,
+        "peak_rss_bytes": 2072313856,
+        "prime": {
+          "bytes": 278142908,
+          "files": 31248
+        },
+        "process_exit": -9,
+        "process_log": "=== RUN   TestExtractionCorpusMeasurement\n",
+        "profile": "fast",
+        "repository": "kubernetes-kubernetes",
+        "reuse": false,
+        "scenario": "baseline",
+        "semantic_digest": null,
+        "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+        "source_unchanged": true,
+        "status": "timeout",
+        "timed_out": true,
+        "trial": 0,
+        "verb": "snapshot",
+        "wall_ns": 120080517614
+      }
+    },
+    {
+      "archive": "baseline-raw/worker-2.tar.gz",
+      "archive_sha256": "520715ec788d622b9fd39d03a9f4a483af254130a19fb6b49968f8c5eb3e1fce",
+      "member": "results/baseline.ndjson",
+      "line": 2,
+      "row": {
+        "cache_bytes": 0,
+        "error": "preregistered 120 second deadline",
+        "extraction": {
+          "stale_source": null
+        },
+        "paired_freshness_basis": "unverified",
+        "partial_failures_count": 0,
+        "peak_rss_bytes": 2103992320,
+        "prime": {
+          "bytes": 278142908,
+          "files": 31248
+        },
+        "process_exit": -9,
+        "process_log": "=== RUN   TestExtractionCorpusMeasurement\n",
+        "profile": "fast",
+        "repository": "kubernetes-kubernetes",
+        "reuse": false,
+        "scenario": "baseline",
+        "semantic_digest": null,
+        "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+        "source_unchanged": true,
+        "status": "timeout",
+        "timed_out": true,
+        "trial": 1,
+        "verb": "snapshot",
+        "wall_ns": 120078471181
+      }
+    },
+    {
+      "archive": "baseline-raw/worker-2.tar.gz",
+      "archive_sha256": "520715ec788d622b9fd39d03a9f4a483af254130a19fb6b49968f8c5eb3e1fce",
+      "member": "results/baseline.ndjson",
+      "line": 3,
+      "row": {
+        "cache_bytes": 0,
+        "error": "preregistered 120 second deadline",
+        "extraction": {
+          "stale_source": null
+        },
+        "paired_freshness_basis": "unverified",
+        "partial_failures_count": 0,
+        "peak_rss_bytes": 2091450368,
+        "prime": {
+          "bytes": 278142908,
+          "files": 31248
+        },
+        "process_exit": -9,
+        "process_log": "=== RUN   TestExtractionCorpusMeasurement\n",
+        "profile": "fast",
+        "repository": "kubernetes-kubernetes",
+        "reuse": false,
+        "scenario": "baseline",
+        "semantic_digest": null,
+        "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+        "source_unchanged": true,
+        "status": "timeout",
+        "timed_out": true,
+        "trial": 2,
+        "verb": "snapshot",
+        "wall_ns": 120081586808
+      }
+    },
+    {
+      "archive": "baseline-raw/worker-3.tar.gz",
+      "archive_sha256": "ee6c45b499d9526bae67d8d3b841932b227f2baa2ee53c813f316373bac57172",
+      "member": "results/baseline.ndjson",
+      "line": 1,
+      "row": {
+        "cache_bytes": 0,
+        "error": "preregistered 120 second deadline",
+        "extraction": {
+          "stale_source": null
+        },
+        "paired_freshness_basis": "unverified",
+        "partial_failures_count": 0,
+        "peak_rss_bytes": 2592366592,
+        "prime": {
+          "bytes": 278142908,
+          "files": 31248
+        },
+        "process_exit": -9,
+        "process_log": "=== RUN   TestExtractionCorpusMeasurement\n",
+        "profile": "full",
+        "repository": "kubernetes-kubernetes",
+        "reuse": false,
+        "scenario": "baseline",
+        "semantic_digest": null,
+        "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+        "source_unchanged": true,
+        "status": "timeout",
+        "timed_out": true,
+        "trial": 0,
+        "verb": "snapshot",
+        "wall_ns": 120091220432
+      }
+    },
+    {
+      "archive": "baseline-raw/worker-3.tar.gz",
+      "archive_sha256": "ee6c45b499d9526bae67d8d3b841932b227f2baa2ee53c813f316373bac57172",
+      "member": "results/baseline.ndjson",
+      "line": 2,
+      "row": {
+        "cache_bytes": 0,
+        "error": "preregistered 120 second deadline",
+        "extraction": {
+          "stale_source": null
+        },
+        "paired_freshness_basis": "unverified",
+        "partial_failures_count": 0,
+        "peak_rss_bytes": 2552877056,
+        "prime": {
+          "bytes": 278142908,
+          "files": 31248
+        },
+        "process_exit": -9,
+        "process_log": "=== RUN   TestExtractionCorpusMeasurement\n",
+        "profile": "full",
+        "repository": "kubernetes-kubernetes",
+        "reuse": false,
+        "scenario": "baseline",
+        "semantic_digest": null,
+        "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+        "source_unchanged": true,
+        "status": "timeout",
+        "timed_out": true,
+        "trial": 1,
+        "verb": "snapshot",
+        "wall_ns": 120093577938
+      }
+    },
+    {
+      "archive": "baseline-raw/worker-3.tar.gz",
+      "archive_sha256": "ee6c45b499d9526bae67d8d3b841932b227f2baa2ee53c813f316373bac57172",
+      "member": "results/baseline.ndjson",
+      "line": 3,
+      "row": {
+        "cache_bytes": 0,
+        "error": "preregistered 120 second deadline",
+        "extraction": {
+          "stale_source": null
+        },
+        "paired_freshness_basis": "unverified",
+        "partial_failures_count": 0,
+        "peak_rss_bytes": 2645393408,
+        "prime": {
+          "bytes": 278142908,
+          "files": 31248
+        },
+        "process_exit": -9,
+        "process_log": "=== RUN   TestExtractionCorpusMeasurement\n",
+        "profile": "full",
+        "repository": "kubernetes-kubernetes",
+        "reuse": false,
+        "scenario": "baseline",
+        "semantic_digest": null,
+        "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+        "source_unchanged": true,
+        "status": "timeout",
+        "timed_out": true,
+        "trial": 2,
+        "verb": "snapshot",
+        "wall_ns": 120097971029
+      }
+    }
+  ]
+}
