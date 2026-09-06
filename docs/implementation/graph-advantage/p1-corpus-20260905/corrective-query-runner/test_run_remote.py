@@ -41,7 +41,7 @@ class QueryRunnerTests(unittest.TestCase):
             "operation": "search",
             "partial_failures": partial,
             "partial_failures_count": len(partial),
-            "partial_failures_sha256": "p" * 64,
+            "partial_failures_sha256": "a" * 64,
             "completeness": retained["completeness"],
             "profile": config["profile"],
             "provider_version": runner.EXPECTED_PROVIDER,
@@ -50,8 +50,8 @@ class QueryRunnerTests(unittest.TestCase):
             "repository_path": runner.EXPECTED_REPO_PATH,
             "scenario": "cold",
             "semantic_bytes": 1,
-            "semantic_digest": "s" * 64,
-            "semantic_sha256": "s" * 64,
+            "semantic_digest": "b" * 64,
+            "semantic_sha256": "b" * 64,
             "source_digest": runner.EXPECTED_INPUT_SHA256,
             "stats": {},
             "status": "partial",
@@ -59,13 +59,25 @@ class QueryRunnerTests(unittest.TestCase):
             "verb": "search",
             "warnings": retained["warnings"],
             "warnings_count": len(retained["warnings"]),
-            "warnings_sha256": "w" * 64,
+            "warnings_sha256": "c" * 64,
             "paired_freshness_basis": "source_digest_and_semantic_digest",
             "extraction": {"stale_source": False, "unchanged_reparses": 0},
             "binary_sha256": binary,
             "cache_mode": config["cache"],
             "reuse": config["cache"] == "on",
         }
+
+    def test_unknown_partial_and_empty_digest_stop_before_on(self):
+        config = json.loads((CONFIG_DIR / "request-syntax-only-off.json").read_text())
+        for field in ("semantic_digest", "semantic_sha256", "partial_failures_sha256", "warnings_sha256"):
+            row = self._observation(config)
+            row[field] = ""
+            with self.assertRaises(RuntimeError):
+                runner.validate_observation(row, config, runner.EXPECTED_BINARY_SHA256)
+        row = self._observation(config)
+        row["partial_failures"][0]["detail"] = "new unreviewed failure"
+        with self.assertRaisesRegex(RuntimeError, "unreviewed"):
+            runner.validate_observation(row, config, runner.EXPECTED_BINARY_SHA256)
 
     def test_retained_fixture_identity_and_full_partial_membership_validate(self):
         config = json.loads((CONFIG_DIR / "request-syntax-only-off.json").read_text())
@@ -109,27 +121,12 @@ class QueryRunnerTests(unittest.TestCase):
 
     def _fake_binary(self, root):
         binary = root / "fake-evaluator"
+        config = json.loads((CONFIG_DIR / "request-syntax-only-off.json").read_text())
+        row = self._observation(config, binary="b" * 64)
         binary.write_text(
             "#!" + sys.executable + "\n"
             "import json, os\n"
-            "config = json.load(open(os.environ['ENTIRE_GRAPH_EXTRACTION_CORPUS_CONFIG']))\n"
-            "a = config['cache']\n"
-            "o = {\n"
-            " 'format_version': 1, 'manifest_version': 1, 'mode': 'measure',\n"
-            " 'mutation_id': 'cold', 'operation': 'search',\n"
-            " 'partial_failures': [], 'partial_failures_count': 0,\n"
-            " 'partial_failures_sha256': 'p' * 64, 'completeness': {},\n"
-            " 'profile': config['profile'], 'provider_version': 'p1-corpus-20260905',\n"
-            " 'query': " + repr(runner.EXPECTED_QUERY) + ",\n"
-            " 'repository': 'kubernetes-kubernetes', 'repository_path': '/opt/p1/corpus/kubernetes-kubernetes',\n"
-            " 'scenario': 'cold', 'semantic_bytes': 1, 'semantic_digest': 's' * 64,\n"
-            " 'semantic_sha256': 's' * 64, 'source_digest': " + repr(runner.EXPECTED_INPUT_SHA256) + ",\n"
-            " 'status': 'ok', 'trial': 0, 'verb': 'search',\n"
-            " 'warnings': [], 'warnings_count': 0, 'warnings_sha256': 'w' * 64,\n"
-            " 'paired_freshness_basis': 'source_digest_and_semantic_digest',\n"
-            " 'extraction': {'unchanged_reparses': 0},\n"
-            " 'binary_sha256': 'b' * 64, 'cache_mode': a, 'reuse': a == 'on',\n"
-            "}\n"
+            "o = json.loads(" + repr(json.dumps(row)) + ")\n"
             "json.dump(o, open(os.environ['ENTIRE_GRAPH_EXTRACTION_CORPUS_OUTPUT'], 'w'))\n"
         )
         binary.chmod(0o700)
@@ -162,7 +159,7 @@ class QueryRunnerTests(unittest.TestCase):
                     root, binary, config_path, config, "b" * 64,
                     "syntax-only", "off", started, root
                 )
-            self.assertEqual(observation["partial_failures_count"], 0)
+            self.assertEqual(observation["partial_failures_count"], 11)
             self.assertEqual(started, ["syntax-only-off"])
             process = json.loads((root / "process-syntax-only-off.json").read_text())
             self.assertEqual(process["peak_rss_bytes"], 7 * 1024)
