@@ -54,7 +54,7 @@ _To be filled at 12:00. Procedure: close session → receive constraint → fres
 
 ## Checkpoint links and what each checkpoint proves
 1. Initial understanding and intended architecture — the plan itself was authored in commit `9ebeac6` (ATC_PLAN.md: problem, taxonomy, architecture, ladder). The checkpoint attaches to **this milestone commit**, made from an in-repo session after reconstructing the full state from ATC_HANDOFF.md/ATC_PLAN.md and re-verifying the build (24/24 checks). Earlier sessions ran from a different working directory, so Entire's capture hooks could not fire for them.
-2. Last stable state before the Noon Curveball — commit `3d8fb66` + this record — _link after push_
+2. Last stable state before the Noon Curveball — S0–S4 and D1–D3 all shipped as of `0eb376a` (ladder table in ATC_HANDOFF.md; first stable cut was `3d8fb66`, S0+S1). Re-verified from this session at 11:45: fixture rebuilds, `feat-auth × feat-checkout` → HOLD exit 2 with both planted RW call sites, control pair → CLEARED exit 0, and `tools/atc/test_atc.py` passes 24/24. The checkpoint attaches to this milestone commit. (Milestone 1 checkpoint: `4e39b887f9d5`.)
 3. Response to the Noon Curveball — _pending_
 4. Final implementation and verification — _pending_
 
