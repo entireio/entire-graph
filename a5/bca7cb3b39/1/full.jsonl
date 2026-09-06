@@ -20,17 +20,17 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 624220,
-      "output": 50172,
-      "reasoning": 12216,
+      "input": 630732,
+      "output": 50705,
+      "reasoning": 12407,
       "cache": {
-        "read": 26300928,
+        "read": 26598400,
         "write": 0
       }
     },
     "time": {
       "created": 1788675781237,
-      "updated": 1788679468169
+      "updated": 1788679570412
     }
   },
   "messages": [
@@ -31003,19 +31003,22 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 59587,
+          "input": 578,
+          "output": 120,
+          "reasoning": 9,
           "cache": {
-            "read": 0,
-            "write": 0
+            "write": 0,
+            "read": 58880
           }
         },
         "modelID": "gpt-5.6-terra-fast",
         "providerID": "openai",
         "time": {
-          "created": 1788679468168
+          "created": 1788679468168,
+          "completed": 1788679489315
         },
+        "finish": "tool-calls",
         "id": "msg_0759ab4870013yIH3GkZPKdo61",
         "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
       },
@@ -31049,17 +31052,22 @@
           "tool": "bash",
           "callID": "call_Q1xnBBtLSf76m6iXloA7xztQ",
           "state": {
-            "metadata": {
-              "output": "ok  \tgithub.com/entireio/entire-graph/internal/cli\t0.120s\n"
-            },
-            "status": "running",
+            "status": "completed",
             "input": {
               "command": "gofmt -w internal/cli/gps.go && go test ./internal/cli -run 'TestGPS' && go build ./cmd/entire-graph && git diff --check && git add internal/cli/gps.go && git commit -m \"fix(gps): identify unconfigured check views\" && ENTIRE_TOKEN_STORE=file git push origin docs/gps-design",
               "workdir": "/home/farhan/entire-graph/entire-graph",
               "timeout": 120000
             },
+            "output": "ok  \tgithub.com/entireio/entire-graph/internal/cli\t0.120s\n[docs/gps-design a2c7884] fix(gps): identify unconfigured check views\n 1 file changed, 1 insertion(+), 1 deletion(-)\n[entire] Pushing entire/checkpoints/v1 to origin...... done\nremote: Receiving objects...        \rremote: Receiving objects: 9.8 KiB (706.8 KiB/s), done.        \nremote: Storing objects: 5 (3 replicas), done.        \nTo entire://aws-ap-south-1.entire.io/gh/saranmahadev/entire-graph\n   9b11616..a2c7884  docs/gps-design -> docs/gps-design\n",
+            "metadata": {
+              "output": "ok  \tgithub.com/entireio/entire-graph/internal/cli\t0.120s\n[docs/gps-design a2c7884] fix(gps): identify unconfigured check views\n 1 file changed, 1 insertion(+), 1 deletion(-)\n[entire] Pushing entire/checkpoints/v1 to origin...... done\nremote: Receiving objects...        \rremote: Receiving objects: 9.8 KiB (706.8 KiB/s), done.        \nremote: Storing objects: 5 (3 replicas), done.        \nTo entire://aws-ap-south-1.entire.io/gh/saranmahadev/entire-graph\n   9b11616..a2c7884  docs/gps-design -> docs/gps-design\n",
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "gofmt -w internal/cli/gps.go && go test ./internal/cli -run 'TestGPS' && go build ./cmd/entire-graph && git diff --check && git add internal/cli/gps.go && git commit -m \"fix(gps): identify unconfigured check views\" && ENTIRE_TOKEN_STORE=file git push origin docs/gps-design",
             "time": {
-              "start": 1788679471899
+              "start": 1788679471899,
+              "end": 1788679489254
             }
           },
           "metadata": {
@@ -31070,6 +31078,466 @@
           "id": "prt_0759abf02001wlAbGXFrXPKvyO",
           "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
           "messageID": "msg_0759ab4870013yIH3GkZPKdo61"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-finish",
+          "tokens": {
+            "total": 59587,
+            "input": 578,
+            "output": 120,
+            "reasoning": 9,
+            "cache": {
+              "write": 0,
+              "read": 58880
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759b07010014Y3fOLBf4ZLj9R",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759ab4870013yIH3GkZPKdo61"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07597093e001khpoyuvumhpjBm",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 59879,
+          "input": 884,
+          "output": 86,
+          "reasoning": 29,
+          "cache": {
+            "write": 0,
+            "read": 58880
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788679489348,
+          "completed": 1788679557215
+        },
+        "finish": "tool-calls",
+        "id": "msg_0759b07440015uQWHy37f7DNh9",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-start",
+          "id": "prt_0759b0e33001jXQBjsA2cOLXCs",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759b07440015uQWHy37f7DNh9"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Planning to run mise tests despite expected failure**",
+          "time": {
+            "start": 1788679491125,
+            "end": 1788679491962
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_039ea4b75847d862016a9d1542ddb487d08519a01fd1e020f7",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_0759b0e35001yDiIVNdeLNk2oe",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759b07440015uQWHy37f7DNh9"
+        },
+        {
+          "type": "text",
+          "text": "Pushed `a2c7884`. I’m running the MVP release test command now to establish the final gate status rather than claiming completion from focused tests alone.",
+          "time": {
+            "start": 1788679491964,
+            "end": 1788679491982
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "msg_039ea4b75847d862016a9d1543c93c87d08b1fdaa94a266d50",
+              "phase": "commentary"
+            }
+          },
+          "id": "prt_0759b117c0010CFbRWb8sAUqMZ",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759b07440015uQWHy37f7DNh9"
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_PMHPEXbBMBS6LgcSBOur9Q43",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "mise run test",
+              "workdir": "/home/farhan/entire-graph/entire-graph",
+              "timeout": 120000
+            },
+            "output": "...output truncated...\n\nFull output saved to: /home/farhan/.local/share/opencode/tool-output/tool_0759c0ff5001268zNN0vjXRjML\n\n[test] ERROR task failed\n",
+            "metadata": {
+              "output": "...\n\ngoroutine 10149 gp=0xd2d875eb680 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d86eb7b78?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d86eb7b28 sp=0xd2d86eb7b08 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d86eb7ba0 sp=0xd2d86eb7b28 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d86eb7bc8 sp=0xd2d86eb7ba0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87548fc8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d86eb7c60 sp=0xd2d86eb7bc8 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestCollapseFunctionValueBindings(0xd2d87548fc8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/function_binding_test.go:193 +0x2a fp=0xd2d86eb7f70 sp=0xd2d86eb7c60 pc=0xa23eca\ntesting.tRunner(0xd2d87548fc8, 0x12d6138)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d86eb7fc0 sp=0xd2d86eb7f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d86eb7fe0 sp=0xd2d86eb7fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d86eb7fe8 sp=0xd2d86eb7fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10150 gp=0xd2d86e12f00 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d86eb8c28?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d86eb8bd8 sp=0xd2d86eb8bb8 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d86eb8c50 sp=0xd2d86eb8bd8 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d86eb8c78 sp=0xd2d86eb8c50 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87549208)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d86eb8d10 sp=0xd2d86eb8c78 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestFunctionValueBindingLanguageSurvey(0xd2d87549208)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/function_binding_test.go:296 +0x2a fp=0xd2d86eb8f70 sp=0xd2d86eb8d10 pc=0xa24bca\ntesting.tRunner(0xd2d87549208, 0x12d69b0)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d86eb8fc0 sp=0xd2d86eb8f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d86eb8fe0 sp=0xd2d86eb8fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d86eb8fe8 sp=0xd2d86eb8fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10148 gp=0xd2d871aaf00 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87672518?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d876724c8 sp=0xd2d876724a8 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87672540 sp=0xd2d876724c8 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87672568 sp=0xd2d87672540 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87277d48)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87672600 sp=0xd2d87672568 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestJavascriptExportedVariableEntityLines(0xd2d87277d48)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/function_binding_test.go:135 +0x2a fp=0xd2d87672770 sp=0xd2d87672600 pc=0xa236aa\ntesting.tRunner(0xd2d87277d48, 0x12d7170)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d876727c0 sp=0xd2d87672770 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d876727e0 sp=0xd2d876727c0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d876727e8 sp=0xd2d876727e0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10815 gp=0xd2d871ab680 m=nil [select]:\nruntime.gopark(0xd2d87320f40?, 0x3?, 0x88?, 0xc?, 0xd2d87320e2a?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87320c68 sp=0xd2d87320c48 pc=0x48c04e\nruntime.selectgo(0xd2d87320f40, 0xd2d87320e24, 0x30?, 0x1, 0x2002d8763fe30?, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/select.go:351 +0xaa5 fp=0xd2d87320d98 sp=0xd2d87320c68 pc=0x4690a5\ngithub.com/entireio/entire-graph/internal/sem.runIndexedPipeline[...]({0x12e8248, 0xd2d872b0690}, 0x1, 0x8, 0xd2d878820c0, 0xd2d87321570)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/provider_parallel.go:350 +0x472 fp=0xd2d87321538 sp=0xd2d87320d98 pc=0xd4a472\ngithub.com/entireio/entire-graph/internal/sem.runProviderFilePipeline({0x12e8248, 0xd2d872b0690}, {0xd2d8720f770, 0x1, 0x1}, 0x8, 0xd2d872b07d0, 0xd2d87322bd8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/provider_parallel.go:269 +0xe5 fp=0xd2d87321590 sp=0xd2d87321538 pc=0x8cf005\ngithub.com/entireio/entire-graph/internal/sem.streamSnapshotWithWorkerCount({0x12e8248, 0xd2d872b0690}, {0xd2d86fa5300, 0x40}, {0x11d83fd, 0xc}, {0x0, 0x1, {0x0, 0x0, ...}, ...}, ...)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/provider.go:1179 +0xb13 fp=0xd2d87322f10 sp=0xd2d87321590 pc=0x7f0493\ngithub.com/entireio/entire-graph/internal/sem.StreamSnapshot({0x12e8248, 0xd2d872b0690}, {0xd2d86fa5300, 0x40}, {0x11d83fd, 0xc}, {0x0, 0x1, {0x0, 0x0, ...}, ...}, ...)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/provider.go:1099 +0x119 fp=0xd2d87322ff0 sp=0xd2d87322f10 pc=0x7ef8f9\ngithub.com/entireio/entire-graph/internal/sem.BuildProviderSnapshotWithOptions({_, _}, {_, _}, {_, _}, {0x0, 0x1, {0x0, 0x0, ...}, ...})\n\t/home/farhan/entire-graph/entire-graph/internal/sem/provider.go:932 +0x17d fp=0xd2d873233a8 sp=0xd2d87322ff0 pc=0x7edc9d\ngithub.com/entireio/entire-graph/internal/sem.TestHaskellHigherOrderShadowedCaseBinderNoEdge(0xd2d870298c8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/haskell_test.go:244 +0x145 fp=0xd2d87323f70 sp=0xd2d873233a8 pc=0xa3d985\ntesting.tRunner(0xd2d870298c8, 0x12d6f98)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87323fc0 sp=0xd2d87323f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87323fe0 sp=0xd2d87323fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87323fe8 sp=0xd2d87323fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10156 gp=0xd2d8755e000 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87279728?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d872796d8 sp=0xd2d872796b8 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87279750 sp=0xd2d872796d8 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87279778 sp=0xd2d87279750 pc=0x41c032\ntesting.(*T).Parallel(0xd2d873a2248)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87279810 sp=0xd2d87279778 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestGoReceiverMethodBindsToSamePackageNotSibling(0xd2d873a2248)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_package_scope_test.go:87 +0x2a fp=0xd2d87279f70 sp=0xd2d87279810 pc=0xa285ea\ntesting.tRunner(0xd2d873a2248, 0x12d6e58)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87279fc0 sp=0xd2d87279f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87279fe0 sp=0xd2d87279fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87279fe8 sp=0xd2d87279fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10154 gp=0xd2d8755e1e0 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87517158?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87517108 sp=0xd2d875170e8 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87517180 sp=0xd2d87517108 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d875171a8 sp=0xd2d87517180 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87549d48)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87517240 sp=0xd2d875171a8 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestGoSingleMethodInterfaceDoesNotFanOutOnAmbiguousName(0xd2d87549d48)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_interface_calls_test.go:187 +0x2a fp=0xd2d87517f70 sp=0xd2d87517240 pc=0xa2710a\ntesting.tRunner(0xd2d87549d48, 0x12d6e90)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87517fc0 sp=0xd2d87517f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87517fe0 sp=0xd2d87517fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87517fe8 sp=0xd2d87517fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 5632 gp=0xd2d873b3c20 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d875da6f0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d875da6a0 sp=0xd2d875da680 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d875da718 sp=0xd2d875da6a0 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d875da740 sp=0xd2d875da718 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87548488)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d875da7d8 sp=0xd2d875da740 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestCppSpecializationAliasesInSnapshotKeepIDsStable(0xd2d87548488)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/cpp_specialization_test.go:77 +0x2a fp=0xd2d875daf70 sp=0xd2d875da7d8 pc=0xa112ca\ntesting.tRunner(0xd2d87548488, 0x12d6380)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d875dafc0 sp=0xd2d875daf70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d875dafe0 sp=0xd2d875dafc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d875dafe8 sp=0xd2d875dafe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 5586 gp=0xd2d8755f860 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87533d78?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87533d28 sp=0xd2d87533d08 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87533da0 sp=0xd2d87533d28 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87533dc8 sp=0xd2d87533da0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87548248)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87533e60 sp=0xd2d87533dc8 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestCapabilityRelationProbesCoverEveryCallExtractionLanguage(0xd2d87548248)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/capability_relation_union_test.go:634 +0x2a fp=0xd2d87533f70 sp=0xd2d87533e60 pc=0xa05d6a\ntesting.tRunner(0xd2d87548248, 0x12d6080)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87533fc0 sp=0xd2d87533f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87533fe0 sp=0xd2d87533fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87533fe8 sp=0xd2d87533fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10158 gp=0xd2d870445a0 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87639de8?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87639d98 sp=0xd2d87639d78 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87639e10 sp=0xd2d87639d98 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87639e38 sp=0xd2d87639e10 pc=0x41c032\ntesting.(*T).Parallel(0xd2d873a26c8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87639ed0 sp=0xd2d87639e38 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestPathProximityRankOrdersByPackageDistance(0xd2d873a26c8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_package_scope_test.go:141 +0x27 fp=0xd2d87639f70 sp=0xd2d87639ed0 pc=0xa29127\ntesting.tRunner(0xd2d873a26c8, 0x12d7718)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87639fc0 sp=0xd2d87639f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87639fe0 sp=0xd2d87639fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87639fe8 sp=0xd2d87639fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 4870 gp=0xd2d870454a0 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d875fd500?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d875fd4b0 sp=0xd2d875fd490 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d875fd528 sp=0xd2d875fd4b0 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d875fd550 sp=0xd2d875fd528 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87445688)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d875fd5e8 sp=0xd2d875fd550 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestCacheEntryWriteRejectsSymlinkedVersion(0xd2d87445688)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/cache_write_confinement_test.go:202 +0x2a fp=0xd2d875fd770 sp=0xd2d875fd5e8 pc=0x9f9c6a\ntesting.tRunner(0xd2d87445688, 0x12d5fb8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d875fd7c0 sp=0xd2d875fd770 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d875fd7e0 sp=0xd2d875fd7c0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d875fd7e8 sp=0xd2d875fd7e0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10146 gp=0xd2d876c4780 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d875ddb98?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d875ddb48 sp=0xd2d875ddb28 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d875ddbc0 sp=0xd2d875ddb48 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d875ddbe8 sp=0xd2d875ddbc0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d872778c8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d875ddc80 sp=0xd2d875ddbe8 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestFunctionValueBindingIsOneSymbol(0xd2d872778c8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/function_binding_test.go:13 +0x2a fp=0xd2d875ddf70 sp=0xd2d875ddc80 pc=0xa22cea\ntesting.tRunner(0xd2d872778c8, 0x12d69a8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d875ddfc0 sp=0xd2d875ddf70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d875ddfe0 sp=0xd2d875ddfc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d875ddfe8 sp=0xd2d875ddfe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 5587 gp=0xd2d87045680 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87343b90?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87343b40 sp=0xd2d87343b20 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87343bb8 sp=0xd2d87343b40 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87343be0 sp=0xd2d87343bb8 pc=0x41c032\ntesting.(*T).Parallel(0xd2d875486c8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87343c78 sp=0xd2d87343be0 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestCapabilityRelationDeclarationsMatchIsolatedExtraction(0xd2d875486c8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/capability_relation_union_test.go:689 +0x2a fp=0xd2d87343f70 sp=0xd2d87343c78 pc=0xa060aa\ntesting.tRunner(0xd2d875486c8, 0x12d6078)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87343fc0 sp=0xd2d87343f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87343fe0 sp=0xd2d87343fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87343fe8 sp=0xd2d87343fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10152 gp=0xd2d876c5a40 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d86f7d3c8?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d86f7d378 sp=0xd2d86f7d358 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d86f7d3f0 sp=0xd2d86f7d378 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d86f7d418 sp=0xd2d86f7d3f0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d875498c8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d86f7d4b0 sp=0xd2d86f7d418 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestGoInterfaceCallCarriesToImplementations(0xd2d875498c8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_interface_calls_test.go:131 +0x2a fp=0xd2d86f7df70 sp=0xd2d86f7d4b0 pc=0xa260aa\ntesting.tRunner(0xd2d875498c8, 0x12d6e00)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d86f7dfc0 sp=0xd2d86f7df70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d86f7dfe0 sp=0xd2d86f7dfc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d86f7dfe8 sp=0xd2d86f7dfe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10153 gp=0xd2d88cd4000 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d875152f8?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d875152a8 sp=0xd2d87515288 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87515320 sp=0xd2d875152a8 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87515348 sp=0xd2d87515320 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87549b08)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d875153e0 sp=0xd2d87515348 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestGoInterfaceCallFanoutCapKeepsInterfaceEdgeOnly(0xd2d87549b08)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_interface_calls_test.go:165 +0x2a fp=0xd2d87515f70 sp=0xd2d875153e0 pc=0xa2680a\ntesting.tRunner(0xd2d87549b08, 0x12d6e08)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87515fc0 sp=0xd2d87515f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87515fe0 sp=0xd2d87515fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87515fe8 sp=0xd2d87515fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10147 gp=0xd2d88cd4d20 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d872eb618?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d872eb5c8 sp=0xd2d872eb5a8 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d872eb640 sp=0xd2d872eb5c8 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d872eb668 sp=0xd2d872eb640 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87277b08)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d872eb700 sp=0xd2d872eb668 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestExportedNonFunctionVariableSurvives(0xd2d87277b08)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/function_binding_test.go:111 +0x1c fp=0xd2d872eb770 sp=0xd2d872eb700 pc=0xa234fc\ntesting.tRunner(0xd2d87277b08, 0x12d6660)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d872eb7c0 sp=0xd2d872eb770 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d872eb7e0 sp=0xd2d872eb7c0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d872eb7e8 sp=0xd2d872eb7e0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10155 gp=0xd2d88cd5a40 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d8727cab8?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d8727ca68 sp=0xd2d8727ca48 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d8727cae0 sp=0xd2d8727ca68 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d8727cb08 sp=0xd2d8727cae0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d873a2008)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d8727cba0 sp=0xd2d8727cb08 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestGoInterfaceRequirementMethodDiscriminator(0xd2d873a2008)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_interface_calls_test.go:230 +0x2a fp=0xd2d8727cf70 sp=0xd2d8727cba0 pc=0xa27a8a\ntesting.tRunner(0xd2d873a2008, 0x12d6e18)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d8727cfc0 sp=0xd2d8727cf70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d8727cfe0 sp=0xd2d8727cfc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d8727cfe8 sp=0xd2d8727cfe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10821 gp=0xd2d8765b0e0 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87aaeda8?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87aaed58 sp=0xd2d87aaed38 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87aaedd0 sp=0xd2d87aaed58 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87aaedf8 sp=0xd2d87aaedd0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d873a3688)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87aaee90 sp=0xd2d87aaedf8 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestFSharpBlockCommentDoesNotFabricateACall(0xd2d873a3688)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/golden_test.go:982 +0x27 fp=0xd2d87aaef70 sp=0xd2d87aaee90 pc=0xa32bc7\ntesting.tRunner(0xd2d873a3688, 0x12d66b0)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87aaefc0 sp=0xd2d87aaef70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87aaefe0 sp=0xd2d87aaefc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87aaefe8 sp=0xd2d87aaefe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\nrax    0x0\nrbx    0x24765\nrcx    0x7f6ff729a17c\nrdx    0x6\nrdi    0x2431f\nrsi    0x24765\nrbp    0x7f6f6bffe7f0\nrsp    0x7f6f6bffe7c0\nr8     0xffffffff\nr9     0x0\nr10    0x22\nr11    0x246\nr12    0x7f6f6bffe930\nr13    0x7f6fac1df000\nr14    0x6\nr15    0x0\nrip    0x7f6ff729a17c\nrflags 0x246\ncs     0x33\nfs     0x0\ngs     0x0\nFAIL\tgithub.com/entireio/entire-graph/internal/sem\t14.831s\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/clojure\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/csharp\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/dart\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/erlang\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/fsharp\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/haskell\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/julia\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/objc\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/perl\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/r\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/zig\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/pgsql\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/zsh\t[no test files]\nok  \tgithub.com/entireio/entire-graph/internal/termsafe\t2.201s\nFAIL\n[test] ERROR task failed\n",
+              "exit": 1,
+              "truncated": true,
+              "outputPath": "/home/farhan/.local/share/opencode/tool-output/tool_0759c0ff5001268zNN0vjXRjML"
+            },
+            "title": "mise run test",
+            "time": {
+              "start": 1788679492435,
+              "end": 1788679557172
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_039ea4b75847d862016a9d1543daf487d0a35bcc4c66b371be"
+            }
+          },
+          "id": "prt_0759b1190001VU0p7kjMrH4wuj",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759b07440015uQWHy37f7DNh9"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-finish",
+          "tokens": {
+            "total": 59879,
+            "input": 884,
+            "output": 86,
+            "reasoning": 29,
+            "cache": {
+              "write": 0,
+              "read": 58880
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759c104a00145BwRpFWbRLZk0",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759b07440015uQWHy37f7DNh9"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07597093e001khpoyuvumhpjBm",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 60023,
+          "input": 1055,
+          "output": 62,
+          "reasoning": 26,
+          "cache": {
+            "write": 0,
+            "read": 58880
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788679557248,
+          "completed": 1788679561464
+        },
+        "finish": "tool-calls",
+        "id": "msg_0759c10800014o95O51ZliY64J",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-start",
+          "id": "prt_0759c1b67001TnWb13GsWSd9qZ",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c10800014o95O51ZliY64J"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Investigating file reading limitations**",
+          "time": {
+            "start": 1788679560041,
+            "end": 1788679561174
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_005d7e6a48073ea3016a9d1587f54c87d0a27fbbd9a9087549",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_0759c1b69001HYh2utyQjH3nyi",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c10800014o95O51ZliY64J"
+        },
+        {
+          "type": "tool",
+          "tool": "grep",
+          "callID": "call_3X9ftIcdjhdeiVH2M6qxMRHQ",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "FAIL|panic|ERROR|fatal",
+              "path": "/home/farhan/.local/share/opencode/tool-output/tool_0759c0ff5001268zNN0vjXRjML",
+              "include": "*"
+            },
+            "output": "Found 100 matches (more matches available)\n/home/farhan/.local/share/opencode/tool-output/tool_0759c0ff5001268zNN0vjXRjML:\n  Line 16: --- FAIL: TestDoctorWorksOutsideGitRepo (0.00s)\n\n  Line 24: FAIL\n\n  Line 25: FAIL\tgithub.com/entireio/entire-graph/internal/cli\t11.263s\n\n  Line 29: --- FAIL: TestProviderGoldenSnapshots (0.13s)\n\n  Line 30:     --- FAIL: TestProviderGoldenSnapshots/csharp-basic (0.00s)\n\n  Line 50:     --- FAIL: TestProviderGoldenSnapshots/julia-r-basic (0.00s)\n\n  Line 69:     --- FAIL: TestProviderGoldenSnapshots/multilang-relations (0.01s)\n\n  Line 227:     --- FAIL: TestProviderGoldenSnapshots/csharp-fields (0.00s)\n\n  Line 250:     --- FAIL: TestProviderGoldenSnapshots/csharp-oo (0.00s)\n\n  Line 282:     --- FAIL: TestProviderGoldenSnapshots/go-basic (0.00s)\n\n  Line 316:     --- FAIL: TestProviderGoldenSnapshots/go-async (0.00s)\n\n  Line 348:     --- FAIL: TestProviderGoldenSnapshots/go-clones (0.00s)\n\n  Line 368:     --- FAIL: TestProviderGoldenSnapshots/go-fields (0.00s)\n\n  Line 396:     --- FAIL: TestProviderGoldenSnapshots/go-tests (0.00s)\n\n  Line 414:     --- FAIL: TestProviderGoldenSnapshots/go-types (0.00s)\n\n  Line 440:     --- FAIL: TestProviderGoldenSnapshots/java-basic (0.00s)\n\n  Line 460:     --- FAIL: TestProviderGoldenSnapshots/java-fields (0.00s)\n\n  Line 484:     --- FAIL: TestProviderGoldenSnapshots/java-oo (0.00s)\n\n  Line 519:     --- FAIL: TestProviderGoldenSnapshots/php-basic (0.00s)\n\n  Line 538:     --- FAIL: TestProviderGoldenSnapshots/php-oo (0.00s)\n\n  Line 568:     --- FAIL: TestProviderGoldenSnapshots/python-basic (0.00s)\n\n  Line 592:     --- FAIL: TestProviderGoldenSnapshots/python-imports (0.00s)\n\n  Line 610:     --- FAIL: TestProviderGoldenSnapshots/python-oo (0.00s)\n\n  Line 643:     --- FAIL: TestProviderGoldenSnapshots/rust-basic (0.00s)\n\n  Line 666:     --- FAIL: TestProviderGoldenSnapshots/rust-oo (0.00s)\n\n  Line 701:     --- FAIL: TestProviderGoldenSnapshots/terraform-basic (0.00s)\n\n  Line 727:     --- FAIL: TestProviderGoldenSnapshots/typescript-basic (0.01s)\n\n  Line 747:     --- FAIL: TestProviderGoldenSnapshots/typescript-events (0.00s)\n\n  Line 766:     --- FAIL: TestProviderGoldenSnapshots/typescript-fields (0.00s)\n\n  Line 791:     --- FAIL: TestProviderGoldenSnapshots/typescript-http (0.01s)\n\n  Line 816:     --- FAIL: TestProviderGoldenSnapshots/typescript-imports (0.00s)\n\n  Line 835:     --- FAIL: TestProviderGoldenSnapshots/typescript-oo (0.01s)\n\n  Line 887:     --- FAIL: TestProviderGoldenSnapshots/services-config (0.01s)\n\n  Line 2497: FAIL\tgithub.com/entireio/entire-graph/internal/sem\t14.831s\n\n  Line 2512: FAIL\n\n  Line 2513: [test] ERROR task failed\n\n\n/home/farhan/.local/share/opencode/tool-output/tool_0757ae2200015HRXL4sZz3wDGo:\n  Line 1: --- FAIL: TestProviderGoldenSnapshots (0.14s)\n\n  Line 2:     --- FAIL: TestProviderGoldenSnapshots/csharp-basic (0.00s)\n\n  Line 22:     --- FAIL: TestProviderGoldenSnapshots/julia-r-basic (0.00s)\n\n  Line 41:     --- FAIL: TestProviderGoldenSnapshots/multilang-relations (0.01s)\n\n  Line 199:     --- FAIL: TestProviderGoldenSnapshots/csharp-fields (0.00s)\n\n  Line 222:     --- FAIL: TestProviderGoldenSnapshots/csharp-oo (0.00s)\n\n  Line 254:     --- FAIL: TestProviderGoldenSnapshots/go-basic (0.01s)\n\n  Line 288:     --- FAIL: TestProviderGoldenSnapshots/go-async (0.00s)\n\n  Line 320:     --- FAIL: TestProviderGoldenSnapshots/go-clones (0.00s)\n\n  Line 340:     --- FAIL: TestProviderGoldenSnapshots/go-fields (0.00s)\n\n  Line 368:     --- FAIL: TestProviderGoldenSnapshots/go-tests (0.00s)\n\n  Line 386:     --- FAIL: TestProviderGoldenSnapshots/go-types (0.00s)\n\n  Line 412:     --- FAIL: TestProviderGoldenSnapshots/java-basic (0.00s)\n\n  Line 432:     --- FAIL: TestProviderGoldenSnapshots/java-fields (0.00s)\n\n  Line 456:     --- FAIL: TestProviderGoldenSnapshots/java-oo (0.00s)\n\n  Line 491:     --- FAIL: TestProviderGoldenSnapshots/php-basic (0.00s)\n\n  Line 510:     --- FAIL: TestProviderGoldenSnapshots/php-oo (0.00s)\n\n  Line 540:     --- FAIL: TestProviderGoldenSnapshots/python-basic (0.00s)\n\n  Line 564:     --- FAIL: TestProviderGoldenSnapshots/python-imports (0.01s)\n\n  Line 582:     --- FAIL: TestProviderGoldenSnapshots/python-oo (0.00s)\n\n  Line 615:     --- FAIL: TestProviderGoldenSnapshots/rust-basic (0.00s)\n\n  Line 638:     --- FAIL: TestProviderGoldenSnapshots/rust-oo (0.00s)\n\n  Line 673:     --- FAIL: TestProviderGoldenSnapshots/terraform-basic (0.01s)\n\n  Line 699:     --- FAIL: TestProviderGoldenSnapshots/typescript-basic (0.01s)\n\n  Line 719:     --- FAIL: TestProviderGoldenSnapshots/typescript-events (0.01s)\n\n  Line 738:     --- FAIL: TestProviderGoldenSnapshots/typescript-fields (0.01s)\n\n  Line 763:     --- FAIL: TestProviderGoldenSnapshots/typescript-http (0.01s)\n\n  Line 788:     --- FAIL: TestProviderGoldenSnapshots/typescript-imports (0.01s)\n\n  Line 807:     --- FAIL: TestProviderGoldenSnapshots/typescript-oo (0.01s)\n\n  Line 859:     --- FAIL: TestProviderGoldenSnapshots/services-config (0.01s)\n\n  Line 2469: FAIL\tgithub.com/entireio/entire-graph/internal/sem\t14.046s\n\n  Line 2470: FAIL\n\n\n/home/farhan/.local/share/opencode/tool-output/tool_0757b9bf40011tvQ45YNmfOteR:\n  Line 1: --- FAIL: TestProviderGoldenSnapshots (0.12s)\n\n  Line 2:     --- FAIL: TestProviderGoldenSnapshots/csharp-basic (0.00s)\n\n  Line 22:     --- FAIL: TestProviderGoldenSnapshots/julia-r-basic (0.00s)\n\n  Line 41:     --- FAIL: TestProviderGoldenSnapshots/multilang-relations (0.01s)\n\n  Line 199:     --- FAIL: TestProviderGoldenSnapshots/csharp-fields (0.00s)\n\n  Line 222:     --- FAIL: TestProviderGoldenSnapshots/csharp-oo (0.00s)\n\n  Line 254:     --- FAIL: TestProviderGoldenSnapshots/go-basic (0.01s)\n\n  Line 288:     --- FAIL: TestProviderGoldenSnapshots/go-async (0.00s)\n\n  Line 320:     --- FAIL: TestProviderGoldenSnapshots/go-clones (0.00s)\n\n  Line 340:     --- FAIL: TestProviderGoldenSnapshots/go-fields (0.00s)\n\n  Line 368:     --- FAIL: TestProviderGoldenSnapshots/go-tests (0.00s)\n\n  Line 386:     --- FAIL: TestProviderGoldenSnapshots/go-types (0.00s)\n\n  Line 412:     --- FAIL: TestProviderGoldenSnapshots/java-basic (0.00s)\n\n  Line 432:     --- FAIL: TestProviderGoldenSnapshots/java-fields (0.00s)\n\n  Line 456:     --- FAIL: TestProviderGoldenSnapshots/java-oo (0.00s)\n\n  Line 491:     --- FAIL: TestProviderGoldenSnapshots/php-basic (0.00s)\n\n  Line 510:     --- FAIL: TestProviderGoldenSnapshots/php-oo (0.00s)\n\n  Line 540:     --- FAIL: TestProviderGoldenSnapshots/python-basic (0.00s)\n\n  Line 564:     --- FAIL: TestProviderGoldenSnapshots/python-imports (0.00s)\n\n  Line 582:     --- FAIL: TestProviderGoldenSnapshots/python-oo (0.00s)\n\n  Line 615:     --- FAIL: TestProviderGoldenSnapshots/rust-basic (0.00s)\n\n  Line 638:     --- FAIL: TestProviderGoldenSnapshots/rust-oo (0.00s)\n\n  Line 673:     --- FAIL: TestProviderGoldenSnapshots/terraform-basic (0.00s)\n\n  Line 699:     --- FAIL: TestProviderGoldenSnapshots/typescript-basic (0.00s)\n\n  Line 719:     --- FAIL: TestProviderGoldenSnapshots/typescript-events (0.01s)\n\n  Line 738:     --- FAIL: TestProviderGoldenSnapshots/typescript-fields (0.00s)\n\n  Line 763:     --- FAIL: TestProviderGoldenSnapshots/typescript-http (0.01s)\n\n  Line 788:     --- FAIL: TestProviderGoldenSnapshots/typescript-imports (0.00s)\n\n  Line 807:     --- FAIL: TestProviderGoldenSnapshots/typescript-oo (0.01s)\n\n  Line 859:     --- FAIL: TestProviderGoldenSnapshots/services-config (0.01s)\n\n  Line 925: FAIL\n\n  Line 926: FAIL\tgithub.com/entireio/entire-graph/internal/sem\t0.137s\n\n\n(Results truncated. Consider using a more specific path or pattern.)",
+            "metadata": {
+              "matches": 100,
+              "truncated": true
+            },
+            "title": "FAIL|panic|ERROR|fatal",
+            "time": {
+              "start": 1788679561257,
+              "end": 1788679561275
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_005d7e6a48073ea3016a9d1588f10887d0b1ddfaea8df1dd10"
+            }
+          },
+          "id": "prt_0759c1fdf0017gTYhfs5zHDqc6",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c10800014o95O51ZliY64J"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-finish",
+          "tokens": {
+            "total": 60023,
+            "input": 1055,
+            "output": 62,
+            "reasoning": 26,
+            "cache": {
+              "write": 0,
+              "read": 58880
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759c20e6001hYT9DM5NGMCeFC",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c10800014o95O51ZliY64J"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07597093e001khpoyuvumhpjBm",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 62461,
+          "input": 3399,
+          "output": 55,
+          "reasoning": 127,
+          "cache": {
+            "write": 0,
+            "read": 58880
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788679561493,
+          "completed": 1788679570382
+        },
+        "finish": "tool-calls",
+        "id": "msg_0759c2115001QuXfVYDBIz7vJe",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-start",
+          "id": "prt_0759c28c1001f5DTxsI2fFgUFX",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c2115001QuXfVYDBIz7vJe"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Acknowledging incomplete MVP with pending status**",
+          "time": {
+            "start": 1788679563461,
+            "end": 1788679568058
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0eaae40865b1b61b016a9d158b5f3c87d082e370c3901ab4a6"
+            }
+          },
+          "id": "prt_0759c28c50019rcxcllgllFWx5",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c2115001QuXfVYDBIz7vJe"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Verifying clean git status**",
+          "time": {
+            "start": 1788679568061,
+            "end": 1788679568532
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0eaae40865b1b61b016a9d158b5f3c87d082e370c3901ab4a6",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_0759c3abd001QUAyzgN52YEAGU",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c2115001QuXfVYDBIz7vJe"
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_0Z0NILIbXa14yu6w5WmDMHPE",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "git status --short && git log --oneline -5",
+              "workdir": "/home/farhan/entire-graph/entire-graph",
+              "timeout": 120000
+            },
+            "output": "?? .opencode/\na2c7884 fix(gps): identify unconfigured check views\n9b11616 test(gps): cover fallback and delta contracts\nc4de129 feat(gps): complete core context and binding contracts\n53ed855 feat(impact): include explicit intent anchors\n59d8f2b feat(gps): identify selected repository views\n",
+            "metadata": {
+              "output": "?? .opencode/\na2c7884 fix(gps): identify unconfigured check views\n9b11616 test(gps): cover fallback and delta contracts\nc4de129 feat(gps): complete core context and binding contracts\n53ed855 feat(impact): include explicit intent anchors\n59d8f2b feat(gps): identify selected repository views\n",
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "git status --short && git log --oneline -5",
+            "time": {
+              "start": 1788679570291,
+              "end": 1788679570311
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0eaae40865b1b61b016a9d159011f887d092d9f58d1e99cac3"
+            }
+          },
+          "id": "prt_0759c4162001m50wvubfMPFZcx",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c2115001QuXfVYDBIz7vJe"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-finish",
+          "tokens": {
+            "total": 62461,
+            "input": 3399,
+            "output": 55,
+            "reasoning": 127,
+            "cache": {
+              "write": 0,
+              "read": 58880
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759c43bb001cEKSu5uvRUYSll",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c2115001QuXfVYDBIz7vJe"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07597093e001khpoyuvumhpjBm",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 62758,
+          "input": 596,
+          "output": 210,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 61952
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788679570410,
+          "completed": 1788679574893
+        },
+        "finish": "stop",
+        "id": "msg_0759c43ea001nqszYmqG0e21F4",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-start",
+          "id": "prt_0759c4afb001Kj1IV1iYa0B5vX",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c43ea001nqszYmqG0e21F4"
+        },
+        {
+          "type": "text",
+          "text": "Continued and pushed through `a2c7884`.\n\nCompleted this pass:\n- No-spec context now returns ranked code evidence plus `NO_SPECS`.\n- Context rejects budgets below its minimum instead of returning an over-budget package.\n- `check` explicitly returns `change_delta: \"not_requested\"` without `--base`.\n- Newly written binding fingerprints are versioned.\n- Missing bindings now identify cross-file move/rename candidates without rebinding.\n- All check outputs, including `NOT_CONFIGURED`, identify the repository view.\n- Added focused regression coverage for fallback context, budget handling, and no-base checks.\n\nRelease gate status:\n- Focused GPS tests and builds pass.\n- `mise run test` still fails on existing unrelated failures:\n  - `internal/cli`: `TestDoctorWorksOutsideGitRepo`\n  - `internal/sem`: widespread `TestProviderGoldenSnapshots` mismatches\n\nMVP is not yet fully complete: end-to-end Git/negative/golden fixture coverage and the documented demo fixture remain.",
+          "time": {
+            "start": 1788679572221,
+            "end": 1788679574668
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "msg_05dae3784151a7a9016a9d1593f74c87d085491d28cabb3d2e",
+              "phase": "final_answer"
+            }
+          },
+          "id": "prt_0759c4afd001gbnnkeM0d0PiNU",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c43ea001nqszYmqG0e21F4"
+        },
+        {
+          "reason": "stop",
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-finish",
+          "tokens": {
+            "total": 62758,
+            "input": 596,
+            "output": 210,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 61952
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759c555b001ZWyZCryyQp971B",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c43ea001nqszYmqG0e21F4"
         }
       ]
     }
