@@ -20,17 +20,17 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 397032,
-      "output": 31436,
-      "reasoning": 8638,
+      "input": 409442,
+      "output": 32814,
+      "reasoning": 9119,
       "cache": {
-        "read": 12279296,
+        "read": 14924288,
         "write": 0
       }
     },
     "time": {
       "created": 1788675781237,
-      "updated": 1788677915793
+      "updated": 1788678009427
     }
   },
   "messages": [
@@ -17566,9 +17566,9 @@
           "diffs": [
             {
               "file": "internal/cli/gps.go",
-              "patch": "Index: internal/cli/gps.go\n===================================================================\n--- internal/cli/gps.go\t\n+++ internal/cli/gps.go\t\n@@ -1,474 +1,496 @@\n package cli\n \n import (\n \t\"bytes\"\n \t\"context\"\n \t\"encoding/json\"\n \t\"errors\"\n \t\"fmt\"\n \t\"sort\"\n \t\"strings\"\n \n \t\"github.com/entireio/entire-graph/internal/gitutil\"\n \t\"github.com/entireio/entire-graph/internal/intent\"\n \t\"github.com/entireio/entire-graph/internal/sem\"\n \t\"github.com/entireio/entire-graph/internal/termsafe\"\n )\n \n const gpsSchemaVersion = \"1.0\"\n \n func runSpec(ctx context.Context, opts Options, args []string) error {\n \tif len(args) == 0 {\n \t\treturn errors.New(\"spec requires init, list, show, or validate\")\n \t}\n \t_, flags, err := gpsFlags(args[1:])\n \tif err != nil {\n \t\treturn err\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif args[0] == \"init\" {\n \t\tif flags.head {\n \t\t\treturn errors.New(\"spec init cannot write a --head view\")\n \t\t}\n \t\treturn intent.Init(repo)\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tswitch args[0] {\n \tcase \"list\":\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"specifications\": set.Specs})\n \tcase \"show\":\n \t\tif flags.id == \"\" {\n \t\t\treturn errors.New(\"spec show requires --id\")\n \t\t}\n \t\tfor _, spec := range set.Specs {\n \t\t\tif spec.ID == flags.id {\n \t\t\t\treturn gpsEncode(opts, flags.format, spec)\n \t\t\t}\n \t\t}\n \t\treturn fmt.Errorf(\"specification %q not found\", flags.id)\n \tcase \"validate\":\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"valid\": true, \"intent_digest\": set.Digest, \"specifications\": len(set.Specs)})\n \tdefault:\n \t\treturn fmt.Errorf(\"unknown spec command %q\", args[0])\n \t}\n }\n \n func runAnchor(ctx context.Context, opts Options, args []string) error {\n \tif len(args) == 0 {\n \t\treturn errors.New(\"anchor requires bind, list, or resolve\")\n \t}\n \tverb, flags, err := gpsFlags(args[1:])\n \t_ = verb\n \tif err != nil {\n \t\treturn err\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif args[0] == \"list\" {\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"anchors\": set.Bindings})\n \t}\n \tif args[0] == \"bind\" {\n \t\tif flags.head {\n \t\t\treturn errors.New(\"anchor bind cannot write a --head view\")\n \t\t}\n \t\tif flags.id == \"\" || flags.symbol == \"\" {\n \t\t\treturn errors.New(\"anchor bind requires --id and --symbol\")\n \t\t}\n \t\tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n \t\tmatches := matchingSymbols(snapshot.Symbols, flags.symbol, flags.file)\n \t\tif len(matches) == 0 {\n \t\t\treturn fmt.Errorf(\"symbol %q not found\", flags.symbol)\n \t\t}\n \t\tif len(matches) > 1 {\n \t\t\treturn fmt.Errorf(\"symbol %q is ambiguous; pass --file\", flags.symbol)\n \t\t}\n \t\ts := matches[0]\n-\t\treturn intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash}}, flags.update)\n+\t\treturn intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash, FileBlob: snapshotFileBlob(snapshot, s.FilePath)}}, flags.update)\n \t}\n \tif args[0] == \"resolve\" {\n \t\tif flags.id == \"\" {\n \t\t\treturn errors.New(\"anchor resolve requires --id\")\n \t\t}\n \t\tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n \t\tfor _, binding := range set.Bindings {\n \t\t\tif binding.ID == flags.id {\n \t\t\t\treturn gpsEncode(opts, flags.format, resolveBinding(binding, snapshot))\n \t\t\t}\n \t\t}\n \t\treturn fmt.Errorf(\"anchor %q not found\", flags.id)\n \t}\n \treturn fmt.Errorf(\"unknown anchor command %q\", args[0])\n }\n \n func runGPSContext(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.query == \"\" {\n \t\treturn errors.New(\"context requires --query\")\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \trequirements := matchingRequirements(set, flags.query)\n \tresponse := map[string]any{\"schema_version\": gpsSchemaVersion, \"request\": flags.query, \"intent_digest\": set.Digest, \"status\": \"complete\", \"requirements\": requirements, \"symbols\": []any{}, \"dependencies\": []any{}, \"tests\": []any{}, \"gaps\": []string{}, \"budget\": map[string]any{\"maximum_bytes\": flags.maxBytes, \"rendered_bytes\": 0, \"omitted\": []string{}}}\n \tif len(set.Specs) == 0 {\n \t\tresponse[\"status\"] = \"complete_with_gaps\"\n \t\tresponse[\"gaps\"] = []string{\"NO_SPECS\"}\n \t\treturn gpsEncode(opts, flags.format, response)\n \t}\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tselected := make(map[string]bool, len(requirements))\n \tfor _, requirement := range requirements {\n \t\tselected[requirement[\"id\"]] = true\n \t}\n \tbindings := make(map[string]intent.Binding, len(set.Bindings))\n \tfor _, binding := range set.Bindings {\n \t\tbindings[binding.ID] = binding\n \t}\n \tvar symbols []any\n \tvar dependencies []any\n \tvar tests []any\n \tvar gaps []string\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tif !selected[anchor.Requirement] {\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tbinding, ok := bindings[anchor.ID]\n \t\t\tif !ok {\n \t\t\t\tgaps = append(gaps, \"UNBOUND_ANCHOR:\"+anchor.ID)\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tstate := resolveBinding(binding, snapshot)\n \t\t\tif state[\"state\"] != \"VALID\" {\n \t\t\t\tgaps = append(gaps, state[\"state\"].(string)+\":\"+anchor.ID)\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tsymbol := state[\"symbol\"].(sem.SymbolRecord)\n \t\t\tsymbols = append(symbols, map[string]any{\"anchor\": anchor.ID, \"requirement\": anchor.Requirement, \"reason\": \"approved_anchor\", \"citation\": fmt.Sprintf(\"%s:%d\", symbol.FilePath, symbol.StartLine), \"symbol\": symbol})\n \t\t\tfor _, relation := range snapshot.Relations {\n \t\t\t\tif relation.FromID == symbol.ID {\n \t\t\t\t\tdependencies = append(dependencies, map[string]any{\"reason\": \"anchor_callee\", \"type\": relation.Type, \"symbol_id\": relation.ToID})\n \t\t\t\t}\n \t\t\t\tif relation.ToID == symbol.ID {\n \t\t\t\t\tdependencies = append(dependencies, map[string]any{\"reason\": \"anchor_caller\", \"type\": relation.Type, \"symbol_id\": relation.FromID})\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t\tfor _, test := range spec.Tests {\n \t\t\tif !acceptanceMatchesRequirement(spec, test.Acceptance, selected) {\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tmatches := matchingSymbols(snapshot.Symbols, test.Selector.Name, \"\")\n \t\t\tif len(matches) == 1 {\n \t\t\t\ttests = append(tests, map[string]any{\"id\": test.ID, \"acceptance\": test.Acceptance, \"reason\": \"declared_mapping\", \"symbol\": matches[0]})\n \t\t\t} else {\n \t\t\t\tgaps = append(gaps, \"DECLARED_TEST_UNRESOLVED:\"+test.ID)\n \t\t\t}\n \t\t}\n \t}\n \tsort.Strings(gaps)\n \tresponse[\"symbols\"] = symbols\n \tresponse[\"dependencies\"] = dependencies\n \tresponse[\"tests\"] = tests\n \tresponse[\"gaps\"] = gaps\n \tif len(gaps) > 0 {\n \t\tresponse[\"status\"] = \"complete_with_gaps\"\n \t}\n \tfitGPSContextBudget(response, flags.maxBytes)\n \treturn gpsEncode(opts, flags.format, response)\n }\n \n func runGPSCheck(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.base != \"\" && !flags.head {\n \t\treturn errors.New(\"check --base requires --head so code and intent use one committed view\")\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif len(set.Specs) == 0 {\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"disposition\": \"NOT_CONFIGURED\", \"findings\": []any{}})\n \t}\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tfindings := make([]map[string]any, 0)\n+\tif len(snapshot.Header.PartialFailures) != 0 || snapshot.Header.Stats.CompletenessLevel != \"ok\" {\n+\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-COMPLETENESS-INCOMPLETE\", \"severity\": \"incomplete\", \"subject\": \"graph\", \"message\": \"selected graph has partial or incomplete analysis\"})\n+\t}\n \tif flags.base != \"\" {\n \t\tbaseSet, err := intent.LoadRevision(ctx, repo, flags.base)\n \t\tif err != nil {\n \t\t\treturn fmt.Errorf(\"load base intent: %w\", err)\n \t\t}\n \t\tchanged, err := gitutil.ChangedFiles(ctx, repo, flags.base, \"HEAD\", nil)\n \t\tif err != nil {\n \t\t\treturn fmt.Errorf(\"compare base revision: %w\", err)\n \t\t}\n \t\tif baseSet.Digest != set.Digest {\n \t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-INTENT\", \"severity\": \"warning\", \"subject\": \"intent\", \"message\": \"selected intent differs from base revision\"})\n \t\t}\n \t\tfor _, file := range changed {\n \t\t\tfor _, binding := range set.Bindings {\n \t\t\t\tif binding.Selector.File == file.Path || binding.Selector.File == file.OldPath {\n \t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-ANCHOR\", \"severity\": \"warning\", \"subject\": binding.ID, \"message\": \"anchored implementation changed since base revision\"})\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t}\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tfound := false\n \t\t\tfor _, binding := range set.Bindings {\n \t\t\t\tif binding.ID != anchor.ID {\n \t\t\t\t\tcontinue\n \t\t\t\t}\n \t\t\t\tfound = true\n \t\t\t\tstate := resolveBinding(binding, snapshot)\n \t\t\t\tif state[\"state\"] != \"VALID\" {\n \t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-ANCHOR-\" + state[\"state\"].(string), \"severity\": \"warning\", \"subject\": anchor.ID, \"message\": state[\"state\"]})\n \t\t\t\t}\n \t\t\t}\n \t\t\tif !found {\n \t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-ANCHOR-UNBOUND\", \"severity\": \"warning\", \"subject\": anchor.ID, \"message\": \"declared anchor has no reviewed binding\"})\n \t\t\t}\n \t\t}\n \t\tfor _, acceptance := range spec.Acceptance {\n \t\t\tmapped := false\n \t\t\tfor _, test := range spec.Tests {\n \t\t\t\tif test.Acceptance == acceptance.ID {\n \t\t\t\t\tmapped = true\n \t\t\t\t\tmatches := matchingSymbols(snapshot.Symbols, test.Selector.Name, \"\")\n \t\t\t\t\tif len(matches) != 1 {\n \t\t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-MAPPING-UNRESOLVED\", \"severity\": \"warning\", \"subject\": test.ID, \"message\": \"declared test selector does not resolve to exactly one symbol\"})\n \t\t\t\t\t}\n \t\t\t\t}\n \t\t\t}\n \t\t\tif !mapped {\n \t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-MAPPING-MISSING\", \"severity\": \"warning\", \"subject\": acceptance.ID, \"message\": \"acceptance criterion has no declared test\"})\n \t\t\t}\n \t\t}\n \t}\n \tdisposition := \"PASS\"\n-\tif len(findings) > 0 {\n+\tfor _, finding := range findings {\n+\t\tif finding[\"severity\"] == \"incomplete\" {\n+\t\t\tdisposition = \"INCOMPLETE\"\n+\t\t\tbreak\n+\t\t}\n+\t\tif finding[\"severity\"] == \"error\" {\n+\t\t\tdisposition = \"FAIL\"\n+\t\t\tbreak\n+\t\t}\n \t\tdisposition = \"REVIEW_REQUIRED\"\n \t}\n \treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"disposition\": disposition, \"findings\": findings})\n }\n \n type gpsOptions struct {\n \trepo, format, id, symbol, file, query, base string\n \tupdate                                      bool\n \thead                                        bool\n \tmaxBytes                                    int\n }\n \n func gpsFlags(args []string) (string, gpsOptions, error) {\n \tflags := gpsOptions{format: \"json\", maxBytes: 12000}\n \tfor i := 0; i < len(args); i++ {\n \t\tvalue := func() (string, error) {\n \t\t\ti++\n \t\t\tif i >= len(args) {\n \t\t\t\treturn \"\", fmt.Errorf(\"%s requires a value\", args[i-1])\n \t\t\t}\n \t\t\treturn args[i], nil\n \t\t}\n \t\tswitch args[i] {\n \t\tcase \"--repo\", \"--format\", \"--id\", \"--symbol\", \"--file\", \"--query\", \"--base\", \"--max-context-bytes\":\n \t\t\tv, err := value()\n \t\t\tif err != nil {\n \t\t\t\treturn \"\", flags, err\n \t\t\t}\n \t\t\tswitch args[i-1] {\n \t\t\tcase \"--repo\":\n \t\t\t\tflags.repo = v\n \t\t\tcase \"--format\":\n \t\t\t\tflags.format = v\n \t\t\tcase \"--id\":\n \t\t\t\tflags.id = v\n \t\t\tcase \"--symbol\":\n \t\t\t\tflags.symbol = v\n \t\t\tcase \"--file\":\n \t\t\t\tflags.file = v\n \t\t\tcase \"--query\":\n \t\t\t\tflags.query = v\n \t\t\tcase \"--base\":\n \t\t\t\tflags.base = v\n \t\t\tdefault:\n \t\t\t\tif _, err := fmt.Sscan(v, &flags.maxBytes); err != nil || flags.maxBytes < 1 {\n \t\t\t\t\treturn \"\", flags, errors.New(\"--max-context-bytes requires a positive integer\")\n \t\t\t\t}\n \t\t\t}\n \t\tcase \"--head\":\n \t\t\tflags.head = true\n \t\tcase \"--update\":\n \t\t\tflags.update = true\n \t\tcase \"--json\":\n \t\t\tflags.format = \"json\"\n \t\tdefault:\n \t\t\treturn \"\", flags, fmt.Errorf(\"unexpected argument %q\", args[i])\n \t\t}\n \t}\n \tif flags.format != \"json\" && flags.format != \"text\" {\n \t\treturn \"\", flags, errors.New(\"--format must be json or text\")\n \t}\n \treturn \"\", flags, nil\n }\n func gpsIntent(ctx context.Context, repo string, head bool) (intent.Set, error) {\n \tif head {\n \t\treturn intent.LoadRevision(ctx, repo, \"HEAD\")\n \t}\n \treturn intent.Load(repo)\n }\n \n func gpsSnapshot(ctx context.Context, opts Options, repo string, head bool) (sem.ProviderSnapshot, error) {\n \tsnapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{NoNetwork: true, Worktree: !head, Profile: sem.ProfileFull}, \"\", true)\n \treturn snapshot, err\n }\n func matchingSymbols(symbols []sem.SymbolRecord, name, file string) []sem.SymbolRecord {\n \tvar out []sem.SymbolRecord\n \tfor _, s := range symbols {\n \t\tif (s.QualifiedName == name || s.Name == name || s.ID == name) && (file == \"\" || s.FilePath == file) {\n \t\t\tout = append(out, s)\n \t\t}\n \t}\n \treturn out\n }\n func resolveBinding(binding intent.Binding, snapshot sem.ProviderSnapshot) map[string]any {\n \tfor _, s := range snapshot.Symbols {\n \t\tif s.ID != binding.SymbolID {\n \t\t\tcontinue\n \t\t}\n \t\tstate := \"VALID\"\n \t\tif binding.Baseline.SignatureHash != intent.Hash(s.Signature) || binding.Baseline.ContainerID != s.ContainerID {\n \t\t\tstate = \"STRUCTURAL_DRIFT\"\n+\t\t} else if binding.Selector.File != s.FilePath || binding.Selector.Kind != s.Kind {\n+\t\t\tstate = \"STRUCTURAL_DRIFT\"\n \t\t} else if binding.Baseline.BodyHash != s.BodyHash {\n \t\t\tstate = \"CONTENT_DRIFT\"\n \t\t}\n \t\treturn map[string]any{\"id\": binding.ID, \"state\": state, \"symbol\": s}\n \t}\n \tcandidates := matchingSymbols(snapshot.Symbols, binding.Selector.QualifiedName, binding.Selector.File)\n \tstate := \"MISSING\"\n \tif len(candidates) > 1 {\n \t\tstate = \"AMBIGUOUS\"\n \t} else if len(candidates) == 1 {\n \t\tstate = \"CANDIDATE_REBIND\"\n \t} else if incompleteAnchorPath(binding.Selector.File, snapshot.Header.PartialFailures) {\n \t\tstate = \"UNVERIFIABLE\"\n \t}\n \treturn map[string]any{\"id\": binding.ID, \"state\": state, \"candidates\": candidates}\n }\n \n+func snapshotFileBlob(snapshot sem.ProviderSnapshot, path string) string {\n+\tfor _, file := range snapshot.Files {\n+\t\tif file.Path == path {\n+\t\t\treturn file.Blob\n+\t\t}\n+\t}\n+\treturn \"\"\n+}\n+\n func incompleteAnchorPath(path string, failures []sem.PartialFailure) bool {\n \tfor _, failure := range failures {\n \t\tif failure.FilePath == path || failure.FilePath == \"\" {\n \t\t\treturn true\n \t\t}\n \t}\n \treturn false\n }\n func matchingRequirements(set intent.Set, query string) []map[string]string {\n \twords := strings.Fields(strings.ToLower(query))\n \tvar out []map[string]string\n \tfor _, s := range set.Specs {\n \t\tfor _, r := range s.Requirements {\n \t\t\ttext := strings.ToLower(s.Title + \" \" + s.Intent + \" \" + r.ID + \" \" + r.Description)\n \t\t\tfor _, word := range words {\n \t\t\t\tif strings.Contains(text, word) {\n \t\t\t\t\tout = append(out, map[string]string{\"specification\": s.ID, \"id\": r.ID, \"description\": r.Description, \"reason\": \"lexical_match\"})\n \t\t\t\t\tbreak\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t}\n \tsort.Slice(out, func(i, j int) bool { return out[i][\"id\"] < out[j][\"id\"] })\n \treturn out\n }\n \n func acceptanceMatchesRequirement(spec intent.Spec, acceptanceID string, requirements map[string]bool) bool {\n \tfor _, acceptance := range spec.Acceptance {\n \t\tif acceptance.ID == acceptanceID {\n \t\t\treturn requirements[acceptance.Requirement]\n \t\t}\n \t}\n \treturn false\n }\n \n // fitGPSContextBudget preserves direct intent first and falls back to an explicit\n // minimal manifest when even that evidence cannot fit the caller's budget.\n func fitGPSContextBudget(response map[string]any, maximum int) {\n \tbudget := response[\"budget\"].(map[string]any)\n \tif renderedGPSJSONBytes(response) <= maximum {\n \t\tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n \t\treturn\n \t}\n \tresponse[\"symbols\"] = []any{}\n \tresponse[\"dependencies\"] = []any{}\n \tresponse[\"tests\"] = []any{}\n \tbudget[\"omitted\"] = []string{\"symbols\", \"dependencies\", \"tests\"}\n \tif renderedGPSJSONBytes(response) > maximum {\n \t\tresponse[\"requirements\"] = []map[string]string{}\n \t\tresponse[\"status\"] = \"BUDGET_TOO_SMALL\"\n \t\tresponse[\"gaps\"] = []string{\"BUDGET_TOO_SMALL\"}\n \t\tbudget[\"omitted\"] = []string{\"requirements\", \"symbols\", \"dependencies\", \"tests\"}\n \t}\n \tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n }\n \n func renderedGPSJSONBytes(value any) int {\n \tvar out bytes.Buffer\n \tencoder := json.NewEncoder(termsafe.NewJSONWriter(&out))\n \tencoder.SetEscapeHTML(false)\n \tif err := encoder.Encode(value); err != nil {\n \t\treturn 0\n \t}\n \treturn out.Len()\n }\n \n func gpsEncode(opts Options, format string, value any) error {\n \tif format == \"json\" {\n \t\tencoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))\n \t\tencoder.SetEscapeHTML(false)\n \t\treturn encoder.Encode(value)\n \t}\n \tdata, err := json.MarshalIndent(value, \"\", \"  \")\n \tif err == nil {\n \t\t_, err = fmt.Fprintln(opts.Stdout, string(data))\n \t}\n \treturn err\n }\n",
-              "additions": 24,
-              "deletions": 2,
+              "patch": "Index: internal/cli/gps.go\n===================================================================\n--- internal/cli/gps.go\t\n+++ internal/cli/gps.go\t\n@@ -1,474 +1,506 @@\n package cli\n \n import (\n \t\"bytes\"\n \t\"context\"\n \t\"encoding/json\"\n \t\"errors\"\n \t\"fmt\"\n \t\"sort\"\n \t\"strings\"\n \n \t\"github.com/entireio/entire-graph/internal/gitutil\"\n \t\"github.com/entireio/entire-graph/internal/intent\"\n \t\"github.com/entireio/entire-graph/internal/sem\"\n \t\"github.com/entireio/entire-graph/internal/termsafe\"\n )\n \n const gpsSchemaVersion = \"1.0\"\n \n func runSpec(ctx context.Context, opts Options, args []string) error {\n \tif len(args) == 0 {\n \t\treturn errors.New(\"spec requires init, list, show, or validate\")\n \t}\n \t_, flags, err := gpsFlags(args[1:])\n \tif err != nil {\n \t\treturn err\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif args[0] == \"init\" {\n \t\tif flags.head {\n \t\t\treturn errors.New(\"spec init cannot write a --head view\")\n \t\t}\n \t\treturn intent.Init(repo)\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tswitch args[0] {\n \tcase \"list\":\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"specifications\": set.Specs})\n \tcase \"show\":\n \t\tif flags.id == \"\" {\n \t\t\treturn errors.New(\"spec show requires --id\")\n \t\t}\n \t\tfor _, spec := range set.Specs {\n \t\t\tif spec.ID == flags.id {\n \t\t\t\treturn gpsEncode(opts, flags.format, spec)\n \t\t\t}\n \t\t}\n \t\treturn fmt.Errorf(\"specification %q not found\", flags.id)\n \tcase \"validate\":\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"valid\": true, \"intent_digest\": set.Digest, \"specifications\": len(set.Specs)})\n \tdefault:\n \t\treturn fmt.Errorf(\"unknown spec command %q\", args[0])\n \t}\n }\n \n func runAnchor(ctx context.Context, opts Options, args []string) error {\n \tif len(args) == 0 {\n \t\treturn errors.New(\"anchor requires bind, list, or resolve\")\n \t}\n \tverb, flags, err := gpsFlags(args[1:])\n \t_ = verb\n \tif err != nil {\n \t\treturn err\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif args[0] == \"list\" {\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"anchors\": set.Bindings})\n \t}\n \tif args[0] == \"bind\" {\n \t\tif flags.head {\n \t\t\treturn errors.New(\"anchor bind cannot write a --head view\")\n \t\t}\n \t\tif flags.id == \"\" || flags.symbol == \"\" {\n \t\t\treturn errors.New(\"anchor bind requires --id and --symbol\")\n \t\t}\n \t\tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n \t\tmatches := matchingSymbols(snapshot.Symbols, flags.symbol, flags.file)\n \t\tif len(matches) == 0 {\n \t\t\treturn fmt.Errorf(\"symbol %q not found\", flags.symbol)\n \t\t}\n \t\tif len(matches) > 1 {\n \t\t\treturn fmt.Errorf(\"symbol %q is ambiguous; pass --file\", flags.symbol)\n \t\t}\n \t\ts := matches[0]\n-\t\treturn intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash}}, flags.update)\n+\t\treturn intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash, FileBlob: snapshotFileBlob(snapshot, s.FilePath)}}, flags.update)\n \t}\n \tif args[0] == \"resolve\" {\n \t\tif flags.id == \"\" {\n \t\t\treturn errors.New(\"anchor resolve requires --id\")\n \t\t}\n \t\tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n \t\tfor _, binding := range set.Bindings {\n \t\t\tif binding.ID == flags.id {\n \t\t\t\treturn gpsEncode(opts, flags.format, resolveBinding(binding, snapshot))\n \t\t\t}\n \t\t}\n \t\treturn fmt.Errorf(\"anchor %q not found\", flags.id)\n \t}\n \treturn fmt.Errorf(\"unknown anchor command %q\", args[0])\n }\n \n func runGPSContext(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.query == \"\" {\n \t\treturn errors.New(\"context requires --query\")\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \trequirements := matchingRequirements(set, flags.query)\n-\tresponse := map[string]any{\"schema_version\": gpsSchemaVersion, \"request\": flags.query, \"intent_digest\": set.Digest, \"status\": \"complete\", \"requirements\": requirements, \"symbols\": []any{}, \"dependencies\": []any{}, \"tests\": []any{}, \"gaps\": []string{}, \"budget\": map[string]any{\"maximum_bytes\": flags.maxBytes, \"rendered_bytes\": 0, \"omitted\": []string{}}}\n+\tresponse := map[string]any{\"schema_version\": gpsSchemaVersion, \"request\": flags.query, \"intent_digest\": set.Digest, \"status\": \"complete\", \"requirements\": requirements, \"symbols\": []any{}, \"code\": []any{}, \"dependencies\": []any{}, \"tests\": []any{}, \"gaps\": []string{}, \"budget\": map[string]any{\"maximum_bytes\": flags.maxBytes, \"rendered_bytes\": 0, \"omitted\": []string{}}}\n \tif len(set.Specs) == 0 {\n \t\tresponse[\"status\"] = \"complete_with_gaps\"\n \t\tresponse[\"gaps\"] = []string{\"NO_SPECS\"}\n \t\treturn gpsEncode(opts, flags.format, response)\n \t}\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n+\tsearch, err := sem.SearchRepository(ctx, repo, opts.Version, flags.query, sem.SearchOptions{Worktree: !flags.head, Profile: sem.ProfileFull, TopK: 5, MaxContextBytes: flags.maxBytes, DisableCache: true})\n+\tif err != nil {\n+\t\treturn err\n+\t}\n+\tcode := make([]any, 0, len(search.Results))\n+\tfor _, result := range search.Results {\n+\t\tcode = append(code, map[string]any{\"reason\": \"ranked_code_search\", \"rank\": result.Rank, \"score\": result.Score, \"citation\": fmt.Sprintf(\"%s:%d\", result.FilePath, result.FocusLine), \"symbol_id\": result.SymbolID})\n+\t}\n+\tresponse[\"code\"] = code\n \tselected := make(map[string]bool, len(requirements))\n \tfor _, requirement := range requirements {\n \t\tselected[requirement[\"id\"]] = true\n \t}\n \tbindings := make(map[string]intent.Binding, len(set.Bindings))\n \tfor _, binding := range set.Bindings {\n \t\tbindings[binding.ID] = binding\n \t}\n \tvar symbols []any\n \tvar dependencies []any\n \tvar tests []any\n \tvar gaps []string\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tif !selected[anchor.Requirement] {\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tbinding, ok := bindings[anchor.ID]\n \t\t\tif !ok {\n \t\t\t\tgaps = append(gaps, \"UNBOUND_ANCHOR:\"+anchor.ID)\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tstate := resolveBinding(binding, snapshot)\n \t\t\tif state[\"state\"] != \"VALID\" {\n \t\t\t\tgaps = append(gaps, state[\"state\"].(string)+\":\"+anchor.ID)\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tsymbol := state[\"symbol\"].(sem.SymbolRecord)\n \t\t\tsymbols = append(symbols, map[string]any{\"anchor\": anchor.ID, \"requirement\": anchor.Requirement, \"reason\": \"approved_anchor\", \"citation\": fmt.Sprintf(\"%s:%d\", symbol.FilePath, symbol.StartLine), \"symbol\": symbol})\n \t\t\tfor _, relation := range snapshot.Relations {\n \t\t\t\tif relation.FromID == symbol.ID {\n \t\t\t\t\tdependencies = append(dependencies, map[string]any{\"reason\": \"anchor_callee\", \"type\": relation.Type, \"symbol_id\": relation.ToID})\n \t\t\t\t}\n \t\t\t\tif relation.ToID == symbol.ID {\n \t\t\t\t\tdependencies = append(dependencies, map[string]any{\"reason\": \"anchor_caller\", \"type\": relation.Type, \"symbol_id\": relation.FromID})\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t\tfor _, test := range spec.Tests {\n \t\t\tif !acceptanceMatchesRequirement(spec, test.Acceptance, selected) {\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tmatches := matchingSymbols(snapshot.Symbols, test.Selector.Name, \"\")\n \t\t\tif len(matches) == 1 {\n \t\t\t\ttests = append(tests, map[string]any{\"id\": test.ID, \"acceptance\": test.Acceptance, \"reason\": \"declared_mapping\", \"symbol\": matches[0]})\n \t\t\t} else {\n \t\t\t\tgaps = append(gaps, \"DECLARED_TEST_UNRESOLVED:\"+test.ID)\n \t\t\t}\n \t\t}\n \t}\n \tsort.Strings(gaps)\n \tresponse[\"symbols\"] = symbols\n \tresponse[\"dependencies\"] = dependencies\n \tresponse[\"tests\"] = tests\n \tresponse[\"gaps\"] = gaps\n \tif len(gaps) > 0 {\n \t\tresponse[\"status\"] = \"complete_with_gaps\"\n \t}\n \tfitGPSContextBudget(response, flags.maxBytes)\n \treturn gpsEncode(opts, flags.format, response)\n }\n \n func runGPSCheck(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.base != \"\" && !flags.head {\n \t\treturn errors.New(\"check --base requires --head so code and intent use one committed view\")\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif len(set.Specs) == 0 {\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"disposition\": \"NOT_CONFIGURED\", \"findings\": []any{}})\n \t}\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tfindings := make([]map[string]any, 0)\n+\tif len(snapshot.Header.PartialFailures) != 0 || snapshot.Header.Stats.CompletenessLevel != \"ok\" {\n+\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-COMPLETENESS-INCOMPLETE\", \"severity\": \"incomplete\", \"subject\": \"graph\", \"message\": \"selected graph has partial or incomplete analysis\"})\n+\t}\n \tif flags.base != \"\" {\n \t\tbaseSet, err := intent.LoadRevision(ctx, repo, flags.base)\n \t\tif err != nil {\n \t\t\treturn fmt.Errorf(\"load base intent: %w\", err)\n \t\t}\n \t\tchanged, err := gitutil.ChangedFiles(ctx, repo, flags.base, \"HEAD\", nil)\n \t\tif err != nil {\n \t\t\treturn fmt.Errorf(\"compare base revision: %w\", err)\n \t\t}\n \t\tif baseSet.Digest != set.Digest {\n \t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-INTENT\", \"severity\": \"warning\", \"subject\": \"intent\", \"message\": \"selected intent differs from base revision\"})\n \t\t}\n \t\tfor _, file := range changed {\n \t\t\tfor _, binding := range set.Bindings {\n \t\t\t\tif binding.Selector.File == file.Path || binding.Selector.File == file.OldPath {\n \t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-ANCHOR\", \"severity\": \"warning\", \"subject\": binding.ID, \"message\": \"anchored implementation changed since base revision\"})\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t}\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tfound := false\n \t\t\tfor _, binding := range set.Bindings {\n \t\t\t\tif binding.ID != anchor.ID {\n \t\t\t\t\tcontinue\n \t\t\t\t}\n \t\t\t\tfound = true\n \t\t\t\tstate := resolveBinding(binding, snapshot)\n \t\t\t\tif state[\"state\"] != \"VALID\" {\n \t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-ANCHOR-\" + state[\"state\"].(string), \"severity\": \"warning\", \"subject\": anchor.ID, \"message\": state[\"state\"]})\n \t\t\t\t}\n \t\t\t}\n \t\t\tif !found {\n \t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-ANCHOR-UNBOUND\", \"severity\": \"warning\", \"subject\": anchor.ID, \"message\": \"declared anchor has no reviewed binding\"})\n \t\t\t}\n \t\t}\n \t\tfor _, acceptance := range spec.Acceptance {\n \t\t\tmapped := false\n \t\t\tfor _, test := range spec.Tests {\n \t\t\t\tif test.Acceptance == acceptance.ID {\n \t\t\t\t\tmapped = true\n \t\t\t\t\tmatches := matchingSymbols(snapshot.Symbols, test.Selector.Name, \"\")\n \t\t\t\t\tif len(matches) != 1 {\n \t\t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-MAPPING-UNRESOLVED\", \"severity\": \"warning\", \"subject\": test.ID, \"message\": \"declared test selector does not resolve to exactly one symbol\"})\n \t\t\t\t\t}\n \t\t\t\t}\n \t\t\t}\n \t\t\tif !mapped {\n \t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-MAPPING-MISSING\", \"severity\": \"warning\", \"subject\": acceptance.ID, \"message\": \"acceptance criterion has no declared test\"})\n \t\t\t}\n \t\t}\n \t}\n \tdisposition := \"PASS\"\n-\tif len(findings) > 0 {\n+\tfor _, finding := range findings {\n+\t\tif finding[\"severity\"] == \"incomplete\" {\n+\t\t\tdisposition = \"INCOMPLETE\"\n+\t\t\tbreak\n+\t\t}\n+\t\tif finding[\"severity\"] == \"error\" {\n+\t\t\tdisposition = \"FAIL\"\n+\t\t\tbreak\n+\t\t}\n \t\tdisposition = \"REVIEW_REQUIRED\"\n \t}\n \treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"disposition\": disposition, \"findings\": findings})\n }\n \n type gpsOptions struct {\n \trepo, format, id, symbol, file, query, base string\n \tupdate                                      bool\n \thead                                        bool\n \tmaxBytes                                    int\n }\n \n func gpsFlags(args []string) (string, gpsOptions, error) {\n \tflags := gpsOptions{format: \"json\", maxBytes: 12000}\n \tfor i := 0; i < len(args); i++ {\n \t\tvalue := func() (string, error) {\n \t\t\ti++\n \t\t\tif i >= len(args) {\n \t\t\t\treturn \"\", fmt.Errorf(\"%s requires a value\", args[i-1])\n \t\t\t}\n \t\t\treturn args[i], nil\n \t\t}\n \t\tswitch args[i] {\n \t\tcase \"--repo\", \"--format\", \"--id\", \"--symbol\", \"--file\", \"--query\", \"--base\", \"--max-context-bytes\":\n \t\t\tv, err := value()\n \t\t\tif err != nil {\n \t\t\t\treturn \"\", flags, err\n \t\t\t}\n \t\t\tswitch args[i-1] {\n \t\t\tcase \"--repo\":\n \t\t\t\tflags.repo = v\n \t\t\tcase \"--format\":\n \t\t\t\tflags.format = v\n \t\t\tcase \"--id\":\n \t\t\t\tflags.id = v\n \t\t\tcase \"--symbol\":\n \t\t\t\tflags.symbol = v\n \t\t\tcase \"--file\":\n \t\t\t\tflags.file = v\n \t\t\tcase \"--query\":\n \t\t\t\tflags.query = v\n \t\t\tcase \"--base\":\n \t\t\t\tflags.base = v\n \t\t\tdefault:\n \t\t\t\tif _, err := fmt.Sscan(v, &flags.maxBytes); err != nil || flags.maxBytes < 1 {\n \t\t\t\t\treturn \"\", flags, errors.New(\"--max-context-bytes requires a positive integer\")\n \t\t\t\t}\n \t\t\t}\n \t\tcase \"--head\":\n \t\t\tflags.head = true\n \t\tcase \"--update\":\n \t\t\tflags.update = true\n \t\tcase \"--json\":\n \t\t\tflags.format = \"json\"\n \t\tdefault:\n \t\t\treturn \"\", flags, fmt.Errorf(\"unexpected argument %q\", args[i])\n \t\t}\n \t}\n \tif flags.format != \"json\" && flags.format != \"text\" {\n \t\treturn \"\", flags, errors.New(\"--format must be json or text\")\n \t}\n \treturn \"\", flags, nil\n }\n func gpsIntent(ctx context.Context, repo string, head bool) (intent.Set, error) {\n \tif head {\n \t\treturn intent.LoadRevision(ctx, repo, \"HEAD\")\n \t}\n \treturn intent.Load(repo)\n }\n \n func gpsSnapshot(ctx context.Context, opts Options, repo string, head bool) (sem.ProviderSnapshot, error) {\n \tsnapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{NoNetwork: true, Worktree: !head, Profile: sem.ProfileFull}, \"\", true)\n \treturn snapshot, err\n }\n func matchingSymbols(symbols []sem.SymbolRecord, name, file string) []sem.SymbolRecord {\n \tvar out []sem.SymbolRecord\n \tfor _, s := range symbols {\n \t\tif (s.QualifiedName == name || s.Name == name || s.ID == name) && (file == \"\" || s.FilePath == file) {\n \t\t\tout = append(out, s)\n \t\t}\n \t}\n \treturn out\n }\n func resolveBinding(binding intent.Binding, snapshot sem.ProviderSnapshot) map[string]any {\n \tfor _, s := range snapshot.Symbols {\n \t\tif s.ID != binding.SymbolID {\n \t\t\tcontinue\n \t\t}\n \t\tstate := \"VALID\"\n \t\tif binding.Baseline.SignatureHash != intent.Hash(s.Signature) || binding.Baseline.ContainerID != s.ContainerID {\n \t\t\tstate = \"STRUCTURAL_DRIFT\"\n+\t\t} else if binding.Selector.File != s.FilePath || binding.Selector.Kind != s.Kind {\n+\t\t\tstate = \"STRUCTURAL_DRIFT\"\n \t\t} else if binding.Baseline.BodyHash != s.BodyHash {\n \t\t\tstate = \"CONTENT_DRIFT\"\n \t\t}\n \t\treturn map[string]any{\"id\": binding.ID, \"state\": state, \"symbol\": s}\n \t}\n \tcandidates := matchingSymbols(snapshot.Symbols, binding.Selector.QualifiedName, binding.Selector.File)\n \tstate := \"MISSING\"\n \tif len(candidates) > 1 {\n \t\tstate = \"AMBIGUOUS\"\n \t} else if len(candidates) == 1 {\n \t\tstate = \"CANDIDATE_REBIND\"\n \t} else if incompleteAnchorPath(binding.Selector.File, snapshot.Header.PartialFailures) {\n \t\tstate = \"UNVERIFIABLE\"\n \t}\n \treturn map[string]any{\"id\": binding.ID, \"state\": state, \"candidates\": candidates}\n }\n \n+func snapshotFileBlob(snapshot sem.ProviderSnapshot, path string) string {\n+\tfor _, file := range snapshot.Files {\n+\t\tif file.Path == path {\n+\t\t\treturn file.Blob\n+\t\t}\n+\t}\n+\treturn \"\"\n+}\n+\n func incompleteAnchorPath(path string, failures []sem.PartialFailure) bool {\n \tfor _, failure := range failures {\n \t\tif failure.FilePath == path || failure.FilePath == \"\" {\n \t\t\treturn true\n \t\t}\n \t}\n \treturn false\n }\n func matchingRequirements(set intent.Set, query string) []map[string]string {\n \twords := strings.Fields(strings.ToLower(query))\n \tvar out []map[string]string\n \tfor _, s := range set.Specs {\n \t\tfor _, r := range s.Requirements {\n \t\t\ttext := strings.ToLower(s.Title + \" \" + s.Intent + \" \" + r.ID + \" \" + r.Description)\n \t\t\tfor _, word := range words {\n \t\t\t\tif strings.Contains(text, word) {\n \t\t\t\t\tout = append(out, map[string]string{\"specification\": s.ID, \"id\": r.ID, \"description\": r.Description, \"reason\": \"lexical_match\"})\n \t\t\t\t\tbreak\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t}\n \tsort.Slice(out, func(i, j int) bool { return out[i][\"id\"] < out[j][\"id\"] })\n \treturn out\n }\n \n func acceptanceMatchesRequirement(spec intent.Spec, acceptanceID string, requirements map[string]bool) bool {\n \tfor _, acceptance := range spec.Acceptance {\n \t\tif acceptance.ID == acceptanceID {\n \t\t\treturn requirements[acceptance.Requirement]\n \t\t}\n \t}\n \treturn false\n }\n \n // fitGPSContextBudget preserves direct intent first and falls back to an explicit\n // minimal manifest when even that evidence cannot fit the caller's budget.\n func fitGPSContextBudget(response map[string]any, maximum int) {\n \tbudget := response[\"budget\"].(map[string]any)\n \tif renderedGPSJSONBytes(response) <= maximum {\n \t\tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n \t\treturn\n \t}\n \tresponse[\"symbols\"] = []any{}\n+\tresponse[\"code\"] = []any{}\n \tresponse[\"dependencies\"] = []any{}\n \tresponse[\"tests\"] = []any{}\n-\tbudget[\"omitted\"] = []string{\"symbols\", \"dependencies\", \"tests\"}\n+\tbudget[\"omitted\"] = []string{\"symbols\", \"code\", \"dependencies\", \"tests\"}\n \tif renderedGPSJSONBytes(response) > maximum {\n \t\tresponse[\"requirements\"] = []map[string]string{}\n \t\tresponse[\"status\"] = \"BUDGET_TOO_SMALL\"\n \t\tresponse[\"gaps\"] = []string{\"BUDGET_TOO_SMALL\"}\n-\t\tbudget[\"omitted\"] = []string{\"requirements\", \"symbols\", \"dependencies\", \"tests\"}\n+\t\tbudget[\"omitted\"] = []string{\"requirements\", \"symbols\", \"code\", \"dependencies\", \"tests\"}\n \t}\n \tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n }\n \n func renderedGPSJSONBytes(value any) int {\n \tvar out bytes.Buffer\n \tencoder := json.NewEncoder(termsafe.NewJSONWriter(&out))\n \tencoder.SetEscapeHTML(false)\n \tif err := encoder.Encode(value); err != nil {\n \t\treturn 0\n \t}\n \treturn out.Len()\n }\n \n func gpsEncode(opts Options, format string, value any) error {\n \tif format == \"json\" {\n \t\tencoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))\n \t\tencoder.SetEscapeHTML(false)\n \t\treturn encoder.Encode(value)\n \t}\n \tdata, err := json.MarshalIndent(value, \"\", \"  \")\n \tif err == nil {\n \t\t_, err = fmt.Fprintln(opts.Stdout, string(data))\n \t}\n \treturn err\n }\n",
+              "additions": 37,
+              "deletions": 5,
               "status": "modified"
             }
           ]
@@ -18133,19 +18133,22 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 218278,
+          "input": 473,
+          "output": 132,
+          "reasoning": 73,
           "cache": {
-            "read": 0,
-            "write": 0
+            "write": 0,
+            "read": 217600
           }
         },
         "modelID": "gpt-5.6-terra-fast",
         "providerID": "openai",
         "time": {
-          "created": 1788677915792
+          "created": 1788677915792,
+          "completed": 1788677933645
         },
+        "finish": "tool-calls",
         "id": "msg_075830490001VVAkfJ9Co9j5Vl",
         "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
       },
@@ -18196,17 +18199,22 @@
           "tool": "bash",
           "callID": "call_bfPr4ywPnuNX7tnlvqzykrTu",
           "state": {
-            "metadata": {
-              "output": ""
-            },
-            "status": "running",
+            "status": "completed",
             "input": {
               "command": "git add internal/cli/gps.go && git commit -m \"feat(gps): report incomplete graph checks\" && ENTIRE_TOKEN_STORE=file git push origin docs/gps-design",
               "workdir": "/home/farhan/entire-graph/entire-graph",
               "timeout": 120000
             },
+            "output": "[docs/gps-design facf959] feat(gps): report incomplete graph checks\n 1 file changed, 24 insertions(+), 2 deletions(-)\n[entire] Pushing entire/checkpoints/v1 to origin...... done\nremote: Receiving objects...        \rremote: Receiving objects: 8.5 KiB (151.0 KiB/s), done.        \nremote: Storing objects: 5 (3 replicas), done.        \nTo entire://aws-ap-south-1.entire.io/gh/saranmahadev/entire-graph\n   468c50e..facf959  docs/gps-design -> docs/gps-design\n",
+            "metadata": {
+              "output": "[docs/gps-design facf959] feat(gps): report incomplete graph checks\n 1 file changed, 24 insertions(+), 2 deletions(-)\n[entire] Pushing entire/checkpoints/v1 to origin...... done\nremote: Receiving objects...        \rremote: Receiving objects: 8.5 KiB (151.0 KiB/s), done.        \nremote: Storing objects: 5 (3 replicas), done.        \nTo entire://aws-ap-south-1.entire.io/gh/saranmahadev/entire-graph\n   468c50e..facf959  docs/gps-design -> docs/gps-design\n",
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "git add internal/cli/gps.go && git commit -m \"feat(gps): report incomplete graph checks\" && ENTIRE_TOKEN_STORE=file git push origin docs/gps-design",
             "time": {
-              "start": 1788677921939
+              "start": 1788677921939,
+              "end": 1788677933602
             }
           },
           "metadata": {
@@ -18217,6 +18225,1295 @@
           "id": "prt_075831915001UKJBcH63IWnZxQ",
           "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
           "messageID": "msg_075830490001VVAkfJ9Co9j5Vl"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-finish",
+          "tokens": {
+            "total": 218278,
+            "input": 473,
+            "output": 132,
+            "reasoning": 73,
+            "cache": {
+              "write": 0,
+              "read": 217600
+            }
+          },
+          "cost": 0,
+          "id": "prt_075834a3a001zv7vN56tNVRjrH",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075830490001VVAkfJ9Co9j5Vl"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07581a1ef0019gaJqxtcz4xAsP",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 218566,
+          "input": 829,
+          "output": 47,
+          "reasoning": 90,
+          "cache": {
+            "write": 0,
+            "read": 217600
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788677933664,
+          "completed": 1788677940517
+        },
+        "finish": "tool-calls",
+        "id": "msg_075834a5f001pFs1ndbNtgFdAL",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-start",
+          "id": "prt_075835959001sY5cSxPW3hShu0",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075834a5f001pFs1ndbNtgFdAL"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Planning validation diagnostics implementation**",
+          "time": {
+            "start": 1788677937500,
+            "end": 1788677940144
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0c1f0016814d7baa016a9d0f314dd887d0b45de52825a13c6c",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_07583595c001bXJ6SEWC7qowpe",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075834a5f001pFs1ndbNtgFdAL"
+        },
+        {
+          "type": "tool",
+          "tool": "grep",
+          "callID": "call_chOZxK06qQUMQJF39U0pWQwz",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "func Search",
+              "path": "/home/farhan/entire-graph/entire-graph/internal/sem",
+              "include": "*.go"
+            },
+            "output": "Found 6 matches\n/home/farhan/entire-graph/entire-graph/internal/sem/search_multi_resolution_test.go:\n  Line 241: \t\t\tSnippetStartLine: 1, SnippetEndLine: 2, Snippet: \"func Search() {}\"},\n\n\n/home/farhan/entire-graph/entire-graph/internal/sem/search_enclosure.go:\n  Line 219: func SearchUnitElisionNote(printedStart, printedEnd, unitStart, unitEnd int) string {\n\n\n/home/farhan/entire-graph/entire-graph/internal/sem/search.go:\n  Line 683: func SearchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {\n\n\n/home/farhan/entire-graph/entire-graph/internal/sem/search_locator_window.go:\n  Line 50: func SearchLocatorWindow(result SearchResult) (int, int, string) {\n\n\n/home/farhan/entire-graph/entire-graph/internal/sem/search_outline.go:\n  Line 181: func SearchFileOutlineCost(outlines []SearchFileOutline) int {\n\n\n/home/farhan/entire-graph/entire-graph/internal/sem/search_replay_policy.go:\n  Line 293: func SearchResponsePaths(response SearchResponse) []string {\n",
+            "metadata": {
+              "matches": 6,
+              "truncated": false
+            },
+            "title": "func Search",
+            "time": {
+              "start": 1788677940194,
+              "end": 1788677940206
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0c1f0016814d7baa016a9d0f33b34087d099ba5274804d7929"
+            }
+          },
+          "id": "prt_0758363ba001AwTehveT3sh3BR",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075834a5f001pFs1ndbNtgFdAL"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-finish",
+          "tokens": {
+            "total": 218566,
+            "input": 829,
+            "output": 47,
+            "reasoning": 90,
+            "cache": {
+              "write": 0,
+              "read": 217600
+            }
+          },
+          "cost": 0,
+          "id": "prt_0758365140019wkttmNUGDo1gm",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075834a5f001pFs1ndbNtgFdAL"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07581a1ef0019gaJqxtcz4xAsP",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 218944,
+          "input": 1265,
+          "output": 47,
+          "reasoning": 32,
+          "cache": {
+            "write": 0,
+            "read": 217600
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788677940533,
+          "completed": 1788677947829
+        },
+        "finish": "tool-calls",
+        "id": "msg_075836535001DLPYmM7RDPvUh6",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-start",
+          "id": "prt_075837757001DP7IAxZo0bkQkf",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075836535001DLPYmM7RDPvUh6"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Assessing repository search approach**",
+          "time": {
+            "start": 1788677945178,
+            "end": 1788677946769
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0a1c5de79a2f7272016a9d0f38c6c087d0b064a3f100078793",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_07583775a001b4rhdpoPJRwf9G",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075836535001DLPYmM7RDPvUh6"
+        },
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_sBso4SSYusYaW9qweqG44mZe",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/home/farhan/entire-graph/entire-graph/internal/sem/search.go",
+              "offset": 600,
+              "limit": 95
+            },
+            "output": "<path>/home/farhan/entire-graph/entire-graph/internal/sem/search.go</path>\n<type>file</type>\n<content>\n600: // whitespace and at the delimiters that end a URL in prose and Markdown — `<>\"'` + backtick,\n601: // and the closing `)]}` of a `[text](url)` link — so a linked URL does not swallow the\n602: // sentence punctuation that follows it.\n603: var searchQueryURLPattern = regexp.MustCompile(\"(?i)[a-z][a-z0-9+.-]*://[^\\\\s<>\\\"'`)\\\\]}]+\")\n604: \n605: // stripSearchQueryURLState removes the query string and fragment of every URL in a query,\n606: // leaving the scheme, host and path in place.\n607: //\n608: // Those two components are the web application's own state, never a name in this repository,\n609: // and both mint tokens that outrank the words the caller actually wrote:\n610: //\n611: //   - `?file=/index.js` (the codesandbox/StackBlitz \"open this file\" parameter) tokenizes to\n612: //     the standalone path token `index.js`, which is identifier-shaped, so it earns the\n613: //     code-like weight 2.5 and then a +6.25 pathSearchScore on EVERY `index.js` in the tree.\n614: //     Measured on preactjs/preact: `hooks/src/index.js` took rank 1 with signal `path` and\n615: //     `karma.conf.js` rank 4, on the strength of a path that exists on codesandbox.io.\n616: //   - a playground permalink encodes the whole reproduction program in its fragment\n617: //     (`https://play.vuejs.org/#eNp9UsFOAjEQ...`). `#` is inside searchWordPattern's class and\n618: //     base64 uses `+` and `/`, so the fragment is one enormous token whose camel-hump and\n619: //     separator variants become dozens of terms — each mixed-case, so each reads as code-like\n620: //     at weight 1.1. Measured on vuejs/core: 40 of 48 terms were base64 debris, and because\n621: //     the term list is sorted by weight and truncated at maxSearchQueryTerms, that debris\n622: //     EVICTED every plain prose word of the issue (`array`, `item`, `object`, `converted`,\n623: //     `incorrectly`) from the query entirely.\n624: //\n625: // The path component is deliberately kept: a \"the bug is here\" link into the repository's own\n626: // source (`https://github.com/o/r/blob/main/src/options.ts`) is the one part of a URL that does\n627: // name a file, and dropping it would discard real evidence. A `#L42` line anchor or a `#issues`\n628: // heading anchor is not a name in the tree, so removing the fragment costs nothing there.\n629: func stripSearchQueryURLState(query string) string {\n630: \tif !strings.Contains(query, \"://\") {\n631: \t\treturn query\n632: \t}\n633: \treturn searchQueryURLPattern.ReplaceAllStringFunc(query, func(url string) string {\n634: \t\tcut := strings.IndexAny(url, \"?#\")\n635: \t\tif cut < 0 {\n636: \t\t\treturn url\n637: \t\t}\n638: \t\t// A space, not \"\": the stripped tail must still end the URL token so the word that\n639: \t\t// follows it in the text cannot fuse onto the host/path.\n640: \t\treturn url[:cut] + \" \"\n641: \t})\n642: }\n643: \n644: var searchStopWords = map[string]bool{\n645: \t\"a\": true, \"an\": true, \"and\": true, \"are\": true, \"as\": true,\n646: \t\"at\": true, \"be\": true, \"but\": true, \"by\": true, \"can\": true, \"change\": true,\n647: \t\"code\": true, \"did\": true, \"does\": true, \"for\": true, \"from\": true, \"how\": true,\n648: \t\"i\": true, \"in\": true, \"into\": true, \"is\": true, \"it\": true,\n649: \t\"make\": true, \"not\": true, \"of\": true, \"on\": true, \"or\": true, \"our\": true,\n650: \t// Politeness is addressed to the tool, never to the corpus: a word like these carries\n651: \t// no retrieval intent, so indexing it can only add noise. This is a refinement, not the\n652: \t// mechanism — see matchesExactSymbolForm and scoreSearchCandidates, which make ANY\n653: \t// unmatchable word inert, listed or not.\n654: \t\"kindly\": true, \"please\": true, \"pls\": true, \"thanks\": true,\n655: \t\"should\": true, \"support\": true, \"that\": true, \"the\": true,\n656: \t\"this\": true, \"to\": true, \"use\": true, \"uses\": true, \"using\": true,\n657: \t\"we\": true, \"what\": true, \"when\": true, \"where\": true, \"which\": true, \"while\": true,\n658: \t\"with\": true, \"without\": true,\n659: }\n660: \n661: var sparseSearchStopWords = map[string]bool{\n662: \t\"a\": true, \"an\": true, \"and\": true, \"are\": true, \"as\": true,\n663: \t\"at\": true, \"be\": true, \"been\": true, \"but\": true, \"by\": true,\n664: \t\"can\": true, \"could\": true, \"do\": true, \"does\": true, \"for\": true,\n665: \t\"from\": true, \"had\": true, \"has\": true, \"have\": true, \"how\": true,\n666: \t\"i\": true, \"if\": true, \"in\": true, \"into\": true, \"is\": true,\n667: \t\"it\": true, \"its\": true, \"may\": true, \"not\": true, \"of\": true,\n668: \t\"on\": true, \"or\": true, \"our\": true, \"should\": true, \"that\": true,\n669: \t\"the\": true, \"their\": true, \"then\": true, \"this\": true, \"to\": true,\n670: \t\"was\": true, \"we\": true, \"were\": true, \"what\": true, \"when\": true,\n671: \t\"where\": true, \"which\": true, \"why\": true, \"will\": true, \"with\": true,\n672: \t\"would\": true, \"you\": true, \"your\": true,\n673: }\n674: \n675: // SearchRepository performs local hybrid lexical/semantic retrieval. It uses\n676: // no qrels, hosted models, embeddings, or network access.\n677: // SearchRepository stamps the response envelope version at the ONE place a\n678: // content-bearing SearchResponse leaves this package, rather than at each\n679: // construction site. searchRepository has two success returns and error returns\n680: // throughout; stamping per site means a third success path added later silently\n681: // emits format_version 0, which a consumer cannot tell from \"field absent\".\n682: // This mirrors how AnalyzeGitRangeWithOptions stamps SchemaVersion.\n683: func SearchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {\n684: \tresponse, err := searchRepository(ctx, repo, providerVersion, query, options)\n685: \tif err != nil {\n686: \t\treturn SearchResponse{}, err\n687: \t}\n688: \tresponse.FormatVersion = SearchFormatVersion\n689: \treturn response, nil\n690: }\n691: \n692: func searchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {\n693: \tq := buildSearchQuery(query)\n694: \tif len(q.terms) == 0 {\n\n(Showing lines 600-694 of 5240. Use offset=695 to continue.)\n</content>",
+            "metadata": {
+              "preview": "// whitespace and at the delimiters that end a URL in prose and Markdown — `<>\"'` + backtick,\n// and the closing `)]}` of a `[text](url)` link — so a linked URL does not swallow the\n// sentence punctuation that follows it.\nvar searchQueryURLPattern = regexp.MustCompile(\"(?i)[a-z][a-z0-9+.-]*://[^\\\\s<>\\\"'`)\\\\]}]+\")\n\n// stripSearchQueryURLState removes the query string and fragment of every URL in a query,\n// leaving the scheme, host and path in place.\n//\n// Those two components are the web application's own state, never a name in this repository,\n// and both mint tokens that outrank the words the caller actually wrote:\n//\n//   - `?file=/index.js` (the codesandbox/StackBlitz \"open this file\" parameter) tokenizes to\n//     the standalone path token `index.js`, which is identifier-shaped, so it earns the\n//     code-like weight 2.5 and then a +6.25 pathSearchScore on EVERY `index.js` in the tree.\n//     Measured on preactjs/preact: `hooks/src/index.js` took rank 1 with signal `path` and\n//     `karma.conf.js` rank 4, on the strength of a path that exists on codesandbox.io.\n//   - a playground permalink encodes the whole reproduction program in its fragment\n//     (`https://play.vuejs.org/#eNp9UsFOAjEQ...`). `#` is inside searchWordPattern's class and\n//     base64 uses `+` and `/`, so the fragment is one enormous token whose camel-hump and\n//     separator variants become dozens of terms — each mixed-case, so each reads as code-like",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/home/farhan/entire-graph/entire-graph/internal/sem/search.go",
+                "text": "// whitespace and at the delimiters that end a URL in prose and Markdown — `<>\"'` + backtick,\n// and the closing `)]}` of a `[text](url)` link — so a linked URL does not swallow the\n// sentence punctuation that follows it.\nvar searchQueryURLPattern = regexp.MustCompile(\"(?i)[a-z][a-z0-9+.-]*://[^\\\\s<>\\\"'`)\\\\]}]+\")\n\n// stripSearchQueryURLState removes the query string and fragment of every URL in a query,\n// leaving the scheme, host and path in place.\n//\n// Those two components are the web application's own state, never a name in this repository,\n// and both mint tokens that outrank the words the caller actually wrote:\n//\n//   - `?file=/index.js` (the codesandbox/StackBlitz \"open this file\" parameter) tokenizes to\n//     the standalone path token `index.js`, which is identifier-shaped, so it earns the\n//     code-like weight 2.5 and then a +6.25 pathSearchScore on EVERY `index.js` in the tree.\n//     Measured on preactjs/preact: `hooks/src/index.js` took rank 1 with signal `path` and\n//     `karma.conf.js` rank 4, on the strength of a path that exists on codesandbox.io.\n//   - a playground permalink encodes the whole reproduction program in its fragment\n//     (`https://play.vuejs.org/#eNp9UsFOAjEQ...`). `#` is inside searchWordPattern's class and\n//     base64 uses `+` and `/`, so the fragment is one enormous token whose camel-hump and\n//     separator variants become dozens of terms — each mixed-case, so each reads as code-like\n//     at weight 1.1. Measured on vuejs/core: 40 of 48 terms were base64 debris, and because\n//     the term list is sorted by weight and truncated at maxSearchQueryTerms, that debris\n//     EVICTED every plain prose word of the issue (`array`, `item`, `object`, `converted`,\n//     `incorrectly`) from the query entirely.\n//\n// The path component is deliberately kept: a \"the bug is here\" link into the repository's own\n// source (`https://github.com/o/r/blob/main/src/options.ts`) is the one part of a URL that does\n// name a file, and dropping it would discard real evidence. A `#L42` line anchor or a `#issues`\n// heading anchor is not a name in the tree, so removing the fragment costs nothing there.\nfunc stripSearchQueryURLState(query string) string {\n\tif !strings.Contains(query, \"://\") {\n\t\treturn query\n\t}\n\treturn searchQueryURLPattern.ReplaceAllStringFunc(query, func(url string) string {\n\t\tcut := strings.IndexAny(url, \"?#\")\n\t\tif cut < 0 {\n\t\t\treturn url\n\t\t}\n\t\t// A space, not \"\": the stripped tail must still end the URL token so the word that\n\t\t// follows it in the text cannot fuse onto the host/path.\n\t\treturn url[:cut] + \" \"\n\t})\n}\n\nvar searchStopWords = map[string]bool{\n\t\"a\": true, \"an\": true, \"and\": true, \"are\": true, \"as\": true,\n\t\"at\": true, \"be\": true, \"but\": true, \"by\": true, \"can\": true, \"change\": true,\n\t\"code\": true, \"did\": true, \"does\": true, \"for\": true, \"from\": true, \"how\": true,\n\t\"i\": true, \"in\": true, \"into\": true, \"is\": true, \"it\": true,\n\t\"make\": true, \"not\": true, \"of\": true, \"on\": true, \"or\": true, \"our\": true,\n\t// Politeness is addressed to the tool, never to the corpus: a word like these carries\n\t// no retrieval intent, so indexing it can only add noise. This is a refinement, not the\n\t// mechanism — see matchesExactSymbolForm and scoreSearchCandidates, which make ANY\n\t// unmatchable word inert, listed or not.\n\t\"kindly\": true, \"please\": true, \"pls\": true, \"thanks\": true,\n\t\"should\": true, \"support\": true, \"that\": true, \"the\": true,\n\t\"this\": true, \"to\": true, \"use\": true, \"uses\": true, \"using\": true,\n\t\"we\": true, \"what\": true, \"when\": true, \"where\": true, \"which\": true, \"while\": true,\n\t\"with\": true, \"without\": true,\n}\n\nvar sparseSearchStopWords = map[string]bool{\n\t\"a\": true, \"an\": true, \"and\": true, \"are\": true, \"as\": true,\n\t\"at\": true, \"be\": true, \"been\": true, \"but\": true, \"by\": true,\n\t\"can\": true, \"could\": true, \"do\": true, \"does\": true, \"for\": true,\n\t\"from\": true, \"had\": true, \"has\": true, \"have\": true, \"how\": true,\n\t\"i\": true, \"if\": true, \"in\": true, \"into\": true, \"is\": true,\n\t\"it\": true, \"its\": true, \"may\": true, \"not\": true, \"of\": true,\n\t\"on\": true, \"or\": true, \"our\": true, \"should\": true, \"that\": true,\n\t\"the\": true, \"their\": true, \"then\": true, \"this\": true, \"to\": true,\n\t\"was\": true, \"we\": true, \"were\": true, \"what\": true, \"when\": true,\n\t\"where\": true, \"which\": true, \"why\": true, \"will\": true, \"with\": true,\n\t\"would\": true, \"you\": true, \"your\": true,\n}\n\n// SearchRepository performs local hybrid lexical/semantic retrieval. It uses\n// no qrels, hosted models, embeddings, or network access.\n// SearchRepository stamps the response envelope version at the ONE place a\n// content-bearing SearchResponse leaves this package, rather than at each\n// construction site. searchRepository has two success returns and error returns\n// throughout; stamping per site means a third success path added later silently\n// emits format_version 0, which a consumer cannot tell from \"field absent\".\n// This mirrors how AnalyzeGitRangeWithOptions stamps SchemaVersion.\nfunc SearchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {\n\tresponse, err := searchRepository(ctx, repo, providerVersion, query, options)\n\tif err != nil {\n\t\treturn SearchResponse{}, err\n\t}\n\tresponse.FormatVersion = SearchFormatVersion\n\treturn response, nil\n}\n\nfunc searchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {\n\tq := buildSearchQuery(query)\n\tif len(q.terms) == 0 {",
+                "lineStart": 600,
+                "lineEnd": 694,
+                "totalLines": 5240,
+                "truncated": true
+              }
+            },
+            "title": "internal/sem/search.go",
+            "time": {
+              "start": 1788677947774,
+              "end": 1788677947790
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0a1c5de79a2f7272016a9d0f3a096887d086702989242d31d3"
+            }
+          },
+          "id": "prt_075837e5a001wFQyq32gmmRicl",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075836535001DLPYmM7RDPvUh6"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-finish",
+          "tokens": {
+            "total": 218944,
+            "input": 1265,
+            "output": 47,
+            "reasoning": 32,
+            "cache": {
+              "write": 0,
+              "read": 217600
+            }
+          },
+          "cost": 0,
+          "id": "prt_0758381a3001y0Eh2LDkAzvRXC",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075836535001DLPYmM7RDPvUh6"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07581a1ef0019gaJqxtcz4xAsP",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 220830,
+          "input": 2152,
+          "output": 45,
+          "reasoning": 9,
+          "cache": {
+            "write": 0,
+            "read": 218624
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788677947844,
+          "completed": 1788677953295
+        },
+        "finish": "tool-calls",
+        "id": "msg_0758381c4001QKSW0M20JKXUll",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-start",
+          "id": "prt_075838dd8001gy6WFlaWSv60sb",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0758381c4001QKSW0M20JKXUll"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Identifying need for SearchOptions definition**",
+          "time": {
+            "start": 1788677950938,
+            "end": 1788677951658
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_01c05e39650e6fe9016a9d0f3e7fac87d0bb80cee71ecf089f",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_075838dda001efGBdj48C0cqTw",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0758381c4001QKSW0M20JKXUll"
+        },
+        {
+          "type": "tool",
+          "tool": "grep",
+          "callID": "call_csZfNiP0JYnl1JXTW1JeOXeI",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "type SearchOptions",
+              "path": "/home/farhan/entire-graph/entire-graph/internal/sem/search.go"
+            },
+            "output": "Found 1 matches\n/home/farhan/entire-graph/entire-graph/internal/sem/search.go:\n  Line 52: type SearchOptions struct {\n",
+            "metadata": {
+              "matches": 1,
+              "truncated": false
+            },
+            "title": "type SearchOptions",
+            "time": {
+              "start": 1788677953221,
+              "end": 1788677953252
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_01c05e39650e6fe9016a9d0f3f46b487d083deffcf2a8394b2"
+            }
+          },
+          "id": "prt_0758393b4001qboPyvBu62Czrx",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0758381c4001QKSW0M20JKXUll"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-finish",
+          "tokens": {
+            "total": 220830,
+            "input": 2152,
+            "output": 45,
+            "reasoning": 9,
+            "cache": {
+              "write": 0,
+              "read": 218624
+            }
+          },
+          "cost": 0,
+          "id": "prt_0758396fd001nQOQ5bkL0F8yqK",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0758381c4001QKSW0M20JKXUll"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07581a1ef0019gaJqxtcz4xAsP",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 220921,
+          "input": 204,
+          "output": 45,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 220672
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788677953311,
+          "completed": 1788677957100
+        },
+        "finish": "tool-calls",
+        "id": "msg_07583971f001uOJOM5lS2MvgUK",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-start",
+          "id": "prt_07583a091001N53vVj72dmcSwS",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583971f001uOJOM5lS2MvgUK"
+        },
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_7m3tbRylFe8BJ3zHD5ja2eUM",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/home/farhan/entire-graph/entire-graph/internal/sem/search.go",
+              "offset": 45,
+              "limit": 50
+            },
+            "output": "<path>/home/farhan/entire-graph/entire-graph/internal/sem/search.go</path>\n<type>file</type>\n<content>\n45: \tmaxSearchContentCacheFileBytes = 2 * 1024 * 1024\n46: \tsearchDiversityRelevanceRatio  = 0.75\n47: \tmaxSearchGitGrepPatterns       = 4096\n48: )\n49: \n50: // SearchOptions controls local issue-to-code retrieval. Search reads the same\n51: // HEAD/worktree view and ignore rules as provider snapshots.\n52: type SearchOptions struct {\n53: \tWorktree          bool\n54: \tIgnoreFiles       []string\n55: \tIncludeFiles      []string\n56: \tProfile           Profile\n57: \tTopK              int\n58: \tContextLines      int\n59: \tMaxRegionLines    int\n60: \tMaxSnippetLines   int\n61: \tMaxRegionsPerFile int\n62: \tMaxParseBytes     int\n63: \tCacheDir          string\n64: \tDisableCache      bool\n65: \tMaxIndexedFiles   int\n66: \tIndexAllFiles     bool\n67: \tMaxContextBytes   int\n68: \t// progressivePreselection is internal policy, not a caller override. The\n69: \t// standard cold default may widen adaptively; explicit and TopK-adaptive\n70: \t// MaxIndexedFiles values remain exact compatibility limits.\n71: \tprogressivePreselection bool\n72: \t// afterCachePolicyCapture is a deterministic test seam for policy-file\n73: \t// mutation between transaction capture and the first cache lookup. It is\n74: \t// deliberately unexported and nil in production.\n75: \tafterCachePolicyCapture func()\n76: \t// afterPreindexLoad is a deterministic test seam for repository-identity\n77: \t// mutation between a complete cache lookup and source preselection. It is\n78: \t// deliberately unexported and nil in production.\n79: \tafterPreindexLoad func()\n80: \t// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the\n81: \t// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow\n82: \t// the head, never widen it, so the growth allowance stays sized for the bodies it funds.\n83: \tBodyHeadRanks int\n84: \t// MEASURED SESSION RESULT — READ BEFORE ENABLING. On haiku 30 with the prompt and the baseline\n85: \t// block held constant, turning this on together with --top-k 20 cost +18.9 pt of total_tokens,\n86: \t// +17.7 pt of turns and +14.6 pt of billed_new against the same cell with shipped defaults\n87: \t// (-23.5% -> -4.6% total_tokens). eg's turns rose 32.10 -> 35.37 against an unchanged baseline.\n88: \t// A separate resolution-anchored evaluation found the same combination cost CORRECTNESS:\n89: \t// the terser edit-from-payload path stops short of a complete fix on harder tasks.\n90: \t//\n91: \t// The $0 payload screen that cleared it (gold recall 22->26/30, code-less gold 8->6, no instance\n92: \t// regressing) was measuring the PAYLOAD, not the SESSION. A payload-shape win is not evidence of a\n93: \t// session win -- that has now been measured four times, and this is the first time it actively hurt.\n94: \t//\n\n(Showing lines 45-94 of 5240. Use offset=95 to continue.)\n</content>",
+            "metadata": {
+              "preview": "\tmaxSearchContentCacheFileBytes = 2 * 1024 * 1024\n\tsearchDiversityRelevanceRatio  = 0.75\n\tmaxSearchGitGrepPatterns       = 4096\n)\n\n// SearchOptions controls local issue-to-code retrieval. Search reads the same\n// HEAD/worktree view and ignore rules as provider snapshots.\ntype SearchOptions struct {\n\tWorktree          bool\n\tIgnoreFiles       []string\n\tIncludeFiles      []string\n\tProfile           Profile\n\tTopK              int\n\tContextLines      int\n\tMaxRegionLines    int\n\tMaxSnippetLines   int\n\tMaxRegionsPerFile int\n\tMaxParseBytes     int\n\tCacheDir          string\n\tDisableCache      bool",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/home/farhan/entire-graph/entire-graph/internal/sem/search.go",
+                "text": "\tmaxSearchContentCacheFileBytes = 2 * 1024 * 1024\n\tsearchDiversityRelevanceRatio  = 0.75\n\tmaxSearchGitGrepPatterns       = 4096\n)\n\n// SearchOptions controls local issue-to-code retrieval. Search reads the same\n// HEAD/worktree view and ignore rules as provider snapshots.\ntype SearchOptions struct {\n\tWorktree          bool\n\tIgnoreFiles       []string\n\tIncludeFiles      []string\n\tProfile           Profile\n\tTopK              int\n\tContextLines      int\n\tMaxRegionLines    int\n\tMaxSnippetLines   int\n\tMaxRegionsPerFile int\n\tMaxParseBytes     int\n\tCacheDir          string\n\tDisableCache      bool\n\tMaxIndexedFiles   int\n\tIndexAllFiles     bool\n\tMaxContextBytes   int\n\t// progressivePreselection is internal policy, not a caller override. The\n\t// standard cold default may widen adaptively; explicit and TopK-adaptive\n\t// MaxIndexedFiles values remain exact compatibility limits.\n\tprogressivePreselection bool\n\t// afterCachePolicyCapture is a deterministic test seam for policy-file\n\t// mutation between transaction capture and the first cache lookup. It is\n\t// deliberately unexported and nil in production.\n\tafterCachePolicyCapture func()\n\t// afterPreindexLoad is a deterministic test seam for repository-identity\n\t// mutation between a complete cache lookup and source preselection. It is\n\t// deliberately unexported and nil in production.\n\tafterPreindexLoad func()\n\t// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the\n\t// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow\n\t// the head, never widen it, so the growth allowance stays sized for the bodies it funds.\n\tBodyHeadRanks int\n\t// MEASURED SESSION RESULT — READ BEFORE ENABLING. On haiku 30 with the prompt and the baseline\n\t// block held constant, turning this on together with --top-k 20 cost +18.9 pt of total_tokens,\n\t// +17.7 pt of turns and +14.6 pt of billed_new against the same cell with shipped defaults\n\t// (-23.5% -> -4.6% total_tokens). eg's turns rose 32.10 -> 35.37 against an unchanged baseline.\n\t// A separate resolution-anchored evaluation found the same combination cost CORRECTNESS:\n\t// the terser edit-from-payload path stops short of a complete fix on harder tasks.\n\t//\n\t// The $0 payload screen that cleared it (gold recall 22->26/30, code-less gold 8->6, no instance\n\t// regressing) was measuring the PAYLOAD, not the SESSION. A payload-shape win is not evidence of a\n\t// session win -- that has now been measured four times, and this is the first time it actively hurt.\n\t//",
+                "lineStart": 45,
+                "lineEnd": 94,
+                "totalLines": 5240,
+                "truncated": true
+              }
+            },
+            "title": "internal/sem/search.go",
+            "time": {
+              "start": 1788677956957,
+              "end": 1788677956980
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_007c3d4928f15062016a9d0f437b4087d09bc9dc01a6d6ce57"
+            }
+          },
+          "id": "prt_07583a093001soGR6JAvugdmoK",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583971f001uOJOM5lS2MvgUK"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-finish",
+          "tokens": {
+            "total": 220921,
+            "input": 204,
+            "output": 45,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 220672
+            }
+          },
+          "cost": 0,
+          "id": "prt_07583a5dc0019MMd6snzhw21VK",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583971f001uOJOM5lS2MvgUK"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07581a1ef0019gaJqxtcz4xAsP",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 221818,
+          "input": 1081,
+          "output": 50,
+          "reasoning": 15,
+          "cache": {
+            "write": 0,
+            "read": 220672
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788677957116,
+          "completed": 1788677962026
+        },
+        "finish": "tool-calls",
+        "id": "msg_07583a5fc0013kN2xXgOuQrN2x",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-start",
+          "id": "prt_07583b0a3001CEpTTWo6d8Z0bp",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583a5fc0013kN2xXgOuQrN2x"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Integrating search results into context**",
+          "time": {
+            "start": 1788677959845,
+            "end": 1788677961183
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0cdc4e8a77601fb2016a9d0f47bc6487d0ba2129263bb88ddf",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_07583b0a5001CTS3g1Jn1rbhWN",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583a5fc0013kN2xXgOuQrN2x"
+        },
+        {
+          "type": "tool",
+          "tool": "grep",
+          "callID": "call_kuRUiZ9SW5HA16mlXWzSRgGh",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "type SearchResponse|type SearchResult struct",
+              "path": "/home/farhan/entire-graph/entire-graph/internal/sem/search.go"
+            },
+            "output": "Found 2 matches\n/home/farhan/entire-graph/entire-graph/internal/sem/search.go:\n  Line 227: type SearchResult struct {\n\n  Line 434: type SearchResponse struct {\n",
+            "metadata": {
+              "matches": 2,
+              "truncated": false
+            },
+            "title": "type SearchResponse|type SearchResult struct",
+            "time": {
+              "start": 1788677961937,
+              "end": 1788677961964
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0cdc4e8a77601fb2016a9d0f4898dc87d0aa10f9bd5d11dffe"
+            }
+          },
+          "id": "prt_07583b5eb001Eetd61rz3AEjx7",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583a5fc0013kN2xXgOuQrN2x"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-finish",
+          "tokens": {
+            "total": 221818,
+            "input": 1081,
+            "output": 50,
+            "reasoning": 15,
+            "cache": {
+              "write": 0,
+              "read": 220672
+            }
+          },
+          "cost": 0,
+          "id": "prt_07583b919001CrhFNXkDnUbANi",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583a5fc0013kN2xXgOuQrN2x"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07581a1ef0019gaJqxtcz4xAsP",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 221919,
+          "input": 1202,
+          "output": 45,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 220672
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788677962043,
+          "completed": 1788677965535
+        },
+        "finish": "tool-calls",
+        "id": "msg_07583b93b001kcoZMqqF6z2w0Q",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-start",
+          "id": "prt_07583c3b40014MU7RHhuUF4Emy",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583b93b001kcoZMqqF6z2w0Q"
+        },
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_mCAPObPBV8VPx9NP8ubgZmKV",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/home/farhan/entire-graph/entire-graph/internal/sem/search.go",
+              "offset": 227,
+              "limit": 25
+            },
+            "output": "<path>/home/farhan/entire-graph/entire-graph/internal/sem/search.go</path>\n<type>file</type>\n<content>\n227: type SearchResult struct {\n228: \tRank             int     `json:\"rank\"`\n229: \tScore            float64 `json:\"score\"`\n230: \tFilePath         string  `json:\"file_path\"`\n231: \tStartLine        int     `json:\"start_line\"`\n232: \tEndLine          int     `json:\"end_line\"`\n233: \tFocusLine        int     `json:\"focus_line\"`\n234: \tSnippetStartLine int     `json:\"snippet_start_line\"`\n235: \tSnippetEndLine   int     `json:\"snippet_end_line\"`\n236: \t// SymbolStartLine/SymbolEndLine are the ENCLOSING symbol's true bounds, which differ from the\n237: \t// snippet bounds whenever the body was elided (too long for the enclosure cap, or a bounded\n238: \t// window). Without them a payload can say `main.c:578-583 symbol=umain` while `umain` actually\n239: \t// spans 270-725, and the agent cannot tell it is holding a 6-line shard of a 456-line function.\n240: \t// Measured on jqlang/jq-2235: that omission produced three sweeping reads (26,873 B, covering\n241: \t// main.c lines 1-697) where the no-tool baseline's `grep -n` gave exact anchors and read 17,536 B.\n242: \tSymbolStartLine int      `json:\"symbol_start_line,omitempty\"`\n243: \tSymbolEndLine   int      `json:\"symbol_end_line,omitempty\"`\n244: \tLanguage        string   `json:\"language,omitempty\"`\n245: \tKind            string   `json:\"kind,omitempty\"`\n246: \tSymbolID        string   `json:\"symbol_id,omitempty\"`\n247: \tSymbolName      string   `json:\"symbol_name,omitempty\"`\n248: \tQualifiedName   string   `json:\"qualified_name,omitempty\"`\n249: \tSignature       string   `json:\"signature,omitempty\"`\n250: \tSignals         []string `json:\"signals\"`\n251: \t// Section groups a result for presentation. Empty (omitted) means the primary list of\n\n(Showing lines 227-251 of 5240. Use offset=252 to continue.)\n</content>",
+            "metadata": {
+              "preview": "type SearchResult struct {\n\tRank             int     `json:\"rank\"`\n\tScore            float64 `json:\"score\"`\n\tFilePath         string  `json:\"file_path\"`\n\tStartLine        int     `json:\"start_line\"`\n\tEndLine          int     `json:\"end_line\"`\n\tFocusLine        int     `json:\"focus_line\"`\n\tSnippetStartLine int     `json:\"snippet_start_line\"`\n\tSnippetEndLine   int     `json:\"snippet_end_line\"`\n\t// SymbolStartLine/SymbolEndLine are the ENCLOSING symbol's true bounds, which differ from the\n\t// snippet bounds whenever the body was elided (too long for the enclosure cap, or a bounded\n\t// window). Without them a payload can say `main.c:578-583 symbol=umain` while `umain` actually\n\t// spans 270-725, and the agent cannot tell it is holding a 6-line shard of a 456-line function.\n\t// Measured on jqlang/jq-2235: that omission produced three sweeping reads (26,873 B, covering\n\t// main.c lines 1-697) where the no-tool baseline's `grep -n` gave exact anchors and read 17,536 B.\n\tSymbolStartLine int      `json:\"symbol_start_line,omitempty\"`\n\tSymbolEndLine   int      `json:\"symbol_end_line,omitempty\"`\n\tLanguage        string   `json:\"language,omitempty\"`\n\tKind            string   `json:\"kind,omitempty\"`\n\tSymbolID        string   `json:\"symbol_id,omitempty\"`",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/home/farhan/entire-graph/entire-graph/internal/sem/search.go",
+                "text": "type SearchResult struct {\n\tRank             int     `json:\"rank\"`\n\tScore            float64 `json:\"score\"`\n\tFilePath         string  `json:\"file_path\"`\n\tStartLine        int     `json:\"start_line\"`\n\tEndLine          int     `json:\"end_line\"`\n\tFocusLine        int     `json:\"focus_line\"`\n\tSnippetStartLine int     `json:\"snippet_start_line\"`\n\tSnippetEndLine   int     `json:\"snippet_end_line\"`\n\t// SymbolStartLine/SymbolEndLine are the ENCLOSING symbol's true bounds, which differ from the\n\t// snippet bounds whenever the body was elided (too long for the enclosure cap, or a bounded\n\t// window). Without them a payload can say `main.c:578-583 symbol=umain` while `umain` actually\n\t// spans 270-725, and the agent cannot tell it is holding a 6-line shard of a 456-line function.\n\t// Measured on jqlang/jq-2235: that omission produced three sweeping reads (26,873 B, covering\n\t// main.c lines 1-697) where the no-tool baseline's `grep -n` gave exact anchors and read 17,536 B.\n\tSymbolStartLine int      `json:\"symbol_start_line,omitempty\"`\n\tSymbolEndLine   int      `json:\"symbol_end_line,omitempty\"`\n\tLanguage        string   `json:\"language,omitempty\"`\n\tKind            string   `json:\"kind,omitempty\"`\n\tSymbolID        string   `json:\"symbol_id,omitempty\"`\n\tSymbolName      string   `json:\"symbol_name,omitempty\"`\n\tQualifiedName   string   `json:\"qualified_name,omitempty\"`\n\tSignature       string   `json:\"signature,omitempty\"`\n\tSignals         []string `json:\"signals\"`\n\t// Section groups a result for presentation. Empty (omitted) means the primary list of",
+                "lineStart": 227,
+                "lineEnd": 251,
+                "totalLines": 5240,
+                "truncated": true
+              }
+            },
+            "title": "internal/sem/search.go",
+            "time": {
+              "start": 1788677965262,
+              "end": 1788677965292
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_032d3c339d9a1a4d016a9d0f4c881887d098ff3f3bb982482e"
+            }
+          },
+          "id": "prt_07583c3b7001VkKMkgIdZQBIbw",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583b93b001kcoZMqqF6z2w0Q"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-finish",
+          "tokens": {
+            "total": 221919,
+            "input": 1202,
+            "output": 45,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 220672
+            }
+          },
+          "cost": 0,
+          "id": "prt_07583c6cd001gLqUyG6I5sD7Aj",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583b93b001kcoZMqqF6z2w0Q"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07581a1ef0019gaJqxtcz4xAsP",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 222515,
+          "input": 757,
+          "output": 47,
+          "reasoning": 15,
+          "cache": {
+            "write": 0,
+            "read": 221696
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788677965552,
+          "completed": 1788677970090
+        },
+        "finish": "tool-calls",
+        "id": "msg_07583c6f0001A2Uiz6HKnvGtJL",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-start",
+          "id": "prt_07583d335001moB2XhXKryvPQh",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583c6f0001A2Uiz6HKnvGtJL"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Identifying code at line 434**",
+          "time": {
+            "start": 1788677968696,
+            "end": 1788677969523
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0ed7e9f3ae6fa750016a9d0f5082a487d0a6f7a0fed61dad00",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_07583d338001mPghe1avjYlMpG",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583c6f0001A2Uiz6HKnvGtJL"
+        },
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_JAflyFbJRV8wj5rzUw5NRrFv",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/home/farhan/entire-graph/entire-graph/internal/sem/search.go",
+              "offset": 434,
+              "limit": 22
+            },
+            "output": "<path>/home/farhan/entire-graph/entire-graph/internal/sem/search.go</path>\n<type>file</type>\n<content>\n434: type SearchResponse struct {\n435: \t// FormatVersion leads the payload so a consumer can branch on it before\n436: \t// reading anything else. Search was the only machine-readable surface with no\n437: \t// version discriminator at all: its five sibling query commands emit\n438: \t// format_version and the record/snapshot surfaces emit schema_version, but a\n439: \t// consumer parsing search JSON had nothing to tell one payload shape from the\n440: \t// next.\n441: \tFormatVersion int            `json:\"format_version\"`\n442: \tQuery         string         `json:\"query\"`\n443: \tRepoRoot      string         `json:\"repo_root\"`\n444: \tCommit        string         `json:\"commit,omitempty\"`\n445: \tTree          string         `json:\"tree,omitempty\"`\n446: \tProfile       string         `json:\"profile\"`\n447: \tResults       []SearchResult `json:\"results\"`\n448: \t// The three blocks below live outside `results`, and they are declared in the order they\n449: \t// are rendered — see the section order documented in search_blocks.go.\n450: \t//\n451: \t// SignatureTypes holds the declarations of the types named in the top hit's\n452: \t// own signature (fields and member signatures, never bodies, never a\n453: \t// transitive walk). It is funded by displacing redundant tail locators, so\n454: \t// its presence never grows the payload — see search_sigtypes.go.\n455: \tSignatureTypes []SearchSignatureType `json:\"signature_types,omitempty\"`\n\n(Showing lines 434-455 of 5240. Use offset=456 to continue.)\n</content>",
+            "metadata": {
+              "preview": "type SearchResponse struct {\n\t// FormatVersion leads the payload so a consumer can branch on it before\n\t// reading anything else. Search was the only machine-readable surface with no\n\t// version discriminator at all: its five sibling query commands emit\n\t// format_version and the record/snapshot surfaces emit schema_version, but a\n\t// consumer parsing search JSON had nothing to tell one payload shape from the\n\t// next.\n\tFormatVersion int            `json:\"format_version\"`\n\tQuery         string         `json:\"query\"`\n\tRepoRoot      string         `json:\"repo_root\"`\n\tCommit        string         `json:\"commit,omitempty\"`\n\tTree          string         `json:\"tree,omitempty\"`\n\tProfile       string         `json:\"profile\"`\n\tResults       []SearchResult `json:\"results\"`\n\t// The three blocks below live outside `results`, and they are declared in the order they\n\t// are rendered — see the section order documented in search_blocks.go.\n\t//\n\t// SignatureTypes holds the declarations of the types named in the top hit's\n\t// own signature (fields and member signatures, never bodies, never a\n\t// transitive walk). It is funded by displacing redundant tail locators, so",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/home/farhan/entire-graph/entire-graph/internal/sem/search.go",
+                "text": "type SearchResponse struct {\n\t// FormatVersion leads the payload so a consumer can branch on it before\n\t// reading anything else. Search was the only machine-readable surface with no\n\t// version discriminator at all: its five sibling query commands emit\n\t// format_version and the record/snapshot surfaces emit schema_version, but a\n\t// consumer parsing search JSON had nothing to tell one payload shape from the\n\t// next.\n\tFormatVersion int            `json:\"format_version\"`\n\tQuery         string         `json:\"query\"`\n\tRepoRoot      string         `json:\"repo_root\"`\n\tCommit        string         `json:\"commit,omitempty\"`\n\tTree          string         `json:\"tree,omitempty\"`\n\tProfile       string         `json:\"profile\"`\n\tResults       []SearchResult `json:\"results\"`\n\t// The three blocks below live outside `results`, and they are declared in the order they\n\t// are rendered — see the section order documented in search_blocks.go.\n\t//\n\t// SignatureTypes holds the declarations of the types named in the top hit's\n\t// own signature (fields and member signatures, never bodies, never a\n\t// transitive walk). It is funded by displacing redundant tail locators, so\n\t// its presence never grows the payload — see search_sigtypes.go.\n\tSignatureTypes []SearchSignatureType `json:\"signature_types,omitempty\"`",
+                "lineStart": 434,
+                "lineEnd": 455,
+                "totalLines": 5240,
+                "truncated": true
+              }
+            },
+            "title": "internal/sem/search.go",
+            "time": {
+              "start": 1788677969816,
+              "end": 1788677969836
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0ed7e9f3ae6fa750016a9d0f51256c87d0b134c26bc6b75582"
+            }
+          },
+          "id": "prt_07583d6a5001WkZrZXcoxdMgKE",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583c6f0001A2Uiz6HKnvGtJL"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-finish",
+          "tokens": {
+            "total": 222515,
+            "input": 757,
+            "output": 47,
+            "reasoning": 15,
+            "cache": {
+              "write": 0,
+              "read": 221696
+            }
+          },
+          "cost": 0,
+          "id": "prt_07583d898001xHNS79kA9mm4RV",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583c6f0001A2Uiz6HKnvGtJL"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07581a1ef0019gaJqxtcz4xAsP",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 223565,
+          "input": 1231,
+          "output": 613,
+          "reasoning": 25,
+          "cache": {
+            "write": 0,
+            "read": 221696
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788677970106,
+          "completed": 1788677981733
+        },
+        "finish": "tool-calls",
+        "id": "msg_07583d8ba001Q2371zVxLr2i9O",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "37b475fc582617923c518b3977b5d27c118259b3",
+          "type": "step-start",
+          "id": "prt_07583e552001DaFdZK9sBih1mL",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583d8ba001Q2371zVxLr2i9O"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Implementing new search options**",
+          "time": {
+            "start": 1788677973333,
+            "end": 1788677975655
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0acd6a96797a6eeb016a9d0f55163087d0a29fde021dca5bd2",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_07583e555001rcc8xhOLOp7F2T",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583d8ba001Q2371zVxLr2i9O"
+        },
+        {
+          "type": "text",
+          "text": "I’m adding existing deterministic code search hits to the context package, retaining the same `--head` selection as the intent and graph snapshot.",
+          "time": {
+            "start": 1788677975737,
+            "end": 1788677975802
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "msg_0acd6a96797a6eeb016a9d0f5735e087d08e30ec66a7a879c3",
+              "phase": "commentary"
+            }
+          },
+          "id": "prt_07583eeb9001Yy6TUEnjZZRiu9",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583d8ba001Q2371zVxLr2i9O"
+        },
+        {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_bUllnGU4pSOQ4cXjAc2dMbJM",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: internal/cli/gps.go\n@@\n-\tresponse := map[string]any{\"schema_version\": gpsSchemaVersion, \"request\": flags.query, \"intent_digest\": set.Digest, \"status\": \"complete\", \"requirements\": requirements, \"symbols\": []any{}, \"dependencies\": []any{}, \"tests\": []any{}, \"gaps\": []string{}, \"budget\": map[string]any{\"maximum_bytes\": flags.maxBytes, \"rendered_bytes\": 0, \"omitted\": []string{}}}\n+\tresponse := map[string]any{\"schema_version\": gpsSchemaVersion, \"request\": flags.query, \"intent_digest\": set.Digest, \"status\": \"complete\", \"requirements\": requirements, \"symbols\": []any{}, \"code\": []any{}, \"dependencies\": []any{}, \"tests\": []any{}, \"gaps\": []string{}, \"budget\": map[string]any{\"maximum_bytes\": flags.maxBytes, \"rendered_bytes\": 0, \"omitted\": []string{}}}\n@@\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n@@\n \t\treturn err\n \t}\n+\tsearch, err := sem.SearchRepository(ctx, repo, opts.Version, flags.query, sem.SearchOptions{Worktree: !flags.head, Profile: sem.ProfileFull, TopK: 5, MaxContextBytes: flags.maxBytes, DisableCache: true})\n+\tif err != nil { return err }\n+\tcode := make([]any, 0, len(search.Results))\n+\tfor _, result := range search.Results { code = append(code, map[string]any{\"reason\":\"ranked_code_search\", \"rank\":result.Rank, \"score\":result.Score, \"citation\":fmt.Sprintf(\"%s:%d\", result.FilePath, result.FocusLine), \"symbol_id\":result.SymbolID}) }\n+\tresponse[\"code\"] = code\n@@\n \tresponse[\"symbols\"] = []any{}\n+\tresponse[\"code\"] = []any{}\n@@\n-\tbudget[\"omitted\"] = []string{\"symbols\", \"dependencies\", \"tests\"}\n+\tbudget[\"omitted\"] = []string{\"symbols\", \"code\", \"dependencies\", \"tests\"}\n@@\n-\t\tbudget[\"omitted\"] = []string{\"requirements\", \"symbols\", \"dependencies\", \"tests\"}\n+\t\tbudget[\"omitted\"] = []string{\"requirements\", \"symbols\", \"code\", \"dependencies\", \"tests\"}\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM internal/cli/gps.go",
+            "metadata": {
+              "diff": "Index: /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n===================================================================\n--- /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n+++ /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n@@ -134,9 +134,9 @@\n \tif err != nil {\n \t\treturn err\n \t}\n \trequirements := matchingRequirements(set, flags.query)\n-\tresponse := map[string]any{\"schema_version\": gpsSchemaVersion, \"request\": flags.query, \"intent_digest\": set.Digest, \"status\": \"complete\", \"requirements\": requirements, \"symbols\": []any{}, \"dependencies\": []any{}, \"tests\": []any{}, \"gaps\": []string{}, \"budget\": map[string]any{\"maximum_bytes\": flags.maxBytes, \"rendered_bytes\": 0, \"omitted\": []string{}}}\n+\tresponse := map[string]any{\"schema_version\": gpsSchemaVersion, \"request\": flags.query, \"intent_digest\": set.Digest, \"status\": \"complete\", \"requirements\": requirements, \"symbols\": []any{}, \"code\": []any{}, \"dependencies\": []any{}, \"tests\": []any{}, \"gaps\": []string{}, \"budget\": map[string]any{\"maximum_bytes\": flags.maxBytes, \"rendered_bytes\": 0, \"omitted\": []string{}}}\n \tif len(set.Specs) == 0 {\n \t\tresponse[\"status\"] = \"complete_with_gaps\"\n \t\tresponse[\"gaps\"] = []string{\"NO_SPECS\"}\n \t\treturn gpsEncode(opts, flags.format, response)\n@@ -144,8 +144,13 @@\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n+\tsearch, err := sem.SearchRepository(ctx, repo, opts.Version, flags.query, sem.SearchOptions{Worktree: !flags.head, Profile: sem.ProfileFull, TopK: 5, MaxContextBytes: flags.maxBytes, DisableCache: true})\n+\tif err != nil { return err }\n+\tcode := make([]any, 0, len(search.Results))\n+\tfor _, result := range search.Results { code = append(code, map[string]any{\"reason\":\"ranked_code_search\", \"rank\":result.Rank, \"score\":result.Score, \"citation\":fmt.Sprintf(\"%s:%d\", result.FilePath, result.FocusLine), \"symbol_id\":result.SymbolID}) }\n+\tresponse[\"code\"] = code\n \tselected := make(map[string]bool, len(requirements))\n \tfor _, requirement := range requirements {\n \t\tselected[requirement[\"id\"]] = true\n \t}\n@@ -459,16 +464,17 @@\n \t\tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n \t\treturn\n \t}\n \tresponse[\"symbols\"] = []any{}\n+\tresponse[\"code\"] = []any{}\n \tresponse[\"dependencies\"] = []any{}\n \tresponse[\"tests\"] = []any{}\n-\tbudget[\"omitted\"] = []string{\"symbols\", \"dependencies\", \"tests\"}\n+\tbudget[\"omitted\"] = []string{\"symbols\", \"code\", \"dependencies\", \"tests\"}\n \tif renderedGPSJSONBytes(response) > maximum {\n \t\tresponse[\"requirements\"] = []map[string]string{}\n \t\tresponse[\"status\"] = \"BUDGET_TOO_SMALL\"\n \t\tresponse[\"gaps\"] = []string{\"BUDGET_TOO_SMALL\"}\n-\t\tbudget[\"omitted\"] = []string{\"requirements\", \"symbols\", \"dependencies\", \"tests\"}\n+\t\tbudget[\"omitted\"] = []string{\"requirements\", \"symbols\", \"code\", \"dependencies\", \"tests\"}\n \t}\n \tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n }\n \n\n",
+              "files": [
+                {
+                  "filePath": "/home/farhan/entire-graph/entire-graph/internal/cli/gps.go",
+                  "relativePath": "internal/cli/gps.go",
+                  "type": "update",
+                  "patch": "Index: /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n===================================================================\n--- /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n+++ /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n@@ -134,9 +134,9 @@\n \tif err != nil {\n \t\treturn err\n \t}\n \trequirements := matchingRequirements(set, flags.query)\n-\tresponse := map[string]any{\"schema_version\": gpsSchemaVersion, \"request\": flags.query, \"intent_digest\": set.Digest, \"status\": \"complete\", \"requirements\": requirements, \"symbols\": []any{}, \"dependencies\": []any{}, \"tests\": []any{}, \"gaps\": []string{}, \"budget\": map[string]any{\"maximum_bytes\": flags.maxBytes, \"rendered_bytes\": 0, \"omitted\": []string{}}}\n+\tresponse := map[string]any{\"schema_version\": gpsSchemaVersion, \"request\": flags.query, \"intent_digest\": set.Digest, \"status\": \"complete\", \"requirements\": requirements, \"symbols\": []any{}, \"code\": []any{}, \"dependencies\": []any{}, \"tests\": []any{}, \"gaps\": []string{}, \"budget\": map[string]any{\"maximum_bytes\": flags.maxBytes, \"rendered_bytes\": 0, \"omitted\": []string{}}}\n \tif len(set.Specs) == 0 {\n \t\tresponse[\"status\"] = \"complete_with_gaps\"\n \t\tresponse[\"gaps\"] = []string{\"NO_SPECS\"}\n \t\treturn gpsEncode(opts, flags.format, response)\n@@ -144,8 +144,13 @@\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n+\tsearch, err := sem.SearchRepository(ctx, repo, opts.Version, flags.query, sem.SearchOptions{Worktree: !flags.head, Profile: sem.ProfileFull, TopK: 5, MaxContextBytes: flags.maxBytes, DisableCache: true})\n+\tif err != nil { return err }\n+\tcode := make([]any, 0, len(search.Results))\n+\tfor _, result := range search.Results { code = append(code, map[string]any{\"reason\":\"ranked_code_search\", \"rank\":result.Rank, \"score\":result.Score, \"citation\":fmt.Sprintf(\"%s:%d\", result.FilePath, result.FocusLine), \"symbol_id\":result.SymbolID}) }\n+\tresponse[\"code\"] = code\n \tselected := make(map[string]bool, len(requirements))\n \tfor _, requirement := range requirements {\n \t\tselected[requirement[\"id\"]] = true\n \t}\n@@ -459,16 +464,17 @@\n \t\tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n \t\treturn\n \t}\n \tresponse[\"symbols\"] = []any{}\n+\tresponse[\"code\"] = []any{}\n \tresponse[\"dependencies\"] = []any{}\n \tresponse[\"tests\"] = []any{}\n-\tbudget[\"omitted\"] = []string{\"symbols\", \"dependencies\", \"tests\"}\n+\tbudget[\"omitted\"] = []string{\"symbols\", \"code\", \"dependencies\", \"tests\"}\n \tif renderedGPSJSONBytes(response) > maximum {\n \t\tresponse[\"requirements\"] = []map[string]string{}\n \t\tresponse[\"status\"] = \"BUDGET_TOO_SMALL\"\n \t\tresponse[\"gaps\"] = []string{\"BUDGET_TOO_SMALL\"}\n-\t\tbudget[\"omitted\"] = []string{\"requirements\", \"symbols\", \"dependencies\", \"tests\"}\n+\t\tbudget[\"omitted\"] = []string{\"requirements\", \"symbols\", \"code\", \"dependencies\", \"tests\"}\n \t}\n \tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n }\n \n",
+                  "additions": 9,
+                  "deletions": 3
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM internal/cli/gps.go",
+            "time": {
+              "start": 1788677981524,
+              "end": 1788677981531
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0acd6a96797a6eeb016a9d0f57431887d0af2838a3d044bb65"
+            }
+          },
+          "id": "prt_07583eefb001GTNRx0zUC24IfX",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583d8ba001Q2371zVxLr2i9O"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "38f07c8520ac555312f38db2fecb62e63c921fbc",
+          "type": "step-finish",
+          "tokens": {
+            "total": 223565,
+            "input": 1231,
+            "output": 613,
+            "reasoning": 25,
+            "cache": {
+              "write": 0,
+              "read": 221696
+            }
+          },
+          "cost": 0,
+          "id": "prt_07584060a001097434vuLv66UA",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583d8ba001Q2371zVxLr2i9O"
+        },
+        {
+          "type": "patch",
+          "hash": "37b475fc582617923c518b3977b5d27c118259b3",
+          "files": [
+            "/home/farhan/entire-graph/entire-graph/internal/cli/gps.go"
+          ],
+          "id": "prt_075840623001M7ermPBu3t6Pnk",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07583d8ba001Q2371zVxLr2i9O"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07581a1ef0019gaJqxtcz4xAsP",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 223686,
+          "input": 870,
+          "output": 73,
+          "reasoning": 23,
+          "cache": {
+            "write": 0,
+            "read": 222720
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788677981749,
+          "completed": 1788677989740
+        },
+        "finish": "tool-calls",
+        "id": "msg_075840635001JA4QwniYH6KYhL",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "38f07c8520ac555312f38db2fecb62e63c921fbc",
+          "type": "step-start",
+          "id": "prt_07584152a0012Z0qII4Q7tPGaF",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075840635001JA4QwniYH6KYhL"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Planning performance test in temp repo**",
+          "time": {
+            "start": 1788677985580,
+            "end": 1788677986736
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0f34128e5450c8c9016a9d0f6163fc87d0808cac20b7923f12",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_07584152c001dTYH09AHGX6fqX",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075840635001JA4QwniYH6KYhL"
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_7c9d4UcCL9RIJHycWyfer7MX",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "gofmt -w internal/cli/gps.go && go test ./internal/cli -run '^TestGPSSpecAndContextCommands$'",
+              "workdir": "/home/farhan/entire-graph/entire-graph",
+              "timeout": 120000
+            },
+            "output": "ok  \tgithub.com/entireio/entire-graph/internal/cli\t0.044s\n",
+            "metadata": {
+              "output": "ok  \tgithub.com/entireio/entire-graph/internal/cli\t0.044s\n",
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "gofmt -w internal/cli/gps.go && go test ./internal/cli -run '^TestGPSSpecAndContextCommands$'",
+            "time": {
+              "start": 1788677987328,
+              "end": 1788677989688
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0f34128e5450c8c9016a9d0f62507087d0b0aa22d6a4489714"
+            }
+          },
+          "id": "prt_0758419b2001xBmGfOz6t3ibnk",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075840635001JA4QwniYH6KYhL"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "50371f137a9815c65bedd736fdf1a66c225be44f",
+          "type": "step-finish",
+          "tokens": {
+            "total": 223686,
+            "input": 870,
+            "output": 73,
+            "reasoning": 23,
+            "cache": {
+              "write": 0,
+              "read": 222720
+            }
+          },
+          "cost": 0,
+          "id": "prt_0758425570014Va5A2iNpMDxVt",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075840635001JA4QwniYH6KYhL"
+        },
+        {
+          "type": "patch",
+          "hash": "38f07c8520ac555312f38db2fecb62e63c921fbc",
+          "files": [
+            "/home/farhan/entire-graph/entire-graph/internal/cli/gps.go"
+          ],
+          "id": "prt_07584256a001yzETXcLBPECvoY",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075840635001JA4QwniYH6KYhL"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07581a1ef0019gaJqxtcz4xAsP",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 223873,
+          "input": 1000,
+          "output": 144,
+          "reasoning": 9,
+          "cache": {
+            "write": 0,
+            "read": 222720
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788677989758,
+          "completed": 1788678009407
+        },
+        "finish": "tool-calls",
+        "id": "msg_07584257e0014N4DiKd501H7FC",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "50371f137a9815c65bedd736fdf1a66c225be44f",
+          "type": "step-start",
+          "id": "prt_07584314f001CGXR2tWuaVBl29",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07584257e0014N4DiKd501H7FC"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Preparing final commit**",
+          "time": {
+            "start": 1788677992786,
+            "end": 1788677993077
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_034af02a1ac51440016a9d0f688a5487d095bd452c3e79ba24",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_075843152001DITsiKeSDP4O7M",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07584257e0014N4DiKd501H7FC"
+        },
+        {
+          "type": "text",
+          "text": "Context now includes deterministic ranked code-search evidence with citations, alongside approved anchors and direct graph dependencies. The focused context test passes.",
+          "time": {
+            "start": 1788677993137,
+            "end": 1788677993244
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "msg_034af02a1ac51440016a9d0f68f3fc87d0ac5f83ccb6108d54",
+              "phase": "commentary"
+            }
+          },
+          "id": "prt_0758432b1001ET3iKlG86zKHpy",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07584257e0014N4DiKd501H7FC"
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_o0vbQ59FZhtgb6jv1sCHAlz3",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "go test ./internal/intent ./internal/cli -run 'Test(GPS|ResolveBinding|Load)' && go build ./cmd/entire-graph && git add internal/cli/gps.go && git commit -m \"feat(gps): include ranked code context\" && ENTIRE_TOKEN_STORE=file git push origin docs/gps-design",
+              "workdir": "/home/farhan/entire-graph/entire-graph",
+              "timeout": 120000
+            },
+            "output": "ok  \tgithub.com/entireio/entire-graph/internal/intent\t(cached)\nok  \tgithub.com/entireio/entire-graph/internal/cli\t0.085s\n[docs/gps-design ce68935] feat(gps): include ranked code context\n 1 file changed, 13 insertions(+), 3 deletions(-)\n[entire] Pushing entire/checkpoints/v1 to origin...... done\nremote: Receiving objects...        \rremote: Receiving objects: 8.6 KiB (120.0 KiB/s), done.        \nremote: Storing objects: 5 (3 replicas), done.        \nTo entire://aws-ap-south-1.entire.io/gh/saranmahadev/entire-graph\n   facf959..ce68935  docs/gps-design -> docs/gps-design\n",
+            "metadata": {
+              "output": "ok  \tgithub.com/entireio/entire-graph/internal/intent\t(cached)\nok  \tgithub.com/entireio/entire-graph/internal/cli\t0.085s\n[docs/gps-design ce68935] feat(gps): include ranked code context\n 1 file changed, 13 insertions(+), 3 deletions(-)\n[entire] Pushing entire/checkpoints/v1 to origin...... done\nremote: Receiving objects...        \rremote: Receiving objects: 8.6 KiB (120.0 KiB/s), done.        \nremote: Storing objects: 5 (3 replicas), done.        \nTo entire://aws-ap-south-1.entire.io/gh/saranmahadev/entire-graph\n   facf959..ce68935  docs/gps-design -> docs/gps-design\n",
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "go test ./internal/intent ./internal/cli -run 'Test(GPS|ResolveBinding|Load)' && go build ./cmd/entire-graph && git add internal/cli/gps.go && git commit -m \"feat(gps): include ranked code context\" && ENTIRE_TOKEN_STORE=file git push origin docs/gps-design",
+            "time": {
+              "start": 1788677994685,
+              "end": 1788678009376
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_034af02a1ac51440016a9d0f6914b487d0ae4131c4c14c2849"
+            }
+          },
+          "id": "prt_07584331e0013MWbCD546L6hbJ",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07584257e0014N4DiKd501H7FC"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "50371f137a9815c65bedd736fdf1a66c225be44f",
+          "type": "step-finish",
+          "tokens": {
+            "total": 223873,
+            "input": 1000,
+            "output": 144,
+            "reasoning": 9,
+            "cache": {
+              "write": 0,
+              "read": 222720
+            }
+          },
+          "cost": 0,
+          "id": "prt_07584722c0019GHgKRp3X8b6yD",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_07584257e0014N4DiKd501H7FC"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07581a1ef0019gaJqxtcz4xAsP",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 224346,
+          "input": 1346,
+          "output": 90,
+          "reasoning": 190,
+          "cache": {
+            "write": 0,
+            "read": 222720
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788678009426,
+          "completed": 1788678016120
+        },
+        "finish": "stop",
+        "id": "msg_075847252001xve7M98EOmbz2h",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "50371f137a9815c65bedd736fdf1a66c225be44f",
+          "type": "step-start",
+          "id": "prt_075847d23001wHXZcNWKaqXYGQ",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075847252001xve7M98EOmbz2h"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Flagging gitutil error handling**",
+          "time": {
+            "start": 1788678012197,
+            "end": 1788678014890
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0313b658a14c6b39016a9d0f7c206c87d0a9bafccdfc6f0517"
+            }
+          },
+          "id": "prt_075847d25001KvsR2WpWqrS1KL",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075847252001xve7M98EOmbz2h"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Notifying user of unresolved issues**",
+          "time": {
+            "start": 1788678014893,
+            "end": 1788678014957
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0313b658a14c6b39016a9d0f7c206c87d0a9bafccdfc6f0517",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_0758487ad001oZ0KhZ5AMPtu5m",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075847252001xve7M98EOmbz2h"
+        },
+        {
+          "type": "text",
+          "text": "Pushed `ce68935` with the latest MVP work:\n\n- `check` now returns `INCOMPLETE` for partial/degraded graph evidence.\n- Anchor bindings persist file blob fingerprints.\n- `context` includes deterministic ranked code-search citations, approved anchors, and direct dependencies.\n- Focused GPS tests and build pass.\n\nRemaining MVP work is primarily end-to-end fixture coverage and richer per-symbol/test delta diagnostics.",
+          "time": {
+            "start": 1788678014958,
+            "end": 1788678015771
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "msg_0313b658a14c6b39016a9d0f7ecb4887d0925df4c406f05874",
+              "phase": "final_answer"
+            }
+          },
+          "id": "prt_0758487ee001rEAPuoptYx4cRt",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075847252001xve7M98EOmbz2h"
+        },
+        {
+          "reason": "stop",
+          "snapshot": "50371f137a9815c65bedd736fdf1a66c225be44f",
+          "type": "step-finish",
+          "tokens": {
+            "total": 224346,
+            "input": 1346,
+            "output": 90,
+            "reasoning": 190,
+            "cache": {
+              "write": 0,
+              "read": 222720
+            }
+          },
+          "cost": 0,
+          "id": "prt_075848c66001x5qSfL5BfzEQTh",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_075847252001xve7M98EOmbz2h"
         }
       ]
     }

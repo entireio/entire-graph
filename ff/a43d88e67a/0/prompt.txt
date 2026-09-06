@@ -1,1 +1,1 @@
-Find a fix for it and do it
+Complete until you are done with MVP and if error occurs fix it until the goal is achieved
