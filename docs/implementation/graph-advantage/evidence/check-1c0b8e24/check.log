@@ -1,0 +1,186 @@
+[fmt] $ gofmt -s -w .
+[vet] $ go vet ./...
+[test:ci] $ go test -race -timeout 30m ./...
+[build] $ go build -o entire-graph ./cmd/entire-graph
+[fmt] Finished in 177.3ms
+[vet] Finished in 4.22s
+[build] Finished in 5.81s
+[test:statusline] $ sh scripts/entire-graph-statusline_test.sh
+[test:statusline] ok    graph-first session: badge
+[test:statusline] ok    graph-first session: saved
+[test:statusline] ok    graph-first session: search verb split
+[test:statusline] ok    graph-first session: impact verb split
+[test:statusline] ok    graph-first session: graph-first tick
+[test:statusline] ok    graph-first session: locate share
+[test:statusline] ok    graph-first session: pct of session
+[test:statusline] ok    graph-first session: exploration calls
+[test:statusline] ok    graph-first session: exploration tokens
+[test:statusline] ok    graph-first session: single line
+[test:statusline] ok    renders the CLI savings number
+[test:statusline] ok    grep-first session: cross mark
+[test:statusline] ok    no graph calls: honest message
+[test:statusline] ok    no graph calls: exploration count
+[test:statusline] ok    no graph calls: no savings claim
+[test:statusline] ok    missing transcript prints nothing
+[test:statusline] ok    empty transcript prints nothing
+[test:statusline] ok    transcript of garbage prints nothing
+[test:statusline] ok    garbage on stdin prints nothing
+[test:statusline] ok    empty stdin prints nothing
+[test:statusline] ok    stdin without transcript_path prints nothing
+[test:statusline] ok    missing binary prints nothing
+[test:statusline] ok    missing binary exits before the cache block
+[test:statusline] ok    the stripped environment reaches the binary lookup at all
+[test:statusline] ok    failing binary prints nothing
+[test:statusline] ok    binary without --transcript support prints nothing
+[test:statusline] ok    zero sessions prints nothing
+[test:statusline] ok    rich line renders exactly
+[test:statusline] ok    rich line stays within the width budget
+[test:statusline] ok    meta verbs are excluded from the split and from "other"
+[test:statusline] ok    meta verb 'stats' is never named
+[test:statusline] ok    meta verb 'version' is never named
+[test:statusline] ok    meta verb 'help' is never named
+[test:statusline] ok    meta verb 'doctor' is never named
+[test:statusline] ok    meta verb 'init-agents' is never named
+[test:statusline] ok    meta verb 'agent-guide' is never named
+[test:statusline] ok    meta verb 'capabilities' is never named
+[test:statusline] ok    meta line stays within the width budget
+[test:statusline] ok    a meta-only session claims nothing
+[test:statusline] ok    locate verbs rank first in the split
+[test:statusline] ok    zero exploration drops both explore segments
+[test:statusline] ok    a percentage that rounds to zero is dropped
+[test:statusline] ok    explore tokens render beside the tiny percentage
+[test:statusline] ok    over-long line drops session % then explore tok, keeping explore calls
+[test:statusline] ok    over-long line is brought under the width budget
+[test:statusline] ok    width discipline drops the session segment whole
+[test:statusline] ok    width discipline drops the explore-token segment whole
+[test:statusline] ok    width discipline never leaves a dangling separator
+[test:statusline] ok    a small overflow sheds only the session segment
+[test:statusline] ok    mildly-long line is brought under the width budget
+[test:statusline] ok    the width budget is used to the last character
+[test:statusline] ok    coloured over-long line keeps the same last segment
+[test:statusline] ok    coloured over-long line drops the same segments
+[test:statusline] ok    NO_COLOR strips escapes from the extended line
+[test:statusline] ok    extended line renders exactly under NO_COLOR
+[test:statusline] ok    the extended line is coloured by default
+[test:statusline] ok    colour does not disturb the new segments
+[test:statusline] ok    round millions print without a stray backreference
+[test:statusline] ok    round millions contain no backslash
+[test:statusline] ok    thousands abbreviate
+[test:statusline] ok    sub-1% keeps two decimals
+[test:statusline] ok    multi-session renders a graph-first rate
+[test:statusline] ok    scope=project scans the session directory
+[test:statusline] ok    scope=project honours the requested window
+[test:statusline] ok    scope=project does not narrow to one transcript
+[test:statusline] ok    scope=project still renders the rate
+[test:ci] ok  	github.com/entireio/entire-graph/cmd/entire-graph	3.463s
+[test:statusline] ok    scope=session narrows to this transcript
+[test:statusline] ok    scope=session ignores the window
+[test:statusline] ok    scope=session does not scan the session directory
+[test:statusline] ok    NO_COLOR strips every escape
+[test:statusline] ok    coloured render emits escapes
+[test:statusline] ok    NO_COLOR is not served a cached coloured line
+[test:statusline] ok    colour survives the NO_COLOR render
+[test:statusline] ok    hostile verb name is dropped, not rendered
+[test:statusline] ok    hostile verb name cannot inject an escape
+[test:statusline] ok    hostile verb name cannot inject a shell metacharacter
+[test:statusline] ok    hostile verb name cannot inject a bracket
+[test:statusline] ok    cached renders are identical
+[test:statusline] ok    cached renders stay identical
+[test:statusline] ok    cache collapses 3 renders to 1 scan
+[test:statusline] ok    cache can be disabled
+[test:statusline] ok    stale cache is served without blocking
+[test:statusline] ok    stale cache is refreshed in the background
+[test:statusline] ok    cache from a different question is not served
+[test:statusline] ok    cache from a different question is recomputed
+[test:statusline] ok    a symlinked cache entry is never served
+[test:statusline] ok    symlinked cache contents never leak
+[test:statusline] ok    symlinked cache is recomputed instead
+[test:statusline] ok    a symlinked cache directory is never read
+[test:statusline] ok    a symlinked cache directory falls back to a real render
+[test:statusline] ok    a symlinked cache directory is never written into
+[test:statusline] ok    a usable cache directory is still created and written
+[test:statusline] ok    chmod exits 0 on an immutable directory already at the requested mode
+[test:statusline] ok    chmod fails on the same directory once the mode differs
+[test:statusline] ok    a cache directory this user cannot chmod is never read
+[test:statusline] ok    an adopted cache directory cannot inject an escape
+[test:statusline] ok    an unchmodable cache directory falls back to a real render
+[test:statusline] ok    an unchmodable cache directory is not rewritten
+[test:statusline] ok    a writable cache directory is still created and written
+[test:statusline] ok    a cache directory chmod refuses is never read
+[test:statusline] ok    a chmod-refused cache directory cannot inject an escape
+[test:statusline] ok    a chmod-refused cache directory falls back to a real render
+[test:statusline] ok    a chmod-refused cache directory is never written into
+[test:statusline] ok    a chmod-refused cache directory gets no new entry
+[test:statusline] ok    a cache directory this user does not own is never read
+[test:statusline] ok    an unowned cache directory cannot inject an escape
+[test:statusline] ok    an unowned cache directory falls back to a real render
+[test:statusline] ok    an unowned cache directory is never written into
+[test:statusline] ok    an unowned cache directory gets no new entry
+[test:statusline] ok    a tab in the repo path still renders
+[test:statusline] ok    a tab in the repo path does not shift the cached record
+[test:statusline] ok    the cache stamp never leaks into the served badge
+[test:statusline] ok    hostile session id still renders (../../../../escaped)
+[test:statusline] ok    hostile session id leaves no separator in the key (../../../../escaped)
+[test:statusline] ok    hostile session id cannot leave the cache dir (../../../../escaped)
+[test:statusline] ok    hostile session id still renders (/etc/shadow)
+[test:statusline] ok    hostile session id leaves no separator in the key (/etc/shadow)
+[test:statusline] ok    hostile session id cannot leave the cache dir (/etc/shadow)
+[test:statusline] ok    an over-long session id still renders
+[test:statusline] ok    an over-long session id is cut to 40 characters
+[test:statusline] ok    an over-long session id leaves no untruncated key behind
+[test:statusline] ok    no session_id: first transcript renders its own numbers
+[test:statusline] ok    no session_id: second transcript renders its own numbers
+[test:statusline] ok    no session_id: the second transcript did not overwrite the first
+[test:statusline] ok    no session_id: two transcripts get two cache files
+[test:statusline] ok    duplicate session_id: first transcript renders its own numbers
+[test:statusline] ok    duplicate session_id: second transcript renders its own numbers
+[test:statusline] ok    duplicate session_id: no flip-flop between the two transcripts
+[test:statusline] ok    duplicate session_id: two transcripts get two cache files
+[test:statusline] ok    no cksum: the badge still renders
+[test:statusline] ok    no cksum: one transcript keeps one key across renders
+[test:statusline] ok    no cksum: one transcript, one cache file
+[test:statusline] ok    no cksum: a second transcript renders its own numbers
+[test:statusline] ok    no cksum: two transcripts, two cache files
+[test:statusline] ok    prune drops a week-old cache line
+[test:statusline] ok    prune drops an abandoned tmp write
+[test:statusline] ok    prune drops an orphaned lock directory
+[test:statusline] ok    prune keeps a fresh cache line
+[test:statusline] ok    prune keeps an in-flight tmp write
+[test:statusline] ok    prune keeps a live lock directory
+[test:statusline] ok    prune leaves its throttle sentinel
+[test:statusline] ok    prune is throttled behind its sentinel
+[test:statusline] ok    a directory sentinel does not wedge prune forever
+[test:statusline] ok    a directory sentinel is replaced by a real sentinel
+[test:statusline] ok    a NON-EMPTY directory sentinel does not wedge prune forever
+[test:statusline] ok    a non-empty directory sentinel is replaced by a real sentinel
+[test:statusline] ok    a read-only sentinel does not wedge prune forever
+[test:statusline] ok    a read-only sentinel is replaced by a real sentinel
+[test:statusline] ok    the replacement sentinel is writable, so the next store is not wedged either
+[test:statusline] ok    the sentinel self-heal survives dash, not just bash
+[test:statusline] ok    dash leaves a real sentinel behind
+[test:statusline] 
+[test:statusline] 151 passed, 0 failed
+[test:statusline] Finished in 9.41s
+[test:ci] ok  	github.com/entireio/entire-graph/cmd/graph-bench	13.177s
+[test:ci] ok  	github.com/entireio/entire-graph/internal/bench	6.392s
+[test:ci] ok  	github.com/entireio/entire-graph/internal/cli	124.746s
+[test:ci] ok  	github.com/entireio/entire-graph/internal/compiler	(cached)
+[test:ci] ok  	github.com/entireio/entire-graph/internal/filedigest	(cached)
+[test:ci] ok  	github.com/entireio/entire-graph/internal/gitutil	(cached)
+[test:ci] ok  	github.com/entireio/entire-graph/internal/sem	624.683s
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/grammars/clojure	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/grammars/csharp	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/grammars/dart	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/grammars/erlang	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/grammars/fsharp	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/grammars/haskell	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/grammars/julia	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/grammars/objc	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/grammars/perl	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/grammars/r	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/grammars/zig	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/pgsql	[no test files]
+[test:ci] ?   	github.com/entireio/entire-graph/internal/sem/zsh	[no test files]
+[test:ci] ok  	github.com/entireio/entire-graph/internal/termsafe	(cached)
+[test:ci] Finished in 676.60s
+Finished in 676.60s

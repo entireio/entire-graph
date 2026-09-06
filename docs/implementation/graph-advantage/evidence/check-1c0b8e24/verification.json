@@ -1,0 +1,11 @@
+{
+  "source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
+  "after_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
+  "command": "mise run check",
+  "exit_code": 0,
+  "elapsed_seconds": 676.7688131332397,
+  "status_after": "",
+  "log_sha256": "03d496b150a631a3637e7b382e26fb04f83170dea6368438f6950f9ec564e6ca",
+  "immutable": true,
+  "binary_sha256": "c80d09cdbfb85022301a82242bd5edb644e84e5fe937610d25e93b1d77f34c65"
+}

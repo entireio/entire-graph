@@ -5,13 +5,13 @@
   "campaign_planned_requests": 17280,
   "subagent_model": "gpt-5.6-luna",
   "implementation_source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
-  "verified_checkpoint": "0c9e80f523ed433cb81ccdaa87b3f8f0c3e6d0dd",
-  "verified_evidence_commit": "see evidence/check-0c9e80f5/verification.json",
-  "current_worktree": "1c0b8e24; focused correctness and race passed; immutable full check running; pinned Linux72tests passed",
+  "verified_checkpoint": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
+  "verified_evidence_commit": "see evidence/check-1c0b8e24/verification.json",
+  "current_worktree": "1c0b8e24 full676.769s and pinned Linux72tests passed",
   "workers_state": "campaign paused; validation VM starting for correctness; other two VMs deallocated",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
-  "correctness": "69pinnedLinuxtests including10live; fullrepositorycheck693.532s",
+  "correctness": "72 pinned Linux tests including10live; full repository check676.769s",
   "release_gate": "not passed",
   "defaults": "unchanged; experimental features off",
   "transport": "AppleDouble sidecars removed before verified fixture digests; clean archive retained",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T12:49:12.120597+00:00",
+  "as_of_utc": "2026-09-06T12:59:10.195425+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -43,7 +43,7 @@
   ],
   "remaining_diagnosis": "Latest retained 0c9e80f5 pair preserves semantics and 194 known partials; OFF56.991s ON66.019s fails 1.10 screen; current lifecycle correction awaits correctness",
   "stopgaps": "77 campaign-control tests passed in7.809s after startup/final-lease/accounting fixes; protocol supersedes old three-failure rule",
-  "full_correctness": "passed0c9e80f5 cleanimmutablecheckout unchangedHEAD",
+  "full_correctness": "passed1c0b8e24 clean immutable checkout unchangedHEAD",
   "campaign": "paused; isolated diagnostic failures retained separately",
   "stopgap_commits": [
     "dc0ddce7",
@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Complete immutable and pinned correctness for1c0b8e24 before considering any isolated corrective retry",
+  "next_work": "Finish fail-closed RSS diagnostic plumbing before any isolated corrective retry; campaign remains paused",
   "current_focused_correctness": {
     "commit": "1c0b8e24",
     "correctness_seconds": 0.788,

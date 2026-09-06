@@ -25,11 +25,11 @@ and the [plan's evaluation rules](</Users/thomi/Projects/entire-plan/entire-grap
   inclusion/exclusion rules, labels, metric formulas, thresholds, repetitions,
   seeds, interval method, and treatment of failures, partials, and zero
   denominators. Preserve raw failures and incomplete denominators.
-- Full `mise run check` passed at `0c9e80f5` in 693.532 seconds in a
-  clean immutable checkout. Pinned Linux passed 69 top-level tests including
-  10 live tests. Session-owned compressor correction `1c0b8e24` has focused
-  correctness and race verification; its immutable check is running and pinned
-  Linux verification is pending. Earlier checks do not cover this new source.
+- Full `mise run check` passed at `1c0b8e24` in 676.769 seconds in a
+  clean immutable checkout with unchanged HEAD. Pinned Linux passed 72
+  top-level tests including 10 live tests. This covers ADR 0047 compressor
+  ownership and earlier admission/capture corrections. It does not clear the
+  failed cold screen or establish a comparative release result.
 - The 77 campaign-control tests pass locally. A live fake-service smoke now verifies the real
   supervisor stop path: all three services were active before injection and
   inactive with STOP markers afterward. Raw responses are retained under
