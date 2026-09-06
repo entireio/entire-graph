@@ -20,17 +20,17 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 622010,
-      "output": 49816,
-      "reasoning": 12116,
+      "input": 630732,
+      "output": 50705,
+      "reasoning": 12407,
       "cache": {
-        "read": 26185216,
+        "read": 26598400,
         "write": 0
       }
     },
     "time": {
       "created": 1788675781237,
-      "updated": 1788679438009
+      "updated": 1788679570412
     }
   },
   "messages": [
@@ -28462,9 +28462,9 @@
           "diffs": [
             {
               "file": "internal/cli/gps.go",
-              "patch": "Index: internal/cli/gps.go\n===================================================================\n--- internal/cli/gps.go\t\n+++ internal/cli/gps.go\t\n@@ -1,689 +1,699 @@\n package cli\n \n import (\n \t\"bytes\"\n \t\"context\"\n \t\"encoding/json\"\n \t\"errors\"\n \t\"fmt\"\n \t\"sort\"\n \t\"strings\"\n \n \t\"github.com/entireio/entire-graph/internal/gitutil\"\n \t\"github.com/entireio/entire-graph/internal/intent\"\n \t\"github.com/entireio/entire-graph/internal/sem\"\n \t\"github.com/entireio/entire-graph/internal/termsafe\"\n )\n \n const gpsSchemaVersion = \"1.0\"\n \n+const minimumGPSContextBytes = 512\n+\n func runSpec(ctx context.Context, opts Options, args []string) error {\n \tif len(args) == 0 {\n \t\treturn errors.New(\"spec requires init, list, show, validate, or relationships\")\n \t}\n \t_, flags, err := gpsFlags(args[1:])\n \tif err != nil {\n \t\treturn err\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif args[0] == \"init\" {\n \t\tif flags.head {\n \t\t\treturn errors.New(\"spec init cannot write a --head view\")\n \t\t}\n \t\treturn intent.Init(repo)\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tswitch args[0] {\n \tcase \"list\":\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"specifications\": set.Specs})\n \tcase \"show\":\n \t\tif flags.id == \"\" {\n \t\t\treturn errors.New(\"spec show requires --id\")\n \t\t}\n \t\tfor _, spec := range set.Specs {\n \t\t\tif spec.ID == flags.id {\n \t\t\t\treturn gpsEncode(opts, flags.format, spec)\n \t\t\t}\n \t\t}\n \t\treturn fmt.Errorf(\"specification %q not found\", flags.id)\n \tcase \"validate\":\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"valid\": true, \"intent_digest\": set.Digest, \"specifications\": len(set.Specs)})\n \tcase \"relationships\":\n \t\tif flags.id == \"\" {\n \t\t\treturn errors.New(\"spec relationships requires --id\")\n \t\t}\n \t\tfor _, spec := range set.Specs {\n \t\t\tif spec.ID == flags.id {\n \t\t\t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"id\": spec.ID, \"relationships\": spec.Relationships})\n \t\t\t}\n \t\t}\n \t\treturn fmt.Errorf(\"specification %q not found\", flags.id)\n \tdefault:\n \t\treturn fmt.Errorf(\"unknown spec command %q\", args[0])\n \t}\n }\n \n func runAnchor(ctx context.Context, opts Options, args []string) error {\n \tif len(args) == 0 {\n \t\treturn errors.New(\"anchor requires bind, list, or resolve\")\n \t}\n \tverb, flags, err := gpsFlags(args[1:])\n \t_ = verb\n \tif err != nil {\n \t\treturn err\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif args[0] == \"list\" {\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"anchors\": set.Bindings})\n \t}\n \tif args[0] == \"bind\" {\n \t\tif flags.head {\n \t\t\treturn errors.New(\"anchor bind cannot write a --head view\")\n \t\t}\n \t\tif flags.id == \"\" || flags.symbol == \"\" {\n \t\t\treturn errors.New(\"anchor bind requires --id and --symbol\")\n \t\t}\n \t\tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n \t\tmatches := matchingSymbols(snapshot.Symbols, flags.symbol, flags.file)\n \t\tif len(matches) == 0 {\n \t\t\treturn fmt.Errorf(\"symbol %q not found\", flags.symbol)\n \t\t}\n \t\tif len(matches) > 1 {\n \t\t\treturn fmt.Errorf(\"symbol %q is ambiguous; pass --file\", flags.symbol)\n \t\t}\n \t\ts := matches[0]\n-\t\treturn intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash, FileBlob: snapshotFileBlob(snapshot, s.FilePath)}}, flags.update)\n+\t\treturn intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{Version: 1, SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash, FileBlob: snapshotFileBlob(snapshot, s.FilePath)}}, flags.update)\n \t}\n \tif args[0] == \"resolve\" {\n \t\tif flags.id == \"\" {\n \t\t\treturn errors.New(\"anchor resolve requires --id\")\n \t\t}\n \t\tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n \t\tfor _, binding := range set.Bindings {\n \t\t\tif binding.ID == flags.id {\n \t\t\t\treturn gpsEncode(opts, flags.format, resolveBinding(binding, snapshot))\n \t\t\t}\n \t\t}\n \t\treturn fmt.Errorf(\"anchor %q not found\", flags.id)\n \t}\n \treturn fmt.Errorf(\"unknown anchor command %q\", args[0])\n }\n \n func runGPSContext(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.query == \"\" {\n \t\treturn errors.New(\"context requires --query\")\n \t}\n+\tif flags.maxBytes < minimumGPSContextBytes {\n+\t\treturn fmt.Errorf(\"context --max-context-bytes must be at least %d\", minimumGPSContextBytes)\n+\t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \trequirements := matchingRequirements(set, flags.query)\n \tresponse := map[string]any{\"schema_version\": gpsSchemaVersion, \"request\": flags.query, \"intent_digest\": set.Digest, \"repository_view\": gpsRepositoryView(ctx, repo, flags.head), \"status\": \"complete\", \"requirements\": requirements, \"symbols\": []any{}, \"code\": []any{}, \"dependencies\": []any{}, \"tests\": []any{}, \"gaps\": []string{}, \"budget\": map[string]any{\"maximum_bytes\": flags.maxBytes, \"rendered_bytes\": 0, \"omitted\": []string{}}}\n \tif len(set.Specs) == 0 {\n \t\tresponse[\"status\"] = \"complete_with_gaps\"\n \t\tresponse[\"gaps\"] = []string{\"NO_SPECS\"}\n-\t\treturn gpsEncode(opts, flags.format, response)\n \t}\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tsearch, err := sem.SearchRepository(ctx, repo, opts.Version, flags.query, sem.SearchOptions{Worktree: !flags.head, Profile: sem.ProfileFull, TopK: 5, MaxContextBytes: flags.maxBytes, DisableCache: true})\n \tif err != nil {\n \t\treturn err\n \t}\n \tcode := make([]any, 0, len(search.Results))\n \tfor _, result := range search.Results {\n \t\tcode = append(code, map[string]any{\"reason\": \"ranked_code_search\", \"rank\": result.Rank, \"score\": result.Score, \"citation\": fmt.Sprintf(\"%s:%d\", result.FilePath, result.FocusLine), \"symbol_id\": result.SymbolID})\n \t}\n \tresponse[\"code\"] = code\n \tselected := make(map[string]bool, len(requirements))\n \tfor _, requirement := range requirements {\n \t\tselected[requirement[\"id\"]] = true\n \t}\n \tbindings := make(map[string]intent.Binding, len(set.Bindings))\n \tfor _, binding := range set.Bindings {\n \t\tbindings[binding.ID] = binding\n \t}\n \tvar symbols []any\n \tvar dependencies []any\n \tvar tests []any\n-\tvar gaps []string\n+\tgaps := response[\"gaps\"].([]string)\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tif !selected[anchor.Requirement] {\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tbinding, ok := bindings[anchor.ID]\n \t\t\tif !ok {\n \t\t\t\tgaps = append(gaps, \"UNBOUND_ANCHOR:\"+anchor.ID)\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tstate := resolveBinding(binding, snapshot)\n \t\t\tif state[\"state\"] != \"VALID\" {\n \t\t\t\tgaps = append(gaps, state[\"state\"].(string)+\":\"+anchor.ID)\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tsymbol := state[\"symbol\"].(sem.SymbolRecord)\n \t\t\tsymbols = append(symbols, map[string]any{\"anchor\": anchor.ID, \"requirement\": anchor.Requirement, \"reason\": \"approved_anchor\", \"citation\": fmt.Sprintf(\"%s:%d\", symbol.FilePath, symbol.StartLine), \"symbol\": symbol})\n \t\t\tfor _, relation := range snapshot.Relations {\n \t\t\t\tif relation.FromID == symbol.ID {\n \t\t\t\t\tdependencies = append(dependencies, map[string]any{\"reason\": \"anchor_callee\", \"type\": relation.Type, \"symbol_id\": relation.ToID})\n \t\t\t\t}\n \t\t\t\tif relation.ToID == symbol.ID {\n \t\t\t\t\tdependencies = append(dependencies, map[string]any{\"reason\": \"anchor_caller\", \"type\": relation.Type, \"symbol_id\": relation.FromID})\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t\tfor _, test := range spec.Tests {\n \t\t\tif !acceptanceMatchesRequirement(spec, test.Acceptance, selected) {\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tmatches := matchingSymbols(snapshot.Symbols, test.Selector.Name, \"\")\n \t\t\tif len(matches) == 1 {\n \t\t\t\ttests = append(tests, map[string]any{\"id\": test.ID, \"acceptance\": test.Acceptance, \"reason\": \"declared_mapping\", \"symbol\": matches[0]})\n \t\t\t} else {\n \t\t\t\tgaps = append(gaps, \"DECLARED_TEST_UNRESOLVED:\"+test.ID)\n \t\t\t}\n \t\t}\n \t}\n \tsort.Strings(gaps)\n \tresponse[\"symbols\"] = symbols\n \tresponse[\"dependencies\"] = dependencies\n \tresponse[\"tests\"] = tests\n \tresponse[\"gaps\"] = gaps\n \tif len(gaps) > 0 {\n \t\tresponse[\"status\"] = \"complete_with_gaps\"\n \t}\n \tfitGPSContextBudget(response, flags.maxBytes)\n \treturn gpsEncode(opts, flags.format, response)\n }\n \n func runGPSCheck(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.base != \"\" && !flags.head {\n \t\treturn errors.New(\"check --base requires --head so code and intent use one committed view\")\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif len(set.Specs) == 0 {\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"disposition\": \"NOT_CONFIGURED\", \"findings\": []any{}})\n \t}\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tfindings := make([]map[string]any, 0)\n \tif len(snapshot.Header.PartialFailures) != 0 || snapshot.Header.Stats.CompletenessLevel != \"ok\" {\n \t\tfindings = append(findings, map[string]any{\"id\": \"GPS-COMPLETENESS-INCOMPLETE\", \"severity\": \"incomplete\", \"subject\": \"graph\", \"message\": \"selected graph has partial or incomplete analysis\"})\n \t}\n \tif flags.base != \"\" {\n \t\tbaseSet, err := intent.LoadRevision(ctx, repo, flags.base)\n \t\tif err != nil {\n \t\t\treturn fmt.Errorf(\"load base intent: %w\", err)\n \t\t}\n \t\tchanged, err := gitutil.ChangedFiles(ctx, repo, flags.base, \"HEAD\", nil)\n \t\tif err != nil {\n \t\t\treturn fmt.Errorf(\"compare base revision: %w\", err)\n \t\t}\n \t\tif baseSet.Digest != set.Digest {\n \t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-INTENT\", \"severity\": \"warning\", \"subject\": \"intent\", \"message\": \"selected intent differs from base revision\"})\n \t\t}\n \t\tcurrentTests := map[string]bool{}\n \t\tfor _, spec := range set.Specs {\n \t\t\tfor _, test := range spec.Tests {\n \t\t\t\tcurrentTests[test.ID] = true\n \t\t\t}\n \t\t}\n \t\tfor _, spec := range baseSet.Specs {\n \t\t\tfor _, test := range spec.Tests {\n \t\t\t\tif !currentTests[test.ID] {\n \t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-MAPPING-REMOVED\", \"severity\": \"warning\", \"subject\": test.ID, \"message\": \"declared test mapping was removed since base revision\"})\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t\tintentChanged, codeChanged := false, false\n \t\tfor _, file := range changed {\n \t\t\tif strings.HasPrefix(file.Path, intent.Root+\"/\") || strings.HasPrefix(file.OldPath, intent.Root+\"/\") {\n \t\t\t\tintentChanged = true\n \t\t\t} else {\n \t\t\t\tcodeChanged = true\n \t\t\t}\n \t\t\tfor _, binding := range set.Bindings {\n \t\t\t\tif binding.Selector.File == file.Path || binding.Selector.File == file.OldPath {\n \t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-ANCHOR\", \"severity\": \"warning\", \"subject\": binding.ID, \"message\": \"anchored implementation changed since base revision\"})\n \t\t\t\t}\n \t\t\t}\n \t\t\tfor _, spec := range set.Specs {\n \t\t\t\tfor _, test := range spec.Tests {\n \t\t\t\t\tfor _, symbol := range matchingSymbols(snapshot.Symbols, test.Selector.Name, \"\") {\n \t\t\t\t\t\tif symbol.FilePath == file.Path || symbol.FilePath == file.OldPath {\n \t\t\t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-TEST\", \"severity\": \"warning\", \"subject\": test.ID, \"message\": \"declared test implementation changed since base revision\"})\n \t\t\t\t\t\t}\n \t\t\t\t\t}\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t\tif intentChanged && !codeChanged {\n \t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-SPEC-ONLY\", \"severity\": \"warning\", \"subject\": \"intent\", \"message\": \"specification changed without implementation changes\"})\n \t\t}\n \t\tif codeChanged && !intentChanged {\n \t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-CODE-ONLY\", \"severity\": \"warning\", \"subject\": \"code\", \"message\": \"implementation changed without specification changes\"})\n \t\t}\n \t}\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tfound := false\n \t\t\tfor _, binding := range set.Bindings {\n \t\t\t\tif binding.ID != anchor.ID {\n \t\t\t\t\tcontinue\n \t\t\t\t}\n \t\t\t\tfound = true\n \t\t\t\tstate := resolveBinding(binding, snapshot)\n \t\t\t\tif state[\"state\"] != \"VALID\" {\n \t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-ANCHOR-\" + state[\"state\"].(string), \"severity\": \"warning\", \"subject\": anchor.ID, \"message\": state[\"state\"]})\n \t\t\t\t}\n \t\t\t}\n \t\t\tif !found {\n \t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-ANCHOR-UNBOUND\", \"severity\": \"warning\", \"subject\": anchor.ID, \"message\": \"declared anchor has no reviewed binding\"})\n \t\t\t}\n \t\t}\n \t\tfor _, acceptance := range spec.Acceptance {\n \t\t\tmapped := false\n \t\t\tfor _, test := range spec.Tests {\n \t\t\t\tif test.Acceptance == acceptance.ID {\n \t\t\t\t\tmapped = true\n \t\t\t\t\tmatches := matchingSymbols(snapshot.Symbols, test.Selector.Name, \"\")\n \t\t\t\t\tif len(matches) != 1 {\n \t\t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-MAPPING-UNRESOLVED\", \"severity\": \"warning\", \"subject\": test.ID, \"message\": \"declared test selector does not resolve to exactly one symbol\"})\n \t\t\t\t\t}\n \t\t\t\t}\n \t\t\t}\n \t\t\tif !mapped {\n \t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-MAPPING-MISSING\", \"severity\": \"warning\", \"subject\": acceptance.ID, \"message\": \"acceptance criterion has no declared test\"})\n \t\t\t}\n \t\t}\n \t}\n \tdisposition := \"PASS\"\n \tfor _, finding := range findings {\n \t\tif finding[\"severity\"] == \"incomplete\" {\n \t\t\tdisposition = \"INCOMPLETE\"\n \t\t\tbreak\n \t\t}\n \t\tif finding[\"severity\"] == \"error\" {\n \t\t\tdisposition = \"FAIL\"\n \t\t\tbreak\n \t\t}\n \t\tdisposition = \"REVIEW_REQUIRED\"\n \t}\n-\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"repository_view\": gpsRepositoryView(ctx, repo, flags.head), \"disposition\": disposition, \"findings\": findings})\n+\tchangeDelta := \"not_requested\"\n+\tif flags.base != \"\" {\n+\t\tchangeDelta = \"compared\"\n+\t}\n+\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"repository_view\": gpsRepositoryView(ctx, repo, flags.head), \"change_delta\": changeDelta, \"disposition\": disposition, \"findings\": findings})\n }\n \n func runGPSWhy(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.symbol == \"\" {\n \t\treturn errors.New(\"why requires --symbol\")\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tmatches := matchingSymbols(snapshot.Symbols, flags.symbol, flags.file)\n \tif len(matches) != 1 {\n \t\tif len(matches) == 0 {\n \t\t\treturn fmt.Errorf(\"symbol %q not found\", flags.symbol)\n \t\t}\n \t\treturn fmt.Errorf(\"symbol %q is ambiguous; pass --file\", flags.symbol)\n \t}\n \tsymbol := matches[0]\n \tbindings := map[string]bool{}\n \tfor _, binding := range set.Bindings {\n \t\tif binding.SymbolID == symbol.ID {\n \t\t\tbindings[binding.ID] = true\n \t\t}\n \t}\n \tvar requirements []map[string]string\n \tvar tests []map[string]string\n \tvar decisions []intent.Decision\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tif bindings[anchor.ID] {\n \t\t\t\trequirements = append(requirements, map[string]string{\"specification\": spec.ID, \"id\": anchor.Requirement, \"anchor\": anchor.ID, \"authority\": \"developer_confirmed\"})\n \t\t\t}\n \t\t}\n \t\tfor _, test := range spec.Tests {\n \t\t\tfor _, acceptance := range spec.Acceptance {\n \t\t\t\tif test.Acceptance != acceptance.ID {\n \t\t\t\t\tcontinue\n \t\t\t\t}\n \t\t\t\tfor _, requirement := range requirements {\n \t\t\t\t\tif requirement[\"specification\"] == spec.ID && requirement[\"id\"] == acceptance.Requirement {\n \t\t\t\t\t\ttests = append(tests, map[string]string{\"id\": test.ID, \"acceptance\": test.Acceptance, \"selector\": test.Selector.Name, \"authority\": \"declared\"})\n \t\t\t\t\t}\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t}\n \tfor _, decision := range set.Decisions {\n \t\tfor _, anchor := range decision.Anchors {\n \t\t\tif bindings[anchor] {\n \t\t\t\tdecisions = append(decisions, decision)\n \t\t\t\tbreak\n \t\t\t}\n \t\t}\n \t}\n \tstatus := \"complete\"\n \tgaps := []string{}\n \tif len(requirements) == 0 {\n \t\tstatus, gaps = \"complete_with_gaps\", []string{\"NO_INTENT_LINK\"}\n \t}\n \treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"status\": status, \"symbol\": symbol, \"requirements\": requirements, \"tests\": tests, \"decisions\": decisions, \"gaps\": gaps})\n }\n \n func runGPSReview(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.base == \"\" {\n \t\treturn errors.New(\"review requires --base\")\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := intent.LoadRevision(ctx, repo, \"HEAD\")\n \tif err != nil {\n \t\treturn err\n \t}\n \tchanged, err := gitutil.ChangedFiles(ctx, repo, flags.base, \"HEAD\", nil)\n \tif err != nil {\n \t\treturn err\n \t}\n \tanchors := map[string]string{}\n \tfor _, binding := range set.Bindings {\n \t\tfor _, file := range changed {\n \t\t\tif binding.Selector.File == file.Path || binding.Selector.File == file.OldPath {\n \t\t\t\tanchors[binding.ID] = binding.Selector.File\n \t\t\t}\n \t\t}\n \t}\n \tvar requirements []map[string]string\n \tvar tests []intent.TestRef\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tif _, ok := anchors[anchor.ID]; ok {\n \t\t\t\trequirements = append(requirements, map[string]string{\"specification\": spec.ID, \"id\": anchor.Requirement, \"anchor\": anchor.ID, \"file\": anchors[anchor.ID]})\n \t\t\t\tfor _, acceptance := range spec.Acceptance {\n \t\t\t\t\tif acceptance.Requirement == anchor.Requirement {\n \t\t\t\t\t\tfor _, test := range spec.Tests {\n \t\t\t\t\t\t\tif test.Acceptance == acceptance.ID {\n \t\t\t\t\t\t\t\ttests = append(tests, test)\n \t\t\t\t\t\t\t}\n \t\t\t\t\t\t}\n \t\t\t\t\t}\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t}\n \treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"base\": flags.base, \"changed_files\": changed, \"requirements\": requirements, \"tests\": tests, \"disposition\": func() string {\n \t\tif len(requirements) > 0 {\n \t\t\treturn \"REVIEW_REQUIRED\"\n \t\t}\n \t\treturn \"PASS\"\n \t}()})\n }\n \n type gpsOptions struct {\n \trepo, format, id, symbol, file, query, base string\n \tupdate                                      bool\n \thead                                        bool\n \tmaxBytes                                    int\n }\n \n func gpsFlags(args []string) (string, gpsOptions, error) {\n \tflags := gpsOptions{format: \"json\", maxBytes: 12000}\n \tfor i := 0; i < len(args); i++ {\n \t\tvalue := func() (string, error) {\n \t\t\ti++\n \t\t\tif i >= len(args) {\n \t\t\t\treturn \"\", fmt.Errorf(\"%s requires a value\", args[i-1])\n \t\t\t}\n \t\t\treturn args[i], nil\n \t\t}\n \t\tswitch args[i] {\n \t\tcase \"--repo\", \"--format\", \"--id\", \"--symbol\", \"--file\", \"--query\", \"--base\", \"--max-context-bytes\":\n \t\t\tv, err := value()\n \t\t\tif err != nil {\n \t\t\t\treturn \"\", flags, err\n \t\t\t}\n \t\t\tswitch args[i-1] {\n \t\t\tcase \"--repo\":\n \t\t\t\tflags.repo = v\n \t\t\tcase \"--format\":\n \t\t\t\tflags.format = v\n \t\t\tcase \"--id\":\n \t\t\t\tflags.id = v\n \t\t\tcase \"--symbol\":\n \t\t\t\tflags.symbol = v\n \t\t\tcase \"--file\":\n \t\t\t\tflags.file = v\n \t\t\tcase \"--query\":\n \t\t\t\tflags.query = v\n \t\t\tcase \"--base\":\n \t\t\t\tflags.base = v\n \t\t\tdefault:\n \t\t\t\tif _, err := fmt.Sscan(v, &flags.maxBytes); err != nil || flags.maxBytes < 1 {\n \t\t\t\t\treturn \"\", flags, errors.New(\"--max-context-bytes requires a positive integer\")\n \t\t\t\t}\n \t\t\t}\n \t\tcase \"--head\":\n \t\t\tflags.head = true\n \t\tcase \"--update\":\n \t\t\tflags.update = true\n \t\tcase \"--json\":\n \t\t\tflags.format = \"json\"\n \t\tdefault:\n \t\t\treturn \"\", flags, fmt.Errorf(\"unexpected argument %q\", args[i])\n \t\t}\n \t}\n \tif flags.format != \"json\" && flags.format != \"text\" {\n \t\treturn \"\", flags, errors.New(\"--format must be json or text\")\n \t}\n \treturn \"\", flags, nil\n }\n func gpsIntent(ctx context.Context, repo string, head bool) (intent.Set, error) {\n \tif head {\n \t\treturn intent.LoadRevision(ctx, repo, \"HEAD\")\n \t}\n \treturn intent.Load(repo)\n }\n \n func gpsRepositoryView(ctx context.Context, repo string, head bool) map[string]string {\n \tif !head {\n \t\treturn map[string]string{\"kind\": \"working_tree\"}\n \t}\n \tcommit, tree, err := gitutil.HeadCommitAndTree(ctx, repo)\n \tif err != nil {\n \t\treturn map[string]string{\"kind\": \"committed\", \"status\": \"unavailable\"}\n \t}\n \treturn map[string]string{\"kind\": \"committed\", \"commit\": commit, \"tree\": tree}\n }\n \n func gpsSnapshot(ctx context.Context, opts Options, repo string, head bool) (sem.ProviderSnapshot, error) {\n \tsnapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{NoNetwork: true, Worktree: !head, Profile: sem.ProfileFull}, \"\", true)\n \treturn snapshot, err\n }\n func matchingSymbols(symbols []sem.SymbolRecord, name, file string) []sem.SymbolRecord {\n \tvar out []sem.SymbolRecord\n \tfor _, s := range symbols {\n \t\tif (s.QualifiedName == name || s.Name == name || s.ID == name) && (file == \"\" || s.FilePath == file) {\n \t\t\tout = append(out, s)\n \t\t}\n \t}\n \treturn out\n }\n func resolveBinding(binding intent.Binding, snapshot sem.ProviderSnapshot) map[string]any {\n \tfor _, s := range snapshot.Symbols {\n \t\tif s.ID != binding.SymbolID {\n \t\t\tcontinue\n \t\t}\n \t\tstate := \"VALID\"\n \t\tif binding.Baseline.SignatureHash != intent.Hash(s.Signature) || binding.Baseline.ContainerID != s.ContainerID {\n \t\t\tstate = \"STRUCTURAL_DRIFT\"\n \t\t} else if binding.Selector.File != s.FilePath || binding.Selector.Kind != s.Kind {\n \t\t\tstate = \"STRUCTURAL_DRIFT\"\n \t\t} else if binding.Baseline.BodyHash != s.BodyHash {\n \t\t\tstate = \"CONTENT_DRIFT\"\n \t\t}\n \t\treturn map[string]any{\"id\": binding.ID, \"state\": state, \"symbol\": s}\n \t}\n-\tcandidates := matchingSymbols(snapshot.Symbols, binding.Selector.QualifiedName, binding.Selector.File)\n+\t// A missing stable symbol ID may be a rename or move. Locate candidates by\n+\t// qualified name across paths, but never write a rebind without review.\n+\tcandidates := matchingSymbols(snapshot.Symbols, binding.Selector.QualifiedName, \"\")\n \tstate := \"MISSING\"\n \tif len(candidates) > 1 {\n \t\tstate = \"AMBIGUOUS\"\n \t} else if len(candidates) == 1 {\n \t\tstate = \"CANDIDATE_REBIND\"\n \t} else if incompleteAnchorPath(binding.Selector.File, snapshot.Header.PartialFailures) {\n \t\tstate = \"UNVERIFIABLE\"\n \t}\n \treturn map[string]any{\"id\": binding.ID, \"state\": state, \"candidates\": candidates}\n }\n \n func snapshotFileBlob(snapshot sem.ProviderSnapshot, path string) string {\n \tfor _, file := range snapshot.Files {\n \t\tif file.Path == path {\n \t\t\treturn file.Blob\n \t\t}\n \t}\n \treturn \"\"\n }\n \n func incompleteAnchorPath(path string, failures []sem.PartialFailure) bool {\n \tfor _, failure := range failures {\n \t\tif failure.FilePath == path || failure.FilePath == \"\" {\n \t\t\treturn true\n \t\t}\n \t}\n \treturn false\n }\n func matchingRequirements(set intent.Set, query string) []map[string]string {\n \twords := strings.Fields(strings.ToLower(query))\n \tvar out []map[string]string\n \tfor _, s := range set.Specs {\n \t\tfor _, r := range s.Requirements {\n \t\t\ttext := strings.ToLower(s.Title + \" \" + s.Intent + \" \" + r.ID + \" \" + r.Description)\n \t\t\tfor _, word := range words {\n \t\t\t\tif strings.Contains(text, word) {\n \t\t\t\t\tout = append(out, map[string]string{\"specification\": s.ID, \"id\": r.ID, \"description\": r.Description, \"reason\": \"lexical_match\"})\n \t\t\t\t\tbreak\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t}\n \tsort.Slice(out, func(i, j int) bool { return out[i][\"id\"] < out[j][\"id\"] })\n \treturn out\n }\n \n func acceptanceMatchesRequirement(spec intent.Spec, acceptanceID string, requirements map[string]bool) bool {\n \tfor _, acceptance := range spec.Acceptance {\n \t\tif acceptance.ID == acceptanceID {\n \t\t\treturn requirements[acceptance.Requirement]\n \t\t}\n \t}\n \treturn false\n }\n \n // fitGPSContextBudget preserves direct intent first and falls back to an explicit\n // minimal manifest when even that evidence cannot fit the caller's budget.\n func fitGPSContextBudget(response map[string]any, maximum int) {\n \tbudget := response[\"budget\"].(map[string]any)\n \tif renderedGPSJSONBytes(response) <= maximum {\n \t\tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n \t\treturn\n \t}\n \tresponse[\"symbols\"] = []any{}\n \tresponse[\"code\"] = []any{}\n \tresponse[\"dependencies\"] = []any{}\n \tresponse[\"tests\"] = []any{}\n \tbudget[\"omitted\"] = []string{\"symbols\", \"code\", \"dependencies\", \"tests\"}\n \tresponse[\"status\"] = \"complete_with_gaps\"\n \tresponse[\"gaps\"] = append(response[\"gaps\"].([]string), \"CONTEXT_OMITTED_FOR_BUDGET\")\n \tif renderedGPSJSONBytes(response) > maximum {\n \t\tresponse[\"requirements\"] = []map[string]string{}\n \t\tresponse[\"status\"] = \"BUDGET_TOO_SMALL\"\n \t\tresponse[\"gaps\"] = []string{\"BUDGET_TOO_SMALL\"}\n \t\tbudget[\"omitted\"] = []string{\"requirements\", \"symbols\", \"code\", \"dependencies\", \"tests\"}\n \t}\n \tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n }\n \n func renderedGPSJSONBytes(value any) int {\n \tvar out bytes.Buffer\n \tencoder := json.NewEncoder(termsafe.NewJSONWriter(&out))\n \tencoder.SetEscapeHTML(false)\n \tif err := encoder.Encode(value); err != nil {\n \t\treturn 0\n \t}\n \treturn out.Len()\n }\n \n func gpsEncode(opts Options, format string, value any) error {\n \tif format == \"json\" {\n \t\tencoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))\n \t\tencoder.SetEscapeHTML(false)\n \t\treturn encoder.Encode(value)\n \t}\n \tdata, err := json.MarshalIndent(value, \"\", \"  \")\n \tif err == nil {\n \t\t_, err = fmt.Fprintln(opts.Stdout, string(data))\n \t}\n \treturn err\n }\n",
-              "additions": 15,
-              "deletions": 5,
+              "patch": "Index: internal/cli/gps.go\n===================================================================\n--- internal/cli/gps.go\t\n+++ internal/cli/gps.go\t\n@@ -1,689 +1,699 @@\n package cli\n \n import (\n \t\"bytes\"\n \t\"context\"\n \t\"encoding/json\"\n \t\"errors\"\n \t\"fmt\"\n \t\"sort\"\n \t\"strings\"\n \n \t\"github.com/entireio/entire-graph/internal/gitutil\"\n \t\"github.com/entireio/entire-graph/internal/intent\"\n \t\"github.com/entireio/entire-graph/internal/sem\"\n \t\"github.com/entireio/entire-graph/internal/termsafe\"\n )\n \n const gpsSchemaVersion = \"1.0\"\n \n+const minimumGPSContextBytes = 512\n+\n func runSpec(ctx context.Context, opts Options, args []string) error {\n \tif len(args) == 0 {\n \t\treturn errors.New(\"spec requires init, list, show, validate, or relationships\")\n \t}\n \t_, flags, err := gpsFlags(args[1:])\n \tif err != nil {\n \t\treturn err\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif args[0] == \"init\" {\n \t\tif flags.head {\n \t\t\treturn errors.New(\"spec init cannot write a --head view\")\n \t\t}\n \t\treturn intent.Init(repo)\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tswitch args[0] {\n \tcase \"list\":\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"specifications\": set.Specs})\n \tcase \"show\":\n \t\tif flags.id == \"\" {\n \t\t\treturn errors.New(\"spec show requires --id\")\n \t\t}\n \t\tfor _, spec := range set.Specs {\n \t\t\tif spec.ID == flags.id {\n \t\t\t\treturn gpsEncode(opts, flags.format, spec)\n \t\t\t}\n \t\t}\n \t\treturn fmt.Errorf(\"specification %q not found\", flags.id)\n \tcase \"validate\":\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"valid\": true, \"intent_digest\": set.Digest, \"specifications\": len(set.Specs)})\n \tcase \"relationships\":\n \t\tif flags.id == \"\" {\n \t\t\treturn errors.New(\"spec relationships requires --id\")\n \t\t}\n \t\tfor _, spec := range set.Specs {\n \t\t\tif spec.ID == flags.id {\n \t\t\t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"id\": spec.ID, \"relationships\": spec.Relationships})\n \t\t\t}\n \t\t}\n \t\treturn fmt.Errorf(\"specification %q not found\", flags.id)\n \tdefault:\n \t\treturn fmt.Errorf(\"unknown spec command %q\", args[0])\n \t}\n }\n \n func runAnchor(ctx context.Context, opts Options, args []string) error {\n \tif len(args) == 0 {\n \t\treturn errors.New(\"anchor requires bind, list, or resolve\")\n \t}\n \tverb, flags, err := gpsFlags(args[1:])\n \t_ = verb\n \tif err != nil {\n \t\treturn err\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif args[0] == \"list\" {\n \t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"anchors\": set.Bindings})\n \t}\n \tif args[0] == \"bind\" {\n \t\tif flags.head {\n \t\t\treturn errors.New(\"anchor bind cannot write a --head view\")\n \t\t}\n \t\tif flags.id == \"\" || flags.symbol == \"\" {\n \t\t\treturn errors.New(\"anchor bind requires --id and --symbol\")\n \t\t}\n \t\tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n \t\tmatches := matchingSymbols(snapshot.Symbols, flags.symbol, flags.file)\n \t\tif len(matches) == 0 {\n \t\t\treturn fmt.Errorf(\"symbol %q not found\", flags.symbol)\n \t\t}\n \t\tif len(matches) > 1 {\n \t\t\treturn fmt.Errorf(\"symbol %q is ambiguous; pass --file\", flags.symbol)\n \t\t}\n \t\ts := matches[0]\n-\t\treturn intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash, FileBlob: snapshotFileBlob(snapshot, s.FilePath)}}, flags.update)\n+\t\treturn intent.SaveBinding(repo, intent.Binding{ID: flags.id, SymbolID: s.ID, Selector: intent.Selector{QualifiedName: s.QualifiedName, Kind: s.Kind, File: s.FilePath}, Baseline: intent.Baseline{Version: 1, SignatureHash: intent.Hash(s.Signature), ContainerID: s.ContainerID, BodyHash: s.BodyHash, FileBlob: snapshotFileBlob(snapshot, s.FilePath)}}, flags.update)\n \t}\n \tif args[0] == \"resolve\" {\n \t\tif flags.id == \"\" {\n \t\t\treturn errors.New(\"anchor resolve requires --id\")\n \t\t}\n \t\tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n \t\tfor _, binding := range set.Bindings {\n \t\t\tif binding.ID == flags.id {\n \t\t\t\treturn gpsEncode(opts, flags.format, resolveBinding(binding, snapshot))\n \t\t\t}\n \t\t}\n \t\treturn fmt.Errorf(\"anchor %q not found\", flags.id)\n \t}\n \treturn fmt.Errorf(\"unknown anchor command %q\", args[0])\n }\n \n func runGPSContext(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.query == \"\" {\n \t\treturn errors.New(\"context requires --query\")\n \t}\n+\tif flags.maxBytes < minimumGPSContextBytes {\n+\t\treturn fmt.Errorf(\"context --max-context-bytes must be at least %d\", minimumGPSContextBytes)\n+\t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \trequirements := matchingRequirements(set, flags.query)\n \tresponse := map[string]any{\"schema_version\": gpsSchemaVersion, \"request\": flags.query, \"intent_digest\": set.Digest, \"repository_view\": gpsRepositoryView(ctx, repo, flags.head), \"status\": \"complete\", \"requirements\": requirements, \"symbols\": []any{}, \"code\": []any{}, \"dependencies\": []any{}, \"tests\": []any{}, \"gaps\": []string{}, \"budget\": map[string]any{\"maximum_bytes\": flags.maxBytes, \"rendered_bytes\": 0, \"omitted\": []string{}}}\n \tif len(set.Specs) == 0 {\n \t\tresponse[\"status\"] = \"complete_with_gaps\"\n \t\tresponse[\"gaps\"] = []string{\"NO_SPECS\"}\n-\t\treturn gpsEncode(opts, flags.format, response)\n \t}\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tsearch, err := sem.SearchRepository(ctx, repo, opts.Version, flags.query, sem.SearchOptions{Worktree: !flags.head, Profile: sem.ProfileFull, TopK: 5, MaxContextBytes: flags.maxBytes, DisableCache: true})\n \tif err != nil {\n \t\treturn err\n \t}\n \tcode := make([]any, 0, len(search.Results))\n \tfor _, result := range search.Results {\n \t\tcode = append(code, map[string]any{\"reason\": \"ranked_code_search\", \"rank\": result.Rank, \"score\": result.Score, \"citation\": fmt.Sprintf(\"%s:%d\", result.FilePath, result.FocusLine), \"symbol_id\": result.SymbolID})\n \t}\n \tresponse[\"code\"] = code\n \tselected := make(map[string]bool, len(requirements))\n \tfor _, requirement := range requirements {\n \t\tselected[requirement[\"id\"]] = true\n \t}\n \tbindings := make(map[string]intent.Binding, len(set.Bindings))\n \tfor _, binding := range set.Bindings {\n \t\tbindings[binding.ID] = binding\n \t}\n \tvar symbols []any\n \tvar dependencies []any\n \tvar tests []any\n-\tvar gaps []string\n+\tgaps := response[\"gaps\"].([]string)\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tif !selected[anchor.Requirement] {\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tbinding, ok := bindings[anchor.ID]\n \t\t\tif !ok {\n \t\t\t\tgaps = append(gaps, \"UNBOUND_ANCHOR:\"+anchor.ID)\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tstate := resolveBinding(binding, snapshot)\n \t\t\tif state[\"state\"] != \"VALID\" {\n \t\t\t\tgaps = append(gaps, state[\"state\"].(string)+\":\"+anchor.ID)\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tsymbol := state[\"symbol\"].(sem.SymbolRecord)\n \t\t\tsymbols = append(symbols, map[string]any{\"anchor\": anchor.ID, \"requirement\": anchor.Requirement, \"reason\": \"approved_anchor\", \"citation\": fmt.Sprintf(\"%s:%d\", symbol.FilePath, symbol.StartLine), \"symbol\": symbol})\n \t\t\tfor _, relation := range snapshot.Relations {\n \t\t\t\tif relation.FromID == symbol.ID {\n \t\t\t\t\tdependencies = append(dependencies, map[string]any{\"reason\": \"anchor_callee\", \"type\": relation.Type, \"symbol_id\": relation.ToID})\n \t\t\t\t}\n \t\t\t\tif relation.ToID == symbol.ID {\n \t\t\t\t\tdependencies = append(dependencies, map[string]any{\"reason\": \"anchor_caller\", \"type\": relation.Type, \"symbol_id\": relation.FromID})\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t\tfor _, test := range spec.Tests {\n \t\t\tif !acceptanceMatchesRequirement(spec, test.Acceptance, selected) {\n \t\t\t\tcontinue\n \t\t\t}\n \t\t\tmatches := matchingSymbols(snapshot.Symbols, test.Selector.Name, \"\")\n \t\t\tif len(matches) == 1 {\n \t\t\t\ttests = append(tests, map[string]any{\"id\": test.ID, \"acceptance\": test.Acceptance, \"reason\": \"declared_mapping\", \"symbol\": matches[0]})\n \t\t\t} else {\n \t\t\t\tgaps = append(gaps, \"DECLARED_TEST_UNRESOLVED:\"+test.ID)\n \t\t\t}\n \t\t}\n \t}\n \tsort.Strings(gaps)\n \tresponse[\"symbols\"] = symbols\n \tresponse[\"dependencies\"] = dependencies\n \tresponse[\"tests\"] = tests\n \tresponse[\"gaps\"] = gaps\n \tif len(gaps) > 0 {\n \t\tresponse[\"status\"] = \"complete_with_gaps\"\n \t}\n \tfitGPSContextBudget(response, flags.maxBytes)\n \treturn gpsEncode(opts, flags.format, response)\n }\n \n func runGPSCheck(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.base != \"\" && !flags.head {\n \t\treturn errors.New(\"check --base requires --head so code and intent use one committed view\")\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif len(set.Specs) == 0 {\n-\t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"disposition\": \"NOT_CONFIGURED\", \"findings\": []any{}})\n+\t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"repository_view\": gpsRepositoryView(ctx, repo, flags.head), \"change_delta\": \"not_requested\", \"disposition\": \"NOT_CONFIGURED\", \"findings\": []any{}})\n \t}\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tfindings := make([]map[string]any, 0)\n \tif len(snapshot.Header.PartialFailures) != 0 || snapshot.Header.Stats.CompletenessLevel != \"ok\" {\n \t\tfindings = append(findings, map[string]any{\"id\": \"GPS-COMPLETENESS-INCOMPLETE\", \"severity\": \"incomplete\", \"subject\": \"graph\", \"message\": \"selected graph has partial or incomplete analysis\"})\n \t}\n \tif flags.base != \"\" {\n \t\tbaseSet, err := intent.LoadRevision(ctx, repo, flags.base)\n \t\tif err != nil {\n \t\t\treturn fmt.Errorf(\"load base intent: %w\", err)\n \t\t}\n \t\tchanged, err := gitutil.ChangedFiles(ctx, repo, flags.base, \"HEAD\", nil)\n \t\tif err != nil {\n \t\t\treturn fmt.Errorf(\"compare base revision: %w\", err)\n \t\t}\n \t\tif baseSet.Digest != set.Digest {\n \t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-INTENT\", \"severity\": \"warning\", \"subject\": \"intent\", \"message\": \"selected intent differs from base revision\"})\n \t\t}\n \t\tcurrentTests := map[string]bool{}\n \t\tfor _, spec := range set.Specs {\n \t\t\tfor _, test := range spec.Tests {\n \t\t\t\tcurrentTests[test.ID] = true\n \t\t\t}\n \t\t}\n \t\tfor _, spec := range baseSet.Specs {\n \t\t\tfor _, test := range spec.Tests {\n \t\t\t\tif !currentTests[test.ID] {\n \t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-MAPPING-REMOVED\", \"severity\": \"warning\", \"subject\": test.ID, \"message\": \"declared test mapping was removed since base revision\"})\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t\tintentChanged, codeChanged := false, false\n \t\tfor _, file := range changed {\n \t\t\tif strings.HasPrefix(file.Path, intent.Root+\"/\") || strings.HasPrefix(file.OldPath, intent.Root+\"/\") {\n \t\t\t\tintentChanged = true\n \t\t\t} else {\n \t\t\t\tcodeChanged = true\n \t\t\t}\n \t\t\tfor _, binding := range set.Bindings {\n \t\t\t\tif binding.Selector.File == file.Path || binding.Selector.File == file.OldPath {\n \t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-ANCHOR\", \"severity\": \"warning\", \"subject\": binding.ID, \"message\": \"anchored implementation changed since base revision\"})\n \t\t\t\t}\n \t\t\t}\n \t\t\tfor _, spec := range set.Specs {\n \t\t\t\tfor _, test := range spec.Tests {\n \t\t\t\t\tfor _, symbol := range matchingSymbols(snapshot.Symbols, test.Selector.Name, \"\") {\n \t\t\t\t\t\tif symbol.FilePath == file.Path || symbol.FilePath == file.OldPath {\n \t\t\t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-TEST\", \"severity\": \"warning\", \"subject\": test.ID, \"message\": \"declared test implementation changed since base revision\"})\n \t\t\t\t\t\t}\n \t\t\t\t\t}\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t\tif intentChanged && !codeChanged {\n \t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-SPEC-ONLY\", \"severity\": \"warning\", \"subject\": \"intent\", \"message\": \"specification changed without implementation changes\"})\n \t\t}\n \t\tif codeChanged && !intentChanged {\n \t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-DELTA-CODE-ONLY\", \"severity\": \"warning\", \"subject\": \"code\", \"message\": \"implementation changed without specification changes\"})\n \t\t}\n \t}\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tfound := false\n \t\t\tfor _, binding := range set.Bindings {\n \t\t\t\tif binding.ID != anchor.ID {\n \t\t\t\t\tcontinue\n \t\t\t\t}\n \t\t\t\tfound = true\n \t\t\t\tstate := resolveBinding(binding, snapshot)\n \t\t\t\tif state[\"state\"] != \"VALID\" {\n \t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-ANCHOR-\" + state[\"state\"].(string), \"severity\": \"warning\", \"subject\": anchor.ID, \"message\": state[\"state\"]})\n \t\t\t\t}\n \t\t\t}\n \t\t\tif !found {\n \t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-ANCHOR-UNBOUND\", \"severity\": \"warning\", \"subject\": anchor.ID, \"message\": \"declared anchor has no reviewed binding\"})\n \t\t\t}\n \t\t}\n \t\tfor _, acceptance := range spec.Acceptance {\n \t\t\tmapped := false\n \t\t\tfor _, test := range spec.Tests {\n \t\t\t\tif test.Acceptance == acceptance.ID {\n \t\t\t\t\tmapped = true\n \t\t\t\t\tmatches := matchingSymbols(snapshot.Symbols, test.Selector.Name, \"\")\n \t\t\t\t\tif len(matches) != 1 {\n \t\t\t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-MAPPING-UNRESOLVED\", \"severity\": \"warning\", \"subject\": test.ID, \"message\": \"declared test selector does not resolve to exactly one symbol\"})\n \t\t\t\t\t}\n \t\t\t\t}\n \t\t\t}\n \t\t\tif !mapped {\n \t\t\t\tfindings = append(findings, map[string]any{\"id\": \"GPS-MAPPING-MISSING\", \"severity\": \"warning\", \"subject\": acceptance.ID, \"message\": \"acceptance criterion has no declared test\"})\n \t\t\t}\n \t\t}\n \t}\n \tdisposition := \"PASS\"\n \tfor _, finding := range findings {\n \t\tif finding[\"severity\"] == \"incomplete\" {\n \t\t\tdisposition = \"INCOMPLETE\"\n \t\t\tbreak\n \t\t}\n \t\tif finding[\"severity\"] == \"error\" {\n \t\t\tdisposition = \"FAIL\"\n \t\t\tbreak\n \t\t}\n \t\tdisposition = \"REVIEW_REQUIRED\"\n \t}\n-\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"repository_view\": gpsRepositoryView(ctx, repo, flags.head), \"disposition\": disposition, \"findings\": findings})\n+\tchangeDelta := \"not_requested\"\n+\tif flags.base != \"\" {\n+\t\tchangeDelta = \"compared\"\n+\t}\n+\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"intent_digest\": set.Digest, \"repository_view\": gpsRepositoryView(ctx, repo, flags.head), \"change_delta\": changeDelta, \"disposition\": disposition, \"findings\": findings})\n }\n \n func runGPSWhy(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.symbol == \"\" {\n \t\treturn errors.New(\"why requires --symbol\")\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := gpsIntent(ctx, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tsnapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n \tif err != nil {\n \t\treturn err\n \t}\n \tmatches := matchingSymbols(snapshot.Symbols, flags.symbol, flags.file)\n \tif len(matches) != 1 {\n \t\tif len(matches) == 0 {\n \t\t\treturn fmt.Errorf(\"symbol %q not found\", flags.symbol)\n \t\t}\n \t\treturn fmt.Errorf(\"symbol %q is ambiguous; pass --file\", flags.symbol)\n \t}\n \tsymbol := matches[0]\n \tbindings := map[string]bool{}\n \tfor _, binding := range set.Bindings {\n \t\tif binding.SymbolID == symbol.ID {\n \t\t\tbindings[binding.ID] = true\n \t\t}\n \t}\n \tvar requirements []map[string]string\n \tvar tests []map[string]string\n \tvar decisions []intent.Decision\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tif bindings[anchor.ID] {\n \t\t\t\trequirements = append(requirements, map[string]string{\"specification\": spec.ID, \"id\": anchor.Requirement, \"anchor\": anchor.ID, \"authority\": \"developer_confirmed\"})\n \t\t\t}\n \t\t}\n \t\tfor _, test := range spec.Tests {\n \t\t\tfor _, acceptance := range spec.Acceptance {\n \t\t\t\tif test.Acceptance != acceptance.ID {\n \t\t\t\t\tcontinue\n \t\t\t\t}\n \t\t\t\tfor _, requirement := range requirements {\n \t\t\t\t\tif requirement[\"specification\"] == spec.ID && requirement[\"id\"] == acceptance.Requirement {\n \t\t\t\t\t\ttests = append(tests, map[string]string{\"id\": test.ID, \"acceptance\": test.Acceptance, \"selector\": test.Selector.Name, \"authority\": \"declared\"})\n \t\t\t\t\t}\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t}\n \tfor _, decision := range set.Decisions {\n \t\tfor _, anchor := range decision.Anchors {\n \t\t\tif bindings[anchor] {\n \t\t\t\tdecisions = append(decisions, decision)\n \t\t\t\tbreak\n \t\t\t}\n \t\t}\n \t}\n \tstatus := \"complete\"\n \tgaps := []string{}\n \tif len(requirements) == 0 {\n \t\tstatus, gaps = \"complete_with_gaps\", []string{\"NO_INTENT_LINK\"}\n \t}\n \treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"status\": status, \"symbol\": symbol, \"requirements\": requirements, \"tests\": tests, \"decisions\": decisions, \"gaps\": gaps})\n }\n \n func runGPSReview(ctx context.Context, opts Options, args []string) error {\n \t_, flags, err := gpsFlags(args)\n \tif err != nil {\n \t\treturn err\n \t}\n \tif flags.base == \"\" {\n \t\treturn errors.New(\"review requires --base\")\n \t}\n \trepo, err := resolveRepo(ctx, opts.Env, flags.repo)\n \tif err != nil {\n \t\treturn err\n \t}\n \tset, err := intent.LoadRevision(ctx, repo, \"HEAD\")\n \tif err != nil {\n \t\treturn err\n \t}\n \tchanged, err := gitutil.ChangedFiles(ctx, repo, flags.base, \"HEAD\", nil)\n \tif err != nil {\n \t\treturn err\n \t}\n \tanchors := map[string]string{}\n \tfor _, binding := range set.Bindings {\n \t\tfor _, file := range changed {\n \t\t\tif binding.Selector.File == file.Path || binding.Selector.File == file.OldPath {\n \t\t\t\tanchors[binding.ID] = binding.Selector.File\n \t\t\t}\n \t\t}\n \t}\n \tvar requirements []map[string]string\n \tvar tests []intent.TestRef\n \tfor _, spec := range set.Specs {\n \t\tfor _, anchor := range spec.Anchors {\n \t\t\tif _, ok := anchors[anchor.ID]; ok {\n \t\t\t\trequirements = append(requirements, map[string]string{\"specification\": spec.ID, \"id\": anchor.Requirement, \"anchor\": anchor.ID, \"file\": anchors[anchor.ID]})\n \t\t\t\tfor _, acceptance := range spec.Acceptance {\n \t\t\t\t\tif acceptance.Requirement == anchor.Requirement {\n \t\t\t\t\t\tfor _, test := range spec.Tests {\n \t\t\t\t\t\t\tif test.Acceptance == acceptance.ID {\n \t\t\t\t\t\t\t\ttests = append(tests, test)\n \t\t\t\t\t\t\t}\n \t\t\t\t\t\t}\n \t\t\t\t\t}\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t}\n \treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"base\": flags.base, \"changed_files\": changed, \"requirements\": requirements, \"tests\": tests, \"disposition\": func() string {\n \t\tif len(requirements) > 0 {\n \t\t\treturn \"REVIEW_REQUIRED\"\n \t\t}\n \t\treturn \"PASS\"\n \t}()})\n }\n \n type gpsOptions struct {\n \trepo, format, id, symbol, file, query, base string\n \tupdate                                      bool\n \thead                                        bool\n \tmaxBytes                                    int\n }\n \n func gpsFlags(args []string) (string, gpsOptions, error) {\n \tflags := gpsOptions{format: \"json\", maxBytes: 12000}\n \tfor i := 0; i < len(args); i++ {\n \t\tvalue := func() (string, error) {\n \t\t\ti++\n \t\t\tif i >= len(args) {\n \t\t\t\treturn \"\", fmt.Errorf(\"%s requires a value\", args[i-1])\n \t\t\t}\n \t\t\treturn args[i], nil\n \t\t}\n \t\tswitch args[i] {\n \t\tcase \"--repo\", \"--format\", \"--id\", \"--symbol\", \"--file\", \"--query\", \"--base\", \"--max-context-bytes\":\n \t\t\tv, err := value()\n \t\t\tif err != nil {\n \t\t\t\treturn \"\", flags, err\n \t\t\t}\n \t\t\tswitch args[i-1] {\n \t\t\tcase \"--repo\":\n \t\t\t\tflags.repo = v\n \t\t\tcase \"--format\":\n \t\t\t\tflags.format = v\n \t\t\tcase \"--id\":\n \t\t\t\tflags.id = v\n \t\t\tcase \"--symbol\":\n \t\t\t\tflags.symbol = v\n \t\t\tcase \"--file\":\n \t\t\t\tflags.file = v\n \t\t\tcase \"--query\":\n \t\t\t\tflags.query = v\n \t\t\tcase \"--base\":\n \t\t\t\tflags.base = v\n \t\t\tdefault:\n \t\t\t\tif _, err := fmt.Sscan(v, &flags.maxBytes); err != nil || flags.maxBytes < 1 {\n \t\t\t\t\treturn \"\", flags, errors.New(\"--max-context-bytes requires a positive integer\")\n \t\t\t\t}\n \t\t\t}\n \t\tcase \"--head\":\n \t\t\tflags.head = true\n \t\tcase \"--update\":\n \t\t\tflags.update = true\n \t\tcase \"--json\":\n \t\t\tflags.format = \"json\"\n \t\tdefault:\n \t\t\treturn \"\", flags, fmt.Errorf(\"unexpected argument %q\", args[i])\n \t\t}\n \t}\n \tif flags.format != \"json\" && flags.format != \"text\" {\n \t\treturn \"\", flags, errors.New(\"--format must be json or text\")\n \t}\n \treturn \"\", flags, nil\n }\n func gpsIntent(ctx context.Context, repo string, head bool) (intent.Set, error) {\n \tif head {\n \t\treturn intent.LoadRevision(ctx, repo, \"HEAD\")\n \t}\n \treturn intent.Load(repo)\n }\n \n func gpsRepositoryView(ctx context.Context, repo string, head bool) map[string]string {\n \tif !head {\n \t\treturn map[string]string{\"kind\": \"working_tree\"}\n \t}\n \tcommit, tree, err := gitutil.HeadCommitAndTree(ctx, repo)\n \tif err != nil {\n \t\treturn map[string]string{\"kind\": \"committed\", \"status\": \"unavailable\"}\n \t}\n \treturn map[string]string{\"kind\": \"committed\", \"commit\": commit, \"tree\": tree}\n }\n \n func gpsSnapshot(ctx context.Context, opts Options, repo string, head bool) (sem.ProviderSnapshot, error) {\n \tsnapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{NoNetwork: true, Worktree: !head, Profile: sem.ProfileFull}, \"\", true)\n \treturn snapshot, err\n }\n func matchingSymbols(symbols []sem.SymbolRecord, name, file string) []sem.SymbolRecord {\n \tvar out []sem.SymbolRecord\n \tfor _, s := range symbols {\n \t\tif (s.QualifiedName == name || s.Name == name || s.ID == name) && (file == \"\" || s.FilePath == file) {\n \t\t\tout = append(out, s)\n \t\t}\n \t}\n \treturn out\n }\n func resolveBinding(binding intent.Binding, snapshot sem.ProviderSnapshot) map[string]any {\n \tfor _, s := range snapshot.Symbols {\n \t\tif s.ID != binding.SymbolID {\n \t\t\tcontinue\n \t\t}\n \t\tstate := \"VALID\"\n \t\tif binding.Baseline.SignatureHash != intent.Hash(s.Signature) || binding.Baseline.ContainerID != s.ContainerID {\n \t\t\tstate = \"STRUCTURAL_DRIFT\"\n \t\t} else if binding.Selector.File != s.FilePath || binding.Selector.Kind != s.Kind {\n \t\t\tstate = \"STRUCTURAL_DRIFT\"\n \t\t} else if binding.Baseline.BodyHash != s.BodyHash {\n \t\t\tstate = \"CONTENT_DRIFT\"\n \t\t}\n \t\treturn map[string]any{\"id\": binding.ID, \"state\": state, \"symbol\": s}\n \t}\n-\tcandidates := matchingSymbols(snapshot.Symbols, binding.Selector.QualifiedName, binding.Selector.File)\n+\t// A missing stable symbol ID may be a rename or move. Locate candidates by\n+\t// qualified name across paths, but never write a rebind without review.\n+\tcandidates := matchingSymbols(snapshot.Symbols, binding.Selector.QualifiedName, \"\")\n \tstate := \"MISSING\"\n \tif len(candidates) > 1 {\n \t\tstate = \"AMBIGUOUS\"\n \t} else if len(candidates) == 1 {\n \t\tstate = \"CANDIDATE_REBIND\"\n \t} else if incompleteAnchorPath(binding.Selector.File, snapshot.Header.PartialFailures) {\n \t\tstate = \"UNVERIFIABLE\"\n \t}\n \treturn map[string]any{\"id\": binding.ID, \"state\": state, \"candidates\": candidates}\n }\n \n func snapshotFileBlob(snapshot sem.ProviderSnapshot, path string) string {\n \tfor _, file := range snapshot.Files {\n \t\tif file.Path == path {\n \t\t\treturn file.Blob\n \t\t}\n \t}\n \treturn \"\"\n }\n \n func incompleteAnchorPath(path string, failures []sem.PartialFailure) bool {\n \tfor _, failure := range failures {\n \t\tif failure.FilePath == path || failure.FilePath == \"\" {\n \t\t\treturn true\n \t\t}\n \t}\n \treturn false\n }\n func matchingRequirements(set intent.Set, query string) []map[string]string {\n \twords := strings.Fields(strings.ToLower(query))\n \tvar out []map[string]string\n \tfor _, s := range set.Specs {\n \t\tfor _, r := range s.Requirements {\n \t\t\ttext := strings.ToLower(s.Title + \" \" + s.Intent + \" \" + r.ID + \" \" + r.Description)\n \t\t\tfor _, word := range words {\n \t\t\t\tif strings.Contains(text, word) {\n \t\t\t\t\tout = append(out, map[string]string{\"specification\": s.ID, \"id\": r.ID, \"description\": r.Description, \"reason\": \"lexical_match\"})\n \t\t\t\t\tbreak\n \t\t\t\t}\n \t\t\t}\n \t\t}\n \t}\n \tsort.Slice(out, func(i, j int) bool { return out[i][\"id\"] < out[j][\"id\"] })\n \treturn out\n }\n \n func acceptanceMatchesRequirement(spec intent.Spec, acceptanceID string, requirements map[string]bool) bool {\n \tfor _, acceptance := range spec.Acceptance {\n \t\tif acceptance.ID == acceptanceID {\n \t\t\treturn requirements[acceptance.Requirement]\n \t\t}\n \t}\n \treturn false\n }\n \n // fitGPSContextBudget preserves direct intent first and falls back to an explicit\n // minimal manifest when even that evidence cannot fit the caller's budget.\n func fitGPSContextBudget(response map[string]any, maximum int) {\n \tbudget := response[\"budget\"].(map[string]any)\n \tif renderedGPSJSONBytes(response) <= maximum {\n \t\tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n \t\treturn\n \t}\n \tresponse[\"symbols\"] = []any{}\n \tresponse[\"code\"] = []any{}\n \tresponse[\"dependencies\"] = []any{}\n \tresponse[\"tests\"] = []any{}\n \tbudget[\"omitted\"] = []string{\"symbols\", \"code\", \"dependencies\", \"tests\"}\n \tresponse[\"status\"] = \"complete_with_gaps\"\n \tresponse[\"gaps\"] = append(response[\"gaps\"].([]string), \"CONTEXT_OMITTED_FOR_BUDGET\")\n \tif renderedGPSJSONBytes(response) > maximum {\n \t\tresponse[\"requirements\"] = []map[string]string{}\n \t\tresponse[\"status\"] = \"BUDGET_TOO_SMALL\"\n \t\tresponse[\"gaps\"] = []string{\"BUDGET_TOO_SMALL\"}\n \t\tbudget[\"omitted\"] = []string{\"requirements\", \"symbols\", \"code\", \"dependencies\", \"tests\"}\n \t}\n \tbudget[\"rendered_bytes\"] = renderedGPSJSONBytes(response)\n }\n \n func renderedGPSJSONBytes(value any) int {\n \tvar out bytes.Buffer\n \tencoder := json.NewEncoder(termsafe.NewJSONWriter(&out))\n \tencoder.SetEscapeHTML(false)\n \tif err := encoder.Encode(value); err != nil {\n \t\treturn 0\n \t}\n \treturn out.Len()\n }\n \n func gpsEncode(opts Options, format string, value any) error {\n \tif format == \"json\" {\n \t\tencoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))\n \t\tencoder.SetEscapeHTML(false)\n \t\treturn encoder.Encode(value)\n \t}\n \tdata, err := json.MarshalIndent(value, \"\", \"  \")\n \tif err == nil {\n \t\t_, err = fmt.Fprintln(opts.Stdout, string(data))\n \t}\n \treturn err\n }\n",
+              "additions": 16,
+              "deletions": 6,
               "status": "modified"
             },
             {
@@ -30748,19 +30748,22 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 58945,
+          "input": 945,
+          "output": 138,
+          "reasoning": 6,
           "cache": {
-            "read": 0,
-            "write": 0
+            "write": 0,
+            "read": 57856
           }
         },
         "modelID": "gpt-5.6-terra-fast",
         "providerID": "openai",
         "time": {
-          "created": 1788679438008
+          "created": 1788679438008,
+          "completed": 1788679461688
         },
+        "finish": "tool-calls",
         "id": "msg_0759a3eb8001IShHs7ho7RTwpa",
         "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
       },
@@ -30794,17 +30797,22 @@
           "tool": "bash",
           "callID": "call_4hT6UHr4LuDizW3x8jgHvP5o",
           "state": {
-            "metadata": {
-              "output": "ok  \tgithub.com/entireio/entire-graph/internal/cli\t0.116s\n"
-            },
-            "status": "running",
+            "status": "completed",
             "input": {
               "command": "gofmt -w internal/cli/gps.go internal/cli/gps_test.go && go test ./internal/cli -run 'TestGPS|TestResolveBinding' && go build ./cmd/entire-graph && git diff --check && git add internal/cli/gps.go internal/cli/gps_test.go && git commit -m \"test(gps): cover fallback and delta contracts\" && ENTIRE_TOKEN_STORE=file git push origin docs/gps-design",
               "workdir": "/home/farhan/entire-graph/entire-graph",
               "timeout": 120000
             },
+            "output": "ok  \tgithub.com/entireio/entire-graph/internal/cli\t0.116s\n[docs/gps-design 9b11616] test(gps): cover fallback and delta contracts\n 2 files changed, 40 insertions(+), 1 deletion(-)\n[entire] Pushing entire/checkpoints/v1 to origin...... done\nremote: Receiving objects...        \rremote: Receiving objects: 11.4 KiB (294.8 KiB/s), done.        \nremote: Storing objects: 6 (3 replicas), done.        \nTo entire://aws-ap-south-1.entire.io/gh/saranmahadev/entire-graph\n   c4de129..9b11616  docs/gps-design -> docs/gps-design\n",
+            "metadata": {
+              "output": "ok  \tgithub.com/entireio/entire-graph/internal/cli\t0.116s\n[docs/gps-design 9b11616] test(gps): cover fallback and delta contracts\n 2 files changed, 40 insertions(+), 1 deletion(-)\n[entire] Pushing entire/checkpoints/v1 to origin...... done\nremote: Receiving objects...        \rremote: Receiving objects: 11.4 KiB (294.8 KiB/s), done.        \nremote: Storing objects: 6 (3 replicas), done.        \nTo entire://aws-ap-south-1.entire.io/gh/saranmahadev/entire-graph\n   c4de129..9b11616  docs/gps-design -> docs/gps-design\n",
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "gofmt -w internal/cli/gps.go internal/cli/gps_test.go && go test ./internal/cli -run 'TestGPS|TestResolveBinding' && go build ./cmd/entire-graph && git diff --check && git add internal/cli/gps.go internal/cli/gps_test.go && git commit -m \"test(gps): cover fallback and delta contracts\" && ENTIRE_TOKEN_STORE=file git push origin docs/gps-design",
             "time": {
-              "start": 1788679443365
+              "start": 1788679443365,
+              "end": 1788679461643
             }
           },
           "metadata": {
@@ -30815,6 +30823,721 @@
           "id": "prt_0759a4aff001MPKI1kRQxrgDMz",
           "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
           "messageID": "msg_0759a3eb8001IShHs7ho7RTwpa"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "6b191c2022958d76c404daf627530a6bc1805d56",
+          "type": "step-finish",
+          "tokens": {
+            "total": 58945,
+            "input": 945,
+            "output": 138,
+            "reasoning": 6,
+            "cache": {
+              "write": 0,
+              "read": 57856
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759a9b23001VEjsIca7eXGV8l",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759a3eb8001IShHs7ho7RTwpa"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07597093e001khpoyuvumhpjBm",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 59433,
+          "input": 1265,
+          "output": 218,
+          "reasoning": 94,
+          "cache": {
+            "write": 0,
+            "read": 57856
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788679461718,
+          "completed": 1788679468140
+        },
+        "finish": "tool-calls",
+        "id": "msg_0759a9b56001ek2EzmtB36oL8t",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "6b191c2022958d76c404daf627530a6bc1805d56",
+          "type": "step-start",
+          "id": "prt_0759aa418001UWyaLD5MmtpxHO",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759a9b56001ek2EzmtB36oL8t"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Planning MVP validation and docs additions**",
+          "time": {
+            "start": 1788679463963,
+            "end": 1788679465565
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_039dd4368ff1e68a016a9d1527dc5087d0be698c5627207f79",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_0759aa41b001zvccTaK7x0EFmQ",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759a9b56001ek2EzmtB36oL8t"
+        },
+        {
+          "type": "text",
+          "text": "Pushed `9b11616`. The fallback and no-base contracts now have focused regression coverage. I’m closing an output-consistency hole next: even `NOT_CONFIGURED` checks must report their selected repository view and delta state.",
+          "time": {
+            "start": 1788679465567,
+            "end": 1788679465867
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "msg_039dd4368ff1e68a016a9d1529622087d0b537219e1cec50d8",
+              "phase": "commentary"
+            }
+          },
+          "id": "prt_0759aaa5f001HQ0kB5i03EkCh8",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759a9b56001ek2EzmtB36oL8t"
+        },
+        {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_iKUpYbziYcsZe5SsxBjtRMfd",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: internal/cli/gps.go\n@@\n \tif len(set.Specs) == 0 {\n-\t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"disposition\": \"NOT_CONFIGURED\", \"findings\": []any{}})\n+\t\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"repository_view\": gpsRepositoryView(ctx, repo, flags.head), \"change_delta\": \"not_requested\", \"disposition\": \"NOT_CONFIGURED\", \"findings\": []any{}})\n \t}\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM internal/cli/gps.go",
+            "metadata": {
+              "diff": "Index: /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n===================================================================\n--- /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n+++ /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n@@ -246,9 +246,9 @@\n if err != nil {\n \treturn err\n }\n if len(set.Specs) == 0 {\n-\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"disposition\": \"NOT_CONFIGURED\", \"findings\": []any{}})\n+\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"repository_view\": gpsRepositoryView(ctx, repo, flags.head), \"change_delta\": \"not_requested\", \"disposition\": \"NOT_CONFIGURED\", \"findings\": []any{}})\n }\n snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n if err != nil {\n \treturn err\n\n",
+              "files": [
+                {
+                  "filePath": "/home/farhan/entire-graph/entire-graph/internal/cli/gps.go",
+                  "relativePath": "internal/cli/gps.go",
+                  "type": "update",
+                  "patch": "Index: /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n===================================================================\n--- /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n+++ /home/farhan/entire-graph/entire-graph/internal/cli/gps.go\n@@ -246,9 +246,9 @@\n if err != nil {\n \treturn err\n }\n if len(set.Specs) == 0 {\n-\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"disposition\": \"NOT_CONFIGURED\", \"findings\": []any{}})\n+\treturn gpsEncode(opts, flags.format, map[string]any{\"schema_version\": gpsSchemaVersion, \"repository_view\": gpsRepositoryView(ctx, repo, flags.head), \"change_delta\": \"not_requested\", \"disposition\": \"NOT_CONFIGURED\", \"findings\": []any{}})\n }\n snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)\n if err != nil {\n \treturn err\n",
+                  "additions": 1,
+                  "deletions": 1
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM internal/cli/gps.go",
+            "time": {
+              "start": 1788679467887,
+              "end": 1788679467893
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_039dd4368ff1e68a016a9d1529c57c87d0aad71e7c988066f1"
+            }
+          },
+          "id": "prt_0759aab8d001n8cbEhmSeWQUZ7",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759a9b56001ek2EzmtB36oL8t"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-finish",
+          "tokens": {
+            "total": 59433,
+            "input": 1265,
+            "output": 218,
+            "reasoning": 94,
+            "cache": {
+              "write": 0,
+              "read": 57856
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759ab456001Lq0NiykkR7VZEe",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759a9b56001ek2EzmtB36oL8t"
+        },
+        {
+          "type": "patch",
+          "hash": "6b191c2022958d76c404daf627530a6bc1805d56",
+          "files": [
+            "/home/farhan/entire-graph/entire-graph/internal/cli/gps.go"
+          ],
+          "id": "prt_0759ab4680014xo0ivmSJc5DiI",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759a9b56001ek2EzmtB36oL8t"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07597093e001khpoyuvumhpjBm",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 59587,
+          "input": 578,
+          "output": 120,
+          "reasoning": 9,
+          "cache": {
+            "write": 0,
+            "read": 58880
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788679468168,
+          "completed": 1788679489315
+        },
+        "finish": "tool-calls",
+        "id": "msg_0759ab4870013yIH3GkZPKdo61",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-start",
+          "id": "prt_0759abc6f001MEvWqCc5IHtbVJ",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759ab4870013yIH3GkZPKdo61"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Planning test execution**",
+          "time": {
+            "start": 1788679470193,
+            "end": 1788679470848
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0463737920b4e7d0016a9d152e18cc87d0bde586f667a62a43",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_0759abc710017jePmg50TtLzUC",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759ab4870013yIH3GkZPKdo61"
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_Q1xnBBtLSf76m6iXloA7xztQ",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "gofmt -w internal/cli/gps.go && go test ./internal/cli -run 'TestGPS' && go build ./cmd/entire-graph && git diff --check && git add internal/cli/gps.go && git commit -m \"fix(gps): identify unconfigured check views\" && ENTIRE_TOKEN_STORE=file git push origin docs/gps-design",
+              "workdir": "/home/farhan/entire-graph/entire-graph",
+              "timeout": 120000
+            },
+            "output": "ok  \tgithub.com/entireio/entire-graph/internal/cli\t0.120s\n[docs/gps-design a2c7884] fix(gps): identify unconfigured check views\n 1 file changed, 1 insertion(+), 1 deletion(-)\n[entire] Pushing entire/checkpoints/v1 to origin...... done\nremote: Receiving objects...        \rremote: Receiving objects: 9.8 KiB (706.8 KiB/s), done.        \nremote: Storing objects: 5 (3 replicas), done.        \nTo entire://aws-ap-south-1.entire.io/gh/saranmahadev/entire-graph\n   9b11616..a2c7884  docs/gps-design -> docs/gps-design\n",
+            "metadata": {
+              "output": "ok  \tgithub.com/entireio/entire-graph/internal/cli\t0.120s\n[docs/gps-design a2c7884] fix(gps): identify unconfigured check views\n 1 file changed, 1 insertion(+), 1 deletion(-)\n[entire] Pushing entire/checkpoints/v1 to origin...... done\nremote: Receiving objects...        \rremote: Receiving objects: 9.8 KiB (706.8 KiB/s), done.        \nremote: Storing objects: 5 (3 replicas), done.        \nTo entire://aws-ap-south-1.entire.io/gh/saranmahadev/entire-graph\n   9b11616..a2c7884  docs/gps-design -> docs/gps-design\n",
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "gofmt -w internal/cli/gps.go && go test ./internal/cli -run 'TestGPS' && go build ./cmd/entire-graph && git diff --check && git add internal/cli/gps.go && git commit -m \"fix(gps): identify unconfigured check views\" && ENTIRE_TOKEN_STORE=file git push origin docs/gps-design",
+            "time": {
+              "start": 1788679471899,
+              "end": 1788679489254
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0463737920b4e7d0016a9d152ea32c87d0a8bb7cc91e52394c"
+            }
+          },
+          "id": "prt_0759abf02001wlAbGXFrXPKvyO",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759ab4870013yIH3GkZPKdo61"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-finish",
+          "tokens": {
+            "total": 59587,
+            "input": 578,
+            "output": 120,
+            "reasoning": 9,
+            "cache": {
+              "write": 0,
+              "read": 58880
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759b07010014Y3fOLBf4ZLj9R",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759ab4870013yIH3GkZPKdo61"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07597093e001khpoyuvumhpjBm",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 59879,
+          "input": 884,
+          "output": 86,
+          "reasoning": 29,
+          "cache": {
+            "write": 0,
+            "read": 58880
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788679489348,
+          "completed": 1788679557215
+        },
+        "finish": "tool-calls",
+        "id": "msg_0759b07440015uQWHy37f7DNh9",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-start",
+          "id": "prt_0759b0e33001jXQBjsA2cOLXCs",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759b07440015uQWHy37f7DNh9"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Planning to run mise tests despite expected failure**",
+          "time": {
+            "start": 1788679491125,
+            "end": 1788679491962
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_039ea4b75847d862016a9d1542ddb487d08519a01fd1e020f7",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_0759b0e35001yDiIVNdeLNk2oe",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759b07440015uQWHy37f7DNh9"
+        },
+        {
+          "type": "text",
+          "text": "Pushed `a2c7884`. I’m running the MVP release test command now to establish the final gate status rather than claiming completion from focused tests alone.",
+          "time": {
+            "start": 1788679491964,
+            "end": 1788679491982
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "msg_039ea4b75847d862016a9d1543c93c87d08b1fdaa94a266d50",
+              "phase": "commentary"
+            }
+          },
+          "id": "prt_0759b117c0010CFbRWb8sAUqMZ",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759b07440015uQWHy37f7DNh9"
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_PMHPEXbBMBS6LgcSBOur9Q43",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "mise run test",
+              "workdir": "/home/farhan/entire-graph/entire-graph",
+              "timeout": 120000
+            },
+            "output": "...output truncated...\n\nFull output saved to: /home/farhan/.local/share/opencode/tool-output/tool_0759c0ff5001268zNN0vjXRjML\n\n[test] ERROR task failed\n",
+            "metadata": {
+              "output": "...\n\ngoroutine 10149 gp=0xd2d875eb680 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d86eb7b78?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d86eb7b28 sp=0xd2d86eb7b08 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d86eb7ba0 sp=0xd2d86eb7b28 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d86eb7bc8 sp=0xd2d86eb7ba0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87548fc8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d86eb7c60 sp=0xd2d86eb7bc8 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestCollapseFunctionValueBindings(0xd2d87548fc8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/function_binding_test.go:193 +0x2a fp=0xd2d86eb7f70 sp=0xd2d86eb7c60 pc=0xa23eca\ntesting.tRunner(0xd2d87548fc8, 0x12d6138)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d86eb7fc0 sp=0xd2d86eb7f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d86eb7fe0 sp=0xd2d86eb7fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d86eb7fe8 sp=0xd2d86eb7fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10150 gp=0xd2d86e12f00 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d86eb8c28?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d86eb8bd8 sp=0xd2d86eb8bb8 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d86eb8c50 sp=0xd2d86eb8bd8 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d86eb8c78 sp=0xd2d86eb8c50 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87549208)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d86eb8d10 sp=0xd2d86eb8c78 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestFunctionValueBindingLanguageSurvey(0xd2d87549208)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/function_binding_test.go:296 +0x2a fp=0xd2d86eb8f70 sp=0xd2d86eb8d10 pc=0xa24bca\ntesting.tRunner(0xd2d87549208, 0x12d69b0)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d86eb8fc0 sp=0xd2d86eb8f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d86eb8fe0 sp=0xd2d86eb8fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d86eb8fe8 sp=0xd2d86eb8fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10148 gp=0xd2d871aaf00 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87672518?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d876724c8 sp=0xd2d876724a8 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87672540 sp=0xd2d876724c8 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87672568 sp=0xd2d87672540 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87277d48)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87672600 sp=0xd2d87672568 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestJavascriptExportedVariableEntityLines(0xd2d87277d48)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/function_binding_test.go:135 +0x2a fp=0xd2d87672770 sp=0xd2d87672600 pc=0xa236aa\ntesting.tRunner(0xd2d87277d48, 0x12d7170)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d876727c0 sp=0xd2d87672770 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d876727e0 sp=0xd2d876727c0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d876727e8 sp=0xd2d876727e0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10815 gp=0xd2d871ab680 m=nil [select]:\nruntime.gopark(0xd2d87320f40?, 0x3?, 0x88?, 0xc?, 0xd2d87320e2a?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87320c68 sp=0xd2d87320c48 pc=0x48c04e\nruntime.selectgo(0xd2d87320f40, 0xd2d87320e24, 0x30?, 0x1, 0x2002d8763fe30?, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/select.go:351 +0xaa5 fp=0xd2d87320d98 sp=0xd2d87320c68 pc=0x4690a5\ngithub.com/entireio/entire-graph/internal/sem.runIndexedPipeline[...]({0x12e8248, 0xd2d872b0690}, 0x1, 0x8, 0xd2d878820c0, 0xd2d87321570)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/provider_parallel.go:350 +0x472 fp=0xd2d87321538 sp=0xd2d87320d98 pc=0xd4a472\ngithub.com/entireio/entire-graph/internal/sem.runProviderFilePipeline({0x12e8248, 0xd2d872b0690}, {0xd2d8720f770, 0x1, 0x1}, 0x8, 0xd2d872b07d0, 0xd2d87322bd8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/provider_parallel.go:269 +0xe5 fp=0xd2d87321590 sp=0xd2d87321538 pc=0x8cf005\ngithub.com/entireio/entire-graph/internal/sem.streamSnapshotWithWorkerCount({0x12e8248, 0xd2d872b0690}, {0xd2d86fa5300, 0x40}, {0x11d83fd, 0xc}, {0x0, 0x1, {0x0, 0x0, ...}, ...}, ...)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/provider.go:1179 +0xb13 fp=0xd2d87322f10 sp=0xd2d87321590 pc=0x7f0493\ngithub.com/entireio/entire-graph/internal/sem.StreamSnapshot({0x12e8248, 0xd2d872b0690}, {0xd2d86fa5300, 0x40}, {0x11d83fd, 0xc}, {0x0, 0x1, {0x0, 0x0, ...}, ...}, ...)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/provider.go:1099 +0x119 fp=0xd2d87322ff0 sp=0xd2d87322f10 pc=0x7ef8f9\ngithub.com/entireio/entire-graph/internal/sem.BuildProviderSnapshotWithOptions({_, _}, {_, _}, {_, _}, {0x0, 0x1, {0x0, 0x0, ...}, ...})\n\t/home/farhan/entire-graph/entire-graph/internal/sem/provider.go:932 +0x17d fp=0xd2d873233a8 sp=0xd2d87322ff0 pc=0x7edc9d\ngithub.com/entireio/entire-graph/internal/sem.TestHaskellHigherOrderShadowedCaseBinderNoEdge(0xd2d870298c8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/haskell_test.go:244 +0x145 fp=0xd2d87323f70 sp=0xd2d873233a8 pc=0xa3d985\ntesting.tRunner(0xd2d870298c8, 0x12d6f98)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87323fc0 sp=0xd2d87323f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87323fe0 sp=0xd2d87323fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87323fe8 sp=0xd2d87323fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10156 gp=0xd2d8755e000 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87279728?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d872796d8 sp=0xd2d872796b8 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87279750 sp=0xd2d872796d8 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87279778 sp=0xd2d87279750 pc=0x41c032\ntesting.(*T).Parallel(0xd2d873a2248)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87279810 sp=0xd2d87279778 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestGoReceiverMethodBindsToSamePackageNotSibling(0xd2d873a2248)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_package_scope_test.go:87 +0x2a fp=0xd2d87279f70 sp=0xd2d87279810 pc=0xa285ea\ntesting.tRunner(0xd2d873a2248, 0x12d6e58)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87279fc0 sp=0xd2d87279f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87279fe0 sp=0xd2d87279fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87279fe8 sp=0xd2d87279fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10154 gp=0xd2d8755e1e0 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87517158?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87517108 sp=0xd2d875170e8 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87517180 sp=0xd2d87517108 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d875171a8 sp=0xd2d87517180 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87549d48)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87517240 sp=0xd2d875171a8 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestGoSingleMethodInterfaceDoesNotFanOutOnAmbiguousName(0xd2d87549d48)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_interface_calls_test.go:187 +0x2a fp=0xd2d87517f70 sp=0xd2d87517240 pc=0xa2710a\ntesting.tRunner(0xd2d87549d48, 0x12d6e90)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87517fc0 sp=0xd2d87517f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87517fe0 sp=0xd2d87517fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87517fe8 sp=0xd2d87517fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 5632 gp=0xd2d873b3c20 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d875da6f0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d875da6a0 sp=0xd2d875da680 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d875da718 sp=0xd2d875da6a0 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d875da740 sp=0xd2d875da718 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87548488)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d875da7d8 sp=0xd2d875da740 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestCppSpecializationAliasesInSnapshotKeepIDsStable(0xd2d87548488)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/cpp_specialization_test.go:77 +0x2a fp=0xd2d875daf70 sp=0xd2d875da7d8 pc=0xa112ca\ntesting.tRunner(0xd2d87548488, 0x12d6380)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d875dafc0 sp=0xd2d875daf70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d875dafe0 sp=0xd2d875dafc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d875dafe8 sp=0xd2d875dafe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 5586 gp=0xd2d8755f860 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87533d78?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87533d28 sp=0xd2d87533d08 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87533da0 sp=0xd2d87533d28 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87533dc8 sp=0xd2d87533da0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87548248)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87533e60 sp=0xd2d87533dc8 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestCapabilityRelationProbesCoverEveryCallExtractionLanguage(0xd2d87548248)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/capability_relation_union_test.go:634 +0x2a fp=0xd2d87533f70 sp=0xd2d87533e60 pc=0xa05d6a\ntesting.tRunner(0xd2d87548248, 0x12d6080)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87533fc0 sp=0xd2d87533f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87533fe0 sp=0xd2d87533fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87533fe8 sp=0xd2d87533fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10158 gp=0xd2d870445a0 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87639de8?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87639d98 sp=0xd2d87639d78 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87639e10 sp=0xd2d87639d98 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87639e38 sp=0xd2d87639e10 pc=0x41c032\ntesting.(*T).Parallel(0xd2d873a26c8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87639ed0 sp=0xd2d87639e38 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestPathProximityRankOrdersByPackageDistance(0xd2d873a26c8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_package_scope_test.go:141 +0x27 fp=0xd2d87639f70 sp=0xd2d87639ed0 pc=0xa29127\ntesting.tRunner(0xd2d873a26c8, 0x12d7718)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87639fc0 sp=0xd2d87639f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87639fe0 sp=0xd2d87639fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87639fe8 sp=0xd2d87639fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 4870 gp=0xd2d870454a0 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d875fd500?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d875fd4b0 sp=0xd2d875fd490 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d875fd528 sp=0xd2d875fd4b0 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d875fd550 sp=0xd2d875fd528 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87445688)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d875fd5e8 sp=0xd2d875fd550 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestCacheEntryWriteRejectsSymlinkedVersion(0xd2d87445688)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/cache_write_confinement_test.go:202 +0x2a fp=0xd2d875fd770 sp=0xd2d875fd5e8 pc=0x9f9c6a\ntesting.tRunner(0xd2d87445688, 0x12d5fb8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d875fd7c0 sp=0xd2d875fd770 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d875fd7e0 sp=0xd2d875fd7c0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d875fd7e8 sp=0xd2d875fd7e0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10146 gp=0xd2d876c4780 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d875ddb98?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d875ddb48 sp=0xd2d875ddb28 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d875ddbc0 sp=0xd2d875ddb48 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d875ddbe8 sp=0xd2d875ddbc0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d872778c8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d875ddc80 sp=0xd2d875ddbe8 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestFunctionValueBindingIsOneSymbol(0xd2d872778c8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/function_binding_test.go:13 +0x2a fp=0xd2d875ddf70 sp=0xd2d875ddc80 pc=0xa22cea\ntesting.tRunner(0xd2d872778c8, 0x12d69a8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d875ddfc0 sp=0xd2d875ddf70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d875ddfe0 sp=0xd2d875ddfc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d875ddfe8 sp=0xd2d875ddfe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 5587 gp=0xd2d87045680 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87343b90?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87343b40 sp=0xd2d87343b20 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87343bb8 sp=0xd2d87343b40 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87343be0 sp=0xd2d87343bb8 pc=0x41c032\ntesting.(*T).Parallel(0xd2d875486c8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87343c78 sp=0xd2d87343be0 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestCapabilityRelationDeclarationsMatchIsolatedExtraction(0xd2d875486c8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/capability_relation_union_test.go:689 +0x2a fp=0xd2d87343f70 sp=0xd2d87343c78 pc=0xa060aa\ntesting.tRunner(0xd2d875486c8, 0x12d6078)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87343fc0 sp=0xd2d87343f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87343fe0 sp=0xd2d87343fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87343fe8 sp=0xd2d87343fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10152 gp=0xd2d876c5a40 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d86f7d3c8?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d86f7d378 sp=0xd2d86f7d358 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d86f7d3f0 sp=0xd2d86f7d378 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d86f7d418 sp=0xd2d86f7d3f0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d875498c8)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d86f7d4b0 sp=0xd2d86f7d418 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestGoInterfaceCallCarriesToImplementations(0xd2d875498c8)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_interface_calls_test.go:131 +0x2a fp=0xd2d86f7df70 sp=0xd2d86f7d4b0 pc=0xa260aa\ntesting.tRunner(0xd2d875498c8, 0x12d6e00)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d86f7dfc0 sp=0xd2d86f7df70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d86f7dfe0 sp=0xd2d86f7dfc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d86f7dfe8 sp=0xd2d86f7dfe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10153 gp=0xd2d88cd4000 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d875152f8?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d875152a8 sp=0xd2d87515288 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87515320 sp=0xd2d875152a8 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87515348 sp=0xd2d87515320 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87549b08)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d875153e0 sp=0xd2d87515348 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestGoInterfaceCallFanoutCapKeepsInterfaceEdgeOnly(0xd2d87549b08)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_interface_calls_test.go:165 +0x2a fp=0xd2d87515f70 sp=0xd2d875153e0 pc=0xa2680a\ntesting.tRunner(0xd2d87549b08, 0x12d6e08)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87515fc0 sp=0xd2d87515f70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87515fe0 sp=0xd2d87515fc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87515fe8 sp=0xd2d87515fe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10147 gp=0xd2d88cd4d20 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d872eb618?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d872eb5c8 sp=0xd2d872eb5a8 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d872eb640 sp=0xd2d872eb5c8 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d872eb668 sp=0xd2d872eb640 pc=0x41c032\ntesting.(*T).Parallel(0xd2d87277b08)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d872eb700 sp=0xd2d872eb668 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestExportedNonFunctionVariableSurvives(0xd2d87277b08)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/function_binding_test.go:111 +0x1c fp=0xd2d872eb770 sp=0xd2d872eb700 pc=0xa234fc\ntesting.tRunner(0xd2d87277b08, 0x12d6660)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d872eb7c0 sp=0xd2d872eb770 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d872eb7e0 sp=0xd2d872eb7c0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d872eb7e8 sp=0xd2d872eb7e0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10155 gp=0xd2d88cd5a40 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d8727cab8?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d8727ca68 sp=0xd2d8727ca48 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d8727cae0 sp=0xd2d8727ca68 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d8727cb08 sp=0xd2d8727cae0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d873a2008)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d8727cba0 sp=0xd2d8727cb08 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestGoInterfaceRequirementMethodDiscriminator(0xd2d873a2008)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/go_interface_calls_test.go:230 +0x2a fp=0xd2d8727cf70 sp=0xd2d8727cba0 pc=0xa27a8a\ntesting.tRunner(0xd2d873a2008, 0x12d6e18)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d8727cfc0 sp=0xd2d8727cf70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d8727cfe0 sp=0xd2d8727cfc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d8727cfe8 sp=0xd2d8727cfe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\ngoroutine 10821 gp=0xd2d8765b0e0 m=nil [chan receive]:\nruntime.gopark(0x0?, 0xd2d871ea070?, 0x53?, 0xd4?, 0xd2d87aaeda8?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/proc.go:462 +0xce fp=0xd2d87aaed58 sp=0xd2d87aaed38 pc=0x48c04e\nruntime.chanrecv(0xd2d86f12150, 0x0, 0x1)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:667 +0x4ae fp=0xd2d87aaedd0 sp=0xd2d87aaed58 pc=0x41c50e\nruntime.chanrecv1(0x562a8e0?, 0x1334fc0?)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/chan.go:509 +0x12 fp=0xd2d87aaedf8 sp=0xd2d87aaedd0 pc=0x41c032\ntesting.(*T).Parallel(0xd2d873a3688)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:1803 +0x230 fp=0xd2d87aaee90 sp=0xd2d87aaedf8 pc=0x538dd0\ngithub.com/entireio/entire-graph/internal/sem.TestFSharpBlockCommentDoesNotFabricateACall(0xd2d873a3688)\n\t/home/farhan/entire-graph/entire-graph/internal/sem/golden_test.go:982 +0x27 fp=0xd2d87aaef70 sp=0xd2d87aaee90 pc=0xa32bc7\ntesting.tRunner(0xd2d873a3688, 0x12d66b0)\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2036 +0xea fp=0xd2d87aaefc0 sp=0xd2d87aaef70 pc=0x5391ea\ntesting.(*T).Run.gowrap1()\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x1b fp=0xd2d87aaefe0 sp=0xd2d87aaefc0 pc=0x53a37b\nruntime.goexit({})\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd2d87aaefe8 sp=0xd2d87aaefe0 pc=0x4934a1\ncreated by testing.(*T).Run in goroutine 1\n\t/home/farhan/.local/share/mise/installs/go/1.26.8/src/testing/testing.go:2101 +0x4c5\n\nrax    0x0\nrbx    0x24765\nrcx    0x7f6ff729a17c\nrdx    0x6\nrdi    0x2431f\nrsi    0x24765\nrbp    0x7f6f6bffe7f0\nrsp    0x7f6f6bffe7c0\nr8     0xffffffff\nr9     0x0\nr10    0x22\nr11    0x246\nr12    0x7f6f6bffe930\nr13    0x7f6fac1df000\nr14    0x6\nr15    0x0\nrip    0x7f6ff729a17c\nrflags 0x246\ncs     0x33\nfs     0x0\ngs     0x0\nFAIL\tgithub.com/entireio/entire-graph/internal/sem\t14.831s\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/clojure\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/csharp\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/dart\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/erlang\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/fsharp\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/haskell\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/julia\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/objc\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/perl\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/r\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/grammars/zig\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/pgsql\t[no test files]\n?   \tgithub.com/entireio/entire-graph/internal/sem/zsh\t[no test files]\nok  \tgithub.com/entireio/entire-graph/internal/termsafe\t2.201s\nFAIL\n[test] ERROR task failed\n",
+              "exit": 1,
+              "truncated": true,
+              "outputPath": "/home/farhan/.local/share/opencode/tool-output/tool_0759c0ff5001268zNN0vjXRjML"
+            },
+            "title": "mise run test",
+            "time": {
+              "start": 1788679492435,
+              "end": 1788679557172
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_039ea4b75847d862016a9d1543daf487d0a35bcc4c66b371be"
+            }
+          },
+          "id": "prt_0759b1190001VU0p7kjMrH4wuj",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759b07440015uQWHy37f7DNh9"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-finish",
+          "tokens": {
+            "total": 59879,
+            "input": 884,
+            "output": 86,
+            "reasoning": 29,
+            "cache": {
+              "write": 0,
+              "read": 58880
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759c104a00145BwRpFWbRLZk0",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759b07440015uQWHy37f7DNh9"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07597093e001khpoyuvumhpjBm",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 60023,
+          "input": 1055,
+          "output": 62,
+          "reasoning": 26,
+          "cache": {
+            "write": 0,
+            "read": 58880
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788679557248,
+          "completed": 1788679561464
+        },
+        "finish": "tool-calls",
+        "id": "msg_0759c10800014o95O51ZliY64J",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-start",
+          "id": "prt_0759c1b67001TnWb13GsWSd9qZ",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c10800014o95O51ZliY64J"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Investigating file reading limitations**",
+          "time": {
+            "start": 1788679560041,
+            "end": 1788679561174
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_005d7e6a48073ea3016a9d1587f54c87d0a27fbbd9a9087549",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_0759c1b69001HYh2utyQjH3nyi",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c10800014o95O51ZliY64J"
+        },
+        {
+          "type": "tool",
+          "tool": "grep",
+          "callID": "call_3X9ftIcdjhdeiVH2M6qxMRHQ",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "FAIL|panic|ERROR|fatal",
+              "path": "/home/farhan/.local/share/opencode/tool-output/tool_0759c0ff5001268zNN0vjXRjML",
+              "include": "*"
+            },
+            "output": "Found 100 matches (more matches available)\n/home/farhan/.local/share/opencode/tool-output/tool_0759c0ff5001268zNN0vjXRjML:\n  Line 16: --- FAIL: TestDoctorWorksOutsideGitRepo (0.00s)\n\n  Line 24: FAIL\n\n  Line 25: FAIL\tgithub.com/entireio/entire-graph/internal/cli\t11.263s\n\n  Line 29: --- FAIL: TestProviderGoldenSnapshots (0.13s)\n\n  Line 30:     --- FAIL: TestProviderGoldenSnapshots/csharp-basic (0.00s)\n\n  Line 50:     --- FAIL: TestProviderGoldenSnapshots/julia-r-basic (0.00s)\n\n  Line 69:     --- FAIL: TestProviderGoldenSnapshots/multilang-relations (0.01s)\n\n  Line 227:     --- FAIL: TestProviderGoldenSnapshots/csharp-fields (0.00s)\n\n  Line 250:     --- FAIL: TestProviderGoldenSnapshots/csharp-oo (0.00s)\n\n  Line 282:     --- FAIL: TestProviderGoldenSnapshots/go-basic (0.00s)\n\n  Line 316:     --- FAIL: TestProviderGoldenSnapshots/go-async (0.00s)\n\n  Line 348:     --- FAIL: TestProviderGoldenSnapshots/go-clones (0.00s)\n\n  Line 368:     --- FAIL: TestProviderGoldenSnapshots/go-fields (0.00s)\n\n  Line 396:     --- FAIL: TestProviderGoldenSnapshots/go-tests (0.00s)\n\n  Line 414:     --- FAIL: TestProviderGoldenSnapshots/go-types (0.00s)\n\n  Line 440:     --- FAIL: TestProviderGoldenSnapshots/java-basic (0.00s)\n\n  Line 460:     --- FAIL: TestProviderGoldenSnapshots/java-fields (0.00s)\n\n  Line 484:     --- FAIL: TestProviderGoldenSnapshots/java-oo (0.00s)\n\n  Line 519:     --- FAIL: TestProviderGoldenSnapshots/php-basic (0.00s)\n\n  Line 538:     --- FAIL: TestProviderGoldenSnapshots/php-oo (0.00s)\n\n  Line 568:     --- FAIL: TestProviderGoldenSnapshots/python-basic (0.00s)\n\n  Line 592:     --- FAIL: TestProviderGoldenSnapshots/python-imports (0.00s)\n\n  Line 610:     --- FAIL: TestProviderGoldenSnapshots/python-oo (0.00s)\n\n  Line 643:     --- FAIL: TestProviderGoldenSnapshots/rust-basic (0.00s)\n\n  Line 666:     --- FAIL: TestProviderGoldenSnapshots/rust-oo (0.00s)\n\n  Line 701:     --- FAIL: TestProviderGoldenSnapshots/terraform-basic (0.00s)\n\n  Line 727:     --- FAIL: TestProviderGoldenSnapshots/typescript-basic (0.01s)\n\n  Line 747:     --- FAIL: TestProviderGoldenSnapshots/typescript-events (0.00s)\n\n  Line 766:     --- FAIL: TestProviderGoldenSnapshots/typescript-fields (0.00s)\n\n  Line 791:     --- FAIL: TestProviderGoldenSnapshots/typescript-http (0.01s)\n\n  Line 816:     --- FAIL: TestProviderGoldenSnapshots/typescript-imports (0.00s)\n\n  Line 835:     --- FAIL: TestProviderGoldenSnapshots/typescript-oo (0.01s)\n\n  Line 887:     --- FAIL: TestProviderGoldenSnapshots/services-config (0.01s)\n\n  Line 2497: FAIL\tgithub.com/entireio/entire-graph/internal/sem\t14.831s\n\n  Line 2512: FAIL\n\n  Line 2513: [test] ERROR task failed\n\n\n/home/farhan/.local/share/opencode/tool-output/tool_0757ae2200015HRXL4sZz3wDGo:\n  Line 1: --- FAIL: TestProviderGoldenSnapshots (0.14s)\n\n  Line 2:     --- FAIL: TestProviderGoldenSnapshots/csharp-basic (0.00s)\n\n  Line 22:     --- FAIL: TestProviderGoldenSnapshots/julia-r-basic (0.00s)\n\n  Line 41:     --- FAIL: TestProviderGoldenSnapshots/multilang-relations (0.01s)\n\n  Line 199:     --- FAIL: TestProviderGoldenSnapshots/csharp-fields (0.00s)\n\n  Line 222:     --- FAIL: TestProviderGoldenSnapshots/csharp-oo (0.00s)\n\n  Line 254:     --- FAIL: TestProviderGoldenSnapshots/go-basic (0.01s)\n\n  Line 288:     --- FAIL: TestProviderGoldenSnapshots/go-async (0.00s)\n\n  Line 320:     --- FAIL: TestProviderGoldenSnapshots/go-clones (0.00s)\n\n  Line 340:     --- FAIL: TestProviderGoldenSnapshots/go-fields (0.00s)\n\n  Line 368:     --- FAIL: TestProviderGoldenSnapshots/go-tests (0.00s)\n\n  Line 386:     --- FAIL: TestProviderGoldenSnapshots/go-types (0.00s)\n\n  Line 412:     --- FAIL: TestProviderGoldenSnapshots/java-basic (0.00s)\n\n  Line 432:     --- FAIL: TestProviderGoldenSnapshots/java-fields (0.00s)\n\n  Line 456:     --- FAIL: TestProviderGoldenSnapshots/java-oo (0.00s)\n\n  Line 491:     --- FAIL: TestProviderGoldenSnapshots/php-basic (0.00s)\n\n  Line 510:     --- FAIL: TestProviderGoldenSnapshots/php-oo (0.00s)\n\n  Line 540:     --- FAIL: TestProviderGoldenSnapshots/python-basic (0.00s)\n\n  Line 564:     --- FAIL: TestProviderGoldenSnapshots/python-imports (0.01s)\n\n  Line 582:     --- FAIL: TestProviderGoldenSnapshots/python-oo (0.00s)\n\n  Line 615:     --- FAIL: TestProviderGoldenSnapshots/rust-basic (0.00s)\n\n  Line 638:     --- FAIL: TestProviderGoldenSnapshots/rust-oo (0.00s)\n\n  Line 673:     --- FAIL: TestProviderGoldenSnapshots/terraform-basic (0.01s)\n\n  Line 699:     --- FAIL: TestProviderGoldenSnapshots/typescript-basic (0.01s)\n\n  Line 719:     --- FAIL: TestProviderGoldenSnapshots/typescript-events (0.01s)\n\n  Line 738:     --- FAIL: TestProviderGoldenSnapshots/typescript-fields (0.01s)\n\n  Line 763:     --- FAIL: TestProviderGoldenSnapshots/typescript-http (0.01s)\n\n  Line 788:     --- FAIL: TestProviderGoldenSnapshots/typescript-imports (0.01s)\n\n  Line 807:     --- FAIL: TestProviderGoldenSnapshots/typescript-oo (0.01s)\n\n  Line 859:     --- FAIL: TestProviderGoldenSnapshots/services-config (0.01s)\n\n  Line 2469: FAIL\tgithub.com/entireio/entire-graph/internal/sem\t14.046s\n\n  Line 2470: FAIL\n\n\n/home/farhan/.local/share/opencode/tool-output/tool_0757b9bf40011tvQ45YNmfOteR:\n  Line 1: --- FAIL: TestProviderGoldenSnapshots (0.12s)\n\n  Line 2:     --- FAIL: TestProviderGoldenSnapshots/csharp-basic (0.00s)\n\n  Line 22:     --- FAIL: TestProviderGoldenSnapshots/julia-r-basic (0.00s)\n\n  Line 41:     --- FAIL: TestProviderGoldenSnapshots/multilang-relations (0.01s)\n\n  Line 199:     --- FAIL: TestProviderGoldenSnapshots/csharp-fields (0.00s)\n\n  Line 222:     --- FAIL: TestProviderGoldenSnapshots/csharp-oo (0.00s)\n\n  Line 254:     --- FAIL: TestProviderGoldenSnapshots/go-basic (0.01s)\n\n  Line 288:     --- FAIL: TestProviderGoldenSnapshots/go-async (0.00s)\n\n  Line 320:     --- FAIL: TestProviderGoldenSnapshots/go-clones (0.00s)\n\n  Line 340:     --- FAIL: TestProviderGoldenSnapshots/go-fields (0.00s)\n\n  Line 368:     --- FAIL: TestProviderGoldenSnapshots/go-tests (0.00s)\n\n  Line 386:     --- FAIL: TestProviderGoldenSnapshots/go-types (0.00s)\n\n  Line 412:     --- FAIL: TestProviderGoldenSnapshots/java-basic (0.00s)\n\n  Line 432:     --- FAIL: TestProviderGoldenSnapshots/java-fields (0.00s)\n\n  Line 456:     --- FAIL: TestProviderGoldenSnapshots/java-oo (0.00s)\n\n  Line 491:     --- FAIL: TestProviderGoldenSnapshots/php-basic (0.00s)\n\n  Line 510:     --- FAIL: TestProviderGoldenSnapshots/php-oo (0.00s)\n\n  Line 540:     --- FAIL: TestProviderGoldenSnapshots/python-basic (0.00s)\n\n  Line 564:     --- FAIL: TestProviderGoldenSnapshots/python-imports (0.00s)\n\n  Line 582:     --- FAIL: TestProviderGoldenSnapshots/python-oo (0.00s)\n\n  Line 615:     --- FAIL: TestProviderGoldenSnapshots/rust-basic (0.00s)\n\n  Line 638:     --- FAIL: TestProviderGoldenSnapshots/rust-oo (0.00s)\n\n  Line 673:     --- FAIL: TestProviderGoldenSnapshots/terraform-basic (0.00s)\n\n  Line 699:     --- FAIL: TestProviderGoldenSnapshots/typescript-basic (0.00s)\n\n  Line 719:     --- FAIL: TestProviderGoldenSnapshots/typescript-events (0.01s)\n\n  Line 738:     --- FAIL: TestProviderGoldenSnapshots/typescript-fields (0.00s)\n\n  Line 763:     --- FAIL: TestProviderGoldenSnapshots/typescript-http (0.01s)\n\n  Line 788:     --- FAIL: TestProviderGoldenSnapshots/typescript-imports (0.00s)\n\n  Line 807:     --- FAIL: TestProviderGoldenSnapshots/typescript-oo (0.01s)\n\n  Line 859:     --- FAIL: TestProviderGoldenSnapshots/services-config (0.01s)\n\n  Line 925: FAIL\n\n  Line 926: FAIL\tgithub.com/entireio/entire-graph/internal/sem\t0.137s\n\n\n(Results truncated. Consider using a more specific path or pattern.)",
+            "metadata": {
+              "matches": 100,
+              "truncated": true
+            },
+            "title": "FAIL|panic|ERROR|fatal",
+            "time": {
+              "start": 1788679561257,
+              "end": 1788679561275
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_005d7e6a48073ea3016a9d1588f10887d0b1ddfaea8df1dd10"
+            }
+          },
+          "id": "prt_0759c1fdf0017gTYhfs5zHDqc6",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c10800014o95O51ZliY64J"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-finish",
+          "tokens": {
+            "total": 60023,
+            "input": 1055,
+            "output": 62,
+            "reasoning": 26,
+            "cache": {
+              "write": 0,
+              "read": 58880
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759c20e6001hYT9DM5NGMCeFC",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c10800014o95O51ZliY64J"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07597093e001khpoyuvumhpjBm",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 62461,
+          "input": 3399,
+          "output": 55,
+          "reasoning": 127,
+          "cache": {
+            "write": 0,
+            "read": 58880
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788679561493,
+          "completed": 1788679570382
+        },
+        "finish": "tool-calls",
+        "id": "msg_0759c2115001QuXfVYDBIz7vJe",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-start",
+          "id": "prt_0759c28c1001f5DTxsI2fFgUFX",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c2115001QuXfVYDBIz7vJe"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Acknowledging incomplete MVP with pending status**",
+          "time": {
+            "start": 1788679563461,
+            "end": 1788679568058
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0eaae40865b1b61b016a9d158b5f3c87d082e370c3901ab4a6"
+            }
+          },
+          "id": "prt_0759c28c50019rcxcllgllFWx5",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c2115001QuXfVYDBIz7vJe"
+        },
+        {
+          "type": "reasoning",
+          "text": "**Verifying clean git status**",
+          "time": {
+            "start": 1788679568061,
+            "end": 1788679568532
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "rs_0eaae40865b1b61b016a9d158b5f3c87d082e370c3901ab4a6",
+              "reasoningEncryptedContent": "REDACTED"
+            }
+          },
+          "id": "prt_0759c3abd001QUAyzgN52YEAGU",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c2115001QuXfVYDBIz7vJe"
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_0Z0NILIbXa14yu6w5WmDMHPE",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "git status --short && git log --oneline -5",
+              "workdir": "/home/farhan/entire-graph/entire-graph",
+              "timeout": 120000
+            },
+            "output": "?? .opencode/\na2c7884 fix(gps): identify unconfigured check views\n9b11616 test(gps): cover fallback and delta contracts\nc4de129 feat(gps): complete core context and binding contracts\n53ed855 feat(impact): include explicit intent anchors\n59d8f2b feat(gps): identify selected repository views\n",
+            "metadata": {
+              "output": "?? .opencode/\na2c7884 fix(gps): identify unconfigured check views\n9b11616 test(gps): cover fallback and delta contracts\nc4de129 feat(gps): complete core context and binding contracts\n53ed855 feat(impact): include explicit intent anchors\n59d8f2b feat(gps): identify selected repository views\n",
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "git status --short && git log --oneline -5",
+            "time": {
+              "start": 1788679570291,
+              "end": 1788679570311
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0eaae40865b1b61b016a9d159011f887d092d9f58d1e99cac3"
+            }
+          },
+          "id": "prt_0759c4162001m50wvubfMPFZcx",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c2115001QuXfVYDBIz7vJe"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-finish",
+          "tokens": {
+            "total": 62461,
+            "input": 3399,
+            "output": 55,
+            "reasoning": 127,
+            "cache": {
+              "write": 0,
+              "read": 58880
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759c43bb001cEKSu5uvRUYSll",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c2115001QuXfVYDBIz7vJe"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_07597093e001khpoyuvumhpjBm",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "variant": "medium",
+        "path": {
+          "cwd": "/home/farhan/entire-graph/entire-graph",
+          "root": "/home/farhan/entire-graph/entire-graph"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 62758,
+          "input": 596,
+          "output": 210,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 61952
+          }
+        },
+        "modelID": "gpt-5.6-terra-fast",
+        "providerID": "openai",
+        "time": {
+          "created": 1788679570410,
+          "completed": 1788679574893
+        },
+        "finish": "stop",
+        "id": "msg_0759c43ea001nqszYmqG0e21F4",
+        "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a"
+      },
+      "parts": [
+        {
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-start",
+          "id": "prt_0759c4afb001Kj1IV1iYa0B5vX",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c43ea001nqszYmqG0e21F4"
+        },
+        {
+          "type": "text",
+          "text": "Continued and pushed through `a2c7884`.\n\nCompleted this pass:\n- No-spec context now returns ranked code evidence plus `NO_SPECS`.\n- Context rejects budgets below its minimum instead of returning an over-budget package.\n- `check` explicitly returns `change_delta: \"not_requested\"` without `--base`.\n- Newly written binding fingerprints are versioned.\n- Missing bindings now identify cross-file move/rename candidates without rebinding.\n- All check outputs, including `NOT_CONFIGURED`, identify the repository view.\n- Added focused regression coverage for fallback context, budget handling, and no-base checks.\n\nRelease gate status:\n- Focused GPS tests and builds pass.\n- `mise run test` still fails on existing unrelated failures:\n  - `internal/cli`: `TestDoctorWorksOutsideGitRepo`\n  - `internal/sem`: widespread `TestProviderGoldenSnapshots` mismatches\n\nMVP is not yet fully complete: end-to-end Git/negative/golden fixture coverage and the documented demo fixture remain.",
+          "time": {
+            "start": 1788679572221,
+            "end": 1788679574668
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "msg_05dae3784151a7a9016a9d1593f74c87d085491d28cabb3d2e",
+              "phase": "final_answer"
+            }
+          },
+          "id": "prt_0759c4afd001gbnnkeM0d0PiNU",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c43ea001nqszYmqG0e21F4"
+        },
+        {
+          "reason": "stop",
+          "snapshot": "a97ea7f84ee89c09e52a0d4a72568d8805b21440",
+          "type": "step-finish",
+          "tokens": {
+            "total": 62758,
+            "input": 596,
+            "output": 210,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 61952
+            }
+          },
+          "cost": 0,
+          "id": "prt_0759c555b001ZWyZCryyQp971B",
+          "sessionID": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+          "messageID": "msg_0759c43ea001nqszYmqG0e21F4"
         }
       ]
     }
