@@ -4,61 +4,89 @@ import (
 	"context"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
-// The captured matcher must preserve the Git preselection contract while reading
-// operation-owned bytes: case-insensitive fixed strings, overlapping patterns,
-// Unicode text, per-file line limits, binary detection, and .gitattributes binary
-// classification all have to agree with Git's bounded matcher.
-func TestCapturedPreselectionMatchesGitContract(t *testing.T) {
+// Downstream preselection consumes only per-path, case-insensitive term presence.
+// The captured matcher therefore has to agree with Git on distinct overlapping
+// terms, the 32 matching-line budget, Unicode case folding, binary sniffing, and
+// .gitattributes binary classification.
+func TestCapturedPreselectionTermPresenceMatchesGitContract(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, ".gitattributes", "src/attribute.txt binary\n")
-	write(t, repo, "src/overlap.go", "package p\n// Needle needle NEEDLE\n// Needle again\n// Needle third\n")
-	write(t, repo, "src/unicode.go", "package p\n// wÉird WÉIRD weird\n")
+	var overlap strings.Builder
+	for i := 0; i < 32; i++ {
+		overlap.WriteString("Needle need\n")
+	}
+	overlap.WriteString("ThirtyThird\n")
+	write(t, repo, "src/overlap.go", "package p\n"+overlap.String())
+	write(t, repo, "src/unicode.go", "package p\n// é\n")
 	write(t, repo, "src/binary.go", "package p\n// Needle\x00 binary\n")
 	write(t, repo, "src/attribute.txt", "Needle in an attribute-classified binary file\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "captured matcher fixture")
 
-	options := ProviderSnapshotOptions{NoNetwork: true, Worktree: true, ExtractionReuse: true}
-	source, err := prepareSource(context.Background(), repo, options)
+	source, err := prepareSource(context.Background(), repo, ProviderSnapshotOptions{
+		NoNetwork: true, Worktree: true, ExtractionReuse: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer source.close()
-	patterns := []string{"needle", "wÉird", "NEEDLE"}
-	captured, _, err := capturedPreselectionMatches(context.Background(), source, source.paths, patterns, 2)
+	patterns := []string{"needle", "need", "thirtythird", "É"}
+	captured, _, err := capturedPreselectionMatches(context.Background(), source, source.paths, patterns, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gitMatches, err := gitutil.GrepIndexMatches(context.Background(), repo, patterns, 2)
+	gitMatches, err := gitutil.GrepIndexMatches(context.Background(), repo, patterns, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sort.Slice(captured, func(i, j int) bool {
-		if captured[i].Path != captured[j].Path {
-			return captured[i].Path < captured[j].Path
-		}
-		return captured[i].Text < captured[j].Text
-	})
-	sort.Slice(gitMatches, func(i, j int) bool {
-		if gitMatches[i].Path != gitMatches[j].Path {
-			return gitMatches[i].Path < gitMatches[j].Path
-		}
-		return gitMatches[i].Text < gitMatches[j].Text
-	})
-	if !reflect.DeepEqual(captured, gitMatches) {
-		t.Fatalf("captured matcher differs from Git:\ncaptured=%#v\ngit=%#v", captured, gitMatches)
+	got := reduceTermPresence(captured, patterns)
+	want := reduceTermPresence(gitMatches, patterns)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured term presence differs from Git:\ncaptured=%#v\ngit=%#v", got, want)
 	}
-	for _, match := range captured {
-		if match.Path == "src/binary.go" || match.Path == "src/attribute.txt" {
-			t.Fatalf("binary path leaked into captured matches: %#v", match)
+	if got["src/overlap.go"]["thirtythird"] {
+		t.Fatal("33rd matching line escaped Git's per-file line budget")
+	}
+	if !got["src/unicode.go"]["é"] {
+		t.Fatalf("Unicode case pair was not retained: %#v", got)
+	}
+	if got["src/binary.go"]["needle"] || got["src/attribute.txt"]["needle"] {
+		t.Fatalf("binary content leaked into term presence: %#v", got)
+	}
+}
+
+func reduceTermPresence(matches []gitutil.GrepMatch, patterns []string) map[string]map[string]bool {
+	presence := map[string]map[string]bool{}
+	for _, match := range matches {
+		terms := presence[match.Path]
+		if terms == nil {
+			terms = map[string]bool{}
+			presence[match.Path] = terms
+		}
+		text := strings.ToLower(match.Text)
+		for _, pattern := range patterns {
+			if strings.Contains(text, strings.ToLower(pattern)) {
+				terms[strings.ToLower(pattern)] = true
+			}
 		}
 	}
+	paths := make([]string, 0, len(presence))
+	for path := range presence {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	ordered := make(map[string]map[string]bool, len(paths))
+	for _, path := range paths {
+		ordered[path] = presence[path]
+	}
+	return ordered
 }
