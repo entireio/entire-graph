@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math/rand/v2"
 	"os"
@@ -187,6 +188,14 @@ func (entry cacheEntry) writeEncoded(temporaryPrefix string, encoded []byte) err
 // if the reservation was insufficient. The returned size and modification time
 // describe the installed inode without reopening its pathname.
 func (entry cacheEntry) writeEncodedHeld(directory *os.Root, temporaryPrefix string, encoded []byte, maxSize int64) (int64, int64, error) {
+	return entry.writeEncodedHeldWithWriter(directory, temporaryPrefix, encoded, maxSize, nil)
+}
+
+// writeEncodedHeldWithWriter optionally reuses one caller-owned compressor.
+// The caller serializes use. Resetting to io.Discard after every attempted
+// compression releases the temporary file reference without discarding the
+// compressor's reusable buffers.
+func (entry cacheEntry) writeEncodedHeldWithWriter(directory *os.Root, temporaryPrefix string, encoded []byte, maxSize int64, reusable *gzip.Writer) (int64, int64, error) {
 	name := filepath.Base(entry.relative)
 	if !strings.HasSuffix(name, ".json.gz") || !validSHA256Hex(strings.TrimSuffix(name, ".json.gz")) {
 		return 0, 0, os.ErrInvalid
@@ -205,7 +214,13 @@ func (entry cacheEntry) writeEncodedHeld(directory *os.Root, temporaryPrefix str
 		_ = temporary.Close()
 		return 0, 0, err
 	}
-	writer := gzip.NewWriter(temporary)
+	writer := reusable
+	if writer == nil {
+		writer = gzip.NewWriter(temporary)
+	} else {
+		writer.Reset(temporary)
+		defer writer.Reset(io.Discard)
+	}
 	if _, err := writer.Write(encoded); err != nil {
 		_ = writer.Close()
 		_ = temporary.Close()
