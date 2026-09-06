@@ -1,5 +1,5 @@
 {
-  "phase": "p1_retained_profile_correctness",
+  "phase": "p1_profile_correctness_and_operation_backpressure",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -7,7 +7,7 @@
   "implementation_source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
   "verified_checkpoint": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
   "verified_evidence_commit": "see evidence/check-1c0b8e24/verification.json",
-  "current_worktree": "1c0b8e24 full676.769s and pinned Linux72tests passed",
+  "current_worktree": "1c0b8e24 remains latest fully verified product; ADR0048 operation-wide publication gate implementation active",
   "workers_state": "validation VM available for focused correctness; campaign workers off",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T13:09:57.152005+00:00",
+  "as_of_utc": "2026-09-06T13:40:52.658034+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Execute one retained correctness pair per profile with first-failure halt; no new cold-performance tuning or campaign expansion",
+  "next_work": "Finish unresolved full-profile correctness pair; implement and verify ADR0048 gate. No new performance sweeps.",
   "current_focused_correctness": {
     "commit": "1c0b8e24",
     "correctness_seconds": 0.788,
@@ -162,5 +162,15 @@
     "measurement_scope": "One isolated pair; GNU time process peak RSS, not simultaneous aggregate process-tree RSS. No statistical or release-gate claim.",
     "next_action": "No new cold sweeps; close retained profile-specific semantic correctness cases independently.",
     "results_sha256": "6f71e5c8d22cb43d56d32b685aef2b1c7ce76a700632f104ca44ccc569829cb9"
+  },
+  "retained_query_replay": {
+    "source_commit": "1c0b8e24",
+    "completed_profiles": [
+      "syntax-only",
+      "fast"
+    ],
+    "full_status": "First OFF paused on oracle warning mismatch; warning equals historical full-profile baseline. Corrected full-only replay active.",
+    "partial_failures_per_arm": 11,
+    "campaign_expanded": false
   }
 }
