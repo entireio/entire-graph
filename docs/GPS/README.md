@@ -46,6 +46,7 @@ deterministic inference is still an inference.
 | [Feature Roadmap](feature-roadmap.md) | Comments, history, agent integration, MCP, storage, and external evaluation. |
 | [Token/Auth MVP Demo](token-auth-demo.md) | Runnable fixture, Git-backed check contract, invalid-input diagnostics, and budget behavior. |
 | [Feature Comparison](feature-comparison.md) | What Entire Graph provides with and without GPS, plus implemented GPS value. |
+| [Theory and Implementation](theory-and-implementation.md) | Detailed GPS evidence model, architecture, command flow, and safety boundaries. |
 
 The documents deliberately separate a buildable first slice from later features.
 Examples of new commands and schemas are **proposed contracts**, not current CLI
