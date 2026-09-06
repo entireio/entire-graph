@@ -8,9 +8,9 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 The latest fully verified implementation source is `1c0b8e24`: ADR 0047 adds one lazily allocated gzip writer per extraction admission session. Root reviewed the private lifecycle; focused byte-equivalence, failure-recovery, quota and race tests passed. Full `mise run check` passed in 676.769 seconds in an immutable checkout with unchanged HEAD and clean status. Pinned Linux passed 72 top-level tests, including 10 live compiler tests. Evidence: `evidence/check-1c0b8e24/` and `evidence/correctness-1c0b8e24-20260906/`. Earlier checks and failed screens remain historical evidence, not performance results for this source.
 
-The P1 campaign remains paused. Its 108 baseline requests completed (69 complete, 33 partial, 6 timeouts); the paired campaign recorded 116 requests before stopping. The latest isolated corrective snapshot pair at `0c9e80f5` preserved exact semantics and all 194 known partials, but OFF 56.991 seconds versus ON 66.019 seconds failed the 1.10 cold screening limit. RSS was unavailable. This one pair is not statistical or release evidence. Earlier failures and the unresolved campaign-scale parity cases remain retained.
+The P1 campaign remains paused. Its 108 baseline requests completed (69 complete, 33 partial, 6 timeouts); the paired campaign recorded 116 requests before stopping. The latest isolated corrective snapshot pair at `1c0b8e24` preserved exact semantics and all 194 known partials. OFF 58.181 seconds versus ON 62.394 seconds is within the latency screen, but peak RSS 2,686,144,512 versus 3,142,365,184 bytes exceeds the 1.10 memory screen. This one pair is not statistical or release evidence. Earlier failures and the unresolved campaign-scale parity cases remain retained.
 
-All 77 campaign-control tests passed. A live fake-service smoke verified the real supervisor pause path: all three services were active before injection and stopped with STOP markers afterward. It executed no product queries. No campaign is running; all three task VMs are deallocated after correctness.
+All 77 campaign-control tests passed. A live fake-service smoke verified the real supervisor pause path: all three services were active before injection and stopped with STOP markers afterward. It executed no product queries. No campaign is running; the validation VM is available for focused correctness; the two campaign VMs remain deallocated.
 
 No wider measurement campaign is admitted while these findings remain open. P2/P3/P4 comparative studies remain deferred. No complete workstream release gate has passed; extraction reuse and compiler remain off, impact depth remains two, and current ranking remains the default.
 
@@ -225,3 +225,9 @@ acceptance of a valid plus malformed duplicate RSS line. Four fake-process/
 parser tests passed (1.510 seconds); no product measurement was run. Missing,
 malformed, nonpositive, duplicate or overflowing values stop before the next
 arm. The campaign remains paused; this is plumbing evidence only.
+
+The original 55 search mismatches are repetitions of three profile paths for
+one retained Kubernetes query. `retained-query-correctness-1c0b8e24/` freezes
+one trial-0 pair per profile, with strict semantic/partial/warning membership
+parity and first-failure pause. These are correctness cases, not a performance
+sweep; execution and complete coverage are not yet claimed.

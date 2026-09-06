@@ -1,0 +1,18 @@
+{
+  "source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
+  "binary_sha256": "b51728ed2c0840081c0921e6ec29931d2b10dce749802fb4f6fb341a60852e37",
+  "semantic_equal": true,
+  "partial_and_warning_digests_equal": true,
+  "known_partial_failures_per_arm": 194,
+  "corpus_before_between_after_equal": true,
+  "off_wall_seconds": 58.180889331,
+  "on_wall_seconds": 62.393518134,
+  "latency_ratio": 1.072405713481513,
+  "off_peak_rss_bytes": 2686144512,
+  "on_peak_rss_bytes": 3142365184,
+  "rss_ratio": 1.1698421920197866,
+  "cold_screen": "failed: RSS ratio exceeds 1.10; campaign remains paused",
+  "measurement_scope": "One isolated pair; GNU time process peak RSS, not simultaneous aggregate process-tree RSS. No statistical or release-gate claim.",
+  "next_action": "No new cold sweeps; close retained profile-specific semantic correctness cases independently.",
+  "results_sha256": "6f71e5c8d22cb43d56d32b685aef2b1c7ce76a700632f104ca44ccc569829cb9"
+}
