@@ -6,7 +6,7 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
-Implementation source is `1c0b8e24`: ADR 0047 adds one lazily allocated gzip writer per extraction admission session. Root reviewed the private lifecycle and focused byte-equivalence, failure-recovery, quota and race tests passed. Its immutable full repository check is running; pinned Linux correctness is pending. This source does not inherit earlier verification or performance results.
+Implementation source is `1c0b8e24`: ADR 0047 adds one lazily allocated gzip writer per extraction admission session. Root reviewed the private lifecycle and focused byte-equivalence, failure-recovery, quota and race tests passed. Its immutable full repository check is running; pinned Linux correctness passed 72 top-level tests including 10 live tests. Evidence: `evidence/correctness-1c0b8e24-20260906/`. This source does not inherit earlier verification or performance results.
 
 The latest fully verified source is `0c9e80f5`: full `mise run check` passed in 693.532 seconds with unchanged HEAD and clean status; pinned Linux passed 69 top-level tests, including 10 live tests. Evidence: `evidence/check-0c9e80f5/` and `evidence/correctness-0c9e80f5-20260906/`.
 

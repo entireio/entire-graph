@@ -7,7 +7,7 @@
   "implementation_source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
   "verified_checkpoint": "0c9e80f523ed433cb81ccdaa87b3f8f0c3e6d0dd",
   "verified_evidence_commit": "see evidence/check-0c9e80f5/verification.json",
-  "current_worktree": "1c0b8e24; focused correctness and race passed; immutable full check running; pinned Linux pending",
+  "current_worktree": "1c0b8e24; focused correctness and race passed; immutable full check running; pinned Linux72tests passed",
   "workers_state": "campaign paused; validation VM starting for correctness; other two VMs deallocated",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
@@ -59,10 +59,10 @@
     "source": "worker executed focused compressor/session tests; root reviewed patch"
   },
   "linux_correctness": {
-    "source_commit": "0c9e80f523ed433cb81ccdaa87b3f8f0c3e6d0dd",
-    "top_level_tests_passed": 69,
+    "source_commit": "1c0b8e24f3b6a5bb880e7b306c1c74d818614782",
+    "top_level_tests_passed": 72,
     "live_tests_passed": 10,
-    "evidence": "evidence/correctness-0c9e80f5-20260906"
+    "evidence": "evidence/correctness-1c0b8e24-20260906"
   },
   "retained_linux_search": {
     "source_commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
