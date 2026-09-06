@@ -360,7 +360,11 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 	if flags.base != "" {
 		changeDelta = "compared"
 	}
-	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "change_delta": changeDelta, "disposition": disposition, "findings": findings})
+	response := map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "change_delta": changeDelta, "disposition": disposition, "findings": findings}
+	if flags.evidence != "" {
+		response["execution_evidence"] = gpsExecutionEvidence(flags.evidence, set)
+	}
+	return gpsEncode(opts, flags.format, response)
 }
 
 func runGPSWhy(ctx context.Context, opts Options, args []string) error {
@@ -481,19 +485,23 @@ func runGPSReview(ctx context.Context, opts Options, args []string) error {
 			}
 		}
 	}
-	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "base": flags.base, "changed_files": changed, "requirements": requirements, "tests": tests, "disposition": func() string {
+	response := map[string]any{"schema_version": gpsSchemaVersion, "base": flags.base, "changed_files": changed, "requirements": requirements, "tests": tests, "disposition": func() string {
 		if len(requirements) > 0 {
 			return "REVIEW_REQUIRED"
 		}
 		return "PASS"
-	}()})
+	}()}
+	if flags.evidence != "" {
+		response["execution_evidence"] = gpsExecutionEvidence(flags.evidence, set)
+	}
+	return gpsEncode(opts, flags.format, response)
 }
 
 type gpsOptions struct {
-	repo, format, id, symbol, file, query, base string
-	update                                      bool
-	head                                        bool
-	maxBytes                                    int
+	repo, format, id, symbol, file, query, base, evidence string
+	update                                                bool
+	head                                                  bool
+	maxBytes                                              int
 }
 
 func gpsFlags(args []string) (string, gpsOptions, error) {
@@ -507,7 +515,7 @@ func gpsFlags(args []string) (string, gpsOptions, error) {
 			return args[i], nil
 		}
 		switch args[i] {
-		case "--repo", "--format", "--id", "--symbol", "--file", "--query", "--base", "--max-context-bytes":
+		case "--repo", "--format", "--id", "--symbol", "--file", "--query", "--base", "--evidence", "--max-context-bytes":
 			v, err := value()
 			if err != nil {
 				return "", flags, err
@@ -527,6 +535,8 @@ func gpsFlags(args []string) (string, gpsOptions, error) {
 				flags.query = v
 			case "--base":
 				flags.base = v
+			case "--evidence":
+				flags.evidence = v
 			default:
 				if _, err := fmt.Sscan(v, &flags.maxBytes); err != nil || flags.maxBytes < 1 {
 					return "", flags, errors.New("--max-context-bytes requires a positive integer")
@@ -546,6 +556,22 @@ func gpsFlags(args []string) (string, gpsOptions, error) {
 		return "", flags, errors.New("--format must be json or text")
 	}
 	return "", flags, nil
+}
+
+func gpsExecutionEvidence(path string, set intent.Set) map[string]any {
+	baseline, err := readVerifyBaseline(path)
+	if err != nil {
+		return map[string]any{"path": path, "status": "UNAVAILABLE"}
+	}
+	if baseline.IntentDigest != "" && baseline.IntentDigest != set.Digest {
+		return map[string]any{"path": path, "scope": baseline.Scope, "status": "STALE"}
+	}
+	for _, result := range baseline.Results {
+		if result != verifyStatusPass {
+			return map[string]any{"path": path, "scope": baseline.Scope, "status": "FAILED"}
+		}
+	}
+	return map[string]any{"path": path, "scope": baseline.Scope, "status": "CURRENT"}
 }
 func gpsIntent(ctx context.Context, repo string, head bool) (intent.Set, error) {
 	if head {
