@@ -1,0 +1,20 @@
+{
+  "source_commit": "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
+  "request_exit_code": 0,
+  "semantic_digest": "fa08ae3464a63c71db89f5755062ac76b3a8960e5bccd2f536c1491d8543b4f7",
+  "partial_failures_count": 194,
+  "request_processes": 1,
+  "profile_duration_seconds": 76.51,
+  "total_cpu_samples_seconds": 153.89,
+  "publish_batch_cumulative_cpu_seconds": 20.86,
+  "maintenance_cumulative_cpu_seconds": 11.27,
+  "write_cumulative_cpu_seconds": 9.23,
+  "source_freshness_limit": "This instrumented request reused the preceding validated fixture; no independent before/after fingerprint was captured for this profile request. It cannot establish a new freshness or comparative gate.",
+  "measurement_limit": "One instrumented ON-only CPU diagnosis; no wall-time comparison, RSS or release conclusion",
+  "collection_recovery": [
+    "formatter lacked GOCACHE; original top.txt retained",
+    "first recovery archive wrote into its own directory and tar refused",
+    "set explicit GOCACHE and archive outside source directory; existing profile collected without rerunning request"
+  ],
+  "cpu_profile_sha256": "99070e5061fc60fba0d8e0dedd244faad7751efc173d967b9398325427122190"
+}

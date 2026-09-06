@@ -1,0 +1,233 @@
+File: p1-evaluator
+Build ID: b511d5c53e21eadf18652754c0839ac4b749de38
+Type: cpu
+Time: 2026-09-06 11:46:31 UTC
+Duration: 76.51s, Total samples = 153.89s (201.14%)
+Showing nodes accounting for 125.71s, 81.69% of 153.89s total
+Dropped 978 nodes (cum <= 0.77s)
+      flat  flat%   sum%        cum   cum%
+    47.66s 30.97% 30.97%     54.10s 35.15%  runtime.cgocall
+    14.28s  9.28% 40.25%     14.28s  9.28%  internal/runtime/syscall/linux.Syscall6
+     7.27s  4.72% 44.97%     13.06s  8.49%  runtime.tryDeferToSpanScan
+     4.95s  3.22% 48.19%      4.95s  3.22%  runtime.spanClass.sizeclass (inline)
+     4.46s  2.90% 51.09%      4.46s  2.90%  internal/runtime/atomic.(*Uint32).CompareAndSwap (inline)
+     3.92s  2.55% 53.64%      3.92s  2.55%  runtime.memclrNoHeapPointers
+     3.92s  2.55% 56.18%      3.92s  2.55%  runtime.memmove
+     3.60s  2.34% 58.52%     16.87s 10.96%  runtime.scanObject
+     2.82s  1.83% 60.35%      5.26s  3.42%  compress/flate.(*compressor).deflate
+     2.23s  1.45% 61.80%      4.63s  3.01%  regexp.(*Regexp).tryBacktrack
+     1.78s  1.16% 62.96%     33.34s 21.66%  github.com/entireio/entire-graph/internal/sem.walkEntitiesScoped
+     1.51s  0.98% 63.94%      1.51s  0.98%  runtime.nextFreeFast (inline)
+     1.34s  0.87% 64.81%      2.93s  1.90%  runtime.mallocgcTiny
+     1.32s  0.86% 65.67%      1.32s  0.86%  regexp.(*bitState).shouldVisit (inline)
+     1.30s  0.84% 66.52%      1.30s  0.84%  crypto/internal/fips140/sha256.blockSHANI
+     1.29s  0.84% 67.35%      5.15s  3.35%  runtime.concatstrings
+     1.28s  0.83% 68.19%      1.63s  1.06%  strings.Fields
+     1.24s  0.81% 68.99%      3.82s  2.48%  runtime.reentersyscall
+     1.12s  0.73% 69.72%     12.89s  8.38%  runtime.mallocgc
+     1.09s  0.71% 70.43%      1.09s  0.71%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
+     1.07s   0.7% 71.12%      1.14s  0.74%  encoding/json.appendString[go.shape.string]
+     0.97s  0.63% 71.75%      3.47s  2.25%  runtime.exitsyscall
+     0.93s   0.6% 72.36%      9.37s  6.09%  github.com/entireio/entire-graph/internal/sem.entityFromNode
+     0.90s  0.58% 72.94%      1.13s  0.73%  compress/flate.(*compressor).findMatch
+     0.86s  0.56% 73.50%      2.08s  1.35%  runtime.cgoCheckArg
+     0.85s  0.55% 74.05%      3.25s  2.11%  github.com/entireio/entire-graph/internal/sem.validNode (inline)
+     0.67s  0.44% 74.49%      0.95s  0.62%  runtime.findObject
+     0.64s  0.42% 74.90%      1.05s  0.68%  runtime.cgoIsGoPointer
+     0.59s  0.38% 75.29%      3.90s  2.53%  github.com/smacker/go-tree-sitter.Node.Type.func1 (inline)
+     0.42s  0.27% 75.56%      7.04s  4.57%  github.com/entireio/entire-graph/internal/sem.tokenSet (inline)
+     0.42s  0.27% 75.83%      3.90s  2.53%  github.com/smacker/go-tree-sitter.Node.NamedChildCount.func1 (inline)
+     0.41s  0.27% 76.10%      1.13s  0.73%  strings.(*Builder).WriteString (inline)
+     0.38s  0.25% 76.35%      2.79s  1.81%  runtime.mapassign
+     0.36s  0.23% 76.58%      2.93s  1.90%  runtime.mallocgcSmallNoscan
+     0.35s  0.23% 76.81%      3.78s  2.46%  encoding/json.structEncoder.encode
+     0.35s  0.23% 77.04%      2.19s  1.42%  runtime.sweepone
+     0.34s  0.22% 77.26%      2.56s  1.66%  runtime.mallocgcSmallScanNoHeader
+     0.31s   0.2% 77.46%      2.40s  1.56%  runtime.cgoCheckPointer
+     0.28s  0.18% 77.64%      2.17s  1.41%  runtime.intstring
+     0.28s  0.18% 77.82%      1.56s  1.01%  runtime.mapaccess2
+     0.27s  0.18% 78.00%      1.42s  0.92%  runtime.(*sweepLocked).sweep
+     0.26s  0.17% 78.17%      2.48s  1.61%  github.com/smacker/go-tree-sitter.Node.IsNull.func1 (inline)
+     0.26s  0.17% 78.34%      0.94s  0.61%  internal/runtime/maps.(*table).uncheckedPutSlot
+     0.25s  0.16% 78.50%      1.89s  1.23%  strings.Join
+     0.24s  0.16% 78.65%      6.70s  4.35%  github.com/smacker/go-tree-sitter.Node.NamedChild.func1 (inline)
+     0.23s  0.15% 78.80%      1.38s   0.9%  runtime.mapassign_faststr
+     0.20s  0.13% 78.93%      2.20s  1.43%  runtime.scanSpan
+     0.18s  0.12% 79.05%      0.91s  0.59%  github.com/entireio/entire-graph/internal/sem.BuildProviderSnapshotWithOptions.func1
+     0.18s  0.12% 79.17%      3.47s  2.25%  runtime.concatstring2
+     0.16s   0.1% 79.27%      1.96s  1.27%  runtime.(*mcache).refill
+     0.16s   0.1% 79.37%      4.19s  2.72%  runtime.entersyscall
+     0.16s   0.1% 79.48%      0.81s  0.53%  runtime.typedmemmove
+     0.15s 0.097% 79.58%      1.11s  0.72%  runtime.(*mcentral).cacheSpan
+     0.14s 0.091% 79.67%      5.99s  3.89%  os.(*File).readdir
+     0.13s 0.084% 79.75%      1.19s  0.77%  github.com/entireio/entire-graph/internal/sem.collectParseErrorDetails.func1
+     0.13s 0.084% 79.84%      5.66s  3.68%  runtime.rawstring (inline)
+     0.12s 0.078% 79.91%      2.34s  1.52%  github.com/entireio/entire-graph/internal/sem.BuildProviderSnapshotWithOptions.func2
+     0.12s 0.078% 79.99%     20.09s 13.05%  runtime.gcDrain
+     0.12s 0.078% 80.07%      2.93s  1.90%  runtime.rawstringtmp
+     0.11s 0.071% 80.14%      5.72s  3.72%  github.com/smacker/go-tree-sitter.(*Tree).cachedNode (inline)
+     0.11s 0.071% 80.21%      2.68s  1.74%  github.com/smacker/go-tree-sitter._Cfunc_ts_node_type
+     0.11s 0.071% 80.28%      5.57s  3.62%  regexp.(*Regexp).doExecute
+     0.10s 0.065% 80.35%      1.15s  0.75%  bytes.(*Buffer).Write
+     0.10s 0.065% 80.41%      1.20s  0.78%  internal/runtime/maps.(*table).split
+     0.10s 0.065% 80.48%      1.90s  1.23%  runtime.gostring
+     0.10s 0.065% 80.54%      1.49s  0.97%  runtime.growslice
+     0.09s 0.058% 80.60%      3.58s  2.33%  runtime.newobject
+     0.07s 0.045% 80.65%      1.21s  0.79%  github.com/entireio/entire-graph/internal/sem.signatureFromNode
+     0.07s 0.045% 80.69%      2.80s  1.82%  github.com/smacker/go-tree-sitter._Cfunc_ts_node_named_child_count
+     0.07s 0.045% 80.74%      1.92s  1.25%  runtime.concatstring3
+     0.06s 0.039% 80.78%      7.14s  4.64%  os.doInRoot[go.shape.interface { IsDir bool; ModTime time.Time; Mode io/fs.FileMode; Name string; Size int64; Sys interface {} }]
+     0.06s 0.039% 80.82%      4.95s  3.22%  regexp.(*Regexp).backtrack
+     0.05s 0.032% 80.85%      5.84s  3.79%  github.com/smacker/go-tree-sitter.Node.Type
+     0.05s 0.032% 80.88%     22.98s 14.93%  runtime.systemstack
+     0.05s 0.032% 80.91%     14.15s  9.19%  syscall.RawSyscall6
+     0.04s 0.026% 80.94%      1.50s  0.97%  github.com/entireio/entire-graph/internal/sem.hclBlockName
+     0.04s 0.026% 80.97%      7.70s  5.00%  github.com/entireio/entire-graph/internal/sem.looksLikeToolHandler
+     0.04s 0.026% 80.99%      0.81s  0.53%  github.com/entireio/entire-graph/internal/sem.streamSnapshotWithWorkerCount.func4
+     0.04s 0.026% 81.02%     11.84s  7.69%  github.com/smacker/go-tree-sitter.Node.NamedChild
+     0.04s 0.026% 81.04%      6.05s  3.93%  github.com/smacker/go-tree-sitter._Cfunc_ts_node_named_child
+     0.04s 0.026% 81.07%      0.97s  0.63%  internal/runtime/maps.(*table).grow
+     0.04s 0.026% 81.10%      4.48s  2.91%  os.(*File).lstatat
+     0.04s 0.026% 81.12%      1.22s  0.79%  runtime.makeslice
+     0.03s 0.019% 81.14%      1.23s   0.8%  compress/flate.(*huffmanBitWriter).writeBlock
+     0.03s 0.019% 81.16%      1.34s  0.87%  crypto/internal/fips140/sha256.(*Digest).Write
+     0.03s 0.019% 81.18%      2.32s  1.51%  encoding/json.stringEncoder
+     0.03s 0.019% 81.20%     99.04s 64.36%  github.com/entireio/entire-graph/internal/sem.(*extractionCache).extract
+     0.03s 0.019% 81.22%      2.54s  1.65%  github.com/entireio/entire-graph/internal/sem.capturedWorktreeReader.func1
+     0.03s 0.019% 81.24%     11.27s  7.32%  github.com/entireio/entire-graph/internal/sem.maintainExtractionCache
+     0.03s 0.019% 81.26%      0.85s  0.55%  github.com/entireio/entire-graph/internal/sem.parameterBindingNames
+     0.03s 0.019% 81.28%      2.51s  1.63%  github.com/smacker/go-tree-sitter.Node.IsNull
+     0.03s 0.019% 81.30%      1.83s  1.19%  github.com/smacker/go-tree-sitter._Cfunc_ts_node_is_null
+     0.03s 0.019% 81.32%         8s  5.20%  internal/syscall/unix.Fstatat
+     0.03s 0.019% 81.34%      1.90s  1.23%  os.doInRoot[go.shape.int]
+     0.03s 0.019% 81.36%      4.57s  2.97%  regexp.(*Regexp).doMatch (inline)
+     0.03s 0.019% 81.38%      2.14s  1.39%  runtime.(*mcache).nextFree
+     0.03s 0.019% 81.40%      2.60s  1.69%  runtime.mallocgcLarge
+     0.03s 0.019% 81.42%      0.89s  0.58%  runtime.suspendG
+     0.03s 0.019% 81.43%      2.26s  1.47%  sort.partition_func
+     0.02s 0.013% 81.45%      3.85s  2.50%  github.com/entireio/entire-graph/internal/sem.(*capturedStore).capture
+     0.02s 0.013% 81.46%      5.50s  3.57%  github.com/entireio/entire-graph/internal/sem.ignoreMatcher.decide
+     0.02s 0.013% 81.47%      1.16s  0.75%  github.com/entireio/entire-graph/internal/sem.ignoreRule.matchBasename
+     0.02s 0.013% 81.49%      5.47s  3.55%  github.com/entireio/entire-graph/internal/sem.ignoreRule.matchKind
+     0.02s 0.013% 81.50%      3.92s  2.55%  github.com/smacker/go-tree-sitter.Node.NamedChildCount
+     0.02s 0.013% 81.51%      4.44s  2.89%  os.(*File).lstatatNolog
+     0.02s 0.013% 81.53%      7.17s  4.66%  os.rootStat
+     0.02s 0.013% 81.54%      2.21s  1.44%  runtime.memclrNoHeapPointersChunked
+     0.02s 0.013% 81.55%     11.43s  7.43%  syscall.Syscall6
+     0.01s 0.0065% 81.56%      3.72s  2.42%  encoding/json.arrayEncoder.encode
+     0.01s 0.0065% 81.56%      3.72s  2.42%  encoding/json.sliceEncoder.encode
+     0.01s 0.0065% 81.57%      3.89s  2.53%  github.com/entireio/entire-graph/internal/sem.(*capturedStore).acquireFrom
+     0.01s 0.0065% 81.58%     20.76s 13.49%  github.com/entireio/entire-graph/internal/sem.(*extractionCache).enqueue
+     0.01s 0.0065% 81.58%     20.86s 13.56%  github.com/entireio/entire-graph/internal/sem.(*extractionCache).publishBatch
+     0.01s 0.0065% 81.59%      1.88s  1.22%  github.com/entireio/entire-graph/internal/sem.(*sameVolumePathResolver).open
+     0.01s 0.0065% 81.60%     76.06s 49.42%  github.com/entireio/entire-graph/internal/sem.TreeSitterParser.ParseWithStatus
+     0.01s 0.0065% 81.60%      1.38s   0.9%  github.com/entireio/entire-graph/internal/sem.astParameterNames
+     0.01s 0.0065% 81.61%      4.24s  2.76%  github.com/entireio/entire-graph/internal/sem.ignoreRule.matchPath
+     0.01s 0.0065% 81.62%      1.01s  0.66%  github.com/entireio/entire-graph/internal/sem.jsonLikeEntities
+     0.01s 0.0065% 81.62%    112.46s 73.08%  github.com/entireio/entire-graph/internal/sem.processProviderFile
+     0.01s 0.0065% 81.63%      1.91s  1.24%  github.com/smacker/go-tree-sitter.(*BaseTree).Close
+     0.01s 0.0065% 81.64%      2.18s  1.42%  internal/poll.ignoringEINTRIO (inline)
+     0.01s 0.0065% 81.64%      2.01s  1.31%  os.(*Root).OpenFile
+     0.01s 0.0065% 81.65%      0.99s  0.64%  os.rootOpenFileNolog.func1
+     0.01s 0.0065% 81.66%      4.40s  2.86%  os.rootStat.func1
+     0.01s 0.0065% 81.66%      2.22s  1.44%  runtime.bgsweep
+     0.01s 0.0065% 81.67%      0.98s  0.64%  runtime.markroot
+     0.01s 0.0065% 81.68%      2.74s  1.78%  sort.pdqsort_func
+     0.01s 0.0065% 81.68%      1.06s  0.69%  syscall.Close
+     0.01s 0.0065% 81.69%      3.97s  2.58%  syscall.Syscall
+         0     0% 81.69%      1.03s  0.67%  bytes.(*Buffer).grow
+         0     0% 81.69%      1.03s  0.67%  bytes.growSlice
+         0     0% 81.69%      4.64s  3.02%  compress/flate.(*Writer).Close (inline)
+         0     0% 81.69%      4.64s  3.02%  compress/flate.(*compressor).close
+         0     0% 81.69%      1.23s   0.8%  compress/flate.(*compressor).writeBlock
+         0     0% 81.69%      2.06s  1.34%  compress/flate.NewWriter (inline)
+         0     0% 81.69%      4.66s  3.03%  compress/gzip.(*Writer).Close
+         0     0% 81.69%      2.83s  1.84%  compress/gzip.(*Writer).Write
+         0     0% 81.69%      1.30s  0.84%  crypto/internal/fips140/sha256.block
+         0     0% 81.69%      1.22s  0.79%  crypto/sha256.Sum256
+         0     0% 81.69%      3.28s  2.13%  encoding/json.(*Encoder).Encode
+         0     0% 81.69%      3.80s  2.47%  encoding/json.(*encodeState).marshal
+         0     0% 81.69%      3.80s  2.47%  encoding/json.(*encodeState).reflectValue
+         0     0% 81.69%      4.02s  2.61%  encoding/json.Marshal
+         0     0% 81.69%      3.89s  2.53%  github.com/entireio/entire-graph/internal/sem.(*capturedStore).acquire (inline)
+         0     0% 81.69%      3.62s  2.35%  github.com/entireio/entire-graph/internal/sem.(*gitDirExcluder).observe
+         0     0% 81.69%      3.63s  2.36%  github.com/entireio/entire-graph/internal/sem.(*gitDirExcluder).observeListedPaths
+         0     0% 81.69%      3.62s  2.35%  github.com/entireio/entire-graph/internal/sem.(*gitDirExcluder).observeListedPaths.func2
+         0     0% 81.69%      1.42s  0.92%  github.com/entireio/entire-graph/internal/sem.(*sameVolumePathResolver).lstat
+         0     0% 81.69%     14.42s  9.37%  github.com/entireio/entire-graph/internal/sem.BuildProviderSnapshotWithOptions
+         0     0% 81.69%     11.70s  7.60%  github.com/entireio/entire-graph/internal/sem.StreamSnapshot
+         0     0% 81.69%     17.85s 11.60%  github.com/entireio/entire-graph/internal/sem.TestExtractionCorpusMeasurement
+         0     0% 81.69%      0.84s  0.55%  github.com/entireio/entire-graph/internal/sem.astSignatureTypeTexts
+         0     0% 81.69%      9.23s  6.00%  github.com/entireio/entire-graph/internal/sem.cacheEntry.write
+         0     0% 81.69%      2.55s  1.66%  github.com/entireio/entire-graph/internal/sem.captureOpenedSource.func1
+         0     0% 81.69%      3.89s  2.53%  github.com/entireio/entire-graph/internal/sem.captureOpenedSource.func2
+         0     0% 81.69%      2.55s  1.66%  github.com/entireio/entire-graph/internal/sem.capturedPolicyContentReader.func1
+         0     0% 81.69%      1.18s  0.77%  github.com/entireio/entire-graph/internal/sem.collectParseErrorDetails
+         0     0% 81.69%      0.79s  0.51%  github.com/entireio/entire-graph/internal/sem.emitStructuralRelationsCompact
+         0     0% 81.69%     76.06s 49.42%  github.com/entireio/entire-graph/internal/sem.extractCapturedSource
+         0     0% 81.69%      1.35s  0.88%  github.com/entireio/entire-graph/internal/sem.extractionCorpusSnapshotDigest
+         0     0% 81.69%      1.10s  0.71%  github.com/entireio/entire-graph/internal/sem.fallbackEntities
+         0     0% 81.69%      5.60s  3.64%  github.com/entireio/entire-graph/internal/sem.filterListedWorktreePaths
+         0     0% 81.69%      1.19s  0.77%  github.com/entireio/entire-graph/internal/sem.gitDirLinkTarget
+         0     0% 81.69%      1.12s  0.73%  github.com/entireio/entire-graph/internal/sem.gitDirPointerTargetWithBudget
+         0     0% 81.69%      5.50s  3.57%  github.com/entireio/entire-graph/internal/sem.ignoreMatcher.Ignored (inline)
+         0     0% 81.69%      1.31s  0.85%  github.com/entireio/entire-graph/internal/sem.looksLikeGitDirWithBudget
+         0     0% 81.69%      1.19s  0.77%  github.com/entireio/entire-graph/internal/sem.lstatSameVolumePath
+         0     0% 81.69%      1.27s  0.83%  github.com/entireio/entire-graph/internal/sem.newPathMountGuard (inline)
+         0     0% 81.69%      1.54s  1.00%  github.com/entireio/entire-graph/internal/sem.newSameVolumePathResolver
+         0     0% 81.69%      1.96s  1.27%  github.com/entireio/entire-graph/internal/sem.normalize
+         0     0% 81.69%      1.12s  0.73%  github.com/entireio/entire-graph/internal/sem.openSameVolumePath
+         0     0% 81.69%      9.44s  6.13%  github.com/entireio/entire-graph/internal/sem.openSource
+         0     0% 81.69%      1.18s  0.77%  github.com/entireio/entire-graph/internal/sem.parseErrorDetailWithLineOffset
+         0     0% 81.69%     76.06s 49.42%  github.com/entireio/entire-graph/internal/sem.parseWithProfile
+         0     0% 81.69%      9.52s  6.19%  github.com/entireio/entire-graph/internal/sem.prepareSource
+         0     0% 81.69%      0.90s  0.58%  github.com/entireio/entire-graph/internal/sem.readLinuxMountPoints
+         0     0% 81.69%      1.27s  0.83%  github.com/entireio/entire-graph/internal/sem.readPathMountGuard
+         0     0% 81.69%      0.86s  0.56%  github.com/entireio/entire-graph/internal/sem.runIndexedPipeline[go.shape.1c1e3145933f765b80957a7dd6f9cb9582c947cb599e68a9c4f32d4d9eb8c07e]
+         0     0% 81.69%    112.56s 73.14%  github.com/entireio/entire-graph/internal/sem.runIndexedPipeline[go.shape.1c1e3145933f765b80957a7dd6f9cb9582c947cb599e68a9c4f32d4d9eb8c07e].func1
+         0     0% 81.69%      0.86s  0.56%  github.com/entireio/entire-graph/internal/sem.runProviderFilePipeline
+         0     0% 81.69%    112.46s 73.08%  github.com/entireio/entire-graph/internal/sem.runProviderFilePipeline.func1
+         0     0% 81.69%      0.81s  0.53%  github.com/entireio/entire-graph/internal/sem.runProviderFilePipeline.func2
+         0     0% 81.69%     11.70s  7.60%  github.com/entireio/entire-graph/internal/sem.streamSnapshotWithWorkerCount
+         0     0% 81.69%    112.46s 73.08%  github.com/entireio/entire-graph/internal/sem.streamSnapshotWithWorkerCount.func3
+         0     0% 81.69%      7.93s  5.15%  github.com/entireio/entire-graph/internal/sem.syntheticBoundarySymbols
+         0     0% 81.69%      1.31s  0.85%  github.com/entireio/entire-graph/internal/sem.validGitHEAD
+         0     0% 81.69%     33.28s 21.63%  github.com/entireio/entire-graph/internal/sem.walkEntities (inline)
+         0     0% 81.69%      9.44s  6.13%  github.com/entireio/entire-graph/internal/sem.worktreeSourceFiles (inline)
+         0     0% 81.69%      9.44s  6.13%  github.com/entireio/entire-graph/internal/sem.worktreeSourceFilesWithLister
+         0     0% 81.69%      1.90s  1.23%  github.com/smacker/go-tree-sitter.(*BaseTree).Close.func1 (inline)
+         0     0% 81.69%     36.25s 23.56%  github.com/smacker/go-tree-sitter.(*Parser).ParseCtx
+         0     0% 81.69%     36.07s 23.44%  github.com/smacker/go-tree-sitter.(*Parser).ParseCtx.func3 (inline)
+         0     0% 81.69%      0.92s   0.6%  github.com/smacker/go-tree-sitter.NewParser
+         0     0% 81.69%      1.34s  0.87%  github.com/smacker/go-tree-sitter.Node.ChildByFieldName
+         0     0% 81.69%      1.90s  1.23%  github.com/smacker/go-tree-sitter._Cfunc_GoString (inline)
+         0     0% 81.69%      0.89s  0.58%  github.com/smacker/go-tree-sitter._Cfunc_ts_parser_new
+         0     0% 81.69%     36.06s 23.43%  github.com/smacker/go-tree-sitter._Cfunc_ts_parser_parse_string
+         0     0% 81.69%      1.90s  1.23%  github.com/smacker/go-tree-sitter._Cfunc_ts_tree_delete
+         0     0% 81.69%      4.12s  2.68%  internal/poll.(*FD).Fstatat
+         0     0% 81.69%      3.84s  2.50%  internal/poll.(*FD).Fstatat.func1 (inline)
+         0     0% 81.69%      1.04s  0.68%  internal/poll.(*FD).ReadDirent
+         0     0% 81.69%      3.92s  2.55%  internal/poll.ignoringEINTR (inline)
+         0     0% 81.69%      2.17s  1.41%  internal/runtime/maps.(*table).rehash
+         0     0% 81.69%      0.84s  0.55%  internal/runtime/maps.(*table).reset
+         0     0% 81.69%      0.86s  0.56%  internal/runtime/maps.newTable
+         0     0% 81.69%      3.02s  1.96%  internal/syscall/unix.Openat
+         0     0% 81.69%      5.99s  3.89%  os.(*File).ReadDir
+         0     0% 81.69%      7.01s  4.56%  os.(*Root).Lstat
+         0     0% 81.69%      0.79s  0.51%  os.(*Root).Open (inline)
+         0     0% 81.69%      3.99s  2.59%  os.ignoringEINTR (inline)
+         0     0% 81.69%      4.64s  3.02%  os.newUnixDirent
+         0     0% 81.69%      1.85s  1.20%  os.rootOpenDir
+         0     0% 81.69%      1.85s  1.20%  os.rootOpenDir.func1 (inline)
+         0     0% 81.69%         2s  1.30%  os.rootOpenFileNolog
+         0     0% 81.69%      0.98s  0.64%  os.rootOpenFileNolog.func1.1 (inline)
+         0     0% 81.69%      4.57s  2.97%  regexp.(*Regexp).MatchString (inline)
+         0     0% 81.69%     20.20s 13.13%  runtime.gcBgMarkWorker
+         0     0% 81.69%     20.09s 13.05%  runtime.gcBgMarkWorker.func2
+         0     0% 81.69%      7.26s  4.72%  runtime.gcDrainMarkWorkerDedicated (inline)
+         0     0% 81.69%     12.83s  8.34%  runtime.gcDrainMarkWorkerIdle (inline)
+         0     0% 81.69%      0.89s  0.58%  runtime.markroot.func1
+         0     0% 81.69%      2.76s  1.79%  sort.Slice
+         0     0% 81.69%      1.04s  0.68%  syscall.Getdents
+         0     0% 81.69%      1.04s  0.68%  syscall.ReadDirent (inline)
+         0     0% 81.69%     17.85s 11.60%  testing.tRunner

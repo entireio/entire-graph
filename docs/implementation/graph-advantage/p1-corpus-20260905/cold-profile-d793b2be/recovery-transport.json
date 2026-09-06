@@ -1,0 +1,3 @@
+[
+  "Enable succeeded: \n[stdout]\n0\nbuild cache is required, but could not be located: GOCACHE is not defined and neither $XDG_CACHE_HOME nor $HOME are defined\n=== RUN   TestExtractionCorpusMeasurement\n--- PASS: TestExtractionCorpusMeasurement (76.51s)\nPASS\n\n[stderr]\ntar: .: file changed as we read it\n"
+]
