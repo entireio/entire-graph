@@ -1,5 +1,5 @@
 {
-  "phase": "p1_captured_selection_compatibility",
+  "phase": "p1_enumeration_cancellation_diagnosis",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -7,11 +7,11 @@
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
   "verified_checkpoint": "dc0ddce7",
   "verified_evidence_commit": "da3c59ee",
-  "current_worktree": "Diagnosis checkpoint5a60fc8f passes pinned focused correctness; not final",
+  "current_worktree": "6102b209: subdirectory compatibility and enumeration cancellation fixes committed; focused verification in progress",
   "workers_state": "all three task-owned VMs deallocated",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
-  "correctness": "verified checkpoint dc0ddce7: mise run check passed in621.0947s; evidence retained by da3c59ee; current worktree fix unverified",
+  "correctness": "Latest full check remains dc0ddce7; later changes require integration verification",
   "release_gate": "not passed",
   "defaults": "unchanged; experimental features off",
   "transport": "AppleDouble sidecars removed before verified fixture digests; clean archive retained",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T09:55:08.449859+00:00",
+  "as_of_utc": "2026-09-06T10:12:38.879782+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -41,17 +41,17 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Binary attribute, oversized-stream and C/POSIX cases now pass; repository-subdirectory policy capture, broader locale/platform coverage and retained corpus end-to-end replay remain",
+  "remaining_diagnosis": "Retained OFF request exceeded120s context and returned after161.18s; ON arm unrun. Cancellation fix6102b209 under verification. Broader locale/platform compatibility and end-to-end parity remain unresolved.",
   "stopgaps": "56 harness tests passed in4.561s at0381ea6d with unchanged source hashes; no Azure campaign run",
-  "full_correctness": "verified at dc0ddce7 in621.0947s; source unchanged; current worktree selection/matcher fix unverified",
-  "campaign": "paused; no new measurements",
+  "full_correctness": "Verified at dc0ddce7 in 621.0947s; later source changes not covered",
+  "campaign": "paused; isolated diagnostic failures retained separately",
   "stopgap_commits": [
     "dc0ddce7",
     "e5873854",
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Complete subdirectory compatibility and query parity checks before a frozen full repository check; do not restart campaigns",
+  "next_work": "Verify cancellation and source compatibility before any replay or campaign restart",
   "current_focused_correctness": {
     "commit": "5a60fc8f91855387ee7a7e9d341ccd88e74822ca",
     "source_hashes_unchanged": true,

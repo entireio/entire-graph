@@ -1,0 +1,80 @@
+=== RUN   TestRetainedSearchDiagnostic
+panic: test timed out after 10s
+	running tests:
+		TestRetainedSearchDiagnostic (10s)
+
+goroutine 42 [running]:
+testing.(*M).startAlarm.func1()
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2802 +0x2c4
+created by time.goFunc
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/time/sleep.go:215 +0x38
+
+goroutine 1 [chan receive]:
+testing.(*T).Run(0x59a605f22248, {0x1053caa8d?, 0x59a605a9fb18?}, 0x1098172d8)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2109 +0x3bc
+testing.runTests.func1(0x59a605f22248)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2585 +0x38
+testing.tRunner(0x59a605f22248, 0x59a605a9fc48)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2036 +0xc4
+testing.runTests({0x1053d49d4, 0x20}, {0x1053fafbd, 0x2d}, 0x59a605a72030, {0x1098cd0a0, 0x7dc, 0x7dc}, {0x8080802b1a610436?, 0x1053ae1c5?, ...})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2583 +0x3f0
+testing.(*M).Run(0x59a605cdaaa0)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2443 +0x578
+main.main()
+	_testmain.go:4084 +0x80
+
+goroutine 50 [syscall]:
+syscall.syscalln(0x104890ec0, {0x59a605f67798, 0x6, 0x6})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/runtime/sys_darwin.go:38 +0x20
+syscall.syscall6(0x59a606cc533f?, 0x15?, 0x59a605f67888?, 0x2?, 0x0?, 0x0?, 0x59a605f67858?)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/syscall/syscall_darwin.go:388 +0x28
+syscall.openat(0x6, {0x59a606cc533f?, 0x59a605f67888?}, 0x1100100, 0x0)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/syscall/zsyscall_darwin_arm64.go:1861 +0x88
+internal/syscall/unix.Openat(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/internal/syscall/unix/at_libc2.go:19
+os.rootOpenDir.func1(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/root_unix.go:117
+os.ignoringEINTR(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/file_posix.go:256
+os.rootOpenDir(0x6, {0x59a606cc533f, 0x15})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/root_unix.go:116 +0x4c
+os.doInRoot[...](0x59a605b82840, {0x59a606cc5310, 0x48}, 0x0, 0x59a605f67ac8)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/root_openat.go:347 +0x25c
+os.rootStat(0x59a606cc4ff0?, {0x59a606cc5310, 0x48}, 0x48?)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/root_unix.go:132 +0x58
+os.(*Root).Lstat(0x59a605b82840, {0x59a606cc5310, 0x48})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/root.go:211 +0x3c
+github.com/entireio/entire-graph/internal/sem.(*sameVolumePathResolver).open(0x59a605e02960, {0x59a606cea690?, 0x59a605f67d00?})
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/provider.go:14847 +0x394
+github.com/entireio/entire-graph/internal/sem.(*sameVolumePathResolver).lstat(0x59a605e02960, {0x59a606cea690, 0x61})
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/provider.go:15090 +0x48
+github.com/entireio/entire-graph/internal/sem.lstatSameVolumePath({0x59a605a880d3?, 0x59a606c7b7a0?}, {0x59a606cea690, 0x61})
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/provider.go:15086 +0x88
+github.com/entireio/entire-graph/internal/sem.gitDirLinkTarget({0x59a605a880d3, 0x45}, {0x59a6064e3710?, 0x1d?})
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/provider.go:16273 +0xac
+github.com/entireio/entire-graph/internal/sem.(*gitDirExcluder).observe(0x59a605b74420, {0x59a6064e3710, 0x16})
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/provider.go:14190 +0x118
+github.com/entireio/entire-graph/internal/sem.(*gitDirExcluder).observeListedPaths.func1({0x59a6064e3710?, 0x59a605f680b0?})
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/provider.go:15527 +0x70
+github.com/entireio/entire-graph/internal/sem.(*gitDirExcluder).observeListedPaths(0x59a605b74420, {0x59a606580000, 0x7a15, 0x45?}, {0x0, 0x0, 0x7a?})
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/provider.go:15537 +0x148
+github.com/entireio/entire-graph/internal/sem.worktreeSourceFilesWithLister({0x1098245e0, 0x59a605ca0ba0}, {0x59a605a880d3, 0x45}, {0x0, {0x0, 0x0}, {0x59a60608a008, 0x7a, 0x97}, ...}, ...)
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/provider.go:18400 +0xb40
+github.com/entireio/entire-graph/internal/sem.worktreeSourceFiles(...)
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/provider.go:18291
+github.com/entireio/entire-graph/internal/sem.openSource({_, _}, {_, _}, {_, _}, {0x0, 0x0, {0x0, 0x0, ...}, ...})
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/provider.go:12652 +0xc3c
+github.com/entireio/entire-graph/internal/sem.prepareSource({_, _}, {_, _}, {0x0, 0x0, {0x59a605a96480, 0x8b}, 0x0, 0x0, ...})
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/provider.go:1789 +0x510
+github.com/entireio/entire-graph/internal/sem.preselectSearchFiles({_, _}, {_, _}, {{0x105462733, 0x7a}, {0x105462733, 0x7a}, {{0x59a605f20b60, 0x1, ...}, ...}, ...}, ...)
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/search.go:1953 +0x214
+github.com/entireio/entire-graph/internal/sem.searchRepository({_, _}, {_, _}, {_, _}, {_, _}, {0x0, 0x0, ...})
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/search.go:833 +0xda0
+github.com/entireio/entire-graph/internal/sem.SearchRepository({_, _}, {_, _}, {_, _}, {_, _}, {0x0, 0x0, ...})
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/search.go:700 +0xbc
+github.com/entireio/entire-graph/internal/sem.TestRetainedSearchDiagnostic(0x59a605f22488)
+	/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/source/internal/sem/retained_search_diagnostic_test.go:23 +0x2fc
+testing.tRunner(0x59a605f22488, 0x1098172d8)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2036 +0xc4
+created by testing.(*T).Run in goroutine 1
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2101 +0x3a8

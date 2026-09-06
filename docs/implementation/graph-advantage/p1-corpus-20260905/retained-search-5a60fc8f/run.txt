@@ -1,0 +1,4 @@
+=== RUN   TestRetainedSearchDiagnostic
+    retained_search_diagnostic_test.go:27: off: context deadline exceeded
+--- FAIL: TestRetainedSearchDiagnostic (161.18s)
+FAIL

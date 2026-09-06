@@ -1,0 +1,8 @@
+{
+  "source_commit": "6102b209b75b6d685634cda890dba3d77d7d464b",
+  "command": "go test -race ./internal/sem -run 'TestCapturedPreselection|TestCapturedAttributePolicy|TestCaptureMatchStream|TestSearchExtractionReuse.*Preselection|TestPolicyCaptureExplicitOverlap|TestGitDir.*Cancel|TestPathMountGuard' -count=1",
+  "exit_code": 0,
+  "output": "ok  github.com/entireio/entire-graph/internal/sem 36.209s",
+  "scope": "Focused correctness only; no full check or campaign gate pass",
+  "as_of_utc": "2026-09-06T10:13:04.747357+00:00"
+}

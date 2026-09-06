@@ -1,0 +1,13 @@
+{
+  "source_commit": "5a60fc8f91855387ee7a7e9d341ccd88e74822ca",
+  "binary_sha256": "04d4a17a07329362fc8406e5e1621b6c28784f0e0cfa840d741e7665f90be3e0",
+  "purpose": "bounded ten-second stack diagnostic of cache-off timeout; not an evaluation repetition",
+  "command": [
+    "/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr/diagnostic",
+    "-test.run=^TestRetainedSearchDiagnostic$",
+    "-test.v",
+    "-test.count=1",
+    "-test.timeout=10s"
+  ],
+  "exit_code": 2
+}

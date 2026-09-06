@@ -1,0 +1,65 @@
+{
+  "source_commit": "5a60fc8f91855387ee7a7e9d341ccd88e74822ca",
+  "source_archive_sha256": "eaf6675781219e68cfd3103a8cad218970edd3e328049249565ed5dd4e9afb44",
+  "diagnostic_harness_sha256": "218f3dc6262386a1294eeecda7d5e9c57620e1a50ad5bec8b5c4c98961ac70d3",
+  "scratch": "/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-retained-diagnostic-0mx5c_nr",
+  "corpus_before": {
+    "effective_tracked_input_sha256": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+    "git_info_exclude_present": true,
+    "graphignore_present": false,
+    "refs": [
+      "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe refs/heads/master",
+      "331746d37d69cc9502f87ca6c33c427588d785e7 refs/heads/p1-branch-variant",
+      "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe refs/remotes/origin/HEAD",
+      "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe refs/remotes/origin/master"
+    ],
+    "repository": "kubernetes-kubernetes",
+    "repository_id": "kubernetes-kubernetes",
+    "scenario": "observed",
+    "tracked_manifest_sha256": "7112c36429cb59223135260d8119a88158edd65786633a0efca30b32a0a719d1"
+  },
+  "purpose": "one retained syntax-only search, semantic and partial-failure diagnosis only; no campaign or performance claim",
+  "locale": {
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "LC_CTYPE": "C.UTF-8"
+  },
+  "build_exit_code": 0,
+  "binary_sha256": "04d4a17a07329362fc8406e5e1621b6c28784f0e0cfa840d741e7665f90be3e0",
+  "exit_code": 1,
+  "corpus_after": {
+    "effective_tracked_input_sha256": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+    "git_info_exclude_present": true,
+    "graphignore_present": false,
+    "refs": [
+      "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe refs/heads/master",
+      "331746d37d69cc9502f87ca6c33c427588d785e7 refs/heads/p1-branch-variant",
+      "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe refs/remotes/origin/HEAD",
+      "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe refs/remotes/origin/master"
+    ],
+    "repository": "kubernetes-kubernetes",
+    "repository_id": "kubernetes-kubernetes",
+    "scenario": "observed",
+    "tracked_manifest_sha256": "7112c36429cb59223135260d8119a88158edd65786633a0efca30b32a0a719d1"
+  },
+  "source_unchanged": true,
+  "arms": {
+    "off": "context deadline exceeded; test reported161.18s",
+    "on": "unrun after off-arm error"
+  },
+  "campaign_status": "remains paused; this isolated diagnostic is not a campaign observation",
+  "platform": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "go": "go version go1.26.1 darwin/arm64"
+  },
+  "build_command": [
+    "go",
+    "test",
+    "-c",
+    "-o",
+    "diagnostic",
+    "./internal/sem"
+  ],
+  "diagnostic_source_recipe": "git archive 5a60fc8f internal cmd go.mod go.sum; copy retained-search-diagnostic.go.txt to internal/sem/retained_search_diagnostic_test.go; build with GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local"
+}

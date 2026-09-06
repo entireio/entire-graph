@@ -1,0 +1,33 @@
+{
+  "format_version": 0,
+  "query": "",
+  "repo_root": "",
+  "profile": "",
+  "results": null,
+  "stats": {
+    "files_scanned": 0,
+    "files_content_read_during_preselection": 0,
+    "files_content_read_during_query": 0,
+    "bytes_content_read_during_query": 0,
+    "files_indexed": 0,
+    "symbols_considered": 0,
+    "lexical_candidates": 0,
+    "graph_candidates": 0,
+    "sparse_candidates": 0,
+    "sparse_files_content_read": 0,
+    "candidates_selected": 0,
+    "result_bytes": 0,
+    "index_cache_hit": false,
+    "index_latency_ms": 0,
+    "query_latency_ms": 0,
+    "total_latency_ms": 0,
+    "search_latency_ms": 0,
+    "preselect_latency_ms": 0
+  },
+  "warnings": null,
+  "partial_failures": null,
+  "completeness": {
+    "languages": null,
+    "relations": null
+  }
+}
