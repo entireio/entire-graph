@@ -27,10 +27,10 @@ This table supersedes earlier checkpoint/status statements. “Complete” in th
 |---|---|---|---|---|
 | P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Fixed six-repository campaign prepared; baseline complete; paired campaign paused for diagnosis | Not passed: full fixed corpus/RSS matrix incomplete |
 | P1.2 pure extraction | Complete: explicit metadata, shared bounded source/policy capture, manifests and sticky errors | Entity field checklist, malformed/overload/language round trips, reader mutation tests; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
-| P1.3 storage | Baseline complete; ADR 0046 held-directory admission correction in progress; encoded publication at `b253e18a` | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
+| P1.3 storage | Implemented through `0c9e80f5`: encoded publication and capability-bound operation admission; immutable checks running | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.4 entity integration | Implemented; retained query/snapshot parity verified for diagnostic cases; full corpus validation incomplete | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.5 relation inputs | Complete for measured raw-import family: Go/TypeScript/Python fast/full; explicit family presence | Exact relation parity and reuse tests; other families deliberately absent | Further profiling deferred; no new family selected by benchmark tuning | Not passed |
-| P1.6 diagnostics/gates | Implemented; first-issue campaign stops verified; ADR 0046 cost correction in progress | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
+| P1.6 diagnostics/gates | Implemented; local first-issue stops verified, live fake-service smoke running; ADR 0046 correction implemented | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
 | P2.1 feasibility | Complete: pinned gopls v0.20.0 and Linux Bubblewrap execution boundary | Existing positive no-egress/read-only/descendant cancellation checks; historical Linux race passed | Hard-Go comparative quality deferred | Not passed |
 | P2.2 client/capture | Complete: bounded lifecycle, source capsule/context identity, mapping and cancellation | Protocol/UTF-16/malformed reply/context/process tests; historical immutable check passed | Deferred | Not passed |
 | P2.3 positive integration | Complete: direct declarations and separate implementation candidates; conversions excluded | New conversion/alias/generic fixtures and pinned live fixture; signature/workspace invalidation tests; historical Linux race passed | Independent realistic quality evaluation deferred | Not passed |
@@ -212,3 +212,12 @@ are retained; the product request was not rerun. The next change under review
 removes duplicate envelope encoding within existing bounded publication.
 Quota-scan alternatives require explicit correctness review; no quota limit,
 corpus, threshold or default is being tuned.
+
+Admission-session correction `3a8ac22f` and `0c9e80f5`: held-directory
+locking/accounting, one bounded inventory per session, exact installed sizes,
+idempotent final/cancel release and fresh reacquisition are implemented.
+Root review caught future-shrink reservation undercounting; the follow-up
+reserves existing bytes plus all pending bounds, including temporary overlap.
+Focused correctness/subprocess quota and race fixtures pass. An immutable
+full check at `0c9e80f5` is running; the latest completed full check remains
+`d793b2be`. A separate fake-service live stop test contains no product queries.
