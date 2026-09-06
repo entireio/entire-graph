@@ -36,6 +36,20 @@ REPOSITORY = "kubernetes-kubernetes"
 REMOTE_PARENT = "/opt/p1/retained-diagnostics"
 RUN_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 HARD_TIMEOUT_SECONDS = 300
+BUILD_TIMEOUT_SECONDS = 300
+RUNTIME_ENVIRONMENT = {
+    "PATH": "/usr/local/go/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "LC_CTYPE": "C.UTF-8",
+    "GOMAXPROCS": "4",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GOPROXY": "off",
+    "GOSUMDB": "off",
+    "GOTOOLCHAIN": "local",
+    "GOTELEMETRY": "off",
+}
 
 
 def sha256_file(path: pathlib.Path) -> str:
@@ -107,6 +121,20 @@ def _q(value: str | pathlib.Path) -> str:
     return shlex.quote(str(value))
 
 
+def persist_script_evidence(output: pathlib.Path, script: str, *, source_blob: str,
+                            artifact_blob: str, remote_root: str) -> None:
+    """Persist only non-secret script identity; SAS URLs never reach disk."""
+    payload = {
+        "script_sha256": hashlib.sha256(script.encode()).hexdigest(),
+        "source_blob": source_blob,
+        "artifact_blob": artifact_blob,
+        "remote_root": remote_root,
+        "signed_urls": "redacted",
+    }
+    (output / "remote-script.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
 def remote_script(*, source_url: str, archive_sha256: str, expected_digest: str,
                   artifact_url: str, artifact_blob: str, remote_root: str,
                   run_id: str) -> str:
@@ -135,7 +163,7 @@ tar -xzf {archive} -C "$root"
 chown -R graphcheck:graphcheck "$root"
 
 set +e
-runuser -u graphcheck -- env P1_CORPUS_ROOT=/opt/p1/corpus \\
+runuser -u graphcheck -- env LANG=C.UTF-8 LC_ALL=C.UTF-8 LC_CTYPE=C.UTF-8 P1_CORPUS_ROOT=/opt/p1/corpus \\
   /usr/bin/python3 "$root/corpus-tools/p1_scenario.py" digest {_q(REPOSITORY)} \\
   > "$root/before-corpus.json" 2>&1
 before_digest_status=$?
@@ -161,14 +189,18 @@ if [ "$before_digest_status" -ne 0 ] || [ "$before_identity_status" -ne 0 ]; the
 else
   set +e
   runuser -u graphcheck -- env PATH=/usr/local/go/bin:/usr/bin:/bin \\
+    LANG=C.UTF-8 LC_ALL=C.UTF-8 LC_CTYPE=C.UTF-8 GOMAXPROCS=4 \\
     GOPATH=/opt/graph-validation/gopath GOCACHE=/opt/graph-validation/cache \\
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \\
     GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOTELEMETRY=off \\
-    sh -c 'cd "$1" && go test -c -o diagnostic ./internal/sem' sh "$root"
+    /usr/bin/timeout --signal=TERM --kill-after=15s {BUILD_TIMEOUT_SECONDS}s \\
+    sh -c 'cd "$1" && go test -c -o diagnostic ./internal/sem' sh "$root" \\
+    > "$root/build.log" 2>&1
   build_status=$?
   set -e
   if [ "$build_status" -eq 0 ]; then
     sha256sum "$root/diagnostic" > "$root/binary.sha256"
+    set +e
     runuser -u graphcheck -- /usr/bin/python3 - "$root" <<'P1_RUN_ONCE'
 import json, os, pathlib, signal, subprocess, sys, time
 root = pathlib.Path(sys.argv[1])
@@ -177,6 +209,8 @@ env = os.environ.copy()
 env.update({{
     "P1_DIAGNOSTIC_REPO": "/opt/p1/corpus/kubernetes-kubernetes",
     "P1_DIAGNOSTIC_OUTPUT": str(root / "raw"),
+    "PATH": "/usr/local/go/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "LC_CTYPE": "C.UTF-8",
     "GOMAXPROCS": "4", "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_SYSTEM": "/dev/null", "GOPROXY": "off",
     "GOSUMDB": "off", "GOTOOLCHAIN": "local", "GOTELEMETRY": "off",
@@ -208,7 +242,7 @@ P1_RUN_ONCE
     runner_status=$?
     set -e
     set +e
-    runuser -u graphcheck -- env P1_CORPUS_ROOT=/opt/p1/corpus \\
+    runuser -u graphcheck -- env LANG=C.UTF-8 LC_ALL=C.UTF-8 LC_CTYPE=C.UTF-8 P1_CORPUS_ROOT=/opt/p1/corpus \\
       /usr/bin/python3 "$root/corpus-tools/p1_scenario.py" digest {_q(REPOSITORY)} \\
       > "$root/after-corpus.json" 2>&1
     after_digest_status=$?
@@ -243,8 +277,15 @@ fi
 printf '%s\\n' '{{"run_id":{json.dumps(run_id)},"source_archive_sha256":{json.dumps(archive_sha256)},"expected_corpus_digest":{json.dumps(expected_digest)}}}' > "$root/identity.json"
 uname -a > "$root/uname.txt"
 /usr/local/go/bin/go version > "$root/go-version.txt" 2>&1 || true
-archive_out="$root/retained-diagnostic-{run_id}.tar.gz"
-tar -czf "$archive_out" -C "$root" .
+printf '%s\\n' '{{"PATH":"/usr/local/go/bin:/usr/bin:/bin","LANG":"C.UTF-8","LC_ALL":"C.UTF-8","LC_CTYPE":"C.UTF-8","GOMAXPROCS":"4","GIT_CONFIG_GLOBAL":"/dev/null","GIT_CONFIG_SYSTEM":"/dev/null","GOPROXY":"off","GOSUMDB":"off","GOTOOLCHAIN":"local","GOTELEMETRY":"off"}}' > "$root/runtime-environment.json"
+archive_out="{REMOTE_PARENT}/retained-diagnostic-{run_id}.tar.gz"
+archive_list="$root/archive-list.txt"
+: > "$archive_list"
+for candidate in request-metadata.json before-corpus.json after-corpus.json outcome.json identity.json runtime-environment.json uname.txt go-version.txt binary.sha256 build.log diagnostic.log process.json; do
+  if [ -f "$root/$candidate" ]; then printf '%s\\n' "$candidate" >> "$archive_list"; fi
+done
+if [ -d "$root/raw" ]; then printf '%s\\n' raw >> "$archive_list"; fi
+tar -czf "$archive_out" -C "$root" -T "$archive_list"
 curl --fail --silent --show-error -X PUT -H "x-ms-blob-type: BlockBlob" \\
   --upload-file "$archive_out" {artifact_url_q}
 printf 'P1_UPLOAD_OK %s\\n' {_q(artifact_blob)}
@@ -287,6 +328,8 @@ def run(args: argparse.Namespace, *, transport: Any = cloud,
         "profile": "syntax-only", "compiler": "off", "ranking": "current",
         "test_count": 1, "arm_order": ["off", "on"],
         "arm_timeout_seconds": 120, "hard_timeout_seconds": HARD_TIMEOUT_SECONDS,
+        "build_timeout_seconds": BUILD_TIMEOUT_SECONDS,
+        "runtime_environment": RUNTIME_ENVIRONMENT,
         "no_campaign": True,
     }
     output.mkdir(parents=True)
@@ -310,7 +353,9 @@ def run(args: argparse.Namespace, *, transport: Any = cloud,
                 artifact_blob=artifact_blob,
                 remote_root=f"{REMOTE_PARENT}/{args.run_id}", run_id=args.run_id,
             )
-            (output / "remote-script.sh").write_text(script)
+            persist_script_evidence(
+                output, script, source_blob=source_blob, artifact_blob=artifact_blob,
+                remote_root=f"{REMOTE_PARENT}/{args.run_id}")
             raw = transport.run(args.vm, script)
             (output / "run-command-response.json").write_text(str(raw) + "\n")
             require_upload_ack(raw, artifact_blob)
