@@ -311,6 +311,69 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "disposition": disposition, "findings": findings})
 }
 
+func runGPSWhy(ctx context.Context, opts Options, args []string) error {
+	_, flags, err := gpsFlags(args)
+	if err != nil {
+		return err
+	}
+	if flags.symbol == "" {
+		return errors.New("why requires --symbol")
+	}
+	repo, err := resolveRepo(ctx, opts.Env, flags.repo)
+	if err != nil {
+		return err
+	}
+	set, err := gpsIntent(ctx, repo, flags.head)
+	if err != nil {
+		return err
+	}
+	snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)
+	if err != nil {
+		return err
+	}
+	matches := matchingSymbols(snapshot.Symbols, flags.symbol, flags.file)
+	if len(matches) != 1 {
+		if len(matches) == 0 {
+			return fmt.Errorf("symbol %q not found", flags.symbol)
+		}
+		return fmt.Errorf("symbol %q is ambiguous; pass --file", flags.symbol)
+	}
+	symbol := matches[0]
+	bindings := map[string]bool{}
+	for _, binding := range set.Bindings {
+		if binding.SymbolID == symbol.ID {
+			bindings[binding.ID] = true
+		}
+	}
+	var requirements []map[string]string
+	var tests []map[string]string
+	for _, spec := range set.Specs {
+		for _, anchor := range spec.Anchors {
+			if bindings[anchor.ID] {
+				requirements = append(requirements, map[string]string{"specification": spec.ID, "id": anchor.Requirement, "anchor": anchor.ID, "authority": "developer_confirmed"})
+			}
+		}
+		for _, test := range spec.Tests {
+			for _, acceptance := range spec.Acceptance {
+				if test.Acceptance != acceptance.ID {
+					continue
+				}
+				for _, requirement := range requirements {
+					if requirement["specification"] == spec.ID && requirement["id"] == acceptance.Requirement {
+						tests = append(tests, map[string]string{"id": test.ID, "acceptance": test.Acceptance, "selector": test.Selector.Name, "authority": "declared"})
+					}
+				}
+			}
+		}
+	}
+	status := "complete"
+	gaps := []string{}
+	if len(requirements) == 0 {
+		status, gaps = "complete_with_gaps", []string{"NO_INTENT_LINK"}
+	}
+	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "status": status, "symbol": symbol, "requirements": requirements, "tests": tests, "gaps": gaps})
+}
+
 type gpsOptions struct {
 	repo, format, id, symbol, file, query, base string
 	update                                      bool

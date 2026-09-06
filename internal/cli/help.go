@@ -145,6 +145,12 @@ var commandDocs = []commandDoc{
 		examples: []string{"entire graph check --repo . --format json"},
 	},
 	{
+		name: "why", group: groupInspect, summary: "Explain declared intent linked to a symbol",
+		usage:    []string{"entire graph why --repo . --symbol NAME [--file path] [--format json]"},
+		long:     "Returns only explicit GPS specification, anchor, and declared test links. It never infers product intent from names or history.",
+		examples: []string{"entire graph why --repo . --symbol Authenticate --file auth.go --format json"},
+	},
+	{
 		name:    "search",
 		group:   groupInspect,
 		summary: "Find the code for a task from a plain-language query (start here)",

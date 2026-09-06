@@ -62,6 +62,13 @@ func TestGPSAnchorBindAndResolve(t *testing.T) {
 	if !strings.Contains(out.String(), "approved_anchor") {
 		t.Fatalf("context omitted resolved anchor evidence: %s", out.String())
 	}
+	out.Reset()
+	if err := Run(t.Context(), opts, []string{"why", "--repo", repo, "--symbol", "Authenticate", "--file", "auth.go", "--format", "json"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "REQ-1") {
+		t.Fatalf("why omitted declared requirement: %s", out.String())
+	}
 }
 
 func TestGPSCheckReportsUnresolvedDeclaredTest(t *testing.T) {
