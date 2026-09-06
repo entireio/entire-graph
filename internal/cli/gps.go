@@ -150,7 +150,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	requirements := matchingRequirements(set, flags.query)
-	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "status": "complete", "requirements": requirements, "symbols": []any{}, "code": []any{}, "dependencies": []any{}, "tests": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
+	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "status": "complete", "requirements": requirements, "symbols": []any{}, "code": []any{}, "dependencies": []any{}, "tests": []any{}, "inferred_tests": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
 	if len(set.Specs) == 0 {
 		response["status"] = "complete_with_gaps"
 		response["gaps"] = []string{"NO_SPECS"}
@@ -179,6 +179,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	var symbols []any
 	var dependencies []any
 	var tests []any
+	var inferredTests []any
 	gaps := response["gaps"].([]string)
 	for _, spec := range set.Specs {
 		for _, anchor := range spec.Anchors {
@@ -218,10 +219,17 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 			}
 		}
 	}
+	for _, symbol := range snapshot.Symbols {
+		if !strings.HasPrefix(symbol.Name, "Test") || !queryMatchesText(flags.query, symbol.Name) {
+			continue
+		}
+		inferredTests = append(inferredTests, map[string]any{"reason": "name_match_candidate", "fulfills_mapping": false, "citation": fmt.Sprintf("%s:%d", symbol.FilePath, symbol.StartLine), "symbol": symbol})
+	}
 	sort.Strings(gaps)
 	response["symbols"] = symbols
 	response["dependencies"] = dependencies
 	response["tests"] = tests
+	response["inferred_tests"] = inferredTests
 	response["gaps"] = gaps
 	if len(gaps) > 0 {
 		response["status"] = "complete_with_gaps"
@@ -676,6 +684,15 @@ func matchingRequirements(set intent.Set, query string) []map[string]string {
 	return out
 }
 
+func queryMatchesText(query, text string) bool {
+	for _, word := range strings.Fields(strings.ToLower(query)) {
+		if strings.Contains(strings.ToLower(text), word) {
+			return true
+		}
+	}
+	return false
+}
+
 func acceptanceMatchesRequirement(spec intent.Spec, acceptanceID string, requirements map[string]bool) bool {
 	for _, acceptance := range spec.Acceptance {
 		if acceptance.ID == acceptanceID {
@@ -697,14 +714,15 @@ func fitGPSContextBudget(response map[string]any, maximum int) {
 	response["code"] = []any{}
 	response["dependencies"] = []any{}
 	response["tests"] = []any{}
-	budget["omitted"] = []string{"symbols", "code", "dependencies", "tests"}
+	response["inferred_tests"] = []any{}
+	budget["omitted"] = []string{"symbols", "code", "dependencies", "tests", "inferred_tests"}
 	response["status"] = "complete_with_gaps"
 	response["gaps"] = append(response["gaps"].([]string), "CONTEXT_OMITTED_FOR_BUDGET")
 	if renderedGPSJSONBytes(response) > maximum {
 		response["requirements"] = []map[string]string{}
 		response["status"] = "BUDGET_TOO_SMALL"
 		response["gaps"] = []string{"BUDGET_TOO_SMALL"}
-		budget["omitted"] = []string{"requirements", "symbols", "code", "dependencies", "tests"}
+		budget["omitted"] = []string{"requirements", "symbols", "code", "dependencies", "tests", "inferred_tests"}
 	}
 	budget["rendered_bytes"] = renderedGPSJSONBytes(response)
 }
