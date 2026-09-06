@@ -2,6 +2,7 @@ package sem
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -21,6 +22,12 @@ import (
 const extractionDecodeLimit = 64 << 20
 const extractionEntryLimit = 100000
 const extractionDiskLimit int64 = 1 << 30
+
+// A cold extraction can produce one cache record per source file. Keep only a
+// bounded batch in memory, then perform one quota scan for that batch instead
+// of rescanning the whole extraction directory for every file.
+const extractionPublishBatchEntries = 128
+const extractionPublishBatchBytes int64 = 16 << 20
 
 var extractionBuildIdentity = sync.OnceValue(func() string {
 	path, err := os.Executable()
@@ -45,8 +52,19 @@ type extractionCache struct {
 	maxEntries                                                            int
 	limitsReady                                                           bool
 	directory, repository, build                                          string
+	ctx                                                                   context.Context
 	parsed, reused, sourceBytes, cacheReadBytes, cacheWriteBytes, parseNS atomic.Int64
 	quotaMu                                                               sync.Mutex
+	pendingMu                                                             sync.Mutex
+	pending                                                               []extractionPending
+	pendingBytes                                                          int64
+	maintenanceCalls                                                      atomic.Int64
+}
+
+type extractionPending struct {
+	entry    cacheEntry
+	bound    int64
+	envelope extractionEnvelope
 }
 type ExtractionStats struct {
 	RawImportsParsed  int64 `json:"raw_imports_parsed"`
@@ -67,9 +85,9 @@ func (cache *extractionCache) stats() *ExtractionStats {
 	return &ExtractionStats{RawImportsParsed: cache.importsParsed.Load(), RawImportsReused: cache.importsReused.Load(), RawImportsNS: cache.importsNS.Load(), FilesParsed: cache.parsed.Load(), FilesReused: cache.reused.Load(), SourceBytesRead: cache.sourceBytes.Load(), CacheBytesRead: cache.cacheReadBytes.Load(), CacheBytesWritten: cache.cacheWriteBytes.Load(), ExtractionNS: cache.parseNS.Load()}
 }
 
-// publish holds admission across maintenance and publication. A reservation may
-// never outlive this lock: other operations and processes share the namespace.
-func (cache *extractionCache) publish(entry cacheEntry, bytes int64, envelope extractionEnvelope) bool {
+// limits resolves the per-cache quota once. Admission itself is held across a
+// bounded publication batch below; the reservation never outlives that lock.
+func (cache *extractionCache) limits() (int64, int) {
 	cache.quotaMu.Lock()
 	defer cache.quotaMu.Unlock()
 	if !cache.limitsReady {
@@ -77,18 +95,117 @@ func (cache *extractionCache) publish(entry cacheEntry, bytes int64, envelope ex
 		cache.maxEntries = int(extractionConfiguredLimit("ENTIRE_GRAPH_EXTRACTION_CACHE_MAX_ENTRIES", extractionEntryLimit))
 		cache.limitsReady = true
 	}
-	if bytes > cache.maxBytes {
-		return false
+	return cache.maxBytes, cache.maxEntries
+}
+
+func (cache *extractionCache) enqueue(entry cacheEntry, bound int64, envelope extractionEnvelope) {
+	if cache == nil {
+		return
 	}
+	cache.pendingMu.Lock()
+	cache.pending = append(cache.pending, extractionPending{entry: entry, bound: bound, envelope: envelope})
+	cache.pendingBytes += bound
+	flush := len(cache.pending) >= extractionPublishBatchEntries || cache.pendingBytes >= extractionPublishBatchBytes
+	var batch []extractionPending
+	if flush {
+		batch = cache.takePendingLocked()
+	}
+	cache.pendingMu.Unlock()
+	if len(batch) > 0 {
+		cache.publishBatch(batch)
+	}
+}
+
+func (cache *extractionCache) takePendingLocked() []extractionPending {
+	batch := cache.pending
+	cache.pending = nil
+	cache.pendingBytes = 0
+	return batch
+}
+
+// flush publishes the final bounded batch at the operation boundary. The
+// provider calls this after workers have stopped, so no producer can append
+// while the drain is in progress.
+func (cache *extractionCache) flush() {
+	if cache == nil {
+		return
+	}
+	for {
+		cache.pendingMu.Lock()
+		batch := cache.takePendingLocked()
+		cache.pendingMu.Unlock()
+		if len(batch) == 0 {
+			return
+		}
+		cache.publishBatch(batch)
+	}
+}
+
+func (cache *extractionCache) publishBatch(batch []extractionPending) {
+	if cache == nil || len(batch) == 0 || (cache.ctx != nil && cache.ctx.Err() != nil) {
+		return
+	}
+	maxBytes, maxEntries := cache.limits()
 	extractionMaintenance.Lock()
 	defer extractionMaintenance.Unlock()
-	lock, err := lockExtractionAdmission(entry)
+	lock, err := lockExtractionAdmission(batch[0].entry)
 	if err != nil {
-		return false
+		return
 	}
 	defer lock.Close() // Kernel releases the lock, including after process failure.
-	_, _, ok := maintainExtractionCache(entry, bytes, cache.maxBytes, cache.maxEntries)
-	return ok && entry.write("extract", envelope) == nil
+
+	// Keep each quota reservation exact and bounded. A configured quota may be
+	// smaller than the normal batch, so split before maintenance rather than
+	// admitting a batch that cannot fit the configured entry or byte limits.
+	for start := 0; start < len(batch); {
+		end := start
+		var bytes int64
+		for end < len(batch) && end-start < maxEntries {
+			bound := batch[end].bound
+			if bound > maxBytes {
+				end++ // This record can never fit; retain the rest of the batch.
+				continue
+			}
+			if end > start && bytes > maxBytes-bound {
+				break
+			}
+			bytes += bound
+			end++
+		}
+		if end == start {
+			end++
+		}
+		chunk := make([]extractionPending, 0, end-start)
+		for _, item := range batch[start:end] {
+			if item.bound <= maxBytes {
+				chunk = append(chunk, item)
+			}
+		}
+		start = end
+		if len(chunk) == 0 || (cache.ctx != nil && cache.ctx.Err() != nil) {
+			continue
+		}
+		var incoming int64
+		for _, item := range chunk {
+			incoming += item.bound
+		}
+		cache.maintenanceCalls.Add(1)
+		_, _, ok := maintainExtractionCache(batch[0].entry, incoming, len(chunk), maxBytes, maxEntries)
+		if !ok || (cache.ctx != nil && cache.ctx.Err() != nil) {
+			continue
+		}
+		for _, item := range chunk {
+			if err := item.entry.write("extract", item.envelope); err != nil {
+				continue
+			}
+			if file, err := item.entry.open(); err == nil {
+				if info, err := file.Stat(); err == nil {
+					cache.cacheWriteBytes.Add(info.Size())
+				}
+				file.Close()
+			}
+		}
+	}
 }
 
 type extractionEnvelope struct {
@@ -159,14 +276,7 @@ func (cache *extractionCache) extract(spec profileSpec, language languageSpec, s
 			// DEFLATE can expand incompressible data; include block and framing
 			// overhead rather than assuming gzip is always smaller than JSON.
 			bound := int64(len(bytes) + len(bytes)/16384*5 + 1024)
-			if cache.publish(entry, bound, envelope) {
-				if file, err := entry.open(); err == nil {
-					if info, err := file.Stat(); err == nil {
-						cache.cacheWriteBytes.Add(info.Size())
-					}
-					file.Close()
-				}
-			}
+			cache.enqueue(entry, bound, envelope)
 		}
 	}
 	return extraction, false
@@ -204,7 +314,7 @@ var extractionMaintenance sync.Mutex
 
 // Maintenance follows held directory capabilities, and removes only internally
 // named regular entries. Admission fails closed when bounded scanning is exceeded.
-func maintainExtractionCache(entry cacheEntry, incoming, maxBytes int64, maxEntries int) (int64, int, bool) {
+func maintainExtractionCache(entry cacheEntry, incomingBytes int64, incomingEntries int, maxBytes int64, maxEntries int) (int64, int, bool) {
 	if os.MkdirAll(entry.root, 0700) != nil {
 		return 0, 0, false
 	}
@@ -267,7 +377,7 @@ func maintainExtractionCache(entry cacheEntry, incoming, maxBytes int64, maxEntr
 	})
 	remaining := len(items)
 	for _, item := range items {
-		if total+incoming <= maxBytes*9/10 && remaining < max(1, maxEntries*9/10) {
+		if total+incomingBytes <= maxBytes*9/10 && remaining+incomingEntries < max(1, maxEntries*9/10) {
 			break
 		}
 		if dir.Remove(item.name) != nil {
@@ -276,7 +386,7 @@ func maintainExtractionCache(entry cacheEntry, incoming, maxBytes int64, maxEntr
 		total -= item.size
 		remaining--
 	}
-	return maxBytes - total, maxEntries - remaining, total+incoming <= maxBytes && remaining < maxEntries
+	return maxBytes - total, maxEntries - remaining, total+incomingBytes <= maxBytes && remaining+incomingEntries <= maxEntries
 }
 
 // Reads refuse redirected descendants as writes do, without creating directories.
