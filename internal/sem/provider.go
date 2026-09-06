@@ -1424,6 +1424,12 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		return err
 	}
 	emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
+	// Publish the final bounded extraction batch before taking the summary
+	// counters. The source close below remains a safety net for early returns,
+	// while successful snapshots report cache writes in their own telemetry.
+	if sc.extraction != nil {
+		sc.extraction.flush()
+	}
 
 	startPhase()
 	externalIDs := make([]string, 0, len(externalsByID))
@@ -1812,13 +1818,23 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 
 	var extraction *extractionCache
 	if options.ExtractionReuse {
-		extraction = &extractionCache{directory: options.ExtractionCacheDir, repository: absRepo + "\x00" + key, build: extractionBuildIdentity()}
+		extraction = &extractionCache{ctx: ctx, directory: options.ExtractionCacheDir, repository: absRepo + "\x00" + key, build: extractionBuildIdentity()}
 	}
 	if options.ExtractionReuse || options.Compiler != nil || options.captureInputs {
 		if committedRevision == "" && options.cachePolicy != nil {
 			opened.read = capturedPolicyContentReader(absRepo, options.cachePolicy, opened.read)
 		}
 		opened = captureOpenedSource(ctx, opened, extraction)
+	}
+	if extraction != nil {
+		originalClose := opened.close
+		opened.close = func() error {
+			extraction.flush()
+			if originalClose != nil {
+				return originalClose()
+			}
+			return nil
+		}
 	}
 	warnings := append([]ProviderWarning(nil), opened.warnings...)
 	if options.Worktree {
