@@ -47,9 +47,17 @@ class LocalBackend:
     evidence_scope = "this machine only"
 
     def __init__(self):
-        d = os.path.expanduser("~/.atc")
-        os.makedirs(d, exist_ok=True)
-        self.conn = sqlite3.connect(os.path.join(d, "telemetry.db"))
+        # ATC_LOCAL_DB lets tests/CI point at an isolated store without
+        # touching HOME (which would break `entire` plugin discovery).
+        path = os.environ.get("ATC_LOCAL_DB")
+        if not path:
+            d = os.path.expanduser("~/.atc")
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, "telemetry.db")
+        else:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        self.path = path
+        self.conn = sqlite3.connect(path)
 
     def execute(self, sql, params=()):
         # SQLite accepts arbitrary type names (STRING/INT) — no rewriting needed.

@@ -308,6 +308,21 @@ Operational notes only. No code changes.
 EOF
 git add -A && git commit -qm "feat-docs: add notes"
 
+# ---------------- hotspot-prior session (no current collision) -------
+# Touches auth.py — historically contended — but collides with nobody today.
+# Used to demonstrate that fleet history warns BEFORE any overlap exists.
+git checkout -q main
+git checkout -qb feat-audit
+python3 - <<'PY'
+s = open("auth.py").read()
+s = s.replace(
+    'def login(user):\n    token = f"{user}.sig"',
+    'def login(user):\n    """Issue a token (audit session adds trace logging)."""\n'
+    '    print(f"[audit] login {user}")\n    token = f"{user}.sig"', 1)
+open("auth.py", "w").write(s)
+PY
+git add -A && git commit -qm "feat-audit: add audit trace to login"
+
 git checkout -q main
 
 # ---------------- worktrees = live parallel sessions ----------------
