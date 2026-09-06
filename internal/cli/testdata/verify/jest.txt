@@ -1,0 +1,9 @@
+PASS test/browser/render.test.js
+  ✓ renders a bigint child (12 ms)
+  ✓ renders nested children (3 ms)
+FAIL test/browser/hooks.test.js
+  ✕ useState with bigint (8 ms)
+  ✓ useState with number (1 ms)
+
+Test Suites: 1 failed, 1 passed, 2 total
+Tests:       1 failed, 3 passed, 4 total

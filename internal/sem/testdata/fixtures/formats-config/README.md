@@ -1,0 +1,5 @@
+# Service
+
+```go
+func Example() {}
+```
