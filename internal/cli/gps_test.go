@@ -216,6 +216,94 @@ func TestGPSCheckCommittedBaseReportsSpecOnlyDelta(t *testing.T) {
 	}
 }
 
+func TestGPSCheckDeltaIgnoresCommentOnlyAnchoredFileChange(t *testing.T) {
+	repo := t.TempDir()
+	gpsGit(t, repo, "init")
+	gpsGit(t, repo, "config", "user.email", "gps@example.invalid")
+	gpsGit(t, repo, "config", "user.name", "GPS Test")
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}}, []string{"spec", "init", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+	spec := "version: 1\nid: SPEC-1\ntitle: Token\nrequirements:\n  - id: REQ-1\n    description: Token.\nanchors:\n  - id: ANCHOR-1\n    requirement: REQ-1\n"
+	if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "specs", "token.yaml"), []byte(spec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "token.go"), []byte("package token\nfunc Lifetime() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}}, []string{"anchor", "bind", "--repo", repo, "--id", "ANCHOR-1", "--symbol", "Lifetime", "--file", "token.go"}); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "baseline")
+	base := gpsRevision(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "token.go"), []byte("package token\n// Lifetime is configurable.\nfunc Lifetime() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", "token.go")
+	gpsGit(t, repo, "commit", "-m", "comment only")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"check", "--repo", repo, "--head", "--base", base}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "GPS-DELTA-ANCHOR") {
+		t.Fatalf("comment-only edit produced anchor delta: %s", out.String())
+	}
+}
+
+func TestGPSWhyHistoryReturnsLocalCheckpointProvenance(t *testing.T) {
+	repo := t.TempDir()
+	gpsGit(t, repo, "init")
+	gpsGit(t, repo, "config", "user.email", "gps@example.invalid")
+	gpsGit(t, repo, "config", "user.name", "GPS Test")
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}}, []string{"spec", "init", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+	spec := "version: 1\nid: SPEC-1\ntitle: Token\nrequirements:\n  - id: REQ-1\n    description: Token.\nanchors:\n  - id: ANCHOR-1\n    requirement: REQ-1\n"
+	if err := os.WriteFile(filepath.Join(repo, ".entire", "graph", "specs", "token.yaml"), []byte(spec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "token.go"), []byte("package token\nfunc Lifetime() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}}, []string{"anchor", "bind", "--repo", repo, "--id", "ANCHOR-1", "--symbol", "Lifetime", "--file", "token.go"}); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "implementation\n\nEntire-Checkpoint: gps-history")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"why", "--repo", repo, "--head", "--symbol", "Lifetime", "--file", "token.go", "--history", "--history-limit", "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"status":"AVAILABLE"`) || !strings.Contains(out.String(), "gps-history") {
+		t.Fatalf("missing local history provenance: %s", out.String())
+	}
+}
+
+func TestGPSCapturedCommittedViewDetectsHeadChange(t *testing.T) {
+	repo := t.TempDir()
+	gpsGit(t, repo, "init")
+	gpsGit(t, repo, "config", "user.email", "gps@example.invalid")
+	gpsGit(t, repo, "config", "user.name", "GPS Test")
+	if err := os.WriteFile(filepath.Join(repo, "token.go"), []byte("package token\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "first")
+	view, err := gpsCaptureView(t.Context(), repo, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "token.go"), []byte("package token\n// changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gpsGit(t, repo, "add", ".")
+	gpsGit(t, repo, "commit", "-m", "second")
+	if !view.inputChanged(t.Context(), repo) {
+		t.Fatal("committed input change was not detected")
+	}
+}
+
 func TestGPSSpecValidateAggregatesStructuredDiagnostics(t *testing.T) {
 	repo := t.TempDir()
 	if err := Run(t.Context(), Options{Version: "test", Env: EntireEnv{RepoRoot: repo}}, []string{"spec", "init", "--repo", repo}); err != nil {

@@ -146,14 +146,14 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "why", group: groupInspect, summary: "Explain declared intent linked to a symbol",
-		usage:    []string{"entire graph why --repo . --symbol NAME [--file path] [--format json]"},
-		long:     "Returns only explicit GPS specification, anchor, and declared test links. It never infers product intent from names or history.",
+		usage:    []string{"entire graph why --repo . --symbol NAME [--file path] [--history --history-limit n] [--format json]"},
+		long:     "Returns only explicit GPS specification, anchor, and declared test links. --history opt-in adds at most 32 local Git commits for the selected symbol path, including recorded Entire checkpoint trailers; unavailable history is reported as HISTORY_UNAVAILABLE.",
 		examples: []string{"entire graph why --repo . --symbol Authenticate --file auth.go --format json"},
 	},
 	{
 		name: "review", group: groupAnalyze, summary: "Project a committed diff onto declared GPS intent",
 		usage:    []string{"entire graph review --repo . --base REV [--format json]"},
-		long:     "Produces a read-only review projection of changed anchored files, affected requirements, and declared tests. It does not approve changes or execute tests.",
+		long:     "Produces a read-only review projection of semantic changes to anchored symbols and declared tests, affected requirements, and mappings. It does not approve changes or execute tests.",
 		examples: []string{"entire graph review --repo . --base HEAD~1 --format json"},
 	},
 	{

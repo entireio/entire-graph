@@ -423,8 +423,12 @@ type ProviderSnapshot struct {
 }
 
 type ProviderSnapshotOptions struct {
-	NoNetwork    bool
-	Worktree     bool
+	NoNetwork bool
+	Worktree  bool
+	// Revision pins a committed snapshot to this exact commit. It is mutually
+	// exclusive with Worktree and lets callers compose code and other committed
+	// inputs without re-resolving a moving ref such as HEAD.
+	Revision     string
 	IgnoreFiles  []string
 	IncludeFiles []string
 	// OnlyFiles restricts parsing to these exact repository-relative paths.
@@ -1659,7 +1663,14 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 	ctx, metadataSafe := newGitMetadataValidation(ctx, absRepo)
 	if metadataSafe {
 		key = repoKey(ctx, absRepo)
-		commit, tree, headErr = resolveCommittedHEAD(ctx, absRepo)
+		if options.Revision != "" {
+			if options.Worktree {
+				return sourceContext{}, errors.New("a committed revision cannot be combined with a working-tree snapshot")
+			}
+			commit, tree, headErr = gitutil.CommitAndTree(ctx, absRepo, options.Revision)
+		} else {
+			commit, tree, headErr = resolveCommittedHEAD(ctx, absRepo)
+		}
 	} else {
 		headErr = fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", absRepo)
 	}

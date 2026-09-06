@@ -97,7 +97,11 @@ func runAnchor(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	set, err := gpsIntent(ctx, repo, flags.head)
+	view, err := gpsCaptureView(ctx, repo, flags.head)
+	if err != nil {
+		return err
+	}
+	set, err := gpsIntentRevision(ctx, repo, view.revision, flags.head)
 	if err != nil {
 		return err
 	}
@@ -158,17 +162,21 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	set, err := gpsIntent(ctx, repo, flags.head)
+	view, err := gpsCaptureView(ctx, repo, flags.head)
+	if err != nil {
+		return err
+	}
+	set, err := gpsIntentRevision(ctx, repo, view.revision, flags.head)
 	if err != nil {
 		return err
 	}
 	requirements := matchingRequirements(set, flags.query)
-	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "status": "complete", "requirements": requirements, "symbols": []any{}, "code": []any{}, "dependencies": []any{}, "tests": []any{}, "inferred_tests": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
+	response := map[string]any{"schema_version": gpsSchemaVersion, "request": flags.query, "intent_digest": set.Digest, "repository_view": view.repositoryView(), "status": "complete", "requirements": requirements, "symbols": []any{}, "code": []any{}, "dependencies": []any{}, "tests": []any{}, "inferred_tests": []any{}, "gaps": []string{}, "budget": map[string]any{"maximum_bytes": flags.maxBytes, "rendered_bytes": 0, "omitted": []string{}}}
 	if len(set.Specs) == 0 {
 		response["status"] = "complete_with_gaps"
 		response["gaps"] = []string{"NO_SPECS"}
 	}
-	snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)
+	snapshot, err := gpsSnapshotRevision(ctx, opts, repo, view.revision, flags.head)
 	if err != nil {
 		return err
 	}
@@ -250,6 +258,11 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 		response["status"] = "complete_with_gaps"
 	}
 	fitGPSContextBudget(response, flags.maxBytes)
+	if view.inputChanged(ctx, repo) {
+		response["status"] = "incomplete"
+		response["gaps"] = append(response["gaps"].([]string), "INPUT_CHANGED")
+		setGPSRenderedBytes(response)
+	}
 	return gpsEncode(opts, flags.format, response)
 }
 
@@ -265,14 +278,23 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	set, err := gpsIntent(ctx, repo, flags.head)
+	view, err := gpsCaptureView(ctx, repo, flags.head)
+	if err != nil {
+		return err
+	}
+	set, err := gpsIntentRevision(ctx, repo, view.revision, flags.head)
 	if err != nil {
 		return err
 	}
 	if len(set.Specs) == 0 {
-		return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "change_delta": "not_requested", "disposition": "NOT_CONFIGURED", "findings": []any{}})
+		response := map[string]any{"schema_version": gpsSchemaVersion, "repository_view": view.repositoryView(), "change_delta": "not_requested", "disposition": "NOT_CONFIGURED", "findings": []any{}}
+		if view.inputChanged(ctx, repo) {
+			response["disposition"] = "INCOMPLETE"
+			response["findings"] = []map[string]any{{"id": "GPS-INPUT-CHANGED", "severity": "incomplete", "subject": "repository", "message": "HEAD changed while GPS was reading committed inputs"}}
+		}
+		return gpsEncode(opts, flags.format, response)
 	}
-	snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)
+	snapshot, err := gpsSnapshotRevision(ctx, opts, repo, view.revision, flags.head)
 	if err != nil {
 		return err
 	}
@@ -285,10 +307,7 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 		if err != nil {
 			return fmt.Errorf("resolve base revision: %w", err)
 		}
-		headRevision, err := gitutil.RevParse(ctx, repo, "HEAD")
-		if err != nil {
-			return fmt.Errorf("resolve current revision: %w", err)
-		}
+		headRevision := view.revision
 		baseSet, err := intent.LoadRevision(ctx, repo, baseRevision)
 		if err != nil {
 			return fmt.Errorf("load base intent: %w", err)
@@ -313,28 +332,18 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 				}
 			}
 		}
-		intentChanged, codeChanged := false, false
+		intentChanged := false
 		for _, file := range changed {
 			if strings.HasPrefix(file.Path, intent.Root+"/") || strings.HasPrefix(file.OldPath, intent.Root+"/") {
 				intentChanged = true
-			} else {
-				codeChanged = true
-			}
-			for _, binding := range set.Bindings {
-				if binding.Selector.File == file.Path || binding.Selector.File == file.OldPath {
-					findings = append(findings, map[string]any{"id": "GPS-DELTA-ANCHOR", "severity": "warning", "subject": binding.ID, "message": "anchored implementation changed since base revision"})
-				}
-			}
-			for _, spec := range set.Specs {
-				for _, test := range spec.Tests {
-					for _, symbol := range matchingSymbols(snapshot.Symbols, test.Selector.Name, "") {
-						if symbol.FilePath == file.Path || symbol.FilePath == file.OldPath {
-							findings = append(findings, map[string]any{"id": "GPS-DELTA-TEST", "severity": "warning", "subject": test.ID, "message": "declared test implementation changed since base revision"})
-						}
-					}
-				}
 			}
 		}
+		baseSnapshot, err := gpsSnapshotRevision(ctx, opts, repo, baseRevision, true)
+		if err != nil {
+			return fmt.Errorf("load base graph: %w", err)
+		}
+		findings = append(findings, gpsSymbolDeltaFindings(baseSet, set, baseSnapshot, snapshot)...)
+		codeChanged := gpsSnapshotsHaveCodeDelta(baseSnapshot, snapshot)
 		if intentChanged && !codeChanged {
 			findings = append(findings, map[string]any{"id": "GPS-DELTA-SPEC-ONLY", "severity": "warning", "subject": "intent", "message": "specification changed without implementation changes"})
 		}
@@ -391,7 +400,11 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 	if flags.base != "" {
 		changeDelta = "compared"
 	}
-	response := map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "repository_view": gpsRepositoryView(ctx, repo, flags.head), "change_delta": changeDelta, "disposition": disposition, "findings": findings}
+	if view.inputChanged(ctx, repo) {
+		findings = append(findings, map[string]any{"id": "GPS-INPUT-CHANGED", "severity": "incomplete", "subject": "repository", "message": "HEAD changed while GPS was reading committed inputs"})
+		disposition = "INCOMPLETE"
+	}
+	response := map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "repository_view": view.repositoryView(), "change_delta": changeDelta, "disposition": disposition, "findings": findings}
 	if flags.evidence != "" {
 		response["execution_evidence"] = gpsExecutionEvidence(flags.evidence, set)
 	}
@@ -410,11 +423,15 @@ func runGPSWhy(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	set, err := gpsIntent(ctx, repo, flags.head)
+	view, err := gpsCaptureView(ctx, repo, flags.head)
 	if err != nil {
 		return err
 	}
-	snapshot, err := gpsSnapshot(ctx, opts, repo, flags.head)
+	set, err := gpsIntentRevision(ctx, repo, view.revision, flags.head)
+	if err != nil {
+		return err
+	}
+	snapshot, err := gpsSnapshotRevision(ctx, opts, repo, view.revision, flags.head)
 	if err != nil {
 		return err
 	}
@@ -467,7 +484,22 @@ func runGPSWhy(ctx context.Context, opts Options, args []string) error {
 	if len(requirements) == 0 {
 		status, gaps = "complete_with_gaps", []string{"NO_INTENT_LINK"}
 	}
-	return gpsEncode(opts, flags.format, map[string]any{"schema_version": gpsSchemaVersion, "status": status, "symbol": symbol, "requirements": requirements, "tests": tests, "decisions": decisions, "gaps": gaps})
+	response := map[string]any{"schema_version": gpsSchemaVersion, "status": status, "symbol": symbol, "requirements": requirements, "tests": tests, "decisions": decisions, "gaps": gaps, "repository_view": view.repositoryView()}
+	if flags.history {
+		history, err := gitutil.HistoryForPath(ctx, repo, view.revision, symbol.FilePath, flags.historyLimit)
+		if err != nil {
+			response["history"] = map[string]any{"status": "HISTORY_UNAVAILABLE"}
+			response["status"] = "complete_with_gaps"
+			response["gaps"] = append(gaps, "HISTORY_UNAVAILABLE")
+		} else {
+			response["history"] = map[string]any{"status": "AVAILABLE", "entries": history}
+		}
+	}
+	if view.inputChanged(ctx, repo) {
+		response["status"] = "incomplete"
+		response["gaps"] = append(response["gaps"].([]string), "INPUT_CHANGED")
+	}
+	return gpsEncode(opts, flags.format, response)
 }
 
 func runGPSReview(ctx context.Context, opts Options, args []string) error {
@@ -482,19 +514,44 @@ func runGPSReview(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	set, err := intent.LoadRevision(ctx, repo, "HEAD")
+	view, err := gpsCaptureView(ctx, repo, true)
 	if err != nil {
 		return err
 	}
-	changed, err := gitutil.ChangedFiles(ctx, repo, flags.base, "HEAD", nil)
+	base, err := gitutil.RevParse(ctx, repo, flags.base)
+	if err != nil {
+		return fmt.Errorf("resolve base revision: %w", err)
+	}
+	set, err := intent.LoadRevision(ctx, repo, view.revision)
 	if err != nil {
 		return err
 	}
+	baseSet, err := intent.LoadRevision(ctx, repo, base)
+	if err != nil {
+		return err
+	}
+	changed, err := gitutil.ChangedFiles(ctx, repo, base, view.revision, nil)
+	if err != nil {
+		return err
+	}
+	baseSnapshot, err := gpsSnapshotRevision(ctx, opts, repo, base, true)
+	if err != nil {
+		return err
+	}
+	headSnapshot, err := gpsSnapshotRevision(ctx, opts, repo, view.revision, true)
+	if err != nil {
+		return err
+	}
+	deltas := gpsSymbolDeltaFindings(baseSet, set, baseSnapshot, headSnapshot)
 	anchors := map[string]string{}
-	for _, binding := range set.Bindings {
-		for _, file := range changed {
-			if binding.Selector.File == file.Path || binding.Selector.File == file.OldPath {
-				anchors[binding.ID] = binding.Selector.File
+	for _, delta := range deltas {
+		if delta["id"] != "GPS-DELTA-ANCHOR" {
+			continue
+		}
+		id, _ := delta["subject"].(string)
+		for _, binding := range set.Bindings {
+			if binding.ID == id {
+				anchors[id] = binding.Selector.File
 			}
 		}
 	}
@@ -516,12 +573,16 @@ func runGPSReview(ctx context.Context, opts Options, args []string) error {
 			}
 		}
 	}
-	response := map[string]any{"schema_version": gpsSchemaVersion, "base": flags.base, "changed_files": changed, "requirements": requirements, "tests": tests, "disposition": func() string {
+	response := map[string]any{"schema_version": gpsSchemaVersion, "base": base, "repository_view": view.repositoryView(), "changed_files": changed, "symbol_deltas": deltas, "requirements": requirements, "tests": tests, "disposition": func() string {
 		if len(requirements) > 0 {
 			return "REVIEW_REQUIRED"
 		}
 		return "PASS"
 	}()}
+	if view.inputChanged(ctx, repo) {
+		response["disposition"] = "INCOMPLETE"
+		response["findings"] = []map[string]any{{"id": "GPS-INPUT-CHANGED", "severity": "incomplete", "subject": "repository", "message": "HEAD changed while GPS was reading committed inputs"}}
+	}
 	if flags.evidence != "" {
 		response["execution_evidence"] = gpsExecutionEvidence(flags.evidence, set)
 	}
@@ -532,11 +593,13 @@ type gpsOptions struct {
 	repo, format, id, symbol, file, query, base, evidence string
 	update                                                bool
 	head                                                  bool
+	history                                               bool
+	historyLimit                                          int
 	maxBytes                                              int
 }
 
 func gpsFlags(args []string) (string, gpsOptions, error) {
-	flags := gpsOptions{format: "json", maxBytes: 12000}
+	flags := gpsOptions{format: "json", maxBytes: 12000, historyLimit: 16}
 	for i := 0; i < len(args); i++ {
 		value := func() (string, error) {
 			i++
@@ -546,7 +609,7 @@ func gpsFlags(args []string) (string, gpsOptions, error) {
 			return args[i], nil
 		}
 		switch args[i] {
-		case "--repo", "--format", "--id", "--symbol", "--file", "--query", "--base", "--evidence", "--max-context-bytes":
+		case "--repo", "--format", "--id", "--symbol", "--file", "--query", "--base", "--evidence", "--max-context-bytes", "--history-limit":
 			v, err := value()
 			if err != nil {
 				return "", flags, err
@@ -568,6 +631,10 @@ func gpsFlags(args []string) (string, gpsOptions, error) {
 				flags.base = v
 			case "--evidence":
 				flags.evidence = v
+			case "--history-limit":
+				if _, err := fmt.Sscan(v, &flags.historyLimit); err != nil || flags.historyLimit < 1 || flags.historyLimit > 32 {
+					return "", flags, errors.New("--history-limit requires an integer from 1 through 32")
+				}
 			default:
 				if _, err := fmt.Sscan(v, &flags.maxBytes); err != nil || flags.maxBytes < 1 {
 					return "", flags, errors.New("--max-context-bytes requires a positive integer")
@@ -577,6 +644,8 @@ func gpsFlags(args []string) (string, gpsOptions, error) {
 			flags.head = true
 		case "--update":
 			flags.update = true
+		case "--history":
+			flags.history = true
 		case "--json":
 			flags.format = "json"
 		default:
@@ -611,6 +680,45 @@ func gpsIntent(ctx context.Context, repo string, head bool) (intent.Set, error) 
 	return intent.Load(repo)
 }
 
+type gpsView struct {
+	head     bool
+	revision string
+	tree     string
+}
+
+func gpsCaptureView(ctx context.Context, repo string, head bool) (gpsView, error) {
+	if !head {
+		return gpsView{}, nil
+	}
+	commit, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
+	if err != nil {
+		return gpsView{}, fmt.Errorf("capture committed GPS inputs: %w", err)
+	}
+	return gpsView{head: true, revision: commit, tree: tree}, nil
+}
+
+func (view gpsView) repositoryView() map[string]string {
+	if !view.head {
+		return map[string]string{"kind": "working_tree"}
+	}
+	return map[string]string{"kind": "committed", "commit": view.revision, "tree": view.tree}
+}
+
+func (view gpsView) inputChanged(ctx context.Context, repo string) bool {
+	if !view.head {
+		return false
+	}
+	commit, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
+	return err != nil || commit != view.revision || tree != view.tree
+}
+
+func gpsIntentRevision(ctx context.Context, repo, revision string, head bool) (intent.Set, error) {
+	if head {
+		return intent.LoadRevision(ctx, repo, revision)
+	}
+	return intent.Load(repo)
+}
+
 func gpsRepositoryView(ctx context.Context, repo string, head bool) map[string]string {
 	if !head {
 		return map[string]string{"kind": "working_tree"}
@@ -625,6 +733,138 @@ func gpsRepositoryView(ctx context.Context, repo string, head bool) map[string]s
 func gpsSnapshot(ctx context.Context, opts Options, repo string, head bool) (sem.ProviderSnapshot, error) {
 	snapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{NoNetwork: true, Worktree: !head, Profile: sem.ProfileFull}, "", true)
 	return snapshot, err
+}
+
+func gpsSnapshotRevision(ctx context.Context, opts Options, repo, revision string, head bool) (sem.ProviderSnapshot, error) {
+	if !head {
+		return gpsSnapshot(ctx, opts, repo, false)
+	}
+	return sem.BuildProviderSnapshotWithOptions(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{NoNetwork: true, Revision: revision, Profile: sem.ProfileFull})
+}
+
+func gpsSnapshotsHaveCodeDelta(base, head sem.ProviderSnapshot) bool {
+	baseSymbols, headSymbols := gpsCodeSymbolsByID(base.Symbols), gpsCodeSymbolsByID(head.Symbols)
+	if len(baseSymbols) != len(headSymbols) {
+		return true
+	}
+	for id, before := range baseSymbols {
+		after, ok := headSymbols[id]
+		if !ok || !gpsSameSymbol(before, after) {
+			return true
+		}
+	}
+	return false
+}
+
+func gpsCodeSymbolsByID(symbols []sem.SymbolRecord) map[string]sem.SymbolRecord {
+	out := map[string]sem.SymbolRecord{}
+	for _, symbol := range symbols {
+		if !strings.HasPrefix(symbol.FilePath, intent.Root+"/") {
+			out[symbol.ID] = symbol
+		}
+	}
+	return out
+}
+
+func gpsSymbolDeltaFindings(baseSet, headSet intent.Set, base, head sem.ProviderSnapshot) []map[string]any {
+	findings := []map[string]any{}
+	baseBindings, headBindings := gpsBindingsByID(baseSet.Bindings), gpsBindingsByID(headSet.Bindings)
+	for _, id := range gpsSortedBindingIDs(baseBindings, headBindings) {
+		before, beforeOK := baseBindings[id]
+		after, afterOK := headBindings[id]
+		if !beforeOK || !afterOK || !gpsSameBoundSymbol(before, after, base, head) {
+			findings = append(findings, map[string]any{"id": "GPS-DELTA-ANCHOR", "severity": "warning", "subject": id, "message": "anchored implementation changed or was deleted since base revision"})
+		}
+	}
+	baseTests, headTests := gpsTestsByID(baseSet), gpsTestsByID(headSet)
+	for _, id := range gpsSortedTestIDs(baseTests, headTests) {
+		before, beforeOK := baseTests[id]
+		after, afterOK := headTests[id]
+		if beforeOK && afterOK && !gpsSameSelectedSymbols(matchingSymbols(base.Symbols, before.Selector.Name, ""), matchingSymbols(head.Symbols, after.Selector.Name, "")) {
+			findings = append(findings, map[string]any{"id": "GPS-DELTA-TEST", "severity": "warning", "subject": id, "message": "declared test implementation changed or was deleted since base revision"})
+		}
+	}
+	return findings
+}
+
+func gpsBindingsByID(bindings []intent.Binding) map[string]intent.Binding {
+	out := make(map[string]intent.Binding, len(bindings))
+	for _, binding := range bindings {
+		out[binding.ID] = binding
+	}
+	return out
+}
+
+func gpsSortedBindingIDs(left, right map[string]intent.Binding) []string {
+	ids := map[string]bool{}
+	for id := range left {
+		ids[id] = true
+	}
+	for id := range right {
+		ids[id] = true
+	}
+	out := make([]string, 0, len(ids))
+	for id := range ids {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func gpsTestsByID(set intent.Set) map[string]intent.TestRef {
+	out := map[string]intent.TestRef{}
+	for _, spec := range set.Specs {
+		for _, test := range spec.Tests {
+			out[test.ID] = test
+		}
+	}
+	return out
+}
+
+func gpsSortedTestIDs(left, right map[string]intent.TestRef) []string {
+	ids := map[string]bool{}
+	for id := range left {
+		ids[id] = true
+	}
+	for id := range right {
+		ids[id] = true
+	}
+	out := make([]string, 0, len(ids))
+	for id := range ids {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func gpsSymbolsByID(symbols []sem.SymbolRecord) map[string]sem.SymbolRecord {
+	out := make(map[string]sem.SymbolRecord, len(symbols))
+	for _, symbol := range symbols {
+		out[symbol.ID] = symbol
+	}
+	return out
+}
+
+func gpsSameBoundSymbol(before, after intent.Binding, base, head sem.ProviderSnapshot) bool {
+	baseSymbol, baseOK := gpsSymbolsByID(base.Symbols)[before.SymbolID]
+	headSymbol, headOK := gpsSymbolsByID(head.Symbols)[after.SymbolID]
+	return baseOK && headOK && gpsSameSymbol(baseSymbol, headSymbol)
+}
+
+func gpsSameSelectedSymbols(before, after []sem.SymbolRecord) bool {
+	if len(before) != len(after) {
+		return false
+	}
+	for i := range before {
+		if !gpsSameSymbol(before[i], after[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func gpsSameSymbol(before, after sem.SymbolRecord) bool {
+	return before.ID == after.ID && before.FilePath == after.FilePath && before.Signature == after.Signature && before.BodyHash == after.BodyHash
 }
 func matchingSymbols(symbols []sem.SymbolRecord, name, file string) []sem.SymbolRecord {
 	var out []sem.SymbolRecord
