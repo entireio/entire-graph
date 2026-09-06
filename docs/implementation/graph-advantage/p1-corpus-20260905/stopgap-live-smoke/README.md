@@ -9,8 +9,10 @@ The operator must review the helper before running it. It requires an explicit
 unique run ID and empty output directory, uses exact worker/unit paths, and
 refuses unknown or malformed transport responses. Each fake service has
 `RuntimeMaxSec=300`; the whole smoke has a separate default 360-second
-watchdog. A timeout or error issues exact stop commands to all workers and
-retains every redacted raw response.
+watchdog. Setup, status, pause, and supervision calls consume the same
+monotonic deadline; an expired watchdog receives a separately bounded 30-second
+cleanup grace so all workers still receive exact stop commands. A timeout or
+error retains every redacted raw response.
 
 Prepared command (no command has been run by preparation):
 
