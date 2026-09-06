@@ -2,7 +2,7 @@
 
 PACT turns confirmed developer intent into Graph-selected checks, executes them against pinned commits, and produces evidence a reviewer can replay.
 
-**Track:** E2 — Build with Graph Intelligence. **Status:** working local/remote product with implemented Noon Curveball; not yet a complete submission. Post-Curveball cloud verification is complete and the implementation milestones are published. Final-context capture and submission remain open. Full scope is defined in [PACT_IMPLEMENTATION_GUIDE.md](PACT_IMPLEMENTATION_GUIDE.md).
+**Track:** E2 — Build with Graph Intelligence. **Status:** working local/remote product with implemented Noon Curveball; not yet a complete submission. Post-Curveball cloud verification is complete and the implementation milestones are published. Authentic final-verification context is captured; submission remains open. Full scope is defined in [PACT_IMPLEMENTATION_GUIDE.md](PACT_IMPLEMENTATION_GUIDE.md).
 
 ## Problem, intended user and why it matters
 
@@ -76,12 +76,12 @@ All five post-Curveball Databricks jobs completed successfully: changed-file, Gr
 | Four-policy approval | Explicit user approval recorded locally; original approval excerpt has not yet been captured into a readable Checkpoint |
 | Pre-noon stable state | Pending a distinct authentic Checkpoint; the repeated setup ID does not count as a new milestone |
 | Fresh-session recovery | `f899811e4ff1`, supported manual attachment of actual new session; creation `2026-09-06T06:39:31.244113Z`, trailer in recovery commit `e9e3634` |
-| Implemented adaptation | Local commits and tests exist; distinct final adaptation Checkpoint remains open |
-| Final verification | Pending final implementation |
+| Implemented adaptation | `90d4a736f01e`, supported manual attachment of actual fresh final-verification session `01a075de-fbc5-7b60-b38c-b14cb13816a0`; reviews adaptation and five completed Databricks runs at `e3b512e`. This is authentic later verification/reconstruction, not retroactive capture of the original implementation session. |
+| Final verification | Same final-review Checkpoint `90d4a736f01e`; this is one unique Checkpoint covering both review topics, not two separate milestones |
 
 Initial source locator: `entire://checkpoint/7c02a621a7d5?session=0`. This is an internal evidence locator, not a verified public judge-access URL. Public/organiser-accessible Checkpoint links must be filled in and opened before submission.
 
-The installed CLI reuses LastCheckpointID on repeated attachment of the same session. The fresh noon transcript produced a new genuine recovery Checkpoint through supported manual attachment. Native capture remains unverified (seven hooks require approval); a distinct final adaptation Checkpoint is still open. No IDs, hooks, timestamps or transcripts were fabricated, and no published commits were amended.
+The installed CLI reuses LastCheckpointID on repeated attachment of the same session. The fresh noon transcript produced a new genuine recovery Checkpoint through supported manual attachment. Native capture remains unverified (seven hooks require approval); fresh final-review Checkpoint `90d4a736f01e` is now readable through supported manual attachment. No IDs, hooks, timestamps or transcripts were fabricated, and no published commits were amended.
 
 ## Setup, run and test instructions
 
@@ -151,7 +151,7 @@ Upstream boundary: `3a2a715fad1948e83dc7ebe0d307377ba29e065a`. Earlier commits b
 
 - Destination fork lineage is corrected; disclose the earlier workflow deviation and provide accessible Checkpoint links before claiming event compliance.
 - Capture/link the real policy approval and the remaining milestone contexts; current reports intentionally retain partial provenance.
-- Curveball implementation, local preservation tests and all five post-Curveball cloud checks are verified; finish final-context capture.
+- Curveball implementation, local preservation tests and all five post-Curveball cloud checks are verified; final review context is captured in `90d4a736f01e`.
 - Finish final semantic review, judge-access check and submission receipt before **15:00 IST**. Two local D1→D2 walkthroughs were performed; the second was genuinely recorded.
 - This is a bounded trusted fixture, not hostile-code isolation, broad-language support, autonomous repair, formal verification or a guarantee that code is safe.
 
@@ -172,7 +172,7 @@ Submission owner, demo owner and Databricks deployment owner must be confirmed b
 | F08 Evidence/replay | New bundles retain evidence quality and source gaps; legacy evidence is not upgraded. |
 | F09 UI | Real D1→D2 flow verified, diagnostics and correction visible, zero JS errors. |
 | F10 Comparison | Local and real Databricks strategy comparisons plus independent full matrix verified; identical assertions. |
-| F11 Authentic history | Setup and manually attached fresh recovery available; missing original/pre-noon/final capture remains disclosed. |
-| F12 Delivery | Setup/architecture/limitations/demo docs and genuine backup recording published; final evidence publication/access/submission receipt remain. |
+| F11 Authentic history | Setup and manually attached fresh recovery available; final review context is captured; missing original/pre-noon capture remains disclosed. |
+| F12 Delivery | Setup/architecture/limitations/demo docs and genuine backup recording published; final cloud/capture evidence included in this milestone. Judge access and submission receipt remain. |
 
 Following explicit user authorization, implementation through `21aabb9c3d5262bfa46b32fdf03ef95d0e940ce6`, D0/D1/D2 tags and the existing authentic Checkpoint branch were pushed to the India mirror and remotely verified. No force-push or history rewrite was used. See [setup](pact/docs/SETUP.md), [architecture](pact/docs/ARCHITECTURE.md), and [limitations](pact/docs/LIMITATIONS.md).

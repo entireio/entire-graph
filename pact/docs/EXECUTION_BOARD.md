@@ -75,4 +75,4 @@ Migration verification: 15 tests passed in 7.59 seconds in PACT-fork; original C
 
 ## Authorized stopping milestone
 
-Post-Curveball cloud verification is complete; see `evidence/curveball-databricks-verification.json`. Authentic final review capture is being performed in user-authorized task `01a075de-fbc5-7b60-b38c-b14cb13816a0`. Stop after that capture is verified and linked. Submission/access and earlier provenance gaps remain open.
+Post-Curveball cloud verification is complete; see `evidence/curveball-databricks-verification.json`. Authentic final review is captured in `90d4a736f01e` from user-authorized task `01a075de-fbc5-7b60-b38c-b14cb13816a0`. Both requested stopping tasks are complete after final link/publication verification. Submission/access and earlier provenance gaps remain open.

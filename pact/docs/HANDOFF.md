@@ -140,6 +140,12 @@ All five post-Curveball Databricks jobs completed successfully: changed-file, Gr
 
 The cloud receipt summary and five derived public reports are in `pact/docs/evidence/`. The original operational script, logs and untouched reports remain in ignored `pact/runs/`. Published reports normalize the local repo path and omit the personal Databricks artifact folder; result and evidence context are unchanged and original report hashes are recorded.
 
-The user authorized one fresh read-only final-verification task, actual session `01a075de-fbc5-7b60-b38c-b14cb13816a0`, to capture a new authentic review context. Parent task will record its verified Checkpoint once available. This is later reconstruction/review of adaptation, never a retroactive pre-noon Checkpoint or continuous native capture.
+The user authorized one fresh read-only final-verification task, actual session `01a075de-fbc5-7b60-b38c-b14cb13816a0`, to capture a new authentic review context. Verified Checkpoint: `90d4a736f01e`. This is later reconstruction/review of adaptation, never a retroactive pre-noon Checkpoint or continuous native capture.
 
 The user's stopping point is completion of post-Curveball Databricks verification and authentic adaptation/final-context capture. Do not proceed to submission, extra features or additional cloud jobs. Judge access, submission receipt and original/pre-noon evidence gaps remain outside this stopping milestone.
+
+## Completed requested stopping point
+
+`90d4a736f01e`, supported manual attachment of actual fresh final-verification session `01a075de-fbc5-7b60-b38c-b14cb13816a0`; reviews adaptation and five completed Databricks runs at `e3b512e`. This is authentic later verification/reconstruction, not retroactive capture of the original implementation session.
+
+All five cloud jobs, local/cloud assertion parity, evidence preservation, idempotent replay and Delta history are verified. Both user-requested tasks are complete after the final trailer commit and remote Checkpoint branch verification. Stop here; do not submit or add further features. Earlier original/pre-noon provenance gaps and judge access/submission remain open.

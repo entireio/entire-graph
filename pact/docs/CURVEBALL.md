@@ -38,4 +38,10 @@ The real UI D1→D2 interaction was verified twice with no JavaScript errors; th
 
 All five post-Curveball Databricks jobs completed successfully: changed-file, Graph fallback, all registered, independent full matrix, and corrected D2. Every cloud assertion matches its local counterpart; evidence context and idempotent replay are verified. D1 finds two regressions through fallback; D2 passes all ten candidate assertions. D2 evidence context was recovered from Delta history. See [cloud verification](evidence/curveball-databricks-verification.json). Earlier H1/H2 runs remain separately identified.
 
-The user explicitly authorized the cloud execution and milestone push. Implementation through `21aabb9` and D0/D1/D2 tags are published and remotely verified. A separate authentic final verification task is reviewing these results before its supported manual attachment; original/pre-noon capture gaps remain disclosed.
+The user explicitly authorized the cloud execution and milestone push. Implementation through `21aabb9` and D0/D1/D2 tags are published and remotely verified. The separate authentic final-verification task completed review and supported manual attachment; original/pre-noon capture gaps remain disclosed.
+
+## Authentic final review capture
+
+`90d4a736f01e`, supported manual attachment of actual fresh final-verification session `01a075de-fbc5-7b60-b38c-b14cb13816a0`; reviews adaptation and five completed Databricks runs at `e3b512e`. This is authentic later verification/reconstruction, not retroactive capture of the original implementation session.
+
+Stored transcript and metadata were independently checked. It records the actual cloud run identities, local parity, preserved partial evidence and limitations. Capture verification: [manifest](evidence/curveball-final-checkpoint.json). Native hook capture remains unverified; this does not repair missing historical policy/pre-noon context.
