@@ -6,15 +6,16 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
-The user authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation is complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is paused for diagnosis; all three jobs and task-owned VMs are stopped/deallocated. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
+The user authorized the fixed P1 corpus campaign, delegated to three `gpt-5.6-luna` subagents with root integration review. P1 preparation is complete; all 108 baseline requests finished (69 complete, 33 partial, 6 timeouts); the paired campaign is paused for diagnosis; all campaign jobs are stopped; the validation VM is temporarily running for correctness while two worker VMs remain deallocated. P2/P3/P4 comparative campaigns remain deferred. Earlier results and failed gates remain retained; none establish the revised source performance or quality.
 
-The current source checkpoint is `6102b209`, which includes the repository-subdirectory capture fix at `9c7c70b8` and adds cancellation handling for listed Git-directory observation. These later source commits have focused evidence only. The latest complete repository check is the earlier `dc0ddce7` checkpoint (621.0947 seconds, source unchanged for that check), so it does not verify the current source. The original implementation and captured-selection checkpoints remain historical evidence; compatibility and end-to-end diagnosis remain open, so this is not final.
+The current product source is `05ad9842`, including captured subdirectory policy and cancellation through enumeration/final filtering. Focused race and filesystem regressions passed. A full repository check is running in a detached checkout pinned to that commit. Pinned Linux correctness has passed at the same source: 28 top-level tests, including 10 live tests with the expected gopls v0.20.0 hash. Raw logs, responses and tool identities are retained in `evidence/correctness-05ad9842-20260906/`.
 
-- **Original implementation commit:** `88dd1dc95a996999ae4e456879b6dd86d8027f71` (historical source checkpoint).
-- **Latest verified checkpoint:** `dc0ddce7`, with the full `mise run check` passing in 621.0947 seconds; evidence is retained by `da3c59ee`.
-- **Pinned Linux correctness:** passed at `88dd1dc9`; later cache/ordering and captured-selection changes are not covered by that Linux run.
-- **Retained diagnostic source:** `5a60fc8f`, with focused race regressions (35.322s) and Git utility tests (22.896s) recorded there. The current source is later (`6102b209`) and has focused evidence only.
-- **Current check:** the source `6102b209` full check was deliberately interrupted after review found additional unchecked enumeration/filter loops. It is not a pass. Fix those boundaries before restarting broad verification.
+- **Latest completed full check:** `dc0ddce7`, passing in 621.0947 seconds; evidence retained by `da3c59ee`. This earlier check does not verify later source.
+- **Current full check:** `05ad9842`, immutable detached checkout, in progress.
+- **Linux correctness:** passed at `05ad9842`, including process-boundary, missing-dependency, conversion, ordinary-query, opt-in combination and freshness checks.
+- **Interrupted check:** `6102b209` was deliberately stopped after review found additional cancellation gaps; it is not a pass. Those findings were addressed by `05ad9842`.
+- **Retained query:** Darwin OFF exceeded its deadline; ON unrun. Linux diagnostic wrapper remains under review, not executed.
+- **Execution:** only the validation VM is running for correctness/diagnosis; two campaign workers remain deallocated. Campaign remains paused.
 - **Release status:** no workstream's complete release gate has passed; defaults remain unchanged.
 
 ## Authoritative task status
@@ -28,7 +29,7 @@ This table supersedes earlier checkpoint/status statements. “Complete” in th
 | P1.3 storage | Complete: cross-process admission, orphan cleanup, versioned keys, integrity, private atomic writes and bounded decode | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.4 entity integration | Implemented; retained-query parity and current diagnostic corrections remain open | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.5 relation inputs | Complete for measured raw-import family: Go/TypeScript/Python fast/full; explicit family presence | Exact relation parity and reuse tests; other families deliberately absent | Further profiling deferred; no new family selected by benchmark tuning | Not passed |
-| P1.6 diagnostics/gates | Implemented; enumeration cancellation follow-up in progress | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
+| P1.6 diagnostics/gates | Implemented; cancellation follow-up committed at `05ad9842`, integration verification in progress | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
 | P2.1 feasibility | Complete: pinned gopls v0.20.0 and Linux Bubblewrap execution boundary | Existing positive no-egress/read-only/descendant cancellation checks; historical Linux race passed | Hard-Go comparative quality deferred | Not passed |
 | P2.2 client/capture | Complete: bounded lifecycle, source capsule/context identity, mapping and cancellation | Protocol/UTF-16/malformed reply/context/process tests; historical immutable check passed | Deferred | Not passed |
 | P2.3 positive integration | Complete: direct declarations and separate implementation candidates; conversions excluded | New conversion/alias/generic fixtures and pinned live fixture; signature/workspace invalidation tests; historical Linux race passed | Independent realistic quality evaluation deferred | Not passed |

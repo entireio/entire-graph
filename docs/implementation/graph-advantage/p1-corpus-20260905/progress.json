@@ -7,8 +7,8 @@
   "implementation_source_commit": "88dd1dc95a996999ae4e456879b6dd86d8027f71",
   "verified_checkpoint": "dc0ddce7",
   "verified_evidence_commit": "da3c59ee",
-  "current_worktree": "Additional enumeration/filter cancellation fixes in progress after6102b209",
-  "workers_state": "all three task-owned VMs deallocated",
+  "current_worktree": "05ad9842 cancellation integration committed; fullcheck running in immutable detached checkout",
+  "workers_state": "graph-validation-linux start requested for pinned correctness and one diagnostic; two campaign workers remain deallocated",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
   "correctness": "Latest full check remains dc0ddce7; later changes require integration verification",
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T10:16:51.693597+00:00",
+  "as_of_utc": "2026-09-06T10:33:21.669444+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -43,7 +43,7 @@
   ],
   "remaining_diagnosis": "Retained OFF request exceeded120s context and returned after161.18s; ON arm unrun. Cancellation fix6102b209 under verification. Broader locale/platform compatibility and end-to-end parity remain unresolved.",
   "stopgaps": "56 harness tests passed in4.561s at0381ea6d with unchanged source hashes; no Azure campaign run",
-  "full_correctness": "Latest pass dc0ddce7;6102b209 fullcheck explicitly interrupted on new review findings",
+  "full_correctness": "05ad9842 detached checkout fullcheck in progress; latest completed pass dc0ddce7",
   "campaign": "paused; isolated diagnostic failures retained separately",
   "stopgap_commits": [
     "dc0ddce7",
@@ -51,11 +51,17 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Complete identified cancellation boundaries and attribute regressions; focused verification then frozen fullcheck",
+  "next_work": "Finish immutable check, pinned Linux correctness and single retained-query diagnosis; campaign remains paused",
   "current_focused_correctness": {
     "commit": "5a60fc8f91855387ee7a7e9d341ccd88e74822ca",
     "source_hashes_unchanged": true,
     "semantic_race_seconds": 35.322,
     "gitutil_seconds": 22.896
+  },
+  "linux_correctness": {
+    "source_commit": "05ad98422530e3573215e2dbfb4bd2fb19fe5d55",
+    "top_level_tests_passed": 28,
+    "live_tests_passed": 10,
+    "evidence": "evidence/correctness-05ad9842-20260906"
   }
 }
