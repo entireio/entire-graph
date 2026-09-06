@@ -1,6 +1,5 @@
 def can_access(request):
-    """H4: seeded alternative policy; requires explicit revised approval."""
-    guest = request["role"] == "guest"
-    if guest:
-        return request["visibility"] == "public"
+    """B0 policy: guests denied; authenticated roles stay in their workspace."""
+    if request["role"] == "guest":
+        return False
     return request["same_workspace"]
