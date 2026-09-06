@@ -1,5 +1,5 @@
 {
-  "phase": "p1_single_corrective_revalidation",
+  "phase": "p1_remaining_publication_correction",
   "workers": 3,
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
@@ -22,7 +22,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T12:33:54.666745+00:00",
+  "as_of_utc": "2026-09-06T12:42:01.043949+00:00",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -32,7 +32,7 @@
   "recorded_unrun_requests": 1434,
   "pending_planned_requests": 15730,
   "heartbeat_status": "ACTIVE",
-  "pause_reason": "corrective d793b2be single pair still exceeds cold latency screen",
+  "pause_reason": "0c9e80f5 retained cold pair exceeds1.10 screen",
   "cache_fix_commits": [
     "f96483ef",
     "9bfafe17"
@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Collect fullintegration andlive stopsmoke outcomes; pinnedLinux correctness; no comparativeexpansion",
+  "next_work": "Review one operation-owned compressor reuse; no pool, limit or codec tuning; no measurements before correctness",
   "current_focused_correctness": {
     "commit": "5a60fc8f91855387ee7a7e9d341ccd88e74822ca",
     "source_hashes_unchanged": true,
@@ -121,5 +121,19 @@
     "workers_verified_inactive": 3,
     "product_queries": 0,
     "evidence": "stopgap-live-smoke/run-0c9e80f5"
+  },
+  "retained_snapshot_0c9e80f5": {
+    "source_commit": "0c9e80f523ed433cb81ccdaa87b3f8f0c3e6d0dd",
+    "binary_sha256": "9796090f85b792f1ca5ce3be5395a3a95a3e031eea1ee4095556ca2679d2ebf0",
+    "semantic_equal": true,
+    "known_partial_failures_per_arm": 194,
+    "known_partial_and_warning_digests_checked": true,
+    "corpus_before_between_after_equal": true,
+    "off_wall_seconds": 56.99134888,
+    "on_wall_seconds": 66.019226593,
+    "cold_screen_ratio": 1.1584078617266798,
+    "cold_screen": "failed; campaign remains paused",
+    "rss": "unavailable",
+    "limitations": "single corrective pair; no statistical or release-gate claim"
   }
 }

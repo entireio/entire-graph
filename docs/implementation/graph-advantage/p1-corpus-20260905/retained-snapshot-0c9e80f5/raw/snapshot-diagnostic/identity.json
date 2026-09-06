@@ -1,0 +1,21 @@
+{
+  "binary": "/opt/graph-validation/correctness-0c9e80f5-20260906/p1-evaluator",
+  "corpus_root": "/opt/p1/corpus",
+  "expected_binary_sha256": "9796090f85b792f1ca5ce3be5395a3a95a3e031eea1ee4095556ca2679d2ebf0",
+  "expected_input_sha256": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+  "expected_partial_failures_count": 194,
+  "expected_partial_failures_sha256": "846649bc1925c607b91b3f41014408938c37232d0a12d86f71569776b46819ef",
+  "expected_semantic_sha256": "fa08ae3464a63c71db89f5755062ac76b3a8960e5bccd2f536c1491d8543b4f7",
+  "expected_warnings_count": 1,
+  "expected_warnings_sha256": "e0ce85fefeba137c4e41fcfa3bc5f1d62d461bc1f4fc7eff5587bbd52cf50468",
+  "fingerprint_timeout_seconds": 60,
+  "go_test_timeout_seconds": 130,
+  "repository": "kubernetes-kubernetes",
+  "rss_status": "unavailable; no isolated wait4 measurement claimed",
+  "scenario_script": "/opt/p1/retained-diagnostics/retained-05ad9842-20260906/corpus-tools/p1_scenario.py",
+  "scenario_sha256": "6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75",
+  "source_commit_asserted": "0c9e80f523ed433cb81ccdaa87b3f8f0c3e6d0dd",
+  "source_provenance": "caller-supplied build archive; commit is recorded, not independently verified",
+  "source_root": "/opt/graph-validation/correctness-0c9e80f5-20260906",
+  "timeout_seconds": 120
+}
