@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "303ac9263789",
+  "session_id": "ses_f8a59596affenCHUw0Nhxj1Pif",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T08:19:31.936022983Z",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "scripts/benchmark-fastapi-gps.sh"
+  ],
+  "agent": "OpenCode",
+  "model": "gpt-5.6-terra-fast",
+  "turn_id": "daa18daf6f1f",
+  "checkpoint_transcript_start": 28,
+  "transcript_lines_at_start": 28,
+  "compact_transcript_start": 28,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T08:19:31.885674262Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 74,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 74,
+    "total_lines_changed": 74,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
