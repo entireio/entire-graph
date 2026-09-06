@@ -279,6 +279,11 @@
          background:var(--ink);color:#fff;border-radius:99px;padding:11px 22px;
          font-size:14px;transition:transform .3s;z-index:60}
   .toast.on{transform:translateX(-50%)}
+  .livedot{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);
+           font-size:11px;letter-spacing:.08em;color:#177A55}
+  .livedot i{width:7px;height:7px;border-radius:50%;background:var(--mint);
+             animation:pulse 1.5s infinite}
+  .livedot.warn{color:#8A6D00}.livedot.warn i{background:var(--yellow)}
   .sec-h{margin:34px 0 14px;display:flex;align-items:baseline;gap:12px}
   .sec-h h2{font-size:20px;font-weight:700;letter-spacing:-.01em}
   .sec-h span{color:var(--muted);font-size:13px}
@@ -313,21 +318,37 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
-const red = DATA.pairs.find(p=>p.id==="red"), R = red.result;
-const prior = DATA.pairs.find(p=>p.id==="prior");
-const clean = DATA.pairs.find(p=>p.id==="clean");
 const A = DATA.assets || {};
-const conflictBranches = new Set([red.a, red.b]);
-const priors = prior.result.priors || [];
-const hotPaths = new Set(priors.map(p=>p.path));
-const rw = R.findings.read_write[0] || {};
-const ww = R.findings.write_write[0] || {};
-const conflictPaths = new Set(
-  [...R.findings.read_write, ...R.findings.write_write].map(f=>f.path));
+let DB = DATA;                       // current dataset (baked, or live sweep)
+let red, R, prior, clean, conflictBranches, priors, hotPaths, rw, ww,
+    conflictPaths, codeOf, fileOf, holdCount;
 
-const codeOf = {}, fileOf = {};
-for (const fl of DATA.flights)
-  fl.files.forEach((f,i)=>{ codeOf[f]=fl.codes[i]; fileOf[fl.codes[i]]=f; });
+/* A pair is identified by role in the baked demo and by worktree name when
+   live, so pick roles by what the verdicts actually say. */
+function derive(){
+  const withResult = (DB.pairs||[]).filter(p=>p.result);
+  red   = withResult.find(p=>p.id==="red")
+       || withResult.slice().sort((a,b)=>(b.result.reds||0)-(a.result.reds||0))[0]
+       || withResult[0];
+  clean = withResult.find(p=>p.id==="clean")
+       || withResult.find(p=>!p.result.reds && p!==red) || red;
+  prior = withResult.find(p=>p.id==="prior")
+       || withResult.find(p=>(p.result.priors||[]).length) || clean;
+  R = red ? red.result : {findings:{write_write:[],read_write:[],advisory:[],proximity:[]},
+                          merge_base:"", verdict:"CLEARED", reds:0, advisories:0};
+  conflictBranches = new Set(red && red.result.reds ? [red.a, red.b] : []);
+  priors = (prior && prior.result.priors) || [];
+  hotPaths = new Set(priors.map(p=>p.path));
+  rw = R.findings.read_write[0] || {};
+  ww = R.findings.write_write[0] || {};
+  conflictPaths = new Set(
+    [...R.findings.read_write, ...R.findings.write_write].map(f=>f.path));
+  codeOf = {}; fileOf = {};
+  for (const fl of DB.flights)
+    fl.files.forEach((f,i)=>{ codeOf[f]=fl.codes[i]; fileOf[fl.codes[i]]=f; });
+  holdCount = DB.flights.filter(f=>conflictBranches.has(flightKey(f))).length;
+}
+const flightKey = fl => fl.label || fl.branch;
 
 function chipFor(verdict){
   if (verdict === "HOLD") return {cls:"hold", label:"HOLD · conflict predicted"};
@@ -338,35 +359,39 @@ function chipFor(verdict){
   return {cls:"adv", label:verdict || "UNKNOWN"};
 }
 function pairOf(fl){
-  if (conflictBranches.has(fl.branch)) return red;
-  if (fl.branch === prior.a) return prior;
-  return clean;
+  const k = flightKey(fl);
+  if (conflictBranches.has(k)) return red;
+  if (prior && k === prior.a) return prior;
+  return clean || red;
 }
 function statusOf(fl){
-  const chip = chipFor(pairOf(fl).result.verdict);
-  if (fl.branch === prior.a && priors.length && chip.cls === "clear")
+  const p = pairOf(fl);
+  const chip = chipFor(p && p.result ? p.result.verdict : "UNKNOWN");
+  if (prior && flightKey(fl) === prior.a && priors.length && chip.cls === "clear")
     return {cls:"adv", label:chip.label + " · turbulence advisory"};
   return chip;
 }
 function gapsOf(fl){
-  const an = pairOf(fl).result.analysis;
+  const p = pairOf(fl);
+  const an = p && p.result && p.result.analysis;
   return (an && an.gaps) ? an.gaps.length : 0;
 }
-const holdCount = DATA.flights.filter(f=>conflictBranches.has(f.branch)).length;
 
 /* =============== HOME =============== */
-$("#v-home").innerHTML = `
+function renderHome(){ $("#v-home").innerHTML = `
   <div class="hero">
     ${A["sky-hero"] ? `<div class="bg" style="background-image:url(${A["sky-hero"]})"></div>` : ""}
     <div class="veil"></div>
     <div class="hero-in">
-      <div class="eyebrow">Tower · ${esc(DATA.profile_label||"repo")} ·
-        ${esc(DATA.generated.slice(0,10))}</div>
-      <h1>Good afternoon.</h1>
-      <div class="sub"><b>${DATA.flights.length} agents</b> working
-        <b>${esc(DATA.profile_label||"this repo")}</b> in parallel ·
+      <div class="eyebrow">Tower · ${esc(DB.profile_label||"repo")} ·
+        ${DB.live?`<span class="livedot"><i></i>LIVE · swept ${esc((DB.generated||"").slice(11,19))}</span>`
+                 :esc((DB.generated||"").slice(0,10))}</div>
+      <h1>${DB.live?"Airspace is live.":"Good afternoon."}</h1>
+      <div class="sub"><b>${DB.flights.length} agent${DB.flights.length===1?"":"s"}</b>
+        working <b>${esc(DB.profile_label||"this repo")}</b> in parallel ·
         <span class="alert">${holdCount} on conflict hold</span>.
-        ${esc(DATA.source_note||"")}</div>
+        ${DB.live?"Reading each session's live prompt and uncommitted work — nothing here is committed yet."
+                 :esc(DB.source_note||"")}</div>
     </div>
   </div>
   <div class="navcards">
@@ -381,28 +406,30 @@ $("#v-home").innerHTML = `
   </div>
   <div class="board">
     <div class="board-head"><h2>Departures</h2>
-      <span>${esc(DATA.profile_label||"repo")} · base ${esc(R.merge_base.slice(0,7))}</span></div>
-    ${DATA.flights.map(fl=>{const st=statusOf(fl);return `
+      <span>${esc(DB.profile_label||"repo")} · base ${esc((R.merge_base||"").slice(0,7))}</span></div>
+    ${DB.flights.map(fl=>{const st=statusOf(fl);return `
       <div class="brow" onclick="gotoFlight('${esc(fl.callsign)}')"
            title="Open flight card">
         <span class="cs">${esc(fl.callsign)}</span>
-        <span class="intent">${esc(fl.intent)}</span>
+        <span class="intent">${esc(fl.intent)}${fl.intent_source&&fl.intent_source!=="none"
+          ?` <span style="opacity:.55">[${esc(fl.intent_source)}]</span>`:""}</span>
         <span class="rt">${[...new Set(fl.codes)].map(esc).join(" · ")||"—"}</span>
         <span class="chip ${st.cls}"><i></i>${st.label}</span>
       </div>`;}).join("")}
-  </div>`;
+  </div>`; }
 
 /* =============== AIR =============== */
 function flightCard(fl){
   const st = statusOf(fl);
-  const other = fl.branch===red.a ? red.b : red.a;
-  const alertBit = conflictBranches.has(fl.branch)
+  const k = flightKey(fl);
+  const other = k===red.a ? red.b : red.a;
+  const alertBit = conflictBranches.has(k)
     ? `<button class="tcas" onclick="openSheet()">⚠ TCAS — loss of separation predicted
         with <b>${esc(other)}</b>. Tap for resolution.</button>`
-    : (fl.branch===prior.a && priors.length
+    : (prior && k===prior.a && priors.length
       ? `<div class="okline">✓ No overlap today — but route crosses charted turbulence
          (${esc(priors[0].path)}). See clearance notes when booking.</div>`
-      : (pairOf(fl).result.verdict === "CLEARED_PARTIAL"
+      : ((pairOf(fl)||{result:{}}).result.verdict === "CLEARED_PARTIAL"
         ? `<div class="okline" style="color:#8A6D00">◐ No collision found — but the graph
            has ${gapsOf(fl)} blind spot(s) on this route (dynamic dispatch / generated
            code). Silence isn't proof here; verify by test.</div>`
@@ -413,25 +440,31 @@ function flightCard(fl){
       <div class="toprow"><span class="cs">${esc(fl.callsign)}</span>
         <span class="chip ${st.cls}"><i></i>${st.label}</span></div>
       <div class="route">
-        <div class="code">BASE<small>merge-base ${esc(R.merge_base.slice(0,7))}</small></div>
-        <div class="mid"><div class="line"><b>✈</b></div>${fl.commits} commit${fl.commits===1?"":"s"}</div>
-        <div class="code r">MAIN<small>default branch</small></div>
+        <div class="code">BASE<small>merge-base ${esc((R.merge_base||"").slice(0,7))}</small></div>
+        <div class="mid"><div class="line"><b>✈</b></div>${DB.live
+          ? `${fl.uncommitted_lines||0} line${fl.uncommitted_lines===1?"":"s"} uncommitted`
+          : `${fl.commits} commit${fl.commits===1?"":"s"}`}</div>
+        <div class="code r">MAIN<small>merge target</small></div>
       </div>
-      <div class="cargo">${fl.files.map((f,i)=>
-        `<span class="tag"><b>${esc(fl.codes[i])}</b> ${esc(f)}</span>`).join("")}</div>
-      <div class="plan">${esc(fl.intent)}</div>
+      <div class="cargo">${fl.files.length?fl.files.map((f,i)=>
+        `<span class="tag"><b>${esc(fl.codes[i])}</b> ${esc(f)}</span>`).join("")
+        :`<span class="tag">no changes yet</span>`}</div>
+      <div class="plan">${esc(fl.intent)}${fl.intent_source&&fl.intent_source!=="none"
+        ?`<br><span style="opacity:.6;font-size:11.5px">${esc(fl.intent_source)}${
+          fl.idle_seconds!=null?` · ${fl.idle_seconds}s ago`:""}</span>`:""}</div>
       ${alertBit}
     </div></article>`;
 }
-$("#v-air").innerHTML = `
-  <div class="sec-h"><h2>Flights in the air</h2>
-    <span>each card is one agent session · branch ${esc(DATA.flights.map(f=>f.branch).join(", "))}</span></div>
-  <div class="grid2">${DATA.flights.map(flightCard).join("")}</div>`;
+function renderAir(){ $("#v-air").innerHTML = `
+  <div class="sec-h"><h2>${DB.live?"Agents in flight, right now":"Flights in the air"}</h2>
+    <span>${DB.live?"live prompt + uncommitted work, sampled without touching their trees"
+      :`each card is one agent session · branch ${esc(DB.flights.map(f=>f.branch).join(", "))}`}</span></div>
+  <div class="grid2">${DB.flights.map(flightCard).join("")}</div>`; }
 
 /* =============== WORLD =============== */
-(function world(){
+function renderWorld(){
   const W=1080, H=560, NS="http://www.w3.org/2000/svg";
-  const files = [...new Set(DATA.flights.flatMap(f=>f.files))];
+  const files = [...new Set(DB.flights.flatMap(f=>f.files))];
   const nodes = {BASE:[70,H/2], MAIN:[W-80,H/2]};
   files.forEach((f,i)=>{
     const t=(i+1)/(files.length+1);
@@ -444,7 +477,7 @@ $("#v-air").innerHTML = `
     svg+=`<circle cx="${x}" cy="${y}" r="52" fill="#FF6257" opacity="0.10"/>
           <circle cx="${x}" cy="${y}" r="34" fill="#FF6257" opacity="0.10"/>`; }
   // arcs per flight
-  DATA.flights.forEach((fl,fi)=>{
+  DB.flights.forEach((fl,fi)=>{
     const pts=[nodes.BASE, ...fl.files.map(f=>nodes[f]), nodes.MAIN];
     let d=`M${pts[0][0]},${pts[0][1]}`;
     for(let i=1;i<pts.length;i++){
@@ -481,9 +514,15 @@ $("#v-air").innerHTML = `
       <span><i style="background:#FF6257"></i>loss of separation — tap it</span>
       <span><i style="background:#FF6257;opacity:.25"></i>charted turbulence (prior collisions)</span>
       <span><i style="background:#14181D"></i>BASE / MAIN</span>
-      <span style="font-family:var(--mono);font-size:11px">routes drawn from each branch's real diff</span>
+      <span style="font-family:var(--mono);font-size:11px">${DB.live
+        ?"drawn from uncommitted work, sampled live":"routes drawn from each branch's real diff"}</span>
     </div>`;
-})();
+}
+
+/* Views that reflect current state; the incident report below is recorded
+   evidence and deliberately stays as generated. */
+function renderAll(){ derive(); renderHome(); renderAir(); renderWorld(); }
+renderAll();
 
 /* =============== SHEET =============== */
 function openSheet(){
@@ -695,4 +734,46 @@ function show(v){
 }
 document.querySelectorAll("[data-v]").forEach(el=>el.addEventListener("click",()=>show(el.dataset.v)));
 if(location.hash) show(location.hash.slice(1)||"home");
+
+/* =============== LIVE =============== */
+/* Served by tools/atc/live.py: each sweep reports the agents currently in
+   flight — their live prompt and their uncommitted work. The page keeps the
+   view you are on and only redraws the data. */
+(async function live(){
+  const badge = document.createElement("button");
+  badge.className = "tab"; badge.id = "live-badge";
+  badge.style.cssText = "margin-left:8px;cursor:default";
+  let seen = null, fails = 0;
+
+  async function poll(){
+    try{
+      const r = await fetch("/live.json", {cache:"no-store"});
+      if(!r.ok) throw new Error(r.status);
+      const s = await r.json();
+      fails = 0;
+      if(!document.getElementById("live-badge"))
+        document.querySelector(".nav-in").appendChild(badge);
+      if(s.status && s.status.startsWith("error")){
+        badge.innerHTML = `<span class="livedot warn"><i></i>SWEEP FAILED</span>`;
+        badge.title = s.status;
+      } else {
+        badge.innerHTML = `<span class="livedot"><i></i>LIVE · ${s.sides_in_flight} in flight</span>`;
+        badge.title = `last sweep ${(s.generated||"").slice(11,19)}`;
+      }
+      const stamp = JSON.stringify([s.generated, s.flights.map(f=>[f.intent,f.files,f.uncommitted_lines]),
+                                    s.pairs.map(p=>p.result&&p.result.verdict)]);
+      if(stamp === seen) return;
+      const first = seen === null;
+      seen = stamp;
+      DB = Object.assign({}, DATA, s);
+      renderAll();
+      if(!first) toast(`Airspace updated — ${s.sides_in_flight} agent(s) in flight`);
+    }catch(e){
+      if(++fails === 1 && document.getElementById("live-badge"))
+        badge.innerHTML = `<span class="livedot warn"><i></i>WATCHER OFFLINE</span>`;
+    }
+  }
+  await poll();                       // static file: fails once, silently
+  if(fails === 0) setInterval(poll, 4000);
+})();
 </script>

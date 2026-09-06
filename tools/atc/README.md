@@ -56,7 +56,36 @@ collide.py <a> <b> --record          # send the verdict to the telemetry store
 collide.py <a> <b> --priors          # add historical contention warnings
 telemetry.py hotspots                # contention leaderboard
 test_atc.py                          # 33-check suite
+
+terminal.py --profile flask          # build the UI from a real 72k-star repo
+live.py --repo . --serve             # watch the agents flying right now
 ```
+
+## Live mode
+
+```bash
+python3 tools/atc/live.py --repo <path> --serve      # then open :8787
+```
+
+Everything else in ATC reasons about commits. `live.py` watches work that has
+not been committed yet, which is when a collision is still cheap to avoid.
+Every few seconds it sweeps each worktree (and the main checkout, when that is
+in flight too) and answers three questions:
+
+| question | source |
+|---|---|
+| what is this agent **trying** to do | the live prompt from that session's Claude Code transcript |
+| what has it **changed** so far | `git stash create` snapshot of the uncommitted tree |
+| will it **collide** | pairwise `collide` over those snapshots |
+
+The prompt is the strongest intent signal ATC has, because it exists before any
+commit message does. Transcripts are read from `~/.claude/projects/<slug>/`,
+read-only, and never leave the machine. The page keeps whatever view you are on
+and redraws only the data, so a collision appears while you are looking at it —
+typically within one sweep of the edit landing.
+
+Point it at this repository and you will see the session that is editing it,
+with your own prompt as the flight plan.
 
 **A side can be a worktree path**, in which case ATC analyses the *uncommitted* work in it — collisions surface before anybody commits. The live tree is sampled with `git stash create`, which writes an object and touches neither the agent's files, its index, nor its stash stack (asserted by tests).
 
