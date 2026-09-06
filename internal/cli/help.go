@@ -417,6 +417,10 @@ var commandDocs = []commandDoc{
 			{name: "--user-prs", arg: "n", desc: "developer: this developer's merged PR count (required)"},
 			{name: "--total-prs", arg: "n", desc: "developer: total merged PR count (required)"},
 			{name: "--commit", arg: "rev", desc: "developer: a commit/PR to analyze (repeatable, at least one required)"},
+			{name: "--cache-dir", arg: "path", desc: "commit/developer: override the committed-tree index cache directory"},
+			{name: "--no-cache", desc: "commit/developer: disable the index cache"},
+			{name: "--worktree", desc: "commit/developer: index the working tree instead of the committed tree (uncached)"},
+			{name: "--head", desc: "commit/developer: index the committed tree (default; cacheable)"},
 		},
 		examples: []string{
 			"entire graph rank demo",

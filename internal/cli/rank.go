@@ -75,6 +75,55 @@ func runRankDemo(ctx context.Context, opts Options, args []string) error {
 	return writeRankProfiles(opts.Stdout, profiles, format)
 }
 
+// rankSnapshotFlags are the index/caching flags `rank commit` and `rank
+// developer` share with `impact`/`neighbors`: same meaning, same defaults
+// where it makes sense to. One difference is deliberate -- Worktree defaults
+// to FALSE here (committed tree), not true. impact/neighbors default to the
+// working tree because they answer "what does my code look like right now";
+// rank analyzes ALREADY-COMMITTED history, which is exactly the case
+// LoadOrBuildProviderSnapshot can cache, and a full first-time build on a
+// large real-world repo is minutes, not seconds -- see runRankDeveloper,
+// which builds the snapshot once and reuses it across every --commit. --worktree
+// opts back into the impact/neighbors default when that is what is wanted.
+type rankSnapshotFlags struct {
+	CacheDir     string
+	DisableCache bool
+	Worktree     bool
+}
+
+func parseRankSnapshotFlag(args []string, index int, flags *rankSnapshotFlags) (consumed bool, next int, err error) {
+	switch args[index] {
+	case "--cache-dir":
+		index++
+		if index >= len(args) {
+			return true, index, fmt.Errorf("--cache-dir requires a value")
+		}
+		flags.CacheDir = args[index]
+		return true, index, nil
+	case "--no-cache":
+		flags.DisableCache = true
+		return true, index, nil
+	case "--worktree":
+		flags.Worktree = true
+		return true, index, nil
+	case "--head":
+		flags.Worktree = false
+		return true, index, nil
+	default:
+		return false, index, nil
+	}
+}
+
+func loadRankSnapshot(ctx context.Context, repo, version string, opts Options, flags rankSnapshotFlags) (sem.ProviderSnapshot, error) {
+	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
+	snapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, version, sem.ProviderSnapshotOptions{
+		NoNetwork: true,
+		Worktree:  flags.Worktree,
+		Profile:   sem.ProfileFull,
+	}, cacheDir, flags.DisableCache)
+	return snapshot, err
+}
+
 // runRankCommit analyzes one commit/PR and prints its CommitImpactScore --
 // the "Analyze Commit" capability (Section 8): "why did this commit
 // contribute to the developer's ranking?"
@@ -82,7 +131,15 @@ func runRankCommit(ctx context.Context, opts Options, args []string) error {
 	var repoFlag, format string
 	format = "text"
 	var rev string
+	var snapshotFlags rankSnapshotFlags
 	for i := 0; i < len(args); i++ {
+		if consumed, next, err := parseRankSnapshotFlag(args, i, &snapshotFlags); consumed {
+			if err != nil {
+				return err
+			}
+			i = next
+			continue
+		}
 		switch args[i] {
 		case "--repo":
 			i++
@@ -120,7 +177,11 @@ func runRankCommit(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	analysis, err := analyzeOneCommit(ctx, repo, rev, nil)
+	snapshot, err := loadRankSnapshot(ctx, repo, opts.Version, opts, snapshotFlags)
+	if err != nil {
+		return err
+	}
+	analysis, err := analyzeOneCommit(ctx, repo, rev, &snapshot)
 	if err != nil {
 		return err
 	}
@@ -142,7 +203,15 @@ func runRankDeveloper(ctx context.Context, opts Options, args []string) error {
 	format = "text"
 	stars, userPRs, totalPRs := -1, -1, -1
 	var revs []string
+	var snapshotFlags rankSnapshotFlags
 	for i := 0; i < len(args); i++ {
+		if consumed, nextIndex, err := parseRankSnapshotFlag(args, i, &snapshotFlags); consumed {
+			if err != nil {
+				return err
+			}
+			i = nextIndex
+			continue
+		}
 		next := func() (string, error) {
 			i++
 			if i >= len(args) {
@@ -195,12 +264,13 @@ func runRankDeveloper(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 
-	// One relation graph is built and reused across every --commit: the
-	// graph reflects the CURRENT repository state (the same thing `impact`
-	// and `neighbors` query), so building it once per invocation instead of
-	// once per commit is both correct and the difference between one slow
-	// index build and N of them.
-	snapshot, err := sem.BuildProviderSnapshot(ctx, repo, opts.Version)
+	// One relation graph is built (or loaded from the on-disk cache -- see
+	// loadRankSnapshot) and reused across every --commit: the graph reflects
+	// the CURRENT repository state (the same thing `impact` and `neighbors`
+	// query), so building it once per invocation instead of once per commit
+	// is both correct and the difference between one slow index build and N
+	// of them.
+	snapshot, err := loadRankSnapshot(ctx, repo, opts.Version, opts, snapshotFlags)
 	if err != nil {
 		return err
 	}
@@ -242,10 +312,8 @@ func rankPositiveIntFlag(args []string, index int) (int, int, error) {
 // analyzeOneCommit resolves one revision's first-parent base, runs the
 // existing semantic-diff analysis (sem.AnalyzeGitRangeWithOptions -- the same
 // engine `diff`/`commit` use) for that range, and folds it together with the
-// relation graph into a rank.CommitAnalysis. When snapshot is nil, one is
-// built for this call only (the `rank commit` single-revision path); the
-// `rank developer` path builds it once and passes it in, since multiple
-// commits share the same current-repository graph.
+// (already built/cached -- see loadRankSnapshot) relation graph into a
+// rank.CommitAnalysis.
 func analyzeOneCommit(ctx context.Context, repo, rev string, snapshot *sem.ProviderSnapshot) (rank.CommitAnalysis, error) {
 	if err := sem.EnsureGitMetadataSafeForSubprocess(repo); err != nil {
 		return rank.CommitAnalysis{}, err
@@ -267,13 +335,6 @@ func analyzeOneCommit(ctx context.Context, repo, rev string, snapshot *sem.Provi
 	// not a hard failure -- the analysis itself does not depend on it.
 	timestamp, _ := gitutil.CommitTimestamp(ctx, repo, resolvedRev)
 
-	if snapshot == nil {
-		built, err := sem.BuildProviderSnapshot(ctx, repo, "")
-		if err != nil {
-			return rank.CommitAnalysis{}, err
-		}
-		snapshot = &built
-	}
 	return rank.AnalyzeCommit(resolvedRev, timestamp, diff, *snapshot, rank.DefaultWeights()), nil
 }
 
