@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
@@ -27,15 +28,52 @@ func (source sourceContext) capturedDiffAttributes(ctx context.Context, paths []
 		if err := EnsureGitMetadataSafeForSubprocess(source.absRepo); err != nil {
 			return nil, err
 		}
-		observed, err := gitutil.CapturedDiffAttributes(ctx, source.absRepo, missing, func(path string) (string, bool, error) {
-			content, present, err := capturePolicyRead(store, source.absRepo, path, func() (string, bool, error) { content, ok := store.read(path); return content, ok, nil })
+		gitRoot, err := gitutil.RepoRoot(ctx, source.absRepo)
+		if err != nil {
+			return nil, err
+		}
+		prefix, err := gitutil.RepoPrefix(ctx, source.absRepo)
+		if err != nil {
+			return nil, err
+		}
+		rootPaths := make([]string, len(missing))
+		for index, path := range missing {
+			rootPaths[index] = prefix + path
+		}
+		root, err := os.OpenRoot(gitRoot)
+		if err != nil {
+			return nil, fmt.Errorf("open captured Git root: %w", err)
+		}
+		defer root.Close()
+		registry := newOversizeRegistry(root, gitRoot)
+		rootRead := capturedWorktreeReader(ctx, root, gitRoot, int64(resolveMaxParseBytes(0)), registry, nil)
+		observed, err := gitutil.CapturedDiffAttributes(ctx, gitRoot, rootPaths, func(path string) (string, bool, error) {
+			absolute := filepath.Join(gitRoot, filepath.FromSlash(path))
+			withinSelected := prefix == "" || strings.HasPrefix(path, prefix)
+			selected := path
+			if withinSelected && prefix != "" {
+				selected = strings.TrimPrefix(path, prefix)
+			}
+			content, present, err := capturePolicyRead(store, source.absRepo, absolute, func() (string, bool, error) {
+				if withinSelected {
+					content, ok := store.read(selected)
+					return content, ok, nil
+				}
+				content, ok := rootRead(path)
+				return content, ok, nil
+			})
 			if !present && source.oversize != nil {
-				if _, oversized := source.oversize(path); oversized {
+				if _, oversized := source.oversize(selected); oversized {
+					return "", false, fmt.Errorf("attribute policy exceeds the captured read limit: %s", path)
+				}
+			}
+			if !present {
+				if _, oversized := registry.lookup(path); oversized {
 					return "", false, fmt.Errorf("attribute policy exceeds the captured read limit: %s", path)
 				}
 			}
 			if !present && err == nil {
-				info, statErr := os.Lstat(filepath.Join(source.absRepo, filepath.FromSlash(path)))
+				info, statErr := os.Lstat(absolute)
 				if statErr != nil && !os.IsNotExist(statErr) {
 					return "", false, fmt.Errorf("attribute policy unavailable: %s: %w", path, statErr)
 				}
@@ -53,9 +91,12 @@ func (source sourceContext) capturedDiffAttributes(ctx context.Context, paths []
 			store.attributeDecisions = map[string]gitutil.CapturedDiffAttribute{}
 		}
 		// Concurrent consumers cannot replace the first retained decision.
-		for path, attribute := range observed {
-			if _, exists := store.attributeDecisions[path]; !exists {
-				store.attributeDecisions[path] = attribute
+		for index, path := range missing {
+			rootPath := rootPaths[index]
+			if attribute, exists := observed[rootPath]; exists {
+				if _, retained := store.attributeDecisions[path]; !retained {
+					store.attributeDecisions[path] = attribute
+				}
 			}
 		}
 		encoded, err := json.Marshal(store.attributeDecisions)
