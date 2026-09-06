@@ -11,7 +11,7 @@ Event: 6 September 2026, E2 Graph Intelligence. All times IST. Full scope is ret
 - This was an empty standalone GitHub repository, populated with upstream history. It is not represented as a GitHub-created fork; confirm the organiser accepts this repository arrangement.
 - Entire CLI 0.10.5; Graph 0.4.0; Python 3.12.12.
 - Codex hooks installed. A captured implementation session must be verified before marking CP00 complete.
-- Active implementation directory: /Users/shaurya/Desktop/BTW/PACT-event, created with `entire repo clone` through the India mirror. The earlier PACT directory is preserved as bootstrap material.
+- Original implementation directory: /Users/shaurya/Desktop/BTW/PACT-event, created with `entire repo clone` through the India mirror. The earlier PACT directory is preserved as bootstrap material.
 - A real fresh Codex session (01a074ee-4456-7fc3-a160-9f669a03611c) was captured, then hit the account limit before application code. The coordinator is continuing implementation and will explicitly attach its authentic session at milestones; this is manual attachment, not claimed automatic capture.
 - Local Graph-driven B0/H1/H2 review, immutable registry and portable reproducer implemented; 8 focused engine tests passed. Browser H1→H2 flow verified with no JavaScript errors; actual H1/H2 Databricks jobs passed their expected outcomes.
 - Real GitHub branch pact/implementation is pushed at 6ba0eca; main still contains upstream history. GitHub API independently confirmed fork=false. User has been asked to create PACT-buildathon as an actual fork; preserve and migrate existing work without rewriting history.
@@ -54,3 +54,11 @@ Tag: `pact-local-remote-v1` (resolve after the integration commit). Final focuse
 ## Pre-noon preservation
 
 User resumed through the noon handoff. `pact-pre-noon-stable` preserves the tested product and evidence; 15 tests passed in 7.95 seconds, JS syntax/package install/clean replay passed. Product code unchanged from 41805b7. Semantic diff saved with upstream parser warnings preserved. Fork and authentic pre-noon Checkpoint remain blocked pending real resolution; tag is not a Checkpoint.
+
+## Genuine fork migration
+
+Active checkout is now `/Users/shaurya/Desktop/BTW/PACT-fork`, created with `entire repo clone` from the genuine `Shaurya002800/entire-graph` GitHub fork through `aws-ap-south-1.entire.io`. Existing implementation history, all seven pact tags, the authentic Checkpoint branch, runtime reports and SQLite history were preserved. Original PACT repositories/checkouts remain intact. Product code was not rewritten. New origin: `entire://aws-ap-south-1.entire.io/gh/Shaurya002800/entire-graph`. GitHub: `https://github.com/Shaurya002800/entire-graph`.
+
+Fork lineage is corrected for the destination; the earlier standalone-repository workflow remains a disclosed deviation. Fresh capture and the authentic pre-noon Checkpoint remain unresolved. The noon session must start in this active clone, not the parent BTW directory.
+
+Migration verification: 15 tests passed in 7.59 seconds in PACT-fork; original Checkpoint export succeeded. New working branch and all pact tags are being pushed to the genuine fork.

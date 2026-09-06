@@ -75,8 +75,8 @@ The installed CLI's manual attachment reuses the earlier Checkpoint for the same
 Use the actual final fork/mirror once the lineage issue below is resolved. Current implementation branch is `pact/implementation`. Preserve fixture tags `pact-B0`, `pact-H1`, `pact-H2`, `pact-H3`, `pact-H4`.
 
 ```sh
-entire repo clone entire://aws-ap-south-1.entire.io/gh/Shaurya002800/PACT PACT-event
-cd PACT-event
+entire repo clone entire://aws-ap-south-1.entire.io/gh/Shaurya002800/entire-graph PACT-fork
+cd PACT-fork
 git switch pact/implementation
 python3 -m venv .venv
 .venv/bin/python -m pip install './pact[test]'
@@ -130,13 +130,13 @@ Remote startup is not presented as instant. The client waits up to 180 seconds, 
 
 The initial repository was created at **09:24:48 IST on 6 September 2026**, after kickoff, but GitHub's API reports `fork: false`. It was populated with upstream Entire Graph history rather than created with GitHub's Fork operation. That does **not** satisfy the guide's literal fork instruction without organiser acceptance.
 
-The user has been asked to create `Shaurya002800/PACT-buildathon` as a real fork. Migration through its India mirror is pending, with existing commits/tags/evidence preserved. Do not delete the current repository or force-push. The current India mirror clone was created using `entire repo clone` before application code was generated there.
+The user created the genuine fork `Shaurya002800/entire-graph`. It has now been cloned through its India mirror into `PACT-fork`; existing commits, seven milestone/fixture tags, authentic Checkpoint branch and runtime evidence were transferred without rewriting history. Do not delete the current repository or force-push. The current India mirror clone was created using `entire repo clone` before application code was generated there.
 
 Upstream boundary: `3a2a715fad1948e83dc7ebe0d307377ba29e065a`. Earlier commits belong to Entire Graph, not this team's event-day implementation. PACT setup starts at `3884262` (10:19 IST); the baseline is `d2ade70`, H1 `67ee0cf`, H2 `6ba0eca`, H3 `b3e7497`, H4 `f438c37`. Fixture identities are distinct from the final implementation SHA. Record the final resulting SHA in the submission form after the last commit; do not create an endless self-referential documentation commit.
 
 ## Known limitations and next steps
 
-- Resolve actual GitHub fork lineage and provide accessible Checkpoint links before claiming event compliance.
+- Destination fork lineage is corrected; disclose the earlier workflow deviation and provide accessible Checkpoint links before claiming event compliance.
 - Capture/link the real policy approval and the remaining milestone contexts; current reports intentionally retain partial provenance.
 - Implement the actual Noon Curveball in a fresh captured session and verify preserved behavior.
 - Finish final semantic review, demo rehearsal, judge-access check and submission receipt before **15:00 IST**.

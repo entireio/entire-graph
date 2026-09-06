@@ -8,11 +8,11 @@ The latest participant guide requires a genuine GitHub fork, an India mirror clo
 
 ## Active workspace and identities
 
-- Active mirror clone: `/Users/shaurya/Desktop/BTW/PACT-event`.
+- Active mirror clone: `/Users/shaurya/Desktop/BTW/PACT-fork`. Original PACT-event is retained.
 - Bootstrap clone `/Users/shaurya/Desktop/BTW/PACT` is preserved; its Python environment is shared through the active clone's ignored `.venv` symlink.
-- Branch `pact/implementation`; origin `entire://aws-ap-south-1.entire.io/gh/Shaurya002800/PACT`; GitHub remote `https://github.com/Shaurya002800/PACT.git`.
+- Branch `pact/implementation`; origin `entire://aws-ap-south-1.entire.io/gh/Shaurya002800/entire-graph`; GitHub remote `https://github.com/Shaurya002800/entire-graph.git`.
 - `main` is protected on the mirror. Feature-branch pushes work. Never force-push or delete either checkout.
-- The GitHub repository was created after kickoff but has `fork: false`. The user was asked to create a genuine `Shaurya002800/PACT-buildathon` fork of `entireio/entire-graph`. That reply/migration is still pending. Migration cannot erase the original workflow deviation; disclose it and obtain organiser acceptance where needed.
+- The GitHub repository was created after kickoff but has `fork: false`. The user was asked to create a genuine `Shaurya002800/PACT-buildathon` fork of `entireio/entire-graph`. The genuine fork was subsequently created as `Shaurya002800/entire-graph`; migration is complete (see latest update below). Migration cannot erase the original workflow deviation; disclose it and obtain organiser acceptance where needed.
 - Upstream boundary `3a2a715fad1948e83dc7ebe0d307377ba29e065a`; fixture tags `pact-B0`, `pact-H1`, `pact-H2`, `pact-H3`, `pact-H4`. Resolve tags once if a task needs their immutable SHAs. They are separate from the current implementation SHA.
 - Pushed milestone through `f438c37`; the current integration will be committed separately. Use `git log -1` for the actual current implementation SHA instead of embedding this document's own future hash.
 
@@ -101,3 +101,11 @@ The user resumed work through the noon handoff. Product code remains at implemen
 A committed-tree semantic diff covers 26 changed PACT files. It retains upstream generated-parser size/parse warnings; this is not a claim of complete repository-wide analysis.
 
 Outstanding hard gates: a genuine GitHub fork (or explicit organiser acceptance), and a distinct authentic pre-noon Checkpoint. The session remains ended in Entire, and supported attachment reuses the old setup Checkpoint. No new Checkpoint or policy source was fabricated. Ask the organiser/mentor about the capture gap. At noon start a fresh captured session in the mirror clone; give it the actual E2 constraint, this handoff and the accessible original Checkpoint context before editing. Do not continue this old session for Curveball implementation.
+
+## Genuine fork migration
+
+Active checkout is now `/Users/shaurya/Desktop/BTW/PACT-fork`, created with `entire repo clone` from the genuine `Shaurya002800/entire-graph` GitHub fork through `aws-ap-south-1.entire.io`. Existing implementation history, all seven pact tags, the authentic Checkpoint branch, runtime reports and SQLite history were preserved. Original PACT repositories/checkouts remain intact. Product code was not rewritten. New origin: `entire://aws-ap-south-1.entire.io/gh/Shaurya002800/entire-graph`. GitHub: `https://github.com/Shaurya002800/entire-graph`.
+
+Fork lineage is corrected for the destination; the earlier standalone-repository workflow remains a disclosed deviation. Fresh capture and the authentic pre-noon Checkpoint remain unresolved. The noon session must start in this active clone, not the parent BTW directory.
+
+Migration verification: all 15 tests passed in the new clone in 7.59 seconds; Checkpoint 7c02a621a7d5 remains readable with one original session.
