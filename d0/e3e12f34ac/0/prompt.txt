@@ -1,0 +1,1 @@
+Audit the implemented GPS feature against docs/GPS/MVP.md only. Do not edit files. Inspect internal/intent, internal/cli/gps.go and tests. Return a concise prioritized list of concrete unimplemented MVP requirements, exact relevant file/line references, and the smallest recommended implementation/test changes. Distinguish actual gaps from already implemented features.

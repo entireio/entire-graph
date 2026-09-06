@@ -105,6 +105,18 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runVerify(ctx, opts, args[1:])
 	case "stats":
 		return runStats(ctx, opts, args[1:])
+	case "spec":
+		return runSpec(ctx, opts, args[1:])
+	case "anchor":
+		return runAnchor(ctx, opts, args[1:])
+	case "context":
+		return runGPSContext(ctx, opts, args[1:])
+	case "check":
+		return runGPSCheck(ctx, opts, args[1:])
+	case "why":
+		return runGPSWhy(ctx, opts, args[1:])
+	case "review":
+		return runGPSReview(ctx, opts, args[1:])
 	case "agent-guide":
 		return runAgentGuide(opts, args[1:])
 	case "init-agents":
