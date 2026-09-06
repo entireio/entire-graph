@@ -202,3 +202,12 @@ source, identical semantic/partial/warning digests and unchanged corpus before,
 between and after requests. OFF53.492s and ON73.462s exceed the 1.10 cold
 screen. RSS is unavailable. This failed screen is retained without a statistical
 claim or campaign expansion; prior failures remain untouched.
+
+Remaining-cost diagnosis: `cold-profile-d793b2be/` retains one ON-only CPU
+profile with exact semantic digest/194 partials. Publication accounts for20.86
+cumulative CPU-seconds, including11.27 in quota maintenance; these samples
+are not a wall-time comparison. Two collection failures and their recovery
+are retained; the product request was not rerun. The next change under review
+removes duplicate envelope encoding within existing bounded publication.
+Quota-scan alternatives require explicit correctness review; no quota limit,
+corpus, threshold or default is being tuned.
