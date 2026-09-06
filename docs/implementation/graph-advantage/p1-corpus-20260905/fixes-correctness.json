@@ -1,0 +1,8 @@
+{
+  "commit": "dc0ddce7a9d1265257503f7315563d9916bc48d2",
+  "command": "mise run check",
+  "exit_code": 0,
+  "seconds": 621.0947296658996,
+  "source_unchanged": true,
+  "changed_files": []
+}

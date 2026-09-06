@@ -37,9 +37,9 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Campaign-scale partial-failure membership differences are not yet explained",
+  "remaining_diagnosis": "Confirmed worktree preselection path divergence (381 vs384 indexed files); fix and independent regression in progress",
   "stopgaps": "Implemented: 41 Python tests pass; supervisor, lease, canary and stale-build admission guards",
-  "full_correctness": "mise run check in progress; see fixes-correctness.json when finished",
+  "full_correctness": "mise run check passed at dc0ddce7 in621.095s; source unchanged",
   "campaign": "paused; no new measurements",
   "stopgap_commits": [
     "dc0ddce7",
