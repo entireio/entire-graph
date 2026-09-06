@@ -52,6 +52,12 @@ def analyse(repo: Path, base: str, head: str) -> dict:
     changes = json.loads(raw)
     if changes.get("base") != base or changes.get("head") != head or "files" not in changes:
         raise ValueError("Unexpected semantic diff identity/schema")
+    # Semantic changes can omit module-level or unsupported changes. Preserve
+    # the raw provider diff, but reconcile changed-file inventory with Git.
+    actual_files = set(git(repo, "diff", "--name-only", "--no-renames", base, head, "--", SCOPE).splitlines())
+    reported_files = {f["path"] for f in changes["files"]}
+    for path in sorted(actual_files - reported_files):
+        changes["files"].append({"path": path, "changes": [], "origin": "git_inventory"})
     versions = {"base": snapshot(repo, base), "head": snapshot(repo, head)}
     return {"diff": changes, "diff_raw": raw, "versions": versions,
             "partial": bool(changes.get("warnings")) or any(v["partial"] for v in versions.values()),

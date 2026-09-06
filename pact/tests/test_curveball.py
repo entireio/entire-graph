@@ -103,3 +103,31 @@ def test_module_configuration_change_cannot_look_like_no_impact(tmp_path):
     diagnostics = source_diagnostics({SCOPE + "/permissions.py":
         'ALLOW_GUESTS = True\n\ndef can_access(request):\n    return ALLOW_GUESTS\n'})
     assert any(d["code"] == "module_configuration" and d["line"] == 1 for d in diagnostics)
+
+
+def test_low_confidence_bound_edge_is_not_presented_as_confirmed():
+    evidence = analyse(REPO, resolve(REPO, "pact-B0"), resolve(REPO, "pact-H1"))
+    for graph in evidence["versions"].values():
+        for edge in graph["calls"]:
+            edge["confidence"] = 0.2
+    result = select(policies(), evidence)
+    assert result["partial_analysis"]
+    assert all(p["evidence_quality"] == "heuristic" for p in result["paths"] if p["edges"])
+
+
+def test_semantic_diff_cannot_silently_omit_changed_file(monkeypatch, tmp_path):
+    import btw_pact.graph_adapter as adapter
+    real = adapter.entire
+    def omit_diff(repo, *args):
+        raw = real(repo, *args)
+        if args[0] == "diff":
+            data = json.loads(raw)
+            data["files"] = []
+            return json.dumps(data)
+        return raw
+    monkeypatch.setattr(adapter, "entire", omit_diff)
+    report = review(ReviewRequest(repo_path=str(REPO), base_sha="pact-B0", head_sha="pact-H1",
+                                 requirements=policies()), tmp_path)
+    assert report["counts"]["head"]["fail"] == 2
+    assert report["selection"]["fallback"]["mode"] == "all_registered"
+    assert any(d["code"] == "unmapped_file_change" for d in report["selection"]["diagnostics"])

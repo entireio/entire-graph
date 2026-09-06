@@ -10,9 +10,11 @@ def binding(symbol):
 
 def confirmed_edge(edge):
     # Entire Graph 0.4 distinguishes bound resolution from name-only heuristics.
-    # Confidence is retained as reported; it is not a probability of runtime use.
+    # The pilot treats confidence below 0.8 as heuristic, even when bound.
+    # This is a conservative policy threshold, not a runtime probability.
     return (edge.get("resolution") in {"exact", "package", "import_resolved"}
-            and not edge.get("warning_codes") and bool(edge.get("evidence")))
+            and not edge.get("warning_codes") and bool(edge.get("evidence"))
+            and isinstance(edge.get("confidence"), (int, float)) and 0.8 <= edge["confidence"] <= 1)
 
 
 def select(requirements, analysis, strategy="graph", max_depth=8):
@@ -73,7 +75,7 @@ def select(requirements, analysis, strategy="graph", max_depth=8):
         for file in analysis["diff"].get("files", []):
             if not file.get("changes"):
                 diagnostic("unmapped_file_change", "Changed file has no mapped semantic definitions", side, graph,
-                           origin="graph", file_path=file["path"])
+                           origin=file.get("origin", "graph"), file_path=file["path"])
             for change in file.get("changes", []):
                 name = change.get("name")
                 line = change.get("before_start_line" if side == "base" else "after_start_line")
@@ -135,7 +137,7 @@ def select(requirements, analysis, strategy="graph", max_depth=8):
         for r in active:
             selected.add(r.key)
             reasons[r.key].append("Conservative fallback: run all registered checks because selection may be incomplete")
-    return {"evidence_schema_version": "1.0", "selected_requirement_ids": sorted(selected),
+    return {"evidence_schema_version": "1.0", "strategy": strategy, "selected_requirement_ids": sorted(selected),
             "selection_reasons": dict(reasons), "paths": paths, "path_ids": [p["path_id"] for p in paths],
             "unresolved_ids": sorted(unresolved), "not_selected_ids": sorted({r.key for r in active} - selected),
             "partial_analysis": partial, "traversal_limit": max_depth,
