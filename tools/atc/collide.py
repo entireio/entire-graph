@@ -60,23 +60,35 @@ def graph_diff(repo, base, head):
     return changes, warnings
 
 
-def callers_on_tree(worktree, name, define_file):
-    """Incoming CALLS for `name` on a side's tree. Returns (callers, unknowns)."""
-    try:
-        data = graph_json(
-            ["neighbors", "--symbol", name, "--direction", "in", "--format", "json"],
-            worktree,
-        )
-    except RuntimeError as e:
-        return [], [f"neighbors({name}): {e}"]
-    if data.get("disambiguation_required"):
+def callers_on_tree(worktree, name, define_file, define_line=None):
+    """Incoming CALLS for one definition on a side's tree.
+
+    Resolution is by <file>:<line> whenever the diff gave us a location, then
+    by name+file, and only then by bare name. Bare names are ambiguous across a
+    large polyglot repo (our own semantic-diff review showed common names such
+    as `main` and `execute` attracting hundreds of unrelated dependents), and a
+    false red is worse than a missed one.
+    """
+    attempts = []
+    if define_line:
+        attempts.append(["--symbol", f"{define_file}:{define_line}"])
+    attempts.append(["--symbol", name, "--file", define_file])
+    attempts.append(["--symbol", name])
+    data, unknowns = None, []
+    for sel in attempts:
         try:
-            data = graph_json(
-                ["neighbors", "--symbol", name, "--file", define_file,
-                 "--direction", "in", "--format", "json"], worktree)
+            data = graph_json(["neighbors", *sel, "--direction", "in",
+                               "--format", "json"], worktree)
         except RuntimeError as e:
-            return [], [f"neighbors({name}, {define_file}): ambiguous, retry failed: {e}"]
-    callers, unknowns = [], []
+            unknowns.append(f"neighbors({' '.join(sel)}): {e}")
+            continue
+        if not data.get("disambiguation_required"):
+            break
+        unknowns.append(f"neighbors({' '.join(sel)}): ambiguous")
+        data = None
+    if data is None:
+        return [], unknowns
+    callers = []
     for m in (data.get("matches") or []):
         for edge in (m.get("incoming") or []):
             ep = edge.get("endpoint", {})
@@ -198,7 +210,8 @@ def collide(repo, spec_a, spec_b):
                     continue
                 if ch.get("type") == "added":
                     continue  # new entity: the other side cannot depend on it yet
-                callers, unk = callers_on_tree(wt, name, path)
+                callers, unk = callers_on_tree(
+                    wt, name, path, ch.get("before_start_line"))
                 unknowns.extend(unk)
                 dependents = [c for c in callers
                               if (c["path"], c["name"]) in other_diff]
