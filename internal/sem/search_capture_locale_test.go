@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -16,17 +17,40 @@ func TestCapturedPreselectionLocaleTermPresenceMatchesGit(t *testing.T) {
 		for _, candidate := range strings.Fields(string(output)) {
 			if strings.Contains(strings.ToUpper(candidate), "UTF-8") || strings.Contains(strings.ToUpper(candidate), "UTF8") {
 				locales = append(locales, candidate)
+				break
 			}
 		}
 	}
-	patterns := []string{"ascii", "É", "é", "K", "K", "s", "ſ", "Σ", "σ", "ς", "I", "i", "İ", "ı"}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
-	write(t, repo, "src/cases.go", "package p\n// ASCII ascii\n// É é\n// K K\n// s ſ\n// Σ σ ς\n// I i İ ı\n")
+	fixtures := map[string]string{
+		"ascii.go":           "ascii",
+		"accent-upper.go":    "É",
+		"accent-lower.go":    "é",
+		"kelvin-ascii.go":    "K",
+		"kelvin-sign.go":     "K",
+		"long-s.go":          "s",
+		"long-s-sign.go":     "ſ",
+		"sigma-upper.go":     "Σ",
+		"sigma-lower.go":     "σ",
+		"sigma-final.go":     "ς",
+		"turkish-upper.go":   "I",
+		"turkish-lower.go":   "i",
+		"turkish-dotted.go":  "İ",
+		"turkish-dotless.go": "ı",
+	}
+	for path, content := range fixtures {
+		write(t, repo, "src/"+path, "package p\n// "+content+"\n")
+	}
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "captured locale fixture")
+	patterns := make([]string, 0, len(fixtures))
+	for _, pattern := range fixtures {
+		patterns = append(patterns, pattern)
+	}
+	sort.Strings(patterns)
 
 	for _, locale := range locales {
 		locale := locale
@@ -42,20 +66,33 @@ func TestCapturedPreselectionLocaleTermPresenceMatchesGit(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer source.close()
-			captured, _, err := capturedPreselectionMatches(context.Background(), source, source.paths, patterns, 32)
-			if err != nil {
-				t.Fatal(err)
-			}
-			gitMatches, err := gitutil.GrepIndexMatches(context.Background(), repo, patterns, 32)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := reduceTermPresence(captured, patterns)
-			want := reduceTermPresence(gitMatches, patterns)
-			if !reflect.DeepEqual(got, want) {
-				t.Logf("locale %s captured=%#v git=%#v rawGit=%#v", locale, got, want, gitMatches)
-				t.Fatalf("captured term presence diverges from Git under locale %s", locale)
+			for _, pattern := range patterns {
+				captured, _, err := capturedPreselectionMatches(context.Background(), source, source.paths, []string{pattern}, 32)
+				if err != nil {
+					t.Fatal(err)
+				}
+				gitMatches, err := gitutil.GrepIndexMatches(context.Background(), repo, []string{pattern}, 32)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := reduceSingleTermPresence(captured, pattern)
+				want := reduceSingleTermPresence(gitMatches, pattern)
+				if !reflect.DeepEqual(got, want) {
+					t.Logf("locale %s pattern %q captured=%#v git=%#v rawGit=%#v", locale, pattern, got, want, gitMatches)
+					t.Fatalf("captured term presence diverges from Git under locale %s pattern %q", locale, pattern)
+				}
 			}
 		})
 	}
+}
+
+func reduceSingleTermPresence(matches []gitutil.GrepMatch, pattern string) map[string]map[string]bool {
+	presence := map[string]map[string]bool{}
+	for _, match := range matches {
+		if presence[match.Path] == nil {
+			presence[match.Path] = map[string]bool{}
+		}
+		presence[match.Path][strings.ToLower(pattern)] = true
+	}
+	return presence
 }
