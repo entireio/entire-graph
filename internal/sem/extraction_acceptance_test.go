@@ -67,6 +67,7 @@ func TestExtractionConcurrentSameKeyAndNoFollow(t *testing.T) {
 		}()
 	}
 	wait.Wait()
+	cache.flush()
 	entry, key, err := cache.entry(spec, language, source, 1024)
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +100,7 @@ func TestExtractionDeterministicFailureAdmission(t *testing.T) {
 	if hit || !first.status.DeterministicSyntaxError {
 		t.Fatalf("invalid cold error status: %#v", first.status)
 	}
+	cache.flush()
 	second, hit := cache.extract(spec, language, source, 1024)
 	if !hit || !reflect.DeepEqual(first, second) {
 		t.Fatal("deterministic failure not retained exactly")

@@ -23,6 +23,7 @@ func TestExtractionQuotaIndependentOperations(t *testing.T) {
 		source := captureSource(fmt.Sprintf("f%d.go", i), "package p\nfunc A(){}\n")
 		language, _ := languageForPath(source.path)
 		caches[owner].extract(resolveProfile(ProfileFull), language, source, 4096)
+		caches[owner].flush()
 		entry, _, _ := caches[owner].entry(resolveProfile(ProfileFull), language, source, 4096)
 		assertExtractionDiskQuota(t, entry, 4, 20000)
 	}
@@ -96,6 +97,7 @@ func TestExtractionQuotaSubprocesses(t *testing.T) {
 			source := captureSource(fmt.Sprintf("f%d-%d.go", os.Getpid(), i), "package p\nfunc A(){}\n")
 			cache.extract(resolveProfile(ProfileFull), language, source, 4096)
 		}
+		cache.flush()
 		return
 	}
 	directory := t.TempDir()
@@ -138,6 +140,7 @@ func TestExtractionAdmissionRemovesOnlyOwnedOrphanTemps(t *testing.T) {
 		}
 	}
 	cache.extract(resolveProfile(ProfileFull), language, source, 4096)
+	cache.flush()
 	if _, err := os.Stat(filepath.Join(directory, orphan)); !os.IsNotExist(err) {
 		t.Fatal("orphan temp survived maintenance")
 	}
