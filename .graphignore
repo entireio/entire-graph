@@ -1,9 +1,0 @@
-# Paths the entire-graph code graph skips, in addition to .gitignore (same
-# syntax). These files are tracked in git on purpose — the CGO build links them —
-# so .gitignore can't exclude them, but they are vendored, generated tree-sitter
-# grammar C, not this project's source. Indexing them produced only
-# E_FILE_TOO_LARGE / E_PARSE_ERROR partial failures (some parser.c blobs are
-# 30-54 MB) and a false "completeness: degraded", plus irrelevant vendored
-# symbols. Skipping them makes `entire graph index` report a clean, honest graph.
-parser.c
-scanner.c

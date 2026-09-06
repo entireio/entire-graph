@@ -1,4 +1,0 @@
-Building with a bespoke in-house harness
-step 1 of 3 ... done
-step 2 of 3 ... done
-step 3 of 3 ... 1 problem found

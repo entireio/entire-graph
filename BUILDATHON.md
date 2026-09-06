@@ -62,11 +62,11 @@ User prompt → Antigravity → DevCheck MCP Server
 
 ### Current evidence status (truthful as of Codex review)
 
-The target repository is enabled for Entire on branch `anupam`. Codex verified Entire CLI `0.10.5`; `entire graph doctor --json` reported Graph `v0.4.0`, a writable local plugin directory, and `no_egress: true`. The imported DevCheck files were uncommitted when the initial local search/impact attempts ran and yielded no findings, so no relationship is claimed from that attempt. The committed implementation must be queried and verified before submission.
+The DevCheck code is ready to execute Graph queries, but this workspace cannot yet produce submission evidence: the `entire` CLI was not available on PATH during review, and `C:\Users\Anupam\Desktop\antigravity projects\Scalar` was not a Git repository. Therefore, no Graph search, definition lookup, impact analysis, semantic diff, or Entire checkpoint is claimed in this document.
 
 ### Evidence to collect before submission
 
-Use the installed CLI's `--help` output to confirm the current Graph command syntax, then record:
+Once Entire is installed and the workspace is initialized as a Git repository, use the installed CLI's `--help` output to confirm the current Graph command syntax, then record:
 
 1. A Graph search or definition lookup for a real DevCheck symbol, with the raw output and the matching source location.
 2. A Graph impact analysis before a meaningful change, with the raw output and source/test verification of the reported relationship.
@@ -134,7 +134,7 @@ Use devcheck check_change_impact to analyze formatImpactReport
 - **Dynamic dispatch:** Graph uses static analysis. Runtime-only connections (reflection, eval, dynamic imports) are not captured.
 - **First-run latency:** The first query against a repository may be slow due to cache building.
 - **Evidence quality:** Graph evidence is structural, not semantic. It shows what _could_ be affected, not what _will_ break.
-- **Current evidence gap:** Run and retain the required search/definition, pre-change impact, and final semantic-diff outputs after the DevCheck commit; do not infer relationships from an empty query.
+- **Current environment:** Entire CLI and Git repository setup must be completed before Track 2 evidence and checkpoints can be collected.
 
 ## Next Steps
 

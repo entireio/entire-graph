@@ -2,8 +2,8 @@
   "mcpServers": {
     "devcheck": {
       "command": "node",
-      "args": ["devcheck/dist/server.js"],
-      "cwd": "."
+      "args": ["c:/Users/Anupam/Desktop/antigravity projects/Scalar/devcheck/dist/server.js"],
+      "cwd": "c:/Users/Anupam/Desktop/antigravity projects/Scalar"
     }
   }
 }

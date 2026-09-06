@@ -1,5 +1,0 @@
-# Service
-
-```go
-func Example() {}
-```

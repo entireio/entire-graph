@@ -1,8 +1,0 @@
-service:
-  name: ledger
-  port: 8080
-  limits:
-    memory: 512Mi
-routes:
-  - path: /add
-    handler: ledgerAdd

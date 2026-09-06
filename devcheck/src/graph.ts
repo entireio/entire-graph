@@ -12,8 +12,7 @@ import type { GraphCommandResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
-/** Optional absolute path for MCP hosts whose PATH omits the Entire CLI. */
-const ENTIRE_BIN = process.env.ENTIRE_BIN ?? "entire";
+const ENTIRE_BIN = "entire";
 const TIMEOUT_MS = 60_000;
 
 // ---------------------------------------------------------------------------
