@@ -216,6 +216,47 @@ def collide(repo, ref_a, ref_b):
     }
 
 
+def attach_priors(r, backend=None):
+    """Fleet memory -> pre-collision warning.
+
+    Asks the telemetry store how often parallel work on these paths has ended
+    in a red finding before. This fires on HISTORY, so it can warn about a
+    contended area even when the current pair shows no overlap at all — the
+    part a purely local, single-run analysis cannot do.
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import telemetry
+    except ImportError:
+        return
+    paths = sorted({p for side in ("write_write", "read_write", "advisory", "proximity")
+                    for f in r["findings"][side] for p in [f.get("path")] if p}
+                   | {p for (p, _n) in []})
+    # also consider every path either side touched, not just colliding ones
+    try:
+        for ref in (r["ref_a"], r["ref_b"]):
+            d, _w = graph_diff(r["repo"], r["merge_base"], ref)
+            paths = sorted(set(paths) | {p for (p, _n) in d})
+    except RuntimeError:
+        pass
+    if not paths:
+        return
+    try:
+        be = telemetry.get_backend(backend)
+    except Exception as e:
+        r["priors_error"] = str(e)
+        return
+    try:
+        telemetry.init(be)
+        r["priors"] = telemetry.priors(be, paths)
+        r["priors_backend"] = be.name
+        r["priors_scope"] = be.evidence_scope
+    except Exception as e:
+        r["priors_error"] = str(e)
+    finally:
+        be.close()
+
+
 def render(r):
     L = []
     L.append(f"🗼 ATC — Agent Traffic Control   {r['ref_a']} ✈ {r['ref_b']}")
@@ -253,6 +294,16 @@ def render(r):
     for f in r["findings"]["proximity"]:
         L.append(f"🟡 PROXIMITY  {f['path']} — {r['ref_a']}: {', '.join(f['a'])}"
                  f"  ·  {r['ref_b']}: {', '.join(f['b'])}")
+    for p in r.get("priors", []):
+        L.append(f"📊 HOTSPOT PRIOR  {p['path']} — {p['red_findings']} red finding(s) "
+                 f"across {p['runs_touching']} prior runs touching it "
+                 f"(rate {p['rate']}). Sequence work here rather than parallelising it.")
+    if r.get("priors"):
+        L.append(f"   prior evidence scope: {r.get('priors_scope', 'unknown')} "
+                 f"[backend: {r.get('priors_backend', '?')}]")
+    if r.get("priors_error"):
+        L.append(f"❔ UNKNOWN: priors unavailable ({r['priors_error']}) — "
+                 f"no historical claim made.")
     if r["landing_order"]:
         L.append(f"✈  LANDING ORDER: {r['landing_order']}")
     for u in r["unknowns"]:
@@ -268,12 +319,30 @@ def main():
     ap.add_argument("ref_b")
     ap.add_argument("--repo", default=".")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--priors", action="store_true",
+                    help="enrich with historical contention priors from telemetry")
+    ap.add_argument("--record", action="store_true",
+                    help="record this verdict to the telemetry store")
+    ap.add_argument("--backend", choices=["local", "databricks"], default=None)
     args = ap.parse_args()
     try:
         r = collide(os.path.abspath(args.repo), args.ref_a, args.ref_b)
     except RuntimeError as e:
         print(f"ATC error (no verdict — do NOT treat as clean): {e}", file=sys.stderr)
         sys.exit(3)
+    if args.priors:
+        attach_priors(r, args.backend)
+    if args.record:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import telemetry
+            be = telemetry.get_backend(args.backend)
+            telemetry.init(be)
+            r["recorded"] = telemetry.record(be, r)
+            be.close()
+        except Exception as e:
+            r["record_error"] = str(e)
+            print(f"[atc] telemetry record failed: {e}", file=sys.stderr)
     print(json.dumps(r, indent=2) if args.json else render(r))
     sys.exit(2 if r["reds"] else (1 if r["advisories"] else 0))
 
