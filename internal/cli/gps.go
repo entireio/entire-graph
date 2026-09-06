@@ -165,7 +165,7 @@ func runGPSContext(ctx context.Context, opts Options, args []string) error {
 	}
 	code := make([]any, 0, len(search.Results))
 	for _, result := range search.Results {
-		code = append(code, map[string]any{"reason": "ranked_code_search", "rank": result.Rank, "score": result.Score, "citation": fmt.Sprintf("%s:%d", result.FilePath, result.FocusLine), "symbol_id": result.SymbolID})
+		code = append(code, map[string]any{"reason": "ranked_code_search", "rank": result.Rank, "score": result.Score, "citation": fmt.Sprintf("%s:%d", result.FilePath, result.FocusLine), "symbol_id": result.SymbolID, "snippet": result.Snippet, "snippet_start_line": result.SnippetStartLine, "snippet_end_line": result.SnippetEndLine})
 	}
 	response["code"] = code
 	selected := make(map[string]bool, len(requirements))
