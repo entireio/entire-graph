@@ -2903,6 +2903,53 @@ func TestFirstParentRejectsAnOptionShapedRevision(t *testing.T) {
 	}
 }
 
+// TestCommitTimestampResolvesAuthorDate pins that CommitTimestamp reports the
+// AUTHOR date, not a later committer/amend date — the developer-ranking
+// package's recency weighting wants when the work happened.
+func TestCommitTimestampResolvesAuthorDate(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.txt", "hi\n")
+	git(t, repo, "add", ".")
+	cmd := exec.Command("git", "commit", "-m", "init")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_DATE=2020-01-02T03:04:05+00:00",
+		"GIT_COMMITTER_DATE=2024-06-07T08:09:10+00:00",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+
+	got, err := CommitTimestamp(t.Context(), repo, "HEAD")
+	if err != nil {
+		t.Fatalf("CommitTimestamp: %v", err)
+	}
+	want := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("CommitTimestamp = %v, want %v (the author date, not the committer date)", got, want)
+	}
+}
+
+func TestCommitTimestampRejectsAnOptionShapedRevision(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.txt", "hi\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "init")
+
+	if _, err := CommitTimestamp(t.Context(), repo, "--upload-pack=/bin/true"); err == nil {
+		t.Fatal("CommitTimestamp(\"--upload-pack=/bin/true\") returned nil error, want a rejection")
+	}
+}
+
 // TestChangedFilesReportsTreeEntryModes pins that ChangedFiles carries the base
 // and head tree entry modes. A symbolic link is stored as an ordinary blob
 // whose bytes are its target path, so mode is the only thing that tells a

@@ -398,6 +398,32 @@ var commandDocs = []commandDoc{
 		},
 		examples: []string{"entire graph stats --repo .", "entire graph stats --repo . --since 7d --verbose"},
 	},
+	{
+		name:    "rank",
+		group:   groupAnalyze,
+		summary: "Evidence-based developer/commit ranking (Hacker House)",
+		usage: []string{
+			"entire graph rank demo [--format text|json]",
+			"entire graph rank commit <rev> --repo . [--format text|json]",
+			"entire graph rank developer --username NAME --stars n --user-prs n --total-prs n --commit <rev> [--commit <rev> ...] --repo . [--format text|json]",
+		},
+		long: "Combines the preserved GitHub-reach formula (min(stars * userPRs/totalPRs, 10000)) with an Entire-derived engineering-impact score built from the SAME impact/neighbors/semantic-diff evidence those commands already expose, so a developer's ranking is traceable down to specific commit evidence instead of resting on stars or PR count alone.\n\n" +
+			"`rank commit` analyzes one commit's structural/dependent/architectural/semantic evidence into a 0-100 CommitImpactScore. `rank developer` aggregates a chosen set of commits (recency-weighted) and combines the result with the reach formula into a FinalScore. `rank demo` runs a deterministic, three-developer fixture with no repository required, showing that diff size alone does not win and that incomplete graph evidence is exposed as uncertainty (evidence_state: confirmed/partial/requires_verification), never silently read as zero impact.",
+		flags: []flagDoc{
+			{name: "--repo", arg: "path", desc: "Repository (default: current repo); not used by demo"},
+			{name: "--format", arg: "text|json", def: "text", desc: "Output format"},
+			{name: "--username", arg: "name", desc: "developer: developer identifier (required)"},
+			{name: "--stars", arg: "n", desc: "developer: repository stars (required)"},
+			{name: "--user-prs", arg: "n", desc: "developer: this developer's merged PR count (required)"},
+			{name: "--total-prs", arg: "n", desc: "developer: total merged PR count (required)"},
+			{name: "--commit", arg: "rev", desc: "developer: a commit/PR to analyze (repeatable, at least one required)"},
+		},
+		examples: []string{
+			"entire graph rank demo",
+			"entire graph rank commit HEAD --repo .",
+			"entire graph rank developer --repo . --username alice --stars 420 --user-prs 6 --total-prs 40 --commit HEAD --commit HEAD~3",
+		},
+	},
 
 	// ── Help & diagnostics ───────────────────────────────────────────────
 	{
