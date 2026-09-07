@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -333,7 +334,7 @@ def check_token(token):
 		if err := json.Unmarshal([]byte(lines[0]), &header); err != nil {
 			t.Fatalf("%s invalid header json %q: %v", tt.command, lines[0], err)
 		}
-		if header["schema_version"] != "1.1" || header["provider"] != "entire-graph" {
+		if header["schema_version"] != "1.2" || header["provider"] != "entire-graph" {
 			t.Fatalf("%s header = %#v", tt.command, header)
 		}
 		seenTypes := map[string]bool{}
@@ -385,7 +386,7 @@ func TestSnapshotAcceptsNoNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"schema_version":"1.1"`) {
+	if !strings.Contains(out.String(), `"schema_version":"1.2"`) {
 		t.Fatalf("snapshot output:\n%s", out.String())
 	}
 }
@@ -399,7 +400,7 @@ func TestSnapshotAcceptsWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"schema_version":"1.1"`) {
+	if !strings.Contains(out.String(), `"schema_version":"1.2"`) {
 		t.Fatalf("snapshot output:\n%s", out.String())
 	}
 }
@@ -1042,7 +1043,7 @@ func TestProviderCommandsAcceptIgnoreFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", command, err)
 		}
-		if !strings.Contains(out.String(), `"schema_version":"1.1"`) {
+		if !strings.Contains(out.String(), `"schema_version":"1.2"`) {
 			t.Fatalf("%s output missing header:\n%s", command, out.String())
 		}
 		if strings.Contains(out.String(), "ignored.py") || strings.Contains(out.String(), "ignored") {
@@ -1071,7 +1072,7 @@ func TestProviderCommandsAcceptIncludeFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", command, err)
 		}
-		if !strings.Contains(out.String(), `"schema_version":"1.1"`) {
+		if !strings.Contains(out.String(), `"schema_version":"1.2"`) {
 			t.Fatalf("%s output missing header:\n%s", command, out.String())
 		}
 		if !strings.Contains(out.String(), "reopened") {
@@ -1163,7 +1164,7 @@ func TestDiffJSONIncludesSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"schema_version": "1.1"`) {
+	if !strings.Contains(out.String(), `"schema_version": "1.2"`) {
 		t.Fatalf("diff json missing schema_version:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), `"producer_version": "9.9.9-test"`) {
@@ -1177,8 +1178,8 @@ func TestDiffJSONIncludesSchemaVersion(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
 		t.Fatalf("diff json invalid:\n%s\n%v", out.String(), err)
 	}
-	if payload.SchemaVersion != "1.1" {
-		t.Fatalf("schema_version = %q, want 1.1", payload.SchemaVersion)
+	if payload.SchemaVersion != "1.2" {
+		t.Fatalf("schema_version = %q, want 1.2", payload.SchemaVersion)
 	}
 	if payload.ProducerVersion != "9.9.9-test" {
 		t.Fatalf("producer_version = %q, want 9.9.9-test", payload.ProducerVersion)
@@ -1571,4 +1572,76 @@ func twoCommitRepo(t *testing.T) string {
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "two")
 	return repo
+}
+
+// TestSnapshotRecordCacheCaptureIsMemoryBounded pins the streaming contract against the cache tee.
+//
+// resolveCacheDir falls back to the user cache directory, so useCache is true for every ordinary
+// committed snapshot/symbols/edges run: the tee that captures records for the cache is no longer the
+// opt-in it was written as, and an unbounded one makes a streaming command hold its entire output in
+// memory — proportional to the whole graph, on exactly the large repositories streaming exists for.
+//
+// The assertion is behavioural rather than a memory measurement: past the cap the run must still
+// produce its complete output, and must NOT store an entry (a stored entry is proof the whole stream
+// was buffered).
+func TestSnapshotRecordCacheCaptureIsMemoryBounded(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "main.go", "package sample\n\nfunc Caller() { Callee() }\nfunc Callee() {}\n")
+	git(t, repo, "add", "main.go")
+	git(t, repo, "commit", "-m", "initial")
+
+	run := func(cacheDir string) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := Run(t.Context(), Options{
+			Version: "bounded-capture-test",
+			Env:     EntireEnv{RepoRoot: repo},
+			Stdout:  &out,
+			Stderr:  io.Discard,
+		}, []string{"snapshot", "--repo", repo, "--format", "ndjson", "--cache-dir", cacheDir}); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	cacheEntries := func(dir string) int {
+		t.Helper()
+		count := 0
+		if err := filepath.WalkDir(dir, func(_ string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !entry.IsDir() {
+				count++
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+
+	// CONTROL: with the real cap the run caches, which is what makes the bounded case meaningful.
+	roomy := t.TempDir()
+	full := run(roomy)
+	if cacheEntries(roomy) == 0 {
+		t.Fatal("the control run cached nothing, so this test proves nothing about the bound")
+	}
+
+	// BOUNDED: a cap smaller than this fixture's own output.
+	previous := providerRecordsCacheMaxBytes
+	providerRecordsCacheMaxBytes = 8
+	t.Cleanup(func() { providerRecordsCacheMaxBytes = previous })
+
+	tight := t.TempDir()
+	bounded := run(tight)
+	if bounded != full {
+		t.Fatalf("the bound changed the streamed output:\n got %q\nwant %q", bounded, full)
+	}
+	if entries := cacheEntries(tight); entries != 0 {
+		t.Fatalf("a %d-byte cap still stored %d cache entrie(s), so the whole stream was buffered",
+			providerRecordsCacheMaxBytes, entries)
+	}
 }
