@@ -1,0 +1,70 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "4b0eccdee663",
+  "session_id": "01a07bf8-43b4-79e1-a764-74369c5b45f5",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-07T13:05:21.256558Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/build-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/binary-build-info.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/binary.sha256",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/build.exit.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/build.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/compiler-advantage.json",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/compiler-review.json",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/compiler.exit.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/compiler.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/environment.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/overall.exit.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/profiler-normal.exit.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/profiler-normal.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/profiler-race.exit.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/profiler-race.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/toolchain.exit.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/raw/toolchain.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/result-blob-exists.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/results.tar.gz",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/source.sha256",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/source.tar.gz",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/test-counts.json",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/transport.exit.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/transport.json",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/transport.stderr.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/vm-terminal.json"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "72a1f0080a8b",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 42569,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 153216,
+    "output_tokens": 503,
+    "api_call_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-07T13:05:21.215017Z",
+    "agent_lines": 6710,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 6710,
+    "total_lines_changed": 6710,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
