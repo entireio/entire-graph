@@ -367,7 +367,7 @@ assert_empty 'zero sessions prints nothing' "$OUT"
 stub '{"sessions":1,"graph_calls":41,"exploration_calls":14,"exploration_returned_est_tokens":1500000,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":28,"returned_bytes":1},{"name":"impact","calls":9,"returned_bytes":1},{"name":"neighbors","calls":3,"returned_bytes":1},{"name":"diff","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":2100000,"estimated_savings_pct_of_session_tokens":12.4}'
 OUT=$(run s-rich "$T" "$REPO" NO_COLOR=1)
 assert_eq 'rich line renders exactly' \
-	'[GRAPH] ↗ 2.1M saved · 28 search · 9 impact · 3 nbrs · 1 other · vs 14 explore · 1.5M explore tok · graph-first ✓ · 75% of locates · 12% of session' \
+	'[GRAPH] ↗ ~2.1M saved · 28 search · 9 impact · 3 nbrs · 1 other · vs 14 explore · 1.5M explore tok · graph-first ✓ · 75% of locates · ~12% of session' \
 	"$OUT"
 assert_within 'rich line stays within the width budget' 150 "$OUT"
 
@@ -376,7 +376,7 @@ assert_within 'rich line stays within the width budget' 150 "$OUT"
 # else -- no verb split, no exploration totals, no percentages. Asserted AFTER the
 # width check above, which reads the same $OUT and is about the rich line.
 OUT=$(run s-terse "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
-assert_eq 'default line is the savings figure alone' '[GRAPH] ↗ 2.1M saved' "$OUT"
+assert_eq 'default line is the savings figure alone' '[GRAPH] ↗ ~2.1M saved' "$OUT"
 for seg in 'search' 'impact' 'nbrs' 'explore' 'graph-first' 'of locates' 'of session'; do
 	assert_lacks "default line omits $seg" "$seg" "$OUT"
 done
@@ -387,7 +387,7 @@ done
 OUT=$(run s-toggle "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=1)
 assert_has 'toggle: the detailed line is cached first' 'explore tok' "$OUT"
 OUT=$(run s-toggle "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
-assert_eq 'flipping detail is not served the other setting cached line' '[GRAPH] ↗ 2.1M saved' "$OUT"
+assert_eq 'flipping detail is not served the other setting cached line' '[GRAPH] ↗ ~2.1M saved' "$OUT"
 
 # --- meta verbs ------------------------------------------------------------------------------
 # stats/version/help/doctor/init-agents/agent-guide/capabilities are self-reporting: they
@@ -398,7 +398,7 @@ assert_eq 'flipping detail is not served the other setting cached line' '[GRAPH]
 stub '{"sessions":1,"graph_calls":41,"exploration_calls":2600,"exploration_returned_est_tokens":1500000,"sessions_with_locate":1,"graph_first_sessions":0,"graph_calls_by_verb":[{"name":"search","calls":13,"returned_bytes":1},{"name":"stats","calls":12,"returned_bytes":1},{"name":"diff","calls":4,"returned_bytes":1},{"name":"impact","calls":3,"returned_bytes":1},{"name":"doctor","calls":2,"returned_bytes":1},{"name":"neighbors","calls":1,"returned_bytes":1},{"name":"version","calls":1,"returned_bytes":1},{"name":"help","calls":1,"returned_bytes":1},{"name":"capabilities","calls":1,"returned_bytes":1},{"name":"init-agents","calls":1,"returned_bytes":1},{"name":"agent-guide","calls":1,"returned_bytes":1},{"name":"newverb","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":6600,"estimated_savings_pct_of_session_tokens":0.2}'
 OUT=$(run s-meta "$T" "$REPO" NO_COLOR=1)
 assert_eq 'meta verbs are excluded from the split and from "other"' \
-	'[GRAPH] ↗ 6.6K saved · 13 search · 3 impact · 1 nbrs · 5 other · vs 2.6K explore · 1.5M explore tok · graph-first ✗ · 2% of locates · 0.20% of session' \
+	'[GRAPH] ↗ ~6.6K saved · 13 search · 3 impact · 1 nbrs · 5 other · vs 2.6K explore · 1.5M explore tok · graph-first ✗ · 2% of locates' \
 	"$OUT"
 for meta in stats version help doctor init-agents agent-guide capabilities; do
 	assert_lacks "meta verb '$meta' is never named" " $meta" "$OUT"
@@ -419,7 +419,7 @@ assert_eq 'a meta-only session is bare with detail off' '[GRAPH] no graph calls 
 stub '{"sessions":1,"graph_calls":30,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"symbols","calls":15,"returned_bytes":1},{"name":"edges","calls":9,"returned_bytes":1},{"name":"search","calls":4,"returned_bytes":1},{"name":"impact","calls":2,"returned_bytes":1}],"estimated_savings_est_tokens":800,"estimated_savings_pct_of_session_tokens":1}'
 OUT=$(run s-order "$T" "$REPO" NO_COLOR=1)
 assert_eq 'locate verbs rank first in the split' \
-	'[GRAPH] ↗ 800 saved · 4 search · 2 impact · 15 symbols · 9 other · graph-first ✓ · 100% of locates · 1.0% of session' \
+	'[GRAPH] ↗ ~800 saved · 4 search · 2 impact · 15 symbols · 9 other · graph-first ✓ · 100% of locates · ~1.0% of session' \
 	"$OUT"
 
 # --- new context segments ---------------------------------------------------------------------
@@ -427,7 +427,7 @@ assert_eq 'locate verbs rank first in the split' \
 stub '{"sessions":1,"graph_calls":3,"exploration_calls":0,"exploration_returned_est_tokens":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":3,"returned_bytes":1}],"estimated_savings_est_tokens":700,"estimated_savings_pct_of_session_tokens":2}'
 OUT=$(run s-noexplore "$T" "$REPO" NO_COLOR=1)
 assert_eq 'zero exploration drops both explore segments' \
-	'[GRAPH] ↗ 700 saved · 3 search · graph-first ✓ · 100% of locates · 2.0% of session' "$OUT"
+	'[GRAPH] ↗ ~700 saved · 3 search · graph-first ✓ · 100% of locates · ~2.0% of session' "$OUT"
 
 # A savings percentage that rounds to 0.00% is a zero, not a number worth a segment.
 stub '{"sessions":1,"graph_calls":1,"exploration_calls":1,"exploration_returned_est_tokens":5,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":40,"estimated_savings_pct_of_session_tokens":0.0004}'
@@ -438,11 +438,11 @@ assert_has 'explore tokens render beside the tiny percentage' '5 explore tok' "$
 # --- width discipline ---------------------------------------------------------------------------
 # An over-long line sheds whole segments from the right: session %, then explore tok, then
 # explore calls. Nothing is ever truncated mid-segment.
-LONG='{"sessions":1,"graph_calls":9999999,"exploration_calls":8888888,"exploration_returned_est_tokens":7777777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":999999,"returned_bytes":1},{"name":"checkpoint","calls":888888,"returned_bytes":1},{"name":"snapshot","calls":777777,"returned_bytes":1}],"estimated_savings_est_tokens":999999999,"estimated_savings_pct_of_session_tokens":12.4}'
+LONG='{"sessions":1,"graph_calls":9999999,"exploration_calls":8888888,"exploration_returned_est_tokens":7777777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":999999,"returned_bytes":1},{"name":"checkpoint","calls":888888,"returned_bytes":1},{"name":"snapshot","calls":777777,"returned_bytes":1}],"estimated_savings_est_tokens":99999999,"estimated_savings_pct_of_session_tokens":12.4}'
 stub "$LONG"
 OUT=$(run s-long "$T" "$REPO" NO_COLOR=1)
 assert_eq 'over-long line drops session % then explore tok, keeping explore calls' \
-	'[GRAPH] ↗ 1000M saved · 999999 search · 888888 checkpoint · 777777 snapshot · 7333335 other · vs 8.9M explore · graph-first ✓ · 53% of locates' \
+	'[GRAPH] ↗ ~100M saved · 999999 search · 888888 checkpoint · 777777 snapshot · 7333335 other · vs 8.9M explore · graph-first ✓ · 53% of locates' \
 	"$OUT"
 assert_within 'over-long line is brought under the width budget' 150 "$OUT"
 assert_lacks 'width discipline drops the session segment whole' 'of session' "$OUT"
@@ -451,10 +451,10 @@ assert_lacks 'width discipline never leaves a dangling separator' '· ·' "$OUT"
 
 # Only the last segment needs to go when the overflow is small: this one renders at exactly
 # 167 visible chars and lands on exactly 150 once the session segment is shed.
-stub '{"sessions":1,"graph_calls":19665,"exploration_calls":88888,"exploration_returned_est_tokens":77777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":9999,"returned_bytes":1},{"name":"checkpoint","calls":8888,"returned_bytes":1},{"name":"snapshot","calls":777,"returned_bytes":1}],"estimated_savings_est_tokens":999999999,"estimated_savings_pct_of_session_tokens":12.4}'
+stub '{"sessions":1,"graph_calls":19665,"exploration_calls":88888,"exploration_returned_est_tokens":77777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":9999,"returned_bytes":1},{"name":"checkpoint","calls":8888,"returned_bytes":1},{"name":"snapshot","calls":777,"returned_bytes":1}],"estimated_savings_est_tokens":99999999,"estimated_savings_pct_of_session_tokens":12.4}'
 OUT=$(run s-long2 "$T" "$REPO" NO_COLOR=1)
 assert_eq 'a small overflow sheds only the session segment' \
-	'[GRAPH] ↗ 1000M saved · 9999 search · 8888 checkpoint · 777 snapshot · 1 other · vs 88.9K explore · 77.8K explore tok · graph-first ✓ · 18% of locates' \
+	'[GRAPH] ↗ ~100M saved · 9999 search · 8888 checkpoint · 777 snapshot · 1 other · vs 88.9K explore · 77.8K explore tok · graph-first ✓ · 18% of locates' \
 	"$OUT"
 assert_within 'mildly-long line is brought under the width budget' 150 "$OUT"
 assert_eq 'the width budget is used to the last character' 150 "$(vwidth "$OUT")"
@@ -470,7 +470,7 @@ stub '{"sessions":1,"graph_calls":5,"exploration_calls":2600,"exploration_return
 OUT=$(run s-newcolor "$T" "$REPO" NO_COLOR=1)
 assert_lacks 'NO_COLOR strips escapes from the extended line' "$(printf '\033')" "$OUT"
 assert_eq 'extended line renders exactly under NO_COLOR' \
-	'[GRAPH] ↗ 6.6K saved · 5 search · vs 2.6K explore · 1.5M explore tok · graph-first ✗ · <1% of locates · 0.20% of session' \
+	'[GRAPH] ↗ ~6.6K saved · 5 search · vs 2.6K explore · 1.5M explore tok · graph-first ✗ · <1% of locates · ~0.20% of session' \
 	"$OUT"
 OUT=$(run s-newcolor2 "$T" "$REPO")
 assert_has 'the extended line is coloured by default' "$(printf '\033')" "$OUT"
@@ -485,7 +485,7 @@ assert_lacks 'round millions contain no backslash' '\' "$OUT"
 stub '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":12345,"estimated_savings_pct_of_session_tokens":0.04}'
 OUT=$(run s-thousands "$T" "$REPO" NO_COLOR=1)
 assert_has 'thousands abbreviate' '12.3K saved' "$OUT"
-assert_has 'sub-1% keeps two decimals' '0.04% of session' "$OUT"
+assert_has 'sub-1% keeps two decimals' '~0.04% of session' "$OUT"
 
 # Multi-session scope reports graph-first as a rate, matching `entire graph stats`.
 stub '{"sessions":7,"graph_calls":10,"exploration_calls":10,"sessions_with_locate":7,"graph_first_sessions":6,"graph_calls_by_verb":[{"name":"search","calls":10,"returned_bytes":1}],"estimated_savings_est_tokens":900,"estimated_savings_pct_of_session_tokens":3}'
@@ -536,7 +536,7 @@ assert_has 'colour survives the NO_COLOR render' "$(printf '\033')" "$OUT"
 stub '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"sea[31mrch;rm -rf /","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":100,"estimated_savings_pct_of_session_tokens":1}'
 OUT=$(run s-inject "$T" "$REPO" NO_COLOR=1)
 assert_eq 'hostile verb name is dropped, not rendered' \
-	'[GRAPH] ↗ 100 saved · 1 graph · graph-first ✓ · 100% of locates · 1.0% of session' "$OUT"
+	'[GRAPH] ↗ ~100 saved · 1 graph · graph-first ✓ · 100% of locates · ~1.0% of session' "$OUT"
 assert_lacks 'hostile verb name cannot inject an escape' "$(printf '\033')" "$OUT"
 assert_lacks 'hostile verb name cannot inject a shell metacharacter' ';' "$OUT"
 assert_lacks 'hostile verb name cannot inject a bracket' '[31m' "$OUT"
