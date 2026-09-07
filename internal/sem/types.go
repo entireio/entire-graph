@@ -1240,19 +1240,27 @@ type assignmentFlowEvent struct {
 }
 
 func expressionAssignedReturnFlows(block string) []returnFlowCall {
+	// Assignment events can contribute only to a bare returned variable. Filter
+	// the matches in place before the six assignment scans; the retained indexes
+	// are the same ones the result loop consumed previously.
+	returnMatches := returnVarRe.FindAllStringSubmatchIndex(block, -1)
+	eligibleReturns := returnMatches[:0]
+	for _, match := range returnMatches {
+		if len(match) != 4 || followsReturnedVariable(block, match[1]) {
+			continue
+		}
+		eligibleReturns = append(eligibleReturns, match)
+	}
+	if len(eligibleReturns) == 0 {
+		return nil
+	}
 	events := assignmentFlowEvents(block)
 	if len(events) == 0 {
 		return nil
 	}
 	seen := map[string]bool{}
 	var flows []returnFlowCall
-	for _, match := range returnVarRe.FindAllStringSubmatchIndex(block, -1) {
-		if len(match) != 4 {
-			continue
-		}
-		if followsReturnedVariable(block, match[1]) {
-			continue
-		}
+	for _, match := range eligibleReturns {
 		returned := strings.TrimPrefix(block[match[2]:match[3]], "$")
 		var last assignmentFlowEvent
 		for _, event := range events {
