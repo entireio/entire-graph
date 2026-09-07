@@ -150,6 +150,7 @@ clean_env() { # clean_env [env assignments...] <command...>
 	env -u ENTIRE_GRAPH_STATUSLINE_SCOPE \
 		-u ENTIRE_GRAPH_STATUSLINE_SINCE \
 		-u ENTIRE_GRAPH_STATUSLINE_CACHE \
+		-u ENTIRE_GRAPH_STATUSLINE_DETAIL \
 		-u NO_COLOR "$@"
 }
 
@@ -158,7 +159,7 @@ run_json() {
 	json=$1
 	shift
 	printf '%s' "$json" |
-		clean_env TMPDIR="$WORK/cache" ENTIRE_GRAPH_BIN="$RUN_BIN" "$@" sh "$SCRIPT"
+		clean_env TMPDIR="$WORK/cache" ENTIRE_GRAPH_BIN="$RUN_BIN" ENTIRE_GRAPH_STATUSLINE_DETAIL=1 "$@" sh "$SCRIPT"
 }
 # run <session-id> <transcript> <cwd> [env assignments...] -> stdout of the status line
 run() {
@@ -322,7 +323,7 @@ STUB
 chmod +x "$WORK/minstub"
 set -- "PATH=/usr/bin:/bin" "HOME=$WORK/nohome"
 OUT=$(stdin_json s-nobin-ok "$T" "$REPO" |
-	env -i "$@" TMPDIR="$WORK/cache" NO_COLOR=1 ENTIRE_GRAPH_BIN="$WORK/minstub" /bin/sh "$SCRIPT")
+	env -i "$@" TMPDIR="$WORK/cache" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=1 ENTIRE_GRAPH_BIN="$WORK/minstub" /bin/sh "$SCRIPT")
 assert_has 'the stripped environment reaches the binary lookup at all' '100 saved' "$OUT"
 
 # A binary that exits non-zero must not leak an error onto the status line.
@@ -368,6 +369,15 @@ OUT=$(run s-rich "$T" "$REPO" NO_COLOR=1)
 assert_eq 'rich line renders exactly' \
 	'[GRAPH] ↗ 2.1M saved · 28 search · 9 impact · 3 nbrs · 1 other · vs 14 explore · 1.5M explore tok · graph-first ✓ · 75% of locates · 12% of session' \
 	"$OUT"
+
+# The default is the savings figure alone. Everything the line above renders is
+# opt-in, so the same fixture with detail off must print one segment and nothing
+# else -- no verb split, no exploration totals, no percentages.
+OUT=$(run s-terse "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
+assert_eq 'default line is the savings figure alone' '[GRAPH] ↗ 2.1M saved' "$OUT"
+for seg in 'search' 'impact' 'nbrs' 'explore' 'graph-first' 'of locates' 'of session'; do
+	assert_lacks "default line omits $seg" "$OUT" "$seg"
+done
 assert_within 'rich line stays within the width budget' 150 "$OUT"
 
 # --- meta verbs ------------------------------------------------------------------------------
