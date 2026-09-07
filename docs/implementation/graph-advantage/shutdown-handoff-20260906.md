@@ -7,13 +7,16 @@ benchmarks until the user requests it. Branch `codex/graph-advantage`, worktree
 ## Current status after explicit resume — 2026-09-07
 
 The user has resumed the revised controlled sequence. The heartbeat
-`monitor-p1-corpus-campaign` is ACTIVE for implementation monitoring. No
-product or corpus call has been made in this resumed sequence; controlled
-diagnostics, fixes and sampled batches may proceed once prerequisites and
-controls pass. No full-campaign approval has been granted. The cheaper-model
-routing, 100-run shared cap, first-issue stops and explicit full-run approval
-boundary remain in force. Azure VMs were last verified deallocated; this
-documentation update made no fresh cloud query.
+`monitor-p1-corpus-campaign` is ACTIVE for implementation monitoring. One
+separately identified cache-off Kubernetes syntax-only snapshot diagnostic has
+completed under the bounded controls; it is recorded in
+`evidence/diagnostic-dispatch-1f20f694/` and is not a stability batch or
+campaign result. No other product or corpus call has been made in this resumed
+sequence. Controlled diagnostics, fixes and sampled batches may proceed once
+prerequisites and controls pass. No full-campaign approval has been granted.
+The cheaper-model routing, 100-run shared cap, first-issue stops and explicit
+full-run approval boundary remain in force. The validation VM is deallocated
+after collection.
 
 The one authorized immutable verification completed on pinned commit
 `1f20f694775c3d8fd616eee4b22d9b13c30ff0fe`: `mise run check` exited 0 in
@@ -23,8 +26,9 @@ raw evidence is retained under `evidence/check-1f20f694/`. The earlier
 reviewer fixture packaging fix is the change verified by the new pass.
 
 The shutdown stopping point and resume sequence below are historical guidance
-from before this explicit resume. No product or corpus run has occurred during
-this resumed sequence, and release gates remain unchanged.
+from before this explicit resume. At the time of handoff no product or corpus
+run had occurred; the later bounded diagnostic is recorded above. Release
+gates remain unchanged.
 
 ## Mandatory model routing
 
@@ -60,10 +64,11 @@ approval.
 - The packaging fix stores those original Go bytes as `.go.txt`; `tasks.json`
   maps original logical paths to stored paths. All16 original hashes match.
   No source input, label coordinate, or fixture origin changed.
-- `full-diagnostics-collector/` is prepared and reviewed, not executed. Root
-  added a guard requiring fingerprint and product corpus roots to agree;
-  eight local synthetic tests passed in0.019s. It performs one OFF request,
-  checks complete raw-array digests, and never admits a campaign.
+- `full-diagnostics-collector/` remains prepared and reviewed as a reusable
+  control. One newer dispatch executed exactly one OFF request under it;
+  complete raw arrays, the claim ledger and source-review packet are retained
+  under `evidence/diagnostic-dispatch-1f20f694/`. The result never admits a
+  campaign.
 - ADR0049 is PROPOSED only. It describes prospective reviewed-partial coverage
   strata while preserving corpus, thresholds, original parse-dominated set,
   explicit coverage and first-issue stops. Adoption tests and complete review

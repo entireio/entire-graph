@@ -1,0 +1,44 @@
+{
+  "approved_archive": "/tmp/p1-corpus-20260905-clean.tar.gz",
+  "approved_archive_bytes": 155753525,
+  "approved_archive_sha256": "a8767fd7f6df1f811e89b7a09257faa723ae53dd606557fb30fc4e90ce9312bd",
+  "approved_corpus_manifest": "docs/implementation/graph-advantage/corpus/corpus-manifest.json",
+  "approved_corpus_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+  "input_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+  "inventory_version": 1,
+  "local_corpus_root": "<P1_CORPUS_ROOT>/kubernetes-kubernetes",
+  "local_repository_head": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
+  "manifest_branch_variant_commit": "331746d37d69cc9502f87ca6c33c427588d785e7",
+  "manifest_repository_commit": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
+  "manifest_repository_record": {
+    "all_indexed_bytes": 156310441,
+    "all_indexed_count": 19782,
+    "branch_variant_commit": "331746d37d69cc9502f87ca6c33c427588d785e7",
+    "commit": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
+    "eligible_ruleset": "p1-source-v1",
+    "id": "kubernetes-kubernetes",
+    "kind": "repository",
+    "language_source_bytes": {
+      "go": 130467473,
+      "py": 27634,
+      "ts": 0,
+      "tsx": 0
+    },
+    "language_source_counts": {
+      "go": 12824,
+      "py": 7,
+      "ts": 0,
+      "tsx": 0
+    },
+    "license": {
+      "path": "LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "raw_tracked_count": 31253
+  },
+  "manifest_source": "https://github.com/kubernetes/kubernetes.git",
+  "note": "Inventory is derived only from the approved local corpus manifest, dispatch identity, and existing local archive/configuration. No corpus was downloaded or modified by this packet step.",
+  "remote_repository_path": "/opt/p1/corpus/kubernetes-kubernetes",
+  "repository": "kubernetes-kubernetes",
+  "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4"
+}

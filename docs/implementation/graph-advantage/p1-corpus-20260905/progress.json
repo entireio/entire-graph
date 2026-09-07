@@ -49,7 +49,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-07T07:42:34.458Z",
+  "as_of_utc": "2026-09-07T08:26:26.000Z",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -59,7 +59,7 @@
   "recorded_unrun_requests": 1434,
   "pending_planned_requests": 15730,
   "heartbeat_status": "ACTIVE",
-  "pause_reason": "User resumed revised controlled sequence; no product/corpus calls yet; full campaign still requires explicit user approval",
+  "pause_reason": "One controlled diagnostic product invocation completed and retained separately; campaign remains paused for partial review and baseline timeout blockers; full campaign still requires explicit user approval",
   "cache_fix_commits": [
     "f96483ef",
     "9bfafe17"
@@ -68,7 +68,7 @@
     "4f582425",
     "f6b8a9d1"
   ],
-  "remaining_diagnosis": "Three retained query profile mismatches closed. Latest single cold pair within latency/RSS screens. Baseline fast/full snapshot timeouts and frozen partial admission policy remain unresolved.",
+  "remaining_diagnosis": "Diagnostic produced 194 known partials and one warning for source review. Baseline fast/full snapshot timeouts and partial-result admission remain unresolved; no stability-batch or release-gate claim.",
   "stopgaps": "77 campaign-control tests passed in7.809s after startup/final-lease/accounting fixes; protocol supersedes old three-failure rule",
   "full_correctness": "aab356ae exit0 in705.514s but immutable false due reviewer fixture gofmt changes; packaging fix verified by 1f20f694 exit0 in42.970406s with immutable true",
   "campaign": "not running; controlled diagnostics, fixes and sampled batches may proceed after prerequisites; full campaign requires user approval",
@@ -78,7 +78,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "Complete prerequisites and pending controls, then run controlled diagnostics, fixes and sampled batches; no full campaign without explicit user approval",
+  "next_work": "Review the retained ordered partial payload with source evidence, preserve the diagnostic as separate from campaign counts, then address baseline timeout and admission blockers; no full campaign without explicit user approval",
   "current_focused_correctness": {
     "commit": "1c0b8e24",
     "correctness_seconds": 0.788,
@@ -307,5 +307,26 @@
     "log_sha256": "1c914a34617a2173b94030cfc06f8b9d571e6982955e07284135944acbbe74ab",
     "evidence": "evidence/check-1f20f694/verification.json",
     "scope": "single immutable verification; no product/corpus measurement, VM or campaign work"
+  },
+  "resumed_product_attempts": 1,
+  "latest_resumed_diagnostic": {
+    "dispatch_id": "p1-diag-1f20-k8s-snapshot-off-20260907-01",
+    "kind": "controlled_off_only_diagnostic",
+    "batch_class": "not_a_stability_batch",
+    "repository": "kubernetes-kubernetes",
+    "profile": "syntax-only",
+    "verb": "snapshot",
+    "cache": "off",
+    "source_commit": "1f20f694775c3d8fd616eee4b22d9b13c30ff0fe",
+    "binary_sha256": "a2f98ef4154ce087068d21368fb7d21e934c5c8327252863746c5a20356bea8f",
+    "semantic_sha256": "fa08ae3464a63c71db89f5755062ac76b3a8960e5bccd2f536c1491d8543b4f7",
+    "partial_failures_count": 194,
+    "warnings_count": 1,
+    "admission_eligible": false,
+    "review_status": "pending_source_review",
+    "performance_claim": false,
+    "vm_status": "deallocated_after_collection",
+    "evidence": "evidence/diagnostic-dispatch-1f20f694/",
+    "review_packet": "evidence/diagnostic-dispatch-1f20f694/review-input/ordered-partials-v1.json"
   }
 }
