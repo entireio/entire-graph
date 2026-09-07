@@ -1,0 +1,36 @@
+{
+  "schema": "immutable-check-normalization-v1",
+  "provenance": {
+    "result_path": "subprocess-result.json",
+    "result_sha256": "87fec69924cc92e98b7e9ba69add874edf69c80d344961eaeae6fc8350d04d86",
+    "integrity_path": "source-integrity.json",
+    "integrity_sha256": "bb1063a25e8ac728b26e42a5134ba8e4ad8841ab01535bc539d71691555ab40e",
+    "raw_log_path": "mise-check.raw.log",
+    "raw_log_sha256": "5828b402524e78296666cb68811b9d37a74cf3cf1c6e743c46eb25a95a495abb"
+  },
+  "terminal_result": {
+    "source_field": "subprocess-result.json:returncode",
+    "returncode": 0,
+    "normalized_exit_code": 0,
+    "timed_out": false,
+    "exception": null,
+    "elapsed_seconds": 1204.7737419605255,
+    "started_epoch": null,
+    "finished_epoch": null,
+    "timestamp_availability": "unavailable; the wrapper retained elapsed time but no trustworthy contemporaneous epoch timestamps"
+  },
+  "source_integrity": {
+    "expected_head": "450bede9970e05c994d80986cf105dd068e9fc29",
+    "before_head": "450bede9970e05c994d80986cf105dd068e9fc29",
+    "after_head": "450bede9970e05c994d80986cf105dd068e9fc29",
+    "before_status_bytes": 0,
+    "after_status_bytes": 0,
+    "before_status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "after_status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "before_tracked_sha256": "a853d09d7a2941689bddc65c47b85bd5c6765166729a15e25e6093fcd970a4a9",
+    "after_tracked_sha256": "a853d09d7a2941689bddc65c47b85bd5c6765166729a15e25e6093fcd970a4a9",
+    "normalized_tracked_source_manifest_equal": true,
+    "source_unchanged": true
+  },
+  "normalization_only": "Original result and integrity files are authoritative and unchanged; this record adds aliases only."
+}

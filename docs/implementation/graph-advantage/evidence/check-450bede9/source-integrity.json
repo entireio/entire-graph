@@ -1,0 +1,10 @@
+{
+  "expected_head": "450bede9970e05c994d80986cf105dd068e9fc29",
+  "before_head": "450bede9970e05c994d80986cf105dd068e9fc29",
+  "after_head": "450bede9970e05c994d80986cf105dd068e9fc29",
+  "before_status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "after_status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "before_tracked_sha256": "a853d09d7a2941689bddc65c47b85bd5c6765166729a15e25e6093fcd970a4a9",
+  "after_tracked_sha256": "a853d09d7a2941689bddc65c47b85bd5c6765166729a15e25e6093fcd970a4a9",
+  "source_unchanged": true
+}
