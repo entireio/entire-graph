@@ -1057,28 +1057,66 @@ func maskYAMLUnsupportedSyntax(content string) string {
 }
 
 func maskYAMLQuotedMappingKey(line string) string {
-	colon := yamlKeyColonIndex(line)
-	if colon < 0 {
+	start, end, ok := yamlQuotedMappingKeyBounds(line)
+	if !ok || end-start < 2 {
 		return line
 	}
-	prefix := line[:colon]
-	trimmed := strings.TrimSpace(prefix)
-	if strings.HasPrefix(trimmed, "- ") {
-		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+	replacement := make([]byte, end-start+1)
+	for index := range replacement {
+		replacement[index] = ' '
 	}
-	if len(trimmed) < 2 {
-		return line
+	replacement[0] = line[start]
+	replacement[1] = 'k'
+	replacement[len(replacement)-1] = line[start]
+	return line[:start] + string(replacement) + line[end+1:]
+}
+
+// yamlQuotedMappingKeyBounds recognizes a complete quoted key at the start of
+// a mapping entry. It does not inherit quote state from an earlier line, so it
+// must validate the whole token before treating a colon as a key separator.
+// In particular, a continuation of a multiline single-quoted scalar may begin
+// with doubled quote escapes and contain a colon; that is scalar content, not a
+// new mapping key.
+func yamlQuotedMappingKeyBounds(line string) (int, int, bool) {
+	start := 0
+	for start < len(line) && (line[start] == ' ' || line[start] == '\t') {
+		start++
 	}
-	quote := trimmed[0]
-	if (quote != '\'' && quote != '"') || trimmed[len(trimmed)-1] != quote {
-		return line
+	if start+1 < len(line) && line[start] == '-' && (line[start+1] == ' ' || line[start+1] == '\t') {
+		start += 2
+		for start < len(line) && (line[start] == ' ' || line[start] == '\t') {
+			start++
+		}
 	}
-	start := strings.IndexByte(line[:colon], quote)
-	end := strings.LastIndexByte(line[:colon], quote)
-	if start < 0 || end <= start {
-		return line
+	if start >= len(line) || (line[start] != '\'' && line[start] != '"') {
+		return 0, 0, false
 	}
-	return line[:start] + string(quote) + "key" + string(quote) + line[end+1:]
+	quote := line[start]
+	for index := start + 1; index < len(line); index++ {
+		if quote == '\'' && line[index] == '\'' && index+1 < len(line) && line[index+1] == '\'' {
+			index++
+			continue
+		}
+		if quote == '"' && line[index] == '\\' {
+			if index+1 >= len(line) {
+				return 0, 0, false
+			}
+			index++
+			continue
+		}
+		if line[index] != quote {
+			continue
+		}
+		cursor := index + 1
+		for cursor < len(line) && (line[cursor] == ' ' || line[cursor] == '\t') {
+			cursor++
+		}
+		if cursor < len(line) && line[cursor] == ':' {
+			return start, index, true
+		}
+		return 0, 0, false
+	}
+	return 0, 0, false
 }
 
 func maskCSharpUnsupportedSyntax(content string) string {

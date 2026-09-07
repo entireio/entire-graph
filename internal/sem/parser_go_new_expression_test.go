@@ -181,7 +181,7 @@ func TestGoNewExpressionRetryPreservesTimeoutStatus(t *testing.T) {
 }
 
 func TestExtractionFormatVersionInvalidatesPreCompatibilityRecord(t *testing.T) {
-	const previousVersion = 3
+	const previousVersion = 4
 	if extractionFormatVersion != previousVersion+1 {
 		t.Fatalf("fixture requires one parser ABI step: current=%d previous=%d", extractionFormatVersion, previousVersion)
 	}
