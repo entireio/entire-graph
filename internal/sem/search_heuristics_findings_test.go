@@ -6,6 +6,61 @@ import (
 	"testing"
 )
 
+func TestSearchTypeScriptFunctionReturnTypesKeepDeclarationPrior(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, source string
+		declaration  bool
+	}{
+		{"makeFormatter", "export declare function makeFormatter(): (value: number) => string;", true},
+		{"makeFormatter", "export function makeFormatter(): (value: number) => string;", true},
+		{"makeFormatter", "export declare function makeFormatter(): Promise<(value: number) => string>;", true},
+		{"makeFormatter", "export const makeFormatter = (value: number): string => String(value);", false},
+		{"makeFormatter", "export const makeFormatter: (value: number) => string = value => String(value);", false},
+		{"makeFormatter", "export declare function makeFormatter<T = string>(): (value: T) => string;", true},
+		{"makeFormatter", "export declare function makeFormatter(): (value: number) => 'a=b';", true},
+		{"makeFormatter", "export function makeFormatter() { return (value: number) => String(value); }", false},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			repo := t.TempDir()
+			write(t, repo, "formatter.ts", tc.source+"\n")
+			response, err := SearchRepository(t.Context(), repo, "test", "makeFormatter", SearchOptions{
+				Worktree: true, Profile: ProfileSyntaxOnly, TopK: 5, MaxContextBytes: 20000,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, result := range response.Results {
+				if result.SymbolName != tc.name {
+					continue
+				}
+				if got := hasSearchSignal(result, "reference-decl-prior"); got != tc.declaration {
+					t.Errorf("%s (%s): declaration prior = %v, want %v", result.SymbolName, result.Kind, got, tc.declaration)
+				}
+				return
+			}
+			t.Fatalf("search did not retrieve %s", tc.name)
+		})
+	}
+}
+
+func TestSearchTypeScriptMethodReturnTypesKeepDeclarationPrior(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		snippet     string
+		declaration bool
+	}{
+		{"makeFormatter(): (value: number) => string;", true},
+		{"makeFormatter = (value: number): string => String(value);", false},
+	} {
+		result := SearchResult{Kind: "method", Language: "TypeScript", Snippet: tc.snippet,
+			SymbolStartLine: 2, SymbolEndLine: 2, SnippetStartLine: 2, SnippetEndLine: 2}
+		if got := searchReferenceDeclaration(result); got != tc.declaration {
+			t.Errorf("%s: declaration = %v, want %v", tc.snippet, got, tc.declaration)
+		}
+	}
+}
+
 // A snapshot or golden file is a machine-written recording of expected output. It belongs in the
 // section that carries its name — docs-and-fixtures — and not in the PRIMARY list an agent reads as
 // its set of candidate fix sites, where it also anchors related-site expansion on a neighbourhood

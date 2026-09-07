@@ -594,6 +594,13 @@ func searchReferenceDeclaration(result SearchResult) bool {
 		if strings.ContainsRune(body, '{') {
 			return false
 		}
+		// TypeScript function and method declarations require a block body. Its braceless
+		// implementations are assigned arrows; an arrow in a return type is not a body.
+		// Check for an initializer outside parameters and type arguments so defaults such as
+		// `<T = string>` cannot turn a bodyless signature into an implementation.
+		if result.Language == "TypeScript" {
+			return strings.TrimSpace(body) != "" && !searchTypeScriptCallableInitializer(body)
+		}
 		// An EXPRESSION BODY opens no block and is still an implementation. Kotlin and Scala write
 		// `fun f() = expr`, C# and Java write `T F() => expr`, and both are exactly the executable
 		// code a behavioural fix edits. Multiplying them by the reference-declaration prior can push
@@ -603,6 +610,53 @@ func searchReferenceDeclaration(result SearchResult) bool {
 			return false
 		}
 		return strings.TrimSpace(body) != ""
+	}
+	return false
+}
+
+func searchTypeScriptCallableInitializer(body string) bool {
+	parens, brackets, angles := 0, 0, 0
+	var quote byte
+	for index := 0; index < len(body); index++ {
+		ch := body[index]
+		if quote != 0 {
+			if ch == '\\' {
+				index++
+			} else if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			quote = ch
+		case '(':
+			parens++
+		case ')':
+			parens = maxInt(0, parens-1)
+		case '[':
+			brackets++
+		case ']':
+			brackets = maxInt(0, brackets-1)
+		case '<':
+			angles++
+		case '>':
+			// A function-type arrow does not close its enclosing generic type.
+			if index == 0 || body[index-1] != '=' {
+				angles = maxInt(0, angles-1)
+			}
+		case '=':
+			if parens != 0 || brackets != 0 || angles != 0 {
+				continue
+			}
+			if index > 0 && strings.ContainsRune("=!<>", rune(body[index-1])) {
+				continue
+			}
+			if index+1 < len(body) && (body[index+1] == '=' || body[index+1] == '>') {
+				continue
+			}
+			return true
+		}
 	}
 	return false
 }
