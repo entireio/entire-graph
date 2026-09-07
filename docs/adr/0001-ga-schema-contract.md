@@ -7,7 +7,7 @@ Date: 2026-07-03
 
 `entire-graph` emits a semantic index consumed by downstream tools (notably
 `entire-brain`). The wire format carries `schema_version` in `major.minor` form.
-The provider currently advertises **`1.1`** (`internal/sem/provider.go`
+The provider currently advertises **`1.2`** (`internal/sem/provider.go`
 `SchemaVersion`), where the `1.1` minor adds *optional, additive* relation fields
 that tolerant readers ignore. A compatibility policy already exists in the
 [semantic provider requirements](../semantic-provider-requirements.md), but it
@@ -19,7 +19,7 @@ against it and so future changes have clear, non-breaking rules.
 
 ## Decision
 
-**GA ships on schema `1.x`, with `1.1` as the current minor. `1.x` is the frozen,
+**GA ships on schema `1.x`, with `1.2` as the current minor. `1.x` is the frozen,
 stable GA contract.** We do NOT roll back to `1.0`; `1.1` is strictly additive
 over `1.0` and every `1.0` reader already tolerates it.
 
@@ -105,7 +105,10 @@ same schema-version decision.
 ### Parser identity corrections and consumer upgrades
 
 `identity_revision` is an additive, opaque field on the snapshot header and on
-`graph version --json`. It identifies parser rules that affect existing symbol
+`graph version --json`, and the persisted diff/checkpoint Result payload.
+Schema `1.2` adds this optional field to the `1.1` contract; its presence does
+not change the stable-ID format or require a major bump. It identifies parser
+rules that affect existing symbol
 IDs or entity-history keys; it does not replace `schema_version` or
 `stable_id_version`. Its absence means legacy parser rules. Consumers comparing
 stored and current revisions must treat inequality (including missing/present)

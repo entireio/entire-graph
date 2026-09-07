@@ -33,11 +33,12 @@ import (
 )
 
 const (
-	// SchemaVersion is bumped to 1.1 for the additive snapshot fields introduced
+	// SchemaVersion is bumped to 1.2 for optional parser identity metadata.
+	// Schema 1.1 added the snapshot fields introduced
 	// alongside boundary source locations (the `external` flag on external records
 	// and the per-symbol source-location fields). The shape is backward compatible
 	// for tolerant readers; the bump lets consumers detect the new fields.
-	SchemaVersion         = "1.1"
+	SchemaVersion         = "1.2"
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
 	// IdentityRevision changes when parser corrections re-key existing symbols.
