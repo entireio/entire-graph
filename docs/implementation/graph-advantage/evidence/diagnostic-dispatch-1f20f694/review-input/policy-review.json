@@ -1,0 +1,316 @@
+{
+  "admission_eligible": false,
+  "admission_note": "This artifact classifies intentional policy exclusions and the worktree provenance warning only. It does not relabel the observation, adopt reviewed_partial, or review any E_PARSE_ERROR record.",
+  "provenance": {
+    "approved_corpus_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+    "approved_local_corpus_commit": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
+    "approved_local_corpus_root": "<P1_CORPUS_ROOT>/kubernetes-kubernetes",
+    "diagnostics_artifact": "raw/output/diagnostics.json",
+    "diagnostics_artifact_sha256": "79be6d6d2c2fafa495e9306fe93e4f67b8486d4b5af37f2aea2ceefe69ae038c",
+    "ordered_packet": "review-input/ordered-partials-v1.json",
+    "ordered_packet_sha256": "610e298c5c882356b363974c2fdb75392de7659b0cc99b75ef16e7bd82474f3e",
+    "review_source_policy": "repository implementation and tests in the checked-out Entire Graph source; no timing, RSS, process, or comparative fields were consumed",
+    "source_inventory": "review-input/source-inventory.json",
+    "source_inventory_sha256": "da9b7d4ae88f049d3f9353d5216957d3085a034c3c85c3fd95ab551a584fe8f7"
+  },
+  "records": [
+    {
+      "admission_eligible": false,
+      "admission_note": "Reviewed as an intentional policy exclusion only; this does not convert the partial observation into a complete or adopted reviewed_partial result.",
+      "classification": "valid_policy_exclusion",
+      "classification_basis": [
+        "The packet detail reports the same byte count as the approved local source.",
+        "The source is 4475944 bytes, above the pinned 4194304-byte parser input limit.",
+        "The implementation records the file and intentionally skips parser work for this condition."
+      ],
+      "code": "E_FILE_TOO_LARGE",
+      "file_path": "api/openapi-spec/swagger.json",
+      "original_index": 0,
+      "policy": {
+        "content_parser_action": "file record retained; symbol parsing skipped",
+        "max_parser_input_bytes": 4194304,
+        "name": "max_parser_input_bytes",
+        "observed_bytes_above_limit": 281640
+      },
+      "record_detail": "file is 4475944 bytes, above max parser input 4194304 bytes; content was never held in memory",
+      "record_effect": "file record emitted but symbol parsing skipped",
+      "severity": "warning",
+      "source_citations": [
+        "internal/sem/provider_parallel.go:192-202 (size cap emits file record plus E_FILE_TOO_LARGE and skips parsing)",
+        "internal/sem/provider.go:27452-27460 (E_FILE_TOO_LARGE is an intentional skip)",
+        "internal/sem/completeness_test.go:9-25 (intentional size skips do not count as completeness failures)"
+      ],
+      "source_sha256": "08a88d5d5fd9dcd1f93a77286f1d3ac8e471caca158284f511e75500a97a4de7",
+      "source_size_bytes": 4475944
+    },
+    {
+      "admission_eligible": false,
+      "admission_note": "Reviewed as an intentional policy exclusion only; this does not convert the partial observation into a complete or adopted reviewed_partial result.",
+      "classification": "valid_policy_exclusion",
+      "classification_basis": [
+        "The packet detail reports the same byte count as the approved local source.",
+        "The source is 4707204 bytes, above the pinned 4194304-byte parser input limit.",
+        "The implementation records the file and intentionally skips parser work for this condition."
+      ],
+      "code": "E_FILE_TOO_LARGE",
+      "file_path": "staging/src/k8s.io/cli-runtime/artifacts/openapi/swagger.json",
+      "original_index": 90,
+      "policy": {
+        "content_parser_action": "file record retained; symbol parsing skipped",
+        "max_parser_input_bytes": 4194304,
+        "name": "max_parser_input_bytes",
+        "observed_bytes_above_limit": 512900
+      },
+      "record_detail": "file is 4707204 bytes, above max parser input 4194304 bytes; content was never held in memory",
+      "record_effect": "file record emitted but symbol parsing skipped",
+      "severity": "warning",
+      "source_citations": [
+        "internal/sem/provider_parallel.go:192-202 (size cap emits file record plus E_FILE_TOO_LARGE and skips parsing)",
+        "internal/sem/provider.go:27452-27460 (E_FILE_TOO_LARGE is an intentional skip)",
+        "internal/sem/completeness_test.go:9-25 (intentional size skips do not count as completeness failures)"
+      ],
+      "source_sha256": "dee95c3360db5f065718077cf7371dda307c2e0416769828252506b700d211fc",
+      "source_size_bytes": 4707204
+    },
+    {
+      "admission_eligible": false,
+      "admission_note": "Reviewed as an intentional policy exclusion only; this does not convert the partial observation into a complete or adopted reviewed_partial result.",
+      "classification": "valid_policy_exclusion",
+      "classification_basis": [
+        "The approved local source has a maximum line of 298681 bytes.",
+        "298681 of 298682 bytes (0.999997) are on lines over 5,000 bytes, exceeding the 0.70 policy threshold.",
+        "The implementation records the file and intentionally skips parser work for this condition."
+      ],
+      "code": "E_MINIFIED",
+      "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1.json",
+      "original_index": 91,
+      "policy": {
+        "content_parser_action": "file record retained; symbol parsing skipped",
+        "max_line_bytes": 298681,
+        "max_minified_line_bytes_exclusive": 5000,
+        "minimum_overlong_byte_fraction": 0.7,
+        "name": "minified_or_bundled_source_heuristic",
+        "overlong_byte_fraction": 0.9999966519576003,
+        "overlong_line_bytes": 298681
+      },
+      "record_detail": "file appears minified/bundled (very long lines); not analyzed as source",
+      "record_effect": "file record emitted but symbol parsing skipped",
+      "severity": "warning",
+      "source_citations": [
+        "internal/sem/provider_parallel.go:204-214 (minified heuristic emits file record plus E_MINIFIED and skips parsing)",
+        "internal/sem/similarity.go:185-213 (5,000-byte line and 0.70 overlong-byte thresholds)",
+        "internal/sem/provider.go:27452-27460 (E_MINIFIED is an intentional skip)",
+        "internal/sem/completeness_test.go:9-25 (intentional minified skips do not count as completeness failures)"
+      ],
+      "source_sha256": "7b9f001f0d1a935e5fd91ffe3c192a4396e1857613f7894177a37d140f6c4bfe",
+      "source_size_bytes": 298682
+    },
+    {
+      "admission_eligible": false,
+      "admission_note": "Reviewed as an intentional policy exclusion only; this does not convert the partial observation into a complete or adopted reviewed_partial result.",
+      "classification": "valid_policy_exclusion",
+      "classification_basis": [
+        "The approved local source has a maximum line of 241441 bytes.",
+        "241441 of 241442 bytes (0.999996) are on lines over 5,000 bytes, exceeding the 0.70 policy threshold.",
+        "The implementation records the file and intentionally skips parser work for this condition."
+      ],
+      "code": "E_MINIFIED",
+      "file_path": "staging/src/k8s.io/client-go/discovery/testdata/apis/batch/v1beta1.json",
+      "original_index": 92,
+      "policy": {
+        "content_parser_action": "file record retained; symbol parsing skipped",
+        "max_line_bytes": 241441,
+        "max_minified_line_bytes_exclusive": 5000,
+        "minimum_overlong_byte_fraction": 0.7,
+        "name": "minified_or_bundled_source_heuristic",
+        "overlong_byte_fraction": 0.999995858218537,
+        "overlong_line_bytes": 241441
+      },
+      "record_detail": "file appears minified/bundled (very long lines); not analyzed as source",
+      "record_effect": "file record emitted but symbol parsing skipped",
+      "severity": "warning",
+      "source_citations": [
+        "internal/sem/provider_parallel.go:204-214 (minified heuristic emits file record plus E_MINIFIED and skips parsing)",
+        "internal/sem/similarity.go:185-213 (5,000-byte line and 0.70 overlong-byte thresholds)",
+        "internal/sem/provider.go:27452-27460 (E_MINIFIED is an intentional skip)",
+        "internal/sem/completeness_test.go:9-25 (intentional minified skips do not count as completeness failures)"
+      ],
+      "source_sha256": "a28dbf04ac31f6e007ff8f4fc8e85f1edcd557d5ba92636c3e4359ad4bba0b95",
+      "source_size_bytes": 241442
+    },
+    {
+      "admission_eligible": false,
+      "admission_note": "Reviewed as an intentional policy exclusion only; this does not convert the partial observation into a complete or adopted reviewed_partial result.",
+      "classification": "valid_policy_exclusion",
+      "classification_basis": [
+        "The packet detail reports the same byte count as the approved local source.",
+        "The source is 5393964 bytes, above the pinned 4194304-byte parser input limit.",
+        "The implementation records the file and intentionally skips parser work for this condition."
+      ],
+      "code": "E_FILE_TOO_LARGE",
+      "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/swagger.json",
+      "original_index": 119,
+      "policy": {
+        "content_parser_action": "file record retained; symbol parsing skipped",
+        "max_parser_input_bytes": 4194304,
+        "name": "max_parser_input_bytes",
+        "observed_bytes_above_limit": 1199660
+      },
+      "record_detail": "file is 5393964 bytes, above max parser input 4194304 bytes; content was never held in memory",
+      "record_effect": "file record emitted but symbol parsing skipped",
+      "severity": "warning",
+      "source_citations": [
+        "internal/sem/provider_parallel.go:192-202 (size cap emits file record plus E_FILE_TOO_LARGE and skips parsing)",
+        "internal/sem/provider.go:27452-27460 (E_FILE_TOO_LARGE is an intentional skip)",
+        "internal/sem/completeness_test.go:9-25 (intentional size skips do not count as completeness failures)"
+      ],
+      "source_sha256": "cd312f10dd741cde6ad4ef67eaa7d678dc5ef6041457e3c07211885de10fd594",
+      "source_size_bytes": 5393964
+    },
+    {
+      "admission_eligible": false,
+      "admission_note": "Reviewed as an intentional policy exclusion only; this does not convert the partial observation into a complete or adopted reviewed_partial result.",
+      "classification": "valid_policy_exclusion",
+      "classification_basis": [
+        "The approved local source has a maximum line of 106466 bytes.",
+        "106466 of 106467 bytes (0.999991) are on lines over 5,000 bytes, exceeding the 0.70 policy threshold.",
+        "The implementation records the file and intentionally skips parser work for this condition."
+      ],
+      "code": "E_MINIFIED",
+      "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v1.json",
+      "original_index": 120,
+      "policy": {
+        "content_parser_action": "file record retained; symbol parsing skipped",
+        "max_line_bytes": 106466,
+        "max_minified_line_bytes_exclusive": 5000,
+        "minimum_overlong_byte_fraction": 0.7,
+        "name": "minified_or_bundled_source_heuristic",
+        "overlong_byte_fraction": 0.9999906074182611,
+        "overlong_line_bytes": 106466
+      },
+      "record_detail": "file appears minified/bundled (very long lines); not analyzed as source",
+      "record_effect": "file record emitted but symbol parsing skipped",
+      "severity": "warning",
+      "source_citations": [
+        "internal/sem/provider_parallel.go:204-214 (minified heuristic emits file record plus E_MINIFIED and skips parsing)",
+        "internal/sem/similarity.go:185-213 (5,000-byte line and 0.70 overlong-byte thresholds)",
+        "internal/sem/provider.go:27452-27460 (E_MINIFIED is an intentional skip)",
+        "internal/sem/completeness_test.go:9-25 (intentional minified skips do not count as completeness failures)"
+      ],
+      "source_sha256": "c5912f36985f3e4b099a1c84ed37f7e54e3367a1af82d4ebb85b6a8d878545dd",
+      "source_size_bytes": 106467
+    },
+    {
+      "admission_eligible": false,
+      "admission_note": "Reviewed as an intentional policy exclusion only; this does not convert the partial observation into a complete or adopted reviewed_partial result.",
+      "classification": "valid_policy_exclusion",
+      "classification_basis": [
+        "The approved local source has a maximum line of 132605 bytes.",
+        "132605 of 132606 bytes (0.999992) are on lines over 5,000 bytes, exceeding the 0.70 policy threshold.",
+        "The implementation records the file and intentionally skips parser work for this condition."
+      ],
+      "code": "E_MINIFIED",
+      "file_path": "staging/src/k8s.io/kubectl/testdata/openapi/v3/apis/autoscaling/v2.json",
+      "original_index": 121,
+      "policy": {
+        "content_parser_action": "file record retained; symbol parsing skipped",
+        "max_line_bytes": 132605,
+        "max_minified_line_bytes_exclusive": 5000,
+        "minimum_overlong_byte_fraction": 0.7,
+        "name": "minified_or_bundled_source_heuristic",
+        "overlong_byte_fraction": 0.9999924588630982,
+        "overlong_line_bytes": 132605
+      },
+      "record_detail": "file appears minified/bundled (very long lines); not analyzed as source",
+      "record_effect": "file record emitted but symbol parsing skipped",
+      "severity": "warning",
+      "source_citations": [
+        "internal/sem/provider_parallel.go:204-214 (minified heuristic emits file record plus E_MINIFIED and skips parsing)",
+        "internal/sem/similarity.go:185-213 (5,000-byte line and 0.70 overlong-byte thresholds)",
+        "internal/sem/provider.go:27452-27460 (E_MINIFIED is an intentional skip)",
+        "internal/sem/completeness_test.go:9-25 (intentional minified skips do not count as completeness failures)"
+      ],
+      "source_sha256": "2c13a19fbb5ca2e37e8ad50d203455930322feee431e6f58c0185e283907f646",
+      "source_size_bytes": 132606
+    },
+    {
+      "admission_eligible": false,
+      "admission_note": "Reviewed as an intentional policy exclusion only; this does not convert the partial observation into a complete or adopted reviewed_partial result.",
+      "classification": "valid_policy_exclusion",
+      "classification_basis": [
+        "The approved local source has a maximum line of 1284159 bytes.",
+        "1284159 of 1290217 bytes (0.995305) are on lines over 5,000 bytes, exceeding the 0.70 policy threshold.",
+        "The implementation records the file and intentionally skips parser work for this condition."
+      ],
+      "code": "E_MINIFIED",
+      "file_path": "vendor/sigs.k8s.io/kustomize/kyaml/openapi/kubernetesapi/v1_21_2/swagger.go",
+      "original_index": 193,
+      "policy": {
+        "content_parser_action": "file record retained; symbol parsing skipped",
+        "max_line_bytes": 1284159,
+        "max_minified_line_bytes_exclusive": 5000,
+        "minimum_overlong_byte_fraction": 0.7,
+        "name": "minified_or_bundled_source_heuristic",
+        "overlong_byte_fraction": 0.9953046658042795,
+        "overlong_line_bytes": 1284159
+      },
+      "record_detail": "file appears minified/bundled (very long lines); not analyzed as source",
+      "record_effect": "file record emitted but symbol parsing skipped",
+      "severity": "warning",
+      "source_citations": [
+        "internal/sem/provider_parallel.go:204-214 (minified heuristic emits file record plus E_MINIFIED and skips parsing)",
+        "internal/sem/similarity.go:185-213 (5,000-byte line and 0.70 overlong-byte thresholds)",
+        "internal/sem/provider.go:27452-27460 (E_MINIFIED is an intentional skip)",
+        "internal/sem/completeness_test.go:9-25 (intentional minified skips do not count as completeness failures)"
+      ],
+      "source_sha256": "cbc9d20b525374bf16cc68dd797cf40b8f742b911394fc8d89881d7c6c255365",
+      "source_size_bytes": 1290217
+    }
+  ],
+  "review_kind": "source_grounded_policy_record_review",
+  "review_version": 1,
+  "scope": {
+    "binary_sha256": "a2f98ef4154ce087068d21368fb7d21e934c5c8327252863746c5a20356bea8f",
+    "cache_mode": "off",
+    "input_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+    "partial_failures_count": 194,
+    "partial_failures_sha256": "846649bc1925c607b91b3f41014408938c37232d0a12d86f71569776b46819ef",
+    "profile": "syntax-only",
+    "repository": "kubernetes-kubernetes",
+    "reuse": false,
+    "reviewed_partial_record_count": 8,
+    "reviewed_warning_record_count": 1,
+    "scenario": "diagnostic",
+    "source_commit": "1f20f694775c3d8fd616eee4b22d9b13c30ff0fe",
+    "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+    "trial": 0,
+    "unreviewed_parse_error_count": 186,
+    "verb": "snapshot",
+    "warnings_count": 1,
+    "warnings_sha256": "e0ce85fefeba137c4e41fcfa3bc5f1d62d461bc1f4fc7eff5587bbd52cf50468"
+  },
+  "status": "reviewed_for_policy_classification_only",
+  "warnings": [
+    {
+      "admission_eligible": false,
+      "admission_note": "Provenance warning retained; it is not a file exclusion and does not authorize adoption of this partial observation.",
+      "classification": "valid_policy_warning",
+      "classification_basis": [
+        "The emitted warning exactly matches the provider worktree provenance branch and its documented effect.",
+        "The diagnostic is a snapshot packet whose retained record identifies the source tree and source digest; this warning describes provenance rather than parser coverage.",
+        "The dispatch packet does not separately preserve the invocation flag, so this warning is retained as evidence and is not used to claim completeness or admission."
+      ],
+      "code": "W_WORKTREE_SNAPSHOT",
+      "file_path": null,
+      "original_index": 0,
+      "record_effect": "snapshot records are read from the working tree because --worktree was requested",
+      "severity": "warning",
+      "source_citations": [
+        "internal/sem/provider.go:1845-1850 (worktree option emits the provenance warning)",
+        "internal/cli/completeness.go:54-58 (warning is provenance, not a parse failure)",
+        "internal/sem/search_cache_worktree_test.go:138-139 (worktree rebuild retains the warning)"
+      ],
+      "source_sha256": null
+    }
+  ]
+}
