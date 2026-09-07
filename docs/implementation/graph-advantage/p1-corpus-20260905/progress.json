@@ -278,7 +278,24 @@
   },
   "resumption_policy": "resumption-plan-20260907.md: at most100 total product invocations per sampled batch; review/fix between batches; initial stability target three consecutive clean batches with coverage",
   "full_campaign_approval": "required from user; NOT GRANTED",
-  "sampling_controls": "planned; hard global batch cap and approval-bound full launcher must be implemented before use",
+  "sampling_controls": {
+    "status": "implemented_and_synthetic_verified",
+    "commit": "58f03a22e09b036245846630c86abb44cccf4aed",
+    "batch_cap": 100,
+    "full_campaign": "hard-disabled; explicit user approval is still required and none is granted",
+    "scope": "selected manifests, derived preparation plus arm costs, durable worker claims, first-issue stop",
+    "evidence": "evidence/bounded-controls-58f03a22/verification.json",
+    "product_or_vm_execution": false
+  },
+  "current_controller_verification": {
+    "commit": "58f03a22e09b036245846630c86abb44cccf4aed",
+    "tests": 90,
+    "elapsed_seconds": 7.985225,
+    "exit_code": 0,
+    "synthetic_only": true,
+    "product_or_vm_execution": false,
+    "scope": "controller and existing focused Python contracts; no diagnostic, sampling or release-gate result"
+  },
   "current_immutable_verification": {
     "source_commit": "1f20f694775c3d8fd616eee4b22d9b13c30ff0fe",
     "command": "mise run check",

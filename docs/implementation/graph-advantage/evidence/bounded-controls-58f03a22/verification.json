@@ -1,0 +1,10 @@
+{
+  "commit": "58f03a22e09b036245846630c86abb44cccf4aed",
+  "corpus_measurement": false,
+  "elapsed_ns": 7985225000,
+  "exit_code": 0,
+  "product_or_vm_execution": false,
+  "stderr_sha256": "ea0c6b7d5062f1241daa3ef8a6cf886b644943121eb6d4513d69b36627ff9d38",
+  "stdout_sha256": "1bb9a4769fea2e68466758d1e87d9260b8ccca532d03f3d57dc7cc3079f85df4",
+  "synthetic_only": true
+}
