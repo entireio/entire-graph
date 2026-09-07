@@ -14,7 +14,7 @@ dispatch, first-issue stop, and approval-boundary controls are implemented at
 `58f03a22`; see `resumption-plan-20260907.md`. The user has resumed the
 revised controlled sequence; no campaign is currently running.
 
-**Current bounded-resumption status:** the user’s resume authorizes controlled diagnostics, fixes and sampled batches once the documented prerequisites and controls pass. The resumed sequence has consumed three controlled product invocations: the completed cache-off Kubernetes syntax-only snapshot in `diagnostic-dispatch-1f20f694`, the full-profile Kubernetes snapshot timeout in `diagnostic-dispatch-12574522-r2`, and the independently identified cache-off full-profile snapshot in `diagnostic-dispatch-90ac3e16`. The latest attempted request also timed out at 120 seconds (`process=-9`, `collector=1`) with no observation or diagnostics, while retaining a complete diagnostic-only 20-second relations CPU profile. Its input and control identities remained unchanged, and the validation VM was deallocated. A separate earlier full-profile dispatch failed in the collector before product startup (`reserved=1`, `consumed=0`, `transport_attempts=1`). None is a stability batch or campaign result. No stability batch has run, and both product timeouts remain unresolved. Offline analysis of the retained `90ac3e16` profile identified unconditional Go route-regex scans as a CPU hotspot, and source `450bede9970e05c994d80986cf105dd068e9fc29` adds a route-candidate prefilter. Its pinned Linux evidence passed 28 compiler tests including 10 live tests with zero compiler skips or failures, the focused route normal/race and profiler checks passed, and the evaluator build produced binary SHA-256 `b4d7e1a5ef72d4e09d045e562ce08cb38ff63a9c3912aef0e002bc70bb5f0674`; evidence was committed at `6e050656` under `evidence/diagnostics-linux-450bede9/`. These are correctness and build results only: no speedup or timeout resolution is established. A new diagnostic at `450bede9` is prepared but has not run, so the resumed invocation total remains three. No full campaign is approved.
+**Current bounded-resumption status:** the user’s resume authorizes controlled diagnostics, fixes and sampled batches once the documented prerequisites and controls pass. The resumed sequence has consumed four controlled product invocations: the completed cache-off Kubernetes syntax-only snapshot in `diagnostic-dispatch-1f20f694` and three full-profile Kubernetes snapshot timeouts in `diagnostic-dispatch-12574522-r2`, `diagnostic-dispatch-90ac3e16`, and `diagnostic-dispatch-450bede9`. The latest post-prefilter request also timed out at 120 seconds (`process=-9`, `collector=1`) with no observation or diagnostics, while retaining a complete diagnostic-only 20-second relations CPU profile. Its input and control identities remained unchanged, and the validation VM was deallocated. A separate earlier full-profile dispatch failed in the collector before product startup (`reserved=1`, `consumed=0`, `transport_attempts=1`). None is a stability batch or campaign result. No stability batch has run, and all three product timeouts remain unresolved. Offline analysis of the retained `90ac3e16` profile identified unconditional Go route-regex scans as a CPU hotspot, and source `450bede9970e05c994d80986cf105dd068e9fc29` adds a route-candidate prefilter. Its pinned Linux evidence passed 28 compiler tests including 10 live tests with zero compiler skips or failures, the focused route normal/race and profiler checks passed, and the evaluator build produced binary SHA-256 `b4d7e1a5ef72d4e09d045e562ce08cb38ff63a9c3912aef0e002bc70bb5f0674`; evidence was committed at `6e050656` under `evidence/diagnostics-linux-450bede9/`. These are correctness and build results only. The first guard did not resolve the timeout, offline analysis of the post-fix profile is pending, and no stability, release or performance claim follows. No full campaign is approved.
 
 **Mandatory model routing, 2026-09-07:** all substantive implementation,
 diagnosis, source/data inspection, fixture or harness work, execution/testing,
@@ -69,15 +69,17 @@ The three retained query profile paths are verified at `1c0b8e24`: syntax-only, 
 The P1 campaign remains paused. Baseline counts remain 108 requests (69
 complete, 33 partial, 6 timeouts); this is a collected but incomplete baseline,
 not a completed release baseline. Campaign counts remain 116 observed requests
-plus explicit unrun accounting. The resumed sequence has consumed three
+plus explicit unrun accounting. The resumed sequence has consumed four
 controlled diagnostic product invocations, recorded separately from campaign
-and stability-batch counts: the earlier completed syntax-only snapshot and two
+and stability-batch counts: the earlier completed syntax-only snapshot and three
 full-profile timeouts at `diagnostic-dispatch-12574522-r2` and
-`diagnostic-dispatch-90ac3e16` (each with a 120-second bound, process exit
-`-9`, collector exit `1`, and no observation or diagnostics). The new
-diagnostic retained a complete 20-second relations CPU profile with unchanged
+`diagnostic-dispatch-90ac3e16`, plus the post-prefilter
+`diagnostic-dispatch-450bede9` (each with a 120-second bound, process exit
+`-9`, collector exit `1`, and no observation or diagnostics). Both profiled
+diagnostics retained complete 20-second relations CPU profiles with unchanged
 before/after corpus identity and zero control-identity mismatches; offline
-analysis is pending and no cause or fix is claimed. The
+analysis of the post-fix profile is pending. The first route prefilter did not
+resolve the timeout, and no further cause or fix is claimed. The
 earlier pre-product collector failure remains a separate transport attempt
 with zero consumed product invocations. The r2 input identities matched and
 the VM was deallocated; its first recorded relations progress event reported
@@ -93,12 +95,12 @@ unchanged inputs. OFF 57.769s / ON 62.614s (ratio 1.084) and peak RSS
 3,312,332,800 / 3,167,264,768 bytes (ratio 0.956) were within both 1.10
 screens. This single pair is not statistical, causal or release evidence; the
 previous failed RSS screen remains retained. Remaining baseline timeouts,
-partial admission and the two unresolved diagnostic timeouts still prevent campaign
+partial admission and the three unresolved diagnostic timeouts still prevent campaign
 expansion. Evidence: `p1-corpus-20260905/retained-snapshot-6cf92c9c/summary.json`
 and `evidence/diagnostic-dispatch-1f20f694/`. No stability batch has run, and
 the retained CPU profile does not establish a stability or performance gate.
 
-The bounded execution controls are implemented at `58f03a22`: selected manifests are capped at 100 derived product invocations, preparation and arm costs are reserved before spawn, worker claims are durable and path-stable, duplicate/retry dispatch is refused, and the first issue stops the batch. The committed controller and focused Python contracts passed 90 synthetic-only tests in 7.985225 seconds; evidence and source hashes are in `evidence/bounded-controls-58f03a22/`. The three controlled product invocations did not close partial admission, timeout or performance gates, and no release gate passed.
+The bounded execution controls are implemented at `58f03a22`: selected manifests are capped at 100 derived product invocations, preparation and arm costs are reserved before spawn, worker claims are durable and path-stable, duplicate/retry dispatch is refused, and the first issue stops the batch. The committed controller and focused Python contracts passed 90 synthetic-only tests in 7.985225 seconds; evidence and source hashes are in `evidence/bounded-controls-58f03a22/`. The four controlled product invocations did not close partial admission, timeout or performance gates, and no release gate passed.
 
 All 77 campaign-control tests passed; a live fake-service smoke verified that all three active workers stopped after an injected pause. The validation VM is confirmed deallocated after correctness and corrective evidence collection; the two campaign workers remain deallocated. No campaign is running. P2/P3/P4 comparative studies remain deferred, and no complete workstream release gate has passed. Defaults remain extraction reuse off, compiler off, impact depth two and current ranking.
 

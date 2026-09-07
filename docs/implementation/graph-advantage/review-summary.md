@@ -67,8 +67,8 @@ The bounded Kubernetes syntax-only diagnostic separately collected 194
 known partials and one warning. All 194 entries have been classified in the
 source-review packet, but that classification does not close parser defects,
 verify every current file, or adopt proposed ADR0049 reviewed-partial
-admission. The resumed sequence has consumed three controlled product
-invocations: that completed syntax-only diagnostic and the two full-profile
+admission. The resumed sequence has consumed four controlled product
+invocations: that completed syntax-only diagnostic and the three full-profile
 timeouts described below. Zero stability batches have run. The first full-profile OFF dispatch attempted
 transport once but failed before product startup because the packaged collector
 still contained placeholder constants (`consumed=0`, `reserved=1`); it is
@@ -99,9 +99,17 @@ The built binary SHA-256 is
 `b4d7e1a5ef72d4e09d045e562ce08cb38ff63a9c3912aef0e002bc70bb5f0674`,
 and evidence was committed at `6e050656` under
 `evidence/diagnostics-linux-450bede9/`. This establishes correctness and build
-status only; it does not establish a speedup or resolve either timeout. A new
-diagnostic at `450bede9` is pending and has not run, so the resumed invocation
-total remains three.
+status only; it does not establish a speedup or resolve either timeout. The
+post-prefilter `diagnostic-dispatch-450bede9` then consumed exactly one
+cache-off full-profile snapshot invocation and also timed out at 120 seconds
+(`process=-9`, `collector=1`) with no observation or diagnostics. It retained
+a complete diagnostic-only 20-second relations CPU profile, SHA-256
+`8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6`,
+with unchanged before/after corpus identity and zero control-identity
+mismatches; the VM is deallocated. The first route prefilter did not resolve
+the timeout. Offline analysis of the post-fix profile is pending, and no
+stability, release or performance claim follows. The resumed invocation total
+is four.
 
 The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
 6 timeouts. It is therefore collected but incomplete. The campaign remains
@@ -147,9 +155,9 @@ policy, the shared 100-invocation cap, durable duplicate/retry prevention and
 first-issue stop. Three clean representative batches are a checkpoint for
 stability only, not a release gate.
 
-The pending `450bede9` diagnostic has not run. The existing timeouts remain
-failed diagnostics, no speedup or timeout-resolution claim exists, and no new
-product invocation or full campaign is authorized by the correctness evidence.
+The existing timeouts remain failed diagnostics. Offline analysis of the
+post-fix profile is pending, no further fix or timeout-resolution claim exists,
+and no new product invocation or full campaign is authorized by this evidence.
 
 P2 and P3 still require independent adjudication of required, allowed and
 forbidden targets with explicit partial/unavailable coverage. P4 requires a
