@@ -1,0 +1,8 @@
+{
+  "batch_manifest_sha256": "2b0cc11fedd4ac01c3b1a926735e3792b475d3326b1e554abedfbe8aee753b0d",
+  "control_archive_sha256": "ed72e7efba0c7250572eb604606d8e801892ddc42aadbba466802e91e871b32d",
+  "dispatch_id": "p1-diag-90ac3e16-k8s-relations-cpu-off-01",
+  "profile": "full",
+  "source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+  "state": "claimed_before_cloud_upload"
+}
