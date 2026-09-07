@@ -1,0 +1,45 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "dd5bd16007b2",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/README.md",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/all-vms-terminal.json",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/after-identity.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/after-tracked-manifest-r1.tsv",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/before-identity.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/before-tracked-manifest-r1.tsv",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/input-identity.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/manifest-count.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/mise-test-statusline.raw.log",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/overall.exit.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/safe-environment.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/task.exit.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/timing.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/toolchain.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/result-blob-exists-before.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/result-blob-exists.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/results.tar.gz",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/review/controller-template.sh",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/review/home-unset-local-proof.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/review/local-stub-proof.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/review/local-stub-test.sh",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/review/prelaunch-sha256.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/review/remote-template.sh",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/review/remote-vs-successful-full-r1.diff",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/transport.exit.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/transport.json",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/transport.stderr.txt",
+    "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/vm-terminal.json",
+    "scripts/entire-graph-statusline.sh",
+    "scripts/entire-graph-statusline_test.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/dd/5bd16007b2/0/metadata.json",
+      "prompt": ""
+    }
+  ]
+}
