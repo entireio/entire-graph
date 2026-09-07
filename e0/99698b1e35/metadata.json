@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "e099698b1e35",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/raw/binary-build-info.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/raw/binary.sha256",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/raw/check.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/raw/environment.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/raw/exit.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/results.tar.gz",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/setup-note.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/transport.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e0/99698b1e35/0/metadata.json",
+      "transcript": "/e0/99698b1e35/0/full.jsonl",
+      "compact_transcript": "/e0/99698b1e35/0/transcript.jsonl",
+      "content_hash": "/e0/99698b1e35/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4087,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 354176,
+    "output_tokens": 467,
+    "api_call_count": 5
+  }
+}
