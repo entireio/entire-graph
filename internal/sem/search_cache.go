@@ -26,7 +26,7 @@ import (
 // retires the flat selective entries written before a derived snapshot was
 // nested beneath the complete entry it came from, which would otherwise sit
 // unreachable inside a live version directory and defeat that cleanup rule.
-const searchSnapshotCacheVersion = "search-snapshot-v15"
+const searchSnapshotCacheVersion = "search-snapshot-v15-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`

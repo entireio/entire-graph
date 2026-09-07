@@ -556,6 +556,10 @@ type searchCandidate struct {
 	score             float64
 	constraintSurface *searchConstraintSurface
 	prosePassagePlan  []SearchPassage
+	// proseSection identifies the headed section of a prose document this region falls in. Set by
+	// attachProseSectionUnits; it is what makes the prose unit of retrieval the SECTION rather than
+	// the file. Empty for code, and for prose whose file has no indexed symbols.
+	proseSection string
 }
 
 type searchContentReadTracker struct {
@@ -1119,6 +1123,10 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	applySearchBoilerplatePrior(candidates, q)
 	sortSearchCandidates(candidates)
 	candidates = collapseNearDuplicateCandidates(candidates)
+	// The prose unit of retrieval is the SECTION, and which section a region belongs to is decided
+	// from the document's headings — not from whether the region happens to carry a symbol of its
+	// own, which is true only for regions that matched a heading LINE. See attachProseSectionUnits.
+	attachProseSectionUnits(candidates, symbolsByFile)
 	semantic := selectSearchCandidates(candidates, q, options.TopK, options.MaxRegionsPerFile, !options.DocumentResolution)
 	selected := semantic
 	if len(sparseCandidates) > 0 {
@@ -1161,6 +1169,12 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// enclosure planner and the VERIFY deriver all see one consistent order.
 	// See search_testrank.go.
 	selected = promoteFixSiteOverLeadingTest(selected, q)
+	// Passage deduplication runs HERE, on the final selection, and not inside selectSearchCandidates
+	// which only produced the semantic half of it: hybrid fusion replaces and reorders rows, so a
+	// plan deduplicated against the pre-fusion selection loses passages whose claimant fusion
+	// dropped and keeps passages that duplicate a sparse row fusion seated. See
+	// dropSelectedProsePassages.
+	selected = dropSelectedProsePassages(selected)
 	results := make([]SearchResult, 0, len(selected))
 	prosePassagePlans := make(map[int][]SearchPassage)
 	for i := range selected {
@@ -1179,6 +1193,17 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// the enclosure planner looks for a callable at the code line rather than in the prose above it,
 	// and the literal block mines program text. Ranking is untouched — see search_reanchor.go.
 	results, stats.DocReanchored = reanchorSearchDocComments(results, symbolsByFile, read, options.MaxSnippetLines)
+	// SECTION LABELS ARE PRICED WITH THE RANKING, not after it. `"section":"docs-and-fixtures"` is
+	// ~28 bytes on every result it touches, and the authoritative pass below runs after the fitter
+	// and the allocator have already spent the ceiling — so on a prose-heavy payload those bytes
+	// landed OUTSIDE the budget and SearchResponse.Validate rejected the whole response with
+	// `search result context exceeds byte budget`, failing the command for a caller who had asked
+	// for a smaller answer. Measured: a 6-document notes corpus at --max-context-bytes 6000 came
+	// back 6170 bytes with --document-resolution.
+	//
+	// Labelling here charges them to the fitter. The pass is idempotent, so the call below still
+	// decides the final labels, and the all-docs fallback, on the payload that is going out.
+	results = assignSearchSections(results, q)
 	ranked := append([]SearchResult(nil), results...)
 	results, resultBytes, dropped, _ := fitSearchResultsToBudget(results, q, options.MaxContextBytes)
 	// The fitter decides HOW MANY results fit; the allocator decides how the bytes they are
@@ -1234,10 +1259,13 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	tailSnippetLines := minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines)
 	seated := results
+	// bodyHeadRanks narrows the BODY head only; the never-demoted head stays at
+	// searchEnclosureHeadRanks. Passing one value for both is what made --body-head-ranks=2
+	// tersify ranks 3-5 as well, contradicting the paragraph above.
 	results, completeSymbols, locators := allocateSearchSnippets(
 		seated, enclosures, plainEnclosures, options.MaxContextBytes,
 		resolvedSearchSnippetGrowth(seated, options.MaxContextBytes),
-		bodyHeadRanks, tailSnippetLines,
+		bodyHeadRanks, searchEnclosureHeadRanks, tailSnippetLines,
 	)
 	// THE RE-ANCHOR FUNDING INVARIANT, the same one seatForcedSearchUnits enforces for forced units: a
 	// body a hit gained only because it was re-anchored may be paid for out of free budget, never out of
@@ -1256,7 +1284,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if control, exempt, gated := unreanchoredSearchEnclosures(seated, enclosures); gated {
 		plan, bodies, demoted := allocateSearchSnippets(
 			seated, control, plainEnclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
-			bodyHeadRanks, tailSnippetLines,
+			bodyHeadRanks, searchEnclosureHeadRanks, tailSnippetLines,
 		)
 		if !searchAllocationPreservesSource(plan, results, exempt) {
 			results, completeSymbols, locators = plan, bodies, demoted
@@ -1421,14 +1449,15 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// Compose here, in the emitted string, rather than asking the agent to compose. `explain`
 		// passes the build output through before appending declarations, so this stays a superset of
 		// what the bare command printed — the agent loses nothing by running the longer line.
-		suffix := " 2>&1 | " + options.VerifyExplainCommand
-		verifyCommand.Command += suffix
-		// The suffix is caller-configured FIXED overhead, not content the ranking produced, so it is
+		composed, overhead := composeSearchVerifyExplain(
+			verifyCommand.Command, options.VerifyExplainCommand)
+		verifyCommand.Command = composed
+		// The wrapper is caller-configured FIXED overhead, not content the ranking produced, so it is
 		// added to the block's allowance rather than charged against it. Without this the composed
 		// command overflows the 320-byte cap and search_blocks fails the whole response — measured:
 		// "search verify command exceeds its allowance: 373 > 320", which returned ZERO-BYTE payloads
 		// on 7 of 17 sessions before it was caught.
-		stats.VerifyExplainSuffixBytes = len(suffix)
+		stats.VerifyExplainSuffixBytes = overhead
 	}
 	if verifyCommand != nil {
 		stats.VerifyCommandBytes = searchVerifyCommandCost(verifyCommand)
@@ -1464,7 +1493,13 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// are handed back to the expansion and spent on regions the payload does not already show.
 	results = dropContainedProseResults(results)
 	if !options.SingleResolution {
-		results = expandProseResolution(results, options.TopK, options.MaxContextBytes)
+		// The reference blocks are funded from the same ceiling the response is validated against,
+		// and they were priced before this pass runs, so promotion may only spend what they left.
+		reserved := stats.SignatureTypeBytes
+		if len(typeCard) > 0 {
+			reserved += serializedSearchResultBytes(typeCard)
+		}
+		results = expandProseResolution(results, options.TopK, options.MaxContextBytes, reserved)
 	}
 	stats.CandidatesSelected = len(results)
 	stats.ProsePassages, stats.ProsePassageBytes = searchPassageStats(results)
