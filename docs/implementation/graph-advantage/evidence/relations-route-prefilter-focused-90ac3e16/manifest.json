@@ -1,0 +1,14 @@
+{
+  "baseline_source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+  "working_head": "46e126bbde74b4a1b37e090a15fbab0771f2ea42",
+  "fixture_origin": "Current timeout profile identified unconditional Go HTTP route scans; fixtures enumerate every registration spelling accepted by the exact 90ac3e16 regexes and retain existing route integration fixtures.",
+  "scope": "Behavior-preserving relation-layer prefilter; no parser/extraction ABI, serialized schema, symbol ID, or relation construction change.",
+  "source_sha256": {
+    "internal/sem/provider.go": "a31518a88403d495662836b735145a0a97fc60aa346cd44e4501c19d03056f3a",
+    "internal/sem/provider_go_http_route_prefilter_test.go": "c3c54028e8ebe9cd710da5f00cde30abc6f665951e0d40a2be2c8d2f4096e4af"
+  },
+  "logs_sha256": {
+    "normal.log": "c650aeed0c5fa955f691a8c81be4b18bfcafc12602e97887b7fb04d73e7830cf",
+    "race.log": "ff79d1d834dda8d9f6cf473187adf7910fa4bcebc879acb6d276c1f152458566"
+  }
+}

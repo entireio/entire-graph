@@ -23676,6 +23676,9 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		if !ok {
 			continue
 		}
+		if !goHTTPRouteCandidate(content) {
+			continue
+		}
 		handlers := map[string]SymbolRecord{}
 		for _, symbol := range recordsByFile[file.Path] {
 			if typeLikeKind(symbol.Kind) {
@@ -23732,6 +23735,19 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		return relations[i].Handler.ID < relations[j].Handler.ID
 	})
 	return relations
+}
+
+func goHTTPRouteCandidate(content string) bool {
+	for _, token := range []string{
+		"HandleFunc", "Handle", ".Group",
+		".GET", ".POST", ".PUT", ".PATCH", ".DELETE", ".HEAD", ".OPTIONS",
+		".Get", ".Post", ".Put", ".Patch", ".Delete", ".Head", ".Options",
+	} {
+		if strings.Contains(content, token) {
+			return true
+		}
+	}
+	return false
 }
 
 var goHTTPRouteRegistrationsGroupRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)`)
