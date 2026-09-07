@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -32,6 +33,9 @@ const (
 	extractionCorpusOperationEnv    = "ENTIRE_GRAPH_EXTRACTION_CORPUS_OPERATION"
 	extractionCorpusOutputEnv       = "ENTIRE_GRAPH_EXTRACTION_CORPUS_OUTPUT"
 	extractionCorpusOutputFormatEnv = "ENTIRE_GRAPH_EXTRACTION_CORPUS_OUTPUT_FORMAT"
+	// Phase breadcrumbs are opt-in diagnostic I/O to the already captured
+	// process stderr stream. They are never part of the observation protocol.
+	extractionCorpusPhaseBreadcrumbsEnv = "ENTIRE_GRAPH_EXTRACTION_CORPUS_PHASE_BREADCRUMBS"
 
 	// These aliases make the harness convenient to invoke from a coordinator
 	// that already uses the shorter P1 names. The long names above are the
@@ -94,6 +98,201 @@ type extractionCorpusEvaluationConfig struct {
 	OutputPath      string
 	OutputFormat    string
 	DiagnosticsPath string
+}
+
+const (
+	extractionCorpusPhaseBreadcrumbMaxEvents = 64
+	extractionCorpusPhaseBreadcrumbMaxBytes  = 4 << 10
+	extractionCorpusPhaseBreadcrumbMaxText   = 256
+	// Keep enough event and byte budget for the terminal API, serialization and
+	// artifact markers even if a source emits many phase transitions.
+	extractionCorpusPhaseBreadcrumbTailEvents = 16
+	extractionCorpusPhaseBreadcrumbTailBytes  = 1536
+)
+
+// extractionCorpusPhaseBreadcrumb is deliberately separate from the measured
+// observation. It is a small, opt-in timeout aid: the coordinator can tell
+// whether a child reached extraction progress, returned from the API, or was
+// killed during serialization/artifact output without changing product APIs or
+// adding timing fields to the result. MaxRSSBytes is intentionally absent;
+// process RSS remains an external observation.
+type extractionCorpusPhaseBreadcrumb struct {
+	Seq            int    `json:"seq"`
+	Event          string `json:"event"`
+	ElapsedNS      int64  `json:"elapsed_ns"`
+	Phase          string `json:"phase,omitempty"`
+	PhaseElapsedNS int64  `json:"phase_elapsed_ns,omitempty"`
+	Events         int    `json:"events,omitempty"`
+	FilesDone      int    `json:"files_done,omitempty"`
+	FilesTotal     int    `json:"files_total,omitempty"`
+	Symbols        int    `json:"symbols,omitempty"`
+	Relations      int    `json:"relations,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+// extractionCorpusPhaseBreadcrumbWriter writes complete NDJSON records to the
+// inherited process stream. Diagnostic I/O is intentionally excluded from
+// comparative measurements because this is enabled only by an explicit
+// environment flag. The byte/event limits are hard limits, so a killed
+// process leaves only a bounded prefix of records already handed to stderr.
+type extractionCorpusPhaseBreadcrumbWriter struct {
+	mu              sync.Mutex
+	output          io.Writer
+	events          int
+	bytes           int
+	writeErr        error
+	closed          bool
+	pendingPhase    string
+	pendingEvents   int
+	pendingProgress ProgressEvent
+}
+
+func extractionCorpusPhaseBreadcrumbsEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(extractionCorpusPhaseBreadcrumbsEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func newExtractionCorpusPhaseBreadcrumbWriter(enabled bool, output io.Writer) *extractionCorpusPhaseBreadcrumbWriter {
+	if !enabled {
+		return nil
+	}
+	return &extractionCorpusPhaseBreadcrumbWriter{output: output}
+}
+
+func (writer *extractionCorpusPhaseBreadcrumbWriter) record(event string, elapsed time.Duration, progress *ProgressEvent, recordErr error, essential bool) {
+	if writer == nil {
+		return
+	}
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if writer.output == nil || writer.closed || writer.writeErr != nil {
+		return
+	}
+	maxEvents, maxBytes := extractionCorpusPhaseBreadcrumbMaxEvents, extractionCorpusPhaseBreadcrumbMaxBytes
+	if !essential {
+		maxEvents -= extractionCorpusPhaseBreadcrumbTailEvents
+		maxBytes -= extractionCorpusPhaseBreadcrumbTailBytes
+	}
+	if writer.events >= maxEvents {
+		return
+	}
+	breadcrumb := extractionCorpusPhaseBreadcrumb{Seq: writer.events + 1, Event: event, ElapsedNS: elapsed.Nanoseconds()}
+	if progress != nil {
+		breadcrumb.Phase = string(progress.Phase)
+		breadcrumb.PhaseElapsedNS = progress.PhaseElapsed.Nanoseconds()
+		breadcrumb.Events = writer.pendingEvents
+		breadcrumb.FilesDone = progress.FilesDone
+		breadcrumb.FilesTotal = progress.FilesTotal
+		breadcrumb.Symbols = progress.Symbols
+		breadcrumb.Relations = progress.Relations
+	}
+	if recordErr != nil {
+		breadcrumb.Error = recordErr.Error()
+		if len(breadcrumb.Error) > extractionCorpusPhaseBreadcrumbMaxText {
+			breadcrumb.Error = breadcrumb.Error[:extractionCorpusPhaseBreadcrumbMaxText]
+		}
+	}
+	data, err := json.Marshal(breadcrumb)
+	if err != nil {
+		writer.writeErr = fmt.Errorf("marshal phase breadcrumb: %w", err)
+		return
+	}
+	data = append(data, '\n')
+	if writer.bytes+len(data) > maxBytes && !essential {
+		return
+	}
+	if writer.bytes+len(data) > extractionCorpusPhaseBreadcrumbMaxBytes {
+		return
+	}
+	n, err := writer.output.Write(data)
+	if err != nil {
+		writer.writeErr = fmt.Errorf("write phase breadcrumb: %w", err)
+		return
+	}
+	if n != len(data) {
+		writer.writeErr = fmt.Errorf("write phase breadcrumb: %w", io.ErrShortWrite)
+		return
+	}
+	writer.events++
+	writer.bytes += len(data)
+}
+
+func (writer *extractionCorpusPhaseBreadcrumbWriter) recordEssential(event string, elapsed time.Duration, recordErr error) {
+	writer.record(event, elapsed, nil, recordErr, true)
+}
+
+func (writer *extractionCorpusPhaseBreadcrumbWriter) recordProgress(elapsed time.Duration, progress ProgressEvent) {
+	if writer == nil {
+		return
+	}
+	writer.mu.Lock()
+	previous := writer.pendingProgress
+	previousPhase := writer.pendingPhase
+	writer.mu.Unlock()
+	if previousPhase != "" && previousPhase != string(progress.Phase) {
+		writer.record("snapshot_phase_end", elapsed, &previous, nil, false)
+		writer.mu.Lock()
+		writer.pendingPhase = ""
+		writer.pendingEvents = 0
+		writer.mu.Unlock()
+	}
+	writer.mu.Lock()
+	if writer.pendingPhase == "" {
+		writer.pendingPhase = string(progress.Phase)
+		writer.pendingEvents = 1
+		writer.pendingProgress = progress
+		first := progress
+		writer.mu.Unlock()
+		writer.record("snapshot_phase_start", elapsed, &first, nil, false)
+		return
+	}
+	writer.pendingEvents++
+	writer.pendingProgress = progress
+	writer.mu.Unlock()
+}
+
+func (writer *extractionCorpusPhaseBreadcrumbWriter) flushProgress(elapsed time.Duration) {
+	if writer == nil {
+		return
+	}
+	writer.mu.Lock()
+	if writer.pendingPhase == "" {
+		writer.mu.Unlock()
+		return
+	}
+	progress := writer.pendingProgress
+	writer.mu.Unlock()
+	writer.record("snapshot_phase_end", elapsed, &progress, nil, false)
+	writer.mu.Lock()
+	writer.pendingPhase = ""
+	writer.pendingEvents = 0
+	writer.mu.Unlock()
+}
+
+func (writer *extractionCorpusPhaseBreadcrumbWriter) err() error {
+	if writer == nil {
+		return nil
+	}
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.writeErr
+}
+
+func (writer *extractionCorpusPhaseBreadcrumbWriter) close() error {
+	if writer == nil {
+		return nil
+	}
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if writer.closed {
+		return writer.writeErr
+	}
+	writer.closed = true
+	return writer.writeErr
 }
 
 type extractionCorpusPhase struct {
@@ -720,6 +919,8 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 	}
 	phases := make(map[string]extractionCorpusPhase)
 	requestStarted := time.Now()
+	phaseLog := newExtractionCorpusPhaseBreadcrumbWriter(extractionCorpusPhaseBreadcrumbsEnabled(), os.Stderr)
+	phaseLog.recordEssential("request_started", 0, nil)
 	var requestErr error
 	var serializeErr error
 	var semanticDigest string
@@ -737,18 +938,25 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 		options := ProviderSnapshotOptions{
 			ExtractionReuse: config.Reuse, ExtractionCacheDir: config.CachePath,
 			Worktree: true, Profile: config.Profile, OnlyFiles: config.OnlyFiles,
-			Compiler: nil, Progress: func(event ProgressEvent) { extractionCorpusPhaseProgress(phases, event) },
+			Compiler: nil, Progress: func(event ProgressEvent) {
+				extractionCorpusPhaseProgress(phases, event)
+				phaseLog.recordProgress(time.Since(requestStarted), event)
+			},
 		}
 		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), config.RepositoryPath, config.ProviderVersion, options)
 		requestErr = err
+		phaseLog.flushProgress(time.Since(requestStarted))
+		phaseLog.recordEssential("api_returned", time.Since(requestStarted), requestErr)
 		failures = snapshot.Header.PartialFailures
 		warnings = snapshot.Header.Warnings
 		stats = snapshot.Header.Stats
 		extraction = snapshot.Header.Stats.Extraction
 		completeness = snapshot.Header.Completeness
+		phaseLog.recordEssential("serialization_started", time.Since(requestStarted), nil)
 		serializeStarted := time.Now()
 		_, serializeErr = json.Marshal(snapshot)
 		serializationNS = time.Since(serializeStarted).Nanoseconds()
+		phaseLog.recordEssential("serialization_ended", time.Since(requestStarted), serializeErr)
 		snapshotForDigest = &snapshot
 	} else {
 		options := SearchOptions{
@@ -758,20 +966,24 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 		}
 		response, err := SearchRepository(t.Context(), config.RepositoryPath, config.ProviderVersion, config.Query, options)
 		requestErr = err
+		phaseLog.recordEssential("api_returned", time.Since(requestStarted), requestErr)
 		failures = response.PartialFailures
 		warnings = response.Warnings
 		stats = response.Stats
 		extraction = response.Stats.Extraction
 		completeness = response.Completeness
+		phaseLog.recordEssential("serialization_started", time.Since(requestStarted), nil)
 		serializeStarted := time.Now()
 		_, serializeErr = json.Marshal(response)
 		serializationNS = time.Since(serializeStarted).Nanoseconds()
+		phaseLog.recordEssential("serialization_ended", time.Since(requestStarted), serializeErr)
 		searchForDigest = &response
 		if searchStats, ok := stats.(SearchStats); ok {
 			phases["index"] = extractionCorpusPhase{NS: searchStats.IndexLatencyMS * int64(time.Millisecond), FilesDone: searchStats.FilesIndexed}
 			phases["preselect"] = extractionCorpusPhase{NS: searchStats.PreselectLatencyMS * int64(time.Millisecond)}
 			phases["query"] = extractionCorpusPhase{NS: searchStats.QueryLatencyMS * int64(time.Millisecond)}
 			phases["total"] = extractionCorpusPhase{NS: searchStats.TotalLatencyMS * int64(time.Millisecond)}
+			phaseLog.recordEssential("resolution_stats", time.Since(requestStarted), nil)
 		}
 	}
 	// Stop the request clock before canonical verification and hashing. The
@@ -827,8 +1039,26 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 	// allocation and write can still affect externally collected process RSS.
 	// A diagnostics write failure is copied into the bounded observation before
 	// the harness fails, preserving the request error and raw diagnostic counts.
-	if err := writeExtractionCorpusArtifacts(config, observation, failures, warnings); err != nil {
-		t.Fatal(err)
+	phaseLog.recordEssential("full_artifact_write_started", time.Since(requestStarted), nil)
+	artifactErr := writeExtractionCorpusArtifacts(config, observation, failures, warnings)
+	phaseLog.recordEssential("full_artifact_write_ended", time.Since(requestStarted), artifactErr)
+	phaseLog.close()
+	phaseLogErr := phaseLog.err()
+	if phaseLogErr != nil {
+		appendExtractionCorpusError(&observation, "phase_log", phaseLogErr)
+		// The first artifact write may have completed before a later breadcrumb
+		// failed. Rewrite only in the opt-in diagnostic case so the bounded
+		// observation retains an explicit logging failure without changing the
+		// default path.
+		if rewriteErr := writeExtractionCorpusObservation(config.OutputPath, config.OutputFormat, observation); rewriteErr != nil {
+			phaseLogErr = errors.Join(phaseLogErr, rewriteErr)
+		}
+	}
+	if artifactErr != nil {
+		t.Fatal(errors.Join(artifactErr, phaseLogErr))
+	}
+	if phaseLogErr != nil {
+		t.Error(phaseLogErr)
 	}
 }
 
