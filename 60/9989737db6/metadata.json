@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "609989737db6",
+  "strategy": "manual-commit",
+  "branch": "fix/ts-overloads-and-fn-expr-scope",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/function_binding_test.go",
+    "internal/sem/parser.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/60/9989737db6/0/metadata.json",
+      "transcript": "/60/9989737db6/0/full.jsonl",
+      "compact_transcript": "/60/9989737db6/0/transcript.jsonl",
+      "content_hash": "/60/9989737db6/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 26216,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2999936,
+    "output_tokens": 4407,
+    "api_call_count": 26
+  }
+}
