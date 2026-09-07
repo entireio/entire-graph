@@ -282,7 +282,7 @@ func TestAllocateSearchSnippetsFallsBackToLargestFittingHeadWindow(t *testing.T)
 	hardBudget := before + 3_000
 
 	allocated, bodies, _ := allocateSearchSnippets(
-		[]SearchResult{result}, []searchEnclosure{enclosure}, nil, hardBudget, hardBudget, 1, 1,
+		[]SearchResult{result}, []searchEnclosure{enclosure}, nil, hardBudget, hardBudget, 1, 1, 1,
 	)
 	if bodies != 0 {
 		t.Fatalf("adaptive read window counted as %d complete bodies", bodies)
@@ -388,7 +388,8 @@ func TestAllocateSearchSnippetsSpendsBudgetByRank(t *testing.T) {
 			}
 			before := serializedSearchResultBytes(results)
 			allocated, bodies, demoted := allocateSearchSnippets(
-				results, enclosures, nil, testCase.hardBudget, testCase.growth, testCase.headRanks, testCase.tailLines,
+				results, enclosures, nil, testCase.hardBudget, testCase.growth,
+				testCase.headRanks, testCase.headRanks, testCase.tailLines,
 			)
 			after := serializedSearchResultBytes(allocated)
 
@@ -467,7 +468,7 @@ func TestSearchEnclosureHeadRanksIsFiveDeep(t *testing.T) {
 	results, enclosures, _ := makeAllocatorResults(8, 6, 30)
 	_, bodies, _ := allocateSearchSnippets(
 		results, enclosures, nil, 1<<20, searchEnclosureGrowthBytes,
-		searchEnclosureHeadRanks, searchEnclosureTailSnippetLines,
+		searchEnclosureHeadRanks, searchEnclosureHeadRanks, searchEnclosureTailSnippetLines,
 	)
 	if bodies != searchEnclosureHeadRanks {
 		t.Fatalf("a budget-unconstrained allocation completed %d bodies, want the whole head (%d)",
