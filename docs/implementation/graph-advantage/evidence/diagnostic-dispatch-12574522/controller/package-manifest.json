@@ -13,7 +13,8 @@
     "corpus/p1_scenario.py": "6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75",
     "corpus/corpus-manifest.json": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
     "build-manifest.json": "4aef960b6ed0eaad356340c7b962a9a48aede06d92716f60df45f3aebb33f12f",
-    "batch-manifest.json": "7db0b5cb191231cdc9b6254d280fc843713ae5f28d4e686f2e7fc2d1212a5f80"
+    "batch-manifest.json": "7db0b5cb191231cdc9b6254d280fc843713ae5f28d4e686f2e7fc2d1212a5f80",
+    "full-check-gate.json": "f35cc0e128742bf068e69815e650119be9f52e5f2715528fa504c2d37bbf11e3"
   },
   "control_hashes_sha256": "f434ea152b9139c1f8ef187bf378527758fa4816627de1d891b30d22216765b3"
 }

@@ -3,7 +3,7 @@
 This package is preparation only and is execution-blocked pending the separate immutable check. It contains no evaluator source or executable binary,
 VM operation, corpus invocation, result archive, or durable claim. The packaged
 cloud transport is the reviewed task-scoped module only; it is not invoked during
-preparation. The source and binary identities are pinned to the completed Linux correctness/build evidence. The pending immutable-check result must be recorded before any execution; no placeholder check hash is accepted.
+preparation. The source and binary identities are pinned to the completed Linux correctness/build evidence. The pending immutable-check result must be recorded before any execution; no placeholder check hash is accepted. `full-check-gate.json` binds the evaluator source at `12574522` to a separate full-check source at `8c8b075d` through explicit equal Git objects and the one allowed offline graph-bench test difference; it remains pending.
 
 The request is exactly one cache-OFF Kubernetes snapshot with profile `full`,
 worker 1, trial 0, diagnostic scenario, and no ON arm, comparison, admission,

@@ -1,5 +1,5 @@
 {
-  "status": "execution blocked pending immutable check",
+  "status": "prepared only; no VM, cloud, collector, product, corpus, or benchmark execution",
   "dispatch_id": "p1-diag-12574522-k8s-full-snapshot-off-01",
   "source_commit": "125745228645b5b605efc3cb1b8c6075e8c14a4e",
   "source_archive": "../diagnostics-linux-12574522/source.tar.gz",
@@ -28,16 +28,24 @@
   "no_comparison": true,
   "admission_eligible": false,
   "remote_control_timeout_seconds": 360,
-  "remote_source_root": "/opt/graph-validation/diagnostics-12574522",
+  "remote_source_root": "/opt/graph-validation/diagnostics-linux-12574522",
   "remote_output_root": "/opt/p1/diagnostics/p1-diag-12574522-k8s-full-snapshot-off-01",
   "remote_claim_path": "/opt/p1/batch-claims/p1-diag-12574522-k8s-full-snapshot-off-01/worker-1.json",
   "cell_id": "b2d03eea03b80fa61eebfeab5ccd7b17db8138e407ce73101531be2869c235db",
   "immutable_check": {
-    "status": "pending",
+    "status": "passed",
     "required_for_execution": true,
-    "source": "external immutable mise check; no result invented",
-    "result_sha256": "<PENDING_IMMUTABLE_CHECK_SHA256>"
+    "source": "external immutable mise check; result, raw log, and source-integrity artifacts are bound",
+    "source_commit": "8c8b075d95503b931c7e9fa3bf2838e22c0f4be1",
+    "result_path": "../check-8c8b075d/subprocess-result.json",
+    "result_sha256": "84af7aff1e7653f4938cb7ff477404cf0174ea537b0627f135577ba2f0a1f611",
+    "log_path": "../check-8c8b075d/mise-check.raw.log",
+    "log_sha256": "7f226ec2631e7f9a5941a6ae66c2cc9f5875a4753c67bb8c290492282191c63f",
+    "integrity_path": "../check-8c8b075d/source-integrity.json",
+    "integrity_sha256": "7d2e5d93bdbe1fe05fd54c49cc82534abaf8c7cb453ac4da556176d04239051c"
   },
   "product_invocations": 0,
-  "corpus_invocations": 0
+  "corpus_invocations": 0,
+  "full_check_gate": "full-check-gate.json",
+  "full_check_gate_sha256": "f35cc0e128742bf068e69815e650119be9f52e5f2715528fa504c2d37bbf11e3"
 }

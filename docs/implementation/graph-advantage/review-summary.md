@@ -7,9 +7,13 @@ labelled by their source checkpoint and are not current-head certification.
 
 ## Source and verification boundary
 
-The latest completed immutable full check is the historical `1f20f694`:
-`mise run check` exited 0 in 42.970406 seconds with unchanged source state. It
-performed no corpus measurement or VM work. Focused YAML/ABI checks for the
+The latest completed immutable full check is `8c8b075d`: serialized
+`mise run check` exited 0 in 1265.559 seconds at exact source
+`8c8b075d95503b931c7e9fa3bf2838e22c0f4be1`, with unchanged HEAD, clean
+before/after status and byte-equal tracked-source manifests. It performed no
+corpus measurement or VM work; evidence is retained under
+`evidence/check-8c8b075d/`. The earlier `1f20f694` pass remains historical
+evidence. Focused YAML/ABI checks for the
 post-fix `12574522` source passed, including the seven-test ABI check reported
 at 1.600s and 2.983s, and the pinned Linux compiler/evaluator check
 and evaluator build passed with 28 top-level tests, including 10 live tests,
@@ -22,10 +26,14 @@ foreground controller sent Ctrl-C after a GitHub username prompt. This is a
 task/transport failure, not a test assertion. Retry 2 retains the same
 source/head and tracked-hash snapshots, but `result.json` is missing and
 `postcheck_completed` is null, so those post-check files cannot be conclusively
-attributed to wrapper completion. The source was unchanged in all attempts;
-none is a source-pass or release claim. Evidence is retained under
+attributed to wrapper completion. The observed before/after source snapshots
+match, but retry 2's capture provenance is indeterminate; none is an immutable
+source-pass or release claim. Evidence is retained under
 `evidence/check-12574522/`, `evidence/check-12574522-retry-1/`,
 `evidence/check-12574522-retry-2/` and `evidence/diagnostics-linux-12574522/`.
+The offline fixture correction and focused normal/race proof that removed the
+credential prompt are retained under
+`evidence/diagnostic-graph-bench-offline-fixtures-12574522/`.
 The earlier `6cf92c9c` full and
 pinned-Linux checks remain historical evidence. Later accepted changes include
 protobuf parse handling (`4cd72774`), Go new-expression arguments
@@ -50,10 +58,10 @@ known partials and one warning. All 194 entries have been classified in the
 source-review packet, but that classification does not close parser defects,
 verify every current file, or adopt proposed ADR0049 reviewed-partial
 admission. That one invocation remains the only resumed corpus diagnostic;
-zero stability batches have run. The post-fix full-profile OFF diagnostic is
-prepared at `evidence/diagnostic-dispatch-12574522/`, with exact source,
-binary, build, batch and control hashes, but is blocked pending the immutable
-check and has not executed. The completed diagnostic is not a stability batch
+zero stability batches have run. The post-fix full-profile OFF diagnostic
+package and its gate are being populated at
+`evidence/diagnostic-dispatch-12574522/`, with exact source, binary, build,
+batch and control hashes, but it has not executed. The completed diagnostic is not a stability batch
 or performance result.
 
 The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
@@ -63,7 +71,7 @@ P2, P3 or P4 release gate has passed.
 
 | Workstream | Implementation and correctness | Evaluation and release status |
 |---|---|---|
-| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. Retained profile and diagnostic outputs have exact parity where stated above. | Fixed-corpus baseline and paired matrix are incomplete; timeout/partial admission, performance, RSS and full current-source verification remain open. |
+| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. Retained profile and diagnostic outputs have exact parity where stated above, and the current immutable full check passed. | Fixed-corpus baseline and paired matrix are incomplete; timeout/partial admission, performance and RSS remain open. |
 | P2 | Pinned Go analysis, lifecycle, source identity, mapping, compiler-view integration and invalidation contracts have implementation and focused correctness evidence. | Hard-Go quality and adjudicated precision/recall studies are deferred; no gate passed. |
 | P3 | Relation policy, bounded traversal, path evidence, CLI/output and compiler-view contracts have focused correctness evidence. | Realistic affected-site precision/recall/cost studies and coverage gates are deferred; no gate passed. |
 | P4 | Candidate-only ranking, experimental integration, ablation controls and fallback behavior are implemented with numerical and contract fixtures. | No winning configuration, held-out result or downstream agent study is established; no gate passed. |
