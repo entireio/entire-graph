@@ -1,0 +1,8 @@
+{
+  "batch_manifest_sha256": "0b9a7bd24946c55f678737aa9bd0ca09f077aaa955bf003aaff1bcc3ec38001c",
+  "control_archive_sha256": "a558bcf65c65d20dfa550c275d7fafb2f2a4bb87814d5caa58bf9456d995ad4a",
+  "dispatch_id": "p1-diag-12574522-k8s-full-snapshot-off-r2-01",
+  "profile": "full",
+  "source_commit": "125745228645b5b605efc3cb1b8c6075e8c14a4e",
+  "state": "claimed_before_cloud_upload"
+}
