@@ -1320,6 +1320,49 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 	return []byte(rendered + searchVerifyContractNote)
 }
 
+// composeSearchVerifyExplain pipes a derived VERIFY command through the caller's `explain` filter
+// WITHOUT letting the filter decide the line's exit status.
+//
+// `<test> 2>&1 | <explain>` is a pipeline, and a pipeline's exit status in every POSIX shell is the
+// status of its LAST command. `explain` succeeds at explaining a failure, so the composed line exits
+// 0 on a failing test and any agent or harness that keys on the exit status reads a failed
+// verification as a passing one. That is the severe direction of the error: a verification tool
+// reporting success on a run that actually failed.
+//
+// `set -o pipefail` is NOT the fix here. The emitted line is run by whatever shell the caller has,
+// and the only shell this binary itself invokes is `sh -c` (see runVerifyShell). On Debian-family
+// systems /bin/sh is dash, where `set -o pipefail` is not merely absent but fatal:
+//
+//	$ dash -c 'set -o pipefail; echo REACHED'
+//	dash: 1: set: Illegal option -o pipefail   (exit 2, REACHED never prints)
+//
+// Only the test's numeric status is captured in command substitution. FD 3
+// carries that status; FD 4 carries the filter's output to the original stdout.
+// Test output streams through the pipe, including binary data and trailing newlines.
+// Both caller fragments run in subshells with the private descriptors closed, so
+// exit, exec, or descriptor use cannot bypass the wrapper's status bookkeeping.
+//
+// The reader keeps the pipe open and drains it after the filter exits. Without
+// that drain, an early-exiting filter can give the test SIGPIPE and replace its
+// real status. Draining is bounded by pipe backpressure, not by total log size.
+// The filter itself may still buffer input; this wrapper does not.
+//
+// A failing test's status takes precedence. Otherwise a filter or drain failure
+// is returned with a diagnostic. The outer subshell disables inherited errexit
+// for bookkeeping, and contains all descriptor, option, and variable changes.
+func composeSearchVerifyExplain(command, explain string) (composed string, overhead int) {
+	const (
+		prefix = "( set +e; exec 4>&1; r=$( { { ( "
+		middle = " ) 3>&- 4>&- 2>&1; printf '%s\\n' \"$?\" >&3; } | { ( "
+		suffix = " ) 3>&- 4>&-; e=$?; cat >/dev/null; d=$?; " +
+			"[ \"$e\" -eq 0 ] || exit \"$e\"; exit \"$d\"; } >&4; } 3>&1 ); e=$?; " +
+			"[ \"$r\" -ne 0 ] && exit \"$r\"; " +
+			"[ \"$e\" -eq 0 ] || echo 'VERIFY: explain filter failed' >&2; exit \"$e\" )"
+	)
+	return prefix + command + middle + explain + suffix,
+		len(prefix) + len(middle) + len(suffix) + len(explain)
+}
+
 // filePathToSlash normalizes a repository path for the string handling above. Repository paths are
 // already slash-separated everywhere in this package; this states it at the boundary.
 func filePathToSlash(filePath string) string {
