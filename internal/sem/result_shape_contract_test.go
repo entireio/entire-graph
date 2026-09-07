@@ -75,8 +75,16 @@ var resultWireShape = map[string][]string{
 		`name="before_start_line" type="int" tagged=true anonymous=false options="omitempty"`,
 		`name="after_start_line" type="int" tagged=true anonymous=false options="omitempty"`,
 		`name="dependents_count" type="int" tagged=true anonymous=false options=""`,
+		`name="dependents_evidence" type="github.com/entireio/entire-graph/internal/sem.EvidenceState" tagged=true anonymous=false options=""`,
 		`name="similarity" type="float64" tagged=true anonymous=false options="omitempty"`,
 		`name="reconciliation" type="string" tagged=true anonymous=false options="omitempty"`,
+	},
+	// EntityChange.DependentsEvidence's type. A named string enum rather than a bare
+	// string so JSON producers and consumers share one closed vocabulary
+	// (EvidenceConfirmed/EvidencePartial/EvidenceRequiresVerification); frozen by its
+	// underlying type per TestNamedNonStructWireShapesAreFrozenByUnderlyingType.
+	"EvidenceState": {
+		`underlying="string"`,
 	},
 	// Result.Warnings' element type. It is persisted with the rest of the
 	// payload and was frozen by nothing.
@@ -884,8 +892,8 @@ func resultWireShapeDigest() string {
 func TestResultWireShapeIsBoundToTheSchemaVersion(t *testing.T) {
 	t.Parallel()
 	const (
-		pinnedSchemaVersion = "1.1"
-		pinnedShapeDigest   = "9c02ab3256e93b77"
+		pinnedSchemaVersion = "1.2"
+		pinnedShapeDigest   = "28c60ef85f029d24"
 	)
 	if SchemaVersion != pinnedSchemaVersion || resultWireShapeDigest() != pinnedShapeDigest {
 		t.Fatalf(

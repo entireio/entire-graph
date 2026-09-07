@@ -143,6 +143,25 @@ func FirstParent(ctx context.Context, repo, rev string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// CommitTimestamp resolves a commit's author date (the moment the change was
+// written, not `git commit --amend`'s later committer date). Callers that
+// weight evidence by recency — the developer-ranking package's aggregation,
+// for one — want when the work happened, not when it last touched a ref.
+func CommitTimestamp(ctx context.Context, repo, rev string) (time.Time, error) {
+	// --end-of-options guards an option-shaped rev the same way RevParse does;
+	// %at is the author date as a Unix seconds integer, so parsing it never
+	// depends on git's locale/timezone display formatting.
+	out, err := run(ctx, repo, "git", "show", "-s", "--no-show-signature", "--no-notes", "--format=%at", "--end-of-options", rev)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("resolve commit timestamp for %s: %w", rev, err)
+	}
+	seconds, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if parseErr != nil {
+		return time.Time{}, fmt.Errorf("parse commit timestamp for %s: %w", rev, parseErr)
+	}
+	return time.Unix(seconds, 0).UTC(), nil
+}
+
 func FindCommitWithCheckpoint(ctx context.Context, repo, checkpointID string) (string, error) {
 	// --all includes detached HEADs from every linked worktree because a
 	// checkpoint commit can be reachable only from one of them. --ignore-missing
