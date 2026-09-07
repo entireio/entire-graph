@@ -554,12 +554,7 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 		// even the NOT RUN evidence goes. A REGRESSION verdict is more actionable than an INCOMPLETE
 		// one (it carries the ids), so the ids are kept and the incompleteness is carried alongside
 		// them rather than replacing them.
-		fmt.Fprintf(&buffer, "VERDICT: REGRESSION in %d test%s: %s",
-			len(newlyFailing), pluralSuffix(len(newlyFailing)), verifyJoinIDs(newlyFailing))
-		if incomplete != "" {
-			fmt.Fprintf(&buffer, " — AND INCOMPLETE: %s Verification is NOT complete.", incomplete)
-		}
-		buffer.WriteString("\n")
+		buffer.WriteString(verifyRegressionVerdict(newlyFailing, incomplete, input.maxBytes))
 	case incomplete != "":
 		fmt.Fprintf(&buffer, "VERDICT: INCOMPLETE — %s Verification is NOT complete.\n", incomplete)
 	case len(newlyPassing) > 0:
@@ -572,6 +567,39 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 		buffer.WriteString("VERDICT: NO EFFECT — the target tests behave exactly as before your edit.\n")
 	}
 	return verifyTruncateOutput(buffer.String(), input.maxBytes)
+}
+
+// verifyRegressionVerdict budgets the classifications before IDs or explanations.
+// Shorten while those fields are still separate: generic text truncation cannot
+// distinguish a test ID from the incompleteness warning that follows the list.
+func verifyRegressionVerdict(ids []string, incomplete string, maxBytes int) string {
+	regression := fmt.Sprintf("VERDICT: REGRESSION in %d test%s", len(ids), pluralSuffix(len(ids)))
+	verdict := regression + ": " + verifyJoinIDs(ids)
+	if incomplete != "" {
+		verdict += " — AND INCOMPLETE: " + incomplete + " Verification is NOT complete."
+	}
+	verdict += "\n"
+	if incomplete == "" || maxBytes <= 0 || len(verdict) <= maxBytes {
+		return verdict
+	}
+
+	// Drop IDs first, then the count if necessary. Both classifications must fit
+	// before any remaining space is spent on the reason the run was incomplete.
+	summary := regression + " — AND INCOMPLETE"
+	if len(summary)+1 > maxBytes {
+		summary = "VERDICT: REGRESSION AND INCOMPLETE"
+	}
+	if len(summary)+1 > maxBytes {
+		return verifyCutToBudget(summary, maxBytes)
+	}
+	if len(summary)+len(": …\n") > maxBytes {
+		return summary + "\n"
+	}
+	verdict = summary + ": " + incomplete + " Verification is NOT complete.\n"
+	if len(verdict) > maxBytes {
+		return verifyCutToBudget(verdict, maxBytes)
+	}
+	return verdict
 }
 
 // verifyIncompleteReason states every way THIS run failed to cover what it claimed to cover, or "" when
