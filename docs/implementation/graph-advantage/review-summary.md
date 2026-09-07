@@ -69,9 +69,9 @@ The bounded Kubernetes syntax-only diagnostic separately collected 194
 known partials and one warning. All 194 entries have been classified in the
 source-review packet, but that classification does not close parser defects,
 verify every current file, or adopt proposed ADR0049 reviewed-partial
-admission. The resumed sequence has consumed two controlled product
-invocations: that completed syntax-only diagnostic and the full-profile r2
-timeout described below. Zero stability batches have run. The first full-profile OFF dispatch attempted
+admission. The resumed sequence has consumed three controlled product
+invocations: that completed syntax-only diagnostic and the two full-profile
+timeouts described below. Zero stability batches have run. The first full-profile OFF dispatch attempted
 transport once but failed before product startup because the packaged collector
 still contained placeholder constants (`consumed=0`, `reserved=1`); it is
 retained at `evidence/diagnostic-dispatch-12574522/` with archive hash
@@ -83,6 +83,14 @@ process exit `-9` and no observation or diagnostics; its archive hash is
 performance result, neither was retried, and the r2 relation progress count
 of 512 is explicitly non-final. A new collector/package review remains
 pending, the timeout remains unresolved, and no new corpus result exists.
+The independently identified `diagnostic-dispatch-90ac3e16` then consumed
+exactly one cache-off full-profile snapshot invocation and timed out at 120
+seconds (`process=-9`, `collector=1`) with no observation or diagnostics. It
+retained a complete diagnostic-only 20-second relations CPU profile, SHA-256
+`3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b`,
+with unchanged before/after corpus identity and zero control-identity
+mismatches. The VM is deallocated. Offline profile analysis is pending; no
+cause, fix, performance result or stability evidence is claimed.
 
 The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
 6 timeouts. It is therefore collected but incomplete. The campaign remains
@@ -128,9 +136,9 @@ policy, the shared 100-invocation cap, durable duplicate/retry prevention and
 first-issue stop. Three clean representative batches are a checkpoint for
 stability only, not a release gate.
 
-The immediate product step is one counted diagnostic only after its gate
-review. It is not a benchmark or stability batch, and it does not authorize a
-full campaign.
+Offline analysis of the retained relations CPU profile is the immediate next
+step. The timeout remains a failed diagnostic, no fix is claimed, and no new
+product invocation or full campaign is authorized by this evidence.
 
 P2 and P3 still require independent adjudication of required, allowed and
 forbidden targets with explicit partial/unavailable coverage. P4 requires a

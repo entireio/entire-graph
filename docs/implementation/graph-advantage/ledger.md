@@ -14,7 +14,7 @@ dispatch, first-issue stop, and approval-boundary controls are implemented at
 `58f03a22`; see `resumption-plan-20260907.md`. The user has resumed the
 revised controlled sequence; no campaign is currently running.
 
-**Current bounded-resumption status:** the user’s resume authorizes controlled diagnostics, fixes and sampled batches once the documented prerequisites and controls pass. The resumed sequence has consumed two controlled product invocations: the completed cache-off Kubernetes syntax-only snapshot in `diagnostic-dispatch-1f20f694` and the full-profile Kubernetes snapshot timeout in `diagnostic-dispatch-12574522-r2`. A separate earlier full-profile dispatch failed in the collector before product startup (`reserved=1`, `consumed=0`, `transport_attempts=1`). None is a stability batch or campaign result. No stability batch has run, and the r2 timeout remains unresolved. The profiler harness at exact source `90ac3e16b96c34ab219ecd2a90eca4600fd0c586` was reviewed and committed. Its pinned Linux evidence passed 28 compiler tests including 10 live tests with zero compiler skips or failures; profiler normal passed 13 tests plus the expected Windows-only skip, profiler race passed 12 tests plus the same expected skip, and the evaluator build produced binary SHA-256 `43c85dfa31358f4911d565e005ddc943cf58d8ddc09790f60714e152e241b86b`. This correctness/build work invoked no product or corpus evaluation and makes no performance claim; evidence was committed at `5db068ee` under `evidence/diagnostics-linux-90ac3e16/`. The validation VM is deallocated. The next product work is one counted diagnostic only after its gate review; no full campaign is approved.
+**Current bounded-resumption status:** the user’s resume authorizes controlled diagnostics, fixes and sampled batches once the documented prerequisites and controls pass. The resumed sequence has consumed three controlled product invocations: the completed cache-off Kubernetes syntax-only snapshot in `diagnostic-dispatch-1f20f694`, the full-profile Kubernetes snapshot timeout in `diagnostic-dispatch-12574522-r2`, and the independently identified cache-off full-profile snapshot in `diagnostic-dispatch-90ac3e16`. The newest request also timed out at 120 seconds (`process=-9`, `collector=1`) with no observation or diagnostics, while retaining a complete diagnostic-only 20-second relations CPU profile. Its input and control identities remained unchanged, and the validation VM was deallocated. A separate earlier full-profile dispatch failed in the collector before product startup (`reserved=1`, `consumed=0`, `transport_attempts=1`). None is a stability batch or campaign result. No stability batch has run, and both product timeouts remain unresolved. The profiler harness at exact source `90ac3e16b96c34ab219ecd2a90eca4600fd0c586` was reviewed and committed. Its pinned Linux evidence passed 28 compiler tests including 10 live tests with zero compiler skips or failures; profiler normal passed 13 tests plus the expected Windows-only skip, profiler race passed 12 tests plus the same expected skip, and the evaluator build produced binary SHA-256 `43c85dfa31358f4911d565e005ddc943cf58d8ddc09790f60714e152e241b86b`. This correctness/build work invoked no product or corpus evaluation and makes no performance claim; evidence was committed at `5db068ee` under `evidence/diagnostics-linux-90ac3e16/`. Offline profile analysis is pending and no fix is claimed. No full campaign is approved.
 
 **Mandatory model routing, 2026-09-07:** all substantive implementation,
 diagnosis, source/data inspection, fixture or harness work, execution/testing,
@@ -70,11 +70,15 @@ The three retained query profile paths are verified at `1c0b8e24`: syntax-only, 
 The P1 campaign remains paused. Baseline counts remain 108 requests (69
 complete, 33 partial, 6 timeouts); this is a collected but incomplete baseline,
 not a completed release baseline. Campaign counts remain 116 observed requests
-plus explicit unrun accounting. The resumed sequence has consumed two
+plus explicit unrun accounting. The resumed sequence has consumed three
 controlled diagnostic product invocations, recorded separately from campaign
-and stability-batch counts: the earlier completed syntax-only snapshot and one
-full-profile timeout at `diagnostic-dispatch-12574522-r2` (120-second bound,
-process exit `-9`, collector exit `1`, no observation or diagnostics). The
+and stability-batch counts: the earlier completed syntax-only snapshot and two
+full-profile timeouts at `diagnostic-dispatch-12574522-r2` and
+`diagnostic-dispatch-90ac3e16` (each with a 120-second bound, process exit
+`-9`, collector exit `1`, and no observation or diagnostics). The new
+diagnostic retained a complete 20-second relations CPU profile with unchanged
+before/after corpus identity and zero control-identity mismatches; offline
+analysis is pending and no cause or fix is claimed. The
 earlier pre-product collector failure remains a separate transport attempt
 with zero consumed product invocations. The r2 input identities matched and
 the VM was deallocated; its first recorded relations progress event reported
@@ -90,13 +94,12 @@ unchanged inputs. OFF 57.769s / ON 62.614s (ratio 1.084) and peak RSS
 3,312,332,800 / 3,167,264,768 bytes (ratio 0.956) were within both 1.10
 screens. This single pair is not statistical, causal or release evidence; the
 previous failed RSS screen remains retained. Remaining baseline timeouts,
-partial admission and the unresolved r2 timeout still prevent campaign
+partial admission and the two unresolved diagnostic timeouts still prevent campaign
 expansion. Evidence: `p1-corpus-20260905/retained-snapshot-6cf92c9c/summary.json`
-and `evidence/diagnostic-dispatch-1f20f694/`. No stability batch has run. The
-next authorized product step is one counted diagnostic after gate review, not
-a benchmark or campaign expansion.
+and `evidence/diagnostic-dispatch-1f20f694/`. No stability batch has run, and
+the retained CPU profile does not establish a stability or performance gate.
 
-The bounded execution controls are implemented at `58f03a22`: selected manifests are capped at 100 derived product invocations, preparation and arm costs are reserved before spawn, worker claims are durable and path-stable, duplicate/retry dispatch is refused, and the first issue stops the batch. The committed controller and focused Python contracts passed 90 synthetic-only tests in 7.985225 seconds; evidence and source hashes are in `evidence/bounded-controls-58f03a22/`. The two later controlled product invocations did not close partial admission, timeout or performance gates, and no release gate passed.
+The bounded execution controls are implemented at `58f03a22`: selected manifests are capped at 100 derived product invocations, preparation and arm costs are reserved before spawn, worker claims are durable and path-stable, duplicate/retry dispatch is refused, and the first issue stops the batch. The committed controller and focused Python contracts passed 90 synthetic-only tests in 7.985225 seconds; evidence and source hashes are in `evidence/bounded-controls-58f03a22/`. The three controlled product invocations did not close partial admission, timeout or performance gates, and no release gate passed.
 
 All 77 campaign-control tests passed; a live fake-service smoke verified that all three active workers stopped after an injected pause. The validation VM is confirmed deallocated after correctness and corrective evidence collection; the two campaign workers remain deallocated. No campaign is running. P2/P3/P4 comparative studies remain deferred, and no complete workstream release gate has passed. Defaults remain extraction reuse off, compiler off, impact depth two and current ranking.
 
