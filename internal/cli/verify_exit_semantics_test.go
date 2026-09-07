@@ -790,9 +790,9 @@ func TestRenderVerifyVerdictAcceptsJestsConfiguredFailureExitCode(t *testing.T) 
 		}
 	}
 
-	// Unlisting gives up only the ordinary codes. A run that was KILLED is still refused, because
-	// verifyExitCodeMeansTestFailure rejects >= 128 for listed and unlisted runners alike — otherwise
-	// this change would have traded one false negative for the false PASS the verb exists to prevent.
+	// Without a declaration, high statuses remain ambiguous and must not turn
+	// possible signal deaths into PASS. A process killed without a status is
+	// incomplete even with a declaration; see TestVerifyDeclaredFailureCode.
 	for _, exitCode := range []int{137, 139, -1} {
 		got := string(renderVerifyVerdict(verifyVerdictInput{
 			baseline: baseline, current: current, parser: "jest/vitest", parsed: true,
