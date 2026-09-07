@@ -1,0 +1,21 @@
+Check the Entire runner setup in this repo vs. entire-brain.
+
+---
+
+Copy the missing runners from Brain to Graph and change the Review config in Graph to the one from Brain. Adapt the semantic diff runner in brain. Also use the same base\_template for Graph. When done, tell me what's left on differences.
+
+---
+
+Enable telemetry in Graph, use the same safe branch-name handling in Brain, then show me the difference in prompts and display names.
+
+---
+
+The name differences are fine. On the prompts, do you suggest any changes?
+
+---
+
+Ok, make it so
+
+---
+
+Open a trail for each repo

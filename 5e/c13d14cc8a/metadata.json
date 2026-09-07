@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "5ec13d14cc8a",
+  "strategy": "manual-commit",
+  "branch": "codex/align-trail-runners",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/5e/c13d14cc8a/0/metadata.json",
+      "transcript": "/5e/c13d14cc8a/0/full.jsonl",
+      "compact_transcript": "/5e/c13d14cc8a/0/transcript.jsonl",
+      "content_hash": "/5e/c13d14cc8a/0/content_hash.txt",
+      "prompt": "/5e/c13d14cc8a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 82191,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1296128,
+    "output_tokens": 8182,
+    "api_call_count": 23
+  }
+}
