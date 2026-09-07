@@ -304,7 +304,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		parseSrc = []byte(maskObjectiveCUnsupportedSyntax(content))
 	}
 	if spec.language == "Bash" {
-		parseSrc = []byte(maskBashUnsupportedSyntax(content))
+		parseSrc = []byte(maskBashCompatibilitySyntax(content))
 	}
 	if spec.language == "Zsh" {
 		parseSrc = []byte(maskZshUnsupportedSyntax(content))

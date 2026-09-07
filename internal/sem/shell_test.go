@@ -1,6 +1,134 @@
 package sem
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+
+	sitter "github.com/smacker/go-tree-sitter"
+)
+
+func TestMaskBashAssignmentPrefixPreservesCallsAndCoordinates(t *testing.T) {
+	source := "#!/usr/bin/env bash\n" +
+		"helper() {\n" +
+		"  V=3 kube::log::status ok\n" +
+		"  text=\"V=4 kube::log::status\" # V=5 kube::log::status\n" +
+		"  result=$(load)\n" +
+		"  V=6 kube::log::status nested\n" +
+		"}\n" +
+		"caller() { helper; }\n"
+	masked := maskBashAssignmentPrefixedNamespacedCommands(source)
+	if len(masked) != len(source) || strings.Count(masked, "\n") != strings.Count(source, "\n") {
+		t.Fatalf("mask changed source coordinates: source=%q masked=%q", source, masked)
+	}
+	if !strings.Contains(masked, "kube::log::status ok") || !strings.Contains(masked, "$(load)") || !strings.Contains(masked, "kube::log::status nested") {
+		t.Fatalf("command or command-substitution spelling changed: %q", masked)
+	}
+	if strings.Contains(masked, "V=3 kube::") || strings.Contains(masked, "V=6 kube::") {
+		t.Fatalf("assignment prefix was not masked: %q", masked)
+	}
+	if !strings.Contains(masked, `text="V=4 kube::log::status" # V=5 kube::log::status`) {
+		t.Fatalf("string/comment content was modified: %q", masked)
+	}
+	calls := shellCommandCallIdentifiers(masked)
+	if _, ok := calls["kube::log::status"]; !ok {
+		t.Fatalf("namespaced call disappeared: %v", calls)
+	}
+	if _, ok := calls["helper"]; !ok {
+		t.Fatalf("ordinary call disappeared: %v", calls)
+	}
+}
+
+func TestMaskBashAssignmentPrefixRestoresValidEntities(t *testing.T) {
+	source := "kube::log::status() { :; }\n" +
+		"load() { :; }\n" +
+		"outer() {\n" +
+		"  result=$(load)\n" +
+		"  V=3 kube::log::status\n" +
+		"}\n"
+
+	spec, ok := languageForPath("raw.sh")
+	if !ok || spec.grammar == nil {
+		t.Fatal("Bash grammar unavailable")
+	}
+	rawParser := sitter.NewParser()
+	defer rawParser.Close()
+	rawParser.SetLanguage(spec.grammar)
+	rawTree, err := rawParser.ParseCtx(context.Background(), nil, []byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawTree.Close()
+	if !rawTree.RootNode().HasError() {
+		t.Fatal("raw tree-sitter Bash unexpectedly accepted assignment-prefixed namespaced command")
+	}
+
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("fixture.sh", source)
+	if language != "Bash" || status.ParseError {
+		t.Fatalf("public parse did not cleanly parse authored source: language=%q status=%+v", language, status)
+	}
+	var outer *Entity
+	for i := range entities {
+		if entities[i].Kind == "function" && entities[i].Name == "outer" {
+			outer = &entities[i]
+			break
+		}
+	}
+	if outer == nil {
+		t.Fatalf("outer function missing from public parse: %v", entities)
+	}
+	if outer.StartLine != 3 || outer.EndLine != 6 || outer.BodyHash != "9f055230a037ec42" {
+		t.Fatalf("outer entity lost authored range/hash: %+v", *outer)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, repo, "fixture.sh", source)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "bash-prefix-fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "outer", "fixture.sh", "load", "fixture.sh") {
+		t.Fatalf("missing authored CALLS outer -> load: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "outer", "fixture.sh", "kube::log::status", "fixture.sh") {
+		t.Fatalf("missing authored CALLS outer -> kube::log::status: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestMaskBashAssignmentPrefixDoesNotMaskNonCommands(t *testing.T) {
+	cases := []string{
+		`# V=3 kube::log::status`,
+		`echo "V=3 kube::log::status"`,
+		`value='V=3 kube::log::status'`,
+		`V=3 ordinary_command`,
+	}
+	for _, source := range cases {
+		got := maskBashAssignmentPrefixedNamespacedCommands(source)
+		if got != source {
+			t.Fatalf("non-command text changed: source=%q got=%q", source, got)
+		}
+	}
+}
+
+func TestMaskBashAssignmentPrefixDeclinesNestedAssignmentCommands(t *testing.T) {
+	source := "load() { :; }\n" +
+		"outer() {\n  A=$(load)\n  V=3 kube::log::status\n}\n"
+	masked := maskBashAssignmentPrefixedNamespacedCommands(source)
+	if strings.Contains(masked, "A=$(load)") == false {
+		t.Fatalf("nested assignment command changed: source=%q masked=%q", source, masked)
+	}
+	calls := shellCommandCallIdentifiers(masked)
+	if _, ok := calls["load"]; !ok {
+		t.Fatalf("real nested callee disappeared from command positions: %v", calls)
+	}
+	if _, ok := calls["kube::log::status"]; !ok {
+		t.Fatalf("outer namespaced command disappeared from command positions: %v", calls)
+	}
+	unsafe := "outer() { A=$(load) V=3 kube::log::status; }\n"
+	if got := maskBashAssignmentPrefixedNamespacedCommands(unsafe); got != unsafe {
+		t.Fatalf("assignment containing a nested command was rewritten: got=%q want=%q", got, unsafe)
+	}
+}
 
 func TestShellCommandCallIdentifiers(t *testing.T) {
 	got := shellCommandCallIdentifiers(`function dirhistory_back() {
