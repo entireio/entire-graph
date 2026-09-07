@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "a66b7669b59b",
+  "strategy": "manual-commit",
+  "branch": "codex/trail158-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/completeness.go",
+    "internal/cli/completeness_test.go",
+    "internal/sem/langcompat.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a6/6b7669b59b/0/metadata.json",
+      "transcript": "/a6/6b7669b59b/0/full.jsonl",
+      "compact_transcript": "/a6/6b7669b59b/0/transcript.jsonl",
+      "content_hash": "/a6/6b7669b59b/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 33756,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2024320,
+    "output_tokens": 3706,
+    "api_call_count": 20
+  }
+}
