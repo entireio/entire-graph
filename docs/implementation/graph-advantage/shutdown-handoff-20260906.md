@@ -33,6 +33,8 @@ benchmarks until the user requests it. Branch `codex/graph-advantage`, worktree
 
 ## Resume sequence
 
+**Updated user instruction, 2026-09-07:** follow `resumption-plan-20260907.md`. Sample in batches capped at100 total runs, stop/fix on issues, and obtain explicit user approval before any full P1 campaign. The steps below are prerequisites, not permission to expand automatically.
+
 1. Re-read current plan/review and this ledger; inspect status. Preserve the
    unrelated untracked `frozen-baseline-initial.json` and
    `frozen-baseline-pre-counts.json`. No memory/competitor/prior-session research.

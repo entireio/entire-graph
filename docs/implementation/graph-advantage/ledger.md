@@ -6,6 +6,8 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
+**Resumption policy revised 2026-09-07:** use batches capped at100 total product invocations, review and fix issues between batches, and establish stability before proposing a full run. Full-campaign execution requires the user’s explicit approval; none is granted. The new cap/approval launcher controls are still to be implemented. See `resumption-plan-20260907.md`. Work remains paused.
+
 **Paused at the user’s request for laptop shutdown.** All three Azure VMs are confirmed deallocated; the 15-minute heartbeat is paused. No test or collector is running. Resume from `shutdown-handoff-20260906.md`; do not restart the campaign automatically.
 
 Current implementation source is `6cf92c9c`: ADR 0048 adds cancellation-aware ownership before batch detachment, permitting only one detached publication batch operation-wide. Focused correctness and race checks passed. Pinned Linux passed 76 top-level tests including 10 live compiler tests. Full `mise run check` passed in 687.332 seconds with unchanged HEAD and clean status. Evidence: `evidence/check-6cf92c9c/` and `evidence/correctness-6cf92c9c-20260906/`.
@@ -83,6 +85,8 @@ Raw relation reuse currently covers imports only; unsupported families are expli
 Rollback uses those default flags. Disposable extraction records occupy their separate cache namespace; no migration is needed. Revert the reviewable implementation commits to remove the features. Persistent working-tree snapshot reuse remains disabled. Installation, MCP packaging, generated summaries and Brain remain out of scope.
 
 ## Next phase: proposed benchmark sequence only
+
+The P1 sequence below is superseded by `resumption-plan-20260907.md`: bounded100-run sampling first, explicit user approval before any full campaign. No canary or sample result authorizes automatic expansion.
 
 1. After final correctness passes, prospectively freeze the binary, source, environments, workload matrix, labels, metrics and trial rules. Preserve earlier failed outcomes.
 2. P1: execute the fixed small/medium/large and synthetic cold/edit/rename/delete/branch/manifest scenarios with at least 30 paired repetitions, identical inputs, documented page-cache state and RSS/disk measurements.

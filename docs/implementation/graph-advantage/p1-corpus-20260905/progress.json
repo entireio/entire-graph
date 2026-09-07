@@ -51,7 +51,7 @@
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "On explicit resume: read shutdown-handoff-20260906.md; verify new immutable integration commit after fixture packaging fix, then re-pin Linux preparation before one full-diagnostics collection.",
+  "next_work": "On explicit resume, follow revised100-run sampling plan; no full campaign without user approval",
   "current_focused_correctness": {
     "commit": "1c0b8e24",
     "correctness_seconds": 0.788,
@@ -248,5 +248,8 @@
     "measurement_scope": "One isolated pair; GNU time process peak RSS, not simultaneous aggregate process-tree RSS. No statistical, causal or release-gate claim. Earlier failed observations remain retained.",
     "next_action": "Resolve remaining baseline timeout and partial admission blockers before separately versioned campaign continuation.",
     "results_sha256": "fec54dd1a21810616cc4518969dc510f1cfc9572174a6bab8dac7f5423ca9008"
-  }
+  },
+  "resumption_policy": "resumption-plan-20260907.md: at most100 total product invocations per sampled batch; review/fix between batches; initial stability target three consecutive clean batches with coverage",
+  "full_campaign_approval": "required from user; NOT GRANTED",
+  "sampling_controls": "planned; hard global batch cap and approval-bound full launcher must be implemented before use"
 }
