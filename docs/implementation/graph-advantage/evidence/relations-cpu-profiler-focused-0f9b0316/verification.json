@@ -1,0 +1,33 @@
+{
+  "status": "passed focused harness verification; no product, corpus, VM, benchmark, or campaign execution",
+  "base_head": "0f9b0316ff0acf619c412c0a8eaa45001b18efb2",
+  "working_source": {
+    "internal/sem/extraction_corpus_evaluation_test.go": "2a71902538cee80bb64e7edacbf2ce52f289d1f652fea304a951a6bad663b644",
+    "internal/sem/extraction_corpus_relations_cpu_profile_test.go": "9c63ffcd0b8ab3b26ab6b251056e53f7312c23fe70b42710c78e3e6739c32174"
+  },
+  "checks": [
+    {
+      "command": "go test ./internal/sem -run '^TestExtractionCorpusRelationsCPUProfile|^TestExtractionCorpusDiagnosticsMeasurementSmoke$' -count=1",
+      "exit_code": 0,
+      "log": "normal.log",
+      "log_sha256": "015708b64b28e277f42f58cf6d6eae84908e521a66ff60b54591315f4a0011a4"
+    },
+    {
+      "command": "go test -race ./internal/sem -run '^TestExtractionCorpusRelationsCPUProfile' -count=1",
+      "exit_code": 0,
+      "log": "race.log",
+      "log_sha256": "234b7ff653156eb2852a5e7ae76097c2fb1b04ea8e42916f946fe41aa62d86f1"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0
+    }
+  ],
+  "fixture_origin": "Entire graph advantage plan and the retained 120-second Kubernetes full-profile timeout; diagnostic only, with no performance or release claim",
+  "limitations": [
+    "CPU samples begin only at the first relations progress event and omit earlier work",
+    "the 90-to-110-second interval is scheduling margin, not a guaranteed flush deadline",
+    "Windows is explicitly unsupported because durable directory Sync is not portable in this harness"
+  ],
+  "platform_boundary": "enabled profiler is rejected on Windows; default-off remains nil, and directory-sync/runtime-profile fixtures skip there"
+}

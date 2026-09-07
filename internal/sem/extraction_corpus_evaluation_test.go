@@ -35,7 +35,8 @@ const (
 	extractionCorpusOutputFormatEnv = "ENTIRE_GRAPH_EXTRACTION_CORPUS_OUTPUT_FORMAT"
 	// Phase breadcrumbs are opt-in diagnostic I/O to the already captured
 	// process stderr stream. They are never part of the observation protocol.
-	extractionCorpusPhaseBreadcrumbsEnv = "ENTIRE_GRAPH_EXTRACTION_CORPUS_PHASE_BREADCRUMBS"
+	extractionCorpusPhaseBreadcrumbsEnv    = "ENTIRE_GRAPH_EXTRACTION_CORPUS_PHASE_BREADCRUMBS"
+	extractionCorpusRelationsCPUProfileEnv = "ENTIRE_GRAPH_EXTRACTION_CORPUS_RELATIONS_CPU_PROFILE"
 
 	// These aliases make the harness convenient to invoke from a coordinator
 	// that already uses the shorter P1 names. The long names above are the
@@ -920,6 +921,13 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 	phases := make(map[string]extractionCorpusPhase)
 	requestStarted := time.Now()
 	phaseLog := newExtractionCorpusPhaseBreadcrumbWriter(extractionCorpusPhaseBreadcrumbsEnabled(), os.Stderr)
+	relationsCPUProfile, err := newExtractionCorpusRelationsCPUProfiler(
+		extractionCorpusRelationsCPUProfileEnabled(), config,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relationsCPUProfile.Close()
 	phaseLog.recordEssential("request_started", 0, nil)
 	var requestErr error
 	var serializeErr error
@@ -939,12 +947,15 @@ func TestExtractionCorpusMeasurement(t *testing.T) {
 			ExtractionReuse: config.Reuse, ExtractionCacheDir: config.CachePath,
 			Worktree: true, Profile: config.Profile, OnlyFiles: config.OnlyFiles,
 			Compiler: nil, Progress: func(event ProgressEvent) {
+				relationsCPUProfile.Observe(event, time.Since(requestStarted))
 				extractionCorpusPhaseProgress(phases, event)
 				phaseLog.recordProgress(time.Since(requestStarted), event)
 			},
 		}
 		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), config.RepositoryPath, config.ProviderVersion, options)
 		requestErr = err
+		relationsCPUProfile.Close()
+		requestErr = errors.Join(requestErr, relationsCPUProfile.Err())
 		phaseLog.flushProgress(time.Since(requestStarted))
 		phaseLog.recordEssential("api_returned", time.Since(requestStarted), requestErr)
 		failures = snapshot.Header.PartialFailures
