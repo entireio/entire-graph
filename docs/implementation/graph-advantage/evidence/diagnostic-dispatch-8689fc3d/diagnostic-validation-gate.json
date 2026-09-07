@@ -1,0 +1,69 @@
+{
+  "schema": "diagnostic-validation-v1",
+  "status": "passed",
+  "purpose": "single-non-admission-timeout-diagnostic",
+  "required_for_execution": true,
+  "admission_eligible": false,
+  "maximum_product_invocations": 1,
+  "allowed_cell": {
+    "cache": "off",
+    "profile": "full",
+    "verb": "snapshot",
+    "scenario": "diagnostic",
+    "arms": [false],
+    "preparatory_invocations": 0,
+    "retry_limit": 0,
+    "comparison": false
+  },
+  "evaluator_source_commit": "8689fc3d790e4290ce2b62500d270c96c02087b3",
+  "source_archive_sha256": "da93f88b25e6b75e19930094558475503422311e38847b3e2d570cde4a5129b4",
+  "evaluator_binary_sha256": "259a56073fb54e74f2d1d60a3a6a98d87a7eec1c992f86a0c665a35c3cdb9559",
+  "evaluator_build_manifest_sha256": "12031726f8413784120050f080214ba84ad791511569f5837b710c39832626c5",
+  "input_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+  "pinned_linux": {
+    "manifest_path": "diagnostics-linux-8689fc3d-r1/manifest.json",
+    "manifest_sha256": "cd65023615c66cb114df50ed044781bedfefeb012a5f42b2d6d67aaf70f467b4",
+    "build_manifest_path": "diagnostics-linux-8689fc3d-r1/build-manifest.json",
+    "stage_results_path": "diagnostics-linux-8689fc3d-r1/stage-results.json",
+    "stage_results_sha256": "5451dbec36aa307fc6ad18ac89379a2a73d6fa439e9455838a03b46c2282d266",
+    "source_commit": "8689fc3d790e4290ce2b62500d270c96c02087b3",
+    "source_archive_sha256": "da93f88b25e6b75e19930094558475503422311e38847b3e2d570cde4a5129b4",
+    "remote_root": "/opt/graph-validation/diagnostics-linux-8689fc3d-r1",
+    "required_stage_ids": ["affected_normal", "affected_race", "correctness", "build"],
+    "expected_stages": [
+      {
+        "id": "affected_normal",
+        "command": "go test -v ./internal/sem -run '^(TestGoHTTPRouteCandidate.*|TestGoHTTPRouteRelationsPreservesCompleteRecordsAndSkipsNonCandidates|TestGoHTTPHandleFuncResolvesRouteHandlerAndBridge|TestGoRouterMethodResolvesChiGinHandlerAndBridge|TestGoRouterSelectorHandlerResolvesUniqueMethodAndBridge|TestGoRouterGroupPrefixComposesHandlerAndBridge|TestGoChainedRouterGroupPrefixComposesHandlerAndBridge|TestGoNestedRouterGroupPrefixComposesHandlerAndBridge)$' -count=1 -timeout=120s",
+        "required_tests": ["TestGoHTTPRouteCandidateCoversRegistrationForms", "TestGoHTTPRouteCandidateRejectsIdentifierPrefixes", "TestGoHTTPRouteCandidateFindsLaterValidOccurrence", "TestGoHTTPRouteRelationsPreservesCompleteRecordsAndSkipsNonCandidates", "TestGoHTTPHandleFuncResolvesRouteHandlerAndBridge", "TestGoRouterMethodResolvesChiGinHandlerAndBridge", "TestGoRouterSelectorHandlerResolvesUniqueMethodAndBridge", "TestGoRouterGroupPrefixComposesHandlerAndBridge", "TestGoChainedRouterGroupPrefixComposesHandlerAndBridge", "TestGoNestedRouterGroupPrefixComposesHandlerAndBridge"],
+        "allowed_skips": []
+      },
+      {
+        "id": "affected_race",
+        "command": "GOFLAGS=-p=1 GOMAXPROCS=2 go test -race -v ./internal/sem -run '^(TestGoHTTPRouteCandidate.*|TestGoHTTPRouteRelationsPreservesCompleteRecordsAndSkipsNonCandidates|TestGoHTTPHandleFuncResolvesRouteHandlerAndBridge|TestGoRouterMethodResolvesChiGinHandlerAndBridge|TestGoRouterSelectorHandlerResolvesUniqueMethodAndBridge|TestGoRouterGroupPrefixComposesHandlerAndBridge|TestGoChainedRouterGroupPrefixComposesHandlerAndBridge|TestGoNestedRouterGroupPrefixComposesHandlerAndBridge)$' -count=1 -timeout=180s",
+        "required_tests": ["TestGoHTTPRouteCandidateCoversRegistrationForms", "TestGoHTTPRouteCandidateRejectsIdentifierPrefixes", "TestGoHTTPRouteCandidateFindsLaterValidOccurrence", "TestGoHTTPRouteRelationsPreservesCompleteRecordsAndSkipsNonCandidates", "TestGoHTTPHandleFuncResolvesRouteHandlerAndBridge", "TestGoRouterMethodResolvesChiGinHandlerAndBridge", "TestGoRouterSelectorHandlerResolvesUniqueMethodAndBridge", "TestGoRouterGroupPrefixComposesHandlerAndBridge", "TestGoChainedRouterGroupPrefixComposesHandlerAndBridge", "TestGoNestedRouterGroupPrefixComposesHandlerAndBridge"],
+        "allowed_skips": []
+      },
+      {
+        "id": "correctness",
+        "command": "ENTIRE_GRAPH_COMPILER_LIVE=1 go test -race -v -timeout 30m ./internal/compiler ./internal/sem ./internal/cli -run 'Test(Compiler|LiveCompiler|LiveAdvantage|LiveReview|MapLocation|RPC|Capsule)' -skip 'QualityEvaluation|ExtractionEvaluation|TestExtractionCorpusMeasurement' -count=1",
+        "required_tests": ["TestLiveCompilerDirectAndCandidate", "TestLiveCompilerMissingDependenciesAndCancellation", "TestLiveCompilerWorkspaceAliases", "TestLiveCompilerTagsReplacementAndClosure", "TestLiveCompilerSignatureAndWorkspaceInvalidation", "TestCapsuleConfinedAndMissingIdentity", "TestMapLocationExactAndConfined", "TestRPCRejectsServerEditsAndHandlesConfiguration", "TestRPCRejectsOutOfOrderAndMalformedReplies", "TestRPCCancellationBoundsUnresponsiveServer", "TestRPCConfigurationRetainsBuildTags", "TestRPCSendsBoundedCancellationNotification", "TestCompilerRejectsMalformedCapturedOperationIdentity", "TestCompilerContextInvalidationAndEvidence", "TestCompilerContextLengthPrefixAndOrdering", "TestLiveCompilerProcessBoundary", "TestCompilerOverlayExactSiteReconciliation", "TestCompilerOverlayProjectionRefusalAndUnavailable", "TestLiveCompilerSemanticMapping", "TestCompilerOverlayAmbiguousDirectAndClosureRemainUnconfirmed", "TestCompilerEnrichedViewDisputesOnlyExactEvidence", "TestCompilerOverlayConversionsAreNotCalls", "TestLiveCompilerConversionsAreNotCalls", "TestLiveAdvantageCombinationsAndNextQueryFreshness", "TestLiveReviewCompilerOrdinaryQueries", "TestCompilerCLIExplicitFallback", "TestCompilerIndexEvidenceDoesNotEnterStaticCache", "TestCompilerNoHitAndNativeHeader"],
+        "allowed_skips": []
+      },
+      {
+        "id": "build",
+        "command": "go test -c -o /opt/graph-validation/diagnostics-linux-8689fc3d-r1/p1-evaluator ./internal/sem",
+        "required_tests": [],
+        "allowed_skips": []
+      }
+    ],
+    "build_exit_code": 0,
+    "binary_sha256": "259a56073fb54e74f2d1d60a3a6a98d87a7eec1c992f86a0c665a35c3cdb9559"
+  },
+  "final_full_check_required_before": ["implementation-admission", "stability-sampling", "merge", "release", "quantitative-publication"],
+  "claims": {
+    "correctness": "focused-exact-source-only",
+    "performance": "none",
+    "stability": "none",
+    "release": "none"
+  }
+}
