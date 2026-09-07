@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "407412dbbb38",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/batch-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/control-files.tar.gz",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/control-hashes.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/package-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/setup-note.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/test_controller.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/40/7412dbbb38/0/metadata.json",
+      "transcript": "/40/7412dbbb38/0/full.jsonl",
+      "compact_transcript": "/40/7412dbbb38/0/transcript.jsonl",
+      "content_hash": "/40/7412dbbb38/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2442,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 289792,
+    "output_tokens": 729,
+    "api_call_count": 2
+  }
+}
