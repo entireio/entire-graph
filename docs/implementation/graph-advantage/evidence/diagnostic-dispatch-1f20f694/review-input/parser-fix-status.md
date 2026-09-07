@@ -52,3 +52,50 @@ Focused verification on the implementation working tree:
 
 No corpus product request, comparative run, benchmark, VM call, grammar update,
 dependency update, or policy change was performed.
+
+## Bash parameter-replacement and comment-backtick partials
+
+The source-bound parameter-replacement reproductions used Kubernetes revision
+`b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe`:
+
+- `cluster/gce/config-common.sh:175`, SHA-256
+  `c6a03d78e6021c2e0a8325becc6047a88be3c12e98d0283840d1bb3053a07800`
+- `cluster/gce/util.sh:3107`, SHA-256
+  `0e6090bccf0b29ca88ab893de8163df403d46cfa3cfb80510e24ae0618bf8c35`
+- `test/e2e/testing-manifests/storage-csi/external-snapshot-metadata/run_snapshot_metadata_e2e.sh:90-92`,
+  SHA-256
+  `b88b7a9ad23e5f02fb36109dc740501b7bd2b43d4ef1a76e840149bbd89fc7f2`
+
+The bundled grammar rejected literal punctuation after a nested expansion in
+complete, double-quoted `${NAME:-word}` and `${NAME:+word}` forms, and the
+escaped-brace fallback `${NAME:-{\}}`. Independently authored tests retain the
+same syntax shapes with different identifiers and surrounding commands. The
+parse view changes only the rejected backslash, semicolon, or three-byte
+escaped-brace fallback, preserving byte and newline positions. Nested
+expansions, command substitutions, and backticks remain in the parse tree;
+incomplete or malformed expansions remain `E_PARSE_ERROR`.
+
+The standalone comment-backtick reproduction is bound to
+`hack/update-codegen.sh:101` at the same Kubernetes revision, SHA-256
+`a9ff06eba58b6f439bb7e558ccb7452d9c2d6b91c69e583cf2f9ad2efec127ef`.
+Its independently authored test masks only complete standalone backtick words
+whose contents are a single-line comment. Real commands, quoted or attached
+forms, multiline content, and escaped forms remain unchanged.
+
+Public parsing, authored ranges and body hashes, supported call relations, and
+cached versus uncached extraction are covered by the focused tests. The
+current shell relation scanner does not emit a command substitution nested in
+a quoted local-assignment value, even for the independently authored
+grammar-clean control. The fix preserves that command-substitution AST and
+the exact public `CALLS` set produced by the clean control; it does not extend
+the resolver. The private extraction format advances from 5 to 6 so cached v5
+parse results cannot survive either new compatibility correction.
+
+Focused verification on the implementation working tree:
+
+- assignment-prefix, parameter-replacement, comment-backtick, cache-version,
+  and graph-selected shell-call tests: passed in 1.438s
+- the same focused tests with `-race`: passed in 2.629s
+
+No corpus product request, comparative run, benchmark, VM call, grammar update,
+dependency update, policy change, or broad shell relation change was performed.

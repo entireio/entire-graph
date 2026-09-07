@@ -2,13 +2,15 @@ package sem
 
 import "strings"
 
-// maskBashCompatibilitySyntax applies the one reviewed compatibility shim for
-// Bash: Bash permits environment assignments before a namespaced command, but
-// the vendored grammar rejects some of those command prefixes. The scanner is
-// deliberately lexical and narrow. It does not rewrite expansions,
-// substitutions, tests, arrays, globs, comments, or string contents.
+// maskBashCompatibilitySyntax applies reviewed, position-preserving parse-view
+// shims for narrow gaps in the bundled Bash grammar. Each helper validates its
+// own complete syntax shape before changing same-width bytes; the authored
+// source remains authoritative for extracted text, ranges, and hashes.
 func maskBashCompatibilitySyntax(content string) string {
-	return maskBashAssignmentPrefixedNamespacedCommands(maskBashUnsupportedSyntax(content))
+	masked := maskBashUnsupportedSyntax(content)
+	masked = maskBashParameterReplacementPunctuation(masked)
+	masked = maskBashCommentBacktickArguments(masked)
+	return maskBashAssignmentPrefixedNamespacedCommands(masked)
 }
 
 // maskBashAssignmentPrefixedNamespacedCommands blanks only assignment words
