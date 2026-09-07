@@ -1135,6 +1135,7 @@ type BatchFileReader struct {
 	closed         bool
 	poison         error
 	maxBytes       int64
+	skipOversize   bool
 	oversize       map[string]OversizeBlob
 	oversizeScan   func(path string, chunk []byte)
 	oversizePrefix func(path string) bool
@@ -1212,6 +1213,27 @@ func (r *BatchFileReader) SetMaxBytes(maxBytes int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.maxBytes = maxBytes
+}
+
+// SetSkipOversizeBodies makes an oversized blob be declined from its `info`
+// response, without ever asking Git for its contents.
+//
+// The size ceiling bounds what the reader HOLDS, not what it READS: an oversized
+// blob is still streamed past in full so its digest, line count and optional
+// prefix can be recorded. That is the right trade for the callers that consume
+// those records, and the wrong one for a caller that only wants source lines to
+// quote — for it the whole object is transferred and hashed only to be thrown
+// away, so one generated multi-gigabyte file in the tree turns a bounded
+// navigation answer into a multi-minute stall.
+//
+// With this set, an oversized path reports the same "no source" outcome it
+// reports today, and OversizeBlob records nothing for it: no digest is computed
+// because no body is requested. Callers that need those records must leave it
+// off. It is off by default, so no existing caller changes.
+func (r *BatchFileReader) SetSkipOversizeBodies(skip bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.skipOversize = skip
 }
 
 // OversizeBlob returns what ReadFile learned about a blob it refused to
@@ -1344,6 +1366,12 @@ func (r *BatchFileReader) readCheckedObjectSpec(objectSpec, oversizeKey string) 
 		// object after its header, so declining only after the request would still
 		// have to stream an arbitrarily large tree or commit merely to reach the next
 		// response. The info response has no object body to drain.
+		return "", false, nil
+	}
+	if r.skipOversize && r.maxBytes > 0 && objectSize > r.maxBytes {
+		// The info response already carries the size, so a caller that wants no
+		// digest for oversized blobs can decline here and never issue the
+		// contents request whose body would have to be drained in full.
 		return "", false, nil
 	}
 	// Pin the checked object before asking for content. Besides avoiding a second

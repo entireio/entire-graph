@@ -36,7 +36,7 @@ without version linker flags reports `dev`.
 - The Entire CLI (0.10.0 or later) must be on `PATH`.
 - Git 2.36 or later must be on `PATH`; committed-tree readers use its
   single-session `cat-file --batch-command` protocol.
-- Development uses Go 1.26. Tree-sitter bindings require CGO and a working C
+- Development uses Go 1.27. Tree-sitter bindings require CGO and a working C
   compiler for the target platform.
 - Local release builds require `tar` for non-Windows archives, `zip` or `7z`
   for Windows archives, and either `sha256sum` or `shasum`. Signing additionally
@@ -159,9 +159,19 @@ back to the per-user cache directory.
 
 ## Reports and the status line
 
-`entire graph stats --repo .` reports graph vs exploration tool usage from
-local session transcripts, read-only. `scripts/entire-graph-statusline.sh`
-renders the single-session variant as a Claude Code status line.
+`entire graph stats --repo .` prints one line — the estimated tokens the graph
+saved — from local session transcripts. `--verbose` restores the full report
+(graph vs exploration usage per verb and kind, billed tokens, the measured
+per-call costs, and the model's assumption); `--format json` is a machine
+contract and is unaffected by `--verbose`.
+
+`--since` prunes transcripts by file mtime before parsing them, and unchanged
+transcripts are memoised under the cache directory keyed on file identity plus
+the binary's own identity, so repeat runs do not re-parse gigabytes of session
+log. `--no-cache` forces a full re-parse; `--cache-dir` relocates the memo.
+
+`scripts/entire-graph-statusline.sh` renders the single-session variant as a
+Claude Code status line.
 
 ## Release archives
 

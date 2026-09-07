@@ -150,6 +150,34 @@ func languagesShareTypes(from, target string) bool {
 	return typeSharingLanguages[from][target]
 }
 
+// LanguagesMayShareRelations reports whether a diagnostic in either language
+// could remove a direct relation involving the other. Completeness must consider
+// both callers and callees, so this symmetrizes the resolver's compatibility
+// table without taking its transitive closure. Declaration-level restrictions
+// cannot rule out a failed file whose declarations were never parsed.
+func LanguagesMayShareRelations(left, right string) bool {
+	if strings.EqualFold(left, right) {
+		return true
+	}
+	for from, targets := range typeSharingLanguages {
+		var other string
+		switch {
+		case strings.EqualFold(from, left):
+			other = right
+		case strings.EqualFold(from, right):
+			other = left
+		default:
+			continue
+		}
+		for target := range targets {
+			if strings.EqualFold(target, other) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // sharedTypeCandidates filters a candidate list from the WORKSPACE-WIDE
 // short-name index down to declarations the referring symbol could actually
 // name.

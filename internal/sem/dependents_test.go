@@ -955,3 +955,47 @@ func TestBuildReferenceIndexReportsPerFileProgress(t *testing.T) {
 		t.Fatalf("last progress event = %#v, want total/total with empty path", last)
 	}
 }
+
+func TestBuildReferenceIndexBudgetRejectsBufferedResults(t *testing.T) {
+	const files = 128
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	for i := range files {
+		write(t, repo, fmt.Sprintf("caller%03d.py", i), "def caller(value):\n    return Foo(value)\n")
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "callers")
+	head := rev(t, repo, "HEAD")
+	const budget = 2 * time.Second
+	deadline := time.Now().Add(budget)
+	crossed := false
+	index, warnings, err := buildReferenceIndexWithProgress(t.Context(), repo, head, map[string]struct{}{"Foo": {}}, dependentsScanOptions{
+		deadline: deadline,
+		budget:   budget,
+		progress: func(done, total int, path string) {
+			if done == 100 && path != "" {
+				crossed = true
+				// Let already-admitted workers finish while the reducer is
+				// paused, then cross the deadline before reducing their results.
+				if remaining := time.Until(deadline); remaining > 0 {
+					time.Sleep(remaining + 100*time.Millisecond)
+				}
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !crossed {
+		t.Fatal("budget expired before the test reached the in-flight result boundary")
+	}
+	if got := len(index["Foo"]); got != 101 {
+		t.Fatalf("counted %d dependents, want only the 101 accepted at the deadline", got)
+	}
+	want := dependentsBudgetWarning(101, files, budget)
+	if len(warnings) != 1 || warnings[0] != want {
+		t.Fatalf("warnings = %#v, want %#v", warnings, want)
+	}
+}
