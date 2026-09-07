@@ -505,6 +505,20 @@ message Host {}
 extend Host { optional string extension_name = 19000; }
 `,
 		},
+		{
+			name: "inside_service",
+			content: `syntax = "proto2";
+message Host {}
+service Invalid { extend Host { optional string extension_name = 104; } }
+`,
+		},
+		{
+			name: "inside_enum",
+			content: `syntax = "proto2";
+message Host {}
+enum Invalid { extend Host { optional string extension_name = 105; } }
+`,
+		},
 	}
 
 	for _, fixture := range fixtures {

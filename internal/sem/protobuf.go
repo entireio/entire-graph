@@ -310,6 +310,9 @@ func isProtocolBuffersIdentifierStartByte(ch byte) bool {
 // This keeps malformed/broader declarations visible as parser errors while
 // allowing the surrounding message/service/RPC entities to be extracted.
 func maskProtocolBuffersExtensions(parseBytes []byte, content string) {
+	containers := make([]string, 0, 4)
+	pendingContainer := ""
+	pendingContainerName := false
 	for index := 0; index < len(content); {
 		switch content[index] {
 		case '/':
@@ -339,6 +342,25 @@ func maskProtocolBuffersExtensions(parseBytes []byte, content string) {
 			}
 			index = end + 1
 			continue
+		case '{':
+			containers = append(containers, pendingContainer)
+			pendingContainer = ""
+			pendingContainerName = false
+			index++
+			continue
+		case '}':
+			if len(containers) > 0 {
+				containers = containers[:len(containers)-1]
+			}
+			pendingContainer = ""
+			pendingContainerName = false
+			index++
+			continue
+		case ';':
+			pendingContainer = ""
+			pendingContainerName = false
+			index++
+			continue
 		}
 		if !isProtocolBuffersIdentifierStartByte(content[index]) {
 			index++
@@ -348,15 +370,49 @@ func maskProtocolBuffersExtensions(parseBytes []byte, content string) {
 		for end < len(content) && isProtocolBuffersIdentifierByte(content[end]) {
 			end++
 		}
-		if content[index:end] == "extend" {
+		word := content[index:end]
+		if word == "extend" && (len(containers) == 0 || containers[len(containers)-1] == "message") {
 			if extensionEnd, ok := protocolBuffersExtensionEnd(content, index); ok {
 				maskBytes(parseBytes, index, extensionEnd)
 				index = extensionEnd
 				continue
 			}
 		}
+		if len(containers) == 0 || containers[len(containers)-1] == "message" {
+			if container, ok := protocolBuffersContainerDeclaration(content, index, end); ok {
+				pendingContainer = container
+				pendingContainerName = true
+			} else if pendingContainerName {
+				// The only token permitted between a recognized container keyword
+				// and its opening brace is the declaration name.
+				pendingContainerName = false
+			} else if pendingContainer != "" {
+				pendingContainer = ""
+			}
+		} else if pendingContainerName {
+			pendingContainerName = false
+		} else if pendingContainer != "" {
+			pendingContainer = ""
+		}
 		index = end
 	}
+}
+
+func protocolBuffersContainerDeclaration(content string, start, end int) (string, bool) {
+	word := content[start:end]
+	if word != "message" && word != "enum" && word != "service" {
+		return "", false
+	}
+	index := skipProtocolBuffersTrivia(content, end)
+	index, ok := protocolBuffersIdentifierEnd(content, index)
+	if !ok {
+		return "", false
+	}
+	index = skipProtocolBuffersTrivia(content, index)
+	if index >= len(content) || content[index] != '{' {
+		return "", false
+	}
+	return word, true
 }
 
 func protocolBuffersExtensionEnd(content string, start int) (int, bool) {
