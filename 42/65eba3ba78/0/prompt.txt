@@ -1,9 +1,1 @@
-Commit/push, make sure that the Entire trailer is attached
-
----
-
-The trail shows a new medium finding
-
----
-
 Fix it
