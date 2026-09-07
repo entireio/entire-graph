@@ -4,6 +4,28 @@ Paused explicitly at the user’s request. Do not resume work, heartbeat or
 benchmarks until the user requests it. Branch `codex/graph-advantage`, worktree
 `<REPO_ROOT>`. Commit and push, no merge.
 
+## Current status after explicit resume — 2026-09-07
+
+The user has resumed the revised controlled sequence. The heartbeat
+`monitor-p1-corpus-campaign` is ACTIVE for implementation monitoring. No
+product or corpus call has been made in this resumed sequence; controlled
+diagnostics, fixes and sampled batches may proceed once prerequisites and
+controls pass. No full-campaign approval has been granted. The cheaper-model
+routing, 100-run shared cap, first-issue stops and explicit full-run approval
+boundary remain in force. Azure VMs were last verified deallocated; this
+documentation update made no fresh cloud query.
+
+The one authorized immutable verification completed on pinned commit
+`1f20f694775c3d8fd616eee4b22d9b13c30ff0fe`: `mise run check` exited 0 in
+42.970406 seconds, with unchanged HEAD and clean status before and after. Its
+raw evidence is retained under `evidence/check-1f20f694/`. The earlier
+`aab356ae` immutable failure remains retained and is not relabeled; the
+reviewer fixture packaging fix is the change verified by the new pass.
+
+The shutdown stopping point and resume sequence below are historical guidance
+from before this explicit resume. No product or corpus run has occurred during
+this resumed sequence, and release gates remain unchanged.
+
 ## Mandatory model routing
 
 For any future authorized work, cheaper-model subagents perform all
@@ -16,8 +38,9 @@ Do not use Astra subagents or silently fall back to Astra execution; report an
 unavailable cheaper worker and leave the step unexecuted. Worker commands and
 VM tasks remain subject to the shared 100-run batch cap, first-issue stops, and
 explicit user approval for a full campaign. This routing grants no new
-authorization. Everything remains paused except the requested plan adjustment;
-do not start tests, benchmarks, VMs, heartbeat, or goal work.
+authorization. Controlled work remains subject to the revised plan,
+prerequisites and stops; do not start a full campaign without explicit user
+approval.
 
 ## Exact stopping point
 

@@ -1,10 +1,14 @@
 # Revised resumption plan — bounded P1 stability sampling
 
 User-directed on 2026-09-07. This changes sequencing and adds an explicit
-approval boundary; it does not resume execution. Work and heartbeat remain
-paused. It supersedes earlier handoff/ledger suggestions that a canary pass
-can lead directly to the full campaign. Historical protocols/results remain
-unchanged. The full P1 campaign is NOT authorized.
+approval boundary. The user subsequently resumed the revised controlled
+sequence, including diagnostics, fixes and sampled batches once prerequisites
+pass; no product or corpus call has yet been made in this resumed sequence.
+The campaign is not currently running and release gates remain unchanged. It
+supersedes earlier handoff/ledger suggestions that a canary pass can lead
+directly to the full campaign. Historical protocols/results remain unchanged.
+The full P1 campaign still requires explicit user approval and is NOT yet
+authorized.
 
 ## 0. Mandatory model routing
 
@@ -21,8 +25,11 @@ the worker unavailable and leave the step unexecuted.
 Workers may execute otherwise authorized commands or VM tasks, but delegation
 adds no budget or authorization. The shared 100-run batch cap, first-issue
 stops, and explicit user approval before any full campaign remain in force.
-All work stays paused except this plan adjustment; do not launch tests,
-benchmarks, VMs, a heartbeat, or a goal from this document.
+The bounded immutable repository verification authorized after the user’s
+resume is complete; no product/corpus run, benchmark, VM task or campaign has
+started in this resumed sequence. After the documented prerequisites and hard
+controls pass, sampled work may proceed under this plan. A full campaign still
+requires explicit user approval.
 
 ## 1. Resolve known issues before sampling
 
@@ -125,6 +132,10 @@ benchmark dataset. Failed gates and experimental defaults remain unchanged.
 
 ## Pause and handoff
 
-Only planning documents and the paused follow-up instructions were revised.
-No VM, benchmark, test campaign or implementation was resumed. This resumption
-plan governs the earlier shutdown handoff and proposed benchmark sequence.
+Planning documents and the bounded verification status were reconciled after
+the explicit resume. No VM, benchmark, product/corpus test campaign or full
+evaluation has run in this resumed sequence. Controlled diagnostics, fixes and
+sampled batches may proceed after prerequisites; the hard batch controls
+remain planned/pending review, and a full campaign still requires explicit
+approval. This resumption plan governs the earlier shutdown handoff and
+proposed benchmark sequence.

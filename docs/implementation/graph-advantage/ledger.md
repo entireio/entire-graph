@@ -6,9 +6,9 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
-**Resumption policy revised 2026-09-07:** use batches capped at100 total product invocations, review and fix issues between batches, and establish stability before proposing a full run. Full-campaign execution requires the user’s explicit approval; none is granted. The new cap/approval launcher controls are still to be implemented. See `resumption-plan-20260907.md`. Work remains paused.
+**Resumption policy revised 2026-09-07:** use batches capped at100 total product invocations, review and fix issues between batches, and establish stability before proposing a full run. Full-campaign execution requires the user’s explicit approval; none is granted. The new cap/approval launcher controls are still to be implemented. See `resumption-plan-20260907.md`. The user has resumed the revised controlled sequence; no campaign is currently running.
 
-**Paused at the user’s request for laptop shutdown.** All three Azure VMs are confirmed deallocated; the 15-minute heartbeat is paused. No test or collector is running. Resume from `shutdown-handoff-20260906.md`; do not restart the campaign automatically.
+**Current bounded-resumption status:** the user’s resume authorizes controlled diagnostics, fixes and sampled batches once the documented prerequisites and controls pass; no product or corpus call has been made in this resumed sequence. The heartbeat is active for implementation monitoring, and no campaign, benchmark, VM task or collector is currently active. Azure VMs were last verified deallocated; this documentation update made no fresh cloud query. The pinned immutable `mise run check` passed in 42.970406 seconds at `1f20f694`; evidence is in `evidence/check-1f20f694/`. A full campaign still requires explicit user approval.
 
 **Mandatory model routing, 2026-09-07:** all substantive implementation,
 diagnosis, source/data inspection, fixture or harness work, execution/testing,
@@ -20,8 +20,9 @@ selection, and user communication. No Astra subagents or silent fallback to
 Astra execution are allowed; report an unavailable cheaper worker and leave
 the step unexecuted. Worker commands or VM tasks remain subject to existing
 authorization, the shared 100-run batch cap, first-issue stops, and explicit
-approval before a full campaign. All work remains paused except this plan
-adjustment.
+approval before a full campaign. No product or corpus work is currently
+running; controlled work remains subject to the revised prerequisites and
+stops.
 
 Current implementation source is `6cf92c9c`: ADR 0048 adds cancellation-aware ownership before batch detachment, permitting only one detached publication batch operation-wide. Focused correctness and race checks passed. Pinned Linux passed 76 top-level tests including 10 live compiler tests. Full `mise run check` passed in 687.332 seconds with unchanged HEAD and clean status. Evidence: `evidence/check-6cf92c9c/` and `evidence/correctness-6cf92c9c-20260906/`.
 
@@ -31,7 +32,7 @@ The P1 campaign remains paused. Baseline counts remain 108 requests (69 complete
 
 All 77 campaign-control tests passed; a live fake-service smoke verified that all three active workers stopped after an injected pause. The validation VM is confirmed deallocated after correctness and corrective evidence collection; the two campaign workers remain deallocated. No campaign is running. P2/P3/P4 comparative studies remain deferred, and no complete workstream release gate has passed. Defaults remain extraction reuse off, compiler off, impact depth two and current ranking.
 
-The test-only corpus harness now has an optional `diagnostics_path` artifact containing every failure and warning. Eight focused tests, including tiny-repository subprocess plumbing and race, passed. The `aab356ae` check command passed in 705.514s, but its immutable-state gate failed because gofmt changed six original reviewer input files. The formatting diff is retained. Those inputs now use `.go.txt` storage with unchanged original hashes and logical-path mapping. A new immutable check after this packaging fix is still required. Existing campaign admission remains unchanged; no old sampled observation is relabeled fully reviewed. See `p1-corpus-20260905/admission-audit-1058c133/README.md`.
+The test-only corpus harness now has an optional `diagnostics_path` artifact containing every failure and warning. Eight focused tests, including tiny-repository subprocess plumbing and race, passed. The `aab356ae` check command passed in 705.514s, but its immutable-state gate failed because gofmt changed six original reviewer input files; that failure and formatting diff remain retained. Those inputs now use `.go.txt` storage with unchanged original hashes and logical-path mapping. The packaging fix was verified by the pinned immutable `mise run check` at `1f20f694`: exit 0 in 42.970406 seconds with unchanged HEAD and clean status; see `evidence/check-1f20f694/`. Existing campaign admission remains unchanged; no old sampled observation is relabeled fully reviewed. See `p1-corpus-20260905/admission-audit-1058c133/README.md`.
 
 ## Authoritative task status
 

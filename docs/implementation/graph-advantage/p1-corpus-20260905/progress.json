@@ -1,5 +1,5 @@
 {
-  "phase": "paused_for_laptop_shutdown",
+  "phase": "resumed_controlled_sequence",
   "workers": 3,
   "model_policy": {
     "routine_worker": "gpt-5.6-luna",
@@ -34,11 +34,11 @@
   "implementation_source_commit": "6cf92c9c",
   "verified_checkpoint": "6cf92c9ccff1882bb2ab63aa9edeb8da0d633cc3",
   "verified_evidence_commit": "see evidence/check-6cf92c9c/verification.json",
-  "current_worktree": "aab356ae harness committed; shutdown commit retains fixture packaging fix, collector draft and proposed ADR0049",
-  "workers_state": "All three Azure VMs confirmed deallocated; no active local check or collector",
+  "current_worktree": "branch HEAD 1f20f694; bounded verification evidence retained; campaign remains paused",
+  "workers_state": "Azure VMs last verified deallocated; no fresh cloud query in this update; immutable check complete; no active product/corpus run or collector",
   "harness_source_commit": "0381ea6d9090e167b716b9c2de5ee50b81b57217",
   "heartbeat": "monitor-p1-corpus-campaign",
-  "correctness": "76pinnedLinuxtests including10live; fullcheck687.332s",
+  "correctness": "76 pinned Linux tests including 10 live; immutable mise run check passed in 42.970406 seconds at 1f20f694",
   "release_gate": "not passed",
   "defaults": "unchanged; experimental features off",
   "transport": "AppleDouble sidecars removed before verified fixture digests; clean archive retained",
@@ -49,7 +49,7 @@
     "timeout": 6
   },
   "hard_blocked_strata": 3,
-  "as_of_utc": "2026-09-06T14:44:23.437633+00:00",
+  "as_of_utc": "2026-09-07T07:42:34.458Z",
   "campaign_status_counts": {
     "partial": 113,
     "timeout": 3,
@@ -58,8 +58,8 @@
   "measured_requests": 116,
   "recorded_unrun_requests": 1434,
   "pending_planned_requests": 15730,
-  "heartbeat_status": "PAUSED",
-  "pause_reason": "User requested laptop shutdown pause; prior campaign blockers remain",
+  "heartbeat_status": "ACTIVE",
+  "pause_reason": "User resumed revised controlled sequence; no product/corpus calls yet; full campaign still requires explicit user approval",
   "cache_fix_commits": [
     "f96483ef",
     "9bfafe17"
@@ -70,15 +70,15 @@
   ],
   "remaining_diagnosis": "Three retained query profile mismatches closed. Latest single cold pair within latency/RSS screens. Baseline fast/full snapshot timeouts and frozen partial admission policy remain unresolved.",
   "stopgaps": "77 campaign-control tests passed in7.809s after startup/final-lease/accounting fixes; protocol supersedes old three-failure rule",
-  "full_correctness": "aab356ae command exit0 in705.514s but immutable false due to reviewer fixture gofmt changes; packaging fix requires new immutable check",
-  "campaign": "paused; no automatic restart",
+  "full_correctness": "aab356ae exit0 in705.514s but immutable false due reviewer fixture gofmt changes; packaging fix verified by 1f20f694 exit0 in42.970406s with immutable true",
+  "campaign": "not running; controlled diagnostics, fixes and sampled batches may proceed after prerequisites; full campaign requires user approval",
   "stopgap_commits": [
     "dc0ddce7",
     "e5873854",
     "969dc52f",
     "3b242da7"
   ],
-  "next_work": "On explicit resume, follow revised100-run sampling plan; no full campaign without user approval",
+  "next_work": "Complete prerequisites and pending controls, then run controlled diagnostics, fixes and sampled batches; no full campaign without explicit user approval",
   "current_focused_correctness": {
     "commit": "1c0b8e24",
     "correctness_seconds": 0.788,
@@ -164,7 +164,7 @@
     "limitations": "single corrective pair; no statistical or release-gate claim"
   },
   "current_product_source_commit": "6cf92c9c",
-  "heartbeat_purpose": "Active implementation monitoring; campaign remains paused",
+  "heartbeat_purpose": "Active implementation monitoring; controlled sequence not currently running",
   "corrective_resource_runner": {
     "source_commit": "31cc145dca122729edbc45894b6bcb8560332a6c",
     "tests": 4,
@@ -278,5 +278,17 @@
   },
   "resumption_policy": "resumption-plan-20260907.md: at most100 total product invocations per sampled batch; review/fix between batches; initial stability target three consecutive clean batches with coverage",
   "full_campaign_approval": "required from user; NOT GRANTED",
-  "sampling_controls": "planned; hard global batch cap and approval-bound full launcher must be implemented before use"
+  "sampling_controls": "planned; hard global batch cap and approval-bound full launcher must be implemented before use",
+  "current_immutable_verification": {
+    "source_commit": "1f20f694775c3d8fd616eee4b22d9b13c30ff0fe",
+    "command": "mise run check",
+    "exit_code": 0,
+    "elapsed_seconds": 42.97040633391589,
+    "immutable": true,
+    "before_after_head_equal": true,
+    "before_after_status_clean": true,
+    "log_sha256": "1c914a34617a2173b94030cfc06f8b9d571e6982955e07284135944acbbe74ab",
+    "evidence": "evidence/check-1f20f694/verification.json",
+    "scope": "single immutable verification; no product/corpus measurement, VM or campaign work"
+  }
 }

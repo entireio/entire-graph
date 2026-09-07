@@ -1,0 +1,13 @@
+{
+  "requested_source": "1f20f694775c3d8fd616eee4b22d9b13c30ff0fe",
+  "pre_checkout": {
+    "checkout": "/private/var/folders/7g/r0pg1n495tb1snh2zvk9y0_r0000gn/T/graph-integration-0c9e80f5-61zo1a1q/source",
+    "head": "aab356ae40eabbbdca7659eac9bcb58ccd8feb18",
+    "status": ""
+  },
+  "before_check": {
+    "head": "1f20f694775c3d8fd616eee4b22d9b13c30ff0fe",
+    "status": "",
+    "branch": ""
+  }
+}
