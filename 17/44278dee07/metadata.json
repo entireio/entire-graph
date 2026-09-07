@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "1744278dee07",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/finished-at.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/mise-check.raw.log",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/process-trees.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/source-after-head.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/source-after-status.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/source-before-head.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/source-before-status.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/source-integrity.json",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/started-at.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/subprocess-result.json",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/tracked-source-sha-after.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/tracked-source-sha-before.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/verification.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/README.md",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/collector-tests-scoped-gate.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller-tests-scoped-gate.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/package-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/test_controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/full-check-gate.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/source-identity.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/verification.json",
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/review-summary.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/17/44278dee07/0/metadata.json",
+      "transcript": "/17/44278dee07/0/full.jsonl",
+      "compact_transcript": "/17/44278dee07/0/transcript.jsonl",
+      "content_hash": "/17/44278dee07/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 148956,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 21325952,
+    "output_tokens": 23568,
+    "api_call_count": 181
+  }
+}

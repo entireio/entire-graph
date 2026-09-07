@@ -1,0 +1,73 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "1744278dee07",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-07T11:40:30.072471Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/finished-at.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/mise-check.raw.log",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/process-trees.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/source-after-head.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/source-after-status.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/source-before-head.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/source-before-status.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/source-integrity.json",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/started-at.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/subprocess-result.json",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/tracked-source-sha-after.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/tracked-source-sha-before.txt",
+    "docs/implementation/graph-advantage/evidence/check-8c8b075d/verification.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/README.md",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/collector-tests-scoped-gate.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller-tests-scoped-gate.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/package-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/test_controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/full-check-gate.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/source-identity.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/verification.json",
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/review-summary.md"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "187f465bd6ad",
+  "checkpoint_transcript_start": 14496,
+  "transcript_lines_at_start": 14496,
+  "compact_transcript_start": 1824,
+  "token_usage": {
+    "input_tokens": 148956,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 21325952,
+    "output_tokens": 23568,
+    "api_call_count": 181
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-07T11:40:29.12515Z",
+    "agent_lines": 6094,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 6094,
+    "total_lines_changed": 6094,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
