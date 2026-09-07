@@ -1,0 +1,10 @@
+{
+  "scope": "diagnostics-linux-8689fc3d serialized launcher and transport artifacts",
+  "scan_result": "no SAS query credential markers found; no content redaction required",
+  "transport_json_original_sha256": "ecace5a8f6cdb2137302dc40bbfb4526d0d9e35d181b887b8a3db7fcdefeeac9",
+  "transport_stderr_original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "azure_response_redaction_observed": true,
+  "secret_values_recorded": false,
+  "reversible_encoded_secret_values_recorded": false,
+  "note": "Base64 is reversible and was treated as secret material; neither a real SAS URL nor its base64 encoding was retained."
+}

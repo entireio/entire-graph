@@ -1,0 +1,17 @@
+{
+  "cloud_calls": 0,
+  "syntax": "pass",
+  "binding": "pass",
+  "inputs": "dummy URLs and dummy 64-character SHA only",
+  "verified": {
+    "source_url": "https://example.invalid/source.tar.gz?dummy=read",
+    "result_url": "https://example.invalid/results.tar.gz?dummy=write",
+    "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "remote_root": "/opt/graph-validation/diagnostics-linux-8689fc3d-r1",
+    "archive_path": "/tmp/diagnostics-linux-8689fc3d-r1-source.tar.gz"
+  },
+  "retained_real_sas_url": false,
+  "retained_real_sas_base64": false,
+  "fail_closed": "pass",
+  "empty_source_exit": 72
+}
