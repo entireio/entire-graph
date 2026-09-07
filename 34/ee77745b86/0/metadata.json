@@ -1,0 +1,67 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "34ee77745b86",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-07T11:52:44.089316Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/dispatch-claim.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/failure-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/claim-worker-1.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/collector-exit.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/collector.log",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/batch-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/build-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/collector/batch_budget.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/collector/campaign_gate.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/collector/cloud.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/collector/run_remote.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/control-hashes.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/corpus/corpus-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/corpus/p1_scenario.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/environment.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/results.tar.gz",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/transport.json",
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/review-summary.md"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "187f465bd6ad",
+  "checkpoint_transcript_start": 15894,
+  "transcript_lines_at_start": 15894,
+  "compact_transcript_start": 1993,
+  "token_usage": {
+    "input_tokens": 11621,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2921088,
+    "output_tokens": 3965,
+    "api_call_count": 20
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-07T11:52:43.129246Z",
+    "agent_lines": 2211,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 2211,
+    "total_lines_changed": 2211,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

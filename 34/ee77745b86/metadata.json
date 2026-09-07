@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "34ee77745b86",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/dispatch-claim.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/failure-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/claim-worker-1.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/collector-exit.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/collector.log",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/batch-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/build-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/collector/batch_budget.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/collector/campaign_gate.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/collector/cloud.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/collector/run_remote.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/control-hashes.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/corpus/corpus-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/control/corpus/p1_scenario.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/environment.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/results.tar.gz",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/transport.json",
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/review-summary.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/34/ee77745b86/0/metadata.json",
+      "transcript": "/34/ee77745b86/0/full.jsonl",
+      "compact_transcript": "/34/ee77745b86/0/transcript.jsonl",
+      "content_hash": "/34/ee77745b86/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 11621,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2921088,
+    "output_tokens": 3965,
+    "api_call_count": 20
+  }
+}
