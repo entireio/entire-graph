@@ -7,12 +7,7 @@ labelled by their source checkpoint and are not current-head certification.
 
 ## Source and verification boundary
 
-The latest completed immutable full check is `450bede9`: serialized
-`mise run check` exited 0 in 1204.774 seconds at exact source
-`450bede9970e05c994d80986cf105dd068e9fc29`, with 151 shell checks passed,
-unchanged HEAD, clean before/after status and byte-equal tracked-source
-manifests. It performed no product or corpus evaluation; evidence is retained
-under `evidence/check-450bede9/`. The `90ac3e16`, `8c8b075d` and `1f20f694`
+The latest completed immutable full check is `25887f69`: unchanged tracked `mise run check` exited 0 in 780.525 seconds at exact source `25887f6954fc06e35bc3a7c699e3c524213dada4`. Formatting, vet, the complete race suite, build and status-line task passed; `internal/sem` passed in 468.340 seconds. The status-line driver reported 145 passed, zero failed and three disclosed platform/ownership skips. `HOME` was observed unset and was not reassigned. All 2,292 tracked path/content/Git-mode identities matched before and after. This is correctness evidence, not a release, stability or performance result; no product or corpus invocation occurred. Evidence: `evidence/check-25887f69-linux-full/`. The `90ac3e16`, `8c8b075d` and `1f20f694`
 passes remain historical evidence. The first `90ac3e16` launcher failure on
 `mise` trust remains retained separately as a non-test failure. The profiler harness at exact source
 `90ac3e16b96c34ab219ecd2a90eca4600fd0c586` was reviewed and committed. Its
@@ -77,7 +72,7 @@ Two separate Linux cache-fixture infrastructure attempts did not reach tests. Th
 
 A separate Linux full-check attempt used the complete 2,059-file source archive and genuine unchanged `mise run check`. Its source, official checksum-bound mise 2026.4.11 and offline-linked Go 1.26.1 prechecks passed. Formatting, vet, the full race suite and build completed; `internal/sem` passed in 457.108 seconds. The overall mise run lasted 764.628 seconds; the required status-line task failed with 62 assertions passed, 78 failed and three platform/ownership checks skipped, so the full check failed and status-line coverage was incomplete. Its separate task duration was not recorded. Pre/post tracked source identity was unchanged. The retained output does not prove the environmental cause of the empty renders and missing cache artifacts. No retry, product or corpus invocation followed, and all three validation VMs were deallocated. Evidence: `evidence/check-6f23da0a-linux-full/`. Two bounded follow-ups did not change that result. The reconstructed Linux trace produced two successful canned renders but did not reproduce the failure or execute the exact task wrapper (`evidence/statusline-linux-trace-6f23da0a/`). The attempted exact-task diagnostic stopped at setup exit 73 before source identity, toolchain selection or the status-line task because it looked for `tracked-manifest.tsv` while successful full-check r1 used `tracked-manifest-r1.tsv`; its stale `HOME`, mode and selected-Go checks are retained and must not be reused (`evidence/statusline-linux-actual-task-6f23da0a/`). Counts remain five product invocations and zero clean stability batches, no full gate passed, and all three validation VMs were deallocated. A fresh worker is preparing a corrected runner from the successful full-check r1 boundary; it has no result yet.
 
-Source commit `25887f6954fc06e35bc3a7c699e3c524213dada` applies the statusline fallback fix for an unset `HOME` and adds five assertions. The exact Linux statusline task evidence remains the pre-fix result (62 passed, 78 failed, 3 skipped); an independently authored local stub reproduces the original `HOME`-unset failure and passes after the fix, while the focused local test driver reports 156 passed and 0 failed. The `dash` invocation also reports 156/0, but its statusline subprocesses still use the driver's literal `sh` command, so this does not claim all SUT cases ran under `dash`. The cloud runner did not capture `${HOME+x}`, so unset `HOME` as the cloud cause remains an inference. Evidence is under `evidence/statusline-linux-actual-task-6f23da0a-r1/`. This source has no immutable full-check result; the full-check and release gates remain failed/unpassed, with five product invocations and zero clean stability batches.
+Source commit `25887f6954fc06e35bc3a7c699e3c524213dada4` applies the status-line fallback fix for an unset `HOME` and adds five assertions. Its exact immutable Linux full check passed as described above, while the pre-fix 62-pass/78-fail/3-skip run and all setup/diagnostic failures remain retained as historical evidence. Counts remain five product invocations and zero clean stability batches; release and stability gates remain unpassed.
 
 ## Current status
 
@@ -143,8 +138,7 @@ zero skips or failures. The evaluator build produced binary SHA-256
 `259a56073fb54e74f2d1d60a3a6a98d87a7eec1c992f86a0c665a35c3cdb9559`;
 evidence is retained under `evidence/diagnostics-linux-8689fc3d-r1/`. This is
 focused correctness and build evidence. No immutable full check exists for
-`8689fc3d`; the latest completed immutable full check remains the historical
-`450bede9` run. The diagnostic preparation was committed and pushed at
+`8689fc3d`; the completed full-check evidence available at that earlier source boundary remained the historical `450bede9` run. The diagnostic preparation was committed and pushed at
 `ad41af6fb21c0b046d3f11716683990954d2ef3d`.
 
 The accepted focused-only `diagnostic-validation-v1` gate then authorized
@@ -185,7 +179,7 @@ P2, P3 or P4 release gate has passed.
 
 | Workstream | Implementation and correctness | Evaluation and release status |
 |---|---|---|
-| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. The route refactor at `78c8b496` has focused normal/race/oracle/resource evidence; source `6f23da0a` has separate pinned Linux focused success, while its immutable full check failed in `internal/sem`. Statusline `HOME` fallback fix `25887f69` has local 156/0 and unset-`HOME` stub evidence, but no full check at that source. | Fixed-corpus baseline and paired matrix are incomplete; timeout/partial admission, performance, RSS and full-check correctness remain open. |
+| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. The route refactor at `78c8b496` has focused normal/race/oracle/resource evidence; source `6f23da0a` has separate pinned Linux focused success, while its immutable full check failed in `internal/sem`. Statusline `HOME` fallback fix `25887f69` has local 156/0 evidence and an exact immutable Linux full-check pass with three disclosed platform/ownership skips. | Fixed-corpus baseline and paired matrix are incomplete; timeout/partial admission, performance, RSS and campaign admission remain open. |
 | P2 | Pinned Go analysis, lifecycle, source identity, mapping, compiler-view integration and invalidation contracts have implementation and focused correctness evidence. | Hard-Go quality and adjudicated precision/recall studies are deferred; no gate passed. |
 | P3 | Relation policy, bounded traversal, path evidence, CLI/output and compiler-view contracts have focused correctness evidence. | Realistic affected-site precision/recall/cost studies and coverage gates are deferred; no gate passed. |
 | P4 | Candidate-only ranking, experimental integration, fallback behavior and one bounded candidate-expansion policy are implemented. `current-expansion`, `uniform` and `weighted` use identical no-compiler candidate pools while `current-expansion` retains baseline ranking; compiler evidence may change the eligible pool in `weighted-compiler`. Focused normal/race contract evidence is retained. | No new retrieval measurement or tuning was run. No winning configuration, held-out result or downstream agent study is established; no gate passed. |
