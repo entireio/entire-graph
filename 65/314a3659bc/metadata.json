@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "65314a3659bc",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/check-1f20f694/before.json",
+    "docs/implementation/graph-advantage/evidence/check-1f20f694/check.log",
+    "docs/implementation/graph-advantage/evidence/check-1f20f694/verification.json",
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/progress.json",
+    "docs/implementation/graph-advantage/resumption-plan-20260907.md",
+    "docs/implementation/graph-advantage/shutdown-handoff-20260906.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/65/314a3659bc/0/metadata.json",
+      "transcript": "/65/314a3659bc/0/full.jsonl",
+      "compact_transcript": "/65/314a3659bc/0/transcript.jsonl",
+      "content_hash": "/65/314a3659bc/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3365829,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 133126272,
+    "output_tokens": 382557,
+    "api_call_count": 1631
+  }
+}
