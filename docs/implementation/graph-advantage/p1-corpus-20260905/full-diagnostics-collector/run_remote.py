@@ -13,8 +13,13 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 
-EXPECTED_SOURCE_COMMIT = "aab356ae40eabbbdca7659eac9bcb58ccd8feb18"
+P1_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(P1_ROOT))
+import batch_budget
+
+EXPECTED_SOURCE_COMMIT = "1f20f694775c3d8fd616eee4b22d9b13c30ff0fe"
 EXPECTED_REPOSITORY = "kubernetes-kubernetes"
 EXPECTED_REPO_PATH = "/opt/p1/corpus/kubernetes-kubernetes"
 EXPECTED_PROVIDER = "p1-corpus-20260905"
@@ -35,6 +40,7 @@ GO_TEST_TIMEOUT_SECONDS = 130
 RSS_PREFIX = "Maximum resident set size (kbytes):"
 RSS_VALUE_RE = re.compile(r"^[0-9]+$")
 MAX_RSS_BYTES = (1 << 64) - 1
+FIXED_CLAIM_ROOT = Path("/opt/p1/batch-claims")
 
 
 def sha256(path):
@@ -52,8 +58,8 @@ def save(path, value):
 
 def existing_artifact_hashes(root):
     root = Path(root)
-    names = ("identity.json", "manifest.json", "before.json", "after.json", "observation.ndjson",
-             "diagnostics.json", "process.log", "process.json", "time.txt")
+    names = ("identity.json", "budget.json", "manifest.json", "before.json", "after.json",
+             "observation.ndjson", "diagnostics.json", "process.log", "process.json", "time.txt")
     return {name: sha256(root / name) for name in names if (root / name).is_file()}
 
 
@@ -224,8 +230,12 @@ def validate_observation(observation, manifest, binary_sha256):
 
 
 def validate_diagnostics(diagnostics, observation_path, manifest, binary_sha256,
-                         raw_values=None, expected_partial_digest=EXPECTED_PARTIAL_FAILURES_SHA256,
-                         expected_warning_digest=EXPECTED_WARNINGS_SHA256):
+                         raw_values=None, expected_partial_digest=None,
+                         expected_warning_digest=None):
+    if expected_partial_digest is None:
+        expected_partial_digest = EXPECTED_PARTIAL_FAILURES_SHA256
+    if expected_warning_digest is None:
+        expected_warning_digest = EXPECTED_WARNINGS_SHA256
     validate_identity(diagnostics, manifest, binary_sha256, "diagnostics")
     if diagnostics.get("observation_path") != str(Path(observation_path).resolve()):
         raise RuntimeError("diagnostics observation_path mismatch")
@@ -259,7 +269,8 @@ def validate_diagnostics(diagnostics, observation_path, manifest, binary_sha256,
     return {"partial_failures": len(failures), "warnings": len(warnings)}
 
 
-def run_process(root, binary, environment, process_factory=subprocess.Popen, kill_process_group=os.killpg):
+def run_process(root, binary, environment, process_factory=subprocess.Popen,
+                kill_process_group=os.killpg, before_spawn=None):
     root = Path(root)
     time_path = root / "time.txt"
     process_log = root / "process.log"
@@ -267,6 +278,8 @@ def run_process(root, binary, environment, process_factory=subprocess.Popen, kil
                "-test.run=^TestExtractionCorpusMeasurement$", "-test.count=1", "-test.v",
                f"-test.timeout={GO_TEST_TIMEOUT_SECONDS}s"]
     with process_log.open("wb") as log:
+        if before_spawn is not None:
+            before_spawn()
         process = process_factory(command, env=environment, cwd=root, stdout=log,
                                   stderr=subprocess.STDOUT, start_new_session=True)
         timed_out = False
@@ -298,15 +311,76 @@ def run_process(root, binary, environment, process_factory=subprocess.Popen, kil
     return {"exit_code": exit_code, "peak_rss_bytes": peak_rss_bytes}
 
 
+def load_build_identity(path, binary_sha256):
+    path = Path(path).resolve()
+    try:
+        document = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"cannot read build manifest: {error}") from error
+    if not isinstance(document, dict):
+        raise RuntimeError("build manifest must be a JSON object")
+    if document.get("binary_sha256") != binary_sha256:
+        raise RuntimeError("build manifest binary identity mismatch")
+    if document.get("source_commit") != EXPECTED_SOURCE_COMMIT:
+        raise RuntimeError("build manifest source identity mismatch")
+    if document.get("exit_code") != 0:
+        raise RuntimeError("build manifest does not record a successful build")
+    return {"path": path, "sha256": sha256(path), "document": document}
+
+
+def claim_diagnostic_budget(batch_manifest, build_manifest, scenario_script,
+                            binary_sha256, worker, claim_root=FIXED_CLAIM_ROOT):
+    if isinstance(worker, bool) or not isinstance(worker, int) or worker < 1:
+        raise RuntimeError("batch worker must be a positive integer")
+    build = load_build_identity(build_manifest, binary_sha256)
+    identity = {
+        "binary_sha256": binary_sha256,
+        "input_manifest_sha256": EXPECTED_INPUT_MANIFEST_SHA256,
+        "runner_sha256": sha256(__file__),
+        "scenario_sha256": sha256(scenario_script),
+        "gate_sha256": sha256(P1_ROOT / "campaign_gate.py"),
+        "budget_sha256": sha256(P1_ROOT / "batch_budget.py"),
+        "build_manifest_sha256": build["sha256"],
+    }
+    try:
+        batch = batch_budget.load(Path(batch_manifest).resolve(), identity)
+    except batch_budget.BudgetError as error:
+        raise RuntimeError(str(error)) from error
+    if batch.get("scope") != "bounded-diagnostic":
+        raise RuntimeError("collector requires bounded-diagnostic batch scope")
+    if batch.get("derived_invocations") != 1 or len(batch.get("cells", [])) != 1:
+        raise RuntimeError("collector batch must contain exactly one invocation cell")
+    cell = batch["cells"][0]
+    expected = {
+        "worker": worker,
+        "repository": EXPECTED_REPOSITORY,
+        "profile": EXPECTED_PROFILE,
+        "verb": "snapshot",
+        "scenario": EXPECTED_SCENARIO,
+        "trial": 0,
+        "arms": [False],
+        "preparatory_invocations": 0,
+    }
+    for field, wanted in expected.items():
+        if cell.get(field) != wanted:
+            raise RuntimeError(f"collector batch cell mismatch: {field}")
+    claim_path = Path(claim_root) / batch["batch_id"] / f"worker-{worker}.json"
+    try:
+        ledger = batch_budget.WorkerLedger(claim_path, batch, worker)
+    except batch_budget.BudgetError as error:
+        raise RuntimeError(str(error)) from error
+    return batch, cell, ledger, claim_path, identity
+
+
 def run_request(output, binary, scenario_script, corpus_root, binary_sha256,
-                source_root, fingerprint_fn=fingerprint, process_factory=subprocess.Popen,
-                kill_process_group=os.killpg):
+                source_root, build_manifest, batch_manifest, batch_worker,
+                fingerprint_fn=fingerprint, process_factory=subprocess.Popen,
+                kill_process_group=os.killpg, _claim_root=FIXED_CLAIM_ROOT):
     output = Path(output).resolve()
     if Path(corpus_root).resolve() != Path(EXPECTED_REPO_PATH).parent:
         raise RuntimeError("fingerprint corpus root differs from fixed product repository")
     if output.exists():
         raise RuntimeError("output directory already exists; refusing overwrite")
-    output.mkdir(parents=True)
     binary = Path(binary).resolve()
     scenario_script = Path(scenario_script).resolve()
     source_root = Path(source_root).resolve()
@@ -316,6 +390,11 @@ def run_request(output, binary, scenario_script, corpus_root, binary_sha256,
         raise RuntimeError("binary is outside source root")
     if sha256(binary) != binary_sha256:
         raise RuntimeError("binary identity mismatch")
+    batch, cell, ledger, claim_path, budget_identity = claim_diagnostic_budget(
+        batch_manifest, build_manifest, scenario_script, binary_sha256,
+        batch_worker, _claim_root,
+    )
+    output.mkdir(parents=True)
     manifest = expected_manifest(output, binary_sha256)
     manifest_path = output / "manifest.json"
     manifest["_path"] = str(manifest_path)
@@ -337,6 +416,16 @@ def run_request(output, binary, scenario_script, corpus_root, binary_sha256,
         "warnings_sha256": EXPECTED_WARNINGS_SHA256,
         "request_scope": "one cache-off syntax-only snapshot; no ON arm, repeats, ratios, or admission",
     })
+    save(output / "budget.json", {
+        "batch_id": batch["batch_id"],
+        "batch_manifest": str(Path(batch_manifest).resolve()),
+        "batch_manifest_sha256": batch["manifest_sha256"],
+        "cell_id": cell["cell_id"],
+        "phase": "arm:false",
+        "worker": batch_worker,
+        "claim_path": str(claim_path),
+        "identity": budget_identity,
+    })
     environment = runtime_environment(corpus_root)
     environment.update(
         ENTIRE_GRAPH_EXTRACTION_CORPUS_MANIFEST=str(manifest_path),
@@ -346,9 +435,21 @@ def run_request(output, binary, scenario_script, corpus_root, binary_sha256,
     issue = None
     before = None
     process = None
+    artifact_counts = None
+    invocation_started = False
+    invocation_finished = False
+
+    def start_invocation():
+        nonlocal invocation_started
+        ledger.start(cell["cell_id"], "arm:false")
+        invocation_started = True
+
     try:
         before = fingerprint_fn(output, scenario_script, corpus_root, "before")
-        process = run_process(output, binary, environment, process_factory, kill_process_group)
+        process = run_process(
+            output, binary, environment, process_factory, kill_process_group,
+            before_spawn=start_invocation,
+        )
         if sha256(binary) != binary_sha256:
             raise RuntimeError("binary identity changed after request")
         if sha256(scenario_script) != scenario_sha256:
@@ -364,21 +465,6 @@ def run_request(output, binary, scenario_script, corpus_root, binary_sha256,
         after = fingerprint_fn(output, scenario_script, corpus_root, "after")
         if after != before:
             raise RuntimeError("input fingerprint changed during request")
-        save(output / "outcome.json", {
-            "status": "captured_expected_partial",
-            "admission_eligible": False,
-            "review_status": "not_reviewed",
-            "coverage": "partial",
-            "no_performance_claim": True,
-            "process": process,
-            "diagnostics": artifact_counts,
-            "artifact_sha256": {
-                "manifest": sha256(manifest_path),
-                "observation": sha256(observation_path),
-                "diagnostics": sha256(diagnostics_path),
-            },
-        })
-        return {"status": "captured_expected_partial", "process": process, "diagnostics": artifact_counts}
     except Exception as error:
         issue = str(error)
     finally:
@@ -391,6 +477,13 @@ def run_request(output, binary, scenario_script, corpus_root, binary_sha256,
             except Exception as error:
                 after_issue = str(error)
                 issue = after_issue if issue is None else issue + "; " + after_issue
+        if invocation_started and not invocation_finished:
+            try:
+                ledger.finish(cell["cell_id"], "arm:false", "ok" if issue is None else "error")
+                invocation_finished = True
+            except Exception as error:
+                ledger_issue = f"budget ledger finish failed: {error}"
+                issue = ledger_issue if issue is None else issue + "; " + ledger_issue
         if issue is not None:
             save(output / "outcome.json", {
                 "status": "issue", "issue": issue, "admission_eligible": False,
@@ -398,7 +491,25 @@ def run_request(output, binary, scenario_script, corpus_root, binary_sha256,
                 "process": process,
                 "artifact_sha256": existing_artifact_hashes(output),
             })
-    return {"status": "issue", "issue": issue}
+    if issue is not None:
+        return {"status": "issue", "issue": issue}
+    observation_path = output / "observation.ndjson"
+    diagnostics_path = output / "diagnostics.json"
+    save(output / "outcome.json", {
+        "status": "captured_expected_partial",
+        "admission_eligible": False,
+        "review_status": "not_reviewed",
+        "coverage": "partial",
+        "no_performance_claim": True,
+        "process": process,
+        "diagnostics": artifact_counts,
+        "artifact_sha256": {
+            "manifest": sha256(manifest_path),
+            "observation": sha256(observation_path),
+            "diagnostics": sha256(diagnostics_path),
+        },
+    })
+    return {"status": "captured_expected_partial", "process": process, "diagnostics": artifact_counts}
 
 
 def parse_args(argv=None):
@@ -409,6 +520,9 @@ def parse_args(argv=None):
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--scenario-script", type=Path, required=True)
+    parser.add_argument("--build-manifest", type=Path, required=True)
+    parser.add_argument("--batch-manifest", type=Path, required=True)
+    parser.add_argument("--batch-worker", type=int, required=True)
     parser.add_argument("--corpus-root", type=Path, default=Path("/opt/p1/corpus"))
     parser.add_argument("--input-sha256", required=True)
     parser.add_argument("--input-manifest-sha256", required=True)
@@ -424,7 +538,8 @@ def main(argv=None):
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.binary_sha256):
         raise SystemExit("binary SHA-256 must be 64 hexadecimal characters")
     result = run_request(args.output, args.binary, args.scenario_script, args.corpus_root,
-                         args.binary_sha256, args.source_root)
+                         args.binary_sha256, args.source_root, args.build_manifest,
+                         args.batch_manifest, args.batch_worker)
     if result["status"] == "issue":
         raise SystemExit(result["issue"])
 

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 import subprocess
 
 HERE = Path(__file__).resolve().parent
@@ -68,13 +69,61 @@ def fixture_artifacts(manifest, observation_path, binary_sha256, partial_count=1
     return observation, diagnostics
 
 
+def budget_fixture(root, binary_sha256, scenario, *, scope="bounded-diagnostic",
+                   cell_overrides=None, extra_cells=None, batch_id="diagnostic-test"):
+    root = Path(root)
+    build = root / "build-manifest.json"
+    build.write_text(json.dumps({
+        "source_commit": collector.EXPECTED_SOURCE_COMMIT,
+        "binary_sha256": binary_sha256,
+        "exit_code": 0,
+    }))
+    identity = {
+        "binary_sha256": binary_sha256,
+        "input_manifest_sha256": collector.EXPECTED_INPUT_MANIFEST_SHA256,
+        "runner_sha256": collector.sha256(HERE / "run_remote.py"),
+        "scenario_sha256": collector.sha256(scenario),
+        "gate_sha256": collector.sha256(collector.P1_ROOT / "campaign_gate.py"),
+        "budget_sha256": collector.sha256(collector.P1_ROOT / "batch_budget.py"),
+        "build_manifest_sha256": collector.sha256(build),
+    }
+    cell = {
+        "worker": 1,
+        "repository": collector.EXPECTED_REPOSITORY,
+        "profile": collector.EXPECTED_PROFILE,
+        "verb": "snapshot",
+        "scenario": collector.EXPECTED_SCENARIO,
+        "trial": 0,
+        "arms": [False],
+        "preparatory_invocations": 0,
+    }
+    cell.update(cell_overrides or {})
+    cell["cell_id"] = collector.batch_budget.cell_id(cell)
+    cells = [cell] + list(extra_cells or [])
+    workers = {}
+    for item in cells:
+        worker = str(item["worker"])
+        workers[worker] = workers.get(worker, 0) + item.get("preparatory_invocations", 0) + len(item["arms"])
+    batch = root / "batch-manifest.json"
+    batch.write_text(json.dumps({
+        "version": 1,
+        "batch_id": batch_id,
+        "scope": scope,
+        "cap": collector.batch_budget.CAP,
+        "identity": identity,
+        "cells": cells,
+        "workers": workers,
+    }))
+    return build, batch, cell
+
+
 class CollectorTests(unittest.TestCase):
     def test_fingerprint_root_cannot_differ_from_product_repository(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with self.assertRaisesRegex(RuntimeError, "fingerprint corpus root"):
                 collector.run_request(root / "output", root / "binary", root / "scenario",
-                                      root / "other-corpus", "b" * 64, root)
+                                      root / "other-corpus", "b" * 64, root, None, None, 1)
             self.assertFalse((root / "output").exists())
 
     def test_raw_json_loader_rejects_duplicate_root_and_trailing_data(self):
@@ -135,6 +184,7 @@ class CollectorTests(unittest.TestCase):
             binary_sha = hashlib.sha256(binary.read_bytes()).hexdigest()
             scenario = source_root / "p1_scenario.py"
             scenario.write_text("# fake scenario\n")
+            build, batch, _ = budget_fixture(root, binary_sha, scenario)
             calls = []
 
             def fingerprints(output, script, corpus_root, stage):
@@ -159,7 +209,9 @@ class CollectorTests(unittest.TestCase):
 
             result = collector.run_request(
                 root / "result", binary, scenario, Path(collector.EXPECTED_REPO_PATH).parent, binary_sha, source_root,
+                build, batch, 1,
                 fingerprint_fn=fingerprints, process_factory=process_factory,
+                _claim_root=root / "claims",
             )
             self.assertEqual(result["status"], "issue")
             self.assertIn("full partial-failure digest", result["issue"])
@@ -167,6 +219,85 @@ class CollectorTests(unittest.TestCase):
             outcome = json.loads((root / "result" / "outcome.json").read_text())
             self.assertFalse(outcome["admission_eligible"])
             self.assertEqual(outcome["review_status"], "not_reviewed")
+
+    def test_one_bounded_request_captures_complete_diagnostics_and_completes_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_root = root / "source"
+            source_root.mkdir()
+            binary = source_root / "evaluator"
+            binary.write_bytes(b"fake evaluator")
+            binary_sha = collector.sha256(binary)
+            scenario = source_root / "p1_scenario.py"
+            scenario.write_text("# fake scenario\n")
+            build, batch, cell = budget_fixture(root, binary_sha, scenario, batch_id="success-path")
+            calls = []
+
+            failures = [
+                {"code": f"E_{i:03d}", "severity": "warning", "file_path": f"f-{i:03d}.go",
+                 "effect_on_semantic_completeness": "partial", "detail": f"detail {i}"}
+                for i in range(collector.EXPECTED_PARTIAL_FAILURES_COUNT)
+            ]
+            warnings = [{"code": "W_WORKTREE_SNAPSHOT", "severity": "warning",
+                         "effect_on_semantic_completeness": "none", "detail": "fixture"}]
+            raw_failures = json.dumps(failures, separators=(",", ":")).encode()
+            raw_warnings = json.dumps(warnings, separators=(",", ":")).encode()
+            failure_digest = hashlib.sha256(raw_failures).hexdigest()
+            warning_digest = hashlib.sha256(raw_warnings).hexdigest()
+
+            def fingerprints(output, script, corpus_root, stage):
+                calls.append(stage)
+                value = {"effective_tracked_input_sha256": collector.EXPECTED_SOURCE_DIGEST}
+                (Path(output) / f"{stage}.json").write_text(json.dumps(value))
+                (Path(output) / f"{stage}.log").write_text("")
+                return value
+
+            def process_factory(command, **kwargs):
+                calls.append("process")
+                output = Path(kwargs["env"]["ENTIRE_GRAPH_EXTRACTION_CORPUS_OUTPUT"])
+                manifest_path = Path(kwargs["env"]["ENTIRE_GRAPH_EXTRACTION_CORPUS_MANIFEST"])
+                manifest = json.loads(manifest_path.read_text())
+                manifest["_path"] = str(manifest_path)
+                observation, diagnostics = fixture_artifacts(manifest, output, binary_sha)
+                for value in (observation, diagnostics):
+                    value["partial_failures_sha256"] = failure_digest
+                    value["warnings_sha256"] = warning_digest
+                diagnostics["partial_failures"] = failures
+                diagnostics["warnings"] = warnings
+                output.write_text(json.dumps(observation, separators=(",", ":")))
+                (output.parent / "diagnostics.json").write_text(
+                    json.dumps(diagnostics, separators=(",", ":"))
+                )
+                Path(command[command.index("-o") + 1]).write_text(
+                    "Maximum resident set size (kbytes): 7\n"
+                )
+                return FakeProcess()
+
+            with mock.patch.object(collector, "EXPECTED_PARTIAL_FAILURES_SHA256", failure_digest), \
+                    mock.patch.object(collector, "EXPECTED_WARNINGS_SHA256", warning_digest):
+                result = collector.run_request(
+                    root / "result", binary, scenario,
+                    Path(collector.EXPECTED_REPO_PATH).parent, binary_sha, source_root,
+                    build, batch, 1, fingerprint_fn=fingerprints,
+                    process_factory=process_factory, _claim_root=root / "claims",
+                )
+
+            self.assertEqual(result["status"], "captured_expected_partial")
+            self.assertEqual(result["diagnostics"], {"partial_failures": 194, "warnings": 1})
+            self.assertEqual(calls, ["before", "process", "after"])
+            token = f"{cell['cell_id']}:arm:false"
+            state = json.loads(
+                (root / "claims" / "success-path" / "worker-1.json").read_text()
+            )
+            self.assertEqual(state["started"], [token])
+            self.assertEqual(state["completed"], [token])
+            self.assertEqual(state["failed"], [])
+            outcome = json.loads((root / "result" / "outcome.json").read_text())
+            self.assertFalse(outcome["admission_eligible"])
+            self.assertEqual(outcome["review_status"], "not_reviewed")
+            self.assertEqual(outcome["diagnostics"], {"partial_failures": 194, "warnings": 1})
+            self.assertTrue((root / "result" / "observation.ndjson").is_file())
+            self.assertTrue((root / "result" / "diagnostics.json").is_file())
 
     def test_process_failure_stops_without_claiming_capture(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -178,6 +309,7 @@ class CollectorTests(unittest.TestCase):
             binary_sha = hashlib.sha256(binary.read_bytes()).hexdigest()
             scenario = source_root / "p1_scenario.py"
             scenario.write_text("# fake scenario\n")
+            build, batch, cell = budget_fixture(root, binary_sha, scenario)
             calls = []
 
             def fingerprints(output, script, corpus_root, stage):
@@ -194,12 +326,114 @@ class CollectorTests(unittest.TestCase):
 
             result = collector.run_request(
                 root / "result", binary, scenario, Path(collector.EXPECTED_REPO_PATH).parent, binary_sha, source_root,
+                build, batch, 1,
                 fingerprint_fn=fingerprints, process_factory=process_factory,
+                _claim_root=root / "claims",
             )
             self.assertEqual(result["status"], "issue")
             self.assertIn("exit 9", result["issue"])
             self.assertEqual(calls, ["before", "process", "after"])
             self.assertFalse((root / "result" / "diagnostics.json").exists())
+            claim = root / "claims" / "diagnostic-test" / "worker-1.json"
+            state = json.loads(claim.read_text())
+            token = f"{cell['cell_id']}:arm:false"
+            self.assertEqual(state["started"], [token])
+            self.assertEqual(state["failed"], [token])
+            with self.assertRaisesRegex(RuntimeError, "existing budget ledger refuses restart"):
+                collector.run_request(
+                    root / "retry-result", binary, scenario,
+                    Path(collector.EXPECTED_REPO_PATH).parent, binary_sha, source_root,
+                    build, batch, 1, fingerprint_fn=fingerprints,
+                    process_factory=process_factory, _claim_root=root / "claims",
+                )
+            self.assertFalse((root / "retry-result").exists())
+
+    def test_wrong_or_multiple_diagnostic_cells_refuse_before_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_root = root / "source"
+            source_root.mkdir()
+            binary = source_root / "evaluator"
+            binary.write_bytes(b"fake evaluator")
+            binary_sha = collector.sha256(binary)
+            scenario = source_root / "p1_scenario.py"
+            scenario.write_text("# fake scenario\n")
+            build, wrong_batch, _ = budget_fixture(
+                root, binary_sha, scenario, cell_overrides={"profile": "fast"},
+                batch_id="wrong-cell",
+            )
+            process_calls = []
+            with self.assertRaisesRegex(RuntimeError, "cell mismatch: profile"):
+                collector.run_request(
+                    root / "wrong-output", binary, scenario,
+                    Path(collector.EXPECTED_REPO_PATH).parent, binary_sha, source_root,
+                    build, wrong_batch, 1,
+                    process_factory=lambda *args, **kwargs: process_calls.append(1),
+                    _claim_root=root / "claims",
+                )
+            self.assertEqual(process_calls, [])
+            self.assertFalse((root / "wrong-output").exists())
+
+            extra = {
+                "worker": 1,
+                "repository": collector.EXPECTED_REPOSITORY,
+                "profile": collector.EXPECTED_PROFILE,
+                "verb": "snapshot",
+                "scenario": collector.EXPECTED_SCENARIO,
+                "trial": 1,
+                "arms": [False],
+                "preparatory_invocations": 0,
+            }
+            extra["cell_id"] = collector.batch_budget.cell_id(extra)
+            build, multiple_batch, _ = budget_fixture(
+                root, binary_sha, scenario, extra_cells=[extra], batch_id="multiple-cell",
+            )
+            with self.assertRaisesRegex(RuntimeError, "exactly one invocation cell"):
+                collector.run_request(
+                    root / "multiple-output", binary, scenario,
+                    Path(collector.EXPECTED_REPO_PATH).parent, binary_sha, source_root,
+                    build, multiple_batch, 1, _claim_root=root / "claims",
+                )
+            self.assertFalse((root / "multiple-output").exists())
+
+    def test_budget_start_is_durable_before_process_factory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_root = root / "source"
+            source_root.mkdir()
+            binary = source_root / "evaluator"
+            binary.write_bytes(b"fake evaluator")
+            binary_sha = collector.sha256(binary)
+            scenario = source_root / "p1_scenario.py"
+            scenario.write_text("# fake scenario\n")
+            build, batch, cell = budget_fixture(root, binary_sha, scenario, batch_id="start-order")
+
+            def fingerprints(output, script, corpus_root, stage):
+                value = {"effective_tracked_input_sha256": collector.EXPECTED_SOURCE_DIGEST}
+                (Path(output) / f"{stage}.json").write_text(json.dumps(value))
+                return value
+
+            def process_factory(command, **kwargs):
+                claim = root / "claims" / "start-order" / "worker-1.json"
+                token = f"{cell['cell_id']}:arm:false"
+                self.assertEqual(json.loads(claim.read_text())["started"], [token])
+                raise OSError("synthetic spawn failure")
+
+            result = collector.run_request(
+                root / "result", binary, scenario, Path(collector.EXPECTED_REPO_PATH).parent,
+                binary_sha, source_root, build, batch, 1,
+                fingerprint_fn=fingerprints, process_factory=process_factory,
+                _claim_root=root / "claims",
+            )
+            self.assertEqual(result["status"], "issue")
+            self.assertIn("synthetic spawn failure", result["issue"])
+            claim = root / "claims" / "start-order" / "worker-1.json"
+            token = f"{cell['cell_id']}:arm:false"
+            state = json.loads(claim.read_text())
+            self.assertEqual(state["started"], [token])
+            self.assertEqual(state["failed"], [token])
+            outcome = json.loads((root / "result" / "outcome.json").read_text())
+            self.assertFalse(outcome["admission_eligible"])
 
     def test_timeout_kills_process_group_and_stops(self):
         with tempfile.TemporaryDirectory() as directory:

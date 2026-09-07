@@ -1,0 +1,17 @@
+{
+  "command": "python3 -m unittest discover -s docs/implementation/graph-advantage/p1-corpus-20260905/full-diagnostics-collector -p 'test_*.py' -v",
+  "exit_code": 0,
+  "log": "verification.log",
+  "log_sha256": "2d12e94df21ead8b7159b4916131dcc163e6384ce2b77d7b3aa4ca0e087e6931",
+  "result": "OK",
+  "scope": "synthetic collector plumbing only; no VM or product request",
+  "source_commit": "1f20f694775c3d8fd616eee4b22d9b13c30ff0fe",
+  "source_sha256": {
+    "batch_budget.py": "23f7d063c75fb3190da21b232145181dd7ac8ff5e30436d65de76eedc678df3a",
+    "campaign_gate.py": "8c07cdac2089a99aae7c338f65472885d3039f223080d60d57978ae08587cae6",
+    "full-diagnostics-collector/README.md": "75c0f0146200dfe45d38b997c425bb3fba3baaa67f3f98726487791558a359ca",
+    "full-diagnostics-collector/run_remote.py": "4afcc7b3b0ab09a23b9613ff8809d6cb8f7452f180739087139b33e9fa4a8e75",
+    "full-diagnostics-collector/test_run_remote.py": "e58ea57933e973331d8ac029cbab3750f744e0b853cfc5c95a3afa8048853bc2"
+  },
+  "tests": 11
+}
