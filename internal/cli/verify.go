@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // `entire graph verify` — an ADJUDICATED verdict, not test output
@@ -159,6 +160,7 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 		verifyVerdictInput{
 			baseline: baseline, current: results, parser: parser, parsed: parsed,
 			exitCode: exitCode, maxBytes: flags.MaxBytes,
+			unattributed: verifyUnattributedFailures(parser, output),
 		}))
 	return writeErr
 }
@@ -488,6 +490,10 @@ type verifyVerdictInput struct {
 	parsed   bool
 	exitCode int
 	maxBytes int
+	// unattributed is the targets the runner reported as failed while naming no test — a package it
+	// could not build or set up. See verifyUnattributedFailures: these are the failures the exit code
+	// cannot distinguish from an ordinary test failure and the result set structurally cannot hold.
+	unattributed []string
 }
 
 // renderVerifyVerdict is the whole output contract: a delta, a verdict, and nothing else.
@@ -570,27 +576,32 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 		verifyWriteList(&buffer,
 			"NOT RUN (in the baseline, absent from this run: aborted, filtered, renamed or deleted)", notRun)
 	}
+	if len(input.unattributed) > 0 {
+		verifyWriteList(&buffer,
+			"NOT BUILT (the runner could not build or set up these targets, so their tests never ran)",
+			input.unattributed)
+	}
+
+	incomplete := verifyIncompleteReason(input, notRun, unexplainedExit)
 
 	switch {
 	case len(newlyFailing) > 0:
-		fmt.Fprintf(&buffer, "VERDICT: REGRESSION in %d test%s: %s\n",
+		// The regression and the incompleteness are BOTH true, and the switch used to report only the
+		// first. That mattered more than it looks: the NOT RUN list is printed above, but the
+		// unexplained-exit condition has no list of its own — its only carrier is the verdict line —
+		// so a crashed run that happened to report one new failure lost every trace of the crash. And
+		// verifyTruncateOutput keeps the VERDICT line and drops the lists, so under a tight byte cap
+		// even the NOT RUN evidence goes. A REGRESSION verdict is more actionable than an INCOMPLETE
+		// one (it carries the ids), so the ids are kept and the incompleteness is carried alongside
+		// them rather than replacing them.
+		fmt.Fprintf(&buffer, "VERDICT: REGRESSION in %d test%s: %s",
 			len(newlyFailing), pluralSuffix(len(newlyFailing)), verifyJoinIDs(newlyFailing))
-	case len(notRun) > 0:
-		fmt.Fprintf(&buffer,
-			"VERDICT: INCOMPLETE — %d baseline test%s did not report in this run, so no claim "+
-				"about regressions can be made. Verification is NOT complete.\n",
-			len(notRun), pluralSuffix(len(notRun)))
-	case unexplainedExit && verifyResultsHaveFailure(input.current):
-		fmt.Fprintf(&buffer,
-			"VERDICT: INCOMPLETE — the runner %s, which is not how %s reports a test failure, so the "+
-				"run ALSO came apart for a reason its per-test output does not name (a crash, a "+
-				"signal, a collection or a build error). Verification is NOT complete.\n",
-			verifyExitDescription(input.exitCode), input.parser)
-	case unexplainedExit:
-		fmt.Fprintf(&buffer,
-			"VERDICT: INCOMPLETE — the runner %s while every test it reported passed, so it "+
-				"failed for a reason its per-test output does not name. Verification is NOT complete.\n",
-			verifyExitDescription(input.exitCode))
+		if incomplete != "" {
+			fmt.Fprintf(&buffer, " — AND INCOMPLETE: %s Verification is NOT complete.", incomplete)
+		}
+		buffer.WriteString("\n")
+	case incomplete != "":
+		fmt.Fprintf(&buffer, "VERDICT: INCOMPLETE — %s Verification is NOT complete.\n", incomplete)
 	case len(newlyPassing) > 0:
 		// The second sentence is a statement about the DELTA, not an instruction: a zero-regression,
 		// at-least-one-fix delta is by construction a complete verification of the change. See the
@@ -603,12 +614,55 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 	return verifyTruncateOutput(buffer.String(), input.maxBytes)
 }
 
+// verifyIncompleteReason states every way THIS run failed to cover what it claimed to cover, or "" when
+// it covered all of it. It is one function rather than three switch arms because incompleteness is not
+// mutually exclusive with anything: a run can lose baseline tests, skip a target it could not build,
+// AND die — and it is not mutually exclusive with a REGRESSION either, which is the precedence bug the
+// caller above documents.
+func verifyIncompleteReason(input verifyVerdictInput, notRun []string, unexplainedExit bool) string {
+	var clauses []string
+	if len(notRun) > 0 {
+		clauses = append(clauses, fmt.Sprintf(
+			"%d baseline test%s did not report in this run, so no claim about regressions can be made.",
+			len(notRun), pluralSuffix(len(notRun))))
+	}
+	if len(input.unattributed) > 0 {
+		// The exit code cannot carry this and the result set cannot hold it: go test spends exit 1 on a
+		// build failure exactly as it does on a failing test, so any reported failure — including a
+		// pre-existing one — made this look explained. See verifyUnattributedFailures.
+		clauses = append(clauses, fmt.Sprintf(
+			"%s could not build or set up %d target%s (%s), whose tests therefore never ran and cannot "+
+				"have reported.",
+			input.parser, len(input.unattributed), pluralSuffix(len(input.unattributed)),
+			verifyJoinIDs(input.unattributed)))
+	}
+	switch {
+	case unexplainedExit && verifyResultsHaveFailure(input.current):
+		clauses = append(clauses, fmt.Sprintf(
+			"the runner %s, which is not how %s reports a test failure, so the run ALSO came apart for "+
+				"a reason its per-test output does not name (a crash, a signal, a collection or a build "+
+				"error).",
+			verifyExitDescription(input.exitCode), input.parser))
+	case unexplainedExit:
+		clauses = append(clauses, fmt.Sprintf(
+			"the runner %s while every test it reported passed, so it failed for a reason its per-test "+
+				"output does not name.", verifyExitDescription(input.exitCode)))
+	}
+	return strings.Join(clauses, " ")
+}
+
 // verifyTestFailureExitCodes is each runner's own code for "a test the run reported did not pass",
 // and nothing else. Every other code these runners emit means the run itself came apart — pytest 2
-// interrupted, 3 internal error, 4 usage error, 5 nothing collected; go test 2 for a flag-parse
-// error; cargo's harness failing at 101 while cargo itself exits 1 when it could not even build; a
-// PHP fatal at 255 — and none of them is explained by a test the run happened to report failing
-// before it died.
+// interrupted, 3 internal error, 4 usage error, 5 nothing collected; cargo's harness failing at 101
+// while cargo itself exits 1 when it could not even build; a PHP fatal at 255 — and none of them is
+// explained by a test the run happened to report failing before it died.
+//
+// GO TEST IS THE COUNTEREXAMPLE, and listing {1} does NOT make it safe on its own. Measured on Go
+// 1.26.5, the go command spends exit 1 on every way a run can fail — a failing test, a build failure,
+// a setup failure, a vet failure, an unknown flag, a missing package — so 1 is simultaneously "the
+// code go test uses for a test failure" (which is what this table is for) and "the code go test uses
+// for a run that never happened". No exit code can tell them apart, so the OUTPUT is read instead:
+// see verifyUnattributedFailures, which is what actually closes that half.
 //
 // A runner that grades its own outcomes needs every code it grades WITH. PHPUnit is the one here
 // that splits them: an assertion failure exits 1 (FAILURE_EXIT) and a test that raised exits 2
@@ -633,15 +687,27 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 // only the spelling that happens to be on the command line and would still be wrong for the
 // configured majority — a narrower guess is still a guess. The permissive rule is the honest answer
 // for a runner whose grading codes this build cannot know.
+// JEST IS UNLISTED FOR THE SAME REASON, and it is the stronger case of the two because the option is
+// documented rather than idiomatic. `testFailureExitCode` is a first-class Jest setting — measured on
+// Jest 29.7.0, a failing suite exits 1 by default, 2 under `--testFailureExitCode=2`, 7 under
+// `module.exports = { testFailureExitCode: 7 }` in jest.config.js, and 5 under a `"jest"` key in
+// package.json. Two of those four sources are files this verb never opens, and the package.json one is
+// where the majority of Jest projects keep their configuration, so "the code Jest uses for a test
+// failure" is a property of the project rather than of Jest. `vitest` shares the parser and the entry.
+//
+// Unlisting does not reopen the crash hole it might look like it does: verifyExitCodeMeansTestFailure
+// refuses every code at or above 128 whether the runner is listed or not, so a segfault, an OOM kill
+// and a timeout are still adjudicated INCOMPLETE. What unlisting gives up is only the ordinary codes
+// 1-127 that some runner spends on something other than a test verdict — exactly the exposure RSpec
+// already accepts, for exactly the same reason.
 var verifyTestFailureExitCodes = map[string][]int{
-	"pytest":      {1},
-	"cargo test":  {101},
-	"go test":     {1},
-	"phpunit":     {1, 2},
-	"jest/vitest": {1},
-	"minitest":    {1},
-	"surefire":    {1},
-	"ctest":       {8},
+	"pytest":     {1},
+	"cargo test": {101},
+	"go test":    {1},
+	"phpunit":    {1, 2},
+	"minitest":   {1},
+	"surefire":   {1},
+	"ctest":      {8},
 }
 
 // verifyExitCodeMeansTestFailure reports whether exitCode is one the named runner uses to report a
@@ -697,6 +763,28 @@ func verifyJoinIDs(ids []string) string {
 		fmt.Sprintf(", … and %d more", len(ids)-verifyMaxListedIDs)
 }
 
+// verifyCutToBudget is the last resort: a hard cut to maxBytes on a rune boundary, ending in an
+// ellipsis when one fits. Nothing structural survives here, which is the point — this is only reached
+// when the budget cannot hold even the "VERDICT: " clause, and a caller who set a budget that small has
+// asked for bytes rather than for a verdict.
+func verifyCutToBudget(text string, maxBytes int) string {
+	const ellipsis = "…\n"
+	budget := maxBytes
+	if maxBytes > len(ellipsis) {
+		budget = maxBytes - len(ellipsis)
+	} else {
+		return ""
+	}
+	cut := text
+	if len(cut) > budget {
+		cut = cut[:budget]
+		for len(cut) > 0 && !utf8.ValidString(cut) {
+			cut = cut[:len(cut)-1]
+		}
+	}
+	return cut + ellipsis
+}
+
 // verifyTruncateOutput enforces the byte cap from the END, so the VERDICT line — the last line and the
 // only one that must survive — is never the part that is cut. A verdict without its lists is still a
 // verdict; lists without a verdict are evidence, which is what this verb refuses to return.
@@ -707,13 +795,35 @@ func verifyTruncateOutput(rendered string, maxBytes int) []byte {
 	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
 	verdict := lines[len(lines)-1] + "\n"
 	if len(verdict) > maxBytes {
-		// Even the verdict is too wide, which happens only when its own id list is long. The COUNT is the
+		// Even the verdict is too wide, which happens when its own id list is long. The COUNT is the
 		// information and the ids are the bonus, so the list yields — word by word from the end, never the
 		// "VERDICT: …" clause itself — rather than the cap yielding. A verdict that overruns the caller's
 		// byte budget is the same failure as returning output.
-		head := verdict
-		if colon := strings.LastIndex(verdict, ": "); colon > 0 {
-			head = verdict[:colon+2]
+		//
+		// The split point is the last ": " WHOSE HEAD STILL FITS, not simply the last one. A verdict line
+		// carries more than one clause now — a regression can be reported together with the run's
+		// incompleteness, which introduces a second ": " — and taking the last unconditionally made the
+		// retained head everything up to that colon, ids included. That head is not bounded by anything,
+		// so the function returned it whole: measured, a 40-id regression carrying an incompleteness
+		// clause returned 1254 bytes under a 100-byte cap, and under a 400-byte one. Walking the colons
+		// from the end keeps the most specific clause that fits and falls back to the broadest that does.
+		head := ""
+		for tail := len(verdict); ; {
+			colon := strings.LastIndex(verdict[:tail], ": ")
+			if colon <= 0 {
+				break
+			}
+			if candidate := verdict[:colon+2]; len(candidate)+len(" …\n") <= maxBytes {
+				head = candidate
+				break
+			}
+			tail = colon
+		}
+		if head == "" {
+			// Not even "VERDICT: " and an ellipsis fit in the budget the caller set. There is no clause
+			// left to preserve, so the cap wins: overrunning it would trade a contract the caller can rely
+			// on for a fragment they cannot.
+			return []byte(verifyCutToBudget(verdict, maxBytes))
 		}
 		ids := strings.TrimSuffix(strings.TrimPrefix(verdict, head), "\n")
 		for _, part := range strings.Split(ids, ", ") {

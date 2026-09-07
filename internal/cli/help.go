@@ -380,18 +380,23 @@ var commandDocs = []commandDoc{
 	{
 		name:    "stats",
 		group:   groupAnalyze,
-		summary: "Human report: graph usage vs grep/read, and estimated token savings",
-		usage:   []string{"entire graph stats [--repo .] [--since 30d|7d|all] [--format text|json] [--sessions-dir path|--transcript path]"},
-		long: "A local, read-only report for humans (agents should not run it as part of a task). It reads the coding-agent session transcripts already on disk (~/.claude/projects/<path-slug>/*.jsonl) and reports graph calls per verb vs exploration calls, bytes each pulled into context, billed tokens, a graph-first rate, and an ESTIMATED token saving whose assumption is printed with the number.\n\n" +
-			"--transcript narrows the whole report to ONE session (that transcript plus its subagent transcripts) instead of a whole project directory.",
+		summary: "Estimated tokens the graph saved (one line; --verbose for the full report)",
+		usage:   []string{"entire graph stats [--repo .] [--since 30d|7d|all] [--verbose] [--format text|json] [--sessions-dir path|--transcript path]"},
+		long: "A local, read-only report for humans (agents should not run it as part of a task). It reads the coding-agent session transcripts already on disk (~/.claude/projects/<path-slug>/*.jsonl).\n\n" +
+			"By DEFAULT it prints one line: the ESTIMATED tokens saved, marked with ~ because it is a model, not a measurement. --verbose restores the full report — graph calls per verb vs exploration calls, bytes each pulled into context, billed tokens, a graph-first rate, the measured per-call costs, and the model's assumption printed with the number.\n\n" +
+			"The estimate credits each graph locate call (search/neighbors/impact) with the ONE exploration call it displaced, priced from that session's own measured bytes per graph call and bytes per exploration call. A session whose graph calls returned more per call than the exploration they displaced correctly contributes nothing.\n\n" +
+			"--transcript narrows the whole report to ONE session (that transcript plus its subagent transcripts) instead of a whole project directory. Summaries of unchanged transcripts are memoised under the cache directory, keyed on file identity; --no-cache turns that off.",
 		flags: []flagDoc{
 			{name: "--repo", arg: "path", desc: "Repository whose sessions to report on (default: current repo)"},
 			{name: "--since", arg: "30d|7d|all", def: "30d", desc: "Lookback window (<n>h|<n>d|<n>w, or all)"},
-			{name: "--format", arg: "text|json", def: "text", desc: "Output format"},
+			{name: "--verbose", desc: "Print the full report instead of the single savings line"},
+			{name: "--format", arg: "text|json", def: "text", desc: "Output format (json is unaffected by --verbose)"},
 			{name: "--sessions-dir", arg: "path", desc: "Override the transcript lookup directory"},
 			{name: "--transcript", arg: "path", desc: "Report on a single session transcript"},
+			{name: "--cache-dir", arg: "path", desc: "Where to memoise per-transcript summaries"},
+			{name: "--no-cache", desc: "Re-parse every transcript instead of reusing the memo"},
 		},
-		examples: []string{"entire graph stats --repo . --since 7d"},
+		examples: []string{"entire graph stats --repo .", "entire graph stats --repo . --since 7d --verbose"},
 	},
 
 	// ── Help & diagnostics ───────────────────────────────────────────────

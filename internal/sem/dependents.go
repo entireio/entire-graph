@@ -2,15 +2,14 @@ package sem
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
-
-var identifierBoundary = regexp.MustCompile(`[A-Za-z0-9_$]+`)
 
 type referenceIndex map[string]map[string]struct{}
 
@@ -80,6 +79,39 @@ func buildReferenceIndex(ctx context.Context, repo, head string, names map[strin
 	return buildReferenceIndexWithProgress(ctx, repo, head, names, dependentsScanOptions{})
 }
 
+// candidateScan is one candidate file's share of the reference scan: the
+// index entries it contributes and the warnings it raises, held until the
+// reducer folds them in candidate order.
+//
+// stopped records that the worker ran out of budget. The ordered reducer also
+// checks the deadline before accepting buffered hits, so earlier work cannot
+// let prefetched candidates bypass the budget.
+type candidateScan struct {
+	hits     []referenceHit
+	warnings []ProviderWarning
+	stopped  bool
+	err      error
+}
+
+// referenceHit is one changed name found as an exact identifier token inside
+// one entity. index is a set of sets, so these fold in any order; they are
+// still applied in candidate order to keep the warnings beside them ordered.
+type referenceHit struct {
+	token     string
+	entityKey string
+}
+
+// errDependentsScanStopped unwinds the pipeline when the budget runs out. It
+// never reaches a caller: the scan reports a stop with a warning and its
+// partial index, exactly as the sequential scan did.
+var errDependentsScanStopped = errors.New("dependents scan stopped")
+
+// dependentsScanWorkers sizes the candidate scan. It reads and parses files the
+// same way the snapshot's parse phase does, so it takes the same bound.
+func dependentsScanWorkers() int {
+	return defaultProviderWorkerCount()
+}
+
 func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, names map[string]struct{}, options dependentsScanOptions) (referenceIndex, []ProviderWarning, error) {
 	index := referenceIndex{}
 	for name := range names {
@@ -126,6 +158,10 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	limited.SetDeadline(options.deadline)
 	defer func() { _ = limited.Close() }()
 
+	// The candidate scan below runs on workers, so everything a read records for
+	// the warnings that follow it is behind one lock. Each entry is written once
+	// per candidate and read once, so the lock is never contended for long.
+	var readOutcomeMu sync.Mutex
 	limitedOversize := map[string]int64{}
 	// limitedOversizeUnscanned records every oversized path whose size came
 	// from LimitedFileReader rather than the batch reader's oversize scanner
@@ -140,24 +176,29 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	limitedUnavailable := map[string]gitutil.LimitedFileStatus{}
 	readLimitedFile := func(path string) (string, bool, error) {
 		if !gitutil.IsCanonicalGitTreePath(path) {
+			readOutcomeMu.Lock()
 			limitedUnaddressable[path] = true
+			readOutcomeMu.Unlock()
 			return "", false, nil
 		}
 		result, err := limited.ReadFile(path)
 		if err != nil {
 			return "", false, err
 		}
-		if result.Status == gitutil.LimitedFileOversize {
+		// Every outcome a read records goes under the one lock, in one
+		// acquisition. The statuses are distinct values, so folding the three
+		// separate checks into one switch records exactly what they did.
+		readOutcomeMu.Lock()
+		switch result.Status {
+		case gitutil.LimitedFileOversize:
 			limitedOversize[path] = result.Bytes
 			limitedOversizeUnscanned[path] = true
-		}
-		if result.Status == gitutil.LimitedFileUnaddressable {
+		case gitutil.LimitedFileUnaddressable:
 			limitedUnaddressable[path] = true
-		}
-		switch result.Status {
 		case gitutil.LimitedFileMissing, gitutil.LimitedFileNonBlob, gitutil.LimitedFileUnreadable:
 			limitedUnavailable[path] = result.Status
 		}
+		readOutcomeMu.Unlock()
 		return result.Content, result.Status == gitutil.LimitedFileContent, nil
 	}
 	readFile := readLimitedFile
@@ -167,6 +208,8 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	// Set for an oversized blob whose streamed bytes contained a changed name.
 	oversizeMatched := map[string]bool{}
 	oversizeBytes := func(path string) (int64, bool) {
+		readOutcomeMu.Lock()
+		defer readOutcomeMu.Unlock()
 		size, ok := limitedOversize[path]
 		return size, ok
 	}
@@ -184,13 +227,18 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 					// Git grep already proved a prefiltered path existed and
 					// matched. A later missing/non-blob batch response means the
 					// promised blob became unavailable between discovery and read.
+					readOutcomeMu.Lock()
 					limitedUnavailable[path] = gitutil.LimitedFileUnreadable
+					readOutcomeMu.Unlock()
 				}
 			}
 			return content, ok, err
 		}
 		oversizeBytes = func(path string) (int64, bool) {
-			if size, ok := limitedOversize[path]; ok {
+			readOutcomeMu.Lock()
+			size, ok := limitedOversize[path]
+			readOutcomeMu.Unlock()
+			if ok {
 				return size, true
 			}
 			blob, ok := batch.OversizeBlob(path)
@@ -209,6 +257,8 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		}
 		carry := map[string]string{}
 		batch.SetOversizeScanner(func(path string, chunk []byte) {
+			readOutcomeMu.Lock()
+			defer readOutcomeMu.Unlock()
 			if oversizeMatched[path] {
 				return
 			}
@@ -260,28 +310,32 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		return prefiltered || containsAnyName(content, names)
 	}
 
+	// Each candidate is read, screened and parsed independently: nothing it
+	// looks at changes while the scan runs, and the reference index it feeds is
+	// a set of sets. So candidates run on workers and a reducer folds each
+	// one's hits and warnings in candidate order, which is the order the
+	// sequential scan produced them in.
 	parser := TreeSitterParser{}
-	for i, path := range files {
+	scanCandidate := func(i int, path string) candidateScan {
+		var scan candidateScan
 		if overBudget() {
-			warnings = append(warnings, dependentsBudgetWarning(i, len(files), options.budget))
-			break
-		}
-		if i > 0 && i%100 == 0 && options.progress != nil {
-			options.progress(i, len(files), path)
+			scan.stopped = true
+			return scan
 		}
 		if !Supported(path) {
-			continue
+			return scan
 		}
 		content, ok, err := readFile(path)
 		if err != nil {
-			return nil, nil, err
+			scan.err = err
+			return scan
 		}
 		// A deep-path metadata read can consume the remaining budget. Stop
 		// immediately after it returns, before its deadline-driven
 		// Unaddressable result is mistaken for a file-read failure.
 		if overBudget() {
-			warnings = append(warnings, dependentsBudgetWarning(i, len(files), options.budget))
-			break
+			scan.stopped = true
+			return scan
 		}
 		if !ok {
 			// In a fallback full-tree scan, an unsafe oversized file has no
@@ -296,16 +350,22 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			// exists to avoid. Unavailable content has the same uncertainty: on a
 			// full-tree fallback there is no sound way to prove the unreadable file
 			// did not contain a changed name, so it is always disclosed too.
-			if size, oversize := oversizeBytes(path); oversize && (prefiltered || oversizeMatched[path] || limitedOversizeUnscanned[path]) {
-				warnings = append(warnings, dependentsFileTooLargeWarning(path, int(size)))
+			size, oversize := oversizeBytes(path)
+			readOutcomeMu.Lock()
+			matched, unscanned := oversizeMatched[path], limitedOversizeUnscanned[path]
+			unaddressable := limitedUnaddressable[path]
+			status, unavailable := limitedUnavailable[path]
+			readOutcomeMu.Unlock()
+			if oversize && (prefiltered || matched || unscanned) {
+				scan.warnings = append(scan.warnings, dependentsFileTooLargeWarning(path, int(size)))
 			}
-			if limitedUnaddressable[path] {
-				warnings = append(warnings, dependentsFileUnaddressableWarning(path))
+			if unaddressable {
+				scan.warnings = append(scan.warnings, dependentsFileUnaddressableWarning(path))
 			}
-			if status, unavailable := limitedUnavailable[path]; unavailable {
-				warnings = append(warnings, dependentsFileUnavailableWarning(path, status))
+			if unavailable {
+				scan.warnings = append(scan.warnings, dependentsFileUnavailableWarning(path, status))
 			}
-			continue
+			return scan
 		}
 		// Size parity with the provider's default MaxParseBytes eligibility:
 		// never count dependents inside a file the graph itself refuses to
@@ -317,9 +377,9 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		// caller-supplied override.
 		if len(content) > defaultMaxParseBytes {
 			if isCandidate(content) {
-				warnings = append(warnings, dependentsFileTooLargeWarning(path, len(content)))
+				scan.warnings = append(scan.warnings, dependentsFileTooLargeWarning(path, len(content)))
 			}
-			continue
+			return scan
 		}
 
 		// Pre-parse screen: tokenize the raw content once and keep only the
@@ -329,19 +389,18 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		// out here — and, crucially, a file with no exact-token occurrence
 		// skips the (far more expensive) tree-sitter parse entirely.
 		relevant := map[string]struct{}{}
-		for _, span := range identifierBoundary.FindAllStringIndex(content, -1) {
-			token := content[span[0]:span[1]]
+		forEachIdentifierToken(content, func(token string) {
 			if _, isName := names[token]; isName {
 				relevant[token] = struct{}{}
 			}
-		}
+		})
 		if len(relevant) == 0 {
-			continue
+			return scan
 		}
 
 		entities, _, status := parser.ParseWithStatus(path, content)
 		if status.ParseError && isCandidate(content) {
-			warnings = append(warnings, dependentsParseFailureWarning(path, status))
+			scan.warnings = append(scan.warnings, dependentsParseFailureWarning(path, status))
 		}
 		lines := strings.Split(content, "\n")
 		for _, entity := range entities {
@@ -354,16 +413,39 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			// scans of every block in the repo.
 			self := shortEntityName(entity.Name)
 			entityKey := path + "#" + entity.Kind + ":" + entity.Name
-			for _, span := range identifierBoundary.FindAllStringIndex(block, -1) {
-				token := block[span[0]:span[1]]
+			forEachIdentifierToken(block, func(token string) {
 				if token == self {
-					continue
+					return
 				}
 				if _, isRelevant := relevant[token]; isRelevant {
-					index[token][entityKey] = struct{}{}
+					scan.hits = append(scan.hits, referenceHit{token: token, entityKey: entityKey})
 				}
-			}
+			})
 		}
+		return scan
+	}
+
+	scanErr := runIndexedPipeline(ctx, len(files), dependentsScanWorkers(),
+		func(_ context.Context, i int) candidateScan { return scanCandidate(i, files[i]) },
+		func(i int, scan candidateScan) error {
+			if scan.err != nil {
+				return scan.err
+			}
+			if scan.stopped || overBudget() {
+				warnings = append(warnings, dependentsBudgetWarning(i, len(files), options.budget))
+				return errDependentsScanStopped
+			}
+			if i > 0 && i%100 == 0 && options.progress != nil {
+				options.progress(i, len(files), files[i])
+			}
+			warnings = append(warnings, scan.warnings...)
+			for _, hit := range scan.hits {
+				index[hit.token][hit.entityKey] = struct{}{}
+			}
+			return nil
+		})
+	if scanErr != nil && !errors.Is(scanErr, errDependentsScanStopped) {
+		return nil, nil, scanErr
 	}
 	if options.progress != nil {
 		options.progress(len(files), len(files), "")
@@ -558,9 +640,9 @@ func entityBlock(lines []string, entity Entity) string {
 
 func identifiersIn(content string) map[string]struct{} {
 	identifiers := map[string]struct{}{}
-	for _, token := range identifierBoundary.FindAllString(content, -1) {
+	forEachIdentifierToken(content, func(token string) {
 		identifiers[token] = struct{}{}
-	}
+	})
 	return identifiers
 }
 

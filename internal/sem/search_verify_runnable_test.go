@@ -753,3 +753,602 @@ func TestSearchVerifyGradleUnparenthesisedIncludeEndsAtTheStatement(t *testing.T
 		})
 	}
 }
+
+// TestSearchVerifyGradleIncludeRequiresACallShape is the regression for `include` read as a
+// declaration when it is an ordinary NAME.
+//
+// `val include = ":modules:core"` and `def include = ':modules:core'` bind a variable in the two
+// settings DSLs. The scanner matched the identifier and then collected the literal on the right of
+// the `=` as an argument, so the settings script was read as declaring `:modules:core` and
+// `./gradlew :modules:core:test` was advertised for a project that does not exist — Gradle answers
+// "Project 'modules' not found in root project", and the hard gate this derivation exists to satisfy
+// cannot run. An argument list starts at `(` or, in the command-expression form, at the literal
+// itself; nothing else after the identifier is a call.
+func TestSearchVerifyGradleIncludeRequiresACallShape(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		settings string
+		declares bool
+	}{
+		{
+			name:     "a Kotlin val named include is not a call",
+			settings: "val include = \":modules:core\"\n",
+		},
+		{
+			name:     "a Groovy def named include is not a call",
+			settings: "def include = ':modules:core'\n",
+		},
+		{
+			name:     "an assignment to include is not a call",
+			settings: "include = ':modules:core'\n",
+		},
+		{
+			name:     "the parenthesised call still declares",
+			settings: "include(\":modules:core\")\n",
+			declares: true,
+		},
+		{
+			name:     "the command-expression call still declares",
+			settings: "include ':modules:core'\n",
+			declares: true,
+		},
+		{
+			name:     "a call whose parenthesis is spaced off still declares",
+			settings: "include (':modules:core')\n",
+			declares: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := searchVerifyGradleSettingsIncludes(testCase.settings, ":modules:core"); got != testCase.declares {
+				t.Fatalf("declares(:modules:core) = %v, want %v for %q",
+					got, testCase.declares, testCase.settings)
+			}
+			files := map[string]string{
+				"gradlew":                           "",
+				"settings.gradle":                   testCase.settings,
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "modules/core/src/main/java/A.java"}, &evidence)
+			if !testCase.declares {
+				if got != nil {
+					t.Fatalf("command = %q, want silence: %q binds a variable and declares no project",
+						got.Command, testCase.settings)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected the declared project's command, got silence")
+			}
+			if want := "./gradlew :modules:core:test"; got.Command != want {
+				t.Fatalf("command = %q, want %q", got.Command, want)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyMavenReactorWalkIsNotStoppedByAWideRoot is the regression for the reactor walk
+// giving up on breadth.
+//
+// Membership is the transitive closure of the `<modules>` lists, and the walk bounded the set of
+// DISCOVERED modules rather than the POMs it opened. A root aggregator declaring more modules than
+// that bound queued them all on its first pass and the walk stopped there, so nothing declared one
+// level down was ever reached: a real reactor module was reported undeclared and handed
+// `cd <dir> && mvn test`, which resolves the module's siblings from the local repository instead of
+// building them. Breadth costs no reads; `visited` is what makes the walk terminate.
+func TestSearchVerifyMavenReactorWalkIsNotStoppedByAWideRoot(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{
+		"services/pom.xml":     mavenAggregator("api"),
+		"services/api/pom.xml": "<project/>",
+		"services/api/src/main/java/com/example/Handler.java": "",
+	}
+	// A flat root wide enough that the nested aggregator is the last thing the walk would reach.
+	modules := make([]string, 0, 129)
+	for index := 0; index < 128; index++ {
+		module := "leaf" + string(rune('a'+index/26)) + string(rune('a'+index%26))
+		files[module+"/pom.xml"] = "<project/>"
+		modules = append(modules, module)
+	}
+	files["pom.xml"] = mavenAggregator(append(modules, "services")...)
+
+	evidence := searchVerifyTestEvidence(files)
+	got := deriveSearchVerifySuiteCommand(
+		searchVerifySubject{sourcePath: "services/api/src/main/java/com/example/Handler.java"}, &evidence)
+	if got == nil {
+		t.Fatal("expected a Maven command, got silence")
+	}
+	if want := "mvn -q -pl services/api -am test"; got.Command != want {
+		t.Fatalf("command = %q, want %q: services/api is declared through services, "+
+			"and %d sibling modules at the root do not unmake that", got.Command, want, len(modules))
+	}
+}
+
+// TestSearchVerifyNodeAncestorLockfileNeedsWorkspaceMembership is the regression for adopting an
+// ancestor's manager for a package that is not in its project.
+//
+// Yarn ≥2 resolves the project by walking up to the nearest lockfile and then REFUSES to run when
+// the package it was invoked in is not part of it: "The nearest package directory (…) doesn't seem
+// to be part of the project declared in (…)". So a standalone package under an unrelated Yarn
+// project was handed `cd <leaf> && yarn test`, a command that cannot run at all, where `npm test` —
+// the floor this block already falls back to — runs.
+//
+// Membership is TRANSITIVE, because a workspace may declare workspaces of its own: under a root
+// declaring `packages/*`, whether `packages/app/examples/demo` is in the project is answered by
+// `packages/app`'s manifest, not by the fact that some ancestor matched. Both nested directions are
+// pinned below.
+//
+// Where a declaration cannot be READ the check is permissive, because declining wrongly replaces a
+// working command with one Plug'n'Play cannot run.
+func TestSearchVerifyNodeAncestorLockfileNeedsWorkspaceMembership(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		rootPackage string
+		leaf        string
+		extraFiles  map[string]string
+		wantCommand string
+	}{
+		{
+			name:        "an unrelated Yarn project above a standalone package",
+			rootPackage: `{"name":"root","private":true}`,
+			leaf:        "tools/scratch",
+			wantCommand: "cd tools/scratch && npm test",
+		},
+		{
+			name:        "a workspace whose patterns do not reach the package",
+			rootPackage: `{"name":"root","workspaces":["packages/*"]}`,
+			leaf:        "tools/scratch",
+			wantCommand: "cd tools/scratch && npm test",
+		},
+		{
+			name:        "a declared workspace keeps the workspace's manager",
+			rootPackage: `{"name":"root","workspaces":["packages/*"]}`,
+			leaf:        "packages/api",
+			wantCommand: "cd packages/api && yarn test",
+		},
+		{
+			name:        "the object spelling of the same declaration",
+			rootPackage: `{"name":"root","workspaces":{"packages":["packages/*"]}}`,
+			leaf:        "packages/api",
+			wantCommand: "cd packages/api && yarn test",
+		},
+		{
+			name:        "a nested workspace the matched workspace declares in turn",
+			rootPackage: `{"name":"root","workspaces":["packages/*"]}`,
+			leaf:        "packages/app/examples/demo",
+			extraFiles: map[string]string{
+				"packages/app/package.json": `{"name":"app","workspaces":["examples/*"]}`,
+			},
+			wantCommand: "cd packages/app/examples/demo && yarn test",
+		},
+		{
+			name:        "a package nested below a workspace that does not declare it",
+			rootPackage: `{"name":"root","workspaces":["packages/*"]}`,
+			leaf:        "packages/app/examples/demo",
+			extraFiles: map[string]string{
+				"packages/app/package.json": `{"name":"app"}`,
+			},
+			wantCommand: "cd packages/app/examples/demo && npm test",
+		},
+		{
+			name:        "a globstar reaches any depth",
+			rootPackage: `{"name":"root","workspaces":["**"]}`,
+			leaf:        "tools/scratch",
+			wantCommand: "cd tools/scratch && yarn test",
+		},
+		{
+			// Yarn globs with micromatch, so brace expansion is a valid pattern that path.Match
+			// reads as literal text. A pattern this cannot express must not be read as a decline.
+			name:        "brace expansion is not answered, so the manager is kept",
+			rootPackage: `{"name":"root","workspaces":["{packages,tools}/*"]}`,
+			leaf:        "tools/scratch",
+			wantCommand: "cd tools/scratch && yarn test",
+		},
+		{
+			name:        "an extglob group is not answered either",
+			rootPackage: `{"name":"root","workspaces":["+(packages|tools)/*"]}`,
+			leaf:        "tools/scratch",
+			wantCommand: "cd tools/scratch && yarn test",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			files := map[string]string{
+				"package.json": testCase.rootPackage,
+				"yarn.lock":    "__metadata:\n  version: 8\n",
+				testCase.leaf + "/package.json": `{"name":"leaf","scripts":{"test":"jest"},` +
+					`"devDependencies":{"jest":"^29.0.0"}}`,
+				testCase.leaf + "/src/index.js": "",
+			}
+			for name, content := range testCase.extraFiles {
+				files[name] = content
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: testCase.leaf + "/src/index.js"}, &evidence)
+			if got == nil {
+				t.Fatal("expected a Node suite command, got silence")
+			}
+			if got.Command != testCase.wantCommand {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.wantCommand)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyGradleTripleQuotedBlockIsNotCode is the regression for a multi-line string read as
+// code by the settings scanner.
+//
+// Both DSLs spell a multi-line string with a triple delimiter, and an ordinary one-line literal
+// terminates at the newline — so the body of such a block sat in code position and an `include` in
+// it was read as a declaration. `./gradlew :lib:test` was then advertised for a project the settings
+// script never declares, which Gradle answers with "Project 'lib' not found in root project".
+//
+// The single-LINE spelling was already declined, for a different reason: the scanner consumed
+// `"include("` as an ordinary literal, so the identifier never reached code position. It is kept
+// below so both spellings are pinned to the same answer rather than agreeing by accident.
+func TestSearchVerifyGradleTripleQuotedBlockIsNotCode(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		settings string
+	}{
+		{
+			name:     "the multi-line Kotlin spelling",
+			settings: "include(\":app\")\nval example = \"\"\"\ninclude(\":lib\")\n\"\"\"\n",
+		},
+		{
+			name:     "the multi-line Groovy spelling",
+			settings: "include ':app'\ndef example = '''\ninclude ':lib'\n'''\n",
+		},
+		{
+			name:     "the single-line spelling it must agree with",
+			settings: "include(\":app\")\nval example = \"\"\"include(\":lib\")\"\"\"\n",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if searchVerifyGradleSettingsIncludes(testCase.settings, ":lib") {
+				t.Fatalf("settings declare :lib, but the only mention of it is inside a string: %q",
+					testCase.settings)
+			}
+			// The include outside the block is still read, so the block is skipped rather than the
+			// scan being abandoned at it.
+			if !searchVerifyGradleSettingsIncludes(testCase.settings, ":app") {
+				t.Fatalf("the settings script no longer declares :app: %q", testCase.settings)
+			}
+			files := map[string]string{
+				"gradlew":                  "",
+				"settings.gradle":          testCase.settings,
+				"app/build.gradle":         "",
+				"lib/build.gradle":         "",
+				"lib/src/main/java/A.java": "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "lib/src/main/java/A.java"}, &evidence)
+			if got != nil {
+				t.Fatalf("command = %q, want silence: :lib appears only inside a string literal",
+					got.Command)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyGradleTripleQuotedIncludeArgumentIsRead pins the other half: a triple-quoted
+// literal PASSED to include is an ordinary argument once its delimiter is stripped.
+func TestSearchVerifyGradleTripleQuotedIncludeArgumentIsRead(t *testing.T) {
+	t.Parallel()
+	settings := "include(\"\"\":lib\"\"\")\n"
+	if !searchVerifyGradleSettingsIncludes(settings, ":lib") {
+		t.Fatalf("settings %q declare :lib and the scanner did not read it", settings)
+	}
+}
+
+// TestSearchVerifyGradleRemappedProjectIsNotThisDirectory is the regression for a project path that
+// is declared but does not live where it was derived from.
+//
+// The suite tier derives `:lib` from the directory `lib/` and confirms it against `include`. Gradle
+// lets a settings script move it — `project(':lib').projectDir = file('other')` — and then `:lib` is
+// a different tree. `./gradlew :lib:test` for an edit in `lib/` RUNS, and passes, about code the
+// edit never touched: worse than a command that cannot run, because nothing announces it.
+//
+// The control matters as much as the cases: an ordinary `include ':lib'` with no remap must keep its
+// command, so the check declines on the remap rather than on the mention of a project() call.
+func TestSearchVerifyGradleRemappedProjectIsNotThisDirectory(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		settings string
+		want     string
+	}{
+		{
+			name:     "the Groovy assignment",
+			settings: "include ':lib'\nproject(':lib').projectDir = file('other')\n",
+		},
+		{
+			name:     "the Kotlin assignment",
+			settings: "include(\":lib\")\nproject(\":lib\").projectDir = file(\"other\")\n",
+		},
+		{
+			name:     "the block spelling of the same assignment",
+			settings: "include ':lib'\nproject(':lib') {\n    projectDir = file('other')\n}\n",
+		},
+		{
+			name:     "the same statement, semicolon separated",
+			settings: "include ':lib'; project(':lib').projectDir = file('other')\n",
+		},
+		{
+			name:     "a chained access continued onto the next line",
+			settings: "include(\":lib\")\nproject(\":lib\")\n    .projectDir = file(\"other\")\n",
+		},
+		{
+			// A `}` inside a string is text. Ending the block window at it stopped the scan before
+			// the assignment that follows.
+			name:     "a brace inside a string does not end the block",
+			settings: "include ':lib'\nproject(':lib') { println(\"}\"); projectDir = file('other') }\n",
+		},
+		{
+			// The same for a `;` on the assignment line.
+			name:     "a semicolon inside a string does not end the statement",
+			settings: "include ':lib'\nproject(':lib').buildFileName = 'a;b'; project(':lib').projectDir = file('other')\n",
+		},
+		{
+			name:     "the setter the assignment is sugar for",
+			settings: "include ':lib'\nproject(':lib').setProjectDir(file('other'))\n",
+		},
+		{
+			name:     "an unremapped project keeps its command",
+			settings: "include ':lib'\n",
+			want:     "./gradlew :lib:test",
+		},
+		{
+			// Reading the property does not move the project, and declining on a read costs a
+			// command that would have run.
+			name:     "a READ of projectDir is not a remap",
+			settings: "include ':lib'\nprintln(project(':lib').projectDir)\n",
+			want:     "./gradlew :lib:test",
+		},
+		{
+			name:     "a comparison is not an assignment",
+			settings: "include ':lib'\nif (project(':lib').projectDir == file('lib')) { }\n",
+			want:     "./gradlew :lib:test",
+		},
+		{
+			name:     "a remap of a DIFFERENT project is not this one's",
+			settings: "include ':lib'\ninclude ':app'\nproject(':app').projectDir = file('other')\n",
+			want:     "./gradlew :lib:test",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			files := map[string]string{
+				"gradlew":                  "",
+				"settings.gradle":          testCase.settings,
+				"lib/build.gradle":         "",
+				"lib/src/main/java/A.java": "",
+				"app/build.gradle":         "",
+				"other/build.gradle":       "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "lib/src/main/java/A.java"}, &evidence)
+			if testCase.want == "" {
+				if got != nil {
+					t.Fatalf("command = %q, want silence: the settings script moves :lib to another "+
+						"directory, so it does not name this one", got.Command)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected the declared project's command, got silence")
+			}
+			if got.Command != testCase.want {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.want)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyGradleIncludeArgumentsMustBeLiterals is the regression for a project path read out
+// of a branch that was not taken.
+//
+// `include(if (flag) ":app" else ":other")` and its Groovy ternary name ONE project, decided at
+// configuration time. Collecting every literal inside the parentheses recorded both, and the one
+// Gradle did not include produced `./gradlew :other:test` — "Project 'other' not found in root
+// project". Nothing in the text says which branch is taken, so an argument list that is not a plain
+// sequence of literals declares nothing.
+func TestSearchVerifyGradleIncludeArgumentsMustBeLiterals(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		settings string
+		declares bool
+	}{
+		{
+			name:     "a Kotlin if-expression argument",
+			settings: "include(if (flag) \":app\" else \":other\")\n",
+		},
+		{
+			name:     "a Groovy ternary argument",
+			settings: "include(flag ? ':app' : ':other')\n",
+		},
+		{
+			name:     "a literal built by a call",
+			settings: "include(prefix(\":app\"))\n",
+		},
+		{
+			name:     "a plain list of literals still declares all of them",
+			settings: "include(\":app\", \":other\")\n",
+			declares: true,
+		},
+		{
+			name:     "the command-expression list too",
+			settings: "include ':app', ':other'\n",
+			declares: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			for _, project := range []string{":app", ":other"} {
+				if got := searchVerifyGradleSettingsIncludes(testCase.settings, project); got != testCase.declares {
+					t.Fatalf("declares(%s) = %v, want %v for %q",
+						project, got, testCase.declares, testCase.settings)
+				}
+			}
+			files := map[string]string{
+				"gradlew":                    "",
+				"settings.gradle":            testCase.settings,
+				"app/build.gradle":           "",
+				"other/build.gradle":         "",
+				"other/src/main/java/A.java": "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "other/src/main/java/A.java"}, &evidence)
+			if !testCase.declares {
+				if got != nil {
+					t.Fatalf("command = %q, want silence: %q names one project, and which one is "+
+						"decided when the script runs", got.Command, testCase.settings)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected the declared project's command, got silence")
+			}
+			if want := "./gradlew :other:test"; got.Command != want {
+				t.Fatalf("command = %q, want %q", got.Command, want)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyRakeDefineTaskDeclaresTheTask pins the API form of a task declaration.
+//
+// `task :test` is sugar: Rake::DSL#task calls Rake::Task.define_task, so a Rakefile spelling it
+// directly declares the task exactly as the keyword does. Rejecting it costs a `rake test` that
+// would have run, which is a coverage loss rather than a wrong command — but a loss with no reason
+// behind it. The negative case is what keeps the widening honest: a define_task for a DIFFERENT task
+// still licenses nothing, because `rake test` would answer "Don't know how to build task 'test'".
+func TestSearchVerifyRakeDefineTaskDeclaresTheTask(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		rakefile    string
+		wantCommand string
+	}{
+		{
+			name:        "the fully qualified API call",
+			rakefile:    "Rake::Task.define_task(:test)\n",
+			wantCommand: "rake test",
+		},
+		{
+			name:        "the same call without parentheses",
+			rakefile:    "Rake::Task.define_task :test\n",
+			wantCommand: "rake test",
+		},
+		{
+			name:     "a define_task for another task declares nothing",
+			rakefile: "Rake::Task.define_task(:lint)\n",
+		},
+		{
+			name:     "a mention in a comment is still not a declaration",
+			rakefile: "# Rake::Task.define_task(:test) would work here\n",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			files := map[string]string{
+				"Rakefile":     testCase.rakefile,
+				"lib/thing.rb": "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "lib/thing.rb"}, &evidence)
+			if testCase.wantCommand == "" {
+				if got != nil {
+					t.Fatalf("command = %q, want silence: %q declares no test task",
+						got.Command, testCase.rakefile)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("expected %q, got silence for %q", testCase.wantCommand, testCase.rakefile)
+			}
+			if got.Command != testCase.wantCommand {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.wantCommand)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyNodeSuiteNeedsATestScriptForTheManagerForm is the regression for the manager's
+// script form emitted for a manifest that has no script.
+//
+// `npm test`, `yarn test` and `pnpm test` all run the package's `test` SCRIPT. The suite tier reads
+// jest/vitest/mocha out of dependencies as the repository's statement of its runner, which is a
+// statement about a RUNNER — with no `scripts.test` the manager form answers "Missing script: test"
+// (npm, pnpm) or "Couldn't find a script named test" (yarn), a hard gate that cannot run. What the
+// dependency licenses is the runner's own invocation.
+//
+// A scripts.test that exists but names no known runner keeps the manager, and that case is pinned in
+// TestSearchVerifyTierLadderAnswersEveryEcosystem: `echo none` is weak verification, not an
+// unrunnable command, and this line is not about that trade.
+func TestSearchVerifyNodeSuiteNeedsATestScriptForTheManagerForm(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		manifest    string
+		wantCommand string
+	}{
+		{
+			name:        "no test script at all, under a yarn lockfile",
+			manifest:    `{"name":"leaf","devDependencies":{"jest":"^29.0.0"}}`,
+			wantCommand: "npx jest",
+		},
+		{
+			name:        "declared in dependencies rather than devDependencies",
+			manifest:    `{"name":"leaf","dependencies":{"vitest":"^1.0.0"}}`,
+			wantCommand: "npx vitest run",
+		},
+		{
+			name:        "an empty test script is no script",
+			manifest:    `{"name":"leaf","scripts":{"test":"  "},"devDependencies":{"mocha":"^10"}}`,
+			wantCommand: "npx mocha",
+		},
+		{
+			name:        "a real test script keeps the manager form",
+			manifest:    `{"name":"leaf","scripts":{"test":"jest"},"devDependencies":{"jest":"^29.0.0"}}`,
+			wantCommand: "yarn test",
+		},
+		{
+			name:        "a placeholder script still keeps the manager form",
+			manifest:    `{"name":"leaf","scripts":{"test":"echo none"},"devDependencies":{"jest":"^29.0.0"}}`,
+			wantCommand: "yarn test",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			files := map[string]string{
+				"package.json":           testCase.manifest,
+				"yarn.lock":              "__metadata:\n  version: 8\n",
+				"node_modules/.bin/jest": "",
+				"src/index.js":           "",
+			}
+			evidence := searchVerifyTestEvidence(files)
+			got := deriveSearchVerifySuiteCommand(
+				searchVerifySubject{sourcePath: "src/index.js"}, &evidence)
+			if got == nil {
+				t.Fatal("expected a Node suite command, got silence")
+			}
+			if got.Command != testCase.wantCommand {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.wantCommand)
+			}
+		})
+	}
+}

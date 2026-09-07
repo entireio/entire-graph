@@ -2,6 +2,7 @@ package sem
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"path"
@@ -47,6 +48,25 @@ type AnalyzeProgressEvent struct {
 	Path    string
 	Elapsed time.Duration
 }
+
+// changedFileScan is one changed file's share of the parse phase: the delta it
+// produced and the warnings it raised, held until the reducer folds them in
+// file order.
+//
+// stopped records that the worker ran out of budget. The reducer also checks
+// the deadline in file order because earlier work can consume the budget while
+// this result waits in the pipeline.
+type changedFileScan struct {
+	delta    *fileDelta
+	warnings []ProviderWarning
+	stopped  bool
+	err      error
+}
+
+// errAnalyzeParseStopped unwinds one window when the budget runs out. It never
+// reaches a caller: the parse reports a stop with warnings and its partial
+// deltas, exactly as the sequential loop did.
+var errAnalyzeParseStopped = errors.New("analyze parse stopped")
 
 // AnalyzeGitRangeWithOptions analyzes a Git range with optional progress reporting.
 func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, paths []string, options AnalyzeOptions) (Result, error) {
@@ -161,49 +181,18 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			result.Warnings = append(result.Warnings, budgetSkippedFileWarning(skipped.Path, start, len(changed), options.MaxDuration))
 		}
 	}
-	for i, file := range changed {
+	// Each changed file is read and parsed independently, so the files in one
+	// metadata window run on workers while a reducer folds their deltas and
+	// warnings in the original file order. Windows stay sequential: priming is
+	// what makes the reads cheap, and it is defined over a run of files.
+	processChangedFile := func(i int, file gitutil.ChangedFile) changedFileScan {
+		var scan changedFileScan
+		// Avoid starting more parse work after the budget expires. The reducer
+		// independently checks the deadline before accepting buffered results.
 		if overBudget() {
-			// Stop cleanly: keep everything analyzed so far and enumerate each
-			// skipped changed file with a machine-readable warning, so the
-			// partial result is never silently incomplete.
-			appendBudgetWarnings(i)
-			break
+			scan.stopped = true
+			return scan
 		}
-		if i%analyzeMetadataPrimeFiles == 0 {
-			end := min(i+analyzeMetadataPrimeFiles, len(changed))
-			basePaths := make([]string, 0, end-i)
-			headPaths := make([]string, 0, end-i)
-			for _, candidate := range changed[i:end] {
-				oldCandidatePath := candidate.OldPath
-				if oldCandidatePath == "" {
-					oldCandidatePath = candidate.Path
-				}
-				if extensionUnsupported(oldCandidatePath) && extensionUnsupported(candidate.Path) {
-					continue
-				}
-				if candidate.Status != "A" && gitutil.IsCanonicalGitTreePath(oldCandidatePath) {
-					basePaths = append(basePaths, oldCandidatePath)
-				}
-				if candidate.Status != "D" && gitutil.IsCanonicalGitTreePath(candidate.Path) {
-					headPaths = append(headPaths, candidate.Path)
-				}
-			}
-			if err := baseReader.Prime(basePaths); err != nil {
-				return Result{}, err
-			}
-			if err := headReader.Prime(headPaths); err != nil {
-				return Result{}, err
-			}
-			// Component traversal observes the same deadline between metadata
-			// subprocesses. Re-check immediately so the current file and the rest
-			// receive the ordinary budget warnings instead of being misreported as
-			// unaddressable/read failures after Prime stopped at that deadline.
-			if overBudget() {
-				appendBudgetWarnings(i)
-				break
-			}
-		}
-		emitProgressEvent("parse", i, len(changed), file.Path, i > 0 && i%100 == 0)
 		path := file.Path
 		oldPath := file.OldPath
 		if oldPath == "" {
@@ -232,8 +221,8 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			} else if beforeInvalidPath && afterInvalidPath {
 				detail = "base and head paths are not canonical Git tree paths"
 			}
-			result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
-			continue
+			scan.warnings = append(scan.warnings, diffFileReadWarning(warningPath, detail))
+			return scan
 		}
 
 		// A symbolic link is stored as a blob whose bytes are its target path,
@@ -277,7 +266,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 					file.Status = "A"
 				}
 			}
-			result.Warnings = append(result.Warnings, ProviderWarning{
+			scan.warnings = append(scan.warnings, ProviderWarning{
 				Code:                 "W_UNSUPPORTED_FILE",
 				Severity:             "info",
 				FilePath:             warningPath,
@@ -285,7 +274,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				Detail:               detail,
 			})
 			if !typeChange {
-				continue
+				return scan
 			}
 		}
 
@@ -305,17 +294,22 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			// chose -- and unlike the snapshot readers, nothing downstream
 			// would have declined to parse it.
 			var beforeRead, afterRead gitutil.LimitedFileResult
+			// Declared here, not shared with the enclosing function: this runs on
+			// a worker.
+			var err error
 			if file.Status != "A" {
 				beforeRead, err = baseReader.ReadFile(oldPath)
 				if err != nil {
-					return Result{}, err
+					scan.err = err
+					return scan
 				}
 				before, beforeOK = beforeRead.Content, beforeRead.Status == gitutil.LimitedFileContent
 			}
 			if file.Status != "D" {
 				afterRead, err = headReader.ReadFile(path)
 				if err != nil {
-					return Result{}, err
+					scan.err = err
+					return scan
 				}
 				after, afterOK = afterRead.Content, afterRead.Status == gitutil.LimitedFileContent
 			}
@@ -331,7 +325,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				} else if beforeMissing && afterMissing {
 					detail = "base and head versions were missing after changed-file discovery"
 				}
-				result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
+				scan.warnings = append(scan.warnings, diffFileReadWarning(warningPath, detail))
 			}
 
 			beforeUnreadable := file.Status != "A" && beforeRead.Status == gitutil.LimitedFileUnreadable
@@ -345,7 +339,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				} else if beforeUnreadable && afterUnreadable {
 					detail = "base and head versions reference unreadable Git blob objects"
 				}
-				result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
+				scan.warnings = append(scan.warnings, diffFileReadWarning(warningPath, detail))
 			}
 
 			beforeNonBlob := file.Status != "A" && beforeRead.Status == gitutil.LimitedFileNonBlob
@@ -359,7 +353,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				} else if beforeNonBlob && afterNonBlob {
 					detail = "base and head versions are non-blob Git tree entries"
 				}
-				result.Warnings = append(result.Warnings, diffNonBlobWarning(warningPath, detail))
+				scan.warnings = append(scan.warnings, diffNonBlobWarning(warningPath, detail))
 			}
 
 			beforeOversize := file.Status != "A" && beforeRead.Status == gitutil.LimitedFileOversize
@@ -373,7 +367,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				} else if beforeOversize && afterOversize {
 					detail = "base and head versions are above the diff read cap"
 				}
-				result.Warnings = append(result.Warnings, diffFileTooLargeWarning(warningPath, detail))
+				scan.warnings = append(scan.warnings, diffFileTooLargeWarning(warningPath, detail))
 			}
 
 			beforeUnaddressable := file.Status != "A" && beforeRead.Status == gitutil.LimitedFileUnaddressable
@@ -387,10 +381,10 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				} else if beforeUnaddressable && afterUnaddressable {
 					detail = "base and head paths could not be resolved within bounded Git metadata traversal"
 				}
-				result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
+				scan.warnings = append(scan.warnings, diffFileReadWarning(warningPath, detail))
 			}
 			if beforeMissing || afterMissing || beforeUnreadable || afterUnreadable || beforeNonBlob || afterNonBlob || beforeOversize || afterOversize || beforeUnaddressable || afterUnaddressable {
-				continue
+				return scan
 			}
 		}
 
@@ -424,7 +418,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			if beforeOK && afterOK && beforeUnsupported != afterUnsupported {
 				effect = "one side has no parser, so its symbols are reported as leaving or entering the graph rather than compared"
 			}
-			result.Warnings = append(result.Warnings, ProviderWarning{
+			scan.warnings = append(scan.warnings, ProviderWarning{
 				Code:                 "W_UNSUPPORTED_FILE",
 				Severity:             "info",
 				FilePath:             warningPath,
@@ -451,7 +445,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			// declines an unchanged path — and any one of them moving would put
 			// the invented record back with nothing to catch it.
 			if !(beforeOK && afterOK && beforeUnsupported != afterUnsupported) {
-				continue
+				return scan
 			}
 			// The unparseable side is not in the graph, so the range did not
 			// rename a file the graph holds: it removed one or added one. Restate
@@ -524,8 +518,8 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			if !afterParseFailed {
 				status, warnPath = beforeStatus, oldPath
 			}
-			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, diffSuppressed))
-			continue
+			scan.warnings = append(scan.warnings, parseFailureWarning(warnPath, status, diffSuppressed))
+			return scan
 		}
 		// A depth-truncated side that recovered ZERO entities is a valid
 		// partial result — the tree parsed — that nonetheless carries NO
@@ -583,7 +577,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			if entitiesSkipped {
 				outcome = diffEntitiesSkipped
 			}
-			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, outcome))
+			scan.warnings = append(scan.warnings, parseFailureWarning(warnPath, status, outcome))
 		}
 		// A side with no parser holds nothing in the graph, so emptying it turns
 		// the comparison below into the removals or additions a snapshot of each
@@ -625,7 +619,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				mod, ok = pathScopeChange(oldPath, path)
 			}
 			if !ok {
-				continue
+				return scan
 			}
 			changes = append(changes, mod)
 		}
@@ -633,7 +627,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		if reportedStatus != "" {
 			deltaStatus = reportedStatus
 		}
-		deltas = append(deltas, &fileDelta{
+		scan.delta = &fileDelta{
 			path:     path,
 			oldPath:  file.OldPath,
 			status:   deltaStatus,
@@ -641,7 +635,80 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			changes:  changes,
 			removed:  removed,
 			added:    added,
-		})
+		}
+		return scan
+	}
+
+	// Windows are sequential because priming is defined over a run of files;
+	// the files inside one window run together. A window that goes over budget
+	// stops the whole parse, and the reducer -- which sees files in order -- is
+	// what decides where, so skipped-file warnings describe the accepted prefix.
+	stopped := false
+	for start := 0; start < len(changed) && !stopped; start += analyzeMetadataPrimeFiles {
+		if overBudget() {
+			appendBudgetWarnings(start)
+			break
+		}
+		end := min(start+analyzeMetadataPrimeFiles, len(changed))
+		basePaths := make([]string, 0, end-start)
+		headPaths := make([]string, 0, end-start)
+		for _, candidate := range changed[start:end] {
+			oldCandidatePath := candidate.OldPath
+			if oldCandidatePath == "" {
+				oldCandidatePath = candidate.Path
+			}
+			if extensionUnsupported(oldCandidatePath) && extensionUnsupported(candidate.Path) {
+				continue
+			}
+			if candidate.Status != "A" && gitutil.IsCanonicalGitTreePath(oldCandidatePath) {
+				basePaths = append(basePaths, oldCandidatePath)
+			}
+			if candidate.Status != "D" && gitutil.IsCanonicalGitTreePath(candidate.Path) {
+				headPaths = append(headPaths, candidate.Path)
+			}
+		}
+		if err := baseReader.Prime(basePaths); err != nil {
+			return Result{}, err
+		}
+		if err := headReader.Prime(headPaths); err != nil {
+			return Result{}, err
+		}
+		// Component traversal observes the same deadline between metadata
+		// subprocesses. Re-check immediately so this window and the rest
+		// receive the ordinary budget warnings instead of being misreported as
+		// unaddressable/read failures after Prime stopped at that deadline.
+		if overBudget() {
+			appendBudgetWarnings(start)
+			break
+		}
+		windowErr := runIndexedPipeline(ctx, end-start, defaultProviderWorkerCount(),
+			func(_ context.Context, j int) changedFileScan {
+				return processChangedFile(start+j, changed[start+j])
+			},
+			func(j int, scan changedFileScan) error {
+				if scan.err != nil {
+					return scan.err
+				}
+				i := start + j
+				// The budget decision comes before the progress event, as it did
+				// in the sequential loop: a file the budget skips is reported as
+				// skipped in the warnings, so announcing it as parsed first would
+				// contradict the result the same run returns.
+				if scan.stopped || overBudget() {
+					appendBudgetWarnings(i)
+					stopped = true
+					return errAnalyzeParseStopped
+				}
+				emitProgressEvent("parse", i, len(changed), changed[i].Path, i > 0 && i%100 == 0)
+				result.Warnings = append(result.Warnings, scan.warnings...)
+				if scan.delta != nil {
+					deltas = append(deltas, scan.delta)
+				}
+				return nil
+			})
+		if windowErr != nil && !errors.Is(windowErr, errAnalyzeParseStopped) {
+			return Result{}, windowErr
+		}
 	}
 	emitProgress("parse", len(changed), len(changed))
 	baseCloseErr := baseReader.Close()
