@@ -2,8 +2,10 @@ import hashlib
 import importlib.util
 import json
 import pathlib
+import shlex
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -13,6 +15,7 @@ sys.path.insert(0, str(HERE))
 spec = importlib.util.spec_from_file_location("launch", HERE / "launch.py")
 launch = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launch)
+import batch_budget
 
 
 class LaunchContracts(unittest.TestCase):
@@ -61,6 +64,7 @@ class LaunchContracts(unittest.TestCase):
             script_url="https://storage/scripts-a?sig=secret",
             binary_url="https://storage/evaluator-a?sig=secret",
             binary_sha256=a["binary_sha256"], trials=1, frozen_baseline=False,
+            archive_sha256="a" * 64,
         )
         self.assertIn("/opt/p1/runs/run-a/p1-evaluator", script)
         self.assertIn("/opt/p1/runs/run-a/scripts", script)
@@ -157,6 +161,85 @@ class LaunchContracts(unittest.TestCase):
                 json.loads((pathlib.Path(d) / "launch-failure.json").read_text()),
             )
             self.assertTrue((pathlib.Path(d) / "launch-failure-retry-2.json").exists())
+
+    def test_missing_batch_manifest_refuses_before_cloud(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(launch.cloud, "upload") as upload, \
+                mock.patch.object(launch.cloud, "run") as run:
+            with self.assertRaises(ValueError):
+                launch.main(["baseline", "--run-id", "bounded-test",
+                             "--supervisor-output", str(pathlib.Path(d) / "supervisor")])
+            upload.assert_not_called()
+            run.assert_not_called()
+
+    def test_worker_archive_contains_budget_module(self):
+        root, first, _ = self.fixture()
+        batch = root / 'batch.json'
+        batch.write_text('{}\n')
+        archive = launch._scripts_archive(first, None, batch)
+        try:
+            with tarfile.open(archive, 'r:gz') as stream:
+                names = stream.getnames()
+            self.assertIn('run_campaign.py', names)
+            self.assertIn('batch_budget.py', names)
+            self.assertIn('batch-manifest.json', names)
+        finally:
+            archive.unlink(missing_ok=True)
+
+    def test_generated_worker_cli_matches_runner_parser(self):
+        script = launch.worker_script(
+            stage='baseline', run_id='cli-contract', worker_index=1,
+            script_url='https://storage/scripts?sig=redacted',
+            binary_url='https://storage/evaluator?sig=redacted',
+            binary_sha256='a' * 64, trials=1, frozen_baseline=None,
+            batch_manifest=None, batch_id='cli-contract', archive_sha256='b' * 64,
+        )
+        command = next(line for line in script.splitlines() if 'run_campaign.py' in line)
+        tokens = shlex.split(command)
+        self.assertNotIn('--budget-claim', tokens)
+        self.assertIn('--batch-manifest', tokens)
+        self.assertIn('--batch-worker', tokens)
+        self.assertIn('--build-manifest', tokens)
+
+    def test_positive_fake_cloud_dispatches_only_allocated_worker(self):
+        root, build, _ = self.fixture()
+        batch = root / 'batch.json'
+        context = {
+            'binary_sha256': 'a' * 64, 'binary_blob': 'evaluator-a',
+            'manifest_sha256': 'b' * 64, 'inventory_sha256': 'c' * 64,
+            'document': {},
+        }
+        cell = {
+            'worker': 1, 'repository': 'kubernetes-kubernetes', 'profile': 'syntax-only',
+            'verb': 'snapshot', 'scenario': 'baseline', 'trial': 0,
+            'arms': [False], 'preparatory_invocations': 0,
+        }
+        cell['cell_id'] = batch_budget.cell_id(cell)
+        batch.write_text(json.dumps({
+            'version': 1, 'batch_id': 'positive-dispatch-test', 'scope': 'bounded-diagnostic',
+            'cap': 100, 'identity': {
+                'binary_sha256': context['binary_sha256'],
+                'input_manifest_sha256': launch.sha(launch.HERE.parent / 'corpus' / 'corpus-manifest.json'),
+                'runner_sha256': launch.sha(launch.HERE / 'run_campaign.py'),
+                'scenario_sha256': launch.sha(launch.HERE.parent / 'corpus' / 'p1_scenario.py'),
+                'gate_sha256': launch.sha(launch.HERE / 'campaign_gate.py'),
+                'budget_sha256': launch.sha(launch.HERE / 'batch_budget.py'),
+                'build_manifest_sha256': context['manifest_sha256'],
+            }, 'cells': [cell], 'workers': {'1': 1},
+        }))
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(launch, 'load_and_validate_build_manifest', return_value=context), \
+                mock.patch.object(launch.cloud, 'environment', return_value={}), \
+                mock.patch.object(launch.cloud, 'upload'), \
+                mock.patch.object(launch.cloud, 'url', side_effect=lambda name, mode, env: 'https://example/' + name), \
+                mock.patch.object(launch.cloud, 'run', return_value=json.dumps(['P1_LAUNCH_OK p1-baseline-positive'])) as cloud_run, \
+                mock.patch.object(launch.supervise, 'supervise', return_value=True) as supervise_run:
+            try:
+                launch.main(['baseline', '--build-manifest', str(build), '--batch-manifest', str(batch),
+                             '--run-id', 'positive', '--supervisor-output', str(pathlib.Path(directory) / 'supervisor')])
+            finally:
+                (launch.HERE / '.p1-dispatch-claims' / 'positive-dispatch-test.json').unlink(missing_ok=True)
+        self.assertEqual(cloud_run.call_count, 1)
+        self.assertEqual(supervise_run.call_args.args[0], [launch.VMS[0]])
 
 
 if __name__ == "__main__":

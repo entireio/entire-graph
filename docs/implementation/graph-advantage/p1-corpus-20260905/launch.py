@@ -19,6 +19,7 @@ import tempfile
 import canary_admission
 import cloud
 import supervise
+import batch_budget
 
 HERE = pathlib.Path(__file__).resolve().parent
 VMS = ["graph-validation-linux", "graph-p1-worker-2", "graph-p1-worker-3"]
@@ -200,9 +201,10 @@ def prepare_supervisor_output(path):
     return path
 
 
-def _scripts_archive(build_manifest_path, frozen_baseline):
+def _scripts_archive(build_manifest_path, frozen_baseline, batch_manifest=None, approval_record=None):
     files = [
         (HERE / "run_campaign.py", "run_campaign.py"),
+        (HERE / "batch_budget.py", "batch_budget.py"),
         (HERE / "verify_inputs.py", "verify_inputs.py"),
         (HERE / "expected-inputs.json", "expected-inputs.json"),
         (HERE / "campaign_gate.py", "campaign_gate.py"),
@@ -215,6 +217,10 @@ def _scripts_archive(build_manifest_path, frozen_baseline):
     ]
     if frozen_baseline is not None:
         files.append((pathlib.Path(frozen_baseline), "frozen-baseline.json"))
+    if batch_manifest is not None:
+        files.append((pathlib.Path(batch_manifest), "batch-manifest.json"))
+    if approval_record is not None:
+        files.append((pathlib.Path(approval_record), "approval-record.json"))
     temp = tempfile.NamedTemporaryFile(prefix="p1-scripts-", suffix=".tar.gz", delete=False)
     temp.close()
     archive_path = pathlib.Path(temp.name)
@@ -234,7 +240,13 @@ def worker_script(
     binary_sha256,
     trials,
     frozen_baseline,
+    batch_manifest=None,
+    approval_record=None,
+    batch_id=None,
+    archive_sha256=None,
 ):
+    if not isinstance(archive_sha256, str) or not _DIGEST_RE.fullmatch(archive_sha256):
+        raise ValueError("archive_sha256 is required for remote archive verification")
     run_dir = f"/opt/p1/runs/{run_id}"
     scripts_dir = f"{run_dir}/scripts"
     archive_path = f"{run_dir}/scripts.tar.gz"
@@ -253,6 +265,10 @@ def worker_script(
         f"{scripts_dir}/corpus-tools/p1_scenario.py",
         "--assignment",
         f"{scripts_dir}/worker-{worker_index}.json",
+        "--batch-manifest",
+        f"{scripts_dir}/batch-manifest.json",
+        "--batch-worker",
+        str(worker_index),
         "--output",
         run_dir,
         "--stage",
@@ -265,6 +281,8 @@ def worker_script(
     ]
     if frozen_baseline:
         command.extend(["--frozen-baseline", f"{scripts_dir}/frozen-baseline.json"])
+    if approval_record:
+        command.extend(["--approval-record", f"{scripts_dir}/approval-record.json"])
     command_text = " ".join(shlex.quote(str(part)) for part in command)
     return "\n".join(
         [
@@ -273,7 +291,10 @@ def worker_script(
             f"test ! -e {shlex.quote(run_dir + '/STOP')}",
             "if systemctl list-units --state=active --no-legend 'p1-*.service' | grep -q .; then exit 1; fi",
             f"mkdir -p {shlex.quote(scripts_dir)}",
+            f"mkdir -p {shlex.quote('/opt/p1/batch-claims/' + str(batch_id))}",
+            f"chown -R graphcheck:graphcheck {shlex.quote('/opt/p1/batch-claims/' + str(batch_id))}",
             f"curl --fail --silent --show-error {shlex.quote(script_url)} -o {shlex.quote(archive_path)}",
+            f"printf '%s  %s\\n' {shlex.quote(archive_sha256 or '')} {shlex.quote(archive_path)} | sha256sum -c -",
             f"tar -xzf {shlex.quote(archive_path)} -C {shlex.quote(scripts_dir)}",
             f"curl --fail --silent --show-error {shlex.quote(binary_url)} -o {shlex.quote(binary_path)}",
             f"chmod 0755 {shlex.quote(binary_path)}",
@@ -297,6 +318,7 @@ def _identity(context, frozen_baseline=None):
         "runner_sha256": canary_admission.sha(HERE / "run_campaign.py"),
         "scenario_sha256": canary_admission.sha(HERE.parent / "corpus" / "p1_scenario.py"),
         "gate_sha256": canary_admission.sha(HERE / "campaign_gate.py"),
+        "budget_sha256": canary_admission.sha(HERE / "batch_budget.py"),
         "build_manifest_sha256": context["manifest_sha256"],
         "source_file_hash_manifest_sha256": context["inventory_sha256"],
     }
@@ -307,7 +329,7 @@ def _identity(context, frozen_baseline=None):
     return identity
 
 
-def stop_workers(stage, run_id, output, attempt=1):
+def stop_workers(stage, run_id, output, attempt=1, vms=None):
     """Stop every worker after a startup/transport failure.
 
     Stop responses are retained before any interpretation, just like startup
@@ -315,6 +337,7 @@ def stop_workers(stage, run_id, output, attempt=1):
     against the remaining workers.
     """
     output = pathlib.Path(output)
+    vms = list(VMS if vms is None else vms)
     results_dir = f"/opt/p1/runs/{run_id}"
     unit = f"p1-{stage}-{run_id}"
     reason = "launcher startup or transport failure; diagnose before retry"
@@ -330,8 +353,8 @@ def stop_workers(stage, run_id, output, attempt=1):
         except BaseException as exc:  # preserve attempts to all workers
             return f"{index}:{type(exc).__name__}"
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(VMS)) as pool:
-        failures = list(pool.map(stop, enumerate(VMS, 1)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(vms)) as pool:
+        failures = list(pool.map(stop, enumerate(vms, 1)))
     (output / f"launch-failure{suffix}.json").write_text(
         json.dumps(
             {
@@ -353,6 +376,9 @@ def main(argv=None):
     parser.add_argument("--canary", action="store_true")
     parser.add_argument("--canary-results", nargs=3, type=pathlib.Path)
     parser.add_argument("--supervisor-output", type=pathlib.Path, required=True)
+    parser.add_argument("--batch-manifest", type=pathlib.Path)
+    parser.add_argument("--approval-record", type=pathlib.Path)
+    parser.add_argument("--dispatch-claim", type=pathlib.Path)
     args = parser.parse_args(argv)
     if not _RUN_ID_RE.fullmatch(args.run_id):
         raise ValueError("run-id must be a simple path-safe identifier")
@@ -360,18 +386,52 @@ def main(argv=None):
         raise ValueError("canary is a campaign stage")
     if args.stage == "campaign" and not args.frozen_baseline:
         raise ValueError("campaign requires a frozen baseline manifest")
+    if args.batch_manifest is None:
+        raise ValueError("all product execution requires a selected batch manifest")
 
     repo_root = HERE.parents[3]
     manifest_path = resolve_manifest_path(args.build_manifest, HERE / "build.json")
     context = load_and_validate_build_manifest(manifest_path, repo_root)
+    batch_identity = {
+        "binary_sha256": context["binary_sha256"],
+        "input_manifest_sha256": canary_admission.sha(HERE.parent / "corpus" / "corpus-manifest.json"),
+        "runner_sha256": canary_admission.sha(HERE / "run_campaign.py"),
+        "scenario_sha256": canary_admission.sha(HERE.parent / "corpus" / "p1_scenario.py"),
+        "gate_sha256": canary_admission.sha(HERE / "campaign_gate.py"),
+        "budget_sha256": canary_admission.sha(HERE / "batch_budget.py"),
+        "build_manifest_sha256": context["manifest_sha256"],
+    }
+    try:
+        batch = batch_budget.load(args.batch_manifest, batch_identity)
+    except batch_budget.BudgetError as exc:
+        raise ValueError(str(exc)) from exc
+    assignments = [
+        json.loads((HERE / f"worker-{i}.json").read_text())
+        for i in range(1, 4)
+    ]
+    for cell in batch["cells"]:
+        index = cell["worker"]
+        if index > len(assignments):
+            raise ValueError("batch cell references an unknown worker")
+        if not any(item.get("repository") == cell["repository"] and
+                   item.get("profile") == cell["profile"] for item in assignments[index - 1]):
+            raise ValueError("batch cell is outside its worker assignment")
+        if cell["scenario"] == "baseline" and args.stage != "baseline":
+            raise ValueError("baseline cell cannot be launched as campaign")
+        if cell["scenario"] != "baseline" and args.stage == "baseline":
+            raise ValueError("campaign cell cannot be launched as baseline")
+        expected_prep = int(args.stage == "campaign" and cell["scenario"] != "cold")
+        if cell["preparatory_invocations"] != expected_prep:
+            raise ValueError("batch preparation cost does not match runner execution plan")
+        expected_arms = [False] if args.stage == "baseline" else ([False, True] if cell["trial"] % 2 == 0 else [True, False])
+        if cell["arms"] != expected_arms:
+            raise ValueError("batch arm order does not match the frozen runner plan")
+    if batch.get("scope") == "full-campaign" or (args.stage == "campaign" and not args.canary):
+        raise ValueError("full campaign is disabled: no trusted user-approval channel is available")
 
     if args.stage == "campaign" and not args.canary:
         if not args.canary_results:
             raise ValueError("campaign requires --canary-results unless --canary is set")
-        assignments = [
-            json.loads((HERE / f"worker-{i}.json").read_text())
-            for i in range(1, 4)
-        ]
         admitted = canary_admission.validate(
             args.canary_results, assignments, _identity(context, args.frozen_baseline)
         )
@@ -382,8 +442,20 @@ def main(argv=None):
     else:
         supervisor_output = prepare_supervisor_output(args.supervisor_output)
 
+    try:
+        dispatch_claim = HERE / ".p1-dispatch-claims" / f"{batch['batch_id']}.json"
+        if args.dispatch_claim is not None and args.dispatch_claim.resolve() != dispatch_claim.resolve():
+            raise ValueError("dispatch claim path must be the stable batch-derived path")
+        batch_budget.create_claim(dispatch_claim, {
+            "batch_id": batch["batch_id"], "batch_manifest_sha256": batch["manifest_sha256"],
+            "run_id": args.run_id, "workers": batch["workers"],
+        })
+    except batch_budget.BudgetError as exc:
+        raise ValueError(str(exc)) from exc
+    active_indices = sorted({cell["worker"] for cell in batch["cells"]})
+    active_vms = [VMS[index - 1] for index in active_indices]
     env = cloud.environment()
-    archive = _scripts_archive(manifest_path, args.frozen_baseline)
+    archive = _scripts_archive(manifest_path, args.frozen_baseline, args.batch_manifest, args.approval_record)
     archive_digest = sha(archive)
     script_blob = f"p1-20260905-scripts-{args.run_id}-{archive_digest}.tar.gz"
     cloud.upload(archive, script_blob, env)
@@ -403,6 +475,10 @@ def main(argv=None):
             binary_sha256=context["binary_sha256"],
             trials=trials,
             frozen_baseline=args.frozen_baseline,
+            batch_manifest=args.batch_manifest,
+            approval_record=args.approval_record,
+            batch_id=batch["batch_id"],
+            archive_sha256=archive_digest,
         )
         raw = cloud.run(vm, script)
         return index, decode_transport_response(
@@ -411,26 +487,26 @@ def main(argv=None):
             expected_ack=f"P1_LAUNCH_OK p1-{args.stage}-{args.run_id}",
         )
 
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(VMS))
-    futures = [pool.submit(start, item) for item in enumerate(VMS, 1)]
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(active_vms))
+    futures = [pool.submit(start, item) for item in zip(active_indices, active_vms)]
     try:
         for future in concurrent.futures.as_completed(futures):
             future.result()
     except BaseException:
         pool.shutdown(wait=False, cancel_futures=True)
-        stop_workers(args.stage, args.run_id, supervisor_output)
+        stop_workers(args.stage, args.run_id, supervisor_output, vms=active_vms)
         done, _ = concurrent.futures.wait(futures, timeout=STARTUP_DRAIN_SECONDS)
         if done:
             # A request that crossed the first stop boundary may have started
             # its unit just before STOP was written. Re-issue the idempotent
             # stop after completed startup responses are drained.
-            stop_workers(args.stage, args.run_id, supervisor_output, attempt=2)
+            stop_workers(args.stage, args.run_id, supervisor_output, attempt=2, vms=active_vms)
         raise
     else:
         pool.shutdown(wait=True)
     unit = f"p1-{args.stage}-{args.run_id}"
     if not supervise.supervise(
-        VMS,
+        active_vms,
         args.stage,
         supervisor_output,
         results_dir=remote_run_dir,

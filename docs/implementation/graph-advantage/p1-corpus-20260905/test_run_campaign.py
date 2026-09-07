@@ -14,6 +14,7 @@ sys.path.insert(0, str(HERE))
 spec = importlib.util.spec_from_file_location('runner', HERE / 'run_campaign.py')
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
+import batch_budget
 
 
 class RunnerContracts(unittest.TestCase):
@@ -61,9 +62,43 @@ def digest(root): return {"effective_tracked_input_sha256": "fixed-source"}
         return root, fake, manifest, assignment, counter, scenario
 
     def command(self, root, fake, manifest, assignment, scenario, output, stage='campaign', trials='1', extra=()):
+        selected_build = root / 'build-auto.json'
+        selected_build.write_text(json.dumps({'binary_sha256': runner.sha(fake),
+                                              'source_file_hash_manifest_sha256': 'a' * 64}))
+        extra = tuple(extra)
+        if '--build-manifest' in extra:
+            selected_build = pathlib.Path(extra[extra.index('--build-manifest') + 1])
+        batch_path = root / 'batch.json'
+        selected = []
+        tasks = json.loads(assignment.read_text())
+        scenarios = ['baseline'] if stage == 'baseline' else runner.SCENARIOS
+        repetitions = 3 if stage == 'baseline' else int(trials)
+        for task in tasks:
+            for verb in ('snapshot', 'search'):
+                for case in scenarios:
+                    for trial in range(repetitions):
+                        arms = [False] if stage == 'baseline' else ([False, True] if trial % 2 == 0 else [True, False])
+                        cell = {'worker': 1, 'repository': task['repository'], 'profile': task['profile'],
+                                'verb': verb, 'scenario': case, 'trial': trial, 'arms': arms,
+                                'preparatory_invocations': int(stage == 'campaign' and case != 'cold')}
+                        cell['cell_id'] = batch_budget.cell_id(cell)
+                        selected.append(cell)
+        allocation = {'1': sum(cell['preparatory_invocations'] + len(cell['arms']) for cell in selected)}
+        batch_path.write_text(json.dumps({
+            'version': 1, 'batch_id': 'synthetic-test-batch', 'scope': 'bounded-diagnostic', 'cap': 100,
+            'identity': {'binary_sha256': runner.sha(fake), 'input_manifest_sha256': runner.sha(manifest),
+                         'runner_sha256': runner.sha(HERE / 'run_campaign.py'),
+                         'scenario_sha256': runner.sha(scenario),
+                         'gate_sha256': runner.sha(HERE / 'campaign_gate.py'),
+                         'budget_sha256': runner.sha(HERE / 'batch_budget.py'),
+                         'build_manifest_sha256': runner.sha(selected_build)},
+            'cells': selected, 'workers': allocation,
+        }))
         return [sys.executable, str(HERE / 'run_campaign.py'), '--root', str(root), '--binary', str(fake),
                 '--manifest', str(manifest), '--scenario-script', str(scenario), '--assignment', str(assignment),
-                '--output', str(output), '--stage', stage, '--trials', trials, *extra]
+                '--output', str(output), '--stage', stage, '--trials', trials,
+                '--batch-manifest', str(batch_path), '--batch-worker', '1',
+                '--build-manifest', str(selected_build), *extra]
 
     def execute(self, case, mode=None, extra=(), check=False):
         root, fake, manifest, assignment, counter, scenario = case
@@ -175,6 +210,51 @@ open(os.environ["ENTIRE_GRAPH_EXTRACTION_CORPUS_OUTPUT"], "w").write("{{")
         self.assertEqual(json.loads((output / 'pause.json').read_text())['reason_code'], 'manual_stop_requested')
         self.assertNotEqual(subprocess.run(self.command(root, fake, manifest, assignment, scenario, output),
                                            capture_output=True).returncode, 0)
+
+    def test_missing_batch_manifest_refuses_without_starting_child(self):
+        case = self.case()
+        root, fake, manifest, assignment, counter, scenario = case
+        output = root / 'out-no-batch'
+        command = [sys.executable, str(HERE / 'run_campaign.py'), '--root', str(root),
+                   '--binary', str(fake), '--manifest', str(manifest), '--scenario-script', str(scenario),
+                   '--assignment', str(assignment), '--output', str(output), '--stage', 'campaign', '--trials', '1']
+        result = subprocess.run(command, env={**os.environ, 'FAKE_COUNTER': str(counter)},
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('batch manifest', result.stderr.lower())
+        self.assertFalse(counter.exists())
+
+    def test_selected_batch_runs_only_selected_pair(self):
+        case = self.case()
+        root, fake, manifest, assignment, counter, scenario = case
+        output = root / 'selected-out'
+        argv = self.command(root, fake, manifest, assignment, scenario, output)
+        batch = json.loads((root / 'batch.json').read_text())
+        batch['cells'] = [cell for cell in batch['cells']
+                         if cell['verb'] == 'snapshot' and cell['scenario'] == 'cold']
+        batch['workers'] = {'1': 2}
+        (root / 'batch.json').write_text(json.dumps(batch))
+        result = subprocess.run(argv,
+                                env={**os.environ, 'FAKE_COUNTER': str(counter)}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line) for line in (output / 'campaign.ndjson').read_text().splitlines()]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row['verb'] for row in rows}, {'snapshot'})
+        self.assertEqual({row['scenario'] for row in rows}, {'cold'})
+
+    def test_batch_order_must_match_frozen_traversal(self):
+        case = self.case()
+        root, fake, manifest, assignment, counter, scenario = case
+        output = root / 'order-out'
+        argv = self.command(root, fake, manifest, assignment, scenario, output)
+        batch = json.loads((root / 'batch.json').read_text())
+        batch['cells'].reverse()
+        (root / 'batch.json').write_text(json.dumps(batch))
+        result = subprocess.run(argv,
+                                env={**os.environ, 'FAKE_COUNTER': str(counter)}, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('order', result.stderr.lower())
+        self.assertFalse(counter.exists())
 
     def test_supervisor_lease_is_required_when_requested(self):
         case = self.case()

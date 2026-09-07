@@ -18,6 +18,7 @@ import signal
 import subprocess
 import time
 
+import batch_budget
 from campaign_gate import (atomic_json as gate_atomic_json,
                            lease_ok as gate_lease_ok,
                            validate_observation as gate_validate_observation)
@@ -195,6 +196,9 @@ def main():
     ap.add_argument('--stop-file', type=pathlib.Path)
     ap.add_argument('--supervisor-lease', type=pathlib.Path)
     ap.add_argument('--require-supervisor', action='store_true')
+    ap.add_argument('--batch-manifest', type=pathlib.Path)
+    ap.add_argument('--batch-worker', type=int, default=1)
+    ap.add_argument('--approval-record', type=pathlib.Path)
     args = ap.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     stop_path = args.stop_file or args.output / 'STOP'
@@ -209,8 +213,33 @@ def main():
     outpath = args.output / f'{args.stage}.ndjson'
     if outpath.exists():
         raise SystemExit('Exclusive output already exists; do not overwrite observations')
+    if not args.batch_manifest:
+        raise SystemExit('Bounded batch manifest is required; full/unbounded runner invocation is refused')
+    if args.batch_worker < 1:
+        raise SystemExit('batch-worker must be positive')
     binary_digest = sha(args.binary)
     manifest_digest = sha(args.manifest)
+    if not args.build_manifest:
+        raise SystemExit('Build manifest is required for a bound batch execution')
+    try:
+        build_manifest_digest = sha(args.build_manifest)
+    except OSError as exc:
+        raise SystemExit(f'Cannot read build manifest: {exc}')
+    batch_identity = {
+        'binary_sha256': binary_digest,
+        'input_manifest_sha256': manifest_digest,
+        'runner_sha256': sha(__file__),
+        'scenario_sha256': sha(args.scenario_script),
+        'gate_sha256': sha(pathlib.Path(__file__).with_name('campaign_gate.py')),
+        'budget_sha256': sha(pathlib.Path(__file__).with_name('batch_budget.py')),
+        'build_manifest_sha256': build_manifest_digest,
+    }
+    try:
+        batch = batch_budget.load(args.batch_manifest, batch_identity)
+    except batch_budget.BudgetError as exc:
+        raise SystemExit(str(exc))
+    if batch.get('scope') == 'full-campaign' or args.trials >= 30:
+        raise SystemExit('Full campaign is disabled: no trusted user-approval channel is available')
     metadata = {'binary_sha256': binary_digest, 'manifest_sha256': manifest_digest,
                 'input_manifest_sha256': manifest_digest, 'compiler': 'off',
                 'ranking': 'current', 'runner_sha256': sha(__file__),
@@ -219,7 +248,10 @@ def main():
                 'stage': args.stage, 'uname': list(os.uname()),
                 'page_cache': 'ordered whole-file prime before each request; no disk-cold claim',
                 'rss': 'Linux wait4 whole child including verification; harness overhead included',
-                'trials': args.trials, 'require_supervisor': args.require_supervisor}
+                'trials': args.trials, 'require_supervisor': args.require_supervisor,
+                'batch_manifest_sha256': batch['manifest_sha256'],
+                'batch_id': batch['batch_id'], 'batch_worker': args.batch_worker,
+                'reserved_invocations': batch['derived_invocations']}
     if args.build_manifest:
         try:
             build_manifest = json.loads(args.build_manifest.read_text())
@@ -243,7 +275,54 @@ def main():
     if args.frozen_baseline:
         metadata['frozen_baseline_sha256'] = sha(args.frozen_baseline)
     (args.output / f'{args.stage}-manifest.json').write_text(json.dumps(metadata, indent=2))
-    plan = list(planned_cells(tasks, records, args.stage, args.trials))
+    worker_cells = [cell for cell in batch['cells'] if cell['worker'] == args.batch_worker]
+    if not worker_cells:
+        raise SystemExit(f'Batch has no cells allocated to worker {args.batch_worker}')
+    task_keys = {(records[item['repository']]['id'], item['profile']) for item in tasks}
+    selected_pairs = {}
+    for selected in worker_cells:
+        if (selected['repository'], selected['profile']) not in task_keys:
+            raise SystemExit('Batch cell is outside this worker assignment')
+        if selected['scenario'] == 'baseline' and args.stage != 'baseline':
+            raise SystemExit('Baseline cell cannot be used for campaign stage')
+        if selected['scenario'] != 'baseline' and args.stage == 'baseline':
+            raise SystemExit('Campaign cell cannot be used for baseline stage')
+        if args.stage == 'campaign' and selected['scenario'] not in SCENARIOS:
+            raise SystemExit('Batch cell contains an unknown campaign scenario')
+        expected_prep = int(args.stage == 'campaign' and selected['scenario'] != 'cold')
+        if selected['preparatory_invocations'] != expected_prep:
+            raise SystemExit('Batch preparation cost does not match runner execution plan')
+        if args.stage == 'baseline' and selected['arms'] != [False]:
+            raise SystemExit('Baseline cells must reserve exactly one cache-off arm')
+        if args.stage == 'campaign' and selected['arms'] not in ([False, True], [True, False]):
+            raise SystemExit('Campaign cells must reserve one complete OFF/ON pair')
+        pair = (selected['repository'], selected['profile'], selected['verb'], selected['scenario'], selected['trial'])
+        if pair in selected_pairs:
+            raise SystemExit('Batch contains duplicate pair cells')
+        selected_pairs[pair] = selected
+    plan = [(pair[0], pair[1], pair[2], pair[3], pair[4], reuse)
+            for pair, selected in selected_pairs.items() for reuse in selected['arms']]
+    expected_order = []
+    scenarios = ['baseline'] if args.stage == 'baseline' else SCENARIOS
+    repetitions = 3 if args.stage == 'baseline' else args.trials
+    for task in tasks:
+        repository = records[task['repository']]['id']
+        for verb in ('snapshot', 'search'):
+            for case in scenarios:
+                for trial in range(repetitions):
+                    selected = selected_pairs.get((repository, task['profile'], verb, case, trial))
+                    if selected is not None:
+                        expected_order.append(selected['cell_id'])
+    if expected_order != [cell['cell_id'] for cell in worker_cells]:
+        raise SystemExit('batch cell order or trial is outside the frozen runner traversal')
+    try:
+        claim_root = (pathlib.Path('/opt/p1/batch-claims')
+                      if pathlib.Path(args.batch_manifest).resolve().is_relative_to('/opt/p1')
+                      else args.batch_manifest.parent / '.batch-claims')
+        claim_path = pathlib.Path(claim_root) / batch['batch_id'] / f'worker-{args.batch_worker}.json'
+        ledger = batch_budget.WorkerLedger(claim_path, batch, args.batch_worker)
+    except batch_budget.BudgetError as exc:
+        raise SystemExit(str(exc))
     count = 0
     blocked = []
     seen = set()
@@ -327,6 +406,8 @@ def main():
                 for verb in ('snapshot', 'search'):
                     if paused:
                         break
+                    if not any(pair[:3] == (record['id'], profile, verb) for pair in selected_pairs):
+                        continue
                     if args.stage == 'campaign' and any(item.get('repository') == record['id'] and
                                                        item.get('profile') == profile and item.get('verb') == verb
                                                        for item in frozen.get('blocked_strata', [])):
@@ -354,6 +435,9 @@ def main():
                             if paused:
                                 break
                             cell = (record['id'], profile, verb, case, trial, False)
+                            selected = selected_pairs.get((record['id'], profile, verb, case, trial))
+                            if selected is None:
+                                continue
                             pair_rows = []
                             try:
                                 scenario.reset(repo, record)
@@ -376,10 +460,17 @@ def main():
                                         break
                                     warm_source = scenario.digest(repo)['effective_tracked_input_sha256']
                                     warm_before_binary, warm_before_manifest = sha(args.binary), sha(args.manifest)
-                                    warm = child(args.binary, dict(config, mode='warm', cache='on',
-                                                                  source_digest=warm_source),
-                                                  args.output / 'request', 120, stop_path,
-                                                  lease_path if args.require_supervisor else None)
+                                    ledger.start(selected['cell_id'], 'prep:0')
+                                    try:
+                                        warm = child(args.binary, dict(config, mode='warm', cache='on',
+                                                                      source_digest=warm_source),
+                                                      args.output / 'request', 120, stop_path,
+                                                      lease_path if args.require_supervisor else None)
+                                    except BaseException:
+                                        ledger.finish(selected['cell_id'], 'prep:0', 'error')
+                                        raise
+                                    ledger.finish(selected['cell_id'], 'prep:0',
+                                                  'ok' if warm.get('status') == 'ok' else 'error')
                                     warm_after_source = scenario.digest(repo)['effective_tracked_input_sha256']
                                     warm_after_binary, warm_after_manifest = sha(args.binary), sha(args.manifest)
                                     warm_cache_bytes = None
@@ -412,7 +503,7 @@ def main():
                                 if case not in ('baseline', 'cold', 'unchanged'):
                                     scenario.apply(repo, record, case)
                                 source = scenario.digest(repo)['effective_tracked_input_sha256']
-                                arms = [False] if args.stage == 'baseline' else ([False, True] if trial % 2 == 0 else [True, False])
+                                arms = selected['arms']
                                 issue = None
                                 for reuse in arms:
                                     current_cell = (record['id'], profile, verb, case, trial, reuse)
@@ -425,10 +516,18 @@ def main():
                                     if issue:
                                         break
                                     before_binary, before_manifest = sha(args.binary), sha(args.manifest)
-                                    row = child(args.binary, dict(config, cache='on' if reuse else 'off',
-                                                                  source_digest=source, mutation_id=case),
-                                                 args.output / 'request', 120, stop_path,
-                                                 lease_path if args.require_supervisor else None)
+                                    phase = f'arm:{str(reuse).lower()}'
+                                    ledger.start(selected['cell_id'], phase)
+                                    try:
+                                        row = child(args.binary, dict(config, cache='on' if reuse else 'off',
+                                                                      source_digest=source, mutation_id=case),
+                                                     args.output / 'request', 120, stop_path,
+                                                     lease_path if args.require_supervisor else None)
+                                    except BaseException:
+                                        ledger.finish(selected['cell_id'], phase, 'error')
+                                        raise
+                                    ledger.finish(selected['cell_id'], phase,
+                                                  'ok' if row.get('status') == 'ok' else 'error')
                                     try:
                                         after_source = scenario.digest(repo)['effective_tracked_input_sha256']
                                         after_binary, after_manifest = sha(args.binary), sha(args.manifest)
