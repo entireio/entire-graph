@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "scope": "bounded-diagnostic",
+  "profile": "full",
+  "cache": "off",
+  "source_commit": "125745228645b5b605efc3cb1b8c6075e8c14a4e",
+  "binary_sha256": "e61ab9fea6e0e11115b1e2e3b266bbce79d3d5ce43840beffb3c1bb422906265",
+  "members": {
+    "collector/run_remote.py": "f8411fc4164e211302057b7ca1f488353155753831515713dbc137a62f379781",
+    "collector/batch_budget.py": "23f7d063c75fb3190da21b232145181dd7ac8ff5e30436d65de76eedc678df3a",
+    "collector/campaign_gate.py": "8c07cdac2089a99aae7c338f65472885d3039f223080d60d57978ae08587cae6",
+    "collector/cloud.py": "927ff2bc4e7647c88d60c39123477953102391936d38ec2c57d9f44f73dcd548",
+    "corpus/p1_scenario.py": "6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75",
+    "corpus/corpus-manifest.json": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+    "build-manifest.json": "4aef960b6ed0eaad356340c7b962a9a48aede06d92716f60df45f3aebb33f12f",
+    "batch-manifest.json": "0b9a7bd24946c55f678737aa9bd0ca09f077aaa955bf003aaff1bcc3ec38001c",
+    "full-check-gate.json": "f35cc0e128742bf068e69815e650119be9f52e5f2715528fa504c2d37bbf11e3"
+  },
+  "control_hashes_sha256": "0179882fd911bc9d3daf0fa5f000f5012056e386da31d7ed79874f6023b5f9b6",
+  "runtime_pins": {
+    "source_commit": "125745228645b5b605efc3cb1b8c6075e8c14a4e",
+    "binary_sha256": "e61ab9fea6e0e11115b1e2e3b266bbce79d3d5ce43840beffb3c1bb422906265"
+  }
+}

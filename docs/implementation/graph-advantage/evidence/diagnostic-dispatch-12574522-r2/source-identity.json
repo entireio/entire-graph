@@ -1,0 +1,18 @@
+{
+  "source_commit": "125745228645b5b605efc3cb1b8c6075e8c14a4e",
+  "source_archive": "../diagnostics-linux-12574522/source.tar.gz",
+  "source_archive_sha256": "2e4a1a4f6d2fad2fffb6b7b68ee8bd3403a83d964505c2f09db77a578ce8aa34",
+  "binary_sha256": "e61ab9fea6e0e11115b1e2e3b266bbce79d3d5ce43840beffb3c1bb422906265",
+  "binary_sha256_file": "binary.sha256",
+  "binary_build_info": "binary-build-info.txt",
+  "build_manifest": "build-manifest.json",
+  "build_manifest_sha256": "4aef960b6ed0eaad356340c7b962a9a48aede06d92716f60df45f3aebb33f12f",
+  "control_archive": "control-files.tar.gz",
+  "control_archive_sha256": "a558bcf65c65d20dfa550c275d7fafb2f2a4bb87814d5caa58bf9456d995ad4a",
+  "input_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+  "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+  "product_invocations": 0,
+  "corpus_invocations": 0,
+  "full_check_gate": "full-check-gate.json",
+  "full_check_gate_sha256": "f35cc0e128742bf068e69815e650119be9f52e5f2715528fa504c2d37bbf11e3"
+}
