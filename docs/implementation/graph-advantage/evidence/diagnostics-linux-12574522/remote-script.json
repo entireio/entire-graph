@@ -1,0 +1,8 @@
+{
+  "script_sha256": "5d29d0515f1ce44f80ca72e02fc430298dc2c2f4d3e7abe3690293e4c7f76ce0",
+  "source_blob": "diagnostics-linux-12574522-source.tar.gz",
+  "result_blob": "diagnostics-linux-12574522-results.tar.gz",
+  "remote_root": "/opt/graph-validation/diagnostics-linux-12574522",
+  "signed_urls": "redacted",
+  "test_command": "cd /opt/graph-validation/diagnostics-linux-12574522 && export PATH=/usr/local/go/bin:/usr/bin:/bin GOPATH=/opt/graph-validation/gopath GOCACHE=/opt/graph-validation/cache GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOTELEMETRY=off ENTIRE_GRAPH_COMPILER_LIVE=1 ENTIRE_GRAPH_ADVANTAGE_LIVE_OUTPUT=/opt/graph-validation/diagnostics-linux-12574522/compiler-advantage.json ENTIRE_GRAPH_REVIEW_LIVE_OUTPUT=/opt/graph-validation/diagnostics-linux-12574522/compiler-review.json && test -x /opt/graph-tools/gopls && /opt/graph-tools/gopls version && go test -race -v -timeout 30m ./internal/compiler ./internal/sem ./internal/cli -run 'Test(Compiler|LiveCompiler|LiveAdvantage|LiveReview|MapLocation|RPC|Capsule)' -skip 'QualityEvaluation|ExtractionEvaluation|TestExtractionCorpusMeasurement' -count=1 && go test -c -o p1-evaluator ./internal/sem && sha256sum p1-evaluator > binary.sha256 && go version -m p1-evaluator > binary-build-info.txt"
+}

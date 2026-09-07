@@ -1,0 +1,9 @@
+{
+  "status": "incomplete_process_terminated_before_wrapper_finalization",
+  "source_worktree": "/tmp/graph-advantage-check-12574522/source",
+  "head": "125745228645b5b605efc3cb1b8c6075e8c14a4e",
+  "raw_log": "/tmp/graph-advantage-check-12574522/mise-check.raw.log",
+  "raw_log_bytes": 3726,
+  "reason_observed": "Darwin cgo/compile workers were killed during concurrent vet/test/build; wrapper result was not finalized",
+  "recorded_at_epoch": 1788777127
+}

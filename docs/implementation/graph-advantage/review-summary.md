@@ -1,61 +1,113 @@
-# Historical graph advantage implementation checkpoint
+# Graph advantage implementation review summary
 
-This document records checkpoint `88dd1dc9`. Its validation and execution
-statements are historical. See [the authoritative ledger](ledger.md) for the
-current source, diagnostic findings, verification and release status.
+This summary supersedes the historical `88dd1dc9` checkpoint narrative. The
+authoritative 23-task implementation, correctness, comparative-evaluation and
+release-gate view is in [ledger.md](ledger.md). Historical claims below remain
+labelled by their source checkpoint and are not current-head certification.
 
-Branch: `codex/graph-advantage`, based on fetched main `3a2a715fad1948e83dc7ebe0d307377ba29e065a`. No merge or default promotion.
+## Source and verification boundary
 
-The interim review's conversion and query-integration findings are fixed in code. This phase completes remaining implementation and correctness checks; it deliberately defers comparative benchmarks. The [task ledger](ledger.md) is the authoritative 23-task implementation/evidence map.
+The latest completed immutable full check is the historical `1f20f694`:
+`mise run check` exited 0 in 42.970406 seconds with unchanged source state. It
+performed no corpus measurement or VM work. Focused YAML/ABI checks for the
+post-fix `12574522` source passed, including the seven-test ABI check reported
+at 1.600s and 2.983s, and the pinned Linux compiler/evaluator check
+and evaluator build passed with 28 top-level tests, including 10 live tests,
+zero skips and zero failures. The local full `mise run check` at `12574522` is
+incomplete: its first attempt ended with Darwin compile/cgo workers killed
+before wrapper finalization, and the first authorized serialized retry also
+ended before a terminal result. Retry 2 reported `Finished in 86.27s` followed
+by `[test:ci] ERROR task failed` without a completed `test:ci` result; its
+foreground controller sent Ctrl-C after a GitHub username prompt. This is a
+task/transport failure, not a test assertion. The source was unchanged in all
+attempts; none is a source-pass or release claim. Evidence is retained under
+`evidence/check-12574522/`, `evidence/check-12574522-retry-1/`,
+`evidence/check-12574522-retry-2/` and `evidence/diagnostics-linux-12574522/`.
+The earlier `6cf92c9c` full and
+pinned-Linux checks remain historical evidence. Later accepted changes include
+protobuf parse handling (`4cd72774`), Go new-expression arguments
+(`c5971406`), Bash assignment-prefixed namespaced commands (`5ed08ed6`), YAML
+multiline quoted scalars (`7c3405ae`), protobuf compatibility context
+(`84ab23aa`) and harness phase breadcrumbs (`84cbb46`). The prior `8763b0d8`
+full check remains retained as a separate failed source-state record.
 
-## Implementation changes
+## Current status
 
-- **P1:** captured source and policy inputs, explicit declaration metadata, private content-addressed storage and fresh graph reconstruction. Raw imports are reused for Go/TypeScript/Python fast/full; other relation families remain explicitly uncached. Cross-process admission now protects cache quota decisions. Policy mutation/overlap/spill and orphan-temp regressions passed; source is frozen.
-- **P2:** bounded pinned Go analysis in Linux network isolation, exact source/configuration identity, precise declaration mapping and explicit coverage. Go type conversions, aliases and generic type conversions cannot become compiler-confirmed calls or dispute static facts. Ordinary search uses the effective compiler view for caller boosts, expansion and ranking.
-- **P3:** all impact depths use the same effective relation view. Deeper traversal retains bounded valid paths and honest partial counts. Implementation candidates remain separate even when a covering-test rule makes their path terminal.
-- **P4:** experimental ranking remains constrained by existing query scope, source/render budgets and deterministic fallback. Harness controls support later controlled ablations; no measurement campaign or outcome-based tuning occurs in this phase.
+The revised resumption controls are implemented at `58f03a22`: each selected
+batch derives and reserves its preparation and arm costs under the shared
+100-invocation cap, uses durable worker claims, refuses duplicate or retry
+dispatch, and stops on the first issue. The 90 synthetic-only controller tests made no diagnostic, sampling, VM or
+product request. Full-campaign execution remains explicitly approval
+bound, and no such approval is recorded.
 
-Schema additions remain optional. Native static records are preserved; compiler-enabled compact/SCIP projections refuse distinctions they cannot represent. Persistent working-tree snapshot reuse remains disabled.
+The retained P1 query evidence at `1c0b8e24` covers three profile paths with
+exact semantic, warning, completeness and 11-record partial-output parity.
+The single bounded Kubernetes syntax-only diagnostic separately collected 194
+known partials and one warning. All 194 entries have been classified in the
+source-review packet, but that classification does not close parser defects,
+verify every current file, or adopt proposed ADR0049 reviewed-partial
+admission. That one invocation remains the only resumed corpus diagnostic;
+zero stability batches have run. The post-fix full-profile OFF diagnostic is
+prepared at `evidence/diagnostic-dispatch-12574522/`, with exact source,
+binary, build, batch and control hashes, but is blocked pending the immutable
+check and has not executed. The completed diagnostic is not a stability batch
+or performance result.
 
-## Correctness status
+The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
+6 timeouts. It is therefore collected but incomplete. The campaign remains
+paused; explicit unrun cells and failed observations remain retained. No P1,
+P2, P3 or P4 release gate has passed.
 
-- **Final implementation commit:** 88dd1dc95a996999ae4e456879b6dd86d8027f71
-- **Immutable `mise run check`:** Passed `mise run check` in 653.107 seconds with unchanged source; see `evidence/review-check-result.json`.
-- **Pinned Linux correctness:** Passed at the same commit: 10 pinned live tests plus focused race suites; see `evidence/review-linux-result.json` and raw logs.
-
-New focused impact regressions and race tests passed, covering compiler-off compatibility, redirects, caller/callee sections at all depths, candidate separation and terminal tests. Conversion and source/configuration regressions accompany the compiler fixes. The new Linux ordinary-query fixture subsequently passed with the pinned backend, alongside nine other live correctness tests.
-
-The previous complete check at `0038ef70` passed in 626.23s. It remains historical evidence and does not certify the newer changes. Final source identity, exact checks and Linux raw responses are recorded above.
-
-## Release status
-
-**No full release gate has passed.** Implementation completion does not authorize default enablement or performance/quality claims.
-
-| Workstream | Retained result | Outstanding gate |
+| Workstream | Implementation and correctness | Evaluation and release status |
 |---|---|---|
-| P1 | Earlier semantic comparisons passed; cold performance regressed | Fixed real-corpus/edit/RSS matrix and performance target |
-| P2 | Positive pinned compiler/boundary fixtures exist | Independently adjudicated hard-Go quality |
-| P3 | Contract paths and bounds have focused correctness evidence | Realistic affected-site precision/recall/cost |
-| P4 | Earlier development recall gain was zero | Adjudicated development, disjoint holdout and conditional agent study |
+| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. Retained profile and diagnostic outputs have exact parity where stated above. | Fixed-corpus baseline and paired matrix are incomplete; timeout/partial admission, performance, RSS and full current-source verification remain open. |
+| P2 | Pinned Go analysis, lifecycle, source identity, mapping, compiler-view integration and invalidation contracts have implementation and focused correctness evidence. | Hard-Go quality and adjudicated precision/recall studies are deferred; no gate passed. |
+| P3 | Relation policy, bounded traversal, path evidence, CLI/output and compiler-view contracts have focused correctness evidence. | Realistic affected-site precision/recall/cost studies and coverage gates are deferred; no gate passed. |
+| P4 | Candidate-only ranking, experimental integration, ablation controls and fallback behavior are implemented with numerical and contract fixtures. | No winning configuration, held-out result or downstream agent study is established; no gate passed. |
 
-Existing results and failures remain intact. Comparative evaluation is deferred by instruction, including performance sweeps, retrieval studies and agent experiments.
+“Complete” in the ledger means implementation or harness delivery. It does
+not mean a comparative result or release decision. Existing failures,
+partials, timeouts and unrun cells remain part of the evidence record.
 
-## Functional limitations
 
-Compiler execution is tested Linux-only. Unsupported external dependency closure and dynamic runtime targets remain explicit partial/unavailable or candidate results. Captured inputs are observed bytes, not an atomic repository revision; Git listing/global configuration and metadata coverage limits remain explicit. The capture memory bound excludes total process RSS. Relation-input reuse covers the measured import family only. Cache admission skips contested writes rather than exceeding quotas; Windows locking has compile-only evidence.
+## Functional limits and rollback
 
-## Proposed next phase
+Compiler execution has Linux-only evidence; dynamic targets and unsupported
+external dependency closure remain explicit partial/unavailable or candidate
+results. Captured inputs are observed bytes rather than an atomic worktree
+revision. The capture memory bound excludes total process RSS, raw relation
+reuse covers imports only, and Windows locking has compile-only evidence. A
+known Bash coverage limitation remains: the parse view preserves nested
+command syntax, but the existing relation scanner does not report calls inside
+some quoted-local assignments; grammar-clean controls show the same limitation.
 
-Freeze final code, environments and prospective evaluation manifests after correctness passes. Run P1's fixed paired workload matrix first; then adjudicated P2/P3 target/path studies. Run P4 development ablations with identical capture, expansion and byte budgets, freeze the selected configuration, and evaluate a disjoint holdout. Run the powered paired agent experiment only after retrieval clears its prerequisite gate. Preserve failed and inconclusive outcomes.
+Rollback remains `--extraction-cache off`, `--compiler off`, `--depth 2`, and
+`--ranking current`. Disposable extraction records occupy a separate cache
+namespace; no migration is required. Revert the reviewable implementation
+commits to remove the features. Installation, MCP packaging, generated
+summaries and Brain remain untouched.
 
-## Rollback
+## Required next decisions
 
-Use `--extraction-cache off`, `--compiler off`, `--depth 2`, and `--ranking current`. Extraction records are disposable in their separate namespace; compiler/ranking state is operation-local. No migration is required. Revert reviewable commits to remove the implementation. Installation, MCP, generated summaries and Brain remain untouched.
+Before any full campaign, preserve a new source, binary, corpus, workload,
+environment and protocol freeze; finish the incomplete baseline and review
+remaining partial/timeout evidence; and obtain explicit user approval bound to
+that freeze. Any bounded sample must continue using the cheaper-worker routing
+policy, the shared 100-invocation cap, durable duplicate/retry prevention and
+first-issue stop. Three clean representative batches are a checkpoint for
+stability only, not a release gate.
 
-Sources and independently authored fixture origins are recorded in the ledger and existing ADR/evidence manifests. The explicitly authorized interim review is included; competitor implementations, prior conversations and memory are not implementation sources.
+P2 and P3 still require independent adjudication of required, allowed and
+forbidden targets with explicit partial/unavailable coverage. P4 requires a
+frozen development comparison, a disjoint held-out evaluation and only then a
+conditional agent study. Defaults remain extraction reuse off, compiler off,
+impact depth two and current ranking.
 
-Final validation: source commit `88dd1dc9` passed the complete repository check
-and pinned Linux correctness. The initial Linux Git-version prerequisite failure
-is retained; the upgraded run passed without product changes. The validation VM
-is verified deallocated. Evidence-only commits after the source freeze do not
-change tested code. No comparative campaign ran and no merge was performed.
+## Scope and provenance
+
+The implementation plan, the authorized interim review, repository source and
+tests, schema/trust-contract ADRs, resumption plan and retained evidence are
+the sources for this summary. No competitor implementation, prior
+conversation, memory file or adjacent comparative corpus is used as
+implementation evidence. The validation VM is deallocated and no campaign is
+running.

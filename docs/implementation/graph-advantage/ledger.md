@@ -6,9 +6,15 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 ## Current phase
 
-**Resumption policy revised 2026-09-07:** use batches capped at100 total product invocations, review and fix issues between batches, and establish stability before proposing a full run. Full-campaign execution requires the user’s explicit approval; none is granted. The new cap/approval launcher controls are still to be implemented. See `resumption-plan-20260907.md`. The user has resumed the revised controlled sequence; no campaign is currently running.
+**Resumption policy revised 2026-09-07:** use batches capped at 100 total
+product invocations, review and fix issues between batches, and establish
+stability before proposing a full run. Full-campaign execution requires the
+user’s explicit approval; none is granted. The cap, durable-claim, duplicate
+dispatch, first-issue stop, and approval-boundary controls are implemented at
+`58f03a22`; see `resumption-plan-20260907.md`. The user has resumed the
+revised controlled sequence; no campaign is currently running.
 
-**Current bounded-resumption status:** the user’s resume authorizes controlled diagnostics, fixes and sampled batches once the documented prerequisites and controls pass. One separately identified controlled product diagnostic has completed: the single cache-off Kubernetes syntax-only snapshot in `diagnostic-dispatch-1f20f694`; it is not a stability batch or campaign result. The heartbeat is active for implementation monitoring, and no campaign, benchmark, VM task or collector is currently active. The validation VM is deallocated after collection. The pinned immutable `mise run check` passed in 42.970406 seconds at `1f20f694`; evidence is in `evidence/check-1f20f694/`. A full campaign still requires explicit user approval.
+**Current bounded-resumption status:** the user’s resume authorizes controlled diagnostics, fixes and sampled batches once the documented prerequisites and controls pass. One separately identified controlled product diagnostic has completed: the single cache-off Kubernetes syntax-only snapshot in `diagnostic-dispatch-1f20f694`; it is not a stability batch or campaign result. No stability batch has run. The heartbeat is active for implementation monitoring, and no campaign, benchmark, VM task or collector is currently active. The validation VM is deallocated after collection. The post-YAML-fix Linux correctness/build evidence at `125745228645b5b605efc3cb1b8c6075e8c14a4e` passed its focused 28-test/10-live-test check and evaluator build; it invoked no corpus or product measurement. Evidence is in `evidence/diagnostics-linux-12574522/`. Its prepared one-cell full-profile diagnostic package is present at `evidence/diagnostic-dispatch-12574522/`, but remains blocked pending the immutable check and has not executed. A full campaign still requires explicit user approval.
 
 **Mandatory model routing, 2026-09-07:** all substantive implementation,
 diagnosis, source/data inspection, fixture or harness work, execution/testing,
@@ -24,13 +30,53 @@ approval before a full campaign. No product or corpus work is currently
 running; controlled work remains subject to the revised prerequisites and
 stops.
 
-Current implementation source is `6cf92c9c`: ADR 0048 adds cancellation-aware ownership before batch detachment, permitting only one detached publication batch operation-wide. Focused correctness and race checks passed. Pinned Linux passed 76 top-level tests including 10 live compiler tests. Full `mise run check` passed in 687.332 seconds with unchanged HEAD and clean status. Evidence: `evidence/check-6cf92c9c/` and `evidence/correctness-6cf92c9c-20260906/`.
+The latest completed immutable full check is the historical `1f20f694`:
+`mise run check` passed in 42.970406 seconds with unchanged source state and
+no corpus or VM work. This is a historical verification checkpoint, not a
+certificate for later source. Focused YAML/ABI checks for the post-fix
+`12574522` source passed, including the seven-test ABI check reported at
+1.600s and 2.983s, and the pinned Linux compiler/evaluator check and
+build passed, but the local full `mise run check` at that source is incomplete:
+the first run ended with Darwin compile/cgo workers killed before wrapper
+finalization, the first serialized retry ended before a terminal result, and
+retry 2 reported `Finished in 86.27s` followed by `[test:ci] ERROR task failed`
+without a completed `test:ci` result. Its foreground controller then sent
+Ctrl-C after a GitHub username prompt; this is a task/transport failure, not a
+test assertion. The source was unchanged in all attempts; none is a
+source-pass or release claim. Evidence is retained in
+`evidence/check-12574522-retry-2/`. The earlier `6cf92c9c` check and pinned Linux
+evidence are also retained historical evidence. Accepted changes after those checkpoints include
+`4cd72774`, `c5971406`, `5ed08ed6`, `7c3405ae`, `84ab23aa`, and harness
+`84cbb46d`. The current source at `8763b0d8` was then checked immutably, but
+`mise run check` failed after 1056.44 seconds:
+`TestTreeSitterParserYAMLMasksQuotedMappingKeys` in `parser_test.go:1204`
+returned `E_PARSE_ERROR`, with an independent documentation-state failure
+also recorded. No current-source verification or release claim follows from
+that failed check.
 
 The three retained query profile paths are verified at `1c0b8e24`: syntax-only, fast and full all have exact semantic, warning, completeness and full 11-record partial parity, with 381 indexed files per arm and unchanged inputs. These are the three distinct requests behind the 55 historical repeated mismatch pairs. Seven requests ran: two completed pairs, a full OFF stopped on a warning-oracle error, then only the corrected full pair. The warning correction came from the original full-profile baseline. Historical repetitions remain retained, not relabeled as new observations. Evidence: `p1-corpus-20260905/retained-query-correctness-1c0b8e24/summary.json`.
 
-The P1 campaign remains paused. Baseline counts remain 108 requests (69 complete, 33 partial, 6 timeouts); campaign counts remain 116 observed requests plus explicit unrun accounting. The resumed sequence has consumed one controlled diagnostic product invocation, recorded separately from campaign and stability-batch counts. Its collector completed with 194 known partials and one warning; the lossless source-review packet is pending review, and no performance or release-gate claim is made. The latest cold snapshot pair at `6cf92c9c` preserved exact semantics, warnings and 194 known partials with unchanged inputs. OFF 57.769s / ON 62.614s (ratio 1.084) and peak RSS 3,312,332,800 / 3,167,264,768 bytes (ratio 0.956) were within both 1.10 screens. This single pair is not statistical, causal or release evidence; the previous failed RSS screen remains retained. Remaining baseline timeouts, partial review and partial-result admission still prevent campaign expansion. Evidence: `p1-corpus-20260905/retained-snapshot-6cf92c9c/summary.json` and `evidence/diagnostic-dispatch-1f20f694/`.
+The P1 campaign remains paused. Baseline counts remain 108 requests (69
+complete, 33 partial, 6 timeouts); this is a collected but incomplete baseline,
+not a completed release baseline. Campaign counts remain 116 observed requests
+plus explicit unrun accounting. The resumed sequence has consumed one
+controlled diagnostic product invocation, recorded separately from campaign
+and stability-batch counts; the prepared `12574522` package has not executed.
+Its collector completed with 194 known partials
+and one warning. The lossless source-review packet has classified all 194
+entries, but that classification does not close parser issues, verify every
+current file, or adopt proposed ADR0049 reviewed-partial admission. No
+performance or release-gate claim is made. The latest cold snapshot pair at
+`6cf92c9c` preserved exact semantics, warnings and 194 known partials with
+unchanged inputs. OFF 57.769s / ON 62.614s (ratio 1.084) and peak RSS
+3,312,332,800 / 3,167,264,768 bytes (ratio 0.956) were within both 1.10
+screens. This single pair is not statistical, causal or release evidence; the
+previous failed RSS screen remains retained. Remaining baseline timeouts,
+partial admission and current-source verification still prevent campaign
+expansion. Evidence: `p1-corpus-20260905/retained-snapshot-6cf92c9c/summary.json`
+and `evidence/diagnostic-dispatch-1f20f694/`. No stability batch has run.
 
-The bounded execution controls are implemented at `58f03a22`: selected manifests are capped at 100 derived product invocations, preparation and arm costs are reserved before spawn, worker claims are durable and path-stable, duplicate/retry dispatch is refused, and the first issue stops the batch. The committed controller and focused Python contracts passed 90 synthetic-only tests in 7.985225 seconds; evidence and source hashes are in `evidence/bounded-controls-58f03a22/`. No diagnostic, sampling, VM or product request ran, so partial admission, timeout and performance gates remain pending and no release gate passed.
+The bounded execution controls are implemented at `58f03a22`: selected manifests are capped at 100 derived product invocations, preparation and arm costs are reserved before spawn, worker claims are durable and path-stable, duplicate/retry dispatch is refused, and the first issue stops the batch. The committed controller and focused Python contracts passed 90 synthetic-only tests in 7.985225 seconds; evidence and source hashes are in `evidence/bounded-controls-58f03a22/`. No new diagnostic, sampling, VM or product request ran under these controls, so partial admission, timeout and performance gates remain pending and no release gate passed.
 
 All 77 campaign-control tests passed; a live fake-service smoke verified that all three active workers stopped after an injected pause. The validation VM is confirmed deallocated after correctness and corrective evidence collection; the two campaign workers remain deallocated. No campaign is running. P2/P3/P4 comparative studies remain deferred, and no complete workstream release gate has passed. Defaults remain extraction reuse off, compiler off, impact depth two and current ranking.
 
@@ -38,16 +84,23 @@ The test-only corpus harness now has an optional `diagnostics_path` artifact con
 
 ## Authoritative task status
 
-This table supersedes earlier checkpoint/status statements. “Complete” in the implementation column describes code or harness delivery. Product source `6cf92c9c` passed the full repository and pinned Linux checks, with the three retained query profile paths now verified for exact partial-output parity. Broader evaluation remains paused. Evaluation tasks cannot be declared complete merely because their harness exists; correctness checks do not establish comparative release gates.
+This table supersedes earlier checkpoint/status statements. “Complete” in the
+implementation column describes code or harness delivery. The latest
+immutable full check is the historical `1f20f694` checkpoint; later accepted
+source changes are listed above and are not represented as a current-source
+full check. The three retained query profile paths are historical exact
+partial-output parity evidence. Broader evaluation remains paused. Evaluation
+tasks cannot be declared complete merely because their harness exists;
+correctness checks do not establish comparative release gates.
 
 | Task | Implementation | Correctness evidence | Comparative evaluation | Release gate |
 |---|---|---|---|---|
-| P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Fixed six-repository campaign prepared; baseline complete; paired campaign paused for diagnosis | Not passed: full fixed corpus/RSS matrix incomplete |
+| P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Fixed six-repository campaign prepared; baseline collected but incomplete (69 complete, 33 partial, 6 timeouts); paired campaign paused for diagnosis | Not passed: full fixed corpus/RSS matrix incomplete |
 | P1.2 pure extraction | Complete: explicit metadata, shared bounded source/policy capture, manifests and sticky errors | Entity field checklist, malformed/overload/language round trips, reader mutation tests; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
-| P1.3 storage | Implemented through `6cf92c9c`: encoded publication, capability-bound admission, session-owned compression and operation-wide batch gate; full and pinned verification passed | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
-| P1.4 entity integration | Implemented; all three retained query profile paths and the diagnostic snapshot have exact partial-output parity; full corpus evaluation incomplete | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
+| P1.3 storage | Implemented through `6cf92c9c` and later accepted source changes: encoded publication, capability-bound admission, session-owned compression and operation-wide batch gate; the available full checks are historical | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; historical immutable checks passed | Fixed corpus campaign paused for diagnosis | Not passed |
+| P1.4 entity integration | Implemented; all three retained query profile paths and the diagnostic snapshot have exact partial-output parity; full corpus evaluation incomplete | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; historical immutable check passed; this does not establish the full fixed-corpus gate | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.5 relation inputs | Complete for measured raw-import family: Go/TypeScript/Python fast/full; explicit family presence | Exact relation parity and reuse tests; other families deliberately absent | Further profiling deferred; no new family selected by benchmark tuning | Not passed |
-| P1.6 diagnostics/gates | Implemented; local first-issue stops verified, live fake-service smoke passed; ADR 0046 verified and ADR 0047 verified; ADR 0048 focused and pinned checks passed, full check passed | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
+| P1.6 diagnostics/gates | Implemented; local first-issue stops verified, live fake-service smoke passed; ADR 0046 verified and ADR 0047 verified; ADR 0048 focused and pinned checks passed, with the available full check historical | Separate parsed/reused/source/cache/phase telemetry; historical immutable check passed | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
 | P2.1 feasibility | Complete: pinned gopls v0.20.0 and Linux Bubblewrap execution boundary | Existing positive no-egress/read-only/descendant cancellation checks; historical Linux race passed | Hard-Go comparative quality deferred | Not passed |
 | P2.2 client/capture | Complete: bounded lifecycle, source capsule/context identity, mapping and cancellation | Protocol/UTF-16/malformed reply/context/process tests; historical immutable check passed | Deferred | Not passed |
 | P2.3 positive integration | Complete: direct declarations and separate implementation candidates; conversions excluded | New conversion/alias/generic fixtures and pinned live fixture; signature/workspace invalidation tests; historical Linux race passed | Independent realistic quality evaluation deferred | Not passed |
