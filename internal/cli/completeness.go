@@ -121,38 +121,10 @@ func diagnosticInScope(queryLanguage, fileLanguage, filePath string) bool {
 	return sameCompletenessLanguageFamily(fileLanguage, queryLanguage)
 }
 
-// sameCompletenessLanguageFamily reports whether a diagnostic in one language
-// can have removed a relation an answer about another language needed.
-//
-// The language LABEL is not the resolution boundary. A JavaScript import is
-// resolved against `.ts` and `.tsx` candidates (see the JS/TS module candidate
-// list in internal/sem/provider.go), so a JavaScript caller resolves to a
-// TypeScript definition and vice versa; and a `.h` header is labelled C while
-// the `.cpp`/`.m` translation units that include it are labelled C++ and
-// Objective-C. A parse failure on either side of one of those pairs can
-// therefore hide a caller of the focus, and the banner that says "cannot affect
-// this answer" would be asserting something false about a missing edge — the
-// most expensive thing a completeness report can do, because it is what stops
-// the reader from looking further.
-//
-// Anything outside a family stays out of scope: these are the joins the provider
-// actually makes, not a guess that any two languages might be related.
+// sameCompletenessLanguageFamily uses the provider's resolution compatibility
+// in both directions: a failed file can hide a caller or a callee of the query.
 func sameCompletenessLanguageFamily(left, right string) bool {
-	if strings.EqualFold(left, right) {
-		return true
-	}
-	family := completenessLanguageFamily(left)
-	return family != "" && family == completenessLanguageFamily(right)
-}
-
-func completenessLanguageFamily(language string) string {
-	switch strings.ToLower(language) {
-	case "javascript", "typescript":
-		return "js/ts"
-	case "c", "c++", "objective-c":
-		return "c/c++"
-	}
-	return ""
+	return sem.LanguagesMayShareRelations(left, right)
 }
 
 // rankedLanguageNames renders "Python 271, JSON 2" style breakdowns, most
