@@ -385,3 +385,258 @@ message Broken {
 		t.Fatalf("malformed proto2 failure = %+v, want visible E_PARSE_ERROR", status)
 	}
 }
+
+func TestProtocolBuffersNarrowExtensionCompatibilityPreservesContract(t *testing.T) {
+	fixtures := []struct {
+		name       string
+		content    string
+		wantEntity string
+	}{
+		{
+			name: "top_level",
+			content: `syntax = "proto2";
+message Host {}
+extend Host { optional string extension_name = 100; }
+service API { rpc Get(Host) returns (Host); }
+`,
+			wantEntity: "API.Get",
+		},
+		{
+			name: "qualified_target_and_repeated_field",
+			content: `syntax = "proto2";
+package example;
+message Host {}
+extend .example.Host {
+  repeated bytes _extension = 101;
+}
+`,
+			wantEntity: "Host",
+		},
+		{
+			name: "nested_extension",
+			content: `syntax = "proto2";
+message Container {
+  extend Host { optional int32 nested_extension = 102; }
+}
+message Host {}
+`,
+			wantEntity: "Container",
+		},
+		{
+			name: "comments_and_braces_in_comments",
+			content: `syntax = "proto2";
+message Host {}
+// The extension body contains a comment with a misleading close brace.
+extend Host {
+  /* } */ optional string extension_name = 103;
+}
+`,
+			wantEntity: "Host",
+		},
+	}
+
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			parseSource, entitySource, offset := prepareProtocolBuffersParseSource(fixture.content)
+			if offset != 0 || entitySource != fixture.content || len(parseSource) != len(fixture.content) {
+				t.Fatalf("extension compatibility changed source binding: offset=%d parse=%q source=%q", offset, parseSource, entitySource)
+			}
+			if strings.Contains(parseSource, "extend") {
+				t.Fatalf("validated extension remained in parse view: %q", parseSource)
+			}
+			if !strings.Contains(entitySource, "extend") {
+				t.Fatalf("authored extension disappeared from entity source: %q", entitySource)
+			}
+			entities, _, status := TreeSitterParser{}.ParseWithStatus(fixture.name+".proto", fixture.content)
+			if status.ParseError {
+				t.Fatalf("valid narrow extension reported a parse failure: %+v", status)
+			}
+			found := false
+			for _, entity := range entities {
+				if entity.Name == fixture.wantEntity {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("missing surrounding entity %q in %#v", fixture.wantEntity, entities)
+			}
+		})
+	}
+}
+
+func TestProtocolBuffersExtensionsLeaveUnknownOrMalformedFormsVisible(t *testing.T) {
+	fixtures := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "bad_field",
+			content: `syntax = "proto2";
+message Host {}
+extend Host { optional string = 100; }
+`,
+		},
+		{
+			name: "missing_brace",
+			content: `syntax = "proto2";
+message Host {}
+extend Host { optional string extension_name = 100;
+`,
+		},
+		{
+			name: "invalid_target",
+			content: `syntax = "proto2";
+message Host {}
+extend { optional string extension_name = 100; }
+`,
+		},
+		{
+			name: "unsupported_options",
+			content: `syntax = "proto2";
+message Host {}
+extend Host { optional string extension_name = 100 [deprecated = true]; }
+`,
+		},
+		{
+			name: "reserved_field_number",
+			content: `syntax = "proto2";
+message Host {}
+extend Host { optional string extension_name = 19000; }
+`,
+		},
+	}
+
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			parseSource, entitySource, offset := prepareProtocolBuffersParseSource(fixture.content)
+			if offset != 0 || entitySource != fixture.content || len(parseSource) != len(fixture.content) {
+				t.Fatalf("malformed extension changed source binding: offset=%d parse=%q source=%q", offset, parseSource, entitySource)
+			}
+			if !strings.Contains(parseSource, "extend") {
+				t.Fatalf("malformed/unsupported extension was hidden: %q", parseSource)
+			}
+			_, _, status := TreeSitterParser{}.ParseWithStatus(fixture.name+".proto", fixture.content)
+			if !status.ParseError || status.Code != "E_PARSE_ERROR" {
+				t.Fatalf("extension failure = %+v, want visible E_PARSE_ERROR", status)
+			}
+		})
+	}
+}
+
+func TestProtocolBuffersLeadingUnderscoreFieldsPreserveAuthoredSource(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		content     string
+		parseToken  string
+		declaration string
+		line        int
+	}{
+		{
+			name: "proto3",
+			content: `syntax = "proto3";
+// string _comment_only = 99;
+message Fields { string _wire_name = 1; }
+`,
+			parseToken:  "xwire_name",
+			declaration: "message Fields { string _wire_name = 1; }",
+			line:        3,
+		},
+		{
+			name: "proto2",
+			content: `syntax = "proto2";
+message Fields { optional string _legacy_name = 1; }
+`,
+			parseToken:  "xlegacy_name",
+			declaration: "message Fields { optional string _legacy_name = 1; }",
+			line:        2,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parseSource, entitySource, offset := prepareProtocolBuffersParseSource(test.content)
+			if offset != 0 || entitySource != test.content || len(parseSource) != len(test.content) {
+				t.Fatalf("compatibility view changed source binding: offset=%d parse=%q entity=%q", offset, parseSource, entitySource)
+			}
+			if !strings.Contains(parseSource, test.parseToken) {
+				t.Fatalf("parse view did not mask leading underscore field: %q", parseSource)
+			}
+			if test.name == "proto3" && !strings.Contains(parseSource, "_comment_only") {
+				t.Fatalf("comment text was unexpectedly rewritten: %q", parseSource)
+			}
+			if !strings.Contains(entitySource, "_wire_name") && !strings.Contains(entitySource, "_legacy_name") {
+				t.Fatalf("authored field name was lost: %q", entitySource)
+			}
+
+			entities, _, status := TreeSitterParser{}.ParseWithStatus("fields.proto", test.content)
+			if status.ParseError {
+				t.Fatalf("valid %s leading-underscore field reported a parse failure: %+v", test.name, status)
+			}
+			var fields Entity
+			for _, entity := range entities {
+				if entity.Name == "Fields" {
+					fields = entity
+					break
+				}
+			}
+			start := strings.Index(test.content, test.declaration)
+			if fields.Kind != "message" || fields.Signature != "message Fields" ||
+				fields.StartLine != test.line || fields.EndLine != test.line ||
+				fields.BodyHash != hash(normalize(test.declaration)) ||
+				fields.sourceStartByte != start || fields.sourceEndByte != start+len(test.declaration) {
+				t.Fatalf("message entity = %#v, want message at line %d (all=%#v)", fields, test.line, entities)
+			}
+		})
+	}
+}
+
+func TestProtocolBuffersReservedStringNamesPreserveAuthoredSource(t *testing.T) {
+	content := `syntax = "proto3";
+message Fields {
+  reserved "legacy_name", "old_name";
+  string current_name = 1;
+}
+`
+	parseSource, entitySource, offset := prepareProtocolBuffersParseSource(content)
+	if offset != 0 || entitySource != content || len(parseSource) != len(content) {
+		t.Fatalf("compatibility view changed source binding: offset=%d parse=%q entity=%q", offset, parseSource, entitySource)
+	}
+	if strings.Contains(parseSource, `"legacy_name"`) || strings.Contains(parseSource, `"old_name"`) {
+		t.Fatalf("reserved string delimiters were not normalized in parse view: %q", parseSource)
+	}
+	if !strings.Contains(entitySource, `reserved "legacy_name", "old_name"`) {
+		t.Fatalf("authored reserved names were lost: %q", entitySource)
+	}
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("reserved.proto", content)
+	if status.ParseError {
+		t.Fatalf("valid reserved string names reported a parse failure: %+v", status)
+	}
+	var fields Entity
+	for _, entity := range entities {
+		if entity.Name == "Fields" {
+			fields = entity
+			break
+		}
+	}
+	messageStart := strings.Index(content, "message Fields")
+	messageEnd := strings.LastIndex(content, "}") + 1
+	if fields.Kind != "message" || fields.Signature != "message Fields" ||
+		fields.StartLine != 2 || fields.EndLine != 5 ||
+		fields.BodyHash != hash(normalize(content[messageStart:messageEnd])) ||
+		fields.sourceStartByte != messageStart || fields.sourceEndByte != messageEnd {
+		t.Fatalf("message entity = %#v, want message at line 2 (all=%#v)", fields, entities)
+	}
+}
+
+func TestProtocolBuffersReservedMalformedStringStillFails(t *testing.T) {
+	content := `syntax = "proto3";
+message Fields { reserved "unterminated; }
+`
+	parseSource, entitySource, offset := prepareProtocolBuffersParseSource(content)
+	if offset != 0 || entitySource != content || parseSource != content {
+		t.Fatalf("malformed reserved string was rewritten: offset=%d parse=%q entity=%q", offset, parseSource, entitySource)
+	}
+	_, _, status := TreeSitterParser{}.ParseWithStatus("invalid-reserved.proto", content)
+	if !status.ParseError || status.Code != "E_PARSE_ERROR" {
+		t.Fatalf("malformed reserved string status = %+v, want E_PARSE_ERROR", status)
+	}
+}
