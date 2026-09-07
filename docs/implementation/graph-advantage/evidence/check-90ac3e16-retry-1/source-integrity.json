@@ -1,0 +1,9 @@
+{
+  "before_head": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+  "after_head": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+  "before_status_bytes": 0,
+  "after_status_bytes": 0,
+  "before_tracked_sha256": "28cf1e71831686cfae91bd5ece5d1bce8411f1cfaaedda21767c3ca5fb87bc23",
+  "after_tracked_sha256": "28cf1e71831686cfae91bd5ece5d1bce8411f1cfaaedda21767c3ca5fb87bc23",
+  "tracked_source_manifest_equal": true
+}

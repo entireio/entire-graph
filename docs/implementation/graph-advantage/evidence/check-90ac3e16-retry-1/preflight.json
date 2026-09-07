@@ -1,0 +1,7 @@
+{
+  "expected_head": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+  "mise_toml_sha256": "6aeb64b910281ebe72f54ffe17546bb4d0bcf09a199e7173ba94c84e63f686ae",
+  "committed_mise_toml_sha256": "6aeb64b910281ebe72f54ffe17546bb4d0bcf09a199e7173ba94c84e63f686ae",
+  "bytes_equal": true,
+  "trusted_config_only": "/tmp/graph-relations-cpu-check-90ac3e16-a/mise.toml"
+}

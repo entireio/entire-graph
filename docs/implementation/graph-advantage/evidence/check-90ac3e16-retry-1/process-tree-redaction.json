@@ -1,0 +1,6 @@
+{
+  "original_sha256": "85aeae5ad65aae739e3743b06168247a33d2114356236f5bc8fc72140149bbbf",
+  "sanitized_sha256": "24126c8b897a07d512e178288cf669db0f3f3909764c1bcd24d3d358666e9a35",
+  "rule": "retained snapshot delimiters and process rows whose PGID is 85534; stripped trailing whitespace",
+  "reason": "host-wide snapshots contained unrelated process arguments and credentials; the original is intentionally not retained in Git"
+}
