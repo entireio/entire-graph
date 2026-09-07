@@ -224,7 +224,8 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 		{
 			name: "maven module with a test class",
 			files: map[string]string{
-				"pom.xml":      "<project/>",
+				// The root aggregator has to DECLARE the module for `-pl` to select it.
+				"pom.xml":      "<project><modules><module>gson</module></modules></project>",
 				"gson/pom.xml": "<project/>",
 				"gson/src/main/java/com/google/gson/GsonBuilder.java":     "",
 				"gson/src/test/java/com/google/gson/GsonBuilderTest.java": "",
@@ -360,8 +361,25 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 			wantDerived: ".rspec + mirror test file path",
 		},
 		{
+			// No Gemfile: `bundle exec` here is a guaranteed "Could not locate Gemfile".
 			name: "minitest single file when the tests live under test/",
 			files: map[string]string{
+				"Rakefile":                     "task :test\n",
+				"lib/fluent/plugin/in_tail.rb": "",
+				"test/plugin/test_in_tail.rb":  "",
+			},
+			subject: searchVerifySubject{
+				sourcePath: "lib/fluent/plugin/in_tail.rb",
+				testPath:   "test/plugin/test_in_tail.rb", testEvidence: "mirror test file",
+			},
+			wantCommand: "ruby -Itest test/plugin/test_in_tail.rb",
+			wantTargets: "test/plugin/test_in_tail.rb",
+			wantDerived: "Rakefile + mirror test file path under test/",
+		},
+		{
+			name: "minitest single file goes through Bundler when a Gemfile exists",
+			files: map[string]string{
+				"Gemfile":                      "source 'https://rubygems.org'\n",
 				"Rakefile":                     "task :test\n",
 				"lib/fluent/plugin/in_tail.rb": "",
 				"test/plugin/test_in_tail.rb":  "",
@@ -952,8 +970,10 @@ func TestSearchVerifySuiteFallback(t *testing.T) {
 		{
 			name: "ruby minitest repo with no covering test falls back to rake test",
 			files: map[string]string{
-				"Gemfile":                       "source 'https://rubygems.org'\n",
-				"Rakefile":                      "task default: %w[test rubocop]\n",
+				"Gemfile": "source 'https://rubygems.org'\n",
+				"Rakefile": "require \"rake/testtask\"\n" +
+					"Rake::TestTask.new(:test)\n" +
+					"task default: %w[test rubocop]\n",
 				"lib/faker/default/internet.rb": "module Faker\nend\n",
 			},
 			subject:     searchVerifySubject{sourcePath: "lib/faker/default/internet.rb"},
@@ -998,14 +1018,25 @@ func TestSearchVerifySuiteFallback(t *testing.T) {
 			wantCommand: "",
 		},
 		{
-			name: "gradle nested module uses root wrapper",
+			name: "gradle nested module uses the root wrapper and names its own project",
+			files: map[string]string{
+				"gradlew":                  "",
+				"settings.gradle":          "include ':lib'\n",
+				"lib/build.gradle":         "",
+				"lib/src/main/kotlin/A.kt": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
+			wantCommand: "./gradlew :lib:test",
+		},
+		{
+			name: "gradle nested module no settings script declares stays silent",
 			files: map[string]string{
 				"gradlew":                  "",
 				"lib/build.gradle":         "",
 				"lib/src/main/kotlin/A.kt": "",
 			},
 			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
-			wantCommand: "./gradlew test",
+			wantCommand: "",
 		},
 		{
 			name: "gradle nested wrapper runs from module directory",
@@ -1765,5 +1796,60 @@ func TestSearchVerifyBuildCheckDoesNotExecuteRepositoryData(t *testing.T) {
 	}
 	if runErr != nil {
 		t.Fatalf("command %q failed: %v\n%s", command.Command, runErr, output)
+	}
+}
+
+// TestSearchVerifyRunnerMissingReadsPackageManagerScriptsAsScripts is the follow-up to the lockfile
+// precedence fix.
+//
+// The Node suite tier used to emit `npm test` unconditionally; it now reads the repository's own
+// statement and emits `yarn test` or `pnpm test`. The look-through probe had not moved with it: it
+// took the word after `yarn` to be a BINARY and required `node_modules/.bin/test`, a file no
+// repository has, so every command the new emitter produced for a yarn or pnpm tree was annotated as
+// having an uninstalled runner — a false gate on a command that runs.
+//
+// The distinction is what the manager was asked to do. `npm`, `yarn` and `pnpm` run the package's
+// own SCRIPTS by default, and a script lives in package.json, not in node_modules/.bin; the manager
+// resolving on PATH is the whole of the question. Only their explicit binary-execution subcommand,
+// `exec`, launches something out of node_modules/.bin — as does `npx`, which is nothing else.
+func TestSearchVerifyRunnerMissingReadsPackageManagerScriptsAsScripts(t *testing.T) {
+	t.Parallel()
+	installed := map[string]string{"node_modules/.bin/jest": "#!/usr/bin/env node\n"}
+	for _, tc := range []struct {
+		name    string
+		command string
+		files   map[string]string
+		want    bool
+	}{
+		// --- scripts: answered by package.json, not by node_modules/.bin ---
+		{"yarn runs the test script", "yarn test", map[string]string{}, false},
+		{"pnpm runs the test script", "pnpm test", map[string]string{}, false},
+		{"npm runs the test script", "npm test", map[string]string{}, false},
+		{"yarn run spells it out", "yarn run test", map[string]string{}, false},
+		{"pnpm run spells it out", "pnpm run test", map[string]string{}, false},
+		{"bun runs the test script", "bun run test", map[string]string{}, false},
+		{"a workspace leaf still runs its script", "cd packages/core && pnpm test", map[string]string{}, false},
+
+		// --- binaries: the launcher does resolve one, so the look-through stands ---
+		{"pnpm exec finds the binary", "pnpm exec jest src/a.test.ts", installed, false},
+		{"pnpm exec has nothing to run", "pnpm exec jest src/a.test.ts", map[string]string{}, true},
+		{"yarn exec has nothing to run", "yarn exec jest src/a.test.ts", map[string]string{}, true},
+		{"npx is unchanged", "npx jest src/a.test.ts", map[string]string{}, true},
+
+		// --- and the manager itself still has to exist ---
+		{"the manager is not installed", "pnpm test", map[string]string{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var evidence searchVerifyEvidence
+			if tc.name == "the manager is not installed" {
+				evidence = searchVerifyTestEvidenceWithout(tc.files, "pnpm")
+			} else {
+				evidence = searchVerifyTestEvidenceWithout(tc.files)
+			}
+			if got := searchVerifyRunnerMissing(tc.command, &evidence); got != tc.want {
+				t.Fatalf("searchVerifyRunnerMissing(%q) = %v, want %v", tc.command, got, tc.want)
+			}
+		})
 	}
 }

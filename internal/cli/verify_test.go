@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -509,5 +510,58 @@ func TestRenderVerifyVerdictReportsDisappearedBaselineTests(t *testing.T) {
 	}
 	if strings.Contains(complete, "NOT RUN") {
 		t.Fatalf("a complete run reported a disappeared test:\n%s", complete)
+	}
+}
+
+// TestVerifyShellForSelectsAPlatformShell pins the shell selection.
+//
+// entire-graph builds, ships and tests a Windows binary, but a normal Windows installation has no
+// executable named `sh`, so `exec.CommandContext(ctx, "sh", ...)` could never launch there — the
+// verb was reachable on a platform where every verification failed before running. Git for Windows
+// installs sh.exe and bash.exe, so the shell usually exists and only has to be looked up; when it
+// genuinely is not there the verb must say so, because cmd.exe would run the POSIX commands this
+// verb emits incorrectly and turn a launch failure into a wrong verdict.
+func TestVerifyShellForSelectsAPlatformShell(t *testing.T) {
+	t.Parallel()
+	missing := func(string) (string, error) { return "", exec.ErrNotFound }
+	found := func(name string) (string, error) {
+		if name == "sh" {
+			return `C:\Program Files\Git\usr\bin\sh.exe`, nil
+		}
+		return "", exec.ErrNotFound
+	}
+	bashOnly := func(name string) (string, error) {
+		if name == "bash" {
+			return `C:\Program Files\Git\bin\bash.exe`, nil
+		}
+		return "", exec.ErrNotFound
+	}
+
+	if shell, err := verifyShellFor("linux", missing); err != nil || shell != "sh" {
+		t.Fatalf("verifyShellFor(linux) = %q, %v; want sh and no error on every POSIX platform", shell, err)
+	}
+	if shell, err := verifyShellFor("darwin", missing); err != nil || shell != "sh" {
+		t.Fatalf("verifyShellFor(darwin) = %q, %v; want sh and no error", shell, err)
+	}
+
+	shell, err := verifyShellFor("windows", found)
+	if err != nil {
+		t.Fatalf("verifyShellFor(windows) with sh on PATH returned %v, want the resolved shell", err)
+	}
+	if shell != `C:\Program Files\Git\usr\bin\sh.exe` {
+		t.Fatalf("verifyShellFor(windows) = %q, want the sh.exe PATH lookup resolved", shell)
+	}
+	if shell, err = verifyShellFor("windows", bashOnly); err != nil ||
+		shell != `C:\Program Files\Git\bin\bash.exe` {
+		t.Fatalf("verifyShellFor(windows) = %q, %v; want bash when only bash is installed", shell, err)
+	}
+
+	shell, err = verifyShellFor("windows", missing)
+	if err == nil {
+		t.Fatalf("verifyShellFor(windows) with no POSIX shell returned %q and no error: "+
+			"launching a shell that does not exist reports a failure the caller cannot act on", shell)
+	}
+	if !strings.Contains(err.Error(), "POSIX shell") {
+		t.Fatalf("error %q does not say a POSIX shell is what is missing", err)
 	}
 }
