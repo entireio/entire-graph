@@ -25,7 +25,7 @@ The implementation treats `E_FILE_TOO_LARGE` and `E_MINIFIED` as intentional ski
 
 ## Warning
 
-Warning index 0, `W_WORKTREE_SNAPSHOT`, is classified as **valid_policy_warning**. The provider emits it when the worktree option is used (`internal/sem/provider.go:1845-1850`), and the implementation describes it as provenance. The packet does not independently retain the invocation flag, so the warning is preserved and excluded from any completeness or admission claim.
+Warning index 0, `W_WORKTREE_SNAPSHOT`, is classified as **valid_policy_warning**. The provider emits it when the worktree option is used (`internal/sem/provider.go:1845-1850`). The source-bound snapshot evaluator at commit `1f20f694` sets `ProviderSnapshotOptions.Worktree: true` and collects the resulting warnings (`internal/sem/extraction_corpus_evaluation_test.go:736-746`). The warning is provenance and is preserved without any completeness or admission claim.
 
 ## Boundary
 

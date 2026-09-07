@@ -297,8 +297,8 @@
       "classification": "valid_policy_warning",
       "classification_basis": [
         "The emitted warning exactly matches the provider worktree provenance branch and its documented effect.",
-        "The diagnostic is a snapshot packet whose retained record identifies the source tree and source digest; this warning describes provenance rather than parser coverage.",
-        "The dispatch packet does not separately preserve the invocation flag, so this warning is retained as evidence and is not used to claim completeness or admission."
+        "The retained diagnostic is a snapshot, and the source-bound evaluator at source commit 1f20f694 sets ProviderSnapshotOptions.Worktree: true before collecting snapshot warnings.",
+        "The warning is provenance rather than parser coverage; it is retained and does not authorize completeness or admission."
       ],
       "code": "W_WORKTREE_SNAPSHOT",
       "file_path": null,
@@ -308,7 +308,8 @@
       "source_citations": [
         "internal/sem/provider.go:1845-1850 (worktree option emits the provenance warning)",
         "internal/cli/completeness.go:54-58 (warning is provenance, not a parse failure)",
-        "internal/sem/search_cache_worktree_test.go:138-139 (worktree rebuild retains the warning)"
+        "internal/sem/search_cache_worktree_test.go:138-139 (worktree rebuild retains the warning)",
+        "internal/sem/extraction_corpus_evaluation_test.go:736-746 at source commit 1f20f694 (snapshot evaluator sets Worktree: true and captures snapshot warnings)"
       ],
       "source_sha256": null
     }
