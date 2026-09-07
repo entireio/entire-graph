@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "4265eba3ba78",
+  "strategy": "manual-commit",
+  "branch": "fix/verify-exit-codes-and-injection",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/verify_failure_code_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/42/65eba3ba78/0/metadata.json",
+      "transcript": "/42/65eba3ba78/0/full.jsonl",
+      "compact_transcript": "/42/65eba3ba78/0/transcript.jsonl",
+      "content_hash": "/42/65eba3ba78/0/content_hash.txt",
+      "prompt": "/42/65eba3ba78/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 21450,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1638400,
+    "output_tokens": 7450,
+    "api_call_count": 12
+  }
+}
