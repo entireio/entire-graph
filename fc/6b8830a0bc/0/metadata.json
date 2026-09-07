@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "fc6b8830a0bc",
+  "session_id": "01a07bf8-43b4-79e1-a764-74369c5b45f5",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-07T13:08:53.184331Z",
+  "branch": "fix/worker-context-and-race-guard",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "04ce9ce96cb9",
+  "checkpoint_transcript_start": 133,
+  "transcript_lines_at_start": 133,
+  "compact_transcript_start": 12,
+  "token_usage": {
+    "input_tokens": 1928,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 226816,
+    "output_tokens": 215,
+    "api_call_count": 3
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
