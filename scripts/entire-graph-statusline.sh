@@ -3,10 +3,10 @@
 #
 # Renders one line summarising what the code graph bought you in THIS session:
 #
-#   [GRAPH] ↗ 6.6K saved
+#   [GRAPH] ↗ ~6.6K saved
 #
 # With ENTIRE_GRAPH_STATUSLINE_DETAIL=1 the measured context follows it:
-#   [GRAPH] ↗ 6.6K saved · 13 search · 3 impact · 1 nbrs · vs 2.6K explore · 1.5M explore tok ·
+#   [GRAPH] ↗ ~6.6K saved · 13 search · 3 impact · 1 nbrs · vs 2.6K explore · 1.5M explore tok ·
 #   graph-first ✗ · 2% of locates · 0.2% of session
 #
 # Segment order is fixed; any segment whose value is missing or zero is dropped rather than
@@ -15,7 +15,7 @@
 # verbs — stats, version, help, doctor, init-agents, agent-guide, capabilities — replace no
 # exploration, so they are struck from the verb split AND from the residual "other" count.
 #
-# The line is held under 150 visible characters. When it would overflow, whole segments are
+# The line is held under 152 visible characters. When it would overflow, whole segments are
 # dropped from the right — session %, then explore tok, then explore calls — never truncated.
 #
 # Claude Code invokes a status line command with the session JSON on stdin and takes stdout as
@@ -191,7 +191,12 @@ render() {
 		function addplain(text, rank) { addseg(sep() text, 3 + length(text), rank) }
 		{ blob = blob $0 }
 		END {
-			maxw = 150
+			# 152, not 150: the two estimate marks are mandatory content, not decoration,
+			# and the old budget was calibrated against a line that lacked them. Holding
+			# 150 made a 1-character overflow shed a ~20-character segment, so the reader
+			# paid twenty characters of real data for two characters of honesty. Two more
+			# characters of width is the cheaper side of that trade.
+			maxw = 152
 			sessions = number("sessions")
 			graph    = number("graph_calls")
 			explore  = number("exploration_calls")
@@ -247,8 +252,14 @@ render() {
 
 			if (saved > 0) {
 				text = human(saved)
-				# "[GRAPH] " = 8, "\342\206\227 " = 2, " saved" = 6.
-				addseg(label " " paint("\342\206\227 " text " saved", "38;5;78"), 16 + length(text), 0)
+				# The tilde is not decoration. The underlying field is
+				# estimated_savings_est_tokens, and the model behind it says
+				# "assumption, not a measurement" -- what you would have read
+				# instead is not observable. `entire graph stats` prints "~45,942
+				# tokens saved" for exactly that reason; a badge that drops the
+				# mark states as fact what the command it wraps hedges.
+				# "[GRAPH] " = 8, "\342\206\227 ~" = 3, " saved" = 6.
+				addseg(label " " paint("\342\206\227 ~" text " saved", "38;5;78"), 17 + length(text), 0)
 			} else {
 				addseg(label, 7, 0)
 			}
@@ -303,7 +314,7 @@ render() {
 			}
 
 			# Below 0.005% every format rounds to "0.00%", which is a zero — drop it.
-			if (savedPct >= 0.005) addplain(pct(savedPct) " of session", 1)
+			if (savedPct >= 0.005) addplain("~" pct(savedPct) " of session", 1)
 
 			for (rank = 1; rank <= 3 && wtotal > maxw; rank++) {
 				for (i = 1; i <= nseg; i++) {
