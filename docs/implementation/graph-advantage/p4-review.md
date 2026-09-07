@@ -39,9 +39,11 @@ The harness now accepts `ENTIRE_GRAPH_RANK_ARMS` (comma-separated `current`,
 `ENTIRE_GRAPH_RANK_REPETITIONS` (1..1000). All arms use captured-input handling.
 At that phase's source version, the expansion control was an explicit identity
 control; its retained results remain historical and unchanged. A later
-implementation-first patch adds a bounded, internal candidate expansion shared
-identically by `current-expansion`, `uniform`, `weighted`, and
-`weighted-compiler`, with baseline ranking retained only by `current-expansion`.
+implementation-first patch adds one bounded, internal candidate-expansion
+policy to all four arms, with baseline ranking retained only by
+`current-expansion`. The no-compiler `current-expansion`, `uniform`, and
+`weighted` arms have identical candidate pools; compiler evidence may change
+the eligible relations and therefore the `weighted-compiler` pool.
 It adds contract fixtures and diagnostics but no new retrieval measurements,
 tuning, or gate evidence. The compiler arm requires JSON-encoded pinned
 `compiler.Config` in `ENTIRE_GRAPH_RANK_COMPILER_CONFIG` and requires complete

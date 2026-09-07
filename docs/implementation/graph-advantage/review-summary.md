@@ -129,11 +129,18 @@ no observation or diagnostics. It retained a complete diagnostic-only
 with byte-identical before/after inputs and zero control-identity mismatches.
 No retry was made and the VM is deallocated. The focused gate is not a full
 check or admission substitute. Offline analysis of the latest profile found
-that route-regex work remains a CPU hotspot; a route refactor is in progress,
-and no further sampling is authorized before the fix and its correctness
-evidence. Zero clean stability batches have run, and no stability, release,
-timeout-resolution or performance claim follows. The resumed invocation total
-is five.
+that route-regex work remains a CPU hotspot. The route refactor and focused
+correctness evidence are now complete, but controlled runtime verification
+remains pending; no further sampling is authorized before that run. Zero clean
+stability batches have run, and no stability, release, timeout-resolution or
+performance claim follows. The resumed invocation total is five.
+
+Source `78c8b496` implements the bounded Go HTTP route-parser refactor
+motivated by the retained relations profile. Focused normal, race,
+compatibility-oracle and resource-bound checks are recorded in
+`evidence/route-parser-profile-8689fc3d/`. This is implementation and
+correctness evidence only; the controlled runtime timeout remains unresolved
+pending a fresh product run.
 
 The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
 6 timeouts. It is therefore collected but incomplete. The campaign remains
@@ -142,10 +149,10 @@ P2, P3 or P4 release gate has passed.
 
 | Workstream | Implementation and correctness | Evaluation and release status |
 |---|---|---|
-| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. Retained profile and diagnostic outputs have exact parity where stated above; the latest immutable full check is the historical `450bede9` pass, `8689fc3d` has focused Linux evidence, and its final full check remains pending. | Fixed-corpus baseline and paired matrix are incomplete; timeout/partial admission, performance and RSS remain open. |
+| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. The route refactor at `78c8b496` has focused normal/race/oracle/resource evidence; the latest immutable full check is the historical `450bede9` pass, and the `6f23da0a` full check is in progress with no result yet. | Fixed-corpus baseline and paired matrix are incomplete; timeout/partial admission, performance and RSS remain open. |
 | P2 | Pinned Go analysis, lifecycle, source identity, mapping, compiler-view integration and invalidation contracts have implementation and focused correctness evidence. | Hard-Go quality and adjudicated precision/recall studies are deferred; no gate passed. |
 | P3 | Relation policy, bounded traversal, path evidence, CLI/output and compiler-view contracts have focused correctness evidence. | Realistic affected-site precision/recall/cost studies and coverage gates are deferred; no gate passed. |
-| P4 | Candidate-only ranking, experimental integration and fallback behavior have numerical and contract fixtures. The development-ablation interface is incomplete because current expansion still aliases current ranking instead of holding candidate expansion identical while ranking varies. | The expansion-control correction and focused proof are in progress. No winning configuration, held-out result or downstream agent study is established; no gate passed. |
+| P4 | Candidate-only ranking, experimental integration, fallback behavior and one bounded candidate-expansion policy are implemented. `current-expansion`, `uniform` and `weighted` use identical no-compiler candidate pools while `current-expansion` retains baseline ranking; compiler evidence may change the eligible pool in `weighted-compiler`. Focused normal/race contract evidence is retained. | No new retrieval measurement or tuning was run. No winning configuration, held-out result or downstream agent study is established; no gate passed. |
 
 “Complete” in the ledger means implementation or harness delivery. It does
 not mean a comparative result or release decision. Existing failures,
@@ -180,10 +187,11 @@ first-issue stop. Three clean representative batches are a checkpoint for
 stability only, not a release gate.
 
 The existing timeouts remain failed diagnostics. The latest profile still
-shows route-regex work as a CPU hotspot; the route refactor and correctness
-evidence must complete before any further sampling. No timeout-resolution
-claim exists, and no new product invocation or full campaign is authorized by
-this evidence.
+shows route-regex work as a CPU hotspot; the route refactor and focused
+correctness evidence are complete, but controlled runtime verification is
+still required before any further sampling. No timeout-resolution claim
+exists, and no new product invocation or full campaign is authorized by this
+evidence.
 
 P2 and P3 still require independent adjudication of required, allowed and
 forbidden targets with explicit partial/unavailable coverage. P4 requires a
