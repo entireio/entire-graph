@@ -1336,43 +1336,27 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 //	$ dash -c 'set -o pipefail; echo REACHED'
 //	dash: 1: set: Illegal option -o pipefail   (exit 2, REACHED never prints)
 //
-// So the status is captured explicitly instead, in pure POSIX: run the test in a command
-// substitution, keep its `$?`, feed the captured output to `explain`, and exit with the status that
-// was kept. The whole thing is wrapped in a subshell so the trailing `exit` ends the wrapper and not
-// an interactive shell the agent pasted it into, and so the subshell's own status IS the test's.
+// Only the test's numeric status is captured in command substitution. FD 3
+// carries that status; FD 4 carries the filter's output to the original stdout.
+// Test output streams through the pipe, including binary data and trailing newlines.
+// Both caller fragments run in subshells with the private descriptors closed, so
+// exit, exec, or descriptor use cannot bypass the wrapper's status bookkeeping.
 //
-// The cost is that output is buffered rather than streamed. `explain` reads its input to EOF before
-// it writes anything, so nothing downstream was streaming in the first place.
+// The reader keeps the pipe open and drains it after the filter exits. Without
+// that drain, an early-exiting filter can give the test SIGPIPE and replace its
+// real status. Draining is bounded by pipe backpressure, not by total log size.
+// The filter itself may still buffer input; this wrapper does not.
 //
-// Keeping the test's status is only half of it. `exit $r` alone reports ONLY the test's status, so
-// the converse error appears: a green test whose `explain` filter was missing, crashed, or could not
-// write its output exits 0 and the line claims a verification that never completed. `explain`'s own
-// status is therefore captured too, and the two are ordered:
-//
-//   - a nonzero TEST status always wins. That is the whole point of the capture, and a harness
-//     keying on `$?` must keep reading the same number the bare test would have produced.
-//   - a green test with a nonzero EXPLAIN status exits with explain's status. The run is
-//     inconclusive rather than passing, and nonzero is the safe direction for an inconclusive run.
-//
-// The two cases are told apart by a one-line stderr note rather than by the number, because the
-// numbers collide — a test and a filter both exit 1 — and the note is the only thing that can say
-// which stage produced it. It is written only when explain is the stage that failed.
-//
-// THE EXPLAIN FRAGMENT IS PARENTHESIZED, and that is load-bearing rather than cosmetic. `explain` is
-// a raw shell fragment the caller supplies (`--verify-explain`), and interpolating it bare left it
-// sharing the wrapper's own command list: `|` binds tighter than `;`, so `--verify-explain 'cat;
-// exit 0'` composed to `… | cat; exit 0; e=$?; …` — the pipeline ran, and then `exit 0` ended the
-// WRAPPER, before `e=$?` and before the `[ "$r" -ne 0 ] && exit "$r"` that is the whole point of the
-// capture. Measured in sh and dash: a test exiting 7 reported 0, which is precisely the false pass
-// the status capture exists to prevent, reachable from an ordinary-looking filter. A subshell rather
-// than a `{ }` group, because a subshell contains `exit` and `exec` wherever it appears and needs no
-// terminating `;` before its closing token. It costs nothing: the pipeline's status is still its last
-// stage's, and the last stage is now the subshell, whose status is the fragment's.
+// A failing test's status takes precedence. Otherwise a filter or drain failure
+// is returned with a diagnostic. The outer subshell disables inherited errexit
+// for bookkeeping, and contains all descriptor, option, and variable changes.
 func composeSearchVerifyExplain(command, explain string) (composed string, overhead int) {
 	const (
-		prefix = "( o=$("
-		middle = " 2>&1); r=$?; printf '%s\\n' \"$o\" | ( "
-		suffix = " ); e=$?; [ \"$r\" -ne 0 ] && exit \"$r\"; " +
+		prefix = "( set +e; exec 4>&1; r=$( { { ( "
+		middle = " ) 3>&- 4>&- 2>&1; printf '%s\\n' \"$?\" >&3; } | { ( "
+		suffix = " ) 3>&- 4>&-; e=$?; cat >/dev/null; d=$?; " +
+			"[ \"$e\" -eq 0 ] || exit \"$e\"; exit \"$d\"; } >&4; } 3>&1 ); e=$?; " +
+			"[ \"$r\" -ne 0 ] && exit \"$r\"; " +
 			"[ \"$e\" -eq 0 ] || echo 'VERIFY: explain filter failed' >&2; exit \"$e\" )"
 	)
 	return prefix + command + middle + explain + suffix,
