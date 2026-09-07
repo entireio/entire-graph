@@ -2,6 +2,7 @@ package sem
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -890,5 +891,53 @@ func TestStaticBlockCallbackKeepsClassScope(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAnonymousClassCallableHelpersAreLocalFunctions(t *testing.T) {
+	for _, tc := range []struct{ language, path string }{{"JavaScript", "w.js"}, {"TypeScript", "w.ts"}} {
+		for _, body := range []string{
+			"onClick = () => { function helper() {} };",
+			"onClick = function() { function helper() {} };",
+			"onClick = function*() { function helper() {} };",
+			"static { (function() { function helper() {} })(); }",
+			"static { (() => { function helper() {} })(); }",
+		} {
+			t.Run(tc.language+"/"+body, func(t *testing.T) {
+				entities, _, status := TreeSitterParser{}.ParseWithStatus(tc.path, "class A { helper() {} "+body+" }")
+				if status.ParseError {
+					t.Fatalf("parse error: %s", status.Detail)
+				}
+				symbols := entitySymbols("local/r", tc.path, tc.language, entities)
+				prefix := "local/r:" + tc.language + ":" + tc.path + ":"
+				method, local := false, false
+				wantLocal := prefix + "function:A.helper"
+				if strings.HasPrefix(body, "onClick") {
+					wantLocal = prefix + "function:A.onClick.helper"
+				}
+				for _, s := range symbols {
+					if s.Name != "helper" {
+						continue
+					}
+					switch s.ID {
+					case prefix + "method:A.helper":
+						method = true
+						if s.Local {
+							t.Error("real member became local")
+						}
+					case wantLocal:
+						local = true
+						if !s.Local {
+							t.Error("anonymous callable helper is not local")
+						}
+					default:
+						t.Errorf("unexpected helper: %#v", s)
+					}
+				}
+				if !method || !local {
+					t.Fatalf("want stable real method and local function, got %s", symbolIDs(symbols))
+				}
+			})
+		}
 	}
 }

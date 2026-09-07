@@ -4183,6 +4183,15 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 			setEntitySourceRange(&fields[index], node, language, src)
 		}
 		*entities = append(*entities, fields...)
+		// JS/TS callable fields already emit their method entity above. Walk
+		// their initializer as that method's lexical scope so nested helpers
+		// are retained without becoming members of the surrounding class.
+		if functionLocalScopeResets(language) && len(fields) == 1 && fields[0].Kind == "method" {
+			if value := node.ChildByFieldName("value"); functionLikeValue(value) {
+				walkEntitiesScoped(value, src, language, fields[0].Name, true, true, depth+1, entities, depthExceeded)
+				return
+			}
+		}
 		// A field whose initializer is an anonymous/nested type still declares
 		// callables: `static final Comparator<T> C = new Comparator<T>() {
 		// public int compare(...) {...} };`. The declaration as a whole is not
@@ -4340,6 +4349,17 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 				}
 				childScopeIsCallable = true
 			}
+		}
+	}
+	// Anonymous JS/TS callables have no entity, but their bodies still establish
+	// lexical scope. This includes class-field arrows and static-block IIFEs.
+	// Retain the nearest named scope without inventing a callable symbol; nested
+	// declarations must be local functions, not members of that enclosing type.
+	if !ok && functionLocalScopeResets(language) {
+		switch node.Type() {
+		case "arrow_function", "function_expression", "generator_function":
+			childInFunc = true
+			childScopeIsCallable = true
 		}
 	}
 	// In R the function body lives under the anonymous function_definition node
