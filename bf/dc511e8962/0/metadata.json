@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "bfdc511e8962",
+  "session_id": "01a07cc3-f7c9-7a82-ac15-4810e5b0fea6",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-07T16:51:06.61035Z",
+  "branch": "codex/trail156-review",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "99501efe98b6",
+  "checkpoint_transcript_start": 171,
+  "transcript_lines_at_start": 171,
+  "compact_transcript_start": 13,
+  "token_usage": {
+    "input_tokens": 392,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 92672,
+    "output_tokens": 65,
+    "api_call_count": 1
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "bfdc511e8962",
+  "strategy": "manual-commit",
+  "branch": "codex/trail156-review",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/bf/dc511e8962/0/metadata.json",
+      "transcript": "/bf/dc511e8962/0/full.jsonl",
+      "compact_transcript": "/bf/dc511e8962/0/transcript.jsonl",
+      "content_hash": "/bf/dc511e8962/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 392,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 92672,
+    "output_tokens": 65,
+    "api_call_count": 1
+  }
+}
