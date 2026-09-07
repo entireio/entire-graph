@@ -1,0 +1,6 @@
+/*
+!/pact/
+/pact/*
+!/pact/demo/
+/pact/demo/*
+!/pact/demo/workspace_app/

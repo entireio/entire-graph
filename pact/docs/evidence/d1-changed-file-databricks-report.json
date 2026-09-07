@@ -1,0 +1,593 @@
+{
+  "assertions": [
+    {
+      "actual_allowed": null,
+      "applicability_reason": "Requirement does not apply to this version",
+      "expected_allowed": true,
+      "observation_ref": null,
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+      "scenario_id": "guest-preview-own-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "not_applicable"
+    },
+    {
+      "actual_allowed": null,
+      "applicability_reason": "Requirement does not apply to this version",
+      "expected_allowed": true,
+      "observation_ref": null,
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+      "scenario_id": "guest-preview-other-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "not_applicable"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "cb61cc6616c04087a7a52ec9390db95b/head/guest-preview-own-public",
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+      "scenario_id": "guest-preview-own-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "cb61cc6616c04087a7a52ec9390db95b/head/guest-preview-other-public",
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+      "scenario_id": "guest-preview-other-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    }
+  ],
+  "backend": "databricks",
+  "backend_metadata": {
+    "assertion_count": 4,
+    "assertion_hash": "c5f1217e98700869a8ec809f6f49af0002bec217c97408e2d9b54747afec43de",
+    "assertion_parity": "verified against returned observations",
+    "assertions": [
+      {
+        "actual_allowed": null,
+        "applicability_reason": "Requirement does not apply to this version",
+        "expected_allowed": true,
+        "observation_ref": null,
+        "requirement_id": "R4",
+        "requirement_revision": 2,
+        "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+        "scenario_id": "guest-preview-own-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "not_applicable"
+      },
+      {
+        "actual_allowed": null,
+        "applicability_reason": "Requirement does not apply to this version",
+        "expected_allowed": true,
+        "observation_ref": null,
+        "requirement_id": "R4",
+        "requirement_revision": 2,
+        "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+        "scenario_id": "guest-preview-other-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "not_applicable"
+      },
+      {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": true,
+        "observation_ref": "cb61cc6616c04087a7a52ec9390db95b/head/guest-preview-own-public",
+        "requirement_id": "R4",
+        "requirement_revision": 2,
+        "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+        "scenario_id": "guest-preview-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "pass"
+      },
+      {
+        "actual_allowed": true,
+        "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+        "expected_allowed": true,
+        "observation_ref": "cb61cc6616c04087a7a52ec9390db95b/head/guest-preview-other-public",
+        "requirement_id": "R4",
+        "requirement_revision": 2,
+        "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+        "scenario_id": "guest-preview-other-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "pass"
+      }
+    ],
+    "code_hash": "07924076fd46bced3ece5dd379275aab16e37c1c02f9f0d09da330314b0a1583",
+    "commits": {
+      "base": "32030ee415285802f847499eef8ae12c6e677a22",
+      "head": "dc177b0ccff06dfe9f13020df23b1caed4b855f5"
+    },
+    "completion_state": "complete",
+    "data_source": "team-owned 24-case permission fixture",
+    "evidence_context": {
+      "schema_version": "1.0",
+      "selection": {
+        "diagnostics": [
+          {
+            "code": "runtime_lookup",
+            "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+            "detail": "getattr may resolve or modify relationships at runtime",
+            "file_path": "pact/demo/workspace_app/export.py",
+            "line": 6,
+            "origin": "source_precaution",
+            "side": "base"
+          },
+          {
+            "code": "indirect_call",
+            "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+            "detail": "Call through check requires source/test verification",
+            "file_path": "pact/demo/workspace_app/export.py",
+            "line": 7,
+            "origin": "source_precaution",
+            "side": "base"
+          },
+          {
+            "code": "runtime_lookup",
+            "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+            "detail": "getattr may resolve or modify relationships at runtime",
+            "file_path": "pact/demo/workspace_app/export.py",
+            "line": 6,
+            "origin": "source_precaution",
+            "side": "head"
+          },
+          {
+            "code": "indirect_call",
+            "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+            "detail": "Call through check requires source/test verification",
+            "file_path": "pact/demo/workspace_app/export.py",
+            "line": 7,
+            "origin": "source_precaution",
+            "side": "head"
+          }
+        ],
+        "evidence_schema_version": "1.0",
+        "fallback": {
+          "added_requirement_ids": [],
+          "mode": "none",
+          "scope": "confirmed registered assertions only; not complete program coverage"
+        },
+        "not_selected_ids": [
+          "R1@2",
+          "R2@2",
+          "R3@2"
+        ],
+        "partial_analysis": true,
+        "path_ids": [],
+        "paths": [],
+        "selected_before_fallback": [
+          "R4@2"
+        ],
+        "selected_requirement_ids": [
+          "R4@2"
+        ],
+        "selection_reasons": {
+          "R4@2": [
+            "New or revised requirement needs verification"
+          ]
+        },
+        "snapshot_hashes": {
+          "base": "b1f78374d316ac99cf81337b4fc0cc8cb8c0a21c4d15b5fa71aeb0af50604ed5",
+          "head": "0e9081852f4ca89a2af6a3dd8c02ba2793327f745d348729bd84e90b9758fd44"
+        },
+        "strategy": "changed_file",
+        "traversal_limit": 8,
+        "unresolved_ids": [],
+        "verification": {
+          "analysis": "potentially_partial",
+          "next_steps": [
+            "Inspect the pinned source at diagnostic locations.",
+            "Replay the bundled registered checks and inspect their observed results.",
+            "Add approved checks for behavior outside the registered scenarios."
+          ],
+          "runtime_reachability": "requires_source_or_test_verification"
+        }
+      },
+      "source_gaps": [
+        "R4@2"
+      ],
+      "verification_scope": "registered assertions only; static paths are not runtime traces"
+    },
+    "evidence_context_hash": "880300a52414bd25538e78d838ddd2bcd5230d15463c11593b4079e440e238ad",
+    "grouped_violations": [],
+    "idempotent_replay_verified": true,
+    "namespace": "workspace.pact",
+    "observation_count": 2,
+    "original_bundle_hash": "32e6de4a596be7ee54f6708edaf6a17ec19415d1af8eb93064e9c2d4ebaad60c",
+    "payload_hash": "a0ea3f518945ddcd402a21d59ad7c2507fc09f9d7da54595378b15d7fcc861bb",
+    "remote_run_id": 962538927251526,
+    "review_completion_state": "partial",
+    "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+    "run_url": "https://dbc-c3d496ed-7dbd.cloud.databricks.com/?o=7474653723260152#job/679652746926491/run/962538927251526",
+    "synthetic": true
+  },
+  "bundle_hash": "32e6de4a596be7ee54f6708edaf6a17ec19415d1af8eb93064e9c2d4ebaad60c",
+  "cache_mode": "disabled",
+  "commits": {
+    "base": "32030ee415285802f847499eef8ae12c6e677a22",
+    "head": "dc177b0ccff06dfe9f13020df23b1caed4b855f5"
+  },
+  "comparison_id": "50c63f7812f849e78676000d6d4cf9ac",
+  "completion_state": "partial",
+  "counts": {
+    "base": {
+      "fail": 0,
+      "not_applicable": 2,
+      "not_run": 0,
+      "observations": 0,
+      "pass": 0,
+      "unresolved": 0
+    },
+    "head": {
+      "fail": 0,
+      "not_applicable": 0,
+      "not_run": 0,
+      "observations": 2,
+      "pass": 2,
+      "unresolved": 0
+    }
+  },
+  "created_at": "2026-09-06T08:35:20.795862+00:00",
+  "errors": [],
+  "evidence_context": {
+    "schema_version": "1.0",
+    "selection": {
+      "diagnostics": [
+        {
+          "code": "runtime_lookup",
+          "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+          "detail": "getattr may resolve or modify relationships at runtime",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 6,
+          "origin": "source_precaution",
+          "side": "base"
+        },
+        {
+          "code": "indirect_call",
+          "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+          "detail": "Call through check requires source/test verification",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 7,
+          "origin": "source_precaution",
+          "side": "base"
+        },
+        {
+          "code": "runtime_lookup",
+          "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+          "detail": "getattr may resolve or modify relationships at runtime",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 6,
+          "origin": "source_precaution",
+          "side": "head"
+        },
+        {
+          "code": "indirect_call",
+          "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+          "detail": "Call through check requires source/test verification",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 7,
+          "origin": "source_precaution",
+          "side": "head"
+        }
+      ],
+      "evidence_schema_version": "1.0",
+      "fallback": {
+        "added_requirement_ids": [],
+        "mode": "none",
+        "scope": "confirmed registered assertions only; not complete program coverage"
+      },
+      "not_selected_ids": [
+        "R1@2",
+        "R2@2",
+        "R3@2"
+      ],
+      "partial_analysis": true,
+      "path_ids": [],
+      "paths": [],
+      "selected_before_fallback": [
+        "R4@2"
+      ],
+      "selected_requirement_ids": [
+        "R4@2"
+      ],
+      "selection_reasons": {
+        "R4@2": [
+          "New or revised requirement needs verification"
+        ]
+      },
+      "snapshot_hashes": {
+        "base": "b1f78374d316ac99cf81337b4fc0cc8cb8c0a21c4d15b5fa71aeb0af50604ed5",
+        "head": "0e9081852f4ca89a2af6a3dd8c02ba2793327f745d348729bd84e90b9758fd44"
+      },
+      "strategy": "changed_file",
+      "traversal_limit": 8,
+      "unresolved_ids": [],
+      "verification": {
+        "analysis": "potentially_partial",
+        "next_steps": [
+          "Inspect the pinned source at diagnostic locations.",
+          "Replay the bundled registered checks and inspect their observed results.",
+          "Add approved checks for behavior outside the registered scenarios."
+        ],
+        "runtime_reachability": "requires_source_or_test_verification"
+      }
+    },
+    "source_gaps": [
+      "R4@2"
+    ],
+    "verification_scope": "registered assertions only; static paths are not runtime traces"
+  },
+  "execution_scope": "selected_applicable_scenarios",
+  "findings": [],
+  "limitations": [
+    "Synthetic, seeded pilot; 24 cases are not complete program coverage.",
+    "Static paths show possible influence, not proven runtime execution.",
+    "Runtime is for the registered trusted fixture, not hostile repositories.",
+    "Checkpoint attachment mode and source gaps are reported explicitly."
+  ],
+  "observations": {
+    "base": [],
+    "head": [
+      {
+        "allowed": true,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.0034380000215605833,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+        "scenario_id": "guest-preview-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "duration_ms": 0.0014679999367217533,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "databricks",
+        "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+        "scenario_id": "guest-preview-other-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      }
+    ]
+  },
+  "request": {
+    "base_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+    "comparison_id": "50c63f7812f849e78676000d6d4cf9ac",
+    "execution_scope": "selected_applicable_scenarios",
+    "head_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+    "repo_path": ".",
+    "requirements": [
+      {
+        "applies_to": [
+          "base",
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.658296+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/export.py:export_document"
+        ],
+        "expected_allowed": false,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R1",
+        "revision": 2,
+        "scenario_filter": {
+          "operation": "export",
+          "role": "guest"
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R1@1",
+        "text": "Any guest export is denied, regardless of workspace or visibility."
+      },
+      {
+        "applies_to": [
+          "base",
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.658810+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/preview.py:preview_document",
+          "pact/demo/workspace_app/export.py:export_document"
+        ],
+        "expected_allowed": false,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R2",
+        "revision": 2,
+        "scenario_filter": {
+          "role": "member",
+          "same_workspace": false,
+          "visibility": "private"
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R2@1",
+        "text": "Members cannot access another workspace's private resources."
+      },
+      {
+        "applies_to": [
+          "base",
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.659474+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/export.py:export_document"
+        ],
+        "expected_allowed": true,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R3",
+        "revision": 2,
+        "scenario_filter": {
+          "operation": "export",
+          "role": "admin",
+          "same_workspace": true
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R3@1",
+        "text": "Admins can export resources in their own workspace."
+      },
+      {
+        "applies_to": [
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.659823+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/preview.py:preview_document"
+        ],
+        "expected_allowed": true,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R4",
+        "revision": 2,
+        "scenario_filter": {
+          "operation": "preview",
+          "role": "guest",
+          "visibility": "public"
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R4@1",
+        "text": "Guests can preview public content in either workspace."
+      }
+    ],
+    "runner": "databricks",
+    "schema_version": "1.0",
+    "scope_prefix": "pact/demo/workspace_app",
+    "strategy": "changed_file"
+  },
+  "requirement_set_hash": "e9ae4d5c5fd6a21ec094a85683dbda1eeca10e2efd750822fecc00dc7f53ec4f",
+  "run_id": "cb61cc6616c04087a7a52ec9390db95b",
+  "scenario_set_hash": "328e881f1bc472b7d38731e637cb4184d94a4fcd0ed692c5534e9e03c1aeca51",
+  "schema_version": "1.0",
+  "selection": {
+    "diagnostics": [
+      {
+        "code": "runtime_lookup",
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "detail": "getattr may resolve or modify relationships at runtime",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 6,
+        "origin": "source_precaution",
+        "side": "base"
+      },
+      {
+        "code": "indirect_call",
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "detail": "Call through check requires source/test verification",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 7,
+        "origin": "source_precaution",
+        "side": "base"
+      },
+      {
+        "code": "runtime_lookup",
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "detail": "getattr may resolve or modify relationships at runtime",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 6,
+        "origin": "source_precaution",
+        "side": "head"
+      },
+      {
+        "code": "indirect_call",
+        "commit_sha": "dc177b0ccff06dfe9f13020df23b1caed4b855f5",
+        "detail": "Call through check requires source/test verification",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 7,
+        "origin": "source_precaution",
+        "side": "head"
+      }
+    ],
+    "evidence_schema_version": "1.0",
+    "fallback": {
+      "added_requirement_ids": [],
+      "mode": "none",
+      "scope": "confirmed registered assertions only; not complete program coverage"
+    },
+    "not_selected_ids": [
+      "R1@2",
+      "R2@2",
+      "R3@2"
+    ],
+    "partial_analysis": true,
+    "path_ids": [],
+    "paths": [],
+    "selected_before_fallback": [
+      "R4@2"
+    ],
+    "selected_requirement_ids": [
+      "R4@2"
+    ],
+    "selection_reasons": {
+      "R4@2": [
+        "New or revised requirement needs verification"
+      ]
+    },
+    "snapshot_hashes": {
+      "base": "b1f78374d316ac99cf81337b4fc0cc8cb8c0a21c4d15b5fa71aeb0af50604ed5",
+      "head": "0e9081852f4ca89a2af6a3dd8c02ba2793327f745d348729bd84e90b9758fd44"
+    },
+    "strategy": "changed_file",
+    "traversal_limit": 8,
+    "unresolved_ids": [],
+    "verification": {
+      "analysis": "potentially_partial",
+      "next_steps": [
+        "Inspect the pinned source at diagnostic locations.",
+        "Replay the bundled registered checks and inspect their observed results.",
+        "Add approved checks for behavior outside the registered scenarios."
+      ],
+      "runtime_reachability": "requires_source_or_test_verification"
+    }
+  },
+  "source_gaps": [
+    "R4@2"
+  ],
+  "timing_ms": {
+    "execution": 121920.59837499983,
+    "graph": 856.0496670033899,
+    "total": 122834.74504200422
+  },
+  "version": "0.2.0",
+  "publication_note": "Derived public report: repo_path normalized to dot; personal Databricks artifact folder omitted. Original report SHA-256 is recorded in curveball-databricks-verification.json. Semantic results and hashed evidence context are unchanged."
+}

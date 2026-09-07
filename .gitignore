@@ -7,3 +7,15 @@ __pycache__/
 /bench/.cache/
 # Per-run benchmark reports are local-only working data, not version-controlled.
 /bench/results/
+
+# PACT local runtime, credentials and build output.
+/.venv/
+/.venv
+/pact/runs/
+/pact/dist/
+/pact/build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.env
+.env.local

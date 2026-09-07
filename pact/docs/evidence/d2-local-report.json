@@ -1,0 +1,1274 @@
+{
+  "assertions": [
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/base/guest-export-own-public",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-export-own-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/base/guest-export-own-private",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-export-own-private",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/base/guest-export-other-public",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-export-other-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/base/guest-export-other-private",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-export-other-private",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/base/member-preview-other-private",
+      "requirement_id": "R2",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "member-preview-other-private",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/base/member-export-other-private",
+      "requirement_id": "R2",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "member-export-other-private",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/base/admin-export-own-public",
+      "requirement_id": "R3",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "admin-export-own-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/base/admin-export-own-private",
+      "requirement_id": "R3",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "admin-export-own-private",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": null,
+      "applicability_reason": "Requirement does not apply to this version",
+      "expected_allowed": true,
+      "observation_ref": null,
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-preview-own-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "not_applicable"
+    },
+    {
+      "actual_allowed": null,
+      "applicability_reason": "Requirement does not apply to this version",
+      "expected_allowed": true,
+      "observation_ref": null,
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-preview-other-public",
+      "schema_version": "1.0",
+      "side": "base",
+      "status": "not_applicable"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/head/guest-export-own-public",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-export-own-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/head/guest-export-own-private",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-export-own-private",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/head/guest-export-other-public",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-export-other-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/head/guest-export-other-private",
+      "requirement_id": "R1",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-export-other-private",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/head/member-preview-other-private",
+      "requirement_id": "R2",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "member-preview-other-private",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": false,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": false,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/head/member-export-other-private",
+      "requirement_id": "R2",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "member-export-other-private",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/head/admin-export-own-public",
+      "requirement_id": "R3",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "admin-export-own-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/head/admin-export-own-private",
+      "requirement_id": "R3",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "admin-export-own-private",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/head/guest-preview-own-public",
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-preview-own-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    },
+    {
+      "actual_allowed": true,
+      "applicability_reason": "Confirmed permission predicate evaluated against observed output",
+      "expected_allowed": true,
+      "observation_ref": "9ca9942acf484f76a34feead9e706570/head/guest-preview-other-public",
+      "requirement_id": "R4",
+      "requirement_revision": 2,
+      "run_id": "9ca9942acf484f76a34feead9e706570",
+      "scenario_id": "guest-preview-other-public",
+      "schema_version": "1.0",
+      "side": "head",
+      "status": "pass"
+    }
+  ],
+  "backend": "local",
+  "backend_metadata": {},
+  "bundle_hash": "a40f7f3e346d17a3e51dc36f528c8242d3d322fcf6934fffb9fbb98e485a86f5",
+  "cache_mode": "disabled",
+  "commits": {
+    "base": "32030ee415285802f847499eef8ae12c6e677a22",
+    "head": "f80531734b57dd9c883e6111146238da68625224"
+  },
+  "comparison_id": null,
+  "completion_state": "partial",
+  "counts": {
+    "base": {
+      "fail": 0,
+      "not_applicable": 2,
+      "not_run": 0,
+      "observations": 8,
+      "pass": 8,
+      "unresolved": 0
+    },
+    "head": {
+      "fail": 0,
+      "not_applicable": 0,
+      "not_run": 0,
+      "observations": 10,
+      "pass": 10,
+      "unresolved": 0
+    }
+  },
+  "created_at": "2026-09-06T07:08:28.848401+00:00",
+  "errors": [],
+  "evidence_context": {
+    "schema_version": "1.0",
+    "selection": {
+      "diagnostics": [
+        {
+          "code": "runtime_lookup",
+          "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+          "detail": "getattr may resolve or modify relationships at runtime",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 6,
+          "origin": "source_precaution",
+          "side": "base"
+        },
+        {
+          "code": "indirect_call",
+          "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+          "detail": "Call through check requires source/test verification",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 7,
+          "origin": "source_precaution",
+          "side": "base"
+        },
+        {
+          "code": "runtime_lookup",
+          "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+          "detail": "getattr may resolve or modify relationships at runtime",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 6,
+          "origin": "source_precaution",
+          "side": "head"
+        },
+        {
+          "code": "indirect_call",
+          "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+          "detail": "Call through check requires source/test verification",
+          "file_path": "pact/demo/workspace_app/export.py",
+          "line": 7,
+          "origin": "source_precaution",
+          "side": "head"
+        }
+      ],
+      "evidence_schema_version": "1.0",
+      "fallback": {
+        "added_requirement_ids": [
+          "R1@2",
+          "R3@2"
+        ],
+        "mode": "all_registered",
+        "scope": "confirmed registered assertions only; not complete program coverage"
+      },
+      "not_selected_ids": [],
+      "partial_analysis": true,
+      "path_ids": [
+        "00328fc10c0165515f6c",
+        "cdefdfecd4318f874421",
+        "c59a73879f237ae75fa1"
+      ],
+      "paths": [
+        {
+          "changed_symbol": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+          "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+          "edges": [
+            {
+              "confidence": 0.86,
+              "evidence": [
+                {
+                  "detail": "can_access",
+                  "end_line": 5,
+                  "file_path": "pact/demo/workspace_app/preview.py",
+                  "kind": "call_site",
+                  "start_line": 4
+                }
+              ],
+              "from_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+              "reason": "direct call expression resolved through import path",
+              "record_type": "relation",
+              "relation_scope": "module",
+              "resolution": "import_resolved",
+              "target_kind": "symbol",
+              "to_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+              "type": "CALLS",
+              "warning_codes": []
+            }
+          ],
+          "entrypoint": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+          "evidence_quality": "confirmed_structural",
+          "path_id": "00328fc10c0165515f6c",
+          "requirement_ref": "R2@2",
+          "runtime_reachability": "requires_verification",
+          "side": "base",
+          "status": "structural_path",
+          "symbols": [
+            {
+              "body_hash": "eba390847868dbc6",
+              "end_line": 5,
+              "file_path": "pact/demo/workspace_app/permissions.py",
+              "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+              "kind": "function",
+              "language": "Python",
+              "name": "can_access",
+              "qualified_name": "can_access",
+              "record_type": "symbol",
+              "signature": "def can_access(request)",
+              "stable_id_version": "compound-v1",
+              "start_line": 1
+            },
+            {
+              "body_hash": "2d834f5479bca3bb",
+              "end_line": 5,
+              "file_path": "pact/demo/workspace_app/preview.py",
+              "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+              "kind": "function",
+              "language": "Python",
+              "name": "preview_document",
+              "qualified_name": "preview_document",
+              "record_type": "symbol",
+              "signature": "def preview_document(request)",
+              "stable_id_version": "compound-v1",
+              "start_line": 4
+            }
+          ]
+        },
+        {
+          "changed_symbol": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+          "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+          "edges": [
+            {
+              "confidence": 0.86,
+              "evidence": [
+                {
+                  "detail": "can_access",
+                  "end_line": 5,
+                  "file_path": "pact/demo/workspace_app/preview.py",
+                  "kind": "call_site",
+                  "start_line": 4
+                }
+              ],
+              "from_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+              "reason": "direct call expression resolved through import path",
+              "record_type": "relation",
+              "relation_scope": "module",
+              "resolution": "import_resolved",
+              "target_kind": "symbol",
+              "to_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+              "type": "CALLS",
+              "warning_codes": []
+            }
+          ],
+          "entrypoint": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+          "evidence_quality": "confirmed_structural",
+          "path_id": "cdefdfecd4318f874421",
+          "requirement_ref": "R2@2",
+          "runtime_reachability": "requires_verification",
+          "side": "head",
+          "status": "structural_path",
+          "symbols": [
+            {
+              "body_hash": "04bbcf751fedef67",
+              "end_line": 8,
+              "file_path": "pact/demo/workspace_app/permissions.py",
+              "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+              "kind": "function",
+              "language": "Python",
+              "name": "can_access",
+              "qualified_name": "can_access",
+              "record_type": "symbol",
+              "signature": "def can_access(request)",
+              "stable_id_version": "compound-v1",
+              "start_line": 1
+            },
+            {
+              "body_hash": "2d834f5479bca3bb",
+              "end_line": 5,
+              "file_path": "pact/demo/workspace_app/preview.py",
+              "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+              "kind": "function",
+              "language": "Python",
+              "name": "preview_document",
+              "qualified_name": "preview_document",
+              "record_type": "symbol",
+              "signature": "def preview_document(request)",
+              "stable_id_version": "compound-v1",
+              "start_line": 4
+            }
+          ]
+        },
+        {
+          "changed_symbol": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+          "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+          "edges": [
+            {
+              "confidence": 0.86,
+              "evidence": [
+                {
+                  "detail": "can_access",
+                  "end_line": 5,
+                  "file_path": "pact/demo/workspace_app/preview.py",
+                  "kind": "call_site",
+                  "start_line": 4
+                }
+              ],
+              "from_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+              "reason": "direct call expression resolved through import path",
+              "record_type": "relation",
+              "relation_scope": "module",
+              "resolution": "import_resolved",
+              "target_kind": "symbol",
+              "to_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+              "type": "CALLS",
+              "warning_codes": []
+            }
+          ],
+          "entrypoint": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+          "evidence_quality": "confirmed_structural",
+          "path_id": "c59a73879f237ae75fa1",
+          "requirement_ref": "R4@2",
+          "runtime_reachability": "requires_verification",
+          "side": "head",
+          "status": "structural_path",
+          "symbols": [
+            {
+              "body_hash": "04bbcf751fedef67",
+              "end_line": 8,
+              "file_path": "pact/demo/workspace_app/permissions.py",
+              "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+              "kind": "function",
+              "language": "Python",
+              "name": "can_access",
+              "qualified_name": "can_access",
+              "record_type": "symbol",
+              "signature": "def can_access(request)",
+              "stable_id_version": "compound-v1",
+              "start_line": 1
+            },
+            {
+              "body_hash": "2d834f5479bca3bb",
+              "end_line": 5,
+              "file_path": "pact/demo/workspace_app/preview.py",
+              "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+              "kind": "function",
+              "language": "Python",
+              "name": "preview_document",
+              "qualified_name": "preview_document",
+              "record_type": "symbol",
+              "signature": "def preview_document(request)",
+              "stable_id_version": "compound-v1",
+              "start_line": 4
+            }
+          ]
+        }
+      ],
+      "selected_before_fallback": [
+        "R2@2",
+        "R4@2"
+      ],
+      "selected_requirement_ids": [
+        "R1@2",
+        "R2@2",
+        "R3@2",
+        "R4@2"
+      ],
+      "selection_reasons": {
+        "R1@2": [
+          "Conservative fallback: run all registered checks because selection may be incomplete"
+        ],
+        "R2@2": [
+          "Resolved structural impact on base at 32030ee4",
+          "Resolved structural impact on head at f8053173",
+          "Conservative fallback: run all registered checks because selection may be incomplete"
+        ],
+        "R3@2": [
+          "Conservative fallback: run all registered checks because selection may be incomplete"
+        ],
+        "R4@2": [
+          "New or revised requirement needs verification",
+          "Resolved structural impact on head at f8053173",
+          "Conservative fallback: run all registered checks because selection may be incomplete"
+        ]
+      },
+      "snapshot_hashes": {
+        "base": "e059bd55f430fc21db47a115899e4cf52a8dcc3ebb9cae41a5f6ade425874644",
+        "head": "7bf30a573b2017f995ef682e9858c20798cbe4af92331dd47d58d4d540be3b66"
+      },
+      "traversal_limit": 8,
+      "unresolved_ids": [],
+      "verification": {
+        "analysis": "potentially_partial",
+        "next_steps": [
+          "Inspect the pinned source at diagnostic locations.",
+          "Replay the bundled registered checks and inspect their observed results.",
+          "Add approved checks for behavior outside the registered scenarios."
+        ],
+        "runtime_reachability": "requires_source_or_test_verification"
+      }
+    },
+    "source_gaps": [
+      "R1@2",
+      "R2@2",
+      "R3@2",
+      "R4@2"
+    ],
+    "verification_scope": "registered assertions only; static paths are not runtime traces"
+  },
+  "execution_scope": "selected_applicable_scenarios",
+  "findings": [],
+  "limitations": [
+    "Synthetic, seeded pilot; 24 cases are not complete program coverage.",
+    "Static paths show possible influence, not proven runtime execution.",
+    "Runtime is for the registered trusted fixture, not hostile repositories.",
+    "Checkpoint attachment mode and source gaps are reported explicitly."
+  ],
+  "observations": {
+    "base": [
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0020419975044205785,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "guest-export-own-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0017499987734481692,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "guest-export-own-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0008749993867240846,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "guest-export-other-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0004169996827840805,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "guest-export-other-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0005830006557516754,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "member-preview-other-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0005410038284026086,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "member-export-other-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.0004169996827840805,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "admin-export-own-public",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "duration_ms": 0.00037500285543501377,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "admin-export-own-private",
+        "schema_version": "1.0",
+        "side": "base",
+        "status": "ok"
+      }
+    ],
+    "head": [
+      {
+        "allowed": true,
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "duration_ms": 0.0020000006770715117,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "guest-preview-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "duration_ms": 0.0017080019460991025,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "guest-preview-other-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "duration_ms": 0.001291002263315022,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "guest-export-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "duration_ms": 0.0008329952834174037,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "guest-export-own-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "duration_ms": 0.0006249974831007421,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "guest-export-other-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "duration_ms": 0.0004169996827840805,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "guest-export-other-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "duration_ms": 0.0004579997039400041,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "member-preview-other-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": false,
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "duration_ms": 0.0004579997039400041,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "member-export-other-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "duration_ms": 0.0004579997039400041,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "admin-export-own-public",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      },
+      {
+        "allowed": true,
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "duration_ms": 0.00037500285543501377,
+        "error_kind": null,
+        "error_message": null,
+        "execution_backend": "local",
+        "run_id": "9ca9942acf484f76a34feead9e706570",
+        "scenario_id": "admin-export-own-private",
+        "schema_version": "1.0",
+        "side": "head",
+        "status": "ok"
+      }
+    ]
+  },
+  "request": {
+    "base_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+    "comparison_id": null,
+    "execution_scope": "selected_applicable_scenarios",
+    "head_sha": "f80531734b57dd9c883e6111146238da68625224",
+    "repo_path": ".",
+    "requirements": [
+      {
+        "applies_to": [
+          "base",
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.658296+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/export.py:export_document"
+        ],
+        "expected_allowed": false,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R1",
+        "revision": 2,
+        "scenario_filter": {
+          "operation": "export",
+          "role": "guest"
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R1@1",
+        "text": "Any guest export is denied, regardless of workspace or visibility."
+      },
+      {
+        "applies_to": [
+          "base",
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.658810+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/preview.py:preview_document",
+          "pact/demo/workspace_app/export.py:export_document"
+        ],
+        "expected_allowed": false,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R2",
+        "revision": 2,
+        "scenario_filter": {
+          "role": "member",
+          "same_workspace": false,
+          "visibility": "private"
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R2@1",
+        "text": "Members cannot access another workspace's private resources."
+      },
+      {
+        "applies_to": [
+          "base",
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.659474+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/export.py:export_document"
+        ],
+        "expected_allowed": true,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R3",
+        "revision": 2,
+        "scenario_filter": {
+          "operation": "export",
+          "role": "admin",
+          "same_workspace": true
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R3@1",
+        "text": "Admins can export resources in their own workspace."
+      },
+      {
+        "applies_to": [
+          "head"
+        ],
+        "assertion_template": "permission_allowed_equals",
+        "confirmed_at": "2026-09-06T05:21:40.659823+00:00",
+        "confirmed_by": "Shaurya",
+        "entrypoints": [
+          "pact/demo/workspace_app/preview.py:preview_document"
+        ],
+        "expected_allowed": true,
+        "policy_changed": false,
+        "proposal_mode": "agent_prepared",
+        "requirement_id": "R4",
+        "revision": 2,
+        "scenario_filter": {
+          "operation": "preview",
+          "role": "guest",
+          "visibility": "public"
+        },
+        "schema_version": "1.0",
+        "source_refs": [],
+        "status": "confirmed_active",
+        "supersedes": "R4@1",
+        "text": "Guests can preview public content in either workspace."
+      }
+    ],
+    "runner": "local",
+    "schema_version": "1.0",
+    "scope_prefix": "pact/demo/workspace_app",
+    "strategy": "graph"
+  },
+  "requirement_set_hash": "e9ae4d5c5fd6a21ec094a85683dbda1eeca10e2efd750822fecc00dc7f53ec4f",
+  "run_id": "9ca9942acf484f76a34feead9e706570",
+  "scenario_set_hash": "328e881f1bc472b7d38731e637cb4184d94a4fcd0ed692c5534e9e03c1aeca51",
+  "schema_version": "1.0",
+  "selection": {
+    "diagnostics": [
+      {
+        "code": "runtime_lookup",
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "detail": "getattr may resolve or modify relationships at runtime",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 6,
+        "origin": "source_precaution",
+        "side": "base"
+      },
+      {
+        "code": "indirect_call",
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "detail": "Call through check requires source/test verification",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 7,
+        "origin": "source_precaution",
+        "side": "base"
+      },
+      {
+        "code": "runtime_lookup",
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "detail": "getattr may resolve or modify relationships at runtime",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 6,
+        "origin": "source_precaution",
+        "side": "head"
+      },
+      {
+        "code": "indirect_call",
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "detail": "Call through check requires source/test verification",
+        "file_path": "pact/demo/workspace_app/export.py",
+        "line": 7,
+        "origin": "source_precaution",
+        "side": "head"
+      }
+    ],
+    "evidence_schema_version": "1.0",
+    "fallback": {
+      "added_requirement_ids": [
+        "R1@2",
+        "R3@2"
+      ],
+      "mode": "all_registered",
+      "scope": "confirmed registered assertions only; not complete program coverage"
+    },
+    "not_selected_ids": [],
+    "partial_analysis": true,
+    "path_ids": [
+      "00328fc10c0165515f6c",
+      "cdefdfecd4318f874421",
+      "c59a73879f237ae75fa1"
+    ],
+    "paths": [
+      {
+        "changed_symbol": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+        "commit_sha": "32030ee415285802f847499eef8ae12c6e677a22",
+        "edges": [
+          {
+            "confidence": 0.86,
+            "evidence": [
+              {
+                "detail": "can_access",
+                "end_line": 5,
+                "file_path": "pact/demo/workspace_app/preview.py",
+                "kind": "call_site",
+                "start_line": 4
+              }
+            ],
+            "from_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+            "reason": "direct call expression resolved through import path",
+            "record_type": "relation",
+            "relation_scope": "module",
+            "resolution": "import_resolved",
+            "target_kind": "symbol",
+            "to_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+            "type": "CALLS",
+            "warning_codes": []
+          }
+        ],
+        "entrypoint": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+        "evidence_quality": "confirmed_structural",
+        "path_id": "00328fc10c0165515f6c",
+        "requirement_ref": "R2@2",
+        "runtime_reachability": "requires_verification",
+        "side": "base",
+        "status": "structural_path",
+        "symbols": [
+          {
+            "body_hash": "eba390847868dbc6",
+            "end_line": 5,
+            "file_path": "pact/demo/workspace_app/permissions.py",
+            "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+            "kind": "function",
+            "language": "Python",
+            "name": "can_access",
+            "qualified_name": "can_access",
+            "record_type": "symbol",
+            "signature": "def can_access(request)",
+            "stable_id_version": "compound-v1",
+            "start_line": 1
+          },
+          {
+            "body_hash": "2d834f5479bca3bb",
+            "end_line": 5,
+            "file_path": "pact/demo/workspace_app/preview.py",
+            "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+            "kind": "function",
+            "language": "Python",
+            "name": "preview_document",
+            "qualified_name": "preview_document",
+            "record_type": "symbol",
+            "signature": "def preview_document(request)",
+            "stable_id_version": "compound-v1",
+            "start_line": 4
+          }
+        ]
+      },
+      {
+        "changed_symbol": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "edges": [
+          {
+            "confidence": 0.86,
+            "evidence": [
+              {
+                "detail": "can_access",
+                "end_line": 5,
+                "file_path": "pact/demo/workspace_app/preview.py",
+                "kind": "call_site",
+                "start_line": 4
+              }
+            ],
+            "from_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+            "reason": "direct call expression resolved through import path",
+            "record_type": "relation",
+            "relation_scope": "module",
+            "resolution": "import_resolved",
+            "target_kind": "symbol",
+            "to_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+            "type": "CALLS",
+            "warning_codes": []
+          }
+        ],
+        "entrypoint": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+        "evidence_quality": "confirmed_structural",
+        "path_id": "cdefdfecd4318f874421",
+        "requirement_ref": "R2@2",
+        "runtime_reachability": "requires_verification",
+        "side": "head",
+        "status": "structural_path",
+        "symbols": [
+          {
+            "body_hash": "04bbcf751fedef67",
+            "end_line": 8,
+            "file_path": "pact/demo/workspace_app/permissions.py",
+            "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+            "kind": "function",
+            "language": "Python",
+            "name": "can_access",
+            "qualified_name": "can_access",
+            "record_type": "symbol",
+            "signature": "def can_access(request)",
+            "stable_id_version": "compound-v1",
+            "start_line": 1
+          },
+          {
+            "body_hash": "2d834f5479bca3bb",
+            "end_line": 5,
+            "file_path": "pact/demo/workspace_app/preview.py",
+            "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+            "kind": "function",
+            "language": "Python",
+            "name": "preview_document",
+            "qualified_name": "preview_document",
+            "record_type": "symbol",
+            "signature": "def preview_document(request)",
+            "stable_id_version": "compound-v1",
+            "start_line": 4
+          }
+        ]
+      },
+      {
+        "changed_symbol": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+        "commit_sha": "f80531734b57dd9c883e6111146238da68625224",
+        "edges": [
+          {
+            "confidence": 0.86,
+            "evidence": [
+              {
+                "detail": "can_access",
+                "end_line": 5,
+                "file_path": "pact/demo/workspace_app/preview.py",
+                "kind": "call_site",
+                "start_line": 4
+              }
+            ],
+            "from_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+            "reason": "direct call expression resolved through import path",
+            "record_type": "relation",
+            "relation_scope": "module",
+            "resolution": "import_resolved",
+            "target_kind": "symbol",
+            "to_id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+            "type": "CALLS",
+            "warning_codes": []
+          }
+        ],
+        "entrypoint": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+        "evidence_quality": "confirmed_structural",
+        "path_id": "c59a73879f237ae75fa1",
+        "requirement_ref": "R4@2",
+        "runtime_reachability": "requires_verification",
+        "side": "head",
+        "status": "structural_path",
+        "symbols": [
+          {
+            "body_hash": "04bbcf751fedef67",
+            "end_line": 8,
+            "file_path": "pact/demo/workspace_app/permissions.py",
+            "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/permissions.py:function:can_access",
+            "kind": "function",
+            "language": "Python",
+            "name": "can_access",
+            "qualified_name": "can_access",
+            "record_type": "symbol",
+            "signature": "def can_access(request)",
+            "stable_id_version": "compound-v1",
+            "start_line": 1
+          },
+          {
+            "body_hash": "2d834f5479bca3bb",
+            "end_line": 5,
+            "file_path": "pact/demo/workspace_app/preview.py",
+            "id": "gh/Shaurya002800/entire-graph:Python:pact/demo/workspace_app/preview.py:function:preview_document",
+            "kind": "function",
+            "language": "Python",
+            "name": "preview_document",
+            "qualified_name": "preview_document",
+            "record_type": "symbol",
+            "signature": "def preview_document(request)",
+            "stable_id_version": "compound-v1",
+            "start_line": 4
+          }
+        ]
+      }
+    ],
+    "selected_before_fallback": [
+      "R2@2",
+      "R4@2"
+    ],
+    "selected_requirement_ids": [
+      "R1@2",
+      "R2@2",
+      "R3@2",
+      "R4@2"
+    ],
+    "selection_reasons": {
+      "R1@2": [
+        "Conservative fallback: run all registered checks because selection may be incomplete"
+      ],
+      "R2@2": [
+        "Resolved structural impact on base at 32030ee4",
+        "Resolved structural impact on head at f8053173",
+        "Conservative fallback: run all registered checks because selection may be incomplete"
+      ],
+      "R3@2": [
+        "Conservative fallback: run all registered checks because selection may be incomplete"
+      ],
+      "R4@2": [
+        "New or revised requirement needs verification",
+        "Resolved structural impact on head at f8053173",
+        "Conservative fallback: run all registered checks because selection may be incomplete"
+      ]
+    },
+    "snapshot_hashes": {
+      "base": "e059bd55f430fc21db47a115899e4cf52a8dcc3ebb9cae41a5f6ade425874644",
+      "head": "7bf30a573b2017f995ef682e9858c20798cbe4af92331dd47d58d4d540be3b66"
+    },
+    "traversal_limit": 8,
+    "unresolved_ids": [],
+    "verification": {
+      "analysis": "potentially_partial",
+      "next_steps": [
+        "Inspect the pinned source at diagnostic locations.",
+        "Replay the bundled registered checks and inspect their observed results.",
+        "Add approved checks for behavior outside the registered scenarios."
+      ],
+      "runtime_reachability": "requires_source_or_test_verification"
+    }
+  },
+  "source_gaps": [
+    "R1@2",
+    "R2@2",
+    "R3@2",
+    "R4@2"
+  ],
+  "timing_ms": {
+    "execution": 76.9617079931777,
+    "graph": 1076.9452499953331,
+    "total": 1246.4554169928306
+  },
+  "version": "0.2.0"
+}

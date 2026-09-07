@@ -1,0 +1,585 @@
+{
+  "format_version": 1,
+  "repo_root": "/Users/shaurya/Desktop/BTW/PACT-fork",
+  "commit": "a8dd2acb110f2fcb8f30774c79827a31d1ab807a",
+  "tree": "7a4bffa1ae145e044d67fede63644b9f465e3908",
+  "profile": "full",
+  "query": "analyse",
+  "file": "pact/src/btw_pact/graph_adapter.py",
+  "depth": 2,
+  "index_cache_hit": false,
+  "index_latency_ms": 27941,
+  "query_latency_ms": 8,
+  "total_latency_ms": 27950,
+  "focus_matches_total": 1,
+  "disambiguation_required": false,
+  "focus": {
+    "id": "gh/Shaurya002800/entire-graph:Python:pact/src/btw_pact/graph_adapter.py:function:analyse",
+    "name": "analyse",
+    "qualified_name": "analyse",
+    "kind": "function",
+    "file_path": "pact/src/btw_pact/graph_adapter.py",
+    "start_line": 47,
+    "end_line": 56,
+    "language": "Python"
+  },
+  "callers": {
+    "total": 8,
+    "direct": 1,
+    "transitive": 7,
+    "in": 1,
+    "entries": [
+      {
+        "endpoint": {
+          "id": "gh/Shaurya002800/entire-graph:Python:pact/src/btw_pact/review.py:function:review",
+          "name": "review",
+          "qualified_name": "review",
+          "kind": "function",
+          "file_path": "pact/src/btw_pact/review.py",
+          "start_line": 20,
+          "end_line": 100,
+          "language": "Python"
+        },
+        "relation": "CALLS",
+        "direction": "in",
+        "depth": 1,
+        "call_site": {
+          "file_path": "pact/src/btw_pact/review.py",
+          "line": 30
+        }
+      },
+      {
+        "endpoint": {
+          "id": "gh/Shaurya002800/entire-graph:Python:pact/src/btw_pact/review.py:function:recover",
+          "name": "recover",
+          "qualified_name": "recover",
+          "kind": "function",
+          "file_path": "pact/src/btw_pact/review.py",
+          "start_line": 103,
+          "end_line": 112,
+          "language": "Python"
+        },
+        "relation": "CALLS",
+        "direction": "in",
+        "depth": 2,
+        "via": "review",
+        "call_site": {
+          "file_path": "pact/src/btw_pact/review.py",
+          "line": 112
+        }
+      },
+      {
+        "endpoint": {
+          "id": "gh/Shaurya002800/entire-graph:Python:pact/src/btw_pact/review.py:function:benchmark",
+          "name": "benchmark",
+          "qualified_name": "benchmark",
+          "kind": "function",
+          "file_path": "pact/src/btw_pact/review.py",
+          "start_line": 115,
+          "end_line": 121,
+          "language": "Python"
+        },
+        "relation": "CALLS",
+        "direction": "in",
+        "depth": 2,
+        "via": "review",
+        "call_site": {
+          "file_path": "pact/src/btw_pact/review.py",
+          "line": 117,
+          "additional_sites": 1
+        }
+      },
+      {
+        "endpoint": {
+          "id": "gh/Shaurya002800/entire-graph:Python:pact/tests/test_incomplete_evidence.py:function:test_remote_identity_and_cardinality_are_enforced",
+          "name": "test_remote_identity_and_cardinality_are_enforced",
+          "qualified_name": "test_remote_identity_and_cardinality_are_enforced",
+          "kind": "function",
+          "file_path": "pact/tests/test_incomplete_evidence.py",
+          "start_line": 26,
+          "end_line": 37,
+          "language": "Python"
+        },
+        "relation": "CALLS",
+        "direction": "in",
+        "depth": 2,
+        "via": "review",
+        "call_site": {
+          "file_path": "pact/tests/test_incomplete_evidence.py",
+          "line": 36
+        }
+      },
+      {
+        "endpoint": {
+          "id": "gh/Shaurya002800/entire-graph:Python:pact/tests/test_policy_revisions.py:function:test_harmless_refactor_and_preexisting_violation",
+          "name": "test_harmless_refactor_and_preexisting_violation",
+          "qualified_name": "test_harmless_refactor_and_preexisting_violation",
+          "kind": "function",
+          "file_path": "pact/tests/test_policy_revisions.py",
+          "start_line": 19,
+          "end_line": 27,
+          "language": "Python"
+        },
+        "relation": "CALLS",
+        "direction": "in",
+        "depth": 2,
+        "via": "review",
+        "call_site": {
+          "file_path": "pact/tests/test_policy_revisions.py",
+          "line": 22,
+          "additional_sites": 1
+        }
+      },
+      {
+        "endpoint": {
+          "id": "gh/Shaurya002800/entire-graph:Python:pact/tests/test_policy_revisions.py:function:test_intentional_policy_revision_keeps_baseline_and_history",
+          "name": "test_intentional_policy_revision_keeps_baseline_and_history",
+          "qualified_name": "test_intentional_policy_revision_keeps_baseline_and_history",
+          "kind": "function",
+          "file_path": "pact/tests/test_policy_revisions.py",
+          "start_line": 30,
+          "end_line": 46,
+          "language": "Python"
+        },
+        "relation": "CALLS",
+        "direction": "in",
+        "depth": 2,
+        "via": "review",
+        "call_site": {
+          "file_path": "pact/tests/test_policy_revisions.py",
+          "line": 40
+        }
+      },
+      {
+        "endpoint": {
+          "id": "gh/Shaurya002800/entire-graph:Python:pact/tests/test_review_flow.py:function:test_real_graph_selects_unchanged_export_and_executes_versions",
+          "name": "test_real_graph_selects_unchanged_export_and_executes_versions",
+          "qualified_name": "test_real_graph_selects_unchanged_export_and_executes_versions",
+          "kind": "function",
+          "file_path": "pact/tests/test_review_flow.py",
+          "start_line": 22,
+          "end_line": 33,
+          "language": "Python"
+        },
+        "relation": "CALLS",
+        "direction": "in",
+        "depth": 2,
+        "via": "review",
+        "call_site": {
+          "file_path": "pact/tests/test_review_flow.py",
+          "line": 23
+        }
+      },
+      {
+        "endpoint": {
+          "id": "gh/Shaurya002800/entire-graph:Python:pact/tests/test_review_flow.py:function:test_changed_file_baseline_misses_old_export_rule",
+          "name": "test_changed_file_baseline_misses_old_export_rule",
+          "qualified_name": "test_changed_file_baseline_misses_old_export_rule",
+          "kind": "function",
+          "file_path": "pact/tests/test_review_flow.py",
+          "start_line": 36,
+          "end_line": 41,
+          "language": "Python"
+        },
+        "relation": "CALLS",
+        "direction": "in",
+        "depth": 2,
+        "via": "review",
+        "call_site": {
+          "file_path": "pact/tests/test_review_flow.py",
+          "line": 37
+        }
+      }
+    ]
+  },
+  "callees": {
+    "total": 3,
+    "out": 3,
+    "entries": [
+      {
+        "endpoint": {
+          "id": "external:symbol:json.loads",
+          "name": "loads",
+          "qualified_name": "json.loads",
+          "kind": "symbol",
+          "external": true
+        },
+        "relation": "CALLS",
+        "direction": "out",
+        "depth": 1
+      },
+      {
+        "endpoint": {
+          "id": "gh/Shaurya002800/entire-graph:Python:pact/src/btw_pact/graph_adapter.py:function:entire",
+          "name": "entire",
+          "qualified_name": "entire",
+          "kind": "function",
+          "file_path": "pact/src/btw_pact/graph_adapter.py",
+          "start_line": 11,
+          "end_line": 15,
+          "language": "Python"
+        },
+        "relation": "CALLS",
+        "direction": "out",
+        "depth": 1
+      },
+      {
+        "endpoint": {
+          "id": "gh/Shaurya002800/entire-graph:Python:pact/src/btw_pact/graph_adapter.py:function:snapshot",
+          "name": "snapshot",
+          "qualified_name": "snapshot",
+          "kind": "function",
+          "file_path": "pact/src/btw_pact/graph_adapter.py",
+          "start_line": 18,
+          "end_line": 44,
+          "language": "Python"
+        },
+        "relation": "CALLS",
+        "direction": "out",
+        "depth": 1
+      }
+    ]
+  },
+  "type_consumers": {
+    "total": 0,
+    "entries": []
+  },
+  "data_flows": {
+    "total": 1,
+    "out": 1,
+    "entries": [
+      {
+        "endpoint": {
+          "id": "gh/Shaurya002800/entire-graph:Python:pact/src/btw_pact/graph_adapter.py:function:snapshot",
+          "name": "snapshot",
+          "qualified_name": "snapshot",
+          "kind": "function",
+          "file_path": "pact/src/btw_pact/graph_adapter.py",
+          "start_line": 18,
+          "end_line": 44,
+          "language": "Python"
+        },
+        "relation": "DATA_FLOWS",
+        "direction": "out",
+        "depth": 1
+      }
+    ]
+  },
+  "co_changes": {
+    "total": 0,
+    "entries": []
+  },
+  "siblings": {
+    "total": 0,
+    "entries": []
+  },
+  "warnings": [
+    {
+      "code": "W_WORKTREE_SNAPSHOT",
+      "severity": "warning",
+      "effect_on_semantic_completeness": "snapshot records are read from the working tree because --worktree was requested"
+    }
+  ],
+  "partial_failures": [
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "pact/docs/evidence/graph-impact-recovery.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "pact/docs/evidence/graph-search-recovery.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "pact/docs/evidence/h1-databricks-report.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "pact/docs/evidence/h1-reproducer.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "pact/docs/evidence/h2-databricks-report.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "pact/docs/evidence/h2-reproducer.json",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    },
+    {
+      "code": "E_MINIFIED",
+      "severity": "warning",
+      "file_path": "pact/src/btw_pact/static/app.css",
+      "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+      "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+    }
+  ],
+  "stats": {
+    "files": 677,
+    "parsed_files": 670,
+    "symbols": 11729,
+    "relations": 57902,
+    "partial_failures": 7,
+    "completeness_level": "ok"
+  },
+  "completeness": {
+    "languages": {
+      "Bash": {
+        "files": 7,
+        "symbols": 36
+      },
+      "C": {
+        "files": 5,
+        "symbols": 57
+      },
+      "C#": {
+        "files": 4,
+        "symbols": 20
+      },
+      "C++": {
+        "files": 26,
+        "symbols": 427
+      },
+      "CSS": {
+        "files": 2,
+        "symbols": 2
+      },
+      "CUE": {
+        "files": 1,
+        "symbols": 9
+      },
+      "Clojure": {
+        "files": 1,
+        "symbols": 3
+      },
+      "ClojureScript": {
+        "files": 1,
+        "symbols": 3
+      },
+      "Dart": {
+        "files": 1,
+        "symbols": 3
+      },
+      "Dockerfile": {
+        "files": 1,
+        "symbols": 2
+      },
+      "Elixir": {
+        "files": 1,
+        "symbols": 3
+      },
+      "Erlang": {
+        "files": 1,
+        "symbols": 4
+      },
+      "F#": {
+        "files": 1,
+        "symbols": 4
+      },
+      "Git Ignore": {
+        "files": 3,
+        "symbols": 3
+      },
+      "Go": {
+        "files": 415,
+        "symbols": 9200
+      },
+      "Groovy": {
+        "files": 2,
+        "symbols": 8
+      },
+      "HCL": {
+        "files": 2,
+        "symbols": 7
+      },
+      "HTML": {
+        "files": 2,
+        "symbols": 24
+      },
+      "Haskell": {
+        "files": 1,
+        "symbols": 3
+      },
+      "JSON": {
+        "files": 28,
+        "symbols": 325
+      },
+      "Java": {
+        "files": 4,
+        "symbols": 20
+      },
+      "JavaScript": {
+        "files": 2,
+        "symbols": 16
+      },
+      "Julia": {
+        "files": 2,
+        "symbols": 6
+      },
+      "Kotlin": {
+        "files": 2,
+        "symbols": 8
+      },
+      "Kustomize": {
+        "files": 1,
+        "symbols": 4
+      },
+      "Lua": {
+        "files": 1,
+        "symbols": 3
+      },
+      "Make": {
+        "files": 1,
+        "symbols": 2
+      },
+      "Markdown": {
+        "files": 51,
+        "symbols": 905
+      },
+      "OCaml": {
+        "files": 1,
+        "symbols": 5
+      },
+      "Objective-C": {
+        "files": 2,
+        "symbols": 6
+      },
+      "PHP": {
+        "files": 3,
+        "symbols": 13
+      },
+      "Patch": {
+        "files": 6,
+        "symbols": 6
+      },
+      "Perl": {
+        "files": 1,
+        "symbols": 5
+      },
+      "Protocol Buffers": {
+        "files": 2,
+        "symbols": 8
+      },
+      "Python": {
+        "files": 54,
+        "symbols": 395
+      },
+      "R": {
+        "files": 2,
+        "symbols": 5
+      },
+      "Ruby": {
+        "files": 2,
+        "symbols": 8
+      },
+      "Rust": {
+        "files": 3,
+        "symbols": 17
+      },
+      "SQL": {
+        "files": 1,
+        "symbols": 4
+      },
+      "Scala": {
+        "files": 2,
+        "symbols": 8
+      },
+      "Svelte": {
+        "files": 1,
+        "symbols": 1
+      },
+      "Swift": {
+        "files": 2,
+        "symbols": 8
+      },
+      "TOML": {
+        "files": 5,
+        "symbols": 44
+      },
+      "TypeScript": {
+        "files": 9,
+        "symbols": 36
+      },
+      "Vue": {
+        "files": 1,
+        "symbols": 3
+      },
+      "XML": {
+        "files": 1,
+        "symbols": 2
+      },
+      "YAML": {
+        "files": 7,
+        "symbols": 39
+      },
+      "Zig": {
+        "files": 2,
+        "symbols": 7
+      },
+      "Zsh": {
+        "files": 1,
+        "symbols": 2
+      }
+    },
+    "relations": {
+      "ACCESSES": 55,
+      "ASYNC_CALLS": 8,
+      "CALLS": 22883,
+      "CONFIGURES": 423,
+      "CONSTRUCTS": 91,
+      "CONTAINS": 3035,
+      "DATA_FLOWS": 5986,
+      "DEFINES": 11729,
+      "EMITS": 3,
+      "EXTENDS": 28,
+      "FILE_CHANGES_WITH": 128,
+      "HANDLES_GRAPHQL": 2,
+      "HANDLES_GRPC": 2,
+      "HANDLES_ROUTE": 76,
+      "HANDLES_TOOL": 17,
+      "HANDLES_TRPC": 1,
+      "HTTP_CALLS": 71,
+      "IMPLEMENTS": 7,
+      "IMPORTS": 2468,
+      "INHERITS": 28,
+      "LISTENS_ON": 2,
+      "OVERRIDES": 10,
+      "PARAM_TYPE": 1512,
+      "READS_FIELD": 1592,
+      "RESOURCE_DEPENDS_ON": 8,
+      "RETURNS_TYPE": 998,
+      "SIMILAR_TO": 3480,
+      "TESTS": 9,
+      "USES_TYPE": 2870,
+      "WRITES_FIELD": 380
+    }
+  },
+  "completeness_scope": {
+    "language": "Python",
+    "language_files": 54,
+    "other_language_failures": 7,
+    "other_failure_languages": [
+      "JSON 6",
+      "CSS 1"
+    ],
+    "worktree_snapshot": true,
+    "level": "ok"
+  }
+}
