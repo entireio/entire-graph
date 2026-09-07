@@ -35,8 +35,9 @@ const (
 	extractionCorpusOutputFormatEnv = "ENTIRE_GRAPH_EXTRACTION_CORPUS_OUTPUT_FORMAT"
 	// Phase breadcrumbs are opt-in diagnostic I/O to the already captured
 	// process stderr stream. They are never part of the observation protocol.
-	extractionCorpusPhaseBreadcrumbsEnv    = "ENTIRE_GRAPH_EXTRACTION_CORPUS_PHASE_BREADCRUMBS"
-	extractionCorpusRelationsCPUProfileEnv = "ENTIRE_GRAPH_EXTRACTION_CORPUS_RELATIONS_CPU_PROFILE"
+	extractionCorpusPhaseBreadcrumbsEnv              = "ENTIRE_GRAPH_EXTRACTION_CORPUS_PHASE_BREADCRUMBS"
+	extractionCorpusRelationsCPUProfileEnv           = "ENTIRE_GRAPH_EXTRACTION_CORPUS_RELATIONS_CPU_PROFILE"
+	extractionCorpusRelationsCPUProfileStartAfterEnv = "ENTIRE_GRAPH_EXTRACTION_CORPUS_RELATIONS_CPU_PROFILE_START_AFTER_NS"
 
 	// These aliases make the harness convenient to invoke from a coordinator
 	// that already uses the shorter P1 names. The long names above are the
