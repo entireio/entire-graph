@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "230b70c5db5a",
+  "strategy": "manual-commit",
+  "branch": "fix/search-heuristics-findings",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/23/0b70c5db5a/0/metadata.json",
+      "transcript": "/23/0b70c5db5a/0/full.jsonl",
+      "compact_transcript": "/23/0b70c5db5a/0/transcript.jsonl",
+      "content_hash": "/23/0b70c5db5a/0/content_hash.txt",
+      "prompt": "/23/0b70c5db5a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7350,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 813952,
+    "output_tokens": 1223,
+    "api_call_count": 6
+  }
+}
