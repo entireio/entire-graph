@@ -1,0 +1,52 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "b6944ad7f6ba",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-07T10:25:11.71868Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/sem/extraction_record.go",
+    "internal/sem/parser.go",
+    "internal/sem/parser_go_new_expression_test.go",
+    "internal/sem/parser_yaml_regression_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "187f465bd6ad",
+  "checkpoint_transcript_start": 12297,
+  "transcript_lines_at_start": 12297,
+  "compact_transcript_start": 1559,
+  "token_usage": {
+    "input_tokens": 291078,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 31634560,
+    "output_tokens": 47759,
+    "api_call_count": 295
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-07T10:25:09.642171Z",
+    "agent_lines": 682,
+    "agent_removed": 46,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 682,
+    "total_lines_changed": 728,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
