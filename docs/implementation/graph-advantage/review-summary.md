@@ -7,13 +7,25 @@ labelled by their source checkpoint and are not current-head certification.
 
 ## Source and verification boundary
 
-The latest completed immutable full check is `8c8b075d`: serialized
-`mise run check` exited 0 in 1265.559 seconds at exact source
-`8c8b075d95503b931c7e9fa3bf2838e22c0f4be1`, with unchanged HEAD, clean
+The latest completed immutable full check is `90ac3e16`: serialized
+`mise run check`, with `GIT_CONFIG_GLOBAL=/dev/null` and
+`GIT_CONFIG_SYSTEM=/dev/null`, exited 0 in 1577.584 seconds at exact source
+`90ac3e16b96c34ab219ecd2a90eca4600fd0c586`, with unchanged HEAD, clean
 before/after status and byte-equal tracked-source manifests. It performed no
-corpus measurement or VM work; evidence is retained under
-`evidence/check-8c8b075d/`. The earlier `1f20f694` pass remains historical
-evidence. Focused YAML/ABI checks for the
+product or corpus evaluation; evidence is retained under
+`evidence/check-90ac3e16-retry-1/`. The first launcher at the same source
+failed on `mise` trust before tests began and remains retained separately; it
+is not a test failure. The `8c8b075d` and `1f20f694` passes remain historical
+evidence. The profiler harness at exact source
+`90ac3e16b96c34ab219ecd2a90eca4600fd0c586` was reviewed and committed. Its
+pinned Linux correctness run passed 28 compiler tests, including 10 live
+tests, with zero compiler skips or failures; profiler normal passed 13 tests
+plus the expected Windows-only skip, profiler race passed 12 tests plus the
+same expected skip, and the evaluator build produced binary SHA-256
+`43c85dfa31358f4911d565e005ddc943cf58d8ddc09790f60714e152e241b86b`.
+Evidence was committed at `5db068ee` under
+`evidence/diagnostics-linux-90ac3e16/`; it contains no product or corpus
+invocation and supports no performance claim. Focused YAML/ABI checks for the
 post-fix `12574522` source passed, including the seven-test ABI check reported
 at 1.600s and 2.983s, and the pinned Linux compiler/evaluator check
 and evaluator build passed with 28 top-level tests, including 10 live tests,
@@ -53,12 +65,13 @@ bound, and no such approval is recorded.
 
 The retained P1 query evidence at `1c0b8e24` covers three profile paths with
 exact semantic, warning, completeness and 11-record partial-output parity.
-The single bounded Kubernetes syntax-only diagnostic separately collected 194
+The bounded Kubernetes syntax-only diagnostic separately collected 194
 known partials and one warning. All 194 entries have been classified in the
 source-review packet, but that classification does not close parser defects,
 verify every current file, or adopt proposed ADR0049 reviewed-partial
-admission. That one invocation remains the only resumed corpus diagnostic;
-zero stability batches have run. The first full-profile OFF dispatch attempted
+admission. The resumed sequence has consumed two controlled product
+invocations: that completed syntax-only diagnostic and the full-profile r2
+timeout described below. Zero stability batches have run. The first full-profile OFF dispatch attempted
 transport once but failed before product startup because the packaged collector
 still contained placeholder constants (`consumed=0`, `reserved=1`); it is
 retained at `evidence/diagnostic-dispatch-12574522/` with archive hash
@@ -69,7 +82,7 @@ process exit `-9` and no observation or diagnostics; its archive hash is
 `evidence/diagnostic-dispatch-12574522-r2/`. Neither is a stability batch or
 performance result, neither was retried, and the r2 relation progress count
 of 512 is explicitly non-final. A new collector/package review remains
-pending.
+pending, the timeout remains unresolved, and no new corpus result exists.
 
 The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
 6 timeouts. It is therefore collected but incomplete. The campaign remains
@@ -114,6 +127,10 @@ that freeze. Any bounded sample must continue using the cheaper-worker routing
 policy, the shared 100-invocation cap, durable duplicate/retry prevention and
 first-issue stop. Three clean representative batches are a checkpoint for
 stability only, not a release gate.
+
+The immediate product step is one counted diagnostic only after its gate
+review. It is not a benchmark or stability batch, and it does not authorize a
+full campaign.
 
 P2 and P3 still require independent adjudication of required, allowed and
 forbidden targets with explicit partial/unavailable coverage. P4 requires a
