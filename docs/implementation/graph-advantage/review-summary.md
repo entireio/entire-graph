@@ -58,11 +58,13 @@ known partials and one warning. All 194 entries have been classified in the
 source-review packet, but that classification does not close parser defects,
 verify every current file, or adopt proposed ADR0049 reviewed-partial
 admission. That one invocation remains the only resumed corpus diagnostic;
-zero stability batches have run. The post-fix full-profile OFF diagnostic
-package and its gate are being populated at
-`evidence/diagnostic-dispatch-12574522/`, with exact source, binary, build,
-batch and control hashes, but it has not executed. The completed diagnostic is not a stability batch
-or performance result.
+zero stability batches have run. A later full-profile OFF dispatch attempted
+transport once but failed before product startup because the packaged collector
+still contained placeholder constants (`consumed=0`, `reserved=1`); it is
+retained at `evidence/diagnostic-dispatch-12574522/` with archive hash
+`ed3201385eed9691eb4e21cecd826ad6354626f5e98c1c0dc936853d568b044c`. It is
+not a product observation, stability batch or performance result, and was not
+retried. A new collector package is pending review.
 
 The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
 6 timeouts. It is therefore collected but incomplete. The campaign remains
