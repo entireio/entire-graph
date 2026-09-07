@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -278,5 +279,40 @@ func TestExplainTruncatesAnOverLongLineRatherThanJoiningIt(t *testing.T) {
 	}
 	if candidates[0].File != "c.go" {
 		t.Fatalf("Gamma resolved with file %q, want c.go: the long line's bytes leaked into it", candidates[0].File)
+	}
+}
+
+func TestExplainPythonTracebackFileContext(t *testing.T) {
+	t.Parallel()
+	build := `Traceback (most recent call last):
+  File "entry.py", line 2, in <module>
+    run()
+  File "internal/api/handler.py", line 3, in run
+    Config()
+NameError: name 'Config' is not defined
+NameError: name 'Unrelated' is not defined
+Traceback (most recent call last):
+  File "C:\project with spaces\worker.py", line 8, in run
+    obj.reset()
+AttributeError: 'Worker' object has no attribute 'reset'
+./other.go:4: undefined: Other
+`
+	got, scanned, err := explainCandidates(strings.NewReader(build), 8)
+	want := []explainCandidate{
+		{Name: "Config", File: "internal/api/handler.py"},
+		{Name: "Unrelated"},
+		{Name: "reset", File: `C:\project with spaces\worker.py`, Owner: "Worker"},
+		{Name: "Other", File: "other.go"},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) || scanned != len(want) {
+		t.Fatalf("candidates = %+v, scanned = %d, err = %v; want %+v", got, scanned, err, want)
+	}
+	snapshot := sem.ProviderSnapshot{Symbols: []sem.SymbolRecord{
+		{ID: "store", Name: "Config", Kind: "class", Signature: "class Config", FilePath: "internal/store/config.py", StartLine: 1, EndLine: 400},
+		{ID: "api", Name: "Config", Kind: "class", Signature: "class Config", FilePath: "internal/api/config.py", StartLine: 1, EndLine: 10},
+	}}
+	response := buildExplainResponse(snapshot, got[:1], 1)
+	if len(response.Symbols) != 1 || response.Symbols[0].FilePath != "internal/api/config.py" {
+		t.Fatalf("resolved symbols = %+v, want the traceback's package", response.Symbols)
 	}
 }

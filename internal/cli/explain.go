@@ -122,9 +122,14 @@ var explainLocationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`-->\s+([A-Za-z0-9_./\\+-]+\.[A-Za-z0-9_+]+):\d+`),
 	// TypeScript: "src/a.ts(4,7): error TS2339: ..."
 	regexp.MustCompile(`([A-Za-z0-9_./\\+-]+\.[A-Za-z0-9_+]+)\((\d+),\d+\):`),
-	// Go, Java, C/C++, Python tracebacks: "./x.go:12:2:", "Foo.java:8:", "file \"a/b.py\", line 3"
+	// Go, Java, C/C++: "./x.go:12:2:", "Foo.java:8:"
 	regexp.MustCompile(`(?:^|[\s"(\[])(?:\./)?([A-Za-z0-9_./\\+-]+\.[A-Za-z0-9_+]+):\d+`),
 }
+
+// Python puts the location on a separate frame line before the exception. Keep
+// only the innermost frame until its exception, including quoted paths with spaces.
+var explainPythonFramePattern = regexp.MustCompile(`^\s*File "([^"\r\n]+)", line \d+(?:,|$)`)
+var explainPythonErrorPattern = regexp.MustCompile(`^(?:[A-Za-z_][A-Za-z0-9_]*\.)*(?:NameError|AttributeError):`)
 
 // explainOwnerPatterns pull the TYPE an error attributes a member to. When the build says the method
 // belongs to `*Parser`, a declaration whose container is `Parser` is not a better guess than the
@@ -381,10 +386,23 @@ func explainCandidates(input io.Reader, limit int) ([]explainCandidate, int, err
 	scanned := 0
 	reader := bufio.NewReaderSize(input, explainReadBufferBytes)
 	buffer := make([]byte, 0, explainReadBufferBytes)
+	var pythonFile string
 	for {
 		var readErr error
 		buffer, readErr = explainReadLine(buffer[:0], reader, explainMaxLineBytes)
 		line := string(buffer)
+		if match := explainPythonFramePattern.FindStringSubmatch(line); match != nil {
+			pythonFile = match[1]
+		}
+		var tracebackFile string
+		if explainPythonErrorPattern.MatchString(line) {
+			tracebackFile = pythonFile
+		}
+		// Exception summaries and subsequent unindented output terminate the
+		// frame context. Source/caret lines are indented and retain it.
+		if line == "" || (line[0] != ' ' && line[0] != '\t') {
+			pythonFile = ""
+		}
 		var file, owner string
 		context := false
 		for _, pattern := range explainErrorPatterns {
@@ -415,6 +433,9 @@ func explainCandidates(input io.Reader, limit int) ([]explainCandidate, int, err
 					// Read once per line, not once per match: every name on one error line shares
 					// that line's file and type context.
 					file, owner, context = explainFirstMatch(explainLocationPatterns, line), explainFirstMatch(explainOwnerPatterns, line), true
+					if file == "" {
+						file = tracebackFile
+					}
 				}
 				candidates = append(candidates, explainCandidate{Name: name, File: file, Owner: owner})
 			}
