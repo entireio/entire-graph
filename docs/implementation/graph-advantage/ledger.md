@@ -66,10 +66,17 @@ The three retained query profile paths are verified at `1c0b8e24`: syntax-only, 
 The P1 campaign remains paused. Baseline counts remain 108 requests (69
 complete, 33 partial, 6 timeouts); this is a collected but incomplete baseline,
 not a completed release baseline. Campaign counts remain 116 observed requests
-plus explicit unrun accounting. The resumed sequence has consumed one
-controlled diagnostic product invocation, recorded separately from campaign
-and stability-batch counts; the prepared `12574522` package has not executed.
-Its collector completed with 194 known partials
+plus explicit unrun accounting. The resumed sequence has consumed two
+controlled diagnostic product invocations, recorded separately from campaign
+and stability-batch counts: the earlier completed syntax-only snapshot and one
+full-profile timeout at `diagnostic-dispatch-12574522-r2` (120-second bound,
+process exit `-9`, collector exit `1`, no observation or diagnostics). The
+earlier pre-product collector failure remains a separate transport attempt
+with zero consumed product invocations. The r2 input identities matched and
+the VM was deallocated; its first recorded relations progress event reported
+512 relations after 30,866 files and 418,711 symbols, not a final relation
+total. Its raw archive and compact failure manifest are retained. No retry
+was made. The earlier completed diagnostic's collector completed with 194 known partials
 and one warning. The lossless source-review packet has classified all 194
 entries, but that classification does not close parser issues, verify every
 current file, or adopt proposed ADR0049 reviewed-partial admission. No
