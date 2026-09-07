@@ -1,0 +1,21 @@
+{
+  "binary_sha256": "a2f98ef4154ce087068d21368fb7d21e934c5c8327252863746c5a20356bea8f",
+  "build_manifest_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/manifest.json",
+  "build_manifest_sha256": "adb964de96fbcb5ac1746a0228fa7db7319149a517e944a0c1ba64fe1f6d34e6",
+  "members": {
+    "batch-manifest.json": "bbd58d5f49bf3c73681e5fffaaa62076fafd47fbeaf7849af7fde6dd817de3eb",
+    "docs/implementation/graph-advantage/corpus/corpus-manifest.json": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+    "docs/implementation/graph-advantage/corpus/p1_scenario.py": "6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/manifest.json": "adb964de96fbcb5ac1746a0228fa7db7319149a517e944a0c1ba64fe1f6d34e6",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/raw/binary.sha256": "9bb70628ac95c94eaa65e5d5963db6168a80419d9ceb3372c6088b250b375607",
+    "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/raw/check.txt": "6b7dcb0a699588a3a5852f254527cdb7a01109a262db0a2e7a908cb2a610c51d",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/batch_budget.py": "23f7d063c75fb3190da21b232145181dd7ac8ff5e30436d65de76eedc678df3a",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/campaign_gate.py": "8c07cdac2089a99aae7c338f65472885d3039f223080d60d57978ae08587cae6",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/full-diagnostics-collector/run_remote.py": "4afcc7b3b0ab09a23b9613ff8809d6cb8f7452f180739087139b33e9fa4a8e75",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/full-diagnostics-collector/verification.json": "1ffbb308b6ea833257521d440144cdb49b5c6ac7493cefeff24dd8b0fae7e762",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/full-diagnostics-collector/verification.log": "2d12e94df21ead8b7159b4916131dcc163e6384ce2b77d7b3aa4ca0e087e6931"
+  },
+  "source_archive_sha256": "3bd0945a7fd4973f6e066393397602fb97d4ecd593201d9f10f42d2029dfb44c",
+  "source_commit": "1f20f694775c3d8fd616eee4b22d9b13c30ff0fe",
+  "version": 1
+}

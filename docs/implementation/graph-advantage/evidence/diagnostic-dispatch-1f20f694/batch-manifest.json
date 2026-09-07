@@ -1,0 +1,54 @@
+{
+  "batch_id": "p1-diag-1f20-k8s-snapshot-off-20260907-01",
+  "cap": 100,
+  "cells": [
+    {
+      "arms": [
+        false
+      ],
+      "cell_id": "6c0481018f843bee4a21b74616158391ae38ac2de2f8caf8bacd489f49a4bb45",
+      "preparatory_invocations": 0,
+      "profile": "syntax-only",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "diagnostic",
+      "trial": 0,
+      "verb": "snapshot",
+      "worker": 1
+    }
+  ],
+  "derived_invocations": 1,
+  "identity": {
+    "binary_sha256": "a2f98ef4154ce087068d21368fb7d21e934c5c8327252863746c5a20356bea8f",
+    "budget_sha256": "23f7d063c75fb3190da21b232145181dd7ac8ff5e30436d65de76eedc678df3a",
+    "build_manifest_sha256": "adb964de96fbcb5ac1746a0228fa7db7319149a517e944a0c1ba64fe1f6d34e6",
+    "gate_sha256": "8c07cdac2089a99aae7c338f65472885d3039f223080d60d57978ae08587cae6",
+    "input_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+    "runner_sha256": "4afcc7b3b0ab09a23b9613ff8809d6cb8f7452f180739087139b33e9fa4a8e75",
+    "scenario_sha256": "6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75"
+  },
+  "preparatory_invocations": 0,
+  "request_contract": {
+    "admission_eligible": false,
+    "arms": [
+      false
+    ],
+    "cache": "off",
+    "claim_root": "/opt/p1/batch-claims",
+    "no_comparison": true,
+    "no_on_arm": true,
+    "profile": "syntax-only",
+    "repo_path": "/opt/p1/corpus/kubernetes-kubernetes",
+    "repository": "kubernetes-kubernetes",
+    "scenario": "diagnostic",
+    "timeout_seconds": 120,
+    "trial": 0,
+    "verb": "snapshot",
+    "worker": 1
+  },
+  "scope": "bounded-diagnostic",
+  "total_attempts": 1,
+  "version": 1,
+  "workers": {
+    "1": 1
+  }
+}
