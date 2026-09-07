@@ -410,6 +410,11 @@ stub '{"sessions":1,"graph_calls":9,"exploration_calls":4,"exploration_returned_
 OUT=$(run s-metaonly "$T" "$REPO" NO_COLOR=1)
 assert_eq 'a meta-only session claims nothing' '[GRAPH] no graph calls yet · 4 explore' "$OUT"
 
+# One rule, no exceptions: with detail off the zero-calls line drops its exploration
+# count too, the same way the savings line drops everything after the figure.
+OUT=$(run s-meta-terse "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
+assert_eq 'a meta-only session is bare with detail off' '[GRAPH] no graph calls yet' "$OUT"
+
 # Locate verbs rank ahead of bulk/change verbs even when they were called less often.
 stub '{"sessions":1,"graph_calls":30,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"symbols","calls":15,"returned_bytes":1},{"name":"edges","calls":9,"returned_bytes":1},{"name":"search","calls":4,"returned_bytes":1},{"name":"impact","calls":2,"returned_bytes":1}],"estimated_savings_est_tokens":800,"estimated_savings_pct_of_session_tokens":1}'
 OUT=$(run s-order "$T" "$REPO" NO_COLOR=1)

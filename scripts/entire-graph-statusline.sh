@@ -229,7 +229,12 @@ render() {
 
 			if (work <= 0) {
 				out = label " " paint("no graph calls yet", "2")
-				if (explore > 0) out = out sep() paint(human(explore) " explore", "2")
+				# Same rule as the savings line below: context is opt-in. This path has no
+				# savings figure to stand alone, but "how much exploration happened instead"
+				# is still context, and gating it here keeps one rule rather than an
+				# exception nobody would predict from the name of the flag. (No apostrophes
+				# in here: the awk program is single-quoted.)
+				if (detail + 0 == 1 && explore > 0) out = out sep() paint(human(explore) " explore", "2")
 				print out
 				exit 0
 			}
