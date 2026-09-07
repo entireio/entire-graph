@@ -7078,6 +7078,18 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
+	var sharedCandidatesByShortName map[string][]SymbolRecord
+	sharedCandidates := func(shortName string) []SymbolRecord {
+		if candidates, ok := sharedCandidatesByShortName[shortName]; ok {
+			return candidates
+		}
+		candidates := sharedTypeCandidates(from, symbolsByShortName[shortName])
+		if sharedCandidatesByShortName == nil {
+			sharedCandidatesByShortName = map[string][]SymbolRecord{}
+		}
+		sharedCandidatesByShortName[shortName] = candidates
+		return candidates
+	}
 	if from.Language == "C#" {
 		// Multi-line verbatim (@"...") and raw ("""...""") string bodies pass
 		// through the generic stripper (which contains string masking to one
@@ -7235,7 +7247,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 		// the package's own file (perlSymbolFileMatchesType), which is how the
 		// fluent gate distinguishes a same-object chain from getter navigation.
 		hopResolvable := func(hop, pkgType string) bool {
-			for _, candidate := range sharedTypeCandidates(from, symbolsByShortName[hop]) {
+			for _, candidate := range sharedCandidates(hop) {
 				if candidate.Language != "Perl" {
 					continue
 				}
@@ -7491,7 +7503,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 	var relations []RelationRecord
 	methodResolved := map[string]bool{}
 	for _, call := range calls {
-		method, confidence, reason, resolution, scope, ok := receiverQualifiedMethodTarget(from, call, sharedTypeCandidates(from, symbolsByShortName[call.Method]), returnTypesBySymbolNameAndFile)
+		method, confidence, reason, resolution, scope, ok := receiverQualifiedMethodTarget(from, call, sharedCandidates(call.Method), returnTypesBySymbolNameAndFile)
 		if !ok {
 			continue
 		}
@@ -7539,7 +7551,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 			if typeName == "" {
 				continue
 			}
-			target, ok := perlCallableForType(typeName, call.Method, sharedTypeCandidates(from, symbolsByShortName[call.Method]))
+			target, ok := perlCallableForType(typeName, call.Method, sharedCandidates(call.Method))
 			if !ok || target.ID == from.ID {
 				continue
 			}
@@ -7601,13 +7613,13 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 					confidence = 0.75
 					reason = "method call resolved via property-chain-typed local receiver"
 				}
-				sym, ok := typeLikeNamedWithMethod(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath, call.Method, methodsByContainer, superContainerByID)
+				sym, ok := typeLikeNamedWithMethod(sharedCandidates(typeName), typeName, from.FilePath, call.Method, methodsByContainer, superContainerByID)
 				if !ok {
 					continue
 				}
 				targetID = sym.ID
 				receiverTypeKind = sym.Kind
-			} else if cls, ok := typeLikeNamedWithMethod(sharedTypeCandidates(from, symbolsByShortName[call.Receiver]), call.Receiver, from.FilePath, call.Method, methodsByContainer, superContainerByID); ok {
+			} else if cls, ok := typeLikeNamedWithMethod(sharedCandidates(call.Receiver), call.Receiver, from.FilePath, call.Method, methodsByContainer, superContainerByID); ok {
 				// ClassName.method(): the receiver is itself a type name, not a
 				// variable, so this is a static (class-qualified) call and the
 				// target is that class's own method.
@@ -7643,7 +7655,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 				// C# class-level member receiver: `Dependencies.Method(...)`
 				// where `Dependencies` is a typed property or field of the
 				// enclosing class (or a base class).
-				sym, ok := firstTypeLikeNamedPreferFile(sharedTypeCandidates(from, symbolsByShortName[typeName]), typeName, from.FilePath)
+				sym, ok := firstTypeLikeNamedPreferFile(sharedCandidates(typeName), typeName, from.FilePath)
 				if !ok {
 					continue
 				}
@@ -7671,7 +7683,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 			// last-declared accessor (getter or setter), so resolve the setter
 			// explicitly and prefer it — otherwise the edge lands on the getter
 			// about half the time (declaration-order dependent).
-			if setter, setterInherited, found := dartSetterAccessor(targetID, call.Method, sharedTypeCandidates(from, symbolsByShortName[call.Method]), superContainerByID); found {
+			if setter, setterInherited, found := dartSetterAccessor(targetID, call.Method, sharedCandidates(call.Method), superContainerByID); found {
 				method, inherited = setter, setterInherited
 			}
 		}
@@ -7690,7 +7702,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 			// exactly one method in the workspace carries the name, resolve to
 			// that sole implementation — the same unique-name stance as the Go
 			// interface fallback.
-			method, ok = uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
+			method, ok = uniqueMethodByShortName(sharedCandidates(call.Method))
 			if ok {
 				confidence = minFloat(confidence, 0.7)
 				reason = "protocol-typed receiver call resolved to the unique implementing method"
@@ -7783,7 +7795,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 				continue
 			}
 			unique := 0
-			for _, candidate := range sharedTypeCandidates(from, symbolsByShortName[call.Method]) {
+			for _, candidate := range sharedCandidates(call.Method) {
 				if candidate.Language == from.Language && candidate.Kind == "method" && candidate.FilePath == from.FilePath {
 					unique++
 				}
@@ -7829,7 +7841,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 		if _, external := importedReceiverVars[call.Receiver]; external {
 			continue
 		}
-		m, ok := uniqueMethodByShortName(sharedTypeCandidates(from, symbolsByShortName[call.Method]))
+		m, ok := uniqueMethodByShortName(sharedCandidates(call.Method))
 		if !ok || m.ID == from.ID {
 			continue
 		}

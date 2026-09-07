@@ -1019,8 +1019,63 @@ type returnFlowCall struct {
 	Direction    string
 }
 
+// returnFlowMatchFacts lazily retains the three exact regex result sets that
+// multiple return-flow scanners consume from one stripped symbol body. The
+// slices are invocation-local and read-only after construction.
+type returnFlowMatchFacts struct {
+	block               string
+	returnVars          [][]int
+	assignCalls         [][]int
+	callSites           [][]string
+	returnVarsLoaded    bool
+	assignCallsLoaded   bool
+	flowCallSitesLoaded bool
+}
+
+func newReturnFlowMatchFacts(block string) *returnFlowMatchFacts {
+	return &returnFlowMatchFacts{block: block}
+}
+
+func (f *returnFlowMatchFacts) returnVarMatches() [][]int {
+	if !f.returnVarsLoaded {
+		f.returnVars = returnVarRe.FindAllStringSubmatchIndex(f.block, -1)
+		f.returnVarsLoaded = true
+	}
+	return f.returnVars
+}
+
+func (f *returnFlowMatchFacts) assignCallMatches() [][]int {
+	if !f.assignCallsLoaded {
+		f.assignCalls = assignCallRe.FindAllStringSubmatchIndex(f.block, -1)
+		f.assignCallsLoaded = true
+	}
+	return f.assignCalls
+}
+
+func (f *returnFlowMatchFacts) flowCallSites() [][]string {
+	if !f.flowCallSitesLoaded {
+		f.callSites = flowCallSiteRe.FindAllStringSubmatch(f.block, -1)
+		f.flowCallSitesLoaded = true
+	}
+	return f.callSites
+}
+
+func eligibleReturnVarMatches(facts *returnFlowMatchFacts) [][]int {
+	matches := facts.returnVarMatches()
+	eligible := make([][]int, 0, len(matches))
+	for _, match := range matches {
+		if len(match) != 4 || followsReturnedVariable(facts.block, match[1]) {
+			continue
+		}
+		eligible = append(eligible, match)
+	}
+	return eligible
+}
+
 func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
 	stripped := body.stripped
+	matchFacts := newReturnFlowMatchFacts(stripped)
+	eligibleReturns := eligibleReturnVarMatches(matchFacts)
 	flows := map[string]returnFlowCall{}
 	for _, name := range returnFlowCallNames(body) {
 		flows[name+"\x00return_flow"] = returnFlowCall{
@@ -1037,11 +1092,11 @@ func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
 	for _, flow := range fallbackReturnFlows(stripped) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind] = flow
 	}
-	for _, flow := range expressionAssignedReturnFlows(stripped) {
+	for _, flow := range expressionAssignedReturnFlowsFromMatches(matchFacts, eligibleReturns) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	assigned := map[string]string{}
-	for _, match := range assignCallRe.FindAllStringSubmatchIndex(stripped, -1) {
+	for _, match := range matchFacts.assignCallMatches() {
 		if len(match) != 6 {
 			continue
 		}
@@ -1054,13 +1109,7 @@ func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
 			assigned[varName] = callee
 		}
 	}
-	for _, match := range returnVarRe.FindAllStringSubmatchIndex(stripped, -1) {
-		if len(match) != 4 {
-			continue
-		}
-		if followsReturnedVariable(stripped, match[1]) {
-			continue
-		}
+	for _, match := range eligibleReturns {
 		varName := strings.TrimPrefix(stripped[match[2]:match[3]], "$")
 		name := assigned[varName]
 		if name == "" {
@@ -1098,13 +1147,13 @@ func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
 	for _, flow := range branchAssignedReturnFlows(stripped) {
 		flows[flow.Name+"\x00assigned_return_flow"] = flow
 	}
-	for _, flow := range argumentForwardingFlows(stripped, params) {
+	for _, flow := range argumentForwardingFlowsFromFacts(matchFacts, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range parameterPropertyForwardingFlows(stripped, params) {
+	for _, flow := range parameterPropertyForwardingFlowsFromFacts(matchFacts, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range parameterPropertyAliasForwardingFlows(stripped, params) {
+	for _, flow := range parameterPropertyAliasForwardingFlowsFromFacts(matchFacts, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	// One alias map, read by the five scanners below. Each derived its own from
@@ -1115,22 +1164,22 @@ func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
 	if len(params) > 0 {
 		aliases = parameterAliasMap(stripped, params)
 	}
-	for _, flow := range aliasForwardingFlows(stripped, params, aliases) {
+	for _, flow := range aliasForwardingFlowsFromFacts(matchFacts, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range destructuredAliasForwardingFlows(stripped, params) {
+	for _, flow := range destructuredAliasForwardingFlowsFromFacts(matchFacts, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range objectFieldForwardingFlows(stripped, params, aliases) {
+	for _, flow := range objectFieldForwardingFlowsFromFacts(matchFacts, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range collectionElementForwardingFlows(stripped, params, aliases) {
+	for _, flow := range collectionElementForwardingFlowsFromFacts(matchFacts, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	for _, flow := range callbackElementForwardingFlows(stripped, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range directLiteralForwardingFlows(stripped, params, aliases) {
+	for _, flow := range directLiteralForwardingFlowsFromFacts(matchFacts, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	out := make([]returnFlowCall, 0, len(flows))
@@ -1240,24 +1289,22 @@ type assignmentFlowEvent struct {
 }
 
 func expressionAssignedReturnFlows(block string) []returnFlowCall {
-	// Assignment events can contribute only to a bare returned variable. Filter
-	// the matches in place before the six assignment scans; the retained indexes
-	// are the same ones the result loop consumed previously.
-	returnMatches := returnVarRe.FindAllStringSubmatchIndex(block, -1)
-	eligibleReturns := returnMatches[:0]
-	for _, match := range returnMatches {
-		if len(match) != 4 || followsReturnedVariable(block, match[1]) {
-			continue
-		}
-		eligibleReturns = append(eligibleReturns, match)
-	}
+	return expressionAssignedReturnFlowsFromFacts(newReturnFlowMatchFacts(block))
+}
+
+func expressionAssignedReturnFlowsFromFacts(facts *returnFlowMatchFacts) []returnFlowCall {
+	return expressionAssignedReturnFlowsFromMatches(facts, eligibleReturnVarMatches(facts))
+}
+
+func expressionAssignedReturnFlowsFromMatches(facts *returnFlowMatchFacts, eligibleReturns [][]int) []returnFlowCall {
 	if len(eligibleReturns) == 0 {
 		return nil
 	}
-	events := assignmentFlowEvents(block)
+	events := assignmentFlowEventsFromFacts(facts)
 	if len(events) == 0 {
 		return nil
 	}
+	block := facts.block
 	seen := map[string]bool{}
 	var flows []returnFlowCall
 	for _, match := range eligibleReturns {
@@ -1300,6 +1347,11 @@ func expressionAssignedReturnFlows(block string) []returnFlowCall {
 }
 
 func assignmentFlowEvents(block string) []assignmentFlowEvent {
+	return assignmentFlowEventsFromFacts(newReturnFlowMatchFacts(block))
+}
+
+func assignmentFlowEventsFromFacts(facts *returnFlowMatchFacts) []assignmentFlowEvent {
+	block := facts.block
 	var events []assignmentFlowEvent
 	addExpressionMatches := func(re *regexp.Regexp, reason, evidence string) {
 		for _, match := range re.FindAllStringSubmatchIndex(block, -1) {
@@ -1325,7 +1377,7 @@ func assignmentFlowEvents(block string) []assignmentFlowEvent {
 	addExpressionMatches(pythonIfAssignRe, "callee return value assigned through conditional expression and returned by caller", "conditional_assigned_return_flow")
 	addExpressionMatches(jsFallbackAssignRe, "callee return value assigned through fallback expression and returned by caller", "fallback_assigned_return_flow")
 	addExpressionMatches(pythonOrAssignRe, "callee return value assigned through fallback expression and returned by caller", "fallback_assigned_return_flow")
-	for _, match := range assignCallRe.FindAllStringSubmatchIndex(block, -1) {
+	for _, match := range facts.assignCallMatches() {
 		if len(match) != 6 {
 			continue
 		}
@@ -1451,18 +1503,22 @@ func branchCallAssignments(block, variable string) []string {
 	return sortedStringSet(seen)
 }
 
-// flowCallSiteRe matches one unnested call site and its argument text. Nine of
-// the forwarding-flow scanners below read the same shape out of the same
-// stripped body, so they share one pattern rather than each compiling it.
+// flowCallSiteRe matches one unnested call site and its argument text. Eight
+// forwarding-flow scanners read the same shape from the full stripped body;
+// callsWithArgument applies it separately to a callback substring.
 var flowCallSiteRe = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 
 func argumentForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+	return argumentForwardingFlowsFromFacts(newReturnFlowMatchFacts(block), params)
+}
+
+func argumentForwardingFlowsFromFacts(facts *returnFlowMatchFacts, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range facts.flowCallSites() {
 		if len(match) != 3 {
 			continue
 		}
@@ -1499,12 +1555,16 @@ func argumentForwardingFlows(block string, params map[string]bool) []returnFlowC
 }
 
 func parameterPropertyForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+	return parameterPropertyForwardingFlowsFromFacts(newReturnFlowMatchFacts(block), params)
+}
+
+func parameterPropertyForwardingFlowsFromFacts(facts *returnFlowMatchFacts, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range facts.flowCallSites() {
 		if len(match) != 3 {
 			continue
 		}
@@ -1570,9 +1630,14 @@ func forwardedParameterProperty(arg string, params map[string]bool) (string, str
 var parameterPropertyAliasForwardingFlowsAssignmentRe = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(\$?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:"[^"]*"|'[^']*'|[0-9]*)\s*\]))`)
 
 func parameterPropertyAliasForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+	return parameterPropertyAliasForwardingFlowsFromFacts(newReturnFlowMatchFacts(block), params)
+}
+
+func parameterPropertyAliasForwardingFlowsFromFacts(facts *returnFlowMatchFacts, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
+	block := facts.block
 	aliasToProperty := map[string]string{}
 	for _, match := range parameterPropertyAliasForwardingFlowsAssignmentRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
@@ -1590,7 +1655,7 @@ func parameterPropertyAliasForwardingFlows(block string, params map[string]bool)
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range facts.flowCallSites() {
 		if len(match) != 3 {
 			continue
 		}
@@ -1628,6 +1693,10 @@ func parameterPropertyAliasForwardingFlows(block string, params map[string]bool)
 }
 
 func aliasForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
+	return aliasForwardingFlowsFromFacts(newReturnFlowMatchFacts(block), params, aliases)
+}
+
+func aliasForwardingFlowsFromFacts(facts *returnFlowMatchFacts, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
@@ -1636,7 +1705,7 @@ func aliasForwardingFlows(block string, params map[string]bool, aliases map[stri
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range facts.flowCallSites() {
 		if len(match) != 3 {
 			continue
 		}
@@ -1674,9 +1743,14 @@ func aliasForwardingFlows(block string, params map[string]bool, aliases map[stri
 }
 
 func destructuredAliasForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+	return destructuredAliasForwardingFlowsFromFacts(newReturnFlowMatchFacts(block), params)
+}
+
+func destructuredAliasForwardingFlowsFromFacts(facts *returnFlowMatchFacts, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
+	block := facts.block
 	aliases := map[string]string{}
 	for _, match := range destructuredParamAliasRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
@@ -1698,7 +1772,7 @@ func destructuredAliasForwardingFlows(block string, params map[string]bool) []re
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range facts.flowCallSites() {
 		if len(match) != 3 {
 			continue
 		}
@@ -1755,9 +1829,14 @@ func destructuredObjectAliases(fields string) []string {
 }
 
 func objectFieldForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
+	return objectFieldForwardingFlowsFromFacts(newReturnFlowMatchFacts(block), params, aliases)
+}
+
+func objectFieldForwardingFlowsFromFacts(facts *returnFlowMatchFacts, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
+	block := facts.block
 	objectVars := localObjectVars(block)
 	fieldParamByObject := map[string]map[string]bool{}
 	for _, match := range objectFieldAssignRe.FindAllStringSubmatch(block, -1) {
@@ -1787,7 +1866,7 @@ func objectFieldForwardingFlows(block string, params map[string]bool, aliases ma
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range facts.flowCallSites() {
 		if len(match) != 3 {
 			continue
 		}
@@ -1867,9 +1946,14 @@ func objectLiteralParamNames(fields string, params map[string]bool, aliases map[
 }
 
 func collectionElementForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
+	return collectionElementForwardingFlowsFromFacts(newReturnFlowMatchFacts(block), params, aliases)
+}
+
+func collectionElementForwardingFlowsFromFacts(facts *returnFlowMatchFacts, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
+	block := facts.block
 	collectionVars := localCollectionVars(block)
 	paramByCollection := map[string]map[string]bool{}
 	for _, match := range collectionAddRe.FindAllStringSubmatch(block, -1) {
@@ -1913,7 +1997,7 @@ func collectionElementForwardingFlows(block string, params map[string]bool, alia
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range facts.flowCallSites() {
 		if len(match) != 3 {
 			continue
 		}
@@ -2059,12 +2143,16 @@ func callsWithArgument(block, argName string) []string {
 }
 
 func directLiteralForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
+	return directLiteralForwardingFlowsFromFacts(newReturnFlowMatchFacts(block), params, aliases)
+}
+
+func directLiteralForwardingFlowsFromFacts(facts *returnFlowMatchFacts, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range facts.flowCallSites() {
 		if len(match) != 3 {
 			continue
 		}
