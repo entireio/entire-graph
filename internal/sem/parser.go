@@ -380,6 +380,16 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		}
 		return nil, spec.language, ParseStatus{ParseError: true, Code: code, Detail: detail}
 	}
+	if spec.language == "Go" && root.HasError() {
+		retryTree, retryRoot, retryStatus := retryGoNewExpressionParse(ctx, parser, root, content)
+		if retryTree != nil {
+			defer retryTree.Close()
+		}
+		if retryStatus != nil {
+			return nil, spec.language, *retryStatus
+		}
+		root = retryRoot
+	}
 	if spec.language == "YAML" {
 		status := ParseStatus{}
 		if root.HasError() {
