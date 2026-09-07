@@ -14,7 +14,7 @@ dispatch, first-issue stop, and approval-boundary controls are implemented at
 `58f03a22`; see `resumption-plan-20260907.md`. The user has resumed the
 revised controlled sequence; no campaign is currently running.
 
-**Current bounded-resumption status:** the user’s resume authorizes controlled diagnostics, fixes and sampled batches once the documented prerequisites and controls pass. The resumed sequence has consumed three controlled product invocations: the completed cache-off Kubernetes syntax-only snapshot in `diagnostic-dispatch-1f20f694`, the full-profile Kubernetes snapshot timeout in `diagnostic-dispatch-12574522-r2`, and the independently identified cache-off full-profile snapshot in `diagnostic-dispatch-90ac3e16`. The newest request also timed out at 120 seconds (`process=-9`, `collector=1`) with no observation or diagnostics, while retaining a complete diagnostic-only 20-second relations CPU profile. Its input and control identities remained unchanged, and the validation VM was deallocated. A separate earlier full-profile dispatch failed in the collector before product startup (`reserved=1`, `consumed=0`, `transport_attempts=1`). None is a stability batch or campaign result. No stability batch has run, and both product timeouts remain unresolved. The profiler harness at exact source `90ac3e16b96c34ab219ecd2a90eca4600fd0c586` was reviewed and committed. Its pinned Linux evidence passed 28 compiler tests including 10 live tests with zero compiler skips or failures; profiler normal passed 13 tests plus the expected Windows-only skip, profiler race passed 12 tests plus the same expected skip, and the evaluator build produced binary SHA-256 `43c85dfa31358f4911d565e005ddc943cf58d8ddc09790f60714e152e241b86b`. This correctness/build work invoked no product or corpus evaluation and makes no performance claim; evidence was committed at `5db068ee` under `evidence/diagnostics-linux-90ac3e16/`. Offline profile analysis is pending and no fix is claimed. No full campaign is approved.
+**Current bounded-resumption status:** the user’s resume authorizes controlled diagnostics, fixes and sampled batches once the documented prerequisites and controls pass. The resumed sequence has consumed three controlled product invocations: the completed cache-off Kubernetes syntax-only snapshot in `diagnostic-dispatch-1f20f694`, the full-profile Kubernetes snapshot timeout in `diagnostic-dispatch-12574522-r2`, and the independently identified cache-off full-profile snapshot in `diagnostic-dispatch-90ac3e16`. The latest attempted request also timed out at 120 seconds (`process=-9`, `collector=1`) with no observation or diagnostics, while retaining a complete diagnostic-only 20-second relations CPU profile. Its input and control identities remained unchanged, and the validation VM was deallocated. A separate earlier full-profile dispatch failed in the collector before product startup (`reserved=1`, `consumed=0`, `transport_attempts=1`). None is a stability batch or campaign result. No stability batch has run, and both product timeouts remain unresolved. Offline analysis of the retained `90ac3e16` profile identified unconditional Go route-regex scans as a CPU hotspot, and source `450bede9970e05c994d80986cf105dd068e9fc29` adds a route-candidate prefilter. Its pinned Linux evidence passed 28 compiler tests including 10 live tests with zero compiler skips or failures, the focused route normal/race and profiler checks passed, and the evaluator build produced binary SHA-256 `b4d7e1a5ef72d4e09d045e562ce08cb38ff63a9c3912aef0e002bc70bb5f0674`; evidence was committed at `6e050656` under `evidence/diagnostics-linux-450bede9/`. These are correctness and build results only: no speedup or timeout resolution is established. A new diagnostic at `450bede9` is prepared but has not run, so the resumed invocation total remains three. No full campaign is approved.
 
 **Mandatory model routing, 2026-09-07:** all substantive implementation,
 diagnosis, source/data inspection, fixture or harness work, execution/testing,
@@ -30,16 +30,15 @@ approval before a full campaign. No product or corpus work is currently
 running; controlled work remains subject to the revised prerequisites and
 stops.
 
-The latest completed immutable full check is `90ac3e16`: serialized
-`mise run check`, with `GIT_CONFIG_GLOBAL=/dev/null` and
-`GIT_CONFIG_SYSTEM=/dev/null`, exited 0 in 1577.584 seconds at exact source
-`90ac3e16b96c34ab219ecd2a90eca4600fd0c586`, with unchanged HEAD, clean
-before/after status and byte-equal tracked-source manifests. It performed no
-product or corpus evaluation; evidence is in
-`evidence/check-90ac3e16-retry-1/`. The first launcher at the same source
-failed on `mise` trust before tests started and remains retained separately;
-it is not a test failure. The `8c8b075d` and `1f20f694` immutable passes remain
-historical evidence. Focused YAML/ABI checks for the post-fix
+The latest completed immutable full check is `450bede9`: serialized
+`mise run check` exited 0 in 1204.774 seconds at exact source
+`450bede9970e05c994d80986cf105dd068e9fc29`, with 151 shell checks passed,
+unchanged HEAD, clean before/after status and byte-equal tracked-source
+manifests. It performed no product or corpus evaluation; evidence is in
+`evidence/check-450bede9/`. The `90ac3e16`, `8c8b075d` and `1f20f694`
+immutable passes remain historical evidence; the first `90ac3e16` launcher
+failure on `mise` trust remains retained separately as a non-test failure.
+Focused YAML/ABI checks for the post-fix
 `12574522` source passed, including the seven-test ABI check reported at
 1.600s and 2.983s, and the pinned Linux compiler/evaluator check and
 build passed, but the local full `mise run check` at that source is incomplete:
@@ -109,7 +108,7 @@ The test-only corpus harness now has an optional `diagnostics_path` artifact con
 
 This table supersedes earlier checkpoint/status statements. “Complete” in the
 implementation column describes code or harness delivery. The latest
-immutable full check is the current `90ac3e16` checkpoint described above.
+immutable full check is the current `450bede9` checkpoint described above.
 The three retained query profile paths are historical exact
 partial-output parity evidence. Broader evaluation remains paused. Evaluation
 tasks cannot be declared complete merely because their harness exists;
@@ -119,10 +118,10 @@ correctness checks do not establish comparative release gates.
 |---|---|---|---|---|
 | P1.1 characterize | Complete: phase/capture characterization and reproducible paired harness | Existing pinned phase artifacts and controlled-reader fixtures | Fixed six-repository campaign prepared; baseline collected but incomplete (69 complete, 33 partial, 6 timeouts); paired campaign paused for diagnosis | Not passed: full fixed corpus/RSS matrix incomplete |
 | P1.2 pure extraction | Complete: explicit metadata, shared bounded source/policy capture, manifests and sticky errors | Entity field checklist, malformed/overload/language round trips, reader mutation tests; historical immutable check passed | Fixed corpus campaign paused for diagnosis | Not passed |
-| P1.3 storage | Implemented through `6cf92c9c` and later accepted source changes: encoded publication, capability-bound admission, session-owned compression and operation-wide batch gate; the current `90ac3e16` full check passed | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; earlier focused and immutable checks remain historical | Fixed corpus campaign paused for diagnosis | Not passed |
+| P1.3 storage | Implemented through `6cf92c9c` and later accepted source changes: encoded publication, capability-bound admission, session-owned compression and operation-wide batch gate; the current `450bede9` full check passed | Independent-operation/subprocess contention, corruption and no-follow regressions passed race; earlier focused and immutable checks remain historical | Fixed corpus campaign paused for diagnosis | Not passed |
 | P1.4 entity integration | Implemented; all three retained query profile paths and the diagnostic snapshot have exact partial-output parity; full corpus evaluation incomplete | P1-A parse counts; manifest/rename/delete/ignore and selective-scope freshness fixtures; historical immutable check passed; this does not establish the full fixed-corpus gate | Fixed corpus campaign paused for diagnosis | Not passed |
-| P1.5 relation inputs | Complete for measured raw-import family: Go/TypeScript/Python fast/full; explicit family presence | Exact relation parity and reuse tests; other families deliberately absent | Further profiling deferred; no new family selected by benchmark tuning | Not passed |
-| P1.6 diagnostics/gates | Implemented; local first-issue stops verified, live fake-service smoke passed; ADR 0046 verified and ADR 0047 verified; ADR 0048 focused and pinned checks passed; the current `90ac3e16` full check passed | Separate parsed/reused/source/cache/phase telemetry; earlier focused and immutable checks remain historical | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
+| P1.5 relation inputs | Complete for measured raw-import family: Go/TypeScript/Python fast/full; explicit family presence; `450bede9` adds a correctness-tested Go route-candidate prefilter | Exact relation parity and reuse tests; focused route normal/race checks passed; other families deliberately absent | The prefilter targets a profiled hotspot, but no speedup or timeout resolution is established | Not passed |
+| P1.6 diagnostics/gates | Implemented; local first-issue stops verified, live fake-service smoke passed; ADR 0046 verified and ADR 0047 verified; ADR 0048 focused and pinned checks passed; the current `450bede9` full check passed | Separate parsed/reused/source/cache/phase telemetry; earlier focused and immutable checks remain historical | Existing cold regression retained; fixed corpus campaign paused for diagnosis | Not passed: performance target previously failed |
 | P2.1 feasibility | Complete: pinned gopls v0.20.0 and Linux Bubblewrap execution boundary | Existing positive no-egress/read-only/descendant cancellation checks; historical Linux race passed | Hard-Go comparative quality deferred | Not passed |
 | P2.2 client/capture | Complete: bounded lifecycle, source capsule/context identity, mapping and cancellation | Protocol/UTF-16/malformed reply/context/process tests; historical immutable check passed | Deferred | Not passed |
 | P2.3 positive integration | Complete: direct declarations and separate implementation candidates; conversions excluded | New conversion/alias/generic fixtures and pinned live fixture; signature/workspace invalidation tests; historical Linux race passed | Independent realistic quality evaluation deferred | Not passed |

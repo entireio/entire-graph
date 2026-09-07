@@ -7,16 +7,14 @@ labelled by their source checkpoint and are not current-head certification.
 
 ## Source and verification boundary
 
-The latest completed immutable full check is `90ac3e16`: serialized
-`mise run check`, with `GIT_CONFIG_GLOBAL=/dev/null` and
-`GIT_CONFIG_SYSTEM=/dev/null`, exited 0 in 1577.584 seconds at exact source
-`90ac3e16b96c34ab219ecd2a90eca4600fd0c586`, with unchanged HEAD, clean
-before/after status and byte-equal tracked-source manifests. It performed no
-product or corpus evaluation; evidence is retained under
-`evidence/check-90ac3e16-retry-1/`. The first launcher at the same source
-failed on `mise` trust before tests began and remains retained separately; it
-is not a test failure. The `8c8b075d` and `1f20f694` passes remain historical
-evidence. The profiler harness at exact source
+The latest completed immutable full check is `450bede9`: serialized
+`mise run check` exited 0 in 1204.774 seconds at exact source
+`450bede9970e05c994d80986cf105dd068e9fc29`, with 151 shell checks passed,
+unchanged HEAD, clean before/after status and byte-equal tracked-source
+manifests. It performed no product or corpus evaluation; evidence is retained
+under `evidence/check-450bede9/`. The `90ac3e16`, `8c8b075d` and `1f20f694`
+passes remain historical evidence. The first `90ac3e16` launcher failure on
+`mise` trust remains retained separately as a non-test failure. The profiler harness at exact source
 `90ac3e16b96c34ab219ecd2a90eca4600fd0c586` was reviewed and committed. Its
 pinned Linux correctness run passed 28 compiler tests, including 10 live
 tests, with zero compiler skips or failures; profiler normal passed 13 tests
@@ -89,8 +87,21 @@ seconds (`process=-9`, `collector=1`) with no observation or diagnostics. It
 retained a complete diagnostic-only 20-second relations CPU profile, SHA-256
 `3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b`,
 with unchanged before/after corpus identity and zero control-identity
-mismatches. The VM is deallocated. Offline profile analysis is pending; no
-cause, fix, performance result or stability evidence is claimed.
+mismatches. The VM is deallocated. The retained profile is diagnostic evidence
+only and establishes no performance result or stability evidence.
+
+Offline analysis of that retained profile identified unconditional Go
+route-regex scans as a CPU hotspot. Source
+`450bede9970e05c994d80986cf105dd068e9fc29` adds a route-candidate prefilter;
+its pinned Linux evidence passed 28 compiler tests including 10 live tests,
+the focused route normal/race and profiler checks, and the evaluator build.
+The built binary SHA-256 is
+`b4d7e1a5ef72d4e09d045e562ce08cb38ff63a9c3912aef0e002bc70bb5f0674`,
+and evidence was committed at `6e050656` under
+`evidence/diagnostics-linux-450bede9/`. This establishes correctness and build
+status only; it does not establish a speedup or resolve either timeout. A new
+diagnostic at `450bede9` is pending and has not run, so the resumed invocation
+total remains three.
 
 The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
 6 timeouts. It is therefore collected but incomplete. The campaign remains
@@ -136,9 +147,9 @@ policy, the shared 100-invocation cap, durable duplicate/retry prevention and
 first-issue stop. Three clean representative batches are a checkpoint for
 stability only, not a release gate.
 
-Offline analysis of the retained relations CPU profile is the immediate next
-step. The timeout remains a failed diagnostic, no fix is claimed, and no new
-product invocation or full campaign is authorized by this evidence.
+The pending `450bede9` diagnostic has not run. The existing timeouts remain
+failed diagnostics, no speedup or timeout-resolution claim exists, and no new
+product invocation or full campaign is authorized by the correctness evidence.
 
 P2 and P3 still require independent adjudication of required, allowed and
 forbidden targets with explicit partial/unavailable coverage. P4 requires a
