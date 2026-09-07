@@ -1,0 +1,48 @@
+{
+  "authorization_gate": "root verification of full Linux check pass and all three VMs deallocated",
+  "build_command": "go test -c -o /opt/graph-validation/diagnostics-linux-950567a3-evaluator-build-01/p1-evaluator ./internal/sem",
+  "cleanup_vms": [
+    "graph-validation-linux",
+    "graph-p1-worker-2",
+    "graph-p1-worker-3"
+  ],
+  "compiler_invocations": 0,
+  "corpus_invocations": 0,
+  "evaluator_invocations": 0,
+  "execution_authorized": false,
+  "full_check_local_gates": [
+    "raw/overall.exit.txt=0",
+    "raw/check.exit.txt=0",
+    "before-tracked-manifest.tsv equals after-tracked-manifest.tsv"
+  ],
+  "go": "go1.26.1 linux/amd64",
+  "go_realpath": "/usr/local/go/bin/go",
+  "go_sha256": "548e61b2d08ae52043be2f1924ed3c1d2b2c41967e360f3e317667f6fa912fc2",
+  "gopls": "golang.org/x/tools/gopls v0.20.0",
+  "gopls_sha256": "2b4652d6ac42a22942f63735d9c7e44e9dfbc1dade5d4fd09c0d4eb8fa3539b1",
+  "home_policy": "unchanged",
+  "prepared_controller_sha256": "06fe46587417dfc4921a7ab3bb3f289a642948a65a2f787b5d913728001d7c87",
+  "prepared_remote_sha256": "1ab36d492943a2a98ff7a1bff350b0f9cffde2ebb3f71683451f97b6b652015a",
+  "product_invocations": 0,
+  "remote_root": "/opt/graph-validation/diagnostics-linux-950567a3-evaluator-build-01",
+  "retry_limit": 0,
+  "runtime_network_policy": {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GOPROXY": "off",
+    "GOSUMDB": "off",
+    "GOTELEMETRY": "off",
+    "GOTOOLCHAIN": "local"
+  },
+  "source_archive": "/opt/graph-validation/check-950567a3-linux-full-01/input/source.tar.gz",
+  "source_archive_sha256": "dfe4b484b98535d0b9c35b6bb0b524352ddb93e61f8bde391aa6663db4c2f91b",
+  "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+  "source_root": "/opt/graph-validation/check-950567a3-linux-full-01/src",
+  "status": "prepared_not_executed",
+  "template_controller_sha256": "2489bb1d6d33b814258f877c45a48652b04b58e1794d4bd1ef30cc51f365e9de",
+  "template_remote_sha256": "7036de8d10352a2a93c7f8307f2cc3df22e18bf9383776fedd97a855a49ecdd0",
+  "template_source": "docs/implementation/graph-advantage/evidence/diagnostics-linux-25887f69-evaluator-build-01",
+  "tracked_file_count": 2398,
+  "tracked_manifest": "/opt/graph-validation/check-950567a3-linux-full-01/input/tracked-manifest.tsv",
+  "tracked_manifest_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371"
+}
