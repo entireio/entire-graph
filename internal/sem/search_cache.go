@@ -23,7 +23,7 @@ import (
 // resource policy were complete; v13 retires entries whose DATA_FLOWS records
 // carry a single evidence entry per edge rather than every flow; v14 retires
 // entries written before truncated records counted what they dropped.
-const searchSnapshotCacheVersion = "search-snapshot-v14"
+const searchSnapshotCacheVersion = "search-snapshot-v14-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`

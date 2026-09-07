@@ -173,7 +173,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	// SchemaVersion is set here, at the one place a content-bearing Result is
 	// constructed; every caller (AnalyzeGitRange, AnalyzeCheckpoint, and the
 	// diff/analyze CLI handlers that call through them) inherits it.
-	result := Result{Base: base, Head: head, SchemaVersion: SchemaVersion}
+	result := Result{Base: base, Head: head, SchemaVersion: SchemaVersion, IdentityRevision: IdentityRevision}
 	result.Warnings = append(result.Warnings, policyWarnings...)
 	var deltas []*fileDelta
 	appendBudgetWarnings := func(start int) {
