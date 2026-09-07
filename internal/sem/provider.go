@@ -1661,7 +1661,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		key = repoKey(ctx, absRepo)
 		commit, tree, headErr = resolveCommittedHEAD(ctx, absRepo)
 	} else {
-		headErr = fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", absRepo)
+		headErr = gitMetadataRefusalError(absRepo)
 	}
 
 	// The provider is local-only. NoNetwork is accepted to make that contract
@@ -1751,7 +1751,7 @@ func resolveMaxParseBytes(requested int) int {
 // between subprocesses.
 func resolveCommittedHEAD(ctx context.Context, repo string) (string, string, error) {
 	if !gitMetadataSafeForSubprocessContext(ctx, repo) {
-		err := fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+		err := gitMetadataRefusalError(repo)
 		return "", "", err
 	}
 	commit, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
@@ -17704,7 +17704,115 @@ func EnsureGitMetadataSafeForSubprocess(repo string) error {
 	if gitMetadataSafeForSubprocess(repo) {
 		return nil
 	}
-	return fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+	return gitMetadataRefusalError(repo)
+}
+
+// gitMetadataRefusalError names the condition that made a repository unsafe.
+//
+// The refusal itself is a safety decision, but "unsafe or unreadable repository
+// metadata" tells the reader nothing about which of a dozen conditions tripped,
+// and every one of them has a different answer. Diagnosing one by hand means
+// walking the same checks the predicate walks. So re-derive the common causes
+// here and say which applied.
+//
+// This is diagnosis only: it never widens what is accepted. When no specific
+// cause is recognised the message degrades to the original wording, so an
+// unrecognised condition still refuses.
+func gitMetadataRefusalError(repo string) error {
+	base := fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+	reason := describeGitMetadataRefusal(repo)
+	if reason == "" {
+		return base
+	}
+	return fmt.Errorf("%w: %s", base, reason)
+}
+
+// describeGitMetadataRefusal returns a human-readable cause, or "" when none of
+// the recognised conditions explains the refusal.
+//
+// It reads the config the same way the predicate does -- through a resolver,
+// never a direct open -- so it applies the same path, mount and special-file
+// policy rather than a looser one of its own.
+//
+// It is nonetheless a second observation, taken after the predicate has already
+// refused. Nothing pins the two reads to one inode, so a config replaced in
+// between yields a cause that is true of the file now and may not be the cause
+// that fired. Pinning them would mean carrying evidence out of the predicate
+// itself, which is a safety boundary this diagnosis is not worth restructuring;
+// the cost of the race is a misattributed sentence in an error, never a
+// different accept/reject decision. Read the cause as "this is what the config
+// says", not as a receipt from the refusal.
+//
+// It is deliberately narrower than the predicate. The predicate also supports
+// Git discovery in ancestor directories, bare repositories, and `.git` gitfiles;
+// this only speaks when `<repo>/.git` is a directory it can open, which is the
+// one case where it knows it is describing the same metadata. Everywhere else it
+// returns "" and the caller keeps the original wording, because a confident
+// wrong cause is worse than no cause at all.
+func describeGitMetadataRefusal(repo string) string {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return ""
+	}
+	resolver, err := newSameVolumePathResolver(repoAbs)
+	if err != nil {
+		return ""
+	}
+	defer resolver.Close()
+
+	gitDir, ok := diagnosableGitDirectory(resolver, repoAbs)
+	if !ok {
+		return ""
+	}
+	common, state := gitCommonDirStateWithResolver(resolver, gitDir, nil)
+	if state != gitCommonDirResolved {
+		return "its Git common directory could not be resolved inside this repository's filesystem"
+	}
+	opened, _, openErr := resolver.open(filepath.Join(common, "config"))
+	if openErr != nil {
+		return ""
+	}
+	defer func() { _ = opened.Close() }()
+	info, statErr := opened.Stat()
+	if statErr != nil {
+		return ""
+	}
+	config, configOK := gitLocalConfigPreflightFromOpened(opened, info)
+	if !configOK {
+		return "its Git config could not be parsed under Git's own config grammar, so it is refused rather than guessed at"
+	}
+	switch {
+	case config.hasPromisorRemote:
+		return "its Git config declares a promisor remote (a partial clone), so Git commands here can fetch objects over the network; " +
+			"indexing falls back to a filesystem walk to stay offline"
+	case config.hasPartialCloneExtension:
+		return "its Git config enables the partial-clone extension, so Git commands here can fetch objects over the network; " +
+			"indexing falls back to a filesystem walk to stay offline"
+	case config.hasInclude:
+		return "its Git config uses include or includeIf, so the effective configuration is not knowable from this file alone"
+	case config.hasCoreWorktree && !gitCoreWorktreePathSafeWithResolver(resolver, gitDir, config.coreWorktree):
+		// The key merely being present is not the refusal; the predicate refuses
+		// only when the path it names leaves the repository's filesystem, so ask
+		// the same question rather than reporting a valid core.worktree as bad.
+		return "its Git config sets core.worktree to a path that leaves this repository's filesystem"
+	}
+	return ""
+}
+
+// diagnosableGitDirectory returns `<repo>/.git` when it is a directory this
+// process can open, which is the only shape describeGitMetadataRefusal can
+// attribute a cause to with certainty.
+func diagnosableGitDirectory(resolver *sameVolumePathResolver, repoAbs string) (string, bool) {
+	opened, resolved, err := resolver.open(filepath.Join(repoAbs, ".git"))
+	if err != nil {
+		return "", false
+	}
+	info, statErr := opened.Stat()
+	_ = opened.Close()
+	if statErr != nil || !info.IsDir() {
+		return "", false
+	}
+	return resolved, true
 }
 
 type gitMetadataValidationContextKey struct{}
@@ -17721,7 +17829,7 @@ type gitMetadataValidationReceipt struct {
 func WithGitMetadataValidationForSetup(ctx context.Context, repo string) (context.Context, error) {
 	validated, safe := newGitMetadataValidation(ctx, repo)
 	if !safe {
-		return validated, fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+		return validated, gitMetadataRefusalError(repo)
 	}
 	return validated, nil
 }
@@ -18117,7 +18225,7 @@ func worktreeSourceFilesWithLister(
 	listWorktreeFiles worktreeFilesLister,
 ) ([]string, []ProviderWarning, error) {
 	if !gitMetadataSafeForSubprocessContext(ctx, repo) {
-		err := fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+		err := gitMetadataRefusalError(repo)
 		// No Git process is started. The fallback treats every ambiguous vendored
 		// directory as potentially tracked so unsafe metadata cannot cause source
 		// omissions, and the warning reports the Git-only policy that is unavailable.

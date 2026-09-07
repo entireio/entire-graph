@@ -61,22 +61,24 @@ const verifyBaselineFormatVersion = 1
 // plus provenance — because its only consumer is the diff below and its only job is to still be
 // readable when the tree it describes is gone.
 type verifyBaseline struct {
-	FormatVersion int           `json:"format_version"`
-	RecordedAt    string        `json:"recorded_at"`
-	Repo          string        `json:"repo"`
-	TestCommand   string        `json:"test_command"`
-	Parser        string        `json:"parser"`
-	ExitCode      int           `json:"exit_code"`
-	Results       verifyResults `json:"results"`
+	FormatVersion       int           `json:"format_version"`
+	RecordedAt          string        `json:"recorded_at"`
+	Repo                string        `json:"repo"`
+	TestCommand         string        `json:"test_command"`
+	Parser              string        `json:"parser"`
+	ExitCode            int           `json:"exit_code"`
+	Results             verifyResults `json:"results"`
+	TestFailureExitCode int           `json:"test_failure_exit_code,omitempty"`
 }
 
 type verifyFlags struct {
-	Repo            string
-	Setup           string
-	Test            string
-	PreEditBaseline string
-	RecordBaseline  string
-	MaxBytes        int
+	Repo                string
+	Setup               string
+	Test                string
+	PreEditBaseline     string
+	RecordBaseline      string
+	MaxBytes            int
+	TestFailureExitCode int
 }
 
 func parseVerifyFlags(args []string) (verifyFlags, error) {
@@ -102,6 +104,14 @@ func parseVerifyFlags(args []string) (verifyFlags, error) {
 			flags.PreEditBaseline, err = value()
 		case "--record-baseline":
 			flags.RecordBaseline, err = value()
+		case "--test-failure-exit-code":
+			var raw string
+			if raw, err = value(); err == nil {
+				flags.TestFailureExitCode, err = strconv.Atoi(raw)
+				if err != nil || flags.TestFailureExitCode < 1 || flags.TestFailureExitCode > 255 {
+					return flags, fmt.Errorf("verify --test-failure-exit-code requires an integer from 1 to 255, got %q", raw)
+				}
+			}
 		case "--max-bytes":
 			var raw string
 			if raw, err = value(); err == nil {
@@ -153,14 +163,15 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := validateVerifyBaseline(baseline, flags.PreEditBaseline, repo, flags.Test, parser, parsed); err != nil {
+	if err := validateVerifyBaseline(baseline, flags.PreEditBaseline, repo, flags.Test, parser, parsed, flags.TestFailureExitCode); err != nil {
 		return err
 	}
 	_, writeErr := opts.Stdout.Write(renderVerifyVerdict(
 		verifyVerdictInput{
 			baseline: baseline, current: results, parser: parser, parsed: parsed,
 			exitCode: exitCode, maxBytes: flags.MaxBytes,
-			unattributed: verifyUnattributedFailures(parser, output),
+			unattributed:        verifyUnattributedFailures(parser, output),
+			testFailureExitCode: flags.TestFailureExitCode,
 		}))
 	return writeErr
 }
@@ -285,13 +296,14 @@ func writeVerifyBaseline(
 	results verifyResults, parser string, parsed bool, exitCode int,
 ) error {
 	baseline := verifyBaseline{
-		FormatVersion: verifyBaselineFormatVersion,
-		RecordedAt:    time.Now().UTC().Format(time.RFC3339),
-		Repo:          verifyRecordedRepo(repo),
-		TestCommand:   flags.Test,
-		Parser:        parser,
-		ExitCode:      exitCode,
-		Results:       results,
+		FormatVersion:       verifyBaselineFormatVersion,
+		RecordedAt:          time.Now().UTC().Format(time.RFC3339),
+		Repo:                verifyRecordedRepo(repo),
+		TestCommand:         flags.Test,
+		TestFailureExitCode: flags.TestFailureExitCode,
+		Parser:              parser,
+		ExitCode:            exitCode,
+		Results:             results,
 	}
 	if !parsed {
 		baseline.Parser = "exit-code-only"
@@ -346,7 +358,7 @@ func readVerifyBaseline(path string) (verifyBaseline, error) {
 // because the failure mode this verb exists to prevent is a confident verdict on a run that did not
 // happen the way the verdict assumes.
 func validateVerifyBaseline(
-	baseline verifyBaseline, path, repo, testCommand, parser string, parsed bool,
+	baseline verifyBaseline, path, repo, testCommand, parser string, parsed bool, testFailureExitCode int,
 ) error {
 	if baseline.FormatVersion != verifyBaselineFormatVersion {
 		return fmt.Errorf(
@@ -371,6 +383,9 @@ func validateVerifyBaseline(
 		return fmt.Errorf(
 			"verify --pre-edit-baseline %s recorded test command %q but this run ran %q: "+
 				"the two id sets are not comparable", path, baseline.TestCommand, testCommand)
+	}
+	if baseline.TestFailureExitCode != testFailureExitCode {
+		return fmt.Errorf("verify --pre-edit-baseline %s recorded test-failure exit code %d but this run declares %d (0 means automatic): re-record with the same --test-failure-exit-code", path, baseline.TestFailureExitCode, testFailureExitCode)
 	}
 	// Parser is checked only when BOTH sides parsed. An exit-code-only baseline is a legitimate,
 	// self-describing degradation that renderVerifyVerdict already handles as coarse mode.
@@ -493,7 +508,8 @@ type verifyVerdictInput struct {
 	// unattributed is the targets the runner reported as failed while naming no test — a package it
 	// could not build or set up. See verifyUnattributedFailures: these are the failures the exit code
 	// cannot distinguish from an ordinary test failure and the result set structurally cannot hold.
-	unattributed []string
+	unattributed        []string
+	testFailureExitCode int
 }
 
 // renderVerifyVerdict is the whole output contract: a delta, a verdict, and nothing else.
@@ -560,7 +576,7 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 	// the RUNNER uses to say "a test failed"; see verifyExitCodeMeansTestFailure.
 	unexplainedExit := input.exitCode != 0 &&
 		!(verifyResultsHaveFailure(input.current) &&
-			verifyExitCodeMeansTestFailure(input.parser, input.exitCode))
+			verifyExitCodeMeansTestFailure(input.parser, input.exitCode, input.testFailureExitCode))
 
 	if len(newlyPassing) > 0 {
 		verifyWriteList(&buffer, "NEWLY PASSING", newlyPassing)
@@ -594,12 +610,7 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 		// even the NOT RUN evidence goes. A REGRESSION verdict is more actionable than an INCOMPLETE
 		// one (it carries the ids), so the ids are kept and the incompleteness is carried alongside
 		// them rather than replacing them.
-		fmt.Fprintf(&buffer, "VERDICT: REGRESSION in %d test%s: %s",
-			len(newlyFailing), pluralSuffix(len(newlyFailing)), verifyJoinIDs(newlyFailing))
-		if incomplete != "" {
-			fmt.Fprintf(&buffer, " — AND INCOMPLETE: %s Verification is NOT complete.", incomplete)
-		}
-		buffer.WriteString("\n")
+		buffer.WriteString(verifyRegressionVerdict(newlyFailing, incomplete, input.maxBytes))
 	case incomplete != "":
 		fmt.Fprintf(&buffer, "VERDICT: INCOMPLETE — %s Verification is NOT complete.\n", incomplete)
 	case len(newlyPassing) > 0:
@@ -612,6 +623,39 @@ func renderVerifyVerdict(input verifyVerdictInput) []byte {
 		buffer.WriteString("VERDICT: NO EFFECT — the target tests behave exactly as before your edit.\n")
 	}
 	return verifyTruncateOutput(buffer.String(), input.maxBytes)
+}
+
+// verifyRegressionVerdict budgets the classifications before IDs or explanations.
+// Shorten while those fields are still separate: generic text truncation cannot
+// distinguish a test ID from the incompleteness warning that follows the list.
+func verifyRegressionVerdict(ids []string, incomplete string, maxBytes int) string {
+	regression := fmt.Sprintf("VERDICT: REGRESSION in %d test%s", len(ids), pluralSuffix(len(ids)))
+	verdict := regression + ": " + verifyJoinIDs(ids)
+	if incomplete != "" {
+		verdict += " — AND INCOMPLETE: " + incomplete + " Verification is NOT complete."
+	}
+	verdict += "\n"
+	if incomplete == "" || maxBytes <= 0 || len(verdict) <= maxBytes {
+		return verdict
+	}
+
+	// Drop IDs first, then the count if necessary. Both classifications must fit
+	// before any remaining space is spent on the reason the run was incomplete.
+	summary := regression + " — AND INCOMPLETE"
+	if len(summary)+1 > maxBytes {
+		summary = "VERDICT: REGRESSION AND INCOMPLETE"
+	}
+	if len(summary)+1 > maxBytes {
+		return verifyCutToBudget(summary, maxBytes)
+	}
+	if len(summary)+len(": …\n") > maxBytes {
+		return summary + "\n"
+	}
+	verdict = summary + ": " + incomplete + " Verification is NOT complete.\n"
+	if len(verdict) > maxBytes {
+		return verifyCutToBudget(verdict, maxBytes)
+	}
+	return verdict
 }
 
 // verifyIncompleteReason states every way THIS run failed to cover what it claimed to cover, or "" when
@@ -636,7 +680,12 @@ func verifyIncompleteReason(input verifyVerdictInput, notRun []string, unexplain
 			input.parser, len(input.unattributed), pluralSuffix(len(input.unattributed)),
 			verifyJoinIDs(input.unattributed)))
 	}
+	_, knownFailureCode := verifyTestFailureExitCodes[input.parser]
 	switch {
+	case unexplainedExit && input.exitCode > 0 && input.testFailureExitCode > 0 && verifyResultsHaveFailure(input.current):
+		clauses = append(clauses, fmt.Sprintf("the runner exited %d, which does not match the declared test-failure exit code %d.", input.exitCode, input.testFailureExitCode))
+	case unexplainedExit && input.exitCode >= 128 && !knownFailureCode && verifyResultsHaveFailure(input.current):
+		clauses = append(clauses, fmt.Sprintf("the runner exited %d; this may be a configured test-failure code or a shell-reported signal. If this is the runner's configured failure code, declare it with --test-failure-exit-code when recording and comparing the baseline.", input.exitCode))
 	case unexplainedExit && verifyResultsHaveFailure(input.current):
 		clauses = append(clauses, fmt.Sprintf(
 			"the runner %s, which is not how %s reports a test failure, so the run ALSO came apart for "+
@@ -695,11 +744,10 @@ func verifyIncompleteReason(input verifyVerdictInput, notRun []string, unexplain
 // where the majority of Jest projects keep their configuration, so "the code Jest uses for a test
 // failure" is a property of the project rather than of Jest. `vitest` shares the parser and the entry.
 //
-// Unlisting does not reopen the crash hole it might look like it does: verifyExitCodeMeansTestFailure
-// refuses every code at or above 128 whether the runner is listed or not, so a segfault, an OOM kill
-// and a timeout are still adjudicated INCOMPLETE. What unlisting gives up is only the ordinary codes
-// 1-127 that some runner spends on something other than a test verdict — exactly the exposure RSpec
-// already accepts, for exactly the same reason.
+// Without an explicit declaration, high exit codes remain ambiguous: shells can
+// encode signals as 128+N, but configurable runners can also exit normally with
+// those numbers. --test-failure-exit-code declares the project's failure status
+// instead of inferring it from either the number or arbitrary repository config.
 var verifyTestFailureExitCodes = map[string][]int{
 	"pytest":     {1},
 	"cargo test": {101},
@@ -712,11 +760,17 @@ var verifyTestFailureExitCodes = map[string][]int{
 
 // verifyExitCodeMeansTestFailure reports whether exitCode is one the named runner uses to report a
 // test failure — the only kind of nonzero exit a reported failure can explain.
-func verifyExitCodeMeansTestFailure(parser string, exitCode int) bool {
-	if exitCode < 0 || exitCode >= 128 {
-		// No exit status at all (killed before it could exit), or the shell's 128+N for a child that
-		// died of a signal. A segfault, an OOM kill and a timeout are not test results whatever the
-		// suite printed on its way down.
+func verifyExitCodeMeansTestFailure(parser string, exitCode, declaredCode int) bool {
+	if exitCode <= 0 {
+		// A killed process has no normal exit code, even with a declared failure status.
+		return false
+	}
+	if declaredCode > 0 {
+		return exitCode == declaredCode
+	}
+	if exitCode >= 128 {
+		// Do not guess whether this is a configured failure status or a shell's
+		// signal encoding. The caller can disambiguate with an explicit declaration.
 		return false
 	}
 	codes, known := verifyTestFailureExitCodes[parser]

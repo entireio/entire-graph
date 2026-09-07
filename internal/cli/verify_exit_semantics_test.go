@@ -91,6 +91,7 @@ func TestRenderVerifyVerdictKeepsTheRunnersOwnFailureExitCodes(t *testing.T) {
 	} {
 		t.Run(testCase.parser, func(t *testing.T) {
 			t.Parallel()
+			baseline := baseline
 			baseline.Parser = testCase.parser
 			got := string(renderVerifyVerdict(verifyVerdictInput{
 				baseline: baseline, current: current, parser: testCase.parser, parsed: true,
@@ -700,6 +701,9 @@ func TestRenderVerifyVerdictHonoursMaxBytesWithAMultiClauseVerdict(t *testing.T)
 		if maxBytes >= 100 && !strings.Contains(string(got), "VERDICT: REGRESSION in 40 tests") {
 			t.Fatalf("--max-bytes %d dropped the verdict clause itself:\n%s", maxBytes, got)
 		}
+		if maxBytes >= 40 && !strings.Contains(string(got), "INCOMPLETE") {
+			t.Fatalf("--max-bytes %d hid the incomplete run:\n%s", maxBytes, got)
+		}
 	}
 
 	// The single-clause verdict keeps the behaviour it always had: at 400 bytes the ids yield one at a
@@ -717,6 +721,35 @@ func TestRenderVerifyVerdictHonoursMaxBytesWithAMultiClauseVerdict(t *testing.T)
 	}
 	if !strings.Contains(tight, "VERDICT: REGRESSION in 40 tests: suite::") || !strings.HasSuffix(tight, "…\n") {
 		t.Fatalf("the single-clause verdict stopped yielding ids one at a time:\n%s", tight)
+	}
+
+	// A crash has no separate NOT RUN list: losing its verdict clause loses all
+	// evidence that verification did not finish, even when every baseline ID reported.
+	crashed := string(renderVerifyVerdict(verifyVerdictInput{
+		baseline: complete, current: current, parser: "pytest", parsed: true,
+		exitCode: 137, maxBytes: 400,
+	}))
+	for _, want := range []string{"REGRESSION in 40 tests", "INCOMPLETE", "exited 137"} {
+		if !strings.Contains(crashed, want) {
+			t.Fatalf("truncated crash verdict lost %q:\n%s", want, crashed)
+		}
+	}
+
+	// Reasons can themselves exceed the budget. Keep both classifications even
+	// then, and check every small budget for overflows and split UTF-8 characters.
+	for maxBytes := 1; maxBytes <= 400; maxBytes++ {
+		got := renderVerifyVerdict(verifyVerdictInput{
+			baseline: complete, current: current, parser: "go test", parsed: true,
+			exitCode: 1, maxBytes: maxBytes,
+			unattributed: []string{strings.Repeat("長", 200)},
+		})
+		if len(got) > maxBytes || !utf8.Valid(got) {
+			t.Fatalf("invalid output at budget %d: %q", maxBytes, got)
+		}
+		if maxBytes >= len("VERDICT: REGRESSION AND INCOMPLETE\n") &&
+			(!strings.Contains(string(got), "REGRESSION") || !strings.Contains(string(got), "INCOMPLETE")) {
+			t.Fatalf("budget %d lost a verdict classification: %q", maxBytes, got)
+		}
 	}
 }
 
@@ -757,9 +790,9 @@ func TestRenderVerifyVerdictAcceptsJestsConfiguredFailureExitCode(t *testing.T) 
 		}
 	}
 
-	// Unlisting gives up only the ordinary codes. A run that was KILLED is still refused, because
-	// verifyExitCodeMeansTestFailure rejects >= 128 for listed and unlisted runners alike — otherwise
-	// this change would have traded one false negative for the false PASS the verb exists to prevent.
+	// Without a declaration, high statuses remain ambiguous and must not turn
+	// possible signal deaths into PASS. A process killed without a status is
+	// incomplete even with a declaration; see TestVerifyDeclaredFailureCode.
 	for _, exitCode := range []int{137, 139, -1} {
 		got := string(renderVerifyVerdict(verifyVerdictInput{
 			baseline: baseline, current: current, parser: "jest/vitest", parsed: true,
