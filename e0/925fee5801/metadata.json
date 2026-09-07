@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "e0925fee5801",
+  "strategy": "manual-commit",
+  "branch": "codex/trail152-eval-refresh",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/e0/925fee5801/0/metadata.json",
+      "transcript": "/e0/925fee5801/0/full.jsonl",
+      "compact_transcript": "/e0/925fee5801/0/transcript.jsonl",
+      "content_hash": "/e0/925fee5801/0/content_hash.txt",
+      "prompt": "/e0/925fee5801/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 94588,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 798720,
+    "output_tokens": 1380,
+    "api_call_count": 14
+  }
+}
