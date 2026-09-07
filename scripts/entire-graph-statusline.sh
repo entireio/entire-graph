@@ -3,6 +3,9 @@
 #
 # Renders one line summarising what the code graph bought you in THIS session:
 #
+#   [GRAPH] ↗ 6.6K saved
+#
+# With ENTIRE_GRAPH_STATUSLINE_DETAIL=1 the measured context follows it:
 #   [GRAPH] ↗ 6.6K saved · 13 search · 3 impact · 1 nbrs · vs 2.6K explore · 1.5M explore tok ·
 #   graph-first ✗ · 2% of locates · 0.2% of session
 #
@@ -130,7 +133,7 @@ render() {
 	color=1
 	[ -n "${NO_COLOR:-}" ] && color=0
 
-	printf '%s' "$report" | awk -v color="$color" '
+	printf '%s' "$report" | awk -v color="$color" -v detail="$DETAIL" '
 		function number(key,   pat, raw) {
 			pat = "\"" key "\"[ \t]*:[ \t]*-?[0-9][0-9.eE+-]*"
 			if (!match(blob, pat)) return -1
@@ -226,7 +229,12 @@ render() {
 
 			if (work <= 0) {
 				out = label " " paint("no graph calls yet", "2")
-				if (explore > 0) out = out sep() paint(human(explore) " explore", "2")
+				# Same rule as the savings line below: context is opt-in. This path has no
+				# savings figure to stand alone, but "how much exploration happened instead"
+				# is still context, and gating it here keeps one rule rather than an
+				# exception nobody would predict from the name of the flag. (No apostrophes
+				# in here: the awk program is single-quoted.)
+				if (detail + 0 == 1 && explore > 0) out = out sep() paint(human(explore) " explore", "2")
 				print out
 				exit 0
 			}
@@ -246,6 +254,12 @@ render() {
 			}
 
 			# Locate verbs first, then the remaining work verbs; calls-desc within each.
+			if (detail + 0 != 1) {
+				out = ""
+				for (i = 1; i <= nseg; i++) if (!gone[i]) out = out stext[i]
+				print out
+				exit 0
+			}
 			shown = 0
 			counted = 0
 			for (pass = 1; pass <= 2; pass++) {
@@ -329,6 +343,17 @@ render() {
 # for a week. A session held open but idle that long loses its entry and pays one in-line
 # recompute; refreshing the mtime on every cache HIT would instead put a fork on the hottest
 # path in this script — one per keystroke — which costs more than the recompute it avoids.
+# Default is the savings figure alone. The context fields were added to answer "is the graph
+# actually being used", which is a question for `entire graph stats`, not for a line that has to
+# stay readable next to everything else on a status bar -- and one of them (exploration token
+# totals) reads as a savings claim the paired benchmark does not support. Opt back in with
+# ENTIRE_GRAPH_STATUSLINE_DETAIL=1.
+#
+# Resolved HERE, above the cache block, not inside render(): the cache config below has to carry
+# it, and render() has not run yet at that point.
+DETAIL=0
+case "${ENTIRE_GRAPH_STATUSLINE_DETAIL:-}" in 1 | true | yes | on) DETAIL=1 ;; esac
+
 CACHE_DIR=
 CACHE_DIR_OK=
 CACHE_FILE=
@@ -389,11 +414,17 @@ if [ "${ENTIRE_GRAPH_STATUSLINE_CACHE:-1}" != "0" ]; then
 				;;
 			esac
 			CACHE_FILE=$CACHE_DIR/$SAFE-$DIGEST.line
-			# v3: the key scheme changed, so entries written by an older script must not be
+			# v4: the key scheme changed, so entries written by an older script must not be
 			# served. Sanitised in one pass because $SCOPE, $SINCE and $REPO all reach a
 			# TAB-delimited record, and a tab or newline in any of them shifts the field split.
-			CACHE_CONFIG=$(printf 'v3 %s %s color%s %s' \
-				"$SCOPE" "$SINCE" "${NO_COLOR:+-off}" "$REPO" | tr '\t\n' '__')
+			#
+			# $detail is part of the config, not incidental to it: this field is everything
+			# that changes WHAT is rendered, and the exact-match branch serves a stored line
+			# without re-rendering. Leave it out and flipping the toggle serves the previous
+			# setting's line until the transcript's stamp happens to move -- so the toggle
+			# would look broken exactly when the session is idle enough to notice.
+			CACHE_CONFIG=$(printf 'v4 %s %s color%s detail%s %s' \
+				"$SCOPE" "$SINCE" "${NO_COLOR:+-off}" "$DETAIL" "$REPO" | tr '\t\n' '__')
 		fi
 	fi
 fi
