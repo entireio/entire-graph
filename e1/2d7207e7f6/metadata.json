@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "e12d7207e7f6",
+  "strategy": "manual-commit",
+  "branch": "fix/bench-kit-medium-findings",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "bench/memory/benchmarks/common/runmeta.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e1/2d7207e7f6/0/metadata.json",
+      "transcript": "/e1/2d7207e7f6/0/full.jsonl",
+      "compact_transcript": "/e1/2d7207e7f6/0/transcript.jsonl",
+      "content_hash": "/e1/2d7207e7f6/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 27548,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 993664,
+    "output_tokens": 1901,
+    "api_call_count": 10
+  }
+}
