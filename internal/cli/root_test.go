@@ -10,12 +10,17 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/entireio/entire-graph/internal/sem"
 	scippb "github.com/scip-code/scip/bindings/go/scip"
 	"google.golang.org/protobuf/proto"
 )
+
+// Process working directories are global. These tests exercise implicit repo
+// discovery, so serialize their temporary directory changes.
+var cliChdirMu sync.Mutex
 
 func TestResolveRepoHonorsInheritedGitCeiling(t *testing.T) {
 	repo := t.TempDir()
@@ -188,6 +193,8 @@ func TestDoctorPrintsEntireEnvironment(t *testing.T) {
 }
 
 func TestDoctorWorksOutsideGitRepo(t *testing.T) {
+	cliChdirMu.Lock()
+	defer cliChdirMu.Unlock()
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +218,7 @@ func TestDoctorWorksOutsideGitRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"repo_root=<unset>", "repo_error="} {
+	for _, want := range []string{"repo_root=" + tmp} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, out.String())
 		}
@@ -364,6 +371,8 @@ def check_token(token):
 }
 
 func TestSnapshotAcceptsNoNetwork(t *testing.T) {
+	cliChdirMu.Lock()
+	defer cliChdirMu.Unlock()
 	repo := t.TempDir()
 	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
 

@@ -1,0 +1,1 @@
+Do not edit. Thoroughly inspect the repo and propose exact minimal implementations for: immutable GPS capture/input change detection; symbol-level base/head impact joining; Git history/blame/co-change/checkpoint provenance. Identify functions/files, existing helpers, data structures, test locations, and potential conflicts. Return an ordered implementation plan.

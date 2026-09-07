@@ -1,0 +1,25 @@
+version: 1
+id: SPEC-AUTH-001
+title: Token authentication
+intent: Valid credentials receive a short-lived access token.
+requirements:
+  - id: REQ-AUTH-TOKEN
+    description: Valid credentials produce an access token.
+  - id: REQ-AUTH-EXPIRY
+    description: Access tokens expire after their configured lifetime.
+acceptance:
+  - id: ACC-AUTH-TOKEN
+    requirement: REQ-AUTH-TOKEN
+    description: Authentication returns a token.
+  - id: ACC-AUTH-EXPIRY
+    requirement: REQ-AUTH-EXPIRY
+    description: Expired tokens are rejected.
+tests:
+  - id: TEST-AUTH-TOKEN
+    acceptance: ACC-AUTH-TOKEN
+    selector:
+      name: TestAuthenticateReturnsToken
+  - id: TEST-AUTH-EXPIRY
+    acceptance: ACC-AUTH-EXPIRY
+    selector:
+      name: TestExpiredTokenIsRejected

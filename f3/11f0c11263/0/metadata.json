@@ -1,0 +1,72 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "f311f0c11263",
+  "session_id": "ses_f8a59596affenCHUw0Nhxj1Pif",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T07:44:42.406593902Z",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "docs/GPS/README.md",
+    "docs/GPS/context-and-impact.md",
+    "docs/GPS/token-auth-demo.md",
+    "internal/cli/gps.go",
+    "internal/cli/gps_test.go",
+    "internal/cli/testdata/gps/golden/check-code-only.json",
+    "internal/cli/testdata/gps/golden/spec-validate-invalid.json",
+    "internal/cli/testdata/gps/token-auth/.entire/graph/intent.yaml",
+    "internal/cli/testdata/gps/token-auth/.entire/graph/specs/auth.yaml",
+    "internal/cli/testdata/gps/token-auth/auth.go",
+    "internal/cli/testdata/gps/token-auth/auth_test.go",
+    "internal/intent/intent.go"
+  ],
+  "agent": "OpenCode",
+  "model": "gpt-5.6-terra-fast",
+  "turn_id": "daa18daf6f1f",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 88798,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1524224,
+    "output_tokens": 12452,
+    "api_call_count": 27
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T07:44:42.363555641Z",
+    "agent_lines": 519,
+    "agent_removed": 21,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 519,
+    "total_lines_changed": 540,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 269,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".opencode/plugins/entire.ts": 269
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 269,
+      "user_lines_removed": 0,
+      "agent_lines_added": 519,
+      "agent_lines_removed": 21,
+      "user_added_per_file": {
+        ".opencode/plugins/entire.ts": 269
+      }
+    }
+  ]
+}

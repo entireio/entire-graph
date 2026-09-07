@@ -1,0 +1,90 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "39d0f169e642",
+  "strategy": "manual-commit",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 8,
+  "files_touched": [
+    "internal/cli/root_test.go",
+    "internal/sem/testdata/fixtures/csharp-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/csharp-fields.ndjson.golden",
+    "internal/sem/testdata/fixtures/csharp-oo.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-async.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-clones.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-fields.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-tests.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-types.ndjson.golden",
+    "internal/sem/testdata/fixtures/java-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/java-fields.ndjson.golden",
+    "internal/sem/testdata/fixtures/java-oo.ndjson.golden",
+    "internal/sem/testdata/fixtures/julia-r-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/multilang-relations.ndjson.golden",
+    "internal/sem/testdata/fixtures/php-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/php-oo.ndjson.golden",
+    "internal/sem/testdata/fixtures/python-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/python-imports.ndjson.golden",
+    "internal/sem/testdata/fixtures/python-oo.ndjson.golden",
+    "internal/sem/testdata/fixtures/rust-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/rust-oo.ndjson.golden",
+    "internal/sem/testdata/fixtures/services-config.ndjson.golden",
+    "internal/sem/testdata/fixtures/terraform-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-events.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-fields.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-http.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-imports.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-oo.ndjson.golden"
+  ],
+  "sessions": [
+    {
+      "metadata": "/39/d0f169e642/0/metadata.json",
+      "transcript": "/39/d0f169e642/0/full.jsonl",
+      "compact_transcript": "/39/d0f169e642/0/transcript.jsonl",
+      "content_hash": "/39/d0f169e642/0/content_hash.txt",
+      "prompt": "/39/d0f169e642/0/prompt.txt"
+    },
+    {
+      "metadata": "/39/d0f169e642/1/metadata.json",
+      "transcript": "/39/d0f169e642/1/full.jsonl",
+      "compact_transcript": "/39/d0f169e642/1/transcript.jsonl",
+      "content_hash": "/39/d0f169e642/1/content_hash.txt",
+      "prompt": "/39/d0f169e642/1/prompt.txt"
+    },
+    {
+      "metadata": "/39/d0f169e642/2/metadata.json",
+      "transcript": "/39/d0f169e642/2/full.jsonl",
+      "compact_transcript": "/39/d0f169e642/2/transcript.jsonl",
+      "content_hash": "/39/d0f169e642/2/content_hash.txt",
+      "prompt": "/39/d0f169e642/2/prompt.txt"
+    },
+    {
+      "metadata": "/39/d0f169e642/3/metadata.json",
+      "transcript": "/39/d0f169e642/3/full.jsonl",
+      "compact_transcript": "/39/d0f169e642/3/transcript.jsonl",
+      "content_hash": "/39/d0f169e642/3/content_hash.txt",
+      "prompt": ""
+    },
+    {
+      "metadata": "/39/d0f169e642/4/metadata.json",
+      "transcript": "/39/d0f169e642/4/full.jsonl",
+      "compact_transcript": "/39/d0f169e642/4/transcript.jsonl",
+      "content_hash": "/39/d0f169e642/4/content_hash.txt",
+      "prompt": ""
+    },
+    {
+      "metadata": "/39/d0f169e642/5/metadata.json",
+      "transcript": "/39/d0f169e642/5/full.jsonl",
+      "compact_transcript": "/39/d0f169e642/5/transcript.jsonl",
+      "content_hash": "/39/d0f169e642/5/content_hash.txt",
+      "prompt": "/39/d0f169e642/5/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1086734,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 37099520,
+    "output_tokens": 91054,
+    "api_call_count": 376
+  }
+}

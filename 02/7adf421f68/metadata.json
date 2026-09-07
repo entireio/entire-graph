@@ -1,0 +1,68 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "027adf421f68",
+  "strategy": "manual-commit",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 16,
+  "files_touched": [
+    "GRAPH_PARSER_SYSTEM/00-front-matter.md",
+    "GRAPH_PARSER_SYSTEM/01-problem-and-solution.md",
+    "GRAPH_PARSER_SYSTEM/02-theory-of-evidence.md",
+    "GRAPH_PARSER_SYSTEM/03-architecture-and-data-model.md",
+    "GRAPH_PARSER_SYSTEM/04-decision-workflows.md",
+    "GRAPH_PARSER_SYSTEM/05-implementation-guide.md",
+    "GRAPH_PARSER_SYSTEM/06-user-verification-guide.md",
+    "GRAPH_PARSER_SYSTEM/07-requirement-traceability.md",
+    "GRAPH_PARSER_SYSTEM/08-limitations-and-roadmap.md",
+    "GRAPH_PARSER_SYSTEM/README.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/02/7adf421f68/0/metadata.json",
+      "transcript": "/02/7adf421f68/0/full.jsonl",
+      "compact_transcript": "/02/7adf421f68/0/transcript.jsonl",
+      "content_hash": "/02/7adf421f68/0/content_hash.txt",
+      "prompt": "/02/7adf421f68/0/prompt.txt"
+    },
+    {
+      "metadata": "/02/7adf421f68/1/metadata.json",
+      "transcript": "/02/7adf421f68/1/full.jsonl",
+      "compact_transcript": "/02/7adf421f68/1/transcript.jsonl",
+      "content_hash": "/02/7adf421f68/1/content_hash.txt",
+      "prompt": "/02/7adf421f68/1/prompt.txt"
+    },
+    {
+      "metadata": "/02/7adf421f68/2/metadata.json",
+      "transcript": "/02/7adf421f68/2/full.jsonl",
+      "compact_transcript": "/02/7adf421f68/2/transcript.jsonl",
+      "content_hash": "/02/7adf421f68/2/content_hash.txt",
+      "prompt": "/02/7adf421f68/2/prompt.txt"
+    },
+    {
+      "metadata": "/02/7adf421f68/3/metadata.json",
+      "transcript": "/02/7adf421f68/3/full.jsonl",
+      "compact_transcript": "/02/7adf421f68/3/transcript.jsonl",
+      "content_hash": "/02/7adf421f68/3/content_hash.txt",
+      "prompt": "/02/7adf421f68/3/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 187073,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 3956224,
+    "output_tokens": 22511,
+    "api_call_count": 62
+  },
+  "combined_attribution": {
+    "calculated_at": "2026-09-06T09:13:45.686869359Z",
+    "agent_lines": 508,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 508,
+    "total_lines_changed": 508,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}

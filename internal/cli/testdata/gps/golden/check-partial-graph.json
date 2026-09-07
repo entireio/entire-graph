@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "change_delta": "not_requested",
+  "disposition": "INCOMPLETE",
+  "repository_view_kind": "committed",
+  "finding_ids": ["GPS-COMPLETENESS-INCOMPLETE"]
+}

@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "239a88c5b9d0",
+  "session_id": "ses_f8a4c41fcffe98paKqdsXVK7WG",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T08:29:17.212369713Z",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "OpenCode",
+  "model": "gpt-5.6-terra-fast",
+  "turn_id": "1a87e0548767",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 117249,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2597376,
+    "output_tokens": 12432,
+    "api_call_count": 33
+  },
+  "session_metrics": {
+    "turn_count": 1
+  }
+}

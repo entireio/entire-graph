@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "a5bca7cb3b39",
+  "strategy": "manual-commit",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "internal/cli/gps.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a5/bca7cb3b39/0/metadata.json",
+      "transcript": "/a5/bca7cb3b39/0/full.jsonl",
+      "compact_transcript": "/a5/bca7cb3b39/0/transcript.jsonl",
+      "content_hash": "/a5/bca7cb3b39/0/content_hash.txt",
+      "prompt": ""
+    },
+    {
+      "metadata": "/a5/bca7cb3b39/1/metadata.json",
+      "transcript": "/a5/bca7cb3b39/1/full.jsonl",
+      "compact_transcript": "/a5/bca7cb3b39/1/transcript.jsonl",
+      "content_hash": "/a5/bca7cb3b39/1/content_hash.txt",
+      "prompt": "/a5/bca7cb3b39/1/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 624220,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 26300928,
+    "output_tokens": 50172,
+    "api_call_count": 233
+  }
+}

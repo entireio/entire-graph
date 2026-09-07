@@ -121,7 +121,17 @@ func RevParse(ctx context.Context, repo, rev string) (string, error) {
 // one show operation prevents a concurrent HEAD update from mixing provenance
 // from two different commits.
 func HeadCommitAndTree(ctx context.Context, repo string) (string, string, error) {
-	out, err := run(ctx, repo, "git", "show", "-s", "--no-show-signature", "--no-notes", "--format=%H%x00%T", "--end-of-options", "HEAD^{commit}")
+	return CommitAndTree(ctx, repo, "HEAD")
+}
+
+// CommitAndTree resolves one commit expression and its tree in one Git
+// invocation. Callers that need an immutable multi-step view must retain the
+// returned commit rather than evaluating a moving ref again.
+func CommitAndTree(ctx context.Context, repo, revision string) (string, string, error) {
+	if revision == "" || strings.ContainsRune(revision, '\x00') {
+		return "", "", fmt.Errorf("invalid commit revision %q", revision)
+	}
+	out, err := run(ctx, repo, "git", "show", "-s", "--no-show-signature", "--no-notes", "--format=%H%x00%T", "--end-of-options", revision+"^{commit}")
 	if err != nil {
 		return "", "", err
 	}
@@ -130,6 +140,47 @@ func HeadCommitAndTree(ctx context.Context, repo string) (string, string, error)
 		return "", "", errors.New("git show returned malformed HEAD commit/tree metadata")
 	}
 	return commit, tree, nil
+}
+
+// HistoryForPath returns a bounded, local Git history projection. It does not
+// inspect remotes or session data; checkpoint IDs are trailers already stored
+// in commit messages.
+type HistoryEntry struct {
+	Commit     string `json:"commit"`
+	Subject    string `json:"subject"`
+	Checkpoint string `json:"checkpoint,omitempty"`
+}
+
+func HistoryForPath(ctx context.Context, repo, revision, path string, limit int) ([]HistoryEntry, error) {
+	if revision == "" || path == "" || strings.ContainsRune(revision, '\x00') || strings.ContainsRune(path, '\x00') {
+		return nil, errors.New("history requires a revision and path without NUL bytes")
+	}
+	if limit <= 0 {
+		limit = 16
+	}
+	if limit > 32 {
+		limit = 32
+	}
+	out, err := run(ctx, repo, "git", "log", "--no-show-signature", "--no-notes", "-n", strconv.Itoa(limit), "--format=%H%x00%s%x00%B%x00", "--end-of-options", revision, "--", path)
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Split(out, "\x00")
+	entries := make([]HistoryEntry, 0, len(fields)/3)
+	for i := 0; i+2 < len(fields); i += 3 {
+		if fields[i] == "" {
+			continue
+		}
+		entry := HistoryEntry{Commit: fields[i], Subject: fields[i+1]}
+		for _, line := range strings.Split(fields[i+2], "\n") {
+			if checkpoint, ok := strings.CutPrefix(line, "Entire-Checkpoint: "); ok {
+				entry.Checkpoint = strings.TrimSpace(checkpoint)
+				break
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
 }
 
 func FirstParent(ctx context.Context, repo, rev string) (string, error) {

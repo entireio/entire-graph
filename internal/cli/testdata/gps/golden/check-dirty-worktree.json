@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "change_delta": "not_requested",
+  "disposition": "REVIEW_REQUIRED",
+  "repository_view_kind": "working_tree",
+  "finding_ids": ["GPS-MAPPING-UNRESOLVED", "GPS-MAPPING-UNRESOLVED"]
+}

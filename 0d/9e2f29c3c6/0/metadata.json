@@ -1,0 +1,78 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "0d9e2f29c3c6",
+  "session_id": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T06:35:22.559669847Z",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 5,
+  "save_step_count": 2,
+  "files_touched": [
+    "go.mod",
+    "internal/cli/gps.go",
+    "internal/cli/gps_test.go",
+    "internal/cli/help.go",
+    "internal/cli/help_test.go",
+    "internal/cli/root.go",
+    "internal/intent/intent.go",
+    "internal/intent/intent_test.go"
+  ],
+  "agent": "OpenCode",
+  "model": "gpt-5.6-terra-fast",
+  "turn_id": "b5d48d2019ec",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 120670,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2535424,
+    "output_tokens": 15814,
+    "api_call_count": 55
+  },
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T06:35:22.506622064Z",
+    "agent_lines": 772,
+    "agent_removed": 1,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 772,
+    "total_lines_changed": 773,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 269,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".opencode/plugins/entire.ts": 269
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 269,
+      "user_lines_removed": 0,
+      "agent_lines_added": 772,
+      "agent_lines_removed": 1,
+      "user_added_per_file": {
+        ".opencode/plugins/entire.ts": 269
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 269,
+      "user_lines_removed": 0,
+      "agent_lines_added": 772,
+      "agent_lines_removed": 1,
+      "user_added_per_file": {
+        ".opencode/plugins/entire.ts": 269
+      }
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "027adf421f68",
+  "session_id": "ses_f8a199e30ffeeyQIZIMLQlLaJ4",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T09:13:34.408206553Z",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 13,
+  "save_step_count": 2,
+  "files_touched": [
+    "GRAPH_PARSER_SYSTEM/00-front-matter.md",
+    "GRAPH_PARSER_SYSTEM/01-problem-and-solution.md",
+    "GRAPH_PARSER_SYSTEM/02-theory-of-evidence.md",
+    "GRAPH_PARSER_SYSTEM/03-architecture-and-data-model.md",
+    "GRAPH_PARSER_SYSTEM/04-decision-workflows.md",
+    "GRAPH_PARSER_SYSTEM/05-implementation-guide.md",
+    "GRAPH_PARSER_SYSTEM/06-user-verification-guide.md",
+    "GRAPH_PARSER_SYSTEM/07-requirement-traceability.md",
+    "GRAPH_PARSER_SYSTEM/08-limitations-and-roadmap.md",
+    "GRAPH_PARSER_SYSTEM/README.md"
+  ],
+  "agent": "OpenCode",
+  "model": "gpt-5.6-terra-fast",
+  "turn_id": "8fce30f37bfe",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 69824,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1358848,
+    "output_tokens": 10079,
+    "api_call_count": 29
+  },
+  "session_metrics": {
+    "turn_count": 13
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T09:13:34.374910737Z",
+    "agent_lines": 508,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 508,
+    "total_lines_changed": 508,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 269,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".opencode/plugins/entire.ts": 269
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 269,
+      "user_lines_removed": 0,
+      "agent_lines_added": 508,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".opencode/plugins/entire.ts": 269
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 269,
+      "user_lines_removed": 0,
+      "agent_lines_added": 508,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".opencode/plugins/entire.ts": 269
+      }
+    }
+  ]
+}

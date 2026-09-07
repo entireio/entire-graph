@@ -1,0 +1,59 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "a074b421274c",
+  "strategy": "manual-commit",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 7,
+  "files_touched": [
+    "docs/GPS/README.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a0/74b421274c/0/metadata.json",
+      "transcript": "/a0/74b421274c/0/full.jsonl",
+      "compact_transcript": "/a0/74b421274c/0/transcript.jsonl",
+      "content_hash": "/a0/74b421274c/0/content_hash.txt",
+      "prompt": "/a0/74b421274c/0/prompt.txt"
+    },
+    {
+      "metadata": "/a0/74b421274c/1/metadata.json",
+      "transcript": "/a0/74b421274c/1/full.jsonl",
+      "compact_transcript": "/a0/74b421274c/1/transcript.jsonl",
+      "content_hash": "/a0/74b421274c/1/content_hash.txt",
+      "prompt": "/a0/74b421274c/1/prompt.txt"
+    },
+    {
+      "metadata": "/a0/74b421274c/2/metadata.json",
+      "transcript": "/a0/74b421274c/2/full.jsonl",
+      "compact_transcript": "/a0/74b421274c/2/transcript.jsonl",
+      "content_hash": "/a0/74b421274c/2/content_hash.txt",
+      "prompt": "/a0/74b421274c/2/prompt.txt"
+    },
+    {
+      "metadata": "/a0/74b421274c/3/metadata.json",
+      "transcript": "/a0/74b421274c/3/full.jsonl",
+      "compact_transcript": "/a0/74b421274c/3/transcript.jsonl",
+      "content_hash": "/a0/74b421274c/3/content_hash.txt",
+      "prompt": "/a0/74b421274c/3/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 125181,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 3424768,
+    "output_tokens": 14545,
+    "api_call_count": 40
+  },
+  "combined_attribution": {
+    "calculated_at": "2026-09-06T08:08:23.391988271Z",
+    "agent_lines": 1,
+    "agent_removed": 0,
+    "human_added": 89,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 90,
+    "total_lines_changed": 90,
+    "agent_percentage": 1.1111111111111112,
+    "metric_version": 2
+  }
+}

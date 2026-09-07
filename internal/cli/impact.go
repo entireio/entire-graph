@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entireio/entire-graph/internal/intent"
 	"github.com/entireio/entire-graph/internal/sem"
 	"github.com/entireio/entire-graph/internal/termsafe"
 )
@@ -40,6 +41,7 @@ type impactFlags struct {
 	DisableCache    bool
 	ExcludeTests    bool
 	MaxContextBytes int
+	Intent          bool
 }
 
 // impactEntry is one affected location. Direction is "in" (points at the
@@ -119,6 +121,7 @@ type impactResponse struct {
 	Completeness           sem.CompletenessReport `json:"completeness"`
 	// CompletenessScope is the query-relative reading of the diagnostics above.
 	CompletenessScope completenessScope `json:"completeness_scope"`
+	IntentAnchors     []string          `json:"intent_anchors,omitempty"`
 }
 
 func runImpact(ctx context.Context, opts Options, args []string) error {
@@ -154,6 +157,16 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	indexLatency := time.Since(indexStarted)
 	queryStarted := time.Now()
 	response := buildImpactResponseFromReader(snapshot, flags, readSource)
+	if flags.Intent && response.Focus != nil {
+		if set, loadErr := intent.Load(repo); loadErr == nil {
+			for _, binding := range set.Bindings {
+				if binding.SymbolID == response.Focus.ID {
+					response.IntentAnchors = append(response.IntentAnchors, binding.ID)
+				}
+			}
+			sort.Strings(response.IntentAnchors)
+		}
+	}
 	annotateImpactCallSites(&response, readSource)
 	// The verdict is computed once, on the finished response, so the text marker and the JSON fields
 	// can never disagree about whether this answer was worth reading.
@@ -280,6 +293,8 @@ func parseImpactFlags(args []string) (impactFlags, error) {
 			flags.DisableCache = true
 		case "--exclude-tests":
 			flags.ExcludeTests = true
+		case "--intent":
+			flags.Intent = true
 		default:
 			return flags, fmt.Errorf("impact received unexpected argument %q", arg)
 		}

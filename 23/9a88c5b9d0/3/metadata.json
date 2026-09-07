@@ -1,0 +1,81 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "239a88c5b9d0",
+  "session_id": "ses_f8a9d8d8affeyhI0phLyx3hF2a",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T08:29:30.37443637Z",
+  "branch": "docs/gps-design",
+  "checkpoints_count": 4,
+  "save_step_count": 3,
+  "files_touched": [
+    "docs/GPS/fastapi-benchmark-task.md",
+    "scripts/benchmark-fastapi-gps.sh"
+  ],
+  "agent": "OpenCode",
+  "model": "gpt-5.6-terra-fast",
+  "turn_id": "86ec6e4c02de",
+  "checkpoint_transcript_start": 384,
+  "transcript_lines_at_start": 384,
+  "compact_transcript_start": 384,
+  "token_usage": {
+    "input_tokens": 22578,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2627584,
+    "output_tokens": 3079,
+    "api_call_count": 18
+  },
+  "session_metrics": {
+    "turn_count": 52
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T08:29:29.918659477Z",
+    "agent_lines": 13,
+    "agent_removed": 5,
+    "human_added": 59,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 72,
+    "total_lines_changed": 77,
+    "agent_percentage": 23.376623376623375,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 269,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".opencode/plugins/entire.ts": 269
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 269,
+      "user_lines_removed": 0,
+      "agent_lines_added": 13,
+      "agent_lines_removed": 5,
+      "user_added_per_file": {
+        ".opencode/plugins/entire.ts": 269
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 269,
+      "user_lines_removed": 0,
+      "agent_lines_added": 13,
+      "agent_lines_removed": 5,
+      "user_added_per_file": {
+        ".opencode/plugins/entire.ts": 269
+      }
+    }
+  ]
+}

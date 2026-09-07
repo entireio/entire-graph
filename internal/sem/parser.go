@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	clojure "github.com/entireio/entire-graph/internal/sem/grammars/clojure"
@@ -134,6 +135,11 @@ var treeSitterLanguages = map[string]languageSpec{
 	".zsh":        {language: "Zsh", grammar: zsh.GetLanguage()},
 	".dockerfile": {language: "Dockerfile"},
 }
+
+// The bundled grammar libraries share native tree-sitter state. Concurrent
+// ParseCtx calls across grammar instances corrupt the C heap on this build, so
+// keep the full parser/tree lifetime exclusive until the bindings are upgraded.
+var treeSitterNativeMu sync.Mutex
 
 type TreeSitterParser struct{}
 
@@ -354,6 +360,8 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	// finalizers — runs only every couple of minutes. Re-parse-heavy passes on large
 	// repos then pile up thousands of tree-sitter trees off-heap (12+ GB RSS on
 	// microsoft/TypeScript) even though the live Go heap is well under 1 GB.
+	treeSitterNativeMu.Lock()
+	defer treeSitterNativeMu.Unlock()
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(spec.grammar)

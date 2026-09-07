@@ -121,6 +121,42 @@ var commandDocs = []commandDoc{
 
 	// ── Inspect the graph ────────────────────────────────────────────────
 	{
+		name: "spec", group: groupSetup, summary: "Manage authored GPS specifications",
+		usage:    []string{"entire graph spec init|list|show|validate|relationships --repo . [--format json]"},
+		long:     "Creates and validates strict repository-local GPS intent documents. Specifications are authored YAML; this command never generates requirements.",
+		examples: []string{"entire graph spec init --repo .", "entire graph spec validate --repo . --format json"},
+	},
+	{
+		name: "anchor", group: groupSetup, summary: "Bind GPS requirements to graph symbols",
+		usage:    []string{"entire graph anchor bind|list|resolve --repo . [--format json]"},
+		long:     "Persists an explicit reviewed symbol binding with structural and body fingerprints. Binding never runs repository code.",
+		examples: []string{"entire graph anchor bind --repo . --id ANCHOR-001 --symbol Authenticate --file auth.go"},
+	},
+	{
+		name: "context", group: groupInspect, summary: "Retrieve intent-aware change context",
+		usage:    []string{"entire graph context --repo . --query \"change request\" [--format json]"},
+		long:     "Returns bounded, deterministic matches from authored GPS specifications. It does not execute tests or modify repository files.",
+		examples: []string{"entire graph context --repo . --query \"change token lifetime\" --format json"},
+	},
+	{
+		name: "check", group: groupAnalyze, summary: "Check GPS traceability and anchor drift",
+		usage:    []string{"entire graph check --repo . [--format json]"},
+		long:     "Performs static, read-only validation of GPS specifications, mappings, bindings, and fingerprint drift. It never executes declared tests.",
+		examples: []string{"entire graph check --repo . --format json"},
+	},
+	{
+		name: "why", group: groupInspect, summary: "Explain declared intent linked to a symbol",
+		usage:    []string{"entire graph why --repo . --symbol NAME [--file path] [--history --history-limit n] [--format json]"},
+		long:     "Returns only explicit GPS specification, anchor, and declared test links. --history opt-in adds at most 32 local Git commits for the selected symbol path, including recorded Entire checkpoint trailers; unavailable history is reported as HISTORY_UNAVAILABLE.",
+		examples: []string{"entire graph why --repo . --symbol Authenticate --file auth.go --format json"},
+	},
+	{
+		name: "review", group: groupAnalyze, summary: "Project a committed diff onto declared GPS intent",
+		usage:    []string{"entire graph review --repo . --base REV [--format json]"},
+		long:     "Produces a read-only review projection of semantic changes to anchored symbols and declared tests, affected requirements, and mappings. It does not approve changes or execute tests.",
+		examples: []string{"entire graph review --repo . --base HEAD~1 --format json"},
+	},
+	{
 		name:    "search",
 		group:   groupInspect,
 		summary: "Find the code for a task from a plain-language query (start here)",
@@ -184,7 +220,7 @@ var commandDocs = []commandDoc{
 		name:    "impact",
 		group:   groupInspect,
 		summary: "One-shot blast radius for changing a symbol",
-		usage:   []string{"entire graph impact --symbol NAME|<file>:<line> --repo . [--depth 1|2] [--limit 15] [--format text|json]"},
+		usage:   []string{"entire graph impact --symbol NAME|<file>:<line> --repo . [--intent] [--depth 1|2] [--limit 15] [--format text|json]"},
 		long: "Everything the graph knows about changing one symbol in a single bounded explanation: direct + transitive callers (depth <=2), callees, type consumers (USES_TYPE/PARAM_TYPE/RETURNS_TYPE), data flows, files that historically co-change with the symbol's file, and same-container siblings. Run this before changing a function/type's behavior.\n\n" +
 			"Ambiguous names return the definition list; rerun with --file/--line/--kind (or --symbol <file>:<line>) to pick one.",
 		flags: []flagDoc{
@@ -195,6 +231,7 @@ var commandDocs = []commandDoc{
 			{name: "--kind", arg: "kind", desc: "Disambiguate by symbol kind"},
 			{name: "--depth", arg: "1|2", def: "2", desc: "Caller-traversal depth"},
 			{name: "--limit", arg: "n", def: "15", desc: "Max entries per section"},
+			{name: "--intent", desc: "Include explicitly bound GPS anchor IDs in JSON output"},
 			{name: "--format", arg: "text|json", desc: "Output format"},
 			{name: "--max-context-bytes", arg: "n", def: "4096", desc: "Total text budget"},
 			{name: "--exclude-tests", desc: "Drop test-only entries"},
@@ -360,14 +397,16 @@ var commandDocs = []commandDoc{
 		name:    "verify",
 		group:   groupAnalyze,
 		summary: "Run a test command and return an adjudicated verdict, not test output",
-		usage:   []string{`entire graph verify --test "<cmd>" --repo . [--setup "<cmd>"] [--record-baseline path | --pre-edit-baseline path] [--max-bytes 2048]`},
+		usage:   []string{`entire graph verify --test "<cmd>" --repo . [--setup "<cmd>"] [--scope id] [--record-baseline path | --pre-edit-baseline path] [--max-bytes 2048]`},
 		long: "verify runs your test command and reports WHICH TESTS CHANGED rather than what the runner printed: which newly pass, which newly fail, and which were ALREADY failing before the edit (labelled PRE-EXISTING). Raw runner output is never forwarded — ids are, text is not — and id lists cap at 20 with a count.\n\n" +
 			"Record a baseline on the pristine tree first (--record-baseline), then pass that file as --pre-edit-baseline after editing. Without a baseline the verdict is a state rather than a delta, so a failure that predates the change cannot be labelled as one.\n\n" +
+			"When .entire/graph/verification.yaml declares scopes, --scope is required and its caller-supplied command and setup metadata must match. The policy is never executed; its digest is recorded and compared with the baseline.\n\n" +
 			"Parsers: pytest, jest/vitest, cargo test, go test, phpunit, rspec, minitest, maven/gradle surefire, ctest. An unrecognised format degrades to an exit-code-only verdict and says so.",
 		flags: []flagDoc{
 			{name: "--test", arg: "cmd", desc: "The test command to run (required)"},
 			{name: "--repo", arg: "path", desc: "Repository to run in (default: current repo)"},
 			{name: "--setup", arg: "cmd", desc: "Command run before the tests; its output never contributes test ids"},
+			{name: "--scope", arg: "id", desc: "Declared verification-policy scope (required when a policy has scopes)"},
 			{name: "--record-baseline", arg: "path", desc: "Write the pristine-tree result to this file instead of adjudicating"},
 			{name: "--pre-edit-baseline", arg: "path", desc: "Diff this run against a previously recorded baseline"},
 			{name: "--max-bytes", arg: "n", def: "2048", desc: "Cap the rendered verdict; the verdict clause always survives"},

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -311,5 +312,33 @@ func TestParseVerifyFlagsRequiresABaseline(t *testing.T) {
 	}
 	if !verifyCompiledCommand("cargo test -p x") || verifyCompiledCommand("pytest -q") {
 		t.Fatal("timeout ecosystem split is wrong")
+	}
+}
+
+func TestVerifyPolicyPersistsDigestAndRejectsChangedPolicy(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, ".entire/graph/verification.yaml", "version: 1\nscopes:\n  - id: unit\n    command: sh run.sh\n")
+	write(t, repo, "run.sh", "#!/bin/sh\necho 'tests/test_a.py::test_target PASSED'\n")
+	if err := os.Chmod(filepath.Join(repo, "run.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
+	run := func(args ...string) error {
+		return Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &bytes.Buffer{}}, append([]string{"verify", "--repo", repo, "--test", "sh run.sh", "--scope", "unit"}, args...))
+	}
+	if err := run("--record-baseline", baselinePath); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var baseline verifyBaseline
+	if err := json.Unmarshal(content, &baseline); err != nil || baseline.PolicyDigest == "" || baseline.FormatVersion != 1 {
+		t.Fatalf("baseline = %#v err = %v", baseline, err)
+	}
+	write(t, repo, ".entire/graph/verification.yaml", "version: 1\nscopes:\n  - id: unit\n    command: sh run.sh\n  - id: integration\n    command: sh integration.sh\n")
+	if err := run("--pre-edit-baseline", baselinePath); err == nil || !strings.Contains(err.Error(), "policy digest") {
+		t.Fatalf("changed policy error = %v", err)
 	}
 }
