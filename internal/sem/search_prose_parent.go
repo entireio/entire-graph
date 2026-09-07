@@ -50,10 +50,92 @@ type proseParent struct {
 // unit is what enforces MaxRegionsPerFile for code, so removing the rule silently uncaps it. A
 // source region therefore keeps falling back to its file, which is exactly its previous behaviour.
 func proseParentKey(candidate searchCandidate, sectionUnits bool) string {
-	if !sectionUnits || candidate.result.SymbolID == "" || !proseParentPath(candidate.result.FilePath) {
+	if !sectionUnits || !proseParentPath(candidate.result.FilePath) {
+		return candidate.result.FilePath
+	}
+	// The section a region BELONGS TO, resolved from the document's headings by
+	// attachProseSectionUnits. A markdown heading is parsed as a one-LINE `section` symbol, so
+	// asking whether the region carries a symbol of its own answers a different question: it is
+	// true only for the handful of regions that match the heading text itself, and false for every
+	// match in a section BODY — which is nearly all of them. Keying on it therefore collapsed all
+	// ordinary body matches of a document back into a single file unit, silently reducing section
+	// resolution to the file resolution it was written to replace, while a markdown CODE FENCE
+	// (also a one-line symbol, also carrying an ID) became a unit of its own.
+	if candidate.proseSection != "" {
+		return candidate.proseSection
+	}
+	// No section index was built for this file — the corpus was not indexed, or the format has no
+	// parser. Fall back to the region's own symbol identity, which is the previous behaviour.
+	if candidate.result.SymbolID == "" {
 		return candidate.result.FilePath
 	}
 	return candidate.result.SymbolID + ":" + strconv.Itoa(candidate.result.StartLine)
+}
+
+// attachProseSectionUnits records, for every prose candidate, the identity of the headed section
+// its match falls in. It is the piece that makes the unit of retrieval for prose actually be the
+// section: a region is placed under the nearest heading AT OR ABOVE the line it matched on, which
+// is what "belongs to this section" means in a document whose headings are single lines.
+//
+// A document with no headings at all is keyed by its file, exactly as document resolution keys it —
+// there are no sections to split it into, and inventing one unit per region would uncap
+// MaxRegionsPerFile for prose the same way keying source files by symbol would.
+//
+// Files absent from symbolsByFile are left alone rather than guessed at, so a caller that has no
+// symbol information keeps the previous behaviour instead of receiving a different one silently.
+func attachProseSectionUnits(candidates []searchCandidate, symbolsByFile map[string][]SymbolRecord) {
+	if len(symbolsByFile) == 0 {
+		return
+	}
+	headings := map[string][]int{}
+	indexed := map[string]bool{}
+	for index := range candidates {
+		candidate := &candidates[index]
+		path := candidate.result.FilePath
+		if !proseParentPath(path) {
+			continue
+		}
+		if !indexed[path] {
+			symbols, known := symbolsByFile[path]
+			if !known {
+				continue
+			}
+			headings[path] = proseSectionHeadingLines(symbols)
+			indexed[path] = true
+		}
+		lines := headings[path]
+		if len(lines) == 0 {
+			candidate.proseSection = path
+			continue
+		}
+		anchor := candidate.result.FocusLine
+		if anchor <= 0 {
+			anchor = candidate.result.StartLine
+		}
+		candidate.proseSection = path + "#" + strconv.Itoa(proseSectionHeadingAt(lines, anchor))
+	}
+}
+
+// proseSectionHeadingLines returns the ascending start lines of a document's headings.
+func proseSectionHeadingLines(symbols []SymbolRecord) []int {
+	var lines []int
+	for _, symbol := range symbols {
+		if symbol.Kind == "section" && symbol.StartLine > 0 {
+			lines = append(lines, symbol.StartLine)
+		}
+	}
+	sort.Ints(lines)
+	return lines
+}
+
+// proseSectionHeadingAt returns the line of the last heading at or above `line`, or 0 for a region
+// in the document's preamble — which is one unit of its own, not a member of the first section.
+func proseSectionHeadingAt(lines []int, line int) int {
+	position := sort.SearchInts(lines, line+1)
+	if position == 0 {
+		return 0
+	}
+	return lines[position-1]
 }
 
 type proseParentSeed struct {
@@ -320,7 +402,15 @@ func dropContainedProseResults(results []SearchResult) []SearchResult {
 }
 
 func searchResultIsProse(result SearchResult) bool {
-	return hasSearchSignal(result, proseParentRetrievalSignal) || hasSearchSignal(result, proseResolutionSignal)
+	// The PATH, not only the retrieval signal. A --deep search fuses sparse windows into the
+	// ranking beside the prose-parent regions, and a sparse window over a markdown document is
+	// prose text that the containment rule has exactly the same reason to deduplicate; asking only
+	// which retrieval mode produced it exempted every sparse row, so a deep payload printed one
+	// 80-line document head twice. The signals stay in the test because a docs-heavy repository
+	// admits its SOURCE files to prose-parent selection, and those carry no prose extension.
+	return proseParentPath(result.FilePath) ||
+		hasSearchSignal(result, proseParentRetrievalSignal) ||
+		hasSearchSignal(result, proseResolutionSignal)
 }
 
 func proseQueryRequestsMultipleParents(q searchQuery) bool {
@@ -328,7 +418,7 @@ func proseQueryRequestsMultipleParents(q searchQuery) bool {
 	if words == nil {
 		words = searchQueryWords(q.rawLower)
 	}
-	if words["else"] || (words["other"] && words["than"]) {
+	if words["else"] {
 		return true
 	}
 	written := q.wordSequence
@@ -336,15 +426,83 @@ func proseQueryRequestsMultipleParents(q searchQuery) bool {
 		written = searchQueryWordSequence(q.rawLower)
 	}
 	for index, word := range written {
+		// `other than` is a LIST cue only as the ordered adjacent phrase. Testing the two words
+		// independently made `why is this slower than the other implementation` — one comparison
+		// against one thing — cut the protected baseline head from half of top-k to a third, and
+		// the slots it gave up went to weaker term-coverage parents that evicted better-ranked
+		// results.
+		if word == "other" && index+1 < len(written) && written[index+1] == "than" {
+			return true
+		}
 		if word == "which" && proseWhichListFrame(written, index) {
 			return true
 		}
-		if (word == "what" || word == "where") && index+1 < len(written) && written[index+1] == "are" &&
-			safeASCIIWrittenPlural(written[len(written)-1]) {
+		if (word == "what" || word == "where") && index+1 < len(written) &&
+			written[index+1] == "are" && proseArePluralFrame(written, index+1) {
 			return true
 		}
 	}
 	return false
+}
+
+// proseArePluralFrame validates a PLURAL NOUN FRAME after `are`, rather than asking whether the
+// query's final word happens to end in a plural.
+//
+// The final-word test read `what are we doing about deployments` — a singular question about one
+// activity — as a request for a list, because its last word is a plural noun in a prepositional
+// phrase that is not the grammatical head at all. Sacrificing baseline head slots on that reading
+// is a silent ranking change the caller never asked for.
+//
+// The frame is bounded by what ENDS a noun phrase, not by a token count. A fixed three-token
+// window was the same over-correction in the other direction: `what are the currently known open
+// blockers` is unambiguously a list, and its head sits at offset four behind a stack of ordinary
+// modifiers. So the scan walks the modifiers and stops at a personal pronoun, a preposition, a
+// conjunction, or a verb — each of which marks the sentence leaving the noun phrase, which is what
+// separates a named SET from a question that merely continued into a verb phrase.
+func proseArePluralFrame(written []string, areIndex int) bool {
+	const frameWidth = 6
+	for offset := 1; offset <= frameWidth; offset++ {
+		index := areIndex + offset
+		if index >= len(written) {
+			return false
+		}
+		word := written[index]
+		if safeASCIIWrittenPlural(word) {
+			return true
+		}
+		if prosePronoun(word) || proseNounPhraseBoundary(word) {
+			return false
+		}
+	}
+	return false
+}
+
+// proseNounPhraseBoundary reports whether a word ends the noun phrase it appears in: a preposition
+// attaches a new phrase, a conjunction or subordinator starts a new clause, and a verb means the
+// head was already read and the sentence moved on. Determiners and modifiers are deliberately
+// absent — they are exactly what the frame has to walk through to reach the head.
+func proseNounPhraseBoundary(word string) bool {
+	switch word {
+	case "of", "in", "on", "for", "about", "with", "without", "from", "to", "at", "by",
+		"into", "onto", "over", "under", "after", "before", "during", "between", "across",
+		"and", "or", "but", "than", "that", "which", "who", "whom", "whose",
+		"when", "where", "why", "how", "if", "because", "while",
+		"is", "was", "were", "be", "been", "being", "do", "does", "did",
+		"has", "have", "had", "will", "would", "can", "could", "shall", "should",
+		"may", "might", "must", "am", "get", "gets", "got", "go", "goes", "went":
+		return true
+	default:
+		return false
+	}
+}
+
+func prosePronoun(word string) bool {
+	switch word {
+	case "i", "we", "you", "he", "she", "it", "they", "me", "us", "him", "her", "them", "there":
+		return true
+	default:
+		return false
+	}
 }
 
 func proseWhichListFrame(written []string, whichIndex int) bool {
@@ -592,7 +750,11 @@ func safeASCIIProseOpposingSuffix(suffix string) bool {
 
 func safeASCIIProseOpposingPrefix(prefix string) bool {
 	switch prefix {
-	case "anti", "counter", "de", "dis", "il", "im", "in", "ir", "mis", "non", "un":
+	// `no` and `not` are the plainest negations a compound identifier uses — `NotEncrypted`,
+	// `notavailable`, `noredirect` — and without them the compound matched the prose evidence
+	// `encrypted`, `available` or `redirect` and promoted a session stating the OPPOSITE of what
+	// the caller asked about. A wrong answer costs more than a missing one.
+	case "anti", "counter", "de", "dis", "il", "im", "in", "ir", "mis", "no", "non", "not", "un":
 		return true
 	default:
 		return false

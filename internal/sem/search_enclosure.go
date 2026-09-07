@@ -586,12 +586,8 @@ func planSearchEnclosures(
 			}
 			continue
 		}
-		// The symbol must actually contain the hit, and there must be something to gain:
-		// a snippet that already spans the whole body needs no upgrade.
+		// The symbol must actually contain the hit.
 		if result.FocusLine < start || result.FocusLine > end {
-			continue
-		}
-		if result.SnippetStartLine <= start && result.SnippetEndLine >= end {
 			continue
 		}
 		// The margin is rank-1 only and never widens the reported symbol: `symbol` still names the
@@ -608,6 +604,14 @@ func planSearchEnclosures(
 			if padEnd-padStart+1 <= maxLines {
 				start, end = padStart, padEnd
 			}
+		}
+		// There must be something to gain, and what the caller asked to SEE is the body plus its
+		// margin — so the margin is applied first and the test is made against the padded span.
+		// Testing the bare body here made --enclosure-context-lines a no-op for exactly the case a
+		// short callable makes common: rank 1 whose ranked snippet already covered the whole body,
+		// which returned unpadded while the caller had asked for context on both sides.
+		if result.SnippetStartLine <= start && result.SnippetEndLine >= end {
+			continue
 		}
 		enclosures[index] = searchEnclosure{start: start, end: end, lines: lines, symbol: symbol}
 	}
