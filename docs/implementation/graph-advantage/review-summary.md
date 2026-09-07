@@ -67,8 +67,8 @@ The bounded Kubernetes syntax-only diagnostic separately collected 194
 known partials and one warning. All 194 entries have been classified in the
 source-review packet, but that classification does not close parser defects,
 verify every current file, or adopt proposed ADR0049 reviewed-partial
-admission. The resumed sequence has consumed four controlled product
-invocations: that completed syntax-only diagnostic and the three full-profile
+admission. The resumed sequence has consumed five controlled product
+invocations: that completed syntax-only diagnostic and the four full-profile
 timeouts described below. Zero stability batches have run. The first full-profile OFF dispatch attempted
 transport once but failed before product startup because the packaged collector
 still contained placeholder constants (`consumed=0`, `reserved=1`); it is
@@ -107,9 +107,33 @@ a complete diagnostic-only 20-second relations CPU profile, SHA-256
 `8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6`,
 with unchanged before/after corpus identity and zero control-identity
 mismatches; the VM is deallocated. The first route prefilter did not resolve
-the timeout. Offline analysis of the post-fix profile is pending, and no
-stability, release or performance claim follows. The resumed invocation total
-is four.
+the timeout.
+
+Source `8689fc3d790e4290ce2b62500d270c96c02087b3` adds a route-token boundary
+correction. Its pinned Linux affected normal and race stages each passed 10
+tests, and compiler correctness passed 28 tests including 10 live tests, with
+zero skips or failures. The evaluator build produced binary SHA-256
+`259a56073fb54e74f2d1d60a3a6a98d87a7eec1c992f86a0c665a35c3cdb9559`;
+evidence is retained under `evidence/diagnostics-linux-8689fc3d-r1/`. This is
+focused correctness and build evidence. No immutable full check exists for
+`8689fc3d`; the latest completed immutable full check remains the historical
+`450bede9` run. The diagnostic preparation was committed and pushed at
+`ad41af6fb21c0b046d3f11716683990954d2ef3d`.
+
+The accepted focused-only `diagnostic-validation-v1` gate then authorized
+exactly one `diagnostic-dispatch-8689fc3d` cache-off full-profile snapshot. The
+request started and timed out at 120 seconds (`process=-9`, `collector=1`) with
+no observation or diagnostics. It retained a complete diagnostic-only
+20.027-second relations CPU profile, SHA-256
+`2c72e17b6089a06fb0fb991a68c30498d407c88ad5baf3777121d0f78b870776`,
+with byte-identical before/after inputs and zero control-identity mismatches.
+No retry was made and the VM is deallocated. The focused gate is not a full
+check or admission substitute. Offline analysis of the latest profile found
+that route-regex work remains a CPU hotspot; a route refactor is in progress,
+and no further sampling is authorized before the fix and its correctness
+evidence. Zero clean stability batches have run, and no stability, release,
+timeout-resolution or performance claim follows. The resumed invocation total
+is five.
 
 The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
 6 timeouts. It is therefore collected but incomplete. The campaign remains
@@ -118,10 +142,10 @@ P2, P3 or P4 release gate has passed.
 
 | Workstream | Implementation and correctness | Evaluation and release status |
 |---|---|---|
-| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. Retained profile and diagnostic outputs have exact parity where stated above, and the current immutable full check passed. | Fixed-corpus baseline and paired matrix are incomplete; timeout/partial admission, performance and RSS remain open. |
+| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. Retained profile and diagnostic outputs have exact parity where stated above; the latest immutable full check is the historical `450bede9` pass, `8689fc3d` has focused Linux evidence, and its final full check remains pending. | Fixed-corpus baseline and paired matrix are incomplete; timeout/partial admission, performance and RSS remain open. |
 | P2 | Pinned Go analysis, lifecycle, source identity, mapping, compiler-view integration and invalidation contracts have implementation and focused correctness evidence. | Hard-Go quality and adjudicated precision/recall studies are deferred; no gate passed. |
 | P3 | Relation policy, bounded traversal, path evidence, CLI/output and compiler-view contracts have focused correctness evidence. | Realistic affected-site precision/recall/cost studies and coverage gates are deferred; no gate passed. |
-| P4 | Candidate-only ranking, experimental integration, ablation controls and fallback behavior are implemented with numerical and contract fixtures. | No winning configuration, held-out result or downstream agent study is established; no gate passed. |
+| P4 | Candidate-only ranking, experimental integration and fallback behavior have numerical and contract fixtures. The development-ablation interface is incomplete because current expansion still aliases current ranking instead of holding candidate expansion identical while ranking varies. | The expansion-control correction and focused proof are in progress. No winning configuration, held-out result or downstream agent study is established; no gate passed. |
 
 “Complete” in the ledger means implementation or harness delivery. It does
 not mean a comparative result or release decision. Existing failures,
@@ -155,9 +179,11 @@ policy, the shared 100-invocation cap, durable duplicate/retry prevention and
 first-issue stop. Three clean representative batches are a checkpoint for
 stability only, not a release gate.
 
-The existing timeouts remain failed diagnostics. Offline analysis of the
-post-fix profile is pending, no further fix or timeout-resolution claim exists,
-and no new product invocation or full campaign is authorized by this evidence.
+The existing timeouts remain failed diagnostics. The latest profile still
+shows route-regex work as a CPU hotspot; the route refactor and correctness
+evidence must complete before any further sampling. No timeout-resolution
+claim exists, and no new product invocation or full campaign is authorized by
+this evidence.
 
 P2 and P3 still require independent adjudication of required, allowed and
 forbidden targets with explicit partial/unavailable coverage. P4 requires a
