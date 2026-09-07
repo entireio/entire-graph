@@ -199,6 +199,61 @@ func benchGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// recordGitCommands installs a transparent Git shim so tests whose failure
+// fixture must stay offline can prove that no remote operation escaped the
+// validation boundary. Windows keeps the behavioral assertion; the shim is a
+// POSIX shell script, so subprocess recording is unavailable there.
+func recordGitCommands(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("no git on PATH: %v", err)
+	}
+	shimDir := t.TempDir()
+	log := filepath.Join(shimDir, "argv.log")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$ENTIRE_GRAPH_TEST_GIT_LOG"
+for arg do
+	case "$arg" in
+		clone|fetch|ls-remote|remote-http|remote-https|git-remote-http|git-remote-https|http://*|https://*)
+			exit 97
+			;;
+	esac
+done
+exec "$ENTIRE_GRAPH_TEST_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ENTIRE_GRAPH_TEST_GIT_LOG", log)
+	t.Setenv("ENTIRE_GRAPH_TEST_REAL_GIT", realGit)
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+func assertNoRemoteGitCommands(t *testing.T, log string) {
+	t.Helper()
+	if log == "" {
+		return
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		t.Fatalf("read git subprocess log: %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		command := strings.TrimSpace(line)
+		if strings.HasPrefix(command, "ls-remote ") || strings.HasPrefix(command, "clone ") || strings.HasPrefix(command, "fetch ") || strings.Contains(command, "https://") {
+			t.Fatalf("validation fixture reached remote git: %q; all git commands:\n%s", command, data)
+		}
+	}
+}
+
 // newUpstreamRepo builds a one-commit local repository that ensureRepo can
 // clone and fetch from with no network, keeping the bench tool's no-egress
 // property intact under test.
@@ -1334,14 +1389,14 @@ func TestEnsureRepoStillResolvesNonHexLockEntryAsARef(t *testing.T) {
 // the measurement loop measured it and printed an ordinary result row. The
 // failure has to reach the report instead.
 //
-// The ref here is refused by validateRef before any git process starts, so the
-// test needs no network -- which is also the shape of a real failure that leaves
-// a stale cache in place (a refused ref, an ls-remote that could not reach the
-// remote).
+// The ref here is refspec syntax and is refused by validateRef before any git
+// process starts, so the test needs no network. A leading dash is intentionally
+// not used: it is a legal branch-name prefix that ensureRepo resolves safely
+// against the remote.
 func TestRunReportsCloneFailureInsteadOfMeasuringTheStaleCache(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "manifest.json")
-	if err := os.WriteFile(manifestPath, []byte(`{"languages":{"Go":["owner/repo@-evil"]}}`), 0o644); err != nil {
+	if err := os.WriteFile(manifestPath, []byte(`{"languages":{"Go":["owner/repo@main:main"]}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// The stale checkout an earlier run left in the cache.
@@ -1353,6 +1408,7 @@ func TestRunReportsCloneFailureInsteadOfMeasuringTheStaleCache(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(staleDir, "stale.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	gitLog := recordGitCommands(t)
 
 	outDir := filepath.Join(dir, "out")
 	if err := run(manifestPath, cacheDir, outDir, filepath.Join(dir, "lock.json"), "", "syntax-only", 0, 1, 1, false, false, "bench-test", false, 0, 0, false); err != nil {
@@ -1370,6 +1426,7 @@ func TestRunReportsCloneFailureInsteadOfMeasuringTheStaleCache(t *testing.T) {
 	if got.LOC != 0 || got.Files != 0 {
 		t.Fatalf("row measured the stale checkout: %#v", got)
 	}
+	assertNoRemoteGitCommands(t, gitLog)
 }
 
 // The clone failures cloneAll reports were keyed by repo path alone, but a
@@ -1382,13 +1439,13 @@ func TestRunReportsCloneFailureInsteadOfMeasuringTheStaleCache(t *testing.T) {
 // The key has to be the checkout whose freshness is in doubt, which is the
 // cache directory, not the repository name.
 //
-// No network: the failing spec is refused by validateRef before any git process
-// starts, and the succeeding spec names no ref, so ensureRepo finds .git in the
-// cache and only runs rev-parse.
+// No network: the failing spec contains refspec syntax and is refused by
+// validateRef before any git process starts, and the succeeding spec names no
+// ref, so ensureRepo finds .git in the cache and only runs local Git commands.
 func TestRunKeepsCloneFailuresToTheirOwnCacheDirectory(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "manifest.json")
-	if err := os.WriteFile(manifestPath, []byte(`{"languages":{"Go":["owner/repo"],"Rust":["owner/repo@-evil"]}}`), 0o644); err != nil {
+	if err := os.WriteFile(manifestPath, []byte(`{"languages":{"Go":["owner/repo"],"Rust":["owner/repo@main:main"]}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// The Go copy is already in the cache, so its clone succeeds untouched.
@@ -1404,6 +1461,7 @@ func TestRunKeepsCloneFailuresToTheirOwnCacheDirectory(t *testing.T) {
 	benchGit(t, goDir, "config", "user.email", "graph@example.com")
 	benchGit(t, goDir, "add", ".")
 	benchGit(t, goDir, "commit", "--quiet", "-m", "init")
+	gitLog := recordGitCommands(t)
 
 	t.Setenv("ENTIRE_GRAPH_BENCH_MAIN_TEST_WORKER", "1")
 	worker := []string{os.Args[0], "-test.run=^TestGraphBenchMeasureWorker$"}
@@ -1430,4 +1488,5 @@ func TestRunKeepsCloneFailuresToTheirOwnCacheDirectory(t *testing.T) {
 	if rows["Go"].Files == 0 {
 		t.Fatalf("Go row measured nothing: %#v", rows["Go"])
 	}
+	assertNoRemoteGitCommands(t, gitLog)
 }
