@@ -23693,7 +23693,14 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 				}
 			}
 		}
-		for _, registration := range goHTTPRouteRegistrations(content, constantsByFile.forFile(file.Path, content)) {
+		var constants map[string]string
+		constantsForFile := func() map[string]string {
+			if constants == nil {
+				constants = constantsByFile.forFile(file.Path, content)
+			}
+			return constants
+		}
+		for _, registration := range goHTTPRouteRegistrations(content, constantsForFile) {
 			handler, ok := resolveRouteHandlerSymbol(handlers, registration.Handler)
 			if !ok {
 				continue
@@ -23773,11 +23780,241 @@ func containsGoHTTPRouteCallToken(content, token string) bool {
 	return false
 }
 
+// goHTTPRouteCandidateRegions splits Go source into bounded statement-like
+// regions, retaining only regions that can contain one of the registration
+// forms accepted by goHTTPRouteRegistrations. Parentheses inside strings and
+// comments do not join unrelated statements into one large region. A newline
+// immediately before a call's opening parenthesis remains part of the region,
+// matching the whitespace accepted by the registration expressions.
+func goHTTPRouteCandidateRegions(content string) []string {
+	var regions []string
+	start, lineStart, depth := 0, 0, 0
+	quote := byte(0)
+	escaped := false
+	lineComment, blockComment := false, false
+	pendingContinuation := false
+	flush := func(end int) {
+		if start < end {
+			region := content[start:end]
+			if goHTTPRouteCandidate(region) {
+				regions = append(regions, region)
+			}
+		}
+		start = end
+		pendingContinuation = false
+	}
+	for i := 0; i < len(content); i++ {
+		ch := content[i]
+		if lineComment {
+			if ch == '\n' {
+				lineComment = false
+				if depth == 0 {
+					blank := goHTTPWhitespaceOnly(content[lineStart:i])
+					if !(pendingContinuation && blank) {
+						pendingContinuation = goHTTPRouteCallContinues(content, start, i)
+					}
+					if !pendingContinuation {
+						flush(i + 1)
+					}
+				}
+				lineStart = i + 1
+			}
+			continue
+		}
+		if blockComment {
+			if ch == '*' && i+1 < len(content) && content[i+1] == '/' {
+				blockComment = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			if quote != '`' && escaped {
+				escaped = false
+				continue
+			}
+			if quote != '`' && ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(content) {
+			switch content[i+1] {
+			case '/':
+				lineComment = true
+				i++
+				continue
+			case '*':
+				blockComment = true
+				i++
+				continue
+			}
+		}
+		switch ch {
+		case '"', '\'', '`':
+			quote = ch
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case '\n':
+			if depth == 0 {
+				blank := goHTTPWhitespaceOnly(content[lineStart:i])
+				if !(pendingContinuation && blank) {
+					pendingContinuation = goHTTPRouteCallContinues(content, start, i)
+				}
+				if !pendingContinuation {
+					flush(i + 1)
+				}
+			}
+			lineStart = i + 1
+		case ';':
+			if depth == 0 {
+				flush(i + 1)
+			}
+		}
+	}
+	flush(len(content))
+	return regions
+}
+
+func goHTTPWhitespaceOnly(value string) bool {
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case ' ', '\t', '\f', '\r':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func goHTTPRouteCallContinues(content string, start, boundary int) bool {
+	prefix := strings.TrimSpace(content[start:boundary])
+	callToken := goHTTPRouteTokenSuffix(prefix)
+	assignmentLHS := goHTTPTrailingIdentifier(prefix) != ""
+	groupAssignment := goHTTPGroupAssignmentPrefix(prefix)
+	if !callToken && !assignmentLHS && !groupAssignment {
+		return false
+	}
+	next := boundary + 1
+	for next < len(content) {
+		switch content[next] {
+		case ' ', '\t', '\f', '\r':
+			next++
+			continue
+		}
+		break
+	}
+	if next < len(content) && content[next] == '\n' {
+		return true
+	}
+	if next < len(content) && content[next] == '(' && callToken {
+		return true
+	}
+	if assignmentLHS && (strings.HasPrefix(content[next:], "=") || strings.HasPrefix(content[next:], ":=")) {
+		return true
+	}
+	if !groupAssignment {
+		return false
+	}
+	return goHTTPGroupCallPrefix(content[next:])
+}
+
+func goHTTPRouteTokenSuffix(prefix string) bool {
+	for _, token := range []string{
+		"HandleFunc", "Handle", ".Group",
+		".GET", ".POST", ".PUT", ".PATCH", ".DELETE", ".HEAD", ".OPTIONS",
+		".Get", ".Post", ".Put", ".Patch", ".Delete", ".Head", ".Options",
+	} {
+		if strings.HasSuffix(prefix, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func goHTTPGroupAssignmentPrefix(prefix string) bool {
+	prefix = strings.TrimSpace(prefix)
+	if strings.HasSuffix(prefix, ":=") {
+		prefix = strings.TrimSpace(strings.TrimSuffix(prefix, ":="))
+	} else if strings.HasSuffix(prefix, "=") {
+		prefix = strings.TrimSpace(strings.TrimSuffix(prefix, "="))
+	} else {
+		return false
+	}
+	return goHTTPTrailingIdentifier(prefix) != ""
+}
+
+func goHTTPGroupCallPrefix(content string) bool {
+	i := 0
+	for i < len(content) && (content[i] == '_' || content[i] >= 'a' && content[i] <= 'z' || content[i] >= 'A' && content[i] <= 'Z' || i > 0 && content[i] >= '0' && content[i] <= '9') {
+		i++
+	}
+	return i > 0 && strings.HasPrefix(content[i:], ".Group")
+}
+
+func goHTTPIdentifier(value string) bool {
+	if value == "" || !(value[0] == '_' || value[0] >= 'a' && value[0] <= 'z' || value[0] >= 'A' && value[0] <= 'Z') {
+		return false
+	}
+	for i := 1; i < len(value); i++ {
+		if !(value[i] == '_' || value[i] >= 'a' && value[i] <= 'z' || value[i] >= 'A' && value[i] <= 'Z' || value[i] >= '0' && value[i] <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func goHTTPTrailingIdentifier(value string) string {
+	value = strings.TrimSpace(value)
+	end := len(value)
+	start := end
+	for start > 0 {
+		ch := value[start-1]
+		if ch == '_' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' {
+			start--
+			continue
+		}
+		break
+	}
+	identifier := value[start:end]
+	if goHTTPIdentifier(identifier) {
+		return identifier
+	}
+	return ""
+}
+
 var goHTTPRouteRegistrationsGroupRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)`)
 
-func goHTTPRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {
+var (
+	goHTTPHandleFuncRe         = regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?HandleFunc\s*\(\s*([^,\n]+)\s*,\s*(` + goHTTPHandlerExpr + `)\s*\)`)
+	goHTTPHandleFuncWrapperRe  = regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?Handle\s*\(\s*([^,\n]+)\s*,\s*(?:http\.)?HandlerFunc\s*\(\s*(` + goHTTPHandlerExpr + `)\s*\)\s*\)`)
+	goHTTPRouterMethodRe       = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*(` + goHTTPHandlerExpr + `)\s*\)`)
+	goHTTPChainedGroupMethodRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)\.(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*(` + goHTTPHandlerExpr + `)\s*\)`)
+)
+
+const goHTTPHandlerExpr = `[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?`
+
+func goHTTPRouteRegistrations(content string, constantsForFile func() map[string]string) []goHTTPRouteRegistration {
+	regions := goHTTPRouteCandidateRegions(content)
+	resolveRoute := func(expr string) (string, bool) {
+		if route, ok := staticRouteExpressionValue(expr, nil); ok {
+			return route, true
+		}
+		return staticRouteExpressionValue(expr, constantsForFile())
+	}
 	groupPrefixes := map[string]string{}
-	groupMatches := goHTTPRouteRegistrationsGroupRe.FindAllStringSubmatch(content, -1)
+	var groupMatches [][]string
+	for _, region := range regions {
+		groupMatches = append(groupMatches, goHTTPRouteRegistrationsGroupRe.FindAllStringSubmatch(region, -1)...)
+	}
 	changed := true
 	for changed {
 		changed = false
@@ -23785,7 +24022,7 @@ func goHTTPRouteRegistrations(content string, constants map[string]string) []goH
 			if len(match) != 4 {
 				continue
 			}
-			prefix, ok := staticRouteExpressionValue(match[3], constants)
+			prefix, ok := resolveRoute(match[3])
 			if !ok {
 				continue
 			}
@@ -23806,13 +24043,13 @@ func goHTTPRouteRegistrations(content string, constants map[string]string) []goH
 		if _, exists := groupPrefixes[match[1]]; exists {
 			continue
 		}
-		if prefix, ok := staticRouteExpressionValue(match[3], constants); ok {
+		if prefix, ok := resolveRoute(match[3]); ok {
 			groupPrefixes[match[1]] = prefix
 		}
 	}
 	var registrations []goHTTPRouteRegistration
 	add := func(routeExpr, handler, evidence string) {
-		route, ok := staticRouteExpressionValue(routeExpr, constants)
+		route, ok := resolveRoute(routeExpr)
 		if !ok || handler == "" {
 			return
 		}
@@ -23823,48 +24060,51 @@ func goHTTPRouteRegistrations(content string, constants map[string]string) []goH
 			Detail:       route + " -> " + handler,
 		})
 	}
-	goHandlerExpr := `[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?`
-	handleFuncRe := regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?HandleFunc\s*\(\s*([^,\n]+)\s*,\s*(` + goHandlerExpr + `)\s*\)`)
-	handleFuncWrapperRe := regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?Handle\s*\(\s*([^,\n]+)\s*,\s*(?:http\.)?HandlerFunc\s*\(\s*(` + goHandlerExpr + `)\s*\)\s*\)`)
-	routerMethodRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*(` + goHandlerExpr + `)\s*\)`)
-	chainedGroupMethodRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)\.(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*(` + goHandlerExpr + `)\s*\)`)
-	for _, match := range handleFuncRe.FindAllStringSubmatch(content, -1) {
-		if len(match) == 3 {
-			add(match[1], match[2], "go_http_handle_func")
-		}
-	}
-	for _, match := range handleFuncWrapperRe.FindAllStringSubmatch(content, -1) {
-		if len(match) == 3 {
-			add(match[1], match[2], "go_http_handler_func")
-		}
-	}
-	for _, match := range routerMethodRe.FindAllStringSubmatch(content, -1) {
-		if len(match) == 4 {
-			routeExpr := match[2]
-			if prefix := groupPrefixes[match[1]]; prefix != "" {
-				if route, ok := staticRouteExpressionValue(routeExpr, constants); ok {
-					routeExpr = strconv.Quote(joinRoutePaths(prefix, route))
-				}
+	for _, region := range regions {
+		for _, match := range goHTTPHandleFuncRe.FindAllStringSubmatch(region, -1) {
+			if len(match) == 3 {
+				add(match[1], match[2], "go_http_handle_func")
 			}
-			add(routeExpr, match[3], "go_router_method")
 		}
 	}
-	for _, match := range chainedGroupMethodRe.FindAllStringSubmatch(content, -1) {
-		if len(match) != 5 {
-			continue
+	for _, region := range regions {
+		for _, match := range goHTTPHandleFuncWrapperRe.FindAllStringSubmatch(region, -1) {
+			if len(match) == 3 {
+				add(match[1], match[2], "go_http_handler_func")
+			}
 		}
-		prefix, ok := staticRouteExpressionValue(match[2], constants)
-		if !ok {
-			continue
+	}
+	for _, region := range regions {
+		for _, match := range goHTTPRouterMethodRe.FindAllStringSubmatch(region, -1) {
+			if len(match) == 4 {
+				routeExpr := match[2]
+				if prefix := groupPrefixes[match[1]]; prefix != "" {
+					if route, ok := resolveRoute(routeExpr); ok {
+						routeExpr = strconv.Quote(joinRoutePaths(prefix, route))
+					}
+				}
+				add(routeExpr, match[3], "go_router_method")
+			}
 		}
-		if parentPrefix := groupPrefixes[match[1]]; parentPrefix != "" {
-			prefix = joinRoutePaths(parentPrefix, prefix)
+	}
+	for _, region := range regions {
+		for _, match := range goHTTPChainedGroupMethodRe.FindAllStringSubmatch(region, -1) {
+			if len(match) != 5 {
+				continue
+			}
+			prefix, ok := resolveRoute(match[2])
+			if !ok {
+				continue
+			}
+			if parentPrefix := groupPrefixes[match[1]]; parentPrefix != "" {
+				prefix = joinRoutePaths(parentPrefix, prefix)
+			}
+			route, ok := resolveRoute(match[3])
+			if !ok {
+				continue
+			}
+			add(strconv.Quote(joinRoutePaths(prefix, route)), match[4], "go_router_group_method")
 		}
-		route, ok := staticRouteExpressionValue(match[3], constants)
-		if !ok {
-			continue
-		}
-		add(strconv.Quote(joinRoutePaths(prefix, route)), match[4], "go_router_group_method")
 	}
 	return registrations
 }
