@@ -92,11 +92,7 @@ const (
 )
 
 func newPathMountGuard(root, trustedBase string) (pathMountGuard, error) {
-	mountPoints, err := readAIXMountPoints()
-	if err != nil {
-		return pathMountGuard{}, err
-	}
-	return makePathMountGuard(root, trustedBase, mountPoints), nil
+	return readPathMountGuard(root, trustedBase, readAIXMountPoints)
 }
 
 // mntctl returns the live kernel VFS inventory. Parsing the bounded vmount

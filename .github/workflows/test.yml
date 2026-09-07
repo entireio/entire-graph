@@ -17,7 +17,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-go@v6
-        with: { go-version: "1.26.x" }
+        with: { go-version: "1.27.x" }
       - run: go vet ./...
       - run: |
           unformatted=$(gofmt -l -s .)
@@ -37,7 +37,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-go@v6
-        with: { go-version: "1.26.x" }
+        with: { go-version: "1.27.x" }
       - run: go build ./...
 
   test:
@@ -50,7 +50,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-go@v6
-        with: { go-version: "1.26.x" }
+        with: { go-version: "1.27.x" }
       # Keep the named package budget consistent with the Windows shard policy.
       - run: go test -timeout 30m ./...
 
@@ -66,7 +66,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.x"
+          go-version: "1.27.x"
           cache-dependency-path: go.sum
       - uses: actions/setup-python@v6
         with:
@@ -125,7 +125,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.x"
+          go-version: "1.27.x"
           cache-dependency-path: go.sum
       - uses: actions/setup-python@v6
         with:
@@ -168,7 +168,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.x"
+          go-version: "1.27.x"
           cache-dependency-path: go.sum
       - uses: actions/setup-python@v6
         with:
@@ -209,7 +209,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.x"
+          go-version: "1.27.x"
           cache-dependency-path: go.sum
       - run: go vet ./...
 
@@ -314,6 +314,6 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-go@v6
-        with: { go-version: "1.26.x" }
+        with: { go-version: "1.27.x" }
       - run: go build -o entire-graph ./cmd/entire-graph
       - run: sh scripts/entire-graph-statusline_test.sh
