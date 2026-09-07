@@ -1,5 +1,1 @@
-Fix it
-
----
-
 Trails has a new medium finding. Keep looping until you fixed them all.
