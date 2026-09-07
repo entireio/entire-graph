@@ -115,25 +115,28 @@ stored and current revisions must treat inequality (including missing/present)
 as a need to refresh derived semantic data. History consumers must also migrate
 previously persisted entity deltas rather than merely append newly parsed ones.
 
-The revision `js-ts-callable-scope-1` covers trail 154's JS/TS callable-scope
-corrections. Snapshot/search cache namespaces include this revision so an
-unchanged tree and unchanged development release string cannot reuse old parser
-output. The companion Brain migration recomputes already indexed commits
-atomically while preserving source commits, checkpoint/session provenance, and
-authored memory. Ship the consumer support before enabling this producer change.
-Future changes that re-key existing symbols must revise this token and document
-the corresponding consumer migration; ordinary body edits do not change it.
+This is one global revision for parser identity rules across all languages.
+The value is a decimal revision encoded as a string, currently `"2"`. Consumers
+compare the complete opaque string for equality rather than relying on numeric
+ordering. The field name supplies its meaning; the value names no language or
+feature. A bump invalidates both snapshot and search
+cache namespaces even when the source tree and provider release are unchanged.
+It does not change the individual symbol-ID format.
 
+The current revision `"2"` includes trail 154's JS/TS callable-scope
+corrections and trail 163's anonymous default-export corrections. Callable exports
+previously classified as classes receive corrected function IDs, phantom exports
+in comments and literals are removed, and corrected source ranges/signatures can
+affect entity history. The original token `js-ts-callable-scope-1` and the interim
+`js-ts-callable-scope-2` are historical values, not separate language revisions.
 
-The revision `js-ts-callable-scope-2` additionally covers trail 163's anonymous
-JS/TS default-export corrections: callable exports previously classified as
-classes receive corrected function IDs, phantom exports in comments and literals
-are removed, and corrected source ranges/signatures can affect entity history.
-Consumers upgrading from `js-ts-callable-scope-1` must refresh derived snapshots
-and recompute persisted entity deltas using the corrected parser, preserving
-source commits and checkpoint/session provenance. A revision mismatch is the
-migration trigger; changing the producer token alone does not implement the
-consumer migration. Verify consumer support before deploying this revision.
+Consumers upgrading from either historical token must refresh derived snapshots
+and recompute persisted entity deltas using the current parser, preserving source
+commits, checkpoint/session provenance, and authored memory. A revision mismatch
+is the migration trigger; changing the producer token alone does not implement
+the consumer migration. Verify consumer support before deploying this revision.
+Future changes that re-key existing symbols in any language must revise this token
+and document the corresponding consumer migration; ordinary body edits do not.
 
 ### Compact snapshot reader compatibility
 
