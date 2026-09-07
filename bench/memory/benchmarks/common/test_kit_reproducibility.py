@@ -486,6 +486,23 @@ class CmmBinaryResolutionTest(unittest.TestCase):
                     CmmClient()
         self.assertIn("CMM_BUILD", str(ctx.exception))
 
+    def test_every_fingerprint_split_at_a_chunk_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "cmm"
+            for build, marker in cmm_client._MARKERS.items():
+                for split in range(len(marker) + 1):
+                    with self.subTest(build=build, split=split):
+                        binary.write_bytes(b"\x00" * ((1 << 20) - split) + marker)
+                        self.assertEqual(cmm_client._fingerprints(str(binary)), {build})
+
+    def test_both_fingerprints_are_explicitly_reported_and_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = self._binary(tmp, _PATCHED_EXCLUSION + b"\x00" + _STOCK_EXCLUSION)
+            for declared in ("patched", "stock"):
+                with self.subTest(declared=declared):
+                    with self.assertRaisesRegex(RuntimeError, "both stock and patched"):
+                        cmm_client._verify_build(binary, declared)
+
     def test_the_fingerprint_survives_a_chunk_boundary(self) -> None:
         """A real binary is megabytes; the scan must not miss a straddling marker."""
         with tempfile.TemporaryDirectory() as tmp:

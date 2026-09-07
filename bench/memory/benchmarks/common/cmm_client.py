@@ -182,6 +182,14 @@ def _verify_build(path: str, declared: str) -> str:
     found = _fingerprints(path)
     if found == {declared}:
         return declared
+    if found == {"stock", "patched"}:
+        raise RuntimeError(
+            f"CMM_UNVERIFIED_BINARY: CMM_BIN={path!r} contains both stock and patched "
+            "BM25 fingerprints, so its build is ambiguous and cannot be scored. "
+            "Rebuild from a clean cmm v0.9.0 checkout, applying "
+            f"{_PATCH_REF} only for the patched build, and point CMM_BIN at "
+            "the resulting executable."
+        )
     if found == {"stock"} and declared == "patched":
         raise RuntimeError(
             f"CMM_UNPATCHED_BINARY: CMM_BIN={path!r} is the SHIPPED cmm build -- "
