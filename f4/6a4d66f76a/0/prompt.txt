@@ -1,0 +1,9 @@
+Ok, let's do that then. entire-brain repo is in \~/Projects. Do all work in a worktree and open a new trail for it when done. Update the entire-graph trail as needed.
+
+---
+
+The Brain trail has one high finding, please address. Even more critical seems to be this risk: Elevated risk: migration atomically rewrites all entity history under write lock, tombstones derived indexes (which propagate via sync to un-migrated peers), and replaces constant-time freshness with O(n) identity scanning on every build.
+
+---
+
+CI on both trails no longer succeeds.
