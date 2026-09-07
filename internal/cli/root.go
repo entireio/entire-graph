@@ -458,7 +458,14 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 
 	// On a miss, tee the serialized record stream into a buffer so we can persist it after
 	// a successful run without a second pass over the graph.
-	var recordBuf bytes.Buffer
+	//
+	// BOUNDED, because the cache is on by default: resolveCacheDir falls back to the user cache
+	// directory, so useCache is true for every ordinary committed snapshot/symbols/edges run and this
+	// tee is no longer the opt-in it was written as. An unbounded tee makes a streaming command hold
+	// its ENTIRE output in memory — proportional to the whole graph, on exactly the large repositories
+	// the streaming contract exists for. Past the cap the buffer is released and the entry is not
+	// stored: the cache is best effort, the stream is not.
+	recordBuf := boundedRecordBuffer{limit: providerRecordsCacheMaxBytes}
 	if recordsCache != nil {
 		encodeRecord = newRecordEncoder(io.MultiWriter(opts.Stdout, &recordBuf))
 	}
@@ -478,11 +485,39 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	} else {
 		warnIfPartial(opts.Stderr, flags.Worktree, summary)
 	}
-	if recordsCache != nil {
+	if recordsCache != nil && !recordBuf.overflowed {
 		// Best effort: a failed cache write never fails the command.
-		_ = recordsCache.Store(recordBuf.Bytes(), summary, snapshotHeader)
+		_ = recordsCache.Store(recordBuf.buffer.Bytes(), summary, snapshotHeader)
 	}
 	return nil
+}
+
+// providerRecordsCacheMaxBytes caps the in-memory capture of a cold run's records. A var rather than
+// a const so a test can shrink it to a size a fixture can actually exceed.
+var providerRecordsCacheMaxBytes = 64 << 20
+
+// boundedRecordBuffer accumulates the record stream up to a byte limit and then stops, releasing what
+// it held and remembering that it did. Writes ALWAYS report success: this sits inside the
+// io.MultiWriter that also feeds stdout, and a short write there would abort the stream the command
+// exists to produce. Giving up on the cache entry is the correct trade; giving up on the output is
+// not.
+type boundedRecordBuffer struct {
+	buffer     bytes.Buffer
+	limit      int
+	overflowed bool
+}
+
+func (b *boundedRecordBuffer) Write(records []byte) (int, error) {
+	if b.overflowed {
+		return len(records), nil
+	}
+	if b.buffer.Len()+len(records) > b.limit {
+		b.overflowed = true
+		// The entry will never be stored, so nothing here is worth the memory any longer.
+		b.buffer = bytes.Buffer{}
+		return len(records), nil
+	}
+	return b.buffer.Write(records)
 }
 
 func scipOmissionNoteWithSummary(note sem.SCIPOmissionNote, summary *sem.SnapshotSummary) sem.SCIPOmissionNote {
