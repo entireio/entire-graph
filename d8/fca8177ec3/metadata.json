@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "d8fca8177ec3",
+  "strategy": "manual-commit",
+  "branch": "fix/verify-exit-codes-and-injection",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/search_verify_stream_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d8/fca8177ec3/0/metadata.json",
+      "transcript": "/d8/fca8177ec3/0/full.jsonl",
+      "compact_transcript": "/d8/fca8177ec3/0/transcript.jsonl",
+      "content_hash": "/d8/fca8177ec3/0/content_hash.txt",
+      "prompt": "/d8/fca8177ec3/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8995,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 602880,
+    "output_tokens": 4101,
+    "api_call_count": 4
+  }
+}
