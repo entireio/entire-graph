@@ -2,6 +2,7 @@ package cli
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -335,4 +336,52 @@ func parseVerifyCTest(output string) (verifyResults, bool) {
 		}
 	}
 	return results, len(results) > 0
+}
+
+// Unattributed failures: the class no per-test parser can carry
+// ============================================================
+//
+// Rule 2 above ("a parser that is not sure reports nothing") is about a format it cannot read at all.
+// This is the narrower, more dangerous case: a format it CAN read, that also contains a failure with
+// no test to hang it on. A target the runner could not build never produced a `--- FAIL:` line, so it
+// is invisible to the result set, and the delta below is then computed as if that target did not
+// exist.
+//
+// That invisibility is only expensive because it lands on top of the exit-code rule. Measured on Go
+// 1.26.5, `go test` exits 1 for a build failure, a setup failure and a vet failure exactly as it does
+// for an ordinary failing test:
+//
+//	$ go test ./failpkg     # --- FAIL: TestFail                 -> exit 1
+//	$ go test ./compilepkg  # FAIL ... [build failed]            -> exit 1
+//	$ go test ./setupfail   # FAIL ... [setup failed]            -> exit 1
+//	$ go test ./vetfail     # FAIL ... [build failed] (vet)      -> exit 1
+//
+// So `verifyTestFailureExitCodes["go test"] = {1}` is correct about what 1 MEANS for a failing test
+// and useless for telling the two apart, and any reported failure — a pre-existing one the baseline
+// already knew about is enough — makes the build failure's exit 1 look explained. A run that fixed one
+// test while a newly added package failed to compile was therefore adjudicated
+// "PASS — verification is complete".
+//
+// The runner does say so in its own output, in a line that names no test. Reading that line back is
+// what closes the hole; only the go toolchain's spelling is implemented here because it is the one
+// measured. An unlisted parser returns nothing, which is the pre-existing behaviour.
+var verifyGoBuildFailure = regexp.MustCompile(`(?m)^FAIL\s+(\S+)\s+\[(?:build|setup) failed\]`)
+
+// verifyUnattributedFailures names the targets the runner reported as failed WITHOUT attributing the
+// failure to any test id, so a caller can be told the run never covered them.
+func verifyUnattributedFailures(parser, output string) []string {
+	if parser != "go test" {
+		return nil
+	}
+	var targets []string
+	seen := map[string]bool{}
+	for _, match := range verifyGoBuildFailure.FindAllStringSubmatch(output, -1) {
+		if seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		targets = append(targets, match[1])
+	}
+	sort.Strings(targets)
+	return targets
 }
