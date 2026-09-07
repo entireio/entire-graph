@@ -1,0 +1,13 @@
+{
+  "cloud_calls": 0,
+  "syntax": "pass",
+  "binding": "pass",
+  "inputs": "dummy URLs and dummy 64-character SHA only",
+  "source_url": "https://example.invalid/source.tar.gz?dummy=read",
+  "result_url": "https://example.invalid/results.tar.gz?dummy=write",
+  "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "remote_root": "/opt/graph-validation/diagnostics-linux-6f23da0a",
+  "placeholders_remaining": 0,
+  "retained_real_sas_url": false,
+  "retained_real_sas_base64": false
+}
