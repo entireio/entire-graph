@@ -7,7 +7,7 @@ Baseline branch commit: `29520508be39f937193b6b034b5792d2cc56be9c`; integration 
 | P4.1 frozen baseline | Fresh GraphMark manifest, six independently authored development repositories, exact source hashes, required-symbol labels, captured outputs and binary/script provenance | Independent label adjudication and repository-disjoint held-out collection remain absent |
 | P4.2 pure ranking | `search_graphrank.go`; hand-derived recurrence, unit mass, invalid weights, duplicate/scope invariance, empty/capped fallback, candidate hub and transition bounds | No production quality inference from numerical correctness |
 | P4.3 constrained integration | Explicit `experimental-graph`; captured input lifetime; candidate-only rerank; exact/deep fallback; source/guidance and current query parity tests | Shared CLI/schema checks handled by integration stage |
-| P4.4 development ablations | 120 CLI current/weighted observations plus 180 full-retrieval current/uniform/weighted observations; identical-expansion identity control; four pure-core graph fixtures; frozen parameters unchanged | All three unconditional retrieval arms executed; conditional winner-plus-compiler arm not run because no retrieval winner passed its gate |
+| P4.4 development ablations | 120 CLI current/weighted observations plus 180 full-retrieval current/uniform/weighted observations; historical identical-expansion identity control retained; bounded functional expansion control now implemented and contract-tested without new measurements; four pure-core graph fixtures; frozen parameters unchanged | All three previously measured unconditional retrieval arms executed; the functional expansion control remains unmeasured, and the conditional winner-plus-compiler arm was not run because no retrieval winner passed its gate |
 | P4.5 held-out evaluation | Protocol and thresholds recorded; no held-out outcome fabricated | Development recall improvement is 0%; held-out corpus/adjudication prerequisite missing |
 | P4.6 downstream gate | Prospective sample-size planning assumption and paired/cluster protocol recorded | Conditional agent study not run; retrieval prerequisite has not passed; current stays default |
 
@@ -37,8 +37,13 @@ Implementation-first phase (2026-09-05): comparative evaluation is deferred.
 The harness now accepts `ENTIRE_GRAPH_RANK_ARMS` (comma-separated `current`,
 `current-expansion`, `uniform`, `weighted`, `weighted-compiler`) and
 `ENTIRE_GRAPH_RANK_REPETITIONS` (1..1000). All arms use captured-input handling.
-The expansion control is an explicit identity control: no additional expansion
-has been implemented or measured. The compiler arm requires JSON-encoded pinned
+At that phase's source version, the expansion control was an explicit identity
+control; its retained results remain historical and unchanged. A later
+implementation-first patch adds a bounded, internal candidate expansion shared
+identically by `current-expansion`, `uniform`, `weighted`, and
+`weighted-compiler`, with baseline ranking retained only by `current-expansion`.
+It adds contract fixtures and diagnostics but no new retrieval measurements,
+tuning, or gate evidence. The compiler arm requires JSON-encoded pinned
 `compiler.Config` in `ENTIRE_GRAPH_RANK_COMPILER_CONFIG` and requires complete
 backend availability. Existing corpus/output variables remain unchanged.
 `TestGraphRankingEvaluationHarnessPlumbing` smoke-tests one captured baseline

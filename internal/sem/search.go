@@ -51,26 +51,30 @@ const (
 // HEAD/worktree view and ignore rules as provider snapshots.
 type SearchOptions struct {
 	// rankingEvaluationUniform is a test-only ablation, never exposed by the CLI.
-	rankingEvaluationUniform bool
-	rankingEvaluationCapture bool
-	Ranking                  string
-	Compiler                 *CompilerOptions
-	ExtractionReuse          bool
-	Worktree                 bool
-	IgnoreFiles              []string
-	IncludeFiles             []string
-	Profile                  Profile
-	TopK                     int
-	ContextLines             int
-	MaxRegionLines           int
-	MaxSnippetLines          int
-	MaxRegionsPerFile        int
-	MaxParseBytes            int
-	CacheDir                 string
-	DisableCache             bool
-	MaxIndexedFiles          int
-	IndexAllFiles            bool
-	MaxContextBytes          int
+	rankingEvaluationUniform   bool
+	rankingEvaluationCapture   bool
+	rankingEvaluationExpansion bool
+	// rankingEvaluationCandidates observes the common candidate pool immediately
+	// before an evaluation arm optionally reranks it. It is test-only.
+	rankingEvaluationCandidates func([]searchCandidate)
+	Ranking                     string
+	Compiler                    *CompilerOptions
+	ExtractionReuse             bool
+	Worktree                    bool
+	IgnoreFiles                 []string
+	IncludeFiles                []string
+	Profile                     Profile
+	TopK                        int
+	ContextLines                int
+	MaxRegionLines              int
+	MaxSnippetLines             int
+	MaxRegionsPerFile           int
+	MaxParseBytes               int
+	CacheDir                    string
+	DisableCache                bool
+	MaxIndexedFiles             int
+	IndexAllFiles               bool
+	MaxContextBytes             int
 	// progressivePreselection is internal policy, not a caller override. The
 	// standard cold default may widen adaptively; explicit and TopK-adaptive
 	// MaxIndexedFiles values remain exact compatibility limits.
@@ -306,21 +310,22 @@ type SearchResult struct {
 }
 
 type SearchStats struct {
-	Ranking                        *graphRankDiagnostics `json:"ranking,omitempty"`
-	Extraction                     *ExtractionStats      `json:"extraction,omitempty"`
-	QueryConstraintsTruncated      bool                  `json:"query_constraints_truncated,omitempty"`
-	FilesScanned                   int                   `json:"files_scanned"`
-	PreselectionBackend            string                `json:"preselection_backend,omitempty"`
-	PreselectionPasses             int                   `json:"preselection_passes,omitempty"`
-	PreselectionFilesExamined      int                   `json:"preselection_files_examined,omitempty"`
-	PreselectionConfidence         float64               `json:"preselection_confidence,omitempty"`
-	PreselectionCoverage           float64               `json:"preselection_coverage,omitempty"`
-	PreselectionDiversity          float64               `json:"preselection_diversity,omitempty"`
-	PreselectionWidened            bool                  `json:"preselection_widened,omitempty"`
-	PreselectionBounded            bool                  `json:"preselection_bounded,omitempty"`
-	UsagePreselectionBackend       string                `json:"identifier_usage_preselection_backend,omitempty"`
-	UsagePreselectionPasses        int                   `json:"identifier_usage_preselection_passes,omitempty"`
-	UsagePreselectionFilesExamined int                   `json:"identifier_usage_preselection_files_examined,omitempty"`
+	Ranking                        *graphRankDiagnostics          `json:"ranking,omitempty"`
+	RankingExpansion               *graphRankExpansionDiagnostics `json:"ranking_candidate_expansion,omitempty"`
+	Extraction                     *ExtractionStats               `json:"extraction,omitempty"`
+	QueryConstraintsTruncated      bool                           `json:"query_constraints_truncated,omitempty"`
+	FilesScanned                   int                            `json:"files_scanned"`
+	PreselectionBackend            string                         `json:"preselection_backend,omitempty"`
+	PreselectionPasses             int                            `json:"preselection_passes,omitempty"`
+	PreselectionFilesExamined      int                            `json:"preselection_files_examined,omitempty"`
+	PreselectionConfidence         float64                        `json:"preselection_confidence,omitempty"`
+	PreselectionCoverage           float64                        `json:"preselection_coverage,omitempty"`
+	PreselectionDiversity          float64                        `json:"preselection_diversity,omitempty"`
+	PreselectionWidened            bool                           `json:"preselection_widened,omitempty"`
+	PreselectionBounded            bool                           `json:"preselection_bounded,omitempty"`
+	UsagePreselectionBackend       string                         `json:"identifier_usage_preselection_backend,omitempty"`
+	UsagePreselectionPasses        int                            `json:"identifier_usage_preselection_passes,omitempty"`
+	UsagePreselectionFilesExamined int                            `json:"identifier_usage_preselection_files_examined,omitempty"`
 	// Content-read counters report blobs hydrated into the Go process. Git's
 	// own immutable-tree scans are represented by the backend/pass/examined
 	// counters above; their internal byte IO is deliberately not estimated.
@@ -1151,6 +1156,21 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	stats.CallerBoostedCandidates += countSearchCandidatesWithSignal(graphCandidates, "graph:callers")
 	candidates = append(candidates, graphCandidates...)
 	sortSearchCandidates(candidates)
+	if options.rankingEvaluationExpansion {
+		candidateScope := make(map[string]bool, len(selectedFiles))
+		for _, filePath := range selectedFiles {
+			candidateScope[filePath] = true
+		}
+		expanded, diagnostics, expansionErr := expandGraphRankEvaluationCandidates(
+			ctx, candidates, q, queryRelations, symbolsByID, candidateScope, read, fileLanguages, options,
+		)
+		if expansionErr != nil {
+			return SearchResponse{}, expansionErr
+		}
+		stats.RankingExpansion = &diagnostics
+		candidates = append(candidates, expanded...)
+		sortSearchCandidates(candidates)
+	}
 	expansionSeeds := append([]searchCandidate(nil), candidates...)
 	usageFilesBefore := queryReads.files
 	usageBytesBefore := queryReads.bytes
@@ -1193,6 +1213,9 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// score that term overlap got right about the TEXT and wrong about the FIX SITE. See
 	// search_boilerplate.go.
 	applySearchBoilerplatePrior(candidates, q)
+	if options.rankingEvaluationCandidates != nil {
+		options.rankingEvaluationCandidates(append([]searchCandidate(nil), candidates...))
+	}
 	if options.Ranking == "experimental-graph" {
 		diagnostics, rankErr := rerankSearchCandidatesWithPolicy(ctx, candidates, queryRelations, options.Deep, options.rankingEvaluationUniform)
 		if rankErr != nil {
