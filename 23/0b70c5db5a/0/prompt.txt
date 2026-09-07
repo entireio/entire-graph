@@ -1,9 +1,1 @@
-Commit/push, make sure Entire session is attached
-
----
-
-The trail has another medium finding. Keep looping until no finding remains open.
-
----
-
 The latest revision of this session log was not pushed to Entire.
