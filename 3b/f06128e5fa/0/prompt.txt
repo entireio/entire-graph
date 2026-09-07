@@ -1,17 +1,1 @@
-Ok, make it so. Show me the output of entire graph version --json before and after the fix.
-
----
-
-So the graph version command has a revision, but only for js-ts? Isn’t that odd?
-
----
-
-When was this revision introduced?
-
----
-
-Ok, so you introduced this shit in the first place. Fix it.
-
----
-
 Why would a field named “identity_revision” have that value?
