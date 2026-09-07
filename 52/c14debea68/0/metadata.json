@@ -1,0 +1,62 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "52c14debea68",
+  "session_id": "01a07d85-c671-7123-a421-fa671d5950de",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-07T20:46:08.098818Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/README.md",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/batch-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/build-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/collector/batch_budget.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/collector/campaign_gate.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/collector/cloud.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/collector/run_remote.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/control-files.tar.gz",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/control-hashes.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/test_controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/corpus/corpus-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/corpus/p1_scenario.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/full-check-gate.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/verification.json"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "95291af5d9f7",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 16939,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1438336,
+    "output_tokens": 2807,
+    "api_call_count": 80
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-07T20:46:08.022437Z",
+    "agent_lines": 2923,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 2923,
+    "total_lines_changed": 2923,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
