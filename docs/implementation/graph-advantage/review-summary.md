@@ -59,6 +59,20 @@ the `internal/sem` race suite failed after 1801.172 seconds. Raw evidence is
 retained under `evidence/check-6f23da0a/`. This is a failed full check, not a
 release or admission pass.
 
+A second immutable check of the same source, with `MISE_JOBS=1`,
+`GOFLAGS='-p=1 -v'` and `GOMAXPROCS=4`, also failed. It ran from
+`2026-09-07T16:49:14.206582Z` to `2026-09-07T17:36:04.432858Z`
+(`2810.177653s`); the cumulative `internal/sem` race run reached its 30-minute
+timeout. Raw terminal evidence is retained under
+`evidence/check-6f23da0a-cpu4/`; source and tracked state were unchanged. This
+configuration change does not establish a cause, and no concurrency ladder or
+further retry is authorized. The profiler worker is analyzing the existing
+verbose log only; the 36-second and 6-second tests were the tests running when
+the alarm fired, not isolated reruns or results, and the prior isolated
+normal/race passes belong to different tests in the first failed check. Counts
+remain five controlled product invocations and zero clean stability batches,
+with all VMs off.
+
 ## Current status
 
 The revised resumption controls are implemented at `58f03a22`: each selected

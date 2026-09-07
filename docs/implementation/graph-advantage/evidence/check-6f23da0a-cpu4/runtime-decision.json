@@ -1,0 +1,16 @@
+{
+  "prior_failed_check": "evidence/check-6f23da0a",
+  "prior_failure": "internal/sem cumulative 30-minute package timeout",
+  "physical_cpus": 10,
+  "logical_cpus": 10,
+  "memory_bytes": 34359738368,
+  "observed_memory_free_percent": 41,
+  "observed_pages_throttled": 0,
+  "MISE_JOBS": "1",
+  "GOFLAGS": "-p=1 -v",
+  "GOMAXPROCS": "4",
+  "selection_and_timeout": "unchanged tracked mise run check and test:ci go test -race -timeout 30m ./...",
+  "rationale": "bounded 4-way Go scheduler capacity on a 10-core host while retaining serial package/build scheduling",
+  "cause_claim": "GOMAXPROCS=2 is a plausible bottleneck, not a proven cause; the historical 450bede9 check passed with it",
+  "retry_policy": "one corrected configuration; no concurrency ladder or automatic retry"
+}

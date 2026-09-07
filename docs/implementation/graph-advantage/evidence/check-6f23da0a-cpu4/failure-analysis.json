@@ -1,0 +1,59 @@
+{
+  "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+  "gate_status": "failed",
+  "failed_stage": "test:ci",
+  "package": "github.com/entireio/entire-graph/internal/sem",
+  "configured_package_timeout": "30m",
+  "package_elapsed_seconds": 1801.689,
+  "launcher_timed_out": false,
+  "inner_go_package_timed_out": true,
+  "running_at_timeout": [
+    "TestSearchRepositoryGitPreselectionKeepsFallbackTiers (36s)",
+    "TestSearchRepositoryGitPreselectionKeepsFallbackTiers/code_fragment (6s)"
+  ],
+  "internal_sem_root_test_counts_before_timeout": {
+    "scope": "lines after the completed internal/gitutil package through, but excluding, the internal/sem FAIL summary",
+    "algorithm": "Parse only column-zero Go verbose records; take the first whitespace-delimited test name and exclude names containing a slash; deduplicate names independently by RUN, PASS, SKIP, PAUSE, CONT and FAIL record type.",
+    "run": 1902,
+    "pass": 1378,
+    "skip": 14,
+    "pause": 509,
+    "continue": 0,
+    "fail": 0,
+    "started_not_terminal": 510,
+    "started_not_terminal_and_not_paused": [
+      "TestSearchRepositoryGitPreselectionKeepsFallbackTiers"
+    ]
+  },
+  "slowest_completed_top_level_tests": [
+    "TestSearchExtractionReusePreservesLargeWorktreePreselectionParity (118.77s)",
+    "TestRAssignmentChainIsBoundedNotFatal (89.58s)",
+    "TestStreamSnapshotParallelMultilanguageMatrix (83.00s)",
+    "TestWarmCommittedSearchMatchesExhaustiveResultsWithoutFullContentRescan (74.10s)",
+    "TestPreindexProviderSnapshotReusesSameTreeAcrossCommits (67.16s)",
+    "TestHeadReadersShareDeepUnsafeMetadataAllowance (62.70s)",
+    "TestSingleLineBundleFlaggedMinified (61.27s)"
+  ],
+  "wall_time_note": "Individual test durations may overlap and must not be summed as package wall time.",
+  "queue_interpretation": "Within the internal/sem package interval, 509 root tests had emitted PAUSE and none had emitted CONT when the timeout fired. Exactly one other started root test lacked a terminal record: the named active test, whose subtest had run for 6s. The package was still in its sequential discovery/execution phase and had not released the queued parallel phase. This establishes cumulative package-budget exhaustion before the parallel queue ran, not a demonstrated hang in the last active test.",
+  "changed_source_comparison": {
+    "files_changed_since_450bede9": [
+      "internal/sem/provider.go",
+      "internal/sem/provider_go_http_route_prefilter_test.go",
+      "internal/sem/search.go",
+      "internal/sem/search_graphrank.go",
+      "internal/sem/search_graphrank_harness_test.go"
+    ],
+    "slow_test_files_directly_changed": [],
+    "focused_feature_observation": "Changed-feature tests visible in the completed verbose log passed; the longest matching route/ranking/expansion test was TestFullPreindexSearchMatchesColdSelectiveGraphExpansion at 8.20s, and TestGraphRankingEvaluationExpansionUsesIdenticalPreRankPool passed in 1.69s. Production provider.go and search.go are shared by broader tests, so the log does not exclude indirect effects."
+  },
+  "runtime_change_result": "Increasing GOMAXPROCS from 2 to 4 did not bring internal/sem under its unchanged 30-minute package bound. This is one correctness-gate result, not a performance comparison or causal proof.",
+  "next_bounded_fix": "Proposed option pending review: change the tracked test runner to execute the complete internal/sem race-test inventory in deterministic, non-overlapping shards with machine-checked coverage and no empty shard, retaining the 30-minute bound per shard and keeping all other packages selected. Existing CI evidence and this option still require review; no sharding change is approved.",
+  "retry_performed": false,
+  "performance_claim": false,
+  "slow_fixture_audit": {
+    "scope": "The three slow completed cache-oriented tests were inspected only for their generated repository fixture sizes.",
+    "finding": "Their toy repositories contain files ranging from 13 to 169 bytes; this bounded inspection found no repository or retained-evidence growth that explains the package timeout.",
+    "causal_claim": false
+  }
+}

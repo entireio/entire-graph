@@ -1,0 +1,5 @@
+{
+  "pid": 21685,
+  "command": "MISE_JOBS=1 GOFLAGS='-p=1 -v' GOMAXPROCS=4 GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null mise run check",
+  "started_at": "2026-09-07T16:49:14.206582+00:00"
+}

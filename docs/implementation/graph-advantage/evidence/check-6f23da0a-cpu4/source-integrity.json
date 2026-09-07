@@ -1,0 +1,10 @@
+{
+  "expected_head": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+  "before_head": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+  "after_head": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+  "before_status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "after_status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "before_tracked_sha256": "82cce58bc90b1355e6a049a7e2cff8caa80063ff9861e536550bad1a1650c45f",
+  "after_tracked_sha256": "82cce58bc90b1355e6a049a7e2cff8caa80063ff9861e536550bad1a1650c45f",
+  "source_unchanged": true
+}
