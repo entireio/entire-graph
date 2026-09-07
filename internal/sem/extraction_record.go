@@ -2,7 +2,7 @@ package sem
 
 // extractionFormatVersion is private, exact-match data identity. This payload
 // is not a public graph record; entries require an exact version match.
-const extractionFormatVersion = 6
+const extractionFormatVersion = 7
 
 // extractionRecord contains file-local declarations only. Repository aliases,
 // final IDs, relation resolution and synthetic boundary symbols are recomputed.

@@ -64,6 +64,88 @@ func TestYAMLQuotedMappingKeyMaskPreservesCoordinates(t *testing.T) {
 	}
 }
 
+func TestYAMLQuotedMappingKeyMaskPreservesLongSequenceEntries(t *testing.T) {
+	source := "navigation:\n" +
+		"  - '" + strings.Repeat("SINGLE_KEY_SEGMENT, ", 18) + "tail': single.md\n" +
+		"  - \"" + strings.Repeat("DOUBLE_KEY_SEGMENT, ", 18) + "tail\": double.md\n"
+	masked := maskYAMLUnsupportedSyntax(source)
+	if len(masked) != len(source) || strings.Count(masked, "\n") != strings.Count(source, "\n") {
+		t.Fatalf("long sequence mapping keys changed coordinates:\nsource=%q\nmasked=%q", source, masked)
+	}
+	if strings.Contains(masked, "SINGLE_KEY_SEGMENT") || strings.Contains(masked, "DOUBLE_KEY_SEGMENT") {
+		t.Fatalf("long quoted key contents survived parse-view mask: %q", masked)
+	}
+	_, language, status := TreeSitterParser{}.ParseWithStatus("navigation.yaml", source)
+	if language != "YAML" || status.ParseError {
+		t.Fatalf("long quoted sequence keys = language %q status %+v", language, status)
+	}
+}
+
+func TestYAMLQuotedMappingKeyExtractionUsesAuthoredRangesAndCacheParity(t *testing.T) {
+	longSingleKey := strings.Repeat("SINGLE_KEY_SEGMENT, ", 18) + "tail"
+	longDoubleKey := strings.Repeat("DOUBLE_KEY_SEGMENT, ", 18) + "tail"
+	source := "navigation:\n" +
+		"  - '" + longSingleKey + "': target.md\n" +
+		"  - \"" + longDoubleKey + "\": other.md\n" +
+		"after:\n" +
+		"  child: value"
+
+	language, ok := languageForPath("navigation.yaml")
+	if !ok {
+		t.Fatal("YAML language unavailable")
+	}
+	spec := resolveProfile(ProfileFull)
+	cache := &extractionCache{
+		ctx:         context.Background(),
+		directory:   t.TempDir(),
+		repository:  "fixture/yaml",
+		build:       "fixture-build",
+		maxBytes:    extractionDiskLimit,
+		maxEntries:  extractionEntryLimit,
+		limitsReady: true,
+	}
+	sourceFile := captureSource("navigation.yaml", source)
+	cold, hit := cache.extract(spec, language, sourceFile, defaultMaxParseBytes)
+	if hit || cold.status.ParseError {
+		t.Fatalf("cold extraction = hit %v status %+v", hit, cold.status)
+	}
+	if len(cold.entities) != 2 {
+		t.Fatalf("cold entities = %#v, want navigation and following top-level entity", cold.entities)
+	}
+	wantNavigation := "navigation:\n" +
+		"  - '" + longSingleKey + "': target.md\n" +
+		"  - \"" + longDoubleKey + "\": other.md"
+	want := map[string]struct {
+		startLine int
+		endLine   int
+		signature string
+		bodyHash  string
+	}{
+		"navigation": {1, 3, "section navigation", hash(normalize(wantNavigation))},
+		"after":      {4, 5, "section after", hash(normalize("after:\n  child: value"))},
+	}
+	for _, entity := range cold.entities {
+		expected, ok := want[entity.Name]
+		if !ok {
+			t.Fatalf("unexpected authored YAML entity: %#v", entity)
+		}
+		if entity.StartLine != expected.startLine || entity.EndLine != expected.endLine ||
+			entity.Signature != expected.signature || entity.BodyHash != expected.bodyHash {
+			t.Fatalf("authored entity %q = %#v, want lines %d-%d signature %q body %q", entity.Name, entity,
+				expected.startLine, expected.endLine, expected.signature, expected.bodyHash)
+		}
+		if entity.sourceStartByte != 0 || entity.sourceEndByte != 0 {
+			t.Fatalf("YAML entity %q unexpectedly acquired parse-view byte positions: %#v", entity.Name, entity)
+		}
+	}
+	cache.flush()
+	warm, hit := cache.extract(spec, language, sourceFile, defaultMaxParseBytes)
+	if !hit || !reflect.DeepEqual(cold, warm) {
+		t.Fatalf("warm extraction = hit %v value %#v, want cold %#v", hit, warm, cold)
+	}
+	cache.flush()
+}
+
 func TestYAMLQuotedMappingKeyMaskLeavesMalformedInputVisible(t *testing.T) {
 	source := "navigation:\n  - \"unterminated quoted key: target.md\n"
 	if masked := maskYAMLUnsupportedSyntax(source); masked != source {

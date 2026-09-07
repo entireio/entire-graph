@@ -1061,14 +1061,14 @@ func maskYAMLQuotedMappingKey(line string) string {
 	if !ok || end-start < 2 {
 		return line
 	}
-	replacement := make([]byte, end-start+1)
-	for index := range replacement {
-		replacement[index] = ' '
-	}
-	replacement[0] = line[start]
-	replacement[1] = 'k'
-	replacement[len(replacement)-1] = line[start]
-	return line[:start] + string(replacement) + line[end+1:]
+	// The bundled scanner still rejects some long simple keys when padding is
+	// left between the neutral key and its colon. Compact the parse-only key,
+	// then move the removed width to trailing whitespace. YAML entities are
+	// extracted from the authored content; keeping the line width stable also
+	// preserves every following line's byte offsets.
+	replacement := string(line[start]) + "k" + string(line[start])
+	padding := strings.Repeat(" ", end-start+1-len(replacement))
+	return line[:start] + replacement + line[end+1:] + padding
 }
 
 // yamlQuotedMappingKeyBounds recognizes a complete quoted key at the start of
