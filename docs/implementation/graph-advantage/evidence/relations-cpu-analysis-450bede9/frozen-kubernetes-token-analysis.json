@@ -1,0 +1,323 @@
+{
+  "source_commit": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
+  "source_status_bytes": 0,
+  "tracked_go_files": 17838,
+  "tracked_go_bytes": 186485767,
+  "current_contains_guard": {
+    "candidate_files": 6798,
+    "candidate_bytes": 112458928
+  },
+  "token_followed_by_optional_whitespace_and_open_paren": {
+    "candidate_files": 2183,
+    "candidate_bytes": 45678653
+  },
+  "tokens": {
+    "HandleFunc": {
+      "contains_files": 39,
+      "call_token_files": 36,
+      "exclusive_contains_files": 0,
+      "examples": [
+        {
+          "path": "vendor/github.com/emicklei/go-restful/v3/route_builder.go",
+          "line": 31,
+          "snippet": "HandleFunc TypeNameHandleFunction // required"
+        },
+        {
+          "path": "vendor/github.com/emicklei/go-restful/v3/web_service.go",
+          "line": 28,
+          "snippet": "HandleFunc TypeNameHandleFunction"
+        },
+        {
+          "path": "vendor/golang.org/x/tools/internal/stdlib/manifest.go",
+          "line": 9078,
+          "snippet": "HandleFunc\", Method, 0, \"\"},"
+        }
+      ]
+    },
+    "Handle": {
+      "contains_files": 2077,
+      "call_token_files": 199,
+      "exclusive_contains_files": 624,
+      "examples": [
+        {
+          "path": "cmd/kube-apiserver/app/options/options_test.go",
+          "line": 302,
+          "snippet": "Handler:       false,"
+        },
+        {
+          "path": "cmd/kube-apiserver/app/server.go",
+          "line": 91,
+          "snippet": "Handler(rest.NoWarnings{})"
+        },
+        {
+          "path": "cmd/kube-proxy/app/options.go",
+          "line": 297,
+          "snippet": "Handler, o.errorHandler)"
+        }
+      ]
+    },
+    ".Group": {
+      "contains_files": 2334,
+      "call_token_files": 14,
+      "exclusive_contains_files": 1161,
+      "examples": [
+        {
+          "path": "cluster/gce/gci/audit_policy_test.go",
+          "line": 193,
+          "snippet": ".Group,"
+        },
+        {
+          "path": "cmd/kube-apiserver/app/aggregator.go",
+          "line": 31,
+          "snippet": ".GroupVersion]controlplaneapiserver.APIServicePriority{"
+        },
+        {
+          "path": "cmd/kube-apiserver/app/testing/testserver.go",
+          "line": 379,
+          "snippet": ".GroupHeaders; len(groupHeaders) > 0 {"
+        }
+      ]
+    },
+    ".GET": {
+      "contains_files": 12,
+      "call_token_files": 12,
+      "exclusive_contains_files": 1,
+      "examples": []
+    },
+    ".POST": {
+      "contains_files": 2,
+      "call_token_files": 2,
+      "exclusive_contains_files": 0,
+      "examples": []
+    },
+    ".PUT": {
+      "contains_files": 1,
+      "call_token_files": 1,
+      "exclusive_contains_files": 0,
+      "examples": []
+    },
+    ".PATCH": {
+      "contains_files": 3,
+      "call_token_files": 1,
+      "exclusive_contains_files": 2,
+      "examples": [
+        {
+          "path": "vendor/golang.org/x/mod/module/pseudo.go",
+          "line": 69,
+          "snippet": ".PATCH"
+        },
+        {
+          "path": "vendor/golang.org/x/mod/semver/semver.go",
+          "line": 11,
+          "snippet": ".PATCH[-PRERELEASE][+BUILD]]]"
+        }
+      ]
+    },
+    ".DELETE": {
+      "contains_files": 6,
+      "call_token_files": 2,
+      "exclusive_contains_files": 2,
+      "examples": [
+        {
+          "path": "pkg/kubelet/config/config.go",
+          "line": 247,
+          "snippet": ".DELETE, Pods: copyPods(deletePods), Source: source}"
+        },
+        {
+          "path": "pkg/kubelet/config/config_test.go",
+          "line": 256,
+          "snippet": ".DELETE, TestSource, addedPod))"
+        },
+        {
+          "path": "pkg/kubelet/kubelet.go",
+          "line": 2778,
+          "snippet": ".DELETE:"
+        }
+      ]
+    },
+    ".HEAD": {
+      "contains_files": 2,
+      "call_token_files": 0,
+      "exclusive_contains_files": 0,
+      "examples": [
+        {
+          "path": "pkg/kubelet/server/server.go",
+          "line": 1224,
+          "snippet": ".HEADER_ContentType, restful.MIME_JSON)"
+        },
+        {
+          "path": "pkg/routes/openidmetadata.go",
+          "line": 97,
+          "snippet": ".HEADER_ContentType, restful.MIME_JSON)"
+        }
+      ]
+    },
+    ".OPTIONS": {
+      "contains_files": 1,
+      "call_token_files": 0,
+      "exclusive_contains_files": 0,
+      "examples": [
+        {
+          "path": "vendor/github.com/emicklei/go-restful/v3/options_filter.go",
+          "line": 33,
+          "snippet": ".OPTIONSFilter"
+        }
+      ]
+    },
+    ".Get": {
+      "contains_files": 4155,
+      "call_token_files": 1647,
+      "exclusive_contains_files": 1542,
+      "examples": [
+        {
+          "path": "cluster/gce/gci/apiserver_etcd_test.go",
+          "line": 74,
+          "snippet": ".Getuid())"
+        },
+        {
+          "path": "cluster/gce/gci/apiserver_kms_test.go",
+          "line": 76,
+          "snippet": ".Getuid()),"
+        },
+        {
+          "path": "cluster/gce/gci/audit_policy_test.go",
+          "line": 222,
+          "snippet": ".GetPath()"
+        }
+      ]
+    },
+    ".Post": {
+      "contains_files": 155,
+      "call_token_files": 55,
+      "exclusive_contains_files": 14,
+      "examples": [
+        {
+          "path": "cmd/kube-scheduler/app/options/options_test.go",
+          "line": 878,
+          "snippet": ".PostFilter,"
+        },
+        {
+          "path": "cmd/kube-scheduler/app/server_test.go",
+          "line": 273,
+          "snippet": ".PostFilter.Enabled[0], plugins.PostFilter.Enabled[1] = plugins.PostFilter.Enabl"
+        },
+        {
+          "path": "pkg/api/pod/util.go",
+          "line": 947,
+          "snippet": ".PostStart)"
+        }
+      ]
+    },
+    ".Put": {
+      "contains_files": 334,
+      "call_token_files": 186,
+      "exclusive_contains_files": 90,
+      "examples": [
+        {
+          "path": "pkg/client/tests/portfoward_test.go",
+          "line": 299,
+          "snippet": ".PutUint16(expectedPortBytes, uint16(testPort))"
+        },
+        {
+          "path": "pkg/controller/controller_utils.go",
+          "line": 1402,
+          "snippet": ".PutUint32(collisionCountBytes, uint32(*collisionCount))"
+        },
+        {
+          "path": "pkg/controller/nodeipam/ipam/cidrset/cidr_set.go",
+          "line": 111,
+          "snippet": ".PutUint32(ip, ipInt)"
+        }
+      ]
+    },
+    ".Patch": {
+      "contains_files": 613,
+      "call_token_files": 202,
+      "exclusive_contains_files": 70,
+      "examples": [
+        {
+          "path": "cmd/kubeadm/app/apis/kubeadm/fuzzer/fuzzer.go",
+          "line": 69,
+          "snippet": ".Patches = nil"
+        },
+        {
+          "path": "cmd/kubeadm/app/apis/kubeadm/v1/zz_generated.conversion.go",
+          "line": 231,
+          "snippet": ".Patches)(nil), func(a, b interface{}, scope conversion.Scope) error {"
+        },
+        {
+          "path": "cmd/kubeadm/app/apis/kubeadm/v1/zz_generated.deepcopy.go",
+          "line": 366,
+          "snippet": ".Patches != nil {"
+        }
+      ]
+    },
+    ".Delete": {
+      "contains_files": 1499,
+      "call_token_files": 644,
+      "exclusive_contains_files": 149,
+      "examples": [
+        {
+          "path": "cmd/kubeadm/app/util/apiclient/dryrun.go",
+          "line": 497,
+          "snippet": ".DeleteAction)"
+        },
+        {
+          "path": "pkg/apis/admission/types.go",
+          "line": 110,
+          "snippet": ".DeleteOptions` or `meta.k8s.io/v1.CreateOptions`. This may be"
+        },
+        {
+          "path": "pkg/apis/admissionregistration/validation/validation.go",
+          "line": 500,
+          "snippet": ".Delete),"
+        }
+      ]
+    },
+    ".Head": {
+      "contains_files": 525,
+      "call_token_files": 4,
+      "exclusive_contains_files": 114,
+      "examples": [
+        {
+          "path": "cmd/kube-proxy/app/server.go",
+          "line": 470,
+          "snippet": ".Header().Set(\"Content-Type\", \"text/plain; charset=utf-8\")"
+        },
+        {
+          "path": "cmd/kube-proxy/app/server_test.go",
+          "line": 696,
+          "snippet": ".Header.Add(\"Accept\", \"text/plain\")"
+        },
+        {
+          "path": "cmd/kubeadm/app/phases/markcontrolplane/markcontrolplane_test.go",
+          "line": 133,
+          "snippet": ".Header().Set(\"Content-Type\", \"application/json\")"
+        }
+      ]
+    },
+    ".Options": {
+      "contains_files": 222,
+      "call_token_files": 11,
+      "exclusive_contains_files": 58,
+      "examples": [
+        {
+          "path": "cmd/genyaml/gen_kubectl_yaml.go",
+          "line": 123,
+          "snippet": ".Options = genFlagResult(flags)"
+        },
+        {
+          "path": "cmd/kube-apiserver/app/config.go",
+          "line": 63,
+          "snippet": ".Options,"
+        },
+        {
+          "path": "cmd/kube-apiserver/app/options/completion.go",
+          "line": 58,
+          "snippet": ".Options.Complete(ctx, []string{\"kubernetes.default.svc\", \"kubernetes.default\", "
+        }
+      ]
+    }
+  },
+  "method": "Offline tracked source byte/text scan. call_token means literal token followed only by whitespace then (. It is a candidate-boundary analysis, not the production route regex or evaluator measurement."
+}

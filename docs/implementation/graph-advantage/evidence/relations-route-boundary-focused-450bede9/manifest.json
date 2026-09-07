@@ -1,0 +1,14 @@
+{
+  "baseline_source_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+  "working_head": "58ac0dd1ff92030387e0adee858f7935f006d964",
+  "fixture_origin": "Complete postfix profile at 450bede9 retained in diagnostic-dispatch-450bede9 plus offline clean frozen Kubernetes b2ec source classification in relations-cpu-analysis-450bede9. Tests are independently authored boundary fixtures.",
+  "scope": "Relation-layer Go HTTP candidate boundary only; production registration regexes, relation records, extraction ABI, schemas, and IDs unchanged.",
+  "source_sha256": {
+    "internal/sem/provider.go": "eb6c89cb3730ff94d1674d9416d1fc1d685f68b20f978bf60294adde94394ac8",
+    "internal/sem/provider_go_http_route_prefilter_test.go": "086002df272ccc6124efee963d47ba3f1497f824b278c80cba79f7480325e3c0"
+  },
+  "logs_sha256": {
+    "normal.log": "48635b673c63ddceb4768424dcbb6e6f9f02b9c2853b9a705a3d12777c678059",
+    "race.log": "45b7afe044e564f1cd277857ba0a8fea327089270594aa2b7b58c80731142add"
+  }
+}

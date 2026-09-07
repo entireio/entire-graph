@@ -23743,9 +23743,32 @@ func goHTTPRouteCandidate(content string) bool {
 		".GET", ".POST", ".PUT", ".PATCH", ".DELETE", ".HEAD", ".OPTIONS",
 		".Get", ".Post", ".Put", ".Patch", ".Delete", ".Head", ".Options",
 	} {
-		if strings.Contains(content, token) {
+		if containsGoHTTPRouteCallToken(content, token) {
 			return true
 		}
+	}
+	return false
+}
+
+func containsGoHTTPRouteCallToken(content, token string) bool {
+	for offset := 0; offset < len(content); {
+		index := strings.Index(content[offset:], token)
+		if index < 0 {
+			return false
+		}
+		next := offset + index + len(token)
+		for next < len(content) {
+			switch content[next] {
+			case ' ', '\t', '\n', '\f', '\r':
+				next++
+				continue
+			}
+			break
+		}
+		if next < len(content) && content[next] == '(' {
+			return true
+		}
+		offset += index + len(token)
 	}
 	return false
 }

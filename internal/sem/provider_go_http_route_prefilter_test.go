@@ -15,6 +15,9 @@ func TestGoHTTPRouteCandidateCoversRegistrationForms(t *testing.T) {
 		{"qualified HandleFunc with newline", "http.HandleFunc \n (\n\"/x\", handler\n)"},
 		{"unqualified Handle wrapper", `Handle("/x", HandlerFunc(handler))`},
 		{"qualified Handle wrapper with newline", "mux.Handle \n (\n\"/x\", http.HandlerFunc \n (handler)\n)"},
+		{"HandleFunc with tab", "http.HandleFunc\t(\"/x\", handler)"},
+		{"Handle with CRLF", "mux.Handle\r\n(\"/x\", http.HandlerFunc(handler))"},
+		{"HandleFunc with form feed", "http.HandleFunc\f(\"/x\", handler)"},
 	}
 	for _, method := range []string{
 		"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS",
@@ -48,12 +51,26 @@ func TestGoHTTPRouteCandidateCoversRegistrationForms(t *testing.T) {
 	}
 }
 
-func TestGoHTTPRouteCandidateAllowsFalsePositives(t *testing.T) {
-	if goHTTPRouteCandidate("package quiet\n\nconst message = \"nothing to register\"\n") {
-		t.Fatal("non-route content was classified as a route candidate")
+func TestGoHTTPRouteCandidateRejectsIdentifierPrefixes(t *testing.T) {
+	for _, content := range []string{
+		"package quiet\n\nconst message = \"nothing to register\"\n",
+		"value.GetPath()",
+		"value.GroupVersion()",
+		"response.Header()",
+		"value.Patches = nil",
+		"config.OptionsField = value",
+		"record.Handler = handler",
+	} {
+		if goHTTPRouteCandidate(content) {
+			t.Fatalf("identifier prefix was classified as a route call: %q", content)
+		}
 	}
-	if !goHTTPRouteCandidate("package noisy\n\n// Handle this later\n") {
-		t.Fatal("conservative prefilter must allow false positives")
+}
+
+func TestGoHTTPRouteCandidateFindsLaterValidOccurrence(t *testing.T) {
+	content := "value.GetPath()\nrouter.Get\t(\"/x\", handler)"
+	if !goHTTPRouteCandidate(content) {
+		t.Fatal("rejected prefix hid a later valid route token")
 	}
 }
 
