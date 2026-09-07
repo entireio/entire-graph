@@ -123,3 +123,22 @@ atomically while preserving source commits, checkpoint/session provenance, and
 authored memory. Ship the consumer support before enabling this producer change.
 Future changes that re-key existing symbols must revise this token and document
 the corresponding consumer migration; ordinary body edits do not change it.
+
+
+The revision `js-ts-callable-scope-2` additionally covers trail 163's anonymous
+JS/TS default-export corrections: callable exports previously classified as
+classes receive corrected function IDs, phantom exports in comments and literals
+are removed, and corrected source ranges/signatures can affect entity history.
+Consumers upgrading from `js-ts-callable-scope-1` must refresh derived snapshots
+and recompute persisted entity deltas using the corrected parser, preserving
+source commits and checkpoint/session provenance. A revision mismatch is the
+migration trigger; changing the producer token alone does not implement the
+consumer migration. Verify consumer support before deploying this revision.
+
+### Compact snapshot reader compatibility
+
+Trail 163 raises the compact summary allowance from 16 MiB to 128 MiB and enforces
+the same ceiling on encoding and decoding. Older readers can still reject summary
+records larger than 16 MiB; upgrade readers before exchanging these larger
+artifacts. The identity revision describes parser identity rules, not compact
+reader compatibility, and does not remove this reader upgrade requirement.

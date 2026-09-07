@@ -42,7 +42,7 @@ const (
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
 	// IdentityRevision changes when parser corrections re-key existing symbols.
-	IdentityRevision     = "js-ts-callable-scope-1"
+	IdentityRevision     = "js-ts-callable-scope-2"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
