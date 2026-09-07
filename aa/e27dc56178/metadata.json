@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "aae27dc56178",
+  "strategy": "manual-commit",
+  "branch": "codex/trail151-review",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/aa/e27dc56178/0/metadata.json",
+      "transcript": "/aa/e27dc56178/0/full.jsonl",
+      "compact_transcript": "/aa/e27dc56178/0/transcript.jsonl",
+      "content_hash": "/aa/e27dc56178/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1118,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 161792,
+    "output_tokens": 217,
+    "api_call_count": 2
+  }
+}
