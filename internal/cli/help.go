@@ -247,7 +247,7 @@ var commandDocs = []commandDoc{
 			{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
 		},
 		examples: []string{
-			"go test ./internal/configs -run '^TestX$' 2>&1 | entire graph explain --repo .",
+			`( o=$(go test ./internal/configs -run '^TestX$' 2>&1); r=$?; printf '%s\n' "$o" | entire graph explain --repo .; exit $r )`,
 		},
 	},
 	{
@@ -360,16 +360,18 @@ var commandDocs = []commandDoc{
 		name:    "verify",
 		group:   groupAnalyze,
 		summary: "Run a test command and return an adjudicated verdict, not test output",
-		usage:   []string{`entire graph verify --test "<cmd>" --repo . [--setup "<cmd>"] [--record-baseline path | --pre-edit-baseline path] [--max-bytes 2048]`},
+		usage:   []string{`entire graph verify --test "<cmd>" --repo . [--setup "<cmd>"] [--record-baseline path | --pre-edit-baseline path] [--test-failure-exit-code n] [--max-bytes 2048]`},
 		long: "verify runs your test command and reports WHICH TESTS CHANGED rather than what the runner printed: which newly pass, which newly fail, and which were ALREADY failing before the edit (labelled PRE-EXISTING). Raw runner output is never forwarded — ids are, text is not — and id lists cap at 20 with a count.\n\n" +
 			"Record a baseline on the pristine tree first (--record-baseline), then pass that file as --pre-edit-baseline after editing. Without a baseline the verdict is a state rather than a delta, so a failure that predates the change cannot be labelled as one.\n\n" +
-			"Parsers: pytest, jest/vitest, cargo test, go test, phpunit, rspec, minitest, maven/gradle surefire, ctest. An unrecognised format degrades to an exit-code-only verdict and says so.",
+			"Parsers: pytest, jest/vitest, cargo test, go test, phpunit, rspec, minitest, maven/gradle surefire, ctest. An unrecognised format degrades to an exit-code-only verdict and says so.\n\n" +
+			"For configured runner failure statuses (for example Jest testFailureExitCode or RSpec failure_exit_code), pass --test-failure-exit-code on both baseline recording and comparison. This declares the status; it does not configure the runner. Parsed failures must still be present, and missing tests or unbuilt targets still make verification incomplete. A shell-reported signal can share the declared number, so the declaration cannot distinguish those cases.",
 		flags: []flagDoc{
 			{name: "--test", arg: "cmd", desc: "The test command to run (required)"},
 			{name: "--repo", arg: "path", desc: "Repository to run in (default: current repo)"},
 			{name: "--setup", arg: "cmd", desc: "Command run before the tests; its output never contributes test ids"},
 			{name: "--record-baseline", arg: "path", desc: "Write the pristine-tree result to this file instead of adjudicating"},
 			{name: "--pre-edit-baseline", arg: "path", desc: "Diff this run against a previously recorded baseline"},
+			{name: "--test-failure-exit-code", arg: "n", desc: "Declare the runner's failure status (1-255), overriding automatic exit-code rules; use the same value when recording and comparing"},
 			{name: "--max-bytes", arg: "n", def: "2048", desc: "Cap the rendered verdict; the verdict clause always survives"},
 		},
 		examples: []string{
@@ -517,10 +519,33 @@ func findCommandDoc(name string) (commandDoc, bool) {
 	return commandDoc{}, false
 }
 
-// wantsHelp reports whether the args request help for a command.
-func wantsHelp(args []string) bool {
-	for _, a := range args {
-		if a == "--help" || a == "-h" {
+// wantsHelp reports whether the args request help for the command documented by doc.
+//
+// It reads the args the way the command's own parser will, because a flat scan for the two spellings
+// cannot tell a request for help from DATA that happens to be spelled like one. Two ways it got that
+// wrong: `search --query --help` is a search for the literal text "--help" and printed help instead,
+// and `diff -- --help` addresses a path named `--help` — after the separator every remaining argument
+// is positional by definition, so nothing there can be a flag at all.
+//
+// The value-taking flags come from the doc registry rather than a second list, because that registry
+// is already the thing this file renders and the command parsers are already checked against it
+// (agentguide_test.go). A hand-copied list here would be a third spelling of the same fact, and the
+// one nothing would notice going stale.
+func wantsHelp(doc commandDoc, args []string) bool {
+	valued := make(map[string]bool, len(doc.flags))
+	for _, flag := range doc.flags {
+		if flag.arg != "" {
+			valued[flag.name] = true
+		}
+	}
+	for index := 0; index < len(args); index++ {
+		switch {
+		case args[index] == "--":
+			return false
+		case valued[args[index]]:
+			// The next argument is this flag's VALUE, whatever it is spelled like.
+			index++
+		case args[index] == "--help" || args[index] == "-h":
 			return true
 		}
 	}

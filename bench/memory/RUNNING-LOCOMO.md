@@ -178,7 +178,9 @@ confidently from an empty context.
 
 This destroyed one system's score by **13.77 points** before we found it. Make `search()` raise on a
 missing buffer rather than return an empty list, and treat zero-context questions clustered by
-conversation as a void run.
+conversation as a void run. `run_locomo.sh` now refuses `resume` for every arm that buffers
+in-process (`entire`, `graphify`, `cmm`, `bm25`) rather than letting a partial corpus report as a
+complete run.
 
 ### 4. Connect timeouts, not read timeouts
 
