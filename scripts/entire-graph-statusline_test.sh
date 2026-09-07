@@ -150,6 +150,7 @@ clean_env() { # clean_env [env assignments...] <command...>
 	env -u ENTIRE_GRAPH_STATUSLINE_SCOPE \
 		-u ENTIRE_GRAPH_STATUSLINE_SINCE \
 		-u ENTIRE_GRAPH_STATUSLINE_CACHE \
+		-u ENTIRE_GRAPH_STATUSLINE_DETAIL \
 		-u NO_COLOR "$@"
 }
 
@@ -158,7 +159,7 @@ run_json() {
 	json=$1
 	shift
 	printf '%s' "$json" |
-		clean_env TMPDIR="$WORK/cache" ENTIRE_GRAPH_BIN="$RUN_BIN" "$@" sh "$SCRIPT"
+		clean_env TMPDIR="$WORK/cache" ENTIRE_GRAPH_BIN="$RUN_BIN" ENTIRE_GRAPH_STATUSLINE_DETAIL=1 "$@" sh "$SCRIPT"
 }
 # run <session-id> <transcript> <cwd> [env assignments...] -> stdout of the status line
 run() {
@@ -322,7 +323,7 @@ STUB
 chmod +x "$WORK/minstub"
 set -- "PATH=/usr/bin:/bin" "HOME=$WORK/nohome"
 OUT=$(stdin_json s-nobin-ok "$T" "$REPO" |
-	env -i "$@" TMPDIR="$WORK/cache" NO_COLOR=1 ENTIRE_GRAPH_BIN="$WORK/minstub" /bin/sh "$SCRIPT")
+	env -i "$@" TMPDIR="$WORK/cache" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=1 ENTIRE_GRAPH_BIN="$WORK/minstub" /bin/sh "$SCRIPT")
 assert_has 'the stripped environment reaches the binary lookup at all' '100 saved' "$OUT"
 
 # A binary that exits non-zero must not leak an error onto the status line.
@@ -370,6 +371,24 @@ assert_eq 'rich line renders exactly' \
 	"$OUT"
 assert_within 'rich line stays within the width budget' 150 "$OUT"
 
+# The default is the savings figure alone. Everything the line above renders is
+# opt-in, so the same fixture with detail off must print one segment and nothing
+# else -- no verb split, no exploration totals, no percentages. Asserted AFTER the
+# width check above, which reads the same $OUT and is about the rich line.
+OUT=$(run s-terse "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
+assert_eq 'default line is the savings figure alone' '[GRAPH] ↗ 2.1M saved' "$OUT"
+for seg in 'search' 'impact' 'nbrs' 'explore' 'graph-first' 'of locates' 'of session'; do
+	assert_lacks "default line omits $seg" "$seg" "$OUT"
+done
+
+# The detail flag changes WHAT is rendered, so it has to be part of the cache config:
+# same session, same transcript, same stamp, so the exact-match branch would serve the
+# other setting's stored line verbatim if the config did not carry it.
+OUT=$(run s-toggle "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=1)
+assert_has 'toggle: the detailed line is cached first' 'explore tok' "$OUT"
+OUT=$(run s-toggle "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
+assert_eq 'flipping detail is not served the other setting cached line' '[GRAPH] ↗ 2.1M saved' "$OUT"
+
 # --- meta verbs ------------------------------------------------------------------------------
 # stats/version/help/doctor/init-agents/agent-guide/capabilities are self-reporting: they
 # substitute for no exploration, so they may appear neither in the verb split nor in the
@@ -390,6 +409,11 @@ assert_within 'meta line stays within the width budget' 150 "$OUT"
 stub '{"sessions":1,"graph_calls":9,"exploration_calls":4,"exploration_returned_est_tokens":100,"sessions_with_locate":1,"graph_first_sessions":0,"graph_calls_by_verb":[{"name":"stats","calls":7,"returned_bytes":1},{"name":"doctor","calls":2,"returned_bytes":1}],"estimated_savings_est_tokens":0,"estimated_savings_pct_of_session_tokens":0}'
 OUT=$(run s-metaonly "$T" "$REPO" NO_COLOR=1)
 assert_eq 'a meta-only session claims nothing' '[GRAPH] no graph calls yet · 4 explore' "$OUT"
+
+# One rule, no exceptions: with detail off the zero-calls line drops its exploration
+# count too, the same way the savings line drops everything after the figure.
+OUT=$(run s-meta-terse "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
+assert_eq 'a meta-only session is bare with detail off' '[GRAPH] no graph calls yet' "$OUT"
 
 # Locate verbs rank ahead of bulk/change verbs even when they were called less often.
 stub '{"sessions":1,"graph_calls":30,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"symbols","calls":15,"returned_bytes":1},{"name":"edges","calls":9,"returned_bytes":1},{"name":"search","calls":4,"returned_bytes":1},{"name":"impact","calls":2,"returned_bytes":1}],"estimated_savings_est_tokens":800,"estimated_savings_pct_of_session_tokens":1}'
