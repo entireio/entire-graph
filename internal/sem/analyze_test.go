@@ -1924,6 +1924,103 @@ func TestAnalyzeGitRangeBudgetExceededEmitsPartialResult(t *testing.T) {
 	}
 }
 
+// TestAnalyzeGitRangeBudgetStopsInsideOnePrimeWindow pins that the budget is
+// tested per file, not per metadata window.
+//
+// The sequential parse loop tested it before every file. When the loop became a
+// worker pipeline the test moved to the top of each 128-file window, so a
+// deadline that expired inside a window let the whole rest of that window parse
+// and reported none of it as skipped. Every other budget test uses a deadline
+// that expires before the first window, which the window-level test still
+// catches, so none of them saw it.
+//
+// The deadline is crossed from the progress callback rather than by waiting on
+// real parse work: the callback knows the elapsed time the event carries, so it
+// can sleep exactly past MaxDuration and the stop lands mid-window on any host.
+func TestAnalyzeGitRangeBudgetStopsInsideOnePrimeWindow(t *testing.T) {
+	const (
+		files = analyzeMetadataPrimeFiles
+		// Large enough that tree resolution, discovery and priming 256 paths
+		// cannot spend it before the window opens, which would stop the parse at
+		// index 0 through the window-level test and prove nothing. The callback
+		// sleeps out whatever of it remains, so the run costs about this much
+		// wall clock however little of it the setup used.
+		maxDuration = 2 * time.Second
+	)
+
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	for i := range files {
+		write(t, repo, fmt.Sprintf("mod%03d.py", i), fmt.Sprintf("def handler%03d(value):\n    return value\n", i))
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+	for i := range files {
+		write(t, repo, fmt.Sprintf("mod%03d.py", i), fmt.Sprintf("def handler%03d(value, extra=None):\n    return value\n", i))
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change")
+	head := rev(t, repo, "HEAD")
+
+	slept := false
+	acceptedBeforeDeadline := 0
+	result, err := AnalyzeGitRangeWithOptions(t.Context(), repo, base, head, nil, AnalyzeOptions{
+		MaxDuration: maxDuration,
+		Progress: func(event AnalyzeProgressEvent) {
+			if slept || event.Phase != "parse" || event.FilesDone == 0 {
+				return
+			}
+			slept = true
+			// This result is already being reduced. Later buffered results
+			// must be rejected even if their workers finished before we sleep.
+			acceptedBeforeDeadline = event.FilesDone + 1
+			if remaining := maxDuration - event.Elapsed; remaining > 0 {
+				time.Sleep(remaining + 100*time.Millisecond)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("budget exhaustion must not error, got %v", err)
+	}
+
+	// The dependents scan runs whatever the budget did and reports its own
+	// early stop under the same code, so counting every W_ANALYSIS_BUDGET_EXCEEDED
+	// overcounts the skipped files by one. FilePath is what separates a per-file
+	// skip from that whole-phase warning.
+	warned := 0
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_ANALYSIS_BUDGET_EXCEEDED" && warning.FilePath != "" {
+			warned++
+		}
+	}
+	// A host slow enough to spend the budget on the files before the first
+	// forced progress event crosses the deadline on its own, and stops for the
+	// right reason without the callback ever running. Only a run that reported
+	// nothing skipped needs to distinguish the two: with the deadline crossed it
+	// is the defect, without it the test never armed itself.
+	if warned == 0 {
+		if !slept {
+			t.Fatal("no in-window parse progress event fired and no file was skipped: the deadline was never crossed, so this run proves nothing")
+		}
+		t.Fatalf("budget expired inside the window but no file was reported skipped; %d/%d files analyzed", len(result.Files), files)
+	}
+	// A stop at index 0 would mean the deadline expired before the window began,
+	// which the window-level test already covers and which would let this test
+	// pass without exercising the per-file one.
+	if warned >= files {
+		t.Fatalf("every file was reported skipped (%d), so the stop was not mid-window", warned)
+	}
+	if len(result.Files)+warned > files {
+		t.Fatalf("analyzed %d and skipped %d exceeds %d changed files", len(result.Files), warned, files)
+	}
+	if slept && len(result.Files) > acceptedBeforeDeadline {
+		t.Fatalf("accepted %d files after the ordered reduction budget expired at %d", len(result.Files), acceptedBeforeDeadline)
+	}
+}
+
 func TestAnalyzeGitRangeDeepPathMetadataHonorsBudget(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")

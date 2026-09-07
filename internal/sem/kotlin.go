@@ -395,6 +395,8 @@ func kotlinExtensionReceiver(signature, name string) string {
 	return ""
 }
 
+var kotlinSupertypeNamesIdentRe = regexp.MustCompile(`^[A-Za-z_][\w.]*`)
+
 // kotlinSupertypeNames parses the supertype list from a Kotlin class/interface
 // declaration signature (`class WebSocketWriter( ... ) : Closeable` ->
 // [Closeable]). Delegation (`by`), superclass constructor arguments, and
@@ -411,10 +413,9 @@ func kotlinSupertypeNames(signature string) []string {
 	if colon < 0 {
 		return nil
 	}
-	identRe := regexp.MustCompile(`^[A-Za-z_][\w.]*`)
 	var out []string
 	for _, part := range splitTopLevelCommas(rest[colon+1:]) {
-		name := kotlinTypeName(identRe.FindString(strings.TrimSpace(part)))
+		name := kotlinTypeName(kotlinSupertypeNamesIdentRe.FindString(strings.TrimSpace(part)))
 		if name != "" {
 			out = append(out, name)
 		}

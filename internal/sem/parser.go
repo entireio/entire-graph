@@ -3425,9 +3425,14 @@ func Supported(path string) bool {
 	return ok
 }
 
+var (
+	looksLikeFluxKustomizationManifestRe  = regexp.MustCompile(`(?m)^apiVersion:\s*kustomize\.toolkit\.fluxcd\.io/`)
+	looksLikeFluxKustomizationManifestRe2 = regexp.MustCompile(`(?m)^kind:\s*Kustomization\s*$`)
+)
+
 func looksLikeFluxKustomizationManifest(content string) bool {
-	return regexp.MustCompile(`(?m)^apiVersion:\s*kustomize\.toolkit\.fluxcd\.io/`).MatchString(content) &&
-		regexp.MustCompile(`(?m)^kind:\s*Kustomization\s*$`).MatchString(content)
+	return looksLikeFluxKustomizationManifestRe.MatchString(content) &&
+		looksLikeFluxKustomizationManifestRe2.MatchString(content)
 }
 
 // objcSelectorName returns the first selector segment of an Objective-C
@@ -3467,13 +3472,20 @@ func maskObjectiveCUnsupportedSyntax(content string) string {
 	return strings.Join(lines, "")
 }
 
+var (
+	looksLikeObjectiveCRe  = regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`)
+	looksLikeObjectiveCRe2 = regexp.MustCompile(`(?m)^\s*#import\s+[<"]`)
+)
+
 func looksLikeObjectiveC(content string) bool {
-	return regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`).MatchString(content) ||
-		regexp.MustCompile(`(?m)^\s*#import\s+[<"]`).MatchString(content)
+	return looksLikeObjectiveCRe.MatchString(content) ||
+		looksLikeObjectiveCRe2.MatchString(content)
 }
 
+var looksLikeCPlusPlusHeaderRe = regexp.MustCompile(`(?m)^\s*(namespace|template\s*<|class\s+\w|struct\s+\w+\s*:|using\s+\w+\s*=|(?:inline\s+)?auto\s+\w+\s*\()`)
+
 func looksLikeCPlusPlusHeader(content string) bool {
-	return regexp.MustCompile(`(?m)^\s*(namespace|template\s*<|class\s+\w|struct\s+\w+\s*:|using\s+\w+\s*=|(?:inline\s+)?auto\s+\w+\s*\()`).MatchString(content) ||
+	return looksLikeCPlusPlusHeaderRe.MatchString(content) ||
 		strings.Contains(content, "std::") ||
 		strings.Contains(content, "extern \"C\"") ||
 		strings.Contains(content, "::")
@@ -3620,16 +3632,17 @@ func kustomizeEntities(content string) []Entity {
 	return yamlKeyEntities(content, "kustomize")
 }
 
+var yamlKeyEntitiesKeyRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
+
 func yamlKeyEntities(content, prefix string) []Entity {
 	lines := strings.Split(content, "\n")
-	keyRe := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
 	var entities []Entity
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		match := keyRe.FindStringSubmatch(trimmed)
+		match := yamlKeyEntitiesKeyRe.FindStringSubmatch(trimmed)
 		if match == nil {
 			continue
 		}
@@ -3639,13 +3652,14 @@ func yamlKeyEntities(content, prefix string) []Entity {
 	return entities
 }
 
+var jsonLikeEntitiesKeyRe = regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
+
 func jsonLikeEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	keyRe := regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
-		match := keyRe.FindStringSubmatch(line)
+		match := jsonLikeEntitiesKeyRe.FindStringSubmatch(line)
 		if match == nil || seen[match[1]] {
 			continue
 		}
@@ -3655,18 +3669,21 @@ func jsonLikeEntities(content string) []Entity {
 	return entities
 }
 
+var (
+	tomlEntitiesSectionRe = regexp.MustCompile(`^\s*\[+\s*([A-Za-z0-9_.-]+)\s*\]+`)
+	tomlEntitiesKeyRe     = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
+)
+
 func tomlEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	sectionRe := regexp.MustCompile(`^\s*\[+\s*([A-Za-z0-9_.-]+)\s*\]+`)
-	keyRe := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
 		name := ""
 		kind := "section"
-		if match := sectionRe.FindStringSubmatch(line); match != nil {
+		if match := tomlEntitiesSectionRe.FindStringSubmatch(line); match != nil {
 			name = match[1]
-		} else if match := keyRe.FindStringSubmatch(line); match != nil {
+		} else if match := tomlEntitiesKeyRe.FindStringSubmatch(line); match != nil {
 			name = match[1]
 			kind = "setting"
 		}
@@ -3679,13 +3696,14 @@ func tomlEntities(content string) []Entity {
 	return entities
 }
 
+var xmlEntitiesTagRe = regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
+
 func xmlEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	tagRe := regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
-		match := tagRe.FindStringSubmatch(line)
+		match := xmlEntitiesTagRe.FindStringSubmatch(line)
 		if match == nil || strings.HasPrefix(match[1], "?") || seen[match[1]] {
 			continue
 		}
@@ -3695,15 +3713,16 @@ func xmlEntities(content string) []Entity {
 	return entities
 }
 
+var makeEntitiesTargetRe = regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
+
 func makeEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	targetRe := regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
 	var entities []Entity
 	for i, line := range lines {
 		if strings.HasPrefix(line, "\t") || strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
-		match := targetRe.FindStringSubmatch(line)
+		match := makeEntitiesTargetRe.FindStringSubmatch(line)
 		if match == nil || strings.Contains(match[1], "=") {
 			continue
 		}
@@ -3712,19 +3731,22 @@ func makeEntities(content string) []Entity {
 	return entities
 }
 
+var (
+	markdownEntitiesHeadingRe = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+	markdownEntitiesFenceRe   = regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
+)
+
 func markdownEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	headingRe := regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
-	fenceRe := regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
 	var entities []Entity
 	fenceIndex := 0
 	for i, line := range lines {
-		if match := headingRe.FindStringSubmatch(line); match != nil {
+		if match := markdownEntitiesHeadingRe.FindStringSubmatch(line); match != nil {
 			name := strings.TrimSpace(strings.Trim(match[2], "#"))
 			entities = append(entities, simpleFallbackEntity("section", slugName(name), "markdown heading "+name, i+1, i+1, strings.TrimSpace(line)))
 			continue
 		}
-		if match := fenceRe.FindStringSubmatch(line); match != nil {
+		if match := markdownEntitiesFenceRe.FindStringSubmatch(line); match != nil {
 			fenceIndex++
 			lang := match[1]
 			if lang == "" {
@@ -3737,15 +3759,16 @@ func markdownEntities(content string) []Entity {
 	return entities
 }
 
+var htmlEntitiesIdRe = regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
+
 func htmlEntities(path, content string) []Entity {
 	lines := strings.Split(content, "\n")
-	idRe := regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
 	var entities []Entity
 	seen := map[string]bool{}
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	entities = append(entities, simpleFallbackEntity("document", base, "html document "+base, 1, maxInt(1, len(lines)), base))
 	for i, line := range lines {
-		for _, match := range idRe.FindAllStringSubmatch(line, -1) {
+		for _, match := range htmlEntitiesIdRe.FindAllStringSubmatch(line, -1) {
 			name := slugName(match[1])
 			if name == "" || seen[name] {
 				continue
@@ -3757,12 +3780,13 @@ func htmlEntities(path, content string) []Entity {
 	return entities
 }
 
+var cssEntitiesSelectorRe = regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
+
 func cssEntities(content string) []Entity {
 	lines := strings.Split(content, "\n")
-	selectorRe := regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
 	var entities []Entity
 	for i, line := range lines {
-		match := selectorRe.FindStringSubmatch(line)
+		match := cssEntitiesSelectorRe.FindStringSubmatch(line)
 		if match == nil {
 			continue
 		}
@@ -4111,10 +4135,12 @@ func simpleFallbackEntity(kind, name, signature string, startLine, endLine int, 
 	}
 }
 
+var slugNameRe = regexp.MustCompile(`[^A-Za-z0-9_.:/-]+`)
+
 func slugName(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.Trim(name, `"'`)
-	name = regexp.MustCompile(`[^A-Za-z0-9_.:/-]+`).ReplaceAllString(name, "-")
+	name = slugNameRe.ReplaceAllString(name, "-")
 	name = strings.Trim(name, "-")
 	return name
 }
@@ -4139,13 +4165,19 @@ func minInt(a, b int) int {
 // as fully understood.
 func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) (depthExceeded bool) {
 	exceeded := false
-	walkEntitiesScoped(node, src, language, scope, false, 0, entities, &exceeded)
+	walkEntitiesScoped(node, src, language, scope, false, false, 0, entities, &exceeded)
 	return exceeded
 }
 
 // walkEntitiesScoped tracks whether the current node is inside a function body
 // (inFunc), so a callable defined there is marked Entity.Local — a nested/closure
 // def that call resolution must not name-match across scopes.
+//
+// scopeIsCallable says what `scope` NAMES: a type (false, the usual case) or the
+// enclosing CALLABLE (true, set only by the JS/TS re-anchoring below).
+// entityFromNode cannot tell the two apart — it treats any non-empty scope as a
+// type and promotes the callables under it to kind "method" — so this is what
+// tells a member of a type from a lexical binding of a function.
 //
 // depth is the current AST nesting level and is capped at maxParseWalkDepth: a
 // tree deeper than that truncates (setting *depthExceeded) instead of recursing
@@ -4154,7 +4186,7 @@ func walkEntities(node *sitter.Node, src []byte, language, scope string, entitie
 // one, because walkEntitiesScoped calls it and then descends into what it
 // returns; two independent budgets over the same root-to-leaf path would let the
 // two walkers amplify each other.
-func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, inFunc bool, depth int, entities *[]Entity, depthExceeded *bool) {
+func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, scopeIsCallable, inFunc bool, depth int, entities *[]Entity, depthExceeded *bool) {
 	if !validNode(node) {
 		return
 	}
@@ -4179,6 +4211,15 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			setEntitySourceRange(&fields[index], node, language, src)
 		}
 		*entities = append(*entities, fields...)
+		// JS/TS callable fields already emit their method entity above. Walk
+		// their initializer as that method's lexical scope so nested helpers
+		// are retained without becoming members of the surrounding class.
+		if functionLocalScopeResets(language) && len(fields) == 1 && fields[0].Kind == "method" {
+			if value := node.ChildByFieldName("value"); functionLikeValue(value) {
+				walkEntitiesScoped(value, src, language, fields[0].Name, true, true, depth+1, entities, depthExceeded)
+				return
+			}
+		}
 		// A field whose initializer is an anonymous/nested type still declares
 		// callables: `static final Comparator<T> C = new Comparator<T>() {
 		// public int compare(...) {...} };`. The declaration as a whole is not
@@ -4193,7 +4234,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		// inside a method body, so localReachable keeps them scoped to the
 		// declaration instead of name-colliding with real members.
 		for _, body := range initializerTypeBodies(node, depth, depthExceeded) {
-			walkEntitiesScoped(body, src, language, scope, true, depth+1, entities, depthExceeded)
+			walkEntitiesScoped(body, src, language, scope, scopeIsCallable, true, depth+1, entities, depthExceeded)
 		}
 		// A C/C++ member can also DEFINE its type inline:
 		// `struct Inner { int value; } inner;`. Before members were extracted
@@ -4203,7 +4244,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		// same scope and the same inFunc — the path the walk already took — so
 		// the type keeps its symbol and gains its own members.
 		for _, definition := range cFamilyInlineTypeDefinitions(node, language) {
-			walkEntitiesScoped(definition, src, language, scope, inFunc, depth+1, entities, depthExceeded)
+			walkEntitiesScoped(definition, src, language, scope, scopeIsCallable, inFunc, depth+1, entities, depthExceeded)
 		}
 		// An ANONYMOUS aggregate with a named instance --
 		// `union { int i; float f; } value;` -- declares no type symbol, so the
@@ -4213,15 +4254,29 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		// are reached from (`packet.value.i`), so its scope is where they belong.
 		for _, body := range cFamilyAnonymousAggregateBodies(node, language) {
 			for _, instance := range fieldDeclNames(node, src) {
-				walkEntitiesScoped(body, src, language, qualify(scope, instance), inFunc, depth+1, entities, depthExceeded)
+				// The instance-qualified scope names a CONTAINER path (`Packet.value`),
+				// never the enclosing callable, so it is not callable-scoped whatever
+				// the parent was.
+				walkEntitiesScoped(body, src, language, qualify(scope, instance), false, inFunc, depth+1, entities, depthExceeded)
 			}
 		}
 		return
 	}
 	entity, ok := entityFromNode(node, src, language, scope)
 	childScope := scope
+	childScopeIsCallable := scopeIsCallable
 	childInFunc := inFunc
 	if ok {
+		// entityFromNode reads a non-empty scope as a TYPE and promotes a
+		// `function name(){}` under it to kind "method". When the scope names
+		// the enclosing callable instead (the re-anchoring below), that
+		// promotion is wrong: the declaration is a lexical binding of that
+		// callable, not member syntax, so it stays kind "function". A
+		// method_definition reached the same way — an object literal's method
+		// declared in a method body — IS member syntax and keeps "method".
+		if scopeIsCallable && entity.Kind == "method" && lexicalCallableForm(node) {
+			entity.Kind = "function"
+		}
 		setEntitySourceRange(&entity, node, language, src)
 		entity.cLinkage = declaredWithCLinkage(language, node, src)
 		if language == "C++" && node.Type() == "function_definition" {
@@ -4253,6 +4308,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		*entities = append(*entities, cFamilyTypedefAliasEntities(node, src, language, entity)...)
 		if scopesChildren(language, entity.Kind) {
 			childScope = entity.Name
+			childScopeIsCallable = false
 		}
 		if entity.Kind == "function" || entity.Kind == "method" {
 			// In R a callable is named by assignment (a binary_operator), and a
@@ -4266,6 +4322,75 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			if language != "R" || node.Type() != "binary_operator" {
 				childInFunc = true // descendants of this callable are function-local
 			}
+			// A declaration inside another callable's BODY is a function-local
+			// binding, not a member of the enclosing class, so it must not
+			// inherit the TYPE scope. `function handler(){}` inside
+			// `Widget.render()` was qualified as the method `Widget.handler` —
+			// a symbol naming a member the class does not have, whose bare
+			// compound-v1 ID then collided with the real `Widget.handler` and
+			// pushed BOTH onto `#sig:`-suffixed IDs, so adding a callback in one
+			// method body silently re-identified an unrelated method.
+			//
+			// The type scope is REPLACED, not cleared. Clearing it drops the
+			// only component that told two nested declarations apart, so
+			// `helper` inside `A.m` and `helper` inside `B.m` would share one
+			// base ID and adding the second would move the first from a bare ID
+			// onto a `#sig:` one — the same instability under a different
+			// spelling, now fired by an edit to an unrelated class. Re-anchoring
+			// to the enclosing callable's own qualified name keeps them
+			// distinct (`A.m.helper` vs `B.m.helper`) and makes the container a
+			// symbol that actually declares them, while `Widget.handler` is left
+			// to the one real method. lexicalCallableForm then undoes
+			// entityFromNode's promotion to "method", which reads a non-empty
+			// scope as a type.
+			//
+			// Only a scope that EXISTS is replaced: at `scope == ""` (a callable
+			// nested in a top-level function) nothing qualified the declaration
+			// before this change and nothing does after, so no ID that predates
+			// it moves. The `const handler = (a) => a` spelling is likewise
+			// untouched — variable_declarator never consults the scope — so its
+			// bare, function-local shape is what it has always been.
+			//
+			// Scoped to JS/TS: other languages' nested callables (Java's
+			// anonymous-class members reached through initializerTypeBodies,
+			// Python's nested defs) rely on the type scope to stay
+			// container-qualified.
+			//
+			// Only a callable whose own name is QUALIFIED by the scope can
+			// become the new scope. The `const cb = () => {}` spelling is a
+			// variable_declarator, which never consults the scope, so its
+			// entity.Name is the bare `cb`: taking it would drop the `A.m`
+			// this walk had already established and re-anchor the body to a
+			// name that says nothing about which class it is in. `helper`
+			// inside `A.m`'s `cb` and inside `B.m`'s `cb` would then BOTH be
+			// `cb.helper` — the very collision this re-anchoring exists to
+			// prevent, one nesting level down, and adding the second class
+			// would move the first from `function:cb.helper` onto
+			// `function:cb.helper#sig:80cfac553042146c`. When the scope
+			// already names a callable it is kept instead, so the body is
+			// anchored to the nearest ENCLOSING callable that has a qualified
+			// name (`A.m.helper` vs `B.m.helper`) and its container is a
+			// symbol that exists. The same guard retains the class scope for an
+			// unqualified callback in a static block: otherwise A and B would
+			// both emit cb.helper. Marking the body scope callable still makes
+			// its helpers local functions rather than phantom class methods.
+			if functionLocalScopeResets(language) && scope != "" {
+				if strings.HasPrefix(entity.Name, scope+".") {
+					childScope = entity.Name
+				}
+				childScopeIsCallable = true
+			}
+		}
+	}
+	// Anonymous JS/TS callables have no entity, but their bodies still establish
+	// lexical scope. This includes class-field arrows and static-block IIFEs.
+	// Retain the nearest named scope without inventing a callable symbol; nested
+	// declarations must be local functions, not members of that enclosing type.
+	if !ok && functionLocalScopeResets(language) {
+		switch node.Type() {
+		case "arrow_function", "function_expression", "generator_function":
+			childInFunc = true
+			childScopeIsCallable = true
 		}
 	}
 	// In R the function body lives under the anonymous function_definition node
@@ -4282,6 +4407,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	if node.Type() == "impl_item" {
 		if t := rustImplTypeName(node, src); t != "" {
 			childScope = t
+			childScopeIsCallable = false
 		}
 	}
 	// A Swift `extension Foo { ... }` block is likewise not a symbol itself
@@ -4290,10 +4416,11 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	if language == "Swift" && node.Type() == "class_declaration" && swiftExtensionDeclaration(node) {
 		if t := swiftExtensionTypeName(node, src); t != "" {
 			childScope = t
+			childScopeIsCallable = false
 		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, depth+1, entities, depthExceeded)
+		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childScopeIsCallable, childInFunc, depth+1, entities, depthExceeded)
 	}
 }
 
@@ -5861,18 +5988,17 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 		kind = "function"
 		name = nodeName(node, src)
-		if language == "Objective-C" || language == "C" {
-			// A C function routinely returns a typedef'd type
+		if language == "Objective-C" || language == "C" || language == "C++" {
+			// A C-family function routinely returns a named type
 			// (`CURLcode curl_easy_perform(...)`, `static NSString * Escape(...)`
-			// in a .m file), whose type_identifier is the first name node in
-			// pre-order, so nodeName would misname the function after its
-			// return type. Take the identifier from the declarator field
-			// instead. Gated to C and Objective-C so C++ extraction (qualified
-			// names, destructors) is unchanged.
-			if declarator := node.ChildByFieldName("declarator"); validNode(declarator) {
-				if id := firstDescendantOfType(declarator, "identifier"); validNode(id) {
-					name = strings.TrimSpace(id.Content(src))
-				}
+			// in a .m file, `std::string Config::name() const`), whose
+			// type_identifier is the first name node in pre-order, so nodeName
+			// would misname the function after its return type — collapsing
+			// every `std::string`-returning function in a repo onto the single
+			// name `string`. Take the declared name from the declarator field
+			// instead.
+			if declared := cFamilyDeclaratorName(node, src); declared != "" {
+				name = declared
 			}
 		}
 		if scope != "" {
@@ -8182,6 +8308,8 @@ func javascriptVariableDeclaratorEnd(content string, valueStart int) int {
 	return len(content)
 }
 
+var javascriptAssignmentMethodEntitiesRe = regexp.MustCompile(`\s*\.\s*`)
+
 func javascriptAssignmentMethodEntities(content string) []Entity {
 	matches := jsAssignmentMethodPattern.FindAllStringSubmatchIndex(content, -1)
 	entities := make([]Entity, 0, len(matches))
@@ -8189,7 +8317,7 @@ func javascriptAssignmentMethodEntities(content string) []Entity {
 		if len(match) < 4 {
 			continue
 		}
-		name := strings.Join(regexp.MustCompile(`\s*\.\s*`).Split(strings.TrimSpace(content[match[2]:match[3]]), -1), ".")
+		name := strings.Join(javascriptAssignmentMethodEntitiesRe.Split(strings.TrimSpace(content[match[2]:match[3]]), -1), ".")
 		if name == "" || strings.HasPrefix(name, "module.exports.") || strings.HasPrefix(name, "exports.") {
 			// Export alias properties are useful exports, but not object/prototype
 			// method declarations with a stable receiver.
@@ -8647,6 +8775,43 @@ func isExportedTopLevelJSVariable(node *sitter.Node, language string) bool {
 	}
 	root := grandparent.Parent()
 	return validNode(root) && root.Type() == "program"
+}
+
+// functionLocalScopeResets reports whether entering a callable's body replaces
+// the enclosing TYPE scope with that callable, so declarations inside it are
+// emitted as function-local bindings of it rather than as members of the type.
+//
+// True only for JavaScript/TypeScript, where a nested `function name(){}` or
+// named function expression is a lexical binding of the enclosing function and
+// is never reachable as `Type.name`. Every other routed grammar keeps the type
+// scope for nested callables: Java's anonymous-class members are walked with the
+// outer scope on purpose (see initializerTypeBodies), and Python/Ruby nested
+// defs are qualified under their class today.
+func functionLocalScopeResets(language string) bool {
+	return language == "JavaScript" || language == "TypeScript"
+}
+
+// lexicalCallableForm reports whether a node is the `function name(){}`
+// spelling — a function declaration or a named function expression — rather
+// than `method_definition`, which is member syntax.
+//
+// It decides one thing: whether a callable qualified under an enclosing
+// CALLABLE keeps kind "function" (a lexical binding of it) or the "method"
+// entityFromNode gave it (an object literal's method, which is declared with
+// member syntax and stays a method of that literal). Callers gate it on
+// scopeIsCallable, which only the JS/TS re-anchoring sets, so the node types
+// here are read as JS/TS grammar node types and never as another grammar's
+// same-named node.
+func lexicalCallableForm(node *sitter.Node) bool {
+	if !validNode(node) {
+		return false
+	}
+	switch node.Type() {
+	case "function_declaration", "function_expression", "generator_function":
+		return true
+	default:
+		return false
+	}
 }
 
 func scopesChildren(language, kind string) bool {
@@ -9214,6 +9379,176 @@ func firstNamedChildOfType(node *sitter.Node, nodeType string) *sitter.Node {
 	return nil
 }
 
+// cFamilyDeclaratorName returns the name a C/C++/Objective-C function
+// definition declares, read from its `declarator` field rather than from the
+// first name node in pre-order. Pre-order finds the RETURN TYPE whenever the
+// return type is a named type, so `std::string Config::name() const` was
+// extracted as a symbol called `string` — and every other std::string-returning
+// function in the repository collapsed onto that same name.
+//
+// Pointer, array and function declarators nest their target under the same
+// `declarator` field, so the name is found by walking that chain; a reference
+// declarator nests its target as a plain child instead, so the walk drops to
+// firstDeclaratorChild there. C++ adds name shapes C does not have: a member
+// definition names its method with `field_identifier`, an out-of-line
+// definition names it with `qualified_identifier` (`Config::name`) or
+// `destructor_name` (`~Config`), and an overload names it with `operator_name`
+// (`operator new`) or `operator_cast` (`operator const char*`). The bare name
+// is what is kept, matching the pre-existing extraction of primitive-returning
+// members. Anything this walk does not model falls back to the historical
+// pre-order identifier search so no declarator shape loses a name it had.
+func cFamilyDeclaratorName(node *sitter.Node, src []byte) string {
+	declarator := node.ChildByFieldName("declarator")
+	if !validNode(declarator) {
+		return ""
+	}
+	for cur := declarator; validNode(cur); {
+		switch cur.Type() {
+		case "identifier", "field_identifier":
+			return strings.TrimSpace(cur.Content(src))
+		case "operator_name":
+			// An overloaded operator declares its name with `operator_name`
+			// (`void *operator new(size_t n)`, `operator delete[]`), whose
+			// operator token is anonymous, so the node holds no identifier at
+			// all. Without this case the walk drops out to the pre-order
+			// identifier search below, which steps straight past the
+			// identifier-free operator_name into the parameter list and names
+			// the function after its FIRST PARAMETER — `operator new` became
+			// `n`, `operator delete` became `p`. The whole spelling is the
+			// name, exactly as C++ writes it, with the optional whitespace C++
+			// allows between its tokens folded out.
+			return canonicalOperatorName(cur.Content(src))
+		case "operator_cast":
+			// A conversion operator (`operator const char*() const`) is named
+			// for the type it converts to, and carries no identifier either;
+			// previously it produced no name at all. Its text runs up to the
+			// (always present) parameter list, so cutting at the first `(`
+			// keeps `operator const char*` and drops `() const`.
+			// Cut at the parameter list STRUCTURALLY. The target type can
+			// contain parentheses of its own -- `operator decltype(value)()
+			// const` and `operator void(*)()` are both valid -- so the first
+			// '(' is not reliably the parameter list. Cutting there produced
+			// `operator decltype` and `operator void`, collapsing unrelated
+			// conversions onto one name and one symbol ID.
+			//
+			// The operator's parameter list is the LAST parameter list under its
+			// declarator child, so the type is everything before that node starts.
+			// A function-pointer target contributes an earlier parameter list of
+			// its own (`operator void(*)(int)()`), which must remain in the name.
+			endByte := cur.EndByte()
+			cutAtParams := false
+			for i := 0; i < int(cur.ChildCount()); i++ {
+				child := cur.Child(i)
+				if !validNode(child) || !strings.HasSuffix(child.Type(), "declarator") {
+					continue
+				}
+				params := lastDescendantOfType(child, "parameter_list")
+				if validNode(params) && params.StartByte() > cur.StartByte() {
+					endByte = params.StartByte()
+					cutAtParams = true
+					break
+				}
+			}
+			text := nodeTextWithoutComments(cur, endByte, src)
+			if !cutAtParams {
+				if paren := strings.IndexByte(text, '('); paren >= 0 {
+					text = text[:paren]
+				}
+			}
+			if name := canonicalOperatorName(text); name != "" {
+				return name
+			}
+		case "qualified_identifier", "template_function":
+			if named := cur.ChildByFieldName("name"); validNode(named) {
+				cur = named
+				continue
+			}
+		case "destructor_name":
+			if id := firstDescendantOfType(cur, "identifier"); validNode(id) {
+				return strings.TrimSpace(id.Content(src))
+			}
+		}
+		next := cur.ChildByFieldName("declarator")
+		if !validNode(next) {
+			// A `reference_declarator` (`Cell &at(int i)`) hangs the declarator
+			// it wraps off an UNNAMED child instead of a `declarator` field, so
+			// a field-only walk stops at the `&`. The fallback below then reads
+			// the first identifier under it, which for a member function is the
+			// first parameter (the method's own name is a `field_identifier`,
+			// which that search skips): `Cell &at(int i)` was named `i`.
+			next = firstDeclaratorChild(cur)
+		}
+		if !validNode(next) {
+			break
+		}
+		cur = next
+	}
+	if id := firstDescendantOfType(declarator, "identifier"); validNode(id) {
+		return strings.TrimSpace(id.Content(src))
+	}
+	return ""
+}
+
+// firstDeclaratorChild returns the declarator a C-family declarator wraps when
+// the grammar attaches it as a plain child rather than under a `declarator`
+// field, as tree-sitter-cpp does for `reference_declarator` and
+// `abstract_reference_declarator`.
+func firstDeclaratorChild(node *sitter.Node) *sitter.Node {
+	if !validNode(node) {
+		return nil
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if validNode(child) && strings.HasSuffix(child.Type(), "declarator") {
+			return child
+		}
+	}
+	return nil
+}
+
+// canonicalOperatorName folds an operator's name down to one spelling. C++
+// permits whitespace between every token of the name, so `operator const char*`,
+// `operator const char *` and `operator  const  char  *` all name the SAME
+// conversion, and `operator new[]`, `operator new []` the same allocation
+// function. The name feeds compound-v1 symbol identity, so carrying the
+// author's spacing into it gives one function a new ID after a whitespace-only
+// edit and gives two files that spell one operator differently two entities for
+// one function.
+//
+// Runs of whitespace collapse to a single space first, then every space that
+// touches a non-identifier byte is dropped. The surviving spaces are exactly
+// those separating two identifier tokens -- `const char`, `unsigned long`,
+// `operator new` -- where dropping the space would fuse two distinct tokens
+// into one and make genuinely different operators collide. Bytes >= 0x80 count
+// as identifier bytes so a UTF-8 identifier is never split or joined.
+func canonicalOperatorName(text string) string {
+	collapsed := normalize(text)
+	var b strings.Builder
+	b.Grow(len(collapsed))
+	for i := 0; i < len(collapsed); i++ {
+		c := collapsed[i]
+		if c == ' ' && i > 0 && i+1 < len(collapsed) &&
+			(!operatorNameWordByte(collapsed[i-1]) || !operatorNameWordByte(collapsed[i+1])) {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// operatorNameWordByte reports whether c can be part of an identifier token, so
+// that a space beside it is load-bearing rather than decoration.
+func operatorNameWordByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '_', c >= 0x80:
+		return true
+	default:
+		return false
+	}
+}
+
 // firstDescendantOfType returns the first node of nodeType in a pre-order
 // descent of node's subtree.
 //
@@ -9240,6 +9575,57 @@ func firstDescendantOfTypeAt(node *sitter.Node, nodeType string, depth int) *sit
 		}
 	}
 	return nil
+}
+
+// lastDescendantOfType returns the last node of nodeType in source order.
+// Conversion operators use it to distinguish parameter lists embedded in a
+// function-pointer target type from the operator's own final parameter list.
+func lastDescendantOfType(node *sitter.Node, nodeType string) *sitter.Node {
+	return lastDescendantOfTypeAt(node, nodeType, 0)
+}
+
+func lastDescendantOfTypeAt(node *sitter.Node, nodeType string, depth int) *sitter.Node {
+	if !validNode(node) || depth >= maxParseWalkDepth {
+		return nil
+	}
+	var found *sitter.Node
+	if node.Type() == nodeType {
+		found = node
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if candidate := lastDescendantOfTypeAt(node.NamedChild(i), nodeType, depth+1); validNode(candidate) {
+			found = candidate
+		}
+	}
+	return found
+}
+
+// nodeTextWithoutComments returns node's source through endByte with comment
+// nodes blanked to whitespace. The tree identifies comments structurally, so
+// comment-looking text inside a literal remains part of the type expression.
+func nodeTextWithoutComments(node *sitter.Node, endByte uint32, src []byte) string {
+	if !validNode(node) || node.StartByte() >= endByte || int(endByte) > len(src) {
+		return ""
+	}
+	startByte := node.StartByte()
+	text := append([]byte(nil), src[startByte:endByte]...)
+	maskCommentDescendants(node, startByte, endByte, text, 0)
+	return string(text)
+}
+
+func maskCommentDescendants(node *sitter.Node, startByte, endByte uint32, text []byte, depth int) {
+	if !validNode(node) || depth >= maxParseWalkDepth || node.StartByte() >= endByte || node.EndByte() <= startByte {
+		return
+	}
+	if node.Type() == "comment" {
+		start := maxInt(0, int(node.StartByte()-startByte))
+		end := minInt(len(text), int(node.EndByte()-startByte))
+		maskBytes(text, start, end)
+		return
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		maskCommentDescendants(node.NamedChild(i), startByte, endByte, text, depth+1)
+	}
 }
 
 func goReceiverName(node *sitter.Node, src []byte) string {

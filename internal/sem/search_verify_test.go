@@ -224,7 +224,8 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 		{
 			name: "maven module with a test class",
 			files: map[string]string{
-				"pom.xml":      "<project/>",
+				// The root aggregator has to DECLARE the module for `-pl` to select it.
+				"pom.xml":      "<project><modules><module>gson</module></modules></project>",
 				"gson/pom.xml": "<project/>",
 				"gson/src/main/java/com/google/gson/GsonBuilder.java":     "",
 				"gson/src/test/java/com/google/gson/GsonBuilderTest.java": "",
@@ -360,8 +361,25 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 			wantDerived: ".rspec + mirror test file path",
 		},
 		{
+			// No Gemfile: `bundle exec` here is a guaranteed "Could not locate Gemfile".
 			name: "minitest single file when the tests live under test/",
 			files: map[string]string{
+				"Rakefile":                     "task :test\n",
+				"lib/fluent/plugin/in_tail.rb": "",
+				"test/plugin/test_in_tail.rb":  "",
+			},
+			subject: searchVerifySubject{
+				sourcePath: "lib/fluent/plugin/in_tail.rb",
+				testPath:   "test/plugin/test_in_tail.rb", testEvidence: "mirror test file",
+			},
+			wantCommand: "ruby -Itest test/plugin/test_in_tail.rb",
+			wantTargets: "test/plugin/test_in_tail.rb",
+			wantDerived: "Rakefile + mirror test file path under test/",
+		},
+		{
+			name: "minitest single file goes through Bundler when a Gemfile exists",
+			files: map[string]string{
+				"Gemfile":                      "source 'https://rubygems.org'\n",
 				"Rakefile":                     "task :test\n",
 				"lib/fluent/plugin/in_tail.rb": "",
 				"test/plugin/test_in_tail.rb":  "",
@@ -952,8 +970,10 @@ func TestSearchVerifySuiteFallback(t *testing.T) {
 		{
 			name: "ruby minitest repo with no covering test falls back to rake test",
 			files: map[string]string{
-				"Gemfile":                       "source 'https://rubygems.org'\n",
-				"Rakefile":                      "task default: %w[test rubocop]\n",
+				"Gemfile": "source 'https://rubygems.org'\n",
+				"Rakefile": "require \"rake/testtask\"\n" +
+					"Rake::TestTask.new(:test)\n" +
+					"task default: %w[test rubocop]\n",
 				"lib/faker/default/internet.rb": "module Faker\nend\n",
 			},
 			subject:     searchVerifySubject{sourcePath: "lib/faker/default/internet.rb"},
@@ -998,14 +1018,25 @@ func TestSearchVerifySuiteFallback(t *testing.T) {
 			wantCommand: "",
 		},
 		{
-			name: "gradle nested module uses root wrapper",
+			name: "gradle nested module uses the root wrapper and names its own project",
+			files: map[string]string{
+				"gradlew":                  "",
+				"settings.gradle":          "include ':lib'\n",
+				"lib/build.gradle":         "",
+				"lib/src/main/kotlin/A.kt": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
+			wantCommand: "./gradlew :lib:test",
+		},
+		{
+			name: "gradle nested module no settings script declares stays silent",
 			files: map[string]string{
 				"gradlew":                  "",
 				"lib/build.gradle":         "",
 				"lib/src/main/kotlin/A.kt": "",
 			},
 			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
-			wantCommand: "./gradlew test",
+			wantCommand: "",
 		},
 		{
 			name: "gradle nested wrapper runs from module directory",
@@ -1482,5 +1513,343 @@ func TestSearchVerifyRunInNeutralizesOptionShapedDir(t *testing.T) {
 	}
 	if plain := searchVerifyRunIn("sub", "go test ./..."); plain != "cd sub && go test ./..." {
 		t.Errorf("ordinary directory changed shape: %q", plain)
+	}
+}
+
+// TestSearchVerifyExplainKeepsTheTestExitStatus pins the exit status of the composed VERIFY line.
+//
+// `<test> 2>&1 | <explain>` is a pipeline, and a pipeline's status in every POSIX shell is its LAST
+// command's. `explain` succeeds at explaining a failure, so the naive composition exits 0 on a
+// failing test and any agent or harness keying on `$?` reads a failed verification as a passing one.
+//
+// The assertion is on a REAL execution, in every POSIX-ish shell available on the machine, because
+// the claim is about shell semantics rather than about a string. dash is the interesting one: it is
+// /bin/sh on Debian-family systems and it has no `set -o pipefail` at all.
+func TestSearchVerifyExplainKeepsTheTestExitStatus(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell semantics")
+	}
+	// A failing test command, and an explain filter that succeeds at explaining the failure.
+	failing := `sh -c 'echo "the test output"; exit 7'`
+	explain := "cat"
+	composed, overhead := composeSearchVerifyExplain(failing, explain)
+	if overhead != len(composed)-len(failing) {
+		t.Fatalf("overhead %d does not account for the whole wrapper (%d)", overhead, len(composed)-len(failing))
+	}
+
+	shells := []string{"sh"}
+	for _, candidate := range []string{"dash", "bash", "zsh"} {
+		if _, err := exec.LookPath(candidate); err == nil {
+			shells = append(shells, candidate)
+		}
+	}
+	for _, shell := range shells {
+		t.Run(shell, func(t *testing.T) {
+			output, err := exec.Command(shell, "-c", composed).CombinedOutput()
+			exit, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("%s: a failing test exited %v (0 means the failure was reported as a pass); "+
+					"command = %s output = %q", shell, err, composed, output)
+			}
+			if exit.ExitCode() != 7 {
+				t.Fatalf("%s: exit code = %d, want the test's 7; output = %q", shell, exit.ExitCode(), output)
+			}
+			// The composition must still be a SUPERSET of what the bare command printed: the whole
+			// reason for the pipe is that explain adds to the output rather than replacing it.
+			if !strings.Contains(string(output), "the test output") {
+				t.Fatalf("%s: the test's own output did not reach explain: %q", shell, output)
+			}
+		})
+	}
+
+	// A passing test must still exit 0, or the wrapper would turn every green run red.
+	passing, _ := composeSearchVerifyExplain(`sh -c 'echo fine; exit 0'`, explain)
+	if output, err := exec.Command("sh", "-c", passing).CombinedOutput(); err != nil {
+		t.Fatalf("a passing test exited nonzero: %v (%q)", err, output)
+	}
+}
+
+// TestSearchVerifyExplainReportsAFailingExplainFilter pins the OTHER half of the composed line's
+// exit status: the half `exit $r` on its own gets wrong.
+//
+// Keeping the test's status means the wrapper reports only the test's status, so a green test whose
+// `explain` filter was missing, crashed, or could not write its output exits 0 — the line claims a
+// verification that never actually completed. That is the same class of error as the one the capture
+// was introduced to fix, pointed the other way.
+//
+// The ordering asserted here is: a nonzero TEST status always wins (a harness keying on `$?` must
+// keep reading the number the bare test produced), and a green test with a nonzero EXPLAIN status
+// exits with explain's status plus a stderr note naming the stage — the numbers collide, so only the
+// note can say which stage failed.
+//
+// As with the sibling above, the assertion is on a REAL execution in every POSIX-ish shell on the
+// machine, because the claim is about shell semantics rather than about a string.
+func TestSearchVerifyExplainReportsAFailingExplainFilter(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell semantics")
+	}
+	shells := []string{"sh"}
+	for _, candidate := range []string{"dash", "bash", "zsh"} {
+		if _, err := exec.LookPath(candidate); err == nil {
+			shells = append(shells, candidate)
+		}
+	}
+	const explainNote = "VERIFY: explain filter failed"
+	tests := []struct {
+		name     string
+		command  string
+		explain  string
+		wantExit int
+		wantNote bool
+	}{{
+		// The regression. A filter that cannot run at all is the common shape of this: a missing
+		// binary is exec's 127, and before the filter status was kept this exited 0.
+		name:     "missing filter on a green test",
+		command:  `sh -c 'echo the test output; exit 0'`,
+		explain:  "/nonexistent/explain",
+		wantExit: 127,
+		wantNote: true,
+	}, {
+		name:     "failing filter on a green test",
+		command:  `sh -c 'echo the test output; exit 0'`,
+		explain:  `sh -c 'cat >/dev/null; exit 3'`,
+		wantExit: 3,
+		wantNote: true,
+	}, {
+		// Precedence: the test's own status is the one a harness keys on, so it survives even when
+		// the filter failed as well, and the note is not written for a failure the test caused.
+		name:     "a failing test outranks a failing filter",
+		command:  `sh -c 'echo the test output; exit 7'`,
+		explain:  `sh -c 'cat >/dev/null; exit 3'`,
+		wantExit: 7,
+		wantNote: false,
+	}, {
+		name:     "a green run stays green and silent",
+		command:  `sh -c 'echo the test output; exit 0'`,
+		explain:  "cat",
+		wantExit: 0,
+		wantNote: false,
+	}}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			composed, overhead := composeSearchVerifyExplain(test.command, test.explain)
+			if overhead != len(composed)-len(test.command) {
+				t.Fatalf("overhead %d does not account for the whole wrapper (%d)",
+					overhead, len(composed)-len(test.command))
+			}
+			for _, shell := range shells {
+				t.Run(shell, func(t *testing.T) {
+					t.Parallel()
+					output, err := exec.Command(shell, "-c", composed).CombinedOutput()
+					exit := 0
+					if err != nil {
+						status, ok := err.(*exec.ExitError)
+						if !ok {
+							t.Fatalf("%s: %v (output %q)", shell, err, output)
+						}
+						exit = status.ExitCode()
+					}
+					if exit != test.wantExit {
+						t.Fatalf("%s: exit code = %d, want %d; command = %s output = %q",
+							shell, exit, test.wantExit, composed, output)
+					}
+					if got := strings.Contains(string(output), explainNote); got != test.wantNote {
+						t.Fatalf("%s: stderr note present = %v, want %v; output = %q",
+							shell, got, test.wantNote, output)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestSearchVerifyExplainContainsTheCallersFragment is the regression for the explain fragment
+// escaping the wrapper it is supposed to be a stage of.
+//
+// `explain` is a raw shell fragment from `--verify-explain`, and it was interpolated bare into the
+// wrapper's command list. `|` binds tighter than `;`, so a fragment ending in a control word did not
+// stay inside the pipeline: `--verify-explain 'cat; exit 0'` composed to
+//
+//	( o=$(<test> 2>&1); r=$?; printf '%s\n' "$o" | cat; exit 0; e=$?; [ "$r" -ne 0 ] && exit "$r"; … )
+//
+// where `exit 0` is a sibling of the pipeline, not part of it. It ended the WRAPPER — before `e=$?`,
+// and before the saved test status was ever consulted — so a test that exited 7 reported 0. That is
+// the exact false pass the capture exists to prevent, produced by a filter that looks like a filter.
+//
+// As with its siblings, the assertion is a REAL execution in every POSIX-ish shell on the machine:
+// the claim is about where a shell draws the boundary of a pipeline, not about a string.
+func TestSearchVerifyExplainContainsTheCallersFragment(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell semantics")
+	}
+	shells := []string{"sh"}
+	for _, candidate := range []string{"dash", "bash", "zsh"} {
+		if _, err := exec.LookPath(candidate); err == nil {
+			shells = append(shells, candidate)
+		}
+	}
+	for _, test := range []struct {
+		name     string
+		command  string
+		explain  string
+		wantExit int
+	}{{
+		// The report. `exit` is the reachable one: it is ordinary shell, and a caller writing a
+		// filter that swallows a status is writing something that reads as reasonable.
+		name:     "a filter that exits cannot end the wrapper",
+		command:  `sh -c 'echo the test output; exit 7'`,
+		explain:  "cat; exit 0",
+		wantExit: 7,
+	}, {
+		// `exec` replaces the shell rather than ending it, and reaches the same place: everything
+		// after the fragment — including the test-status check — is simply never executed.
+		name:     "a filter that execs cannot replace the wrapper",
+		command:  `sh -c 'echo the test output; exit 7'`,
+		explain:  "cat >/dev/null; exec true",
+		wantExit: 7,
+	}, {
+		// A green test with a fragment that exits nonzero must still report the FILTER's status, so
+		// the containment must not swallow the other direction either.
+		name:     "a filter that exits nonzero on a green test still reports its status",
+		command:  `sh -c 'echo the test output; exit 0'`,
+		explain:  "cat >/dev/null; exit 3",
+		wantExit: 3,
+	}} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			composed, overhead := composeSearchVerifyExplain(test.command, test.explain)
+			if overhead != len(composed)-len(test.command) {
+				t.Fatalf("overhead %d does not account for the whole wrapper (%d)",
+					overhead, len(composed)-len(test.command))
+			}
+			for _, shell := range shells {
+				t.Run(shell, func(t *testing.T) {
+					t.Parallel()
+					output, err := exec.Command(shell, "-c", composed).CombinedOutput()
+					exit := 0
+					if err != nil {
+						status, ok := err.(*exec.ExitError)
+						if !ok {
+							t.Fatalf("%s: %v (output %q)", shell, err, output)
+						}
+						exit = status.ExitCode()
+					}
+					if exit != test.wantExit {
+						t.Fatalf("%s: exit code = %d, want %d — the caller's explain fragment escaped "+
+							"the pipeline stage it is supposed to be; command = %s output = %q",
+							shell, exit, test.wantExit, composed, output)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestSearchVerifyBuildCheckDoesNotExecuteRepositoryData is the build-check derivation's own
+// side-effect proof.
+//
+// The sibling table above covers every manifest-driven derivation but reaches the build check only
+// through a string comparison, and the string is the weaker assertion: it says what was WRITTEN, not
+// what a shell DOES with it. This runs the emitted command in a real POSIX shell with a filename
+// carrying every metacharacter class at once — a space, a `;`, a `$(...)`, a backtick and a literal
+// newline — where each injected payload's only job is to create VERIFY_MARKER. The assertion is that
+// the marker does not exist afterwards.
+func TestSearchVerifyBuildCheckDoesNotExecuteRepositoryData(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell quoting is exercised on non-Windows platforms")
+	}
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is not installed")
+	}
+	// Every payload writes the marker, by a different route out of the quoting.
+	sourcePath := "a b" +
+		`;>"$VERIFY_MARKER";` +
+		`$(: >"$VERIFY_MARKER")` +
+		"`: >\"$VERIFY_MARKER\"`" +
+		"\n>\"$VERIFY_MARKER\"\n" +
+		"x.py"
+
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	writeSearchVerifyShellStub(t, filepath.Join(binDir, "python"))
+	marker := filepath.Join(root, "VERIFY_MARKER")
+
+	evidence := searchVerifyTestEvidence(map[string]string{sourcePath: "print('safe')\n"})
+	command := deriveSearchVerifyBuildCheck("", searchVerifySubject{sourcePath: sourcePath}, &evidence)
+	if command == nil {
+		t.Fatal("fixture did not derive a build check command")
+	}
+	process := exec.Command(shell, "-c", command.Command)
+	process.Dir = root
+	process.Env = searchVerifyShellTestEnv(binDir, marker)
+	output, runErr := process.CombinedOutput()
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Fatalf("repository data executed as shell syntax: command = %q output = %q",
+			command.Command, output)
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("inspect marker: %v", statErr)
+	}
+	if runErr != nil {
+		t.Fatalf("command %q failed: %v\n%s", command.Command, runErr, output)
+	}
+}
+
+// TestSearchVerifyRunnerMissingReadsPackageManagerScriptsAsScripts is the follow-up to the lockfile
+// precedence fix.
+//
+// The Node suite tier used to emit `npm test` unconditionally; it now reads the repository's own
+// statement and emits `yarn test` or `pnpm test`. The look-through probe had not moved with it: it
+// took the word after `yarn` to be a BINARY and required `node_modules/.bin/test`, a file no
+// repository has, so every command the new emitter produced for a yarn or pnpm tree was annotated as
+// having an uninstalled runner — a false gate on a command that runs.
+//
+// The distinction is what the manager was asked to do. `npm`, `yarn` and `pnpm` run the package's
+// own SCRIPTS by default, and a script lives in package.json, not in node_modules/.bin; the manager
+// resolving on PATH is the whole of the question. Only their explicit binary-execution subcommand,
+// `exec`, launches something out of node_modules/.bin — as does `npx`, which is nothing else.
+func TestSearchVerifyRunnerMissingReadsPackageManagerScriptsAsScripts(t *testing.T) {
+	t.Parallel()
+	installed := map[string]string{"node_modules/.bin/jest": "#!/usr/bin/env node\n"}
+	for _, tc := range []struct {
+		name    string
+		command string
+		files   map[string]string
+		want    bool
+	}{
+		// --- scripts: answered by package.json, not by node_modules/.bin ---
+		{"yarn runs the test script", "yarn test", map[string]string{}, false},
+		{"pnpm runs the test script", "pnpm test", map[string]string{}, false},
+		{"npm runs the test script", "npm test", map[string]string{}, false},
+		{"yarn run spells it out", "yarn run test", map[string]string{}, false},
+		{"pnpm run spells it out", "pnpm run test", map[string]string{}, false},
+		{"bun runs the test script", "bun run test", map[string]string{}, false},
+		{"a workspace leaf still runs its script", "cd packages/core && pnpm test", map[string]string{}, false},
+
+		// --- binaries: the launcher does resolve one, so the look-through stands ---
+		{"pnpm exec finds the binary", "pnpm exec jest src/a.test.ts", installed, false},
+		{"pnpm exec has nothing to run", "pnpm exec jest src/a.test.ts", map[string]string{}, true},
+		{"yarn exec has nothing to run", "yarn exec jest src/a.test.ts", map[string]string{}, true},
+		{"npx is unchanged", "npx jest src/a.test.ts", map[string]string{}, true},
+
+		// --- and the manager itself still has to exist ---
+		{"the manager is not installed", "pnpm test", map[string]string{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var evidence searchVerifyEvidence
+			if tc.name == "the manager is not installed" {
+				evidence = searchVerifyTestEvidenceWithout(tc.files, "pnpm")
+			} else {
+				evidence = searchVerifyTestEvidenceWithout(tc.files)
+			}
+			if got := searchVerifyRunnerMissing(tc.command, &evidence); got != tc.want {
+				t.Fatalf("searchVerifyRunnerMissing(%q) = %v, want %v", tc.command, got, tc.want)
+			}
+		})
 	}
 }

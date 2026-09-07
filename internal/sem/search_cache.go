@@ -23,7 +23,7 @@ import (
 // resource policy were complete; v13 retires entries whose DATA_FLOWS records
 // carry a single evidence entry per edge rather than every flow; v14 retires
 // entries written before truncated records counted what they dropped.
-const searchSnapshotCacheVersion = "search-snapshot-v14"
+const searchSnapshotCacheVersion = "search-snapshot-v14-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -622,7 +622,7 @@ func selectiveSearchSnapshotFromFull(
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, emitRelation)
 	} else {
-		forEachRelation(sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, func() bool {
+		forEachRelation(ctx, sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, defaultProviderWorkerCount(), func() bool {
 			return ctx.Err() != nil
 		}, emitRelation, func(failure PartialFailure) {
 			relationFailures = append(relationFailures, failure)

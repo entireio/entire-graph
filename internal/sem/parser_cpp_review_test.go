@@ -122,7 +122,7 @@ class Derived : public Base {};`)
 	}
 	// Exercise receiver resolution with a known inheritance map. C++ base
 	// extraction is separate from the redirection behavior under test.
-	relations := receiverCallRelations(from, "int run() { Derived d; return d.Fetch(); }",
+	relations := receiverCallRelations(from, newSymbolBody("int run() { Derived d; return d.Fetch(); }"),
 		map[string]map[string]SymbolRecord{base.ID: {"Fetch": declaration}},
 		map[string]string{derived.ID: base.ID}, nil, byName, nil, nil, nil, "", nil, nil, nil, nil, nil, swiftFileTypes{})
 	for _, r := range relations {

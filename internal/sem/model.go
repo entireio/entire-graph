@@ -91,11 +91,12 @@ type FileChange struct {
 }
 
 type Result struct {
-	Checkpoint string            `json:"checkpoint,omitempty"`
-	Base       string            `json:"base"`
-	Head       string            `json:"head"`
-	Files      []FileChange      `json:"files"`
-	Warnings   []ProviderWarning `json:"warnings,omitempty"`
+	IdentityRevision string            `json:"identity_revision,omitempty"`
+	Checkpoint       string            `json:"checkpoint,omitempty"`
+	Base             string            `json:"base"`
+	Head             string            `json:"head"`
+	Files            []FileChange      `json:"files"`
+	Warnings         []ProviderWarning `json:"warnings,omitempty"`
 	// SchemaVersion pins the shape of this Result so a copy persisted into
 	// checkpoint metadata can be read back knowing which schema it was written
 	// under. Populated centrally from the package SchemaVersion const at the
