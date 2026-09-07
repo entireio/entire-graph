@@ -69,14 +69,14 @@ further retry is authorized. The profiler worker is analyzing the existing
 verbose log only; the 36-second and 6-second tests were the tests running when
 the alarm fired, not isolated reruns or results, and the prior isolated
 normal/race passes belong to different tests in the first failed check. Counts
-remain six controlled product invocations and zero clean stability batches,
-with all VMs off.
+remain seven controlled product invocations and zero clean stability batches;
+all VMs used for that diagnostic were deallocated after collection.
 
 Two separate Linux cache-fixture infrastructure attempts did not reach tests. The original `evidence/check-6f23da0a-linux-cache-fixtures/` attempt stopped at the URL-substitution guard before tests; exit 73 is inferred from the guard path rather than observed. The `evidence/check-6f23da0a-linux-cache-fixtures-r1/` attempt observed remote exit 74 because the source directory or the temporary source archive was absent; retained evidence does not identify which. Transport and upload both recorded exit 0. Both attempts ran zero tests and made zero product or corpus invocations; the VM reached terminal deallocated state at the end of r1. The r2 durable-archive repair/check succeeded for its scoped cache-fixture validation: exactly three named tests passed with zero skips or failures in 2.190 seconds, using Go 1.26.1 and gopls v0.20.0; source-hash and source-comparison checks passed. mise was absent, so this is not a full `mise run check`, a timeout explanation, or a performance result. All three validation VMs were deallocated.
 
-A separate Linux full-check attempt used the complete 2,059-file source archive and genuine unchanged `mise run check`. Its source, official checksum-bound mise 2026.4.11 and offline-linked Go 1.26.1 prechecks passed. Formatting, vet, the full race suite and build completed; `internal/sem` passed in 457.108 seconds. The overall mise run lasted 764.628 seconds; the required status-line task failed with 62 assertions passed, 78 failed and three platform/ownership checks skipped, so the full check failed and status-line coverage was incomplete. Its separate task duration was not recorded. Pre/post tracked source identity was unchanged. The retained output does not prove the environmental cause of the empty renders and missing cache artifacts. No retry, product or corpus invocation followed, and all three validation VMs were deallocated. Evidence: `evidence/check-6f23da0a-linux-full/`. Two bounded follow-ups did not change that result. The reconstructed Linux trace produced two successful canned renders but did not reproduce the failure or execute the exact task wrapper (`evidence/statusline-linux-trace-6f23da0a/`). The attempted exact-task diagnostic stopped at setup exit 73 before source identity, toolchain selection or the status-line task because it looked for `tracked-manifest.tsv` while successful full-check r1 used `tracked-manifest-r1.tsv`; its stale `HOME`, mode and selected-Go checks are retained and must not be reused (`evidence/statusline-linux-actual-task-6f23da0a/`). Counts remain six product invocations and zero clean stability batches, no full gate passed, and all three validation VMs were deallocated. The corrected source-`25887f69` full-check result is recorded above; no further full-check or diagnostic result is implied.
+A separate Linux full-check attempt used the complete 2,059-file source archive and genuine unchanged `mise run check`. Its source, official checksum-bound mise 2026.4.11 and offline-linked Go 1.26.1 prechecks passed. Formatting, vet, the full race suite and build completed; `internal/sem` passed in 457.108 seconds. The overall mise run lasted 764.628 seconds; the required status-line task failed with 62 assertions passed, 78 failed and three platform/ownership checks skipped, so the full check failed and status-line coverage was incomplete. Its separate task duration was not recorded. Pre/post tracked source identity was unchanged. The retained output does not prove the environmental cause of the empty renders and missing cache artifacts. No retry, product or corpus invocation followed, and all three validation VMs were deallocated. Evidence: `evidence/check-6f23da0a-linux-full/`. Two bounded follow-ups did not change that result. The reconstructed Linux trace produced two successful canned renders but did not reproduce the failure or execute the exact task wrapper (`evidence/statusline-linux-trace-6f23da0a/`). The attempted exact-task diagnostic stopped at setup exit 73 before source identity, toolchain selection or the status-line task because it looked for `tracked-manifest.tsv` while successful full-check r1 used `tracked-manifest-r1.tsv`; its stale `HOME`, mode and selected-Go checks are retained and must not be reused (`evidence/statusline-linux-actual-task-6f23da0a/`). Counts remained six product invocations and zero clean stability batches, no full gate passed, and all three validation VMs were deallocated. The corrected source-`25887f69` full-check result is recorded above; no further full-check or diagnostic result is implied.
 
-Source commit `25887f6954fc06e35bc3a7c699e3c524213dada4` remains historical: its status-line fallback fix was later verified by the `950567a3` full check. The pre-fix 62-pass/78-fail/3-skip run and all setup/diagnostic failures remain retained. Counts remain six product invocations and zero clean stability batches; release and stability gates remain unpassed.
+Source commit `25887f6954fc06e35bc3a7c699e3c524213dada4` remains historical: its status-line fallback fix was later verified by the `950567a3` full check. The pre-fix 62-pass/78-fail/3-skip run and all setup/diagnostic failures remain retained. Counts remained six product invocations and zero clean stability batches; release and stability gates remain unpassed.
 
 ## Current status
 
@@ -93,8 +93,8 @@ The bounded Kubernetes syntax-only diagnostic separately collected 194
 known partials and one warning. All 194 entries have been classified in the
 source-review packet, but that classification does not close parser defects,
 verify every current file, or adopt proposed ADR0049 reviewed-partial
-admission. The resumed sequence has consumed six controlled product
-invocations: that completed syntax-only diagnostic and the five full-profile
+admission. The resumed sequence has consumed seven controlled product
+invocations: that completed syntax-only diagnostic and the six full-profile
 timeouts described below. Zero stability batches have run. The first full-profile OFF dispatch attempted
 transport once but failed before product startup because the packaged collector
 still contained placeholder constants (`consumed=0`, `reserved=1`); it is
@@ -153,12 +153,13 @@ no observation or diagnostics. It retained a complete diagnostic-only
 `2c72e17b6089a06fb0fb991a68c30498d407c88ad5baf3777121d0f78b870776`,
 with byte-identical before/after inputs and zero control-identity mismatches.
 No retry was made and the VM is deallocated. The focused gate is not a full
-check or admission substitute. Offline analysis of the latest profile found
-that route-regex work remains a CPU hotspot. The route refactor and focused
-correctness evidence are complete, but the latest `25887f69` diagnostic still
-timed out at 120 seconds; no further sampling is authorized. Zero clean
-stability batches have run, and no stability, release, timeout-resolution or
-performance claim follows. The resumed invocation total is six.
+check or admission substitute. Offline analysis of that retained
+`8689fc3d` profile found that route-regex work remained a CPU hotspot. The route refactor and focused
+correctness evidence are complete, but the latest `950567a3` diagnostic timed
+out at 120 seconds with zero completed arms; no further sampling is authorized.
+Zero clean stability batches have run, and no stability, release,
+timeout-resolution, performance or bottleneck claim follows. The resumed
+invocation total is seven.
 
 The source-`6f23da0a` pinned Linux evidence is separate from the failed full
 check: 32/32 affected normal, 32/32 affected race, and 28/28 compiler
@@ -177,12 +178,24 @@ ran. Retained evidence is recorded by commit `33df33079b6f5618546f12bbc699a26b66
 stability, release or campaign-admission evidence. The immutable `25887f69`
 full-check pass establishes correctness only.
 
+The seventh controlled product invocation, `diagnostic-dispatch-950567a3`,
+started one OFF/full/snapshot arm and timed out at 120 seconds
+(`process=-9`, `collector=1`) with zero completed arms. Its complete
+diagnostic-only relations profile started at 88.012954726 seconds, captured
+20.033042049 seconds and 41,212 bytes, with 1,302 progress events and
+first/latest relation counts of 512/666,624. Those relation counts are
+accumulated progress counters, not sample-local work; no bottleneck is
+inferred. All three VMs were deallocated after collection. This is a failed
+diagnostic issue, not timeout-resolution, performance, stability, release or
+campaign-admission evidence. Evidence: `evidence/diagnostic-dispatch-950567a3/`.
+
 Source `78c8b496` implements the bounded Go HTTP route-parser refactor
 motivated by the retained relations profile. Focused normal, race,
 compatibility-oracle and resource-bound checks are recorded in
 `evidence/route-parser-profile-8689fc3d/`. This is implementation and
-correctness evidence only; the latest `25887f69` diagnostic still timed out at
-120 seconds, and diagnostic packaging/runtime execution remains blocked.
+correctness evidence only; the latest `950567a3` diagnostic timed out at 120
+seconds with zero completed arms; further runtime sampling is stopped pending
+diagnosis.
 
 The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
 6 timeouts. It is therefore collected but incomplete. The campaign remains
@@ -191,7 +204,7 @@ P2, P3 or P4 release gate has passed.
 
 | Workstream | Implementation and correctness | Evaluation and release status |
 |---|---|---|
-| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. Route changes at `78c8b496`, return-flow gating at `3a3d6137`, and delayed profile scheduling at `950567a3` have source/evidence coverage; source `6f23da0a` has separate pinned Linux focused success and failed immutable checks, while source `950567a3` has the latest immutable Linux full-check pass. Source `25887f69` remains historical. | Fixed-corpus baseline and paired matrix are incomplete; the sixth diagnostic still timed out; partial admission, performance, RSS and campaign admission remain open. |
+| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. Route changes at `78c8b496`, return-flow gating at `3a3d6137`, and delayed profile scheduling at `950567a3` have source/evidence coverage; source `6f23da0a` has separate pinned Linux focused success and failed immutable checks, while source `950567a3` has the latest immutable Linux full-check pass. Source `25887f69` remains historical. | Fixed-corpus baseline and paired matrix are incomplete; the seventh diagnostic timed out; partial admission, performance, RSS and campaign admission remain open. |
 | P2 | Pinned Go analysis, lifecycle, source identity, mapping, compiler-view integration and invalidation contracts have implementation and focused correctness evidence. | Hard-Go quality and adjudicated precision/recall studies are deferred; no gate passed. |
 | P3 | Relation policy, bounded traversal, path evidence, CLI/output and compiler-view contracts have focused correctness evidence. | Realistic affected-site precision/recall/cost studies and coverage gates are deferred; no gate passed. |
 | P4 | Candidate-only ranking, experimental integration, fallback behavior and one bounded candidate-expansion policy are implemented. `current-expansion`, `uniform` and `weighted` use identical no-compiler candidate pools while `current-expansion` retains baseline ranking; compiler evidence may change the eligible pool in `weighted-compiler`. Focused normal/race contract evidence is retained. | No new retrieval measurement or tuning was run. No winning configuration, held-out result or downstream agent study is established; no gate passed. |
@@ -228,9 +241,9 @@ policy, the shared 100-invocation cap, durable duplicate/retry prevention and
 first-issue stop. Three clean representative batches are a checkpoint for
 stability only, not a release gate.
 
-The existing timeouts remain failed diagnostics. The latest `25887f69` diagnostic still timed out at 120 seconds and retained
+The existing timeouts remain failed diagnostics. The latest `950567a3` diagnostic timed out at 120 seconds with zero completed arms and retained
 a diagnostic-only CPU profile; the route refactor and focused correctness
-evidence are complete, but no timeout-resolution claim exists. No further
+evidence are complete, but no timeout-resolution or bottleneck claim exists. No further
 sampling or full campaign is authorized by this evidence.
 
 P2 and P3 still require independent adjudication of required, allowed and

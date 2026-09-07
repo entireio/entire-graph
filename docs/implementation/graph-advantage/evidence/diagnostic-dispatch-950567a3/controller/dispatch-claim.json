@@ -1,0 +1,11 @@
+{
+  "admission_eligible": false,
+  "batch_manifest_sha256": "04bce45a96f169e963be895ed3413dad03fd3a709b5c9da46a9ec545f9043d77",
+  "control_archive_sha256": "e5c9f2caa5383721a7878e7841143de9400790e145abbeb8a39fa18a221215f4",
+  "dispatch_id": "p1-diag-950567a3-k8s-late-relations-off-01",
+  "profile": "full",
+  "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+  "state": "claimed_before_cloud_upload",
+  "validation_gate_kind": "full-check-archive-v1",
+  "validation_gate_sha256": "91aa6b3199e63a7a8f4eac641ad186d6ad4b046e73b21a6e96dda0553b13e22e"
+}
