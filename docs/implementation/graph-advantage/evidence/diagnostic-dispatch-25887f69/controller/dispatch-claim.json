@@ -1,0 +1,11 @@
+{
+  "admission_eligible": false,
+  "batch_manifest_sha256": "85c20af4d5a87530e51897f732f99eff6ab7e423ce41dafc2b3a5f784a0bd38d",
+  "control_archive_sha256": "14a320c9fde991e3cc011fa076fc99faddf511c6e55e2f3f38daaf971c8cf1e5",
+  "dispatch_id": "p1-diag-25887f69-k8s-route-boundary-off-01",
+  "profile": "full",
+  "source_commit": "25887f6954fc06e35bc3a7c699e3c524213dada4",
+  "state": "claimed_before_cloud_upload",
+  "validation_gate_kind": "full-check-archive-v1",
+  "validation_gate_sha256": "95651f37e5bdcda7a4d869251ca17b50466f07056f131cd1fc13b849cf462794"
+}
