@@ -6,6 +6,24 @@ paused. It supersedes earlier handoff/ledger suggestions that a canary pass
 can lead directly to the full campaign. Historical protocols/results remain
 unchanged. The full P1 campaign is NOT authorized.
 
+## 0. Mandatory model routing
+
+Every substantive step is delegated to a cheaper-model worker: routine work to
+Luna and complex work to Sol. This includes implementation, diagnosis,
+source/data inspection, fixture and harness work, execution/testing, result
+summaries, documentation, and Git, VM, or automation/control-plane execution.
+The main Astra agent only decomposes and assigns work, coordinates workers,
+reviews evidence and diffs, adjudicates results, chooses the next step, and
+communicates with the user. Do not create Astra subagents or silently fall
+back to Astra execution; if the required cheaper worker is unavailable, report
+the worker unavailable and leave the step unexecuted.
+
+Workers may execute otherwise authorized commands or VM tasks, but delegation
+adds no budget or authorization. The shared 100-run batch cap, first-issue
+stops, and explicit user approval before any full campaign remain in force.
+All work stays paused except this plan adjustment; do not launch tests,
+benchmarks, VMs, a heartbeat, or a goal from this document.
+
 ## 1. Resolve known issues before sampling
 
 Close the fixture-packaging immutable-check issue; retain its failed-state

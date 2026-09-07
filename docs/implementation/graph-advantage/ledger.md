@@ -10,6 +10,19 @@ Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. 
 
 **Paused at the user’s request for laptop shutdown.** All three Azure VMs are confirmed deallocated; the 15-minute heartbeat is paused. No test or collector is running. Resume from `shutdown-handoff-20260906.md`; do not restart the campaign automatically.
 
+**Mandatory model routing, 2026-09-07:** all substantive implementation,
+diagnosis, source/data inspection, fixture or harness work, execution/testing,
+result summaries, documentation, and Git, VM, or automation/control-plane
+execution must be performed by cheaper-model subagents: Luna for routine work
+and Sol for complex work. The main Astra agent is limited to decomposition,
+assignment, coordination, evidence/diff review, adjudication, next-step
+selection, and user communication. No Astra subagents or silent fallback to
+Astra execution are allowed; report an unavailable cheaper worker and leave
+the step unexecuted. Worker commands or VM tasks remain subject to existing
+authorization, the shared 100-run batch cap, first-issue stops, and explicit
+approval before a full campaign. All work remains paused except this plan
+adjustment.
+
 Current implementation source is `6cf92c9c`: ADR 0048 adds cancellation-aware ownership before batch detachment, permitting only one detached publication batch operation-wide. Focused correctness and race checks passed. Pinned Linux passed 76 top-level tests including 10 live compiler tests. Full `mise run check` passed in 687.332 seconds with unchanged HEAD and clean status. Evidence: `evidence/check-6cf92c9c/` and `evidence/correctness-6cf92c9c-20260906/`.
 
 The three retained query profile paths are verified at `1c0b8e24`: syntax-only, fast and full all have exact semantic, warning, completeness and full 11-record partial parity, with 381 indexed files per arm and unchanged inputs. These are the three distinct requests behind the 55 historical repeated mismatch pairs. Seven requests ran: two completed pairs, a full OFF stopped on a warning-oracle error, then only the corrected full pair. The warning correction came from the original full-profile baseline. Historical repetitions remain retained, not relabeled as new observations. Evidence: `p1-corpus-20260905/retained-query-correctness-1c0b8e24/summary.json`.

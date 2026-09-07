@@ -1,6 +1,33 @@
 {
   "phase": "paused_for_laptop_shutdown",
   "workers": 3,
+  "model_policy": {
+    "routine_worker": "gpt-5.6-luna",
+    "complex_worker": "gpt-5.6-sol",
+    "main_agent_role": "gpt-6-astra orchestrator/judge only: decompose, assign, coordinate, review evidence/diffs, adjudicate, choose next step, communicate",
+    "required_work": [
+      "implementation",
+      "diagnosis",
+      "source/data inspection",
+      "fixture work",
+      "harness work",
+      "execution/testing",
+      "result summaries",
+      "documentation",
+      "Git execution",
+      "VM execution",
+      "automation/control-plane execution"
+    ],
+    "prohibited": [
+      "Astra subagents",
+      "silent fallback to Astra execution"
+    ],
+    "unavailable_worker_action": "report unavailable worker; leave step unexecuted",
+    "worker_execution": "authorized commands or VM tasks only; shared batch cap and existing stops remain",
+    "shared_batch_run_cap": 100,
+    "full_campaign_user_approval_required": true,
+    "state": "all work paused except this plan adjustment"
+  },
   "baseline_planned_requests": 108,
   "campaign_planned_requests": 17280,
   "subagent_model": "gpt-5.6-luna",

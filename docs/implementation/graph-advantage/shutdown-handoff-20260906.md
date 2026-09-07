@@ -4,6 +4,21 @@ Paused explicitly at the user’s request. Do not resume work, heartbeat or
 benchmarks until the user requests it. Branch `codex/graph-advantage`, worktree
 `<REPO_ROOT>`. Commit and push, no merge.
 
+## Mandatory model routing
+
+For any future authorized work, cheaper-model subagents perform all
+implementation, diagnosis, source/data inspection, fixture and harness work,
+execution/testing, result summaries, documentation, and Git, VM, or
+automation/control-plane execution: Luna handles routine work and Sol handles
+complex work. The main Astra agent only decomposes, assigns, coordinates,
+reviews evidence/diffs, adjudicates, selects the next step, and communicates.
+Do not use Astra subagents or silently fall back to Astra execution; report an
+unavailable cheaper worker and leave the step unexecuted. Worker commands and
+VM tasks remain subject to the shared 100-run batch cap, first-issue stops, and
+explicit user approval for a full campaign. This routing grants no new
+authorization. Everything remains paused except the requested plan adjustment;
+do not start tests, benchmarks, VMs, heartbeat, or goal work.
+
 ## Exact stopping point
 
 - All three task Azure VMs confirmed deallocated. Heartbeat
