@@ -1,0 +1,13 @@
+Ok, but now there are medium findings. Address those.
+
+---
+
+The risk eval says "Parser change affecting stable symbol IDs in a frozen contract area with downstream Entire Brain impact." - are those changes address in the entire-brain repo or any of its open PRs?
+
+---
+
+What do you suggest?
+
+---
+
+Ok, let's do that then. entire-brain repo is in \~/Projects. Do all work in a worktree and open a new trail for it when done. Update the entire-graph trail as needed.
