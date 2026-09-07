@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "b26be6a6725f",
+  "strategy": "manual-commit",
+  "branch": "fix/search-heuristics-findings",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/sem/search_file_class.go",
+    "internal/sem/search_heuristics_findings_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b2/6be6a6725f/0/metadata.json",
+      "transcript": "/b2/6be6a6725f/0/full.jsonl",
+      "compact_transcript": "/b2/6be6a6725f/0/transcript.jsonl",
+      "content_hash": "/b2/6be6a6725f/0/content_hash.txt",
+      "prompt": "/b2/6be6a6725f/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 27636,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 3057024,
+    "output_tokens": 7254,
+    "api_call_count": 28
+  }
+}
