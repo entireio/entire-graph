@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "148f783c0b86",
+  "session_id": "01a07d5b-a449-76f1-9bff-17664035bc96",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-07T19:39:12.217522Z",
+  "branch": "fix/bench-kit-medium-findings",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "bench/memory/benchmarks/common/cmm_client.py"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "9294bf480ab4",
+  "checkpoint_transcript_start": 246,
+  "transcript_lines_at_start": 246,
+  "compact_transcript_start": 21,
+  "token_usage": {
+    "input_tokens": 8054,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 589184,
+    "output_tokens": 1270,
+    "api_call_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-07T19:39:12.163601Z",
+    "agent_lines": 8,
+    "agent_removed": 0,
+    "human_added": 18,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 26,
+    "total_lines_changed": 27,
+    "agent_percentage": 29.629629629629626,
+    "metric_version": 2
+  }
+}
