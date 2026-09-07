@@ -311,6 +311,18 @@ assert_empty 'missing binary prints nothing' "$OUT"
 assert_absent 'missing binary exits before the cache block' \
 	"$WORK/nobin-tmp/entire-graph-statusline-$(id -u)"
 
+# HOME may be absent in non-login runners. That must not abort expansion of the optional
+# $HOME/go/bin fallback, whether an explicit binary is available or no binary can be found.
+mkdir -p "$WORK/nohome-unset-tmp"
+OUT=$(stdin_json s-nobin-unset "$T" "$REPO" |
+	env -i PATH=/usr/bin:/bin TMPDIR="$WORK/nohome-unset-tmp" \
+		ENTIRE_GRAPH_BIN=/nonexistent/entire-graph /bin/sh "$SCRIPT")
+NOHOME_NOBIN_RC=$?
+assert_eq 'missing HOME and missing binary still exit safely' 0 "$NOHOME_NOBIN_RC"
+assert_empty 'missing HOME and missing binary print nothing' "$OUT"
+assert_absent 'missing HOME and missing binary exit before the cache block' \
+	"$WORK/nohome-unset-tmp/entire-graph-statusline-$(id -u)"
+
 # Positive control for the case above: the SAME stripped environment with a working binary must
 # render. Without it, "prints nothing" is satisfied by any earlier exit.
 cat >"$WORK/minstub" <<'STUB'
@@ -324,6 +336,13 @@ set -- "PATH=/usr/bin:/bin" "HOME=$WORK/nohome"
 OUT=$(stdin_json s-nobin-ok "$T" "$REPO" |
 	env -i "$@" TMPDIR="$WORK/cache" NO_COLOR=1 ENTIRE_GRAPH_BIN="$WORK/minstub" /bin/sh "$SCRIPT")
 assert_has 'the stripped environment reaches the binary lookup at all' '100 saved' "$OUT"
+
+OUT=$(stdin_json s-nobin-ok-unset "$T" "$REPO" |
+	env -i PATH=/usr/bin:/bin TMPDIR="$WORK/cache" NO_COLOR=1 \
+		ENTIRE_GRAPH_BIN="$WORK/minstub" /bin/sh "$SCRIPT")
+NOHOME_BIN_RC=$?
+assert_eq 'an explicit binary works with HOME absent' 0 "$NOHOME_BIN_RC"
+assert_has 'an explicit binary renders with HOME absent' '100 saved' "$OUT"
 
 # A binary that exits non-zero must not leak an error onto the status line.
 cat >"$WORK/broken" <<'STUB'

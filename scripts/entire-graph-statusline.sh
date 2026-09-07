@@ -102,7 +102,7 @@ for candidate in \
 	"${ENTIRE_GRAPH_BIN:-}" \
 	"${CLAUDE_PLUGIN_ROOT:-}${CLAUDE_PLUGIN_ROOT:+/entire-graph}" \
 	"${GOBIN:-}${GOBIN:+/entire-graph}" \
-	"${HOME}/go/bin/entire-graph"; do
+	"${HOME:+${HOME}/go/bin/entire-graph}"; do
 	if [ -n "$candidate" ] && [ -x "$candidate" ]; then
 		BIN=$candidate
 		break
