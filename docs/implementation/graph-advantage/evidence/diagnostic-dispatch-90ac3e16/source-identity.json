@@ -1,0 +1,18 @@
+{
+  "binary_sha256": "43c85dfa31358f4911d565e005ddc943cf58d8ddc09790f60714e152e241b86b",
+  "build_manifest": "build-manifest.json",
+  "build_manifest_sha256": "210ee00a9b340434bdf38e22aa18f547a2dd4dbe2db2b60128dab1033a077611",
+  "input_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+  "remote_root": "/opt/graph-validation/diagnostics-linux-90ac3e16",
+  "repository": "kubernetes-kubernetes",
+  "repository_path": "/opt/p1/corpus/kubernetes-kubernetes",
+  "source_archive": "../diagnostics-linux-90ac3e16/source.tar.gz",
+  "source_archive_sha256": "c1baab3e4c3c7d412951ba8bd9ce008c6d761122f7a570806b05426c82d4635f",
+  "source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+  "source_digest": "d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4",
+  "status": "bound source, binary, and passed immutable full-check gate",
+  "full_check_source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+  "full_check_result": "../check-90ac3e16-retry-1/subprocess-result.json",
+  "full_check_log": "../check-90ac3e16-retry-1/mise-check.raw.log",
+  "full_check_integrity": "../check-90ac3e16-retry-1/source-integrity.json"
+}

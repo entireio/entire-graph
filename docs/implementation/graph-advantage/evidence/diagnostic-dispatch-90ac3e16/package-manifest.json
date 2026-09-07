@@ -1,0 +1,135 @@
+{
+  "control_archive": "control-files.tar.gz",
+  "control_archive_sha256": "ed72e7efba0c7250572eb604606d8e801892ddc42aadbba466802e91e871b32d",
+  "members": {
+    "README.md": {
+      "bytes": 3577,
+      "sha256": "1ba620db1ce693a3b86a444f1a2cc9d9c041aa1bff8efa37274fac191993ccf2"
+    },
+    "batch-manifest.json": {
+      "bytes": 1280,
+      "sha256": "2b0cc11fedd4ac01c3b1a926735e3792b475d3326b1e554abedfbe8aee753b0d"
+    },
+    "build-manifest.json": {
+      "bytes": 2180,
+      "sha256": "210ee00a9b340434bdf38e22aa18f547a2dd4dbe2db2b60128dab1033a077611"
+    },
+    "collector/__pycache__/batch_budget.cpython-314.pyc": {
+      "bytes": 19789,
+      "sha256": "aa3b21beb296ca00680a857565867f04f68b5d80958ccf057340ddc422ceb34f"
+    },
+    "collector/__pycache__/campaign_gate.cpython-314.pyc": {
+      "bytes": 6784,
+      "sha256": "e02cd3997a98d73def9d5b96db15933fd54711463406808565947a885f1ede46"
+    },
+    "collector/__pycache__/cloud.cpython-314.pyc": {
+      "bytes": 3584,
+      "sha256": "5e1ee8dd4498d7b348aaa7b86e43b948e2090d645b04c9c34ba00ca5bb95d558"
+    },
+    "collector/__pycache__/run_remote.cpython-314.pyc": {
+      "bytes": 46856,
+      "sha256": "b2b730101f022dda1ea4296a536a88837c54428183bb78e320b01ef6d7c680c7"
+    },
+    "collector/__pycache__/test_r2_collector_regressions.cpython-314.pyc": {
+      "bytes": 20313,
+      "sha256": "c2beee8eee18153bf061307038bda2e8f81b3f2bf139f1ae4c33ba570bae96fb"
+    },
+    "collector/__pycache__/test_run_remote.cpython-314.pyc": {
+      "bytes": 20512,
+      "sha256": "7fa83d1738ab092e324c54c53687fec410dff1e30d3bbb8cf43b25f76145e0f6"
+    },
+    "collector/batch_budget.py": {
+      "bytes": 10624,
+      "sha256": "23f7d063c75fb3190da21b232145181dd7ac8ff5e30436d65de76eedc678df3a"
+    },
+    "collector/campaign_gate.py": {
+      "bytes": 4439,
+      "sha256": "8c07cdac2089a99aae7c338f65472885d3039f223080d60d57978ae08587cae6"
+    },
+    "collector/cloud.py": {
+      "bytes": 1593,
+      "sha256": "927ff2bc4e7647c88d60c39123477953102391936d38ec2c57d9f44f73dcd548"
+    },
+    "collector/run_remote.py": {
+      "bytes": 36966,
+      "sha256": "222cb830ecfc6952dd29a53dac5da877ec1d46e8b6b859cfe75281b8029bb398"
+    },
+    "collector/test_r2_collector_regressions.py": {
+      "bytes": 13263,
+      "sha256": "e693917d659ba4052cb015036ff7762e603dd3ed8ec8467b359c1a2b04185a2e"
+    },
+    "collector/test_run_remote.py": {
+      "bytes": 11489,
+      "sha256": "2d0bae060facb7269e4ec1d1e01bb1a434cc18abc651fdb15b3da364cdeec9ff"
+    },
+    "collector-dry-preflight.txt": {
+      "bytes": 667,
+      "sha256": "984596dc5c58fe99347ac6bbe515390aca632b4898fda43a7a11714b065844c5"
+    },
+    "collector-tests.txt": {
+      "bytes": 3381,
+      "sha256": "4ad5ee12ef8377a51038024075a45593ada915cdf1f387287d289f02f280942d"
+    },
+    "control-hashes.txt": {
+      "bytes": 714,
+      "sha256": "9ffdf390e60d6e33c79c3556cd219db03dd96f837cb7e3ecaae1f9f6fb58218b"
+    },
+    "controller/__pycache__/controller.cpython-314.pyc": {
+      "bytes": 40744,
+      "sha256": "ede26d7aef0fc7c37e8b136f0d186185cefaa110867f1c9c2ca26c18d4d6788c"
+    },
+    "controller/__pycache__/test_controller.cpython-314.pyc": {
+      "bytes": 8774,
+      "sha256": "fa69991b40393516676cb7ec0a53865d89ec7f3f0809ac033b2ba6af9ce9d69e"
+    },
+    "controller/__pycache__/test_r2_controller_regressions.cpython-314.pyc": {
+      "bytes": 48739,
+      "sha256": "4dc07e146939de0fc23fb4546eea125ffe97a33362f63d76053cbd28776c12b7"
+    },
+    "controller/controller.py": {
+      "bytes": 27041,
+      "sha256": "25d27151861fa748b565128b80c23131614cb8223f2a9d63f5a925212c562cd6"
+    },
+    "controller/manifest.json": {
+      "bytes": 3017,
+      "sha256": "a17aa600f00033bafd4c84c4ec36bb16cbf39004147a250232193755cb60857d"
+    },
+    "controller/test_controller.py": {
+      "bytes": 3861,
+      "sha256": "c51b406577b0627c30a11744d67954c7b861f31f19a3e9eb4b05fb96ffce010a"
+    },
+    "controller/test_r2_controller_regressions.py": {
+      "bytes": 29682,
+      "sha256": "7cde35cccf92a4fcdd9d297acf77c68fee2474295c370ddfce776f9387de5708"
+    },
+    "controller-tests.txt": {
+      "bytes": 4677,
+      "sha256": "051a871fea1f7257217a1768dd7e2b0f728d2022d48ff2c4a1f16fd04d0b470a"
+    },
+    "corpus/__pycache__/p1_scenario.cpython-314.pyc": {
+      "bytes": 14785,
+      "sha256": "1b7b554208887d62c141c47431aefd5e012d12fe22172cd5f0573bc3a5227dc9"
+    },
+    "corpus/corpus-manifest.json": {
+      "bytes": 24349,
+      "sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0"
+    },
+    "corpus/p1_scenario.py": {
+      "bytes": 8025,
+      "sha256": "6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75"
+    },
+    "full-check-gate.json": {
+      "bytes": 2660,
+      "sha256": "8f184d500281488da18771280146c211cefcaa7ab4fd6a3855927684b87ff8b5"
+    },
+    "source-identity.json": {
+      "bytes": 1174,
+      "sha256": "8bc280f10bb0487d2645f5dbd4221bae5592dd0891617fcd4a2dd47c51958152"
+    },
+    "verification.json": {
+      "bytes": 8576,
+      "sha256": "4153a4bb2cfa2281f0e99495d710ec24c77df28b2ad95ea388f6d2dff491ad6b"
+    }
+  },
+  "status": "prepared-only; immutable full-check gate passed; no execution"
+}

@@ -1,0 +1,37 @@
+{
+  "batch_id": "p1-diag-90ac3e16-k8s-relations-cpu-off-01",
+  "cap": 100,
+  "cells": [
+    {
+      "arms": [
+        false
+      ],
+      "cell_id": "b2d03eea03b80fa61eebfeab5ccd7b17db8138e407ce73101531be2869c235db",
+      "preparatory_invocations": 0,
+      "profile": "full",
+      "repository": "kubernetes-kubernetes",
+      "scenario": "diagnostic",
+      "trial": 0,
+      "verb": "snapshot",
+      "worker": 1
+    }
+  ],
+  "derived_invocations": 1,
+  "identity": {
+    "binary_sha256": "43c85dfa31358f4911d565e005ddc943cf58d8ddc09790f60714e152e241b86b",
+    "budget_sha256": "23f7d063c75fb3190da21b232145181dd7ac8ff5e30436d65de76eedc678df3a",
+    "build_manifest_sha256": "210ee00a9b340434bdf38e22aa18f547a2dd4dbe2db2b60128dab1033a077611",
+    "gate_sha256": "8c07cdac2089a99aae7c338f65472885d3039f223080d60d57978ae08587cae6",
+    "input_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+    "runner_sha256": "222cb830ecfc6952dd29a53dac5da877ec1d46e8b6b859cfe75281b8029bb398",
+    "scenario_sha256": "6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75"
+  },
+  "preparatory_invocations": 0,
+  "profiler_enabled": true,
+  "scope": "bounded-diagnostic",
+  "total_attempts": 1,
+  "version": 1,
+  "workers": {
+    "1": 1
+  }
+}
