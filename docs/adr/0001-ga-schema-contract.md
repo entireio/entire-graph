@@ -101,3 +101,22 @@ same schema-version decision.
 - The stale `1.0` example header in the
   [semantic provider requirements](../semantic-provider-requirements.md) is
   updated to `1.1` for consistency with the emitted version.
+
+### Parser identity corrections and consumer upgrades
+
+`identity_revision` is an additive, opaque field on the snapshot header and on
+`graph version --json`. It identifies parser rules that affect existing symbol
+IDs or entity-history keys; it does not replace `schema_version` or
+`stable_id_version`. Its absence means legacy parser rules. Consumers comparing
+stored and current revisions must treat inequality (including missing/present)
+as a need to refresh derived semantic data. History consumers must also migrate
+previously persisted entity deltas rather than merely append newly parsed ones.
+
+The revision `js-ts-callable-scope-1` covers trail 154's JS/TS callable-scope
+corrections. Snapshot/search cache namespaces include this revision so an
+unchanged tree and unchanged development release string cannot reuse old parser
+output. The companion Brain migration recomputes already indexed commits
+atomically while preserving source commits, checkpoint/session provenance, and
+authored memory. Ship the consumer support before enabling this producer change.
+Future changes that re-key existing symbols must revise this token and document
+the corresponding consumer migration; ordinary body edits do not change it.

@@ -112,8 +112,9 @@ func Run(ctx context.Context, opts Options, args []string) error {
 	case "version", "--version", "-v":
 		if len(args) > 1 && args[1] == "--json" {
 			return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(map[string]string{
-				"provider": sem.ProviderName,
-				"version":  opts.Version,
+				"provider":          sem.ProviderName,
+				"version":           opts.Version,
+				"identity_revision": sem.IdentityRevision,
 			})
 		}
 		fmt.Fprintln(opts.Stdout, opts.Version)

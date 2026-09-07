@@ -40,7 +40,9 @@ const (
 	SchemaVersion         = "1.1"
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
-	defaultMaxParseBytes  = 4 * 1024 * 1024
+	// IdentityRevision changes when parser corrections re-key existing symbols.
+	IdentityRevision     = "js-ts-callable-scope-1"
+	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
 	// are the only memory that grows with repository size, so this is the ceiling
@@ -222,14 +224,15 @@ type ProviderRecord struct {
 }
 
 type SnapshotHeader struct {
-	SchemaVersion   string   `json:"schema_version"`
-	Provider        string   `json:"provider"`
-	ProviderVersion string   `json:"provider_version"`
-	RepoRoot        string   `json:"repo_root"`
-	RepoKey         string   `json:"repo_key"`
-	Commit          string   `json:"commit"`
-	Tree            string   `json:"tree"`
-	Languages       []string `json:"languages"`
+	SchemaVersion    string   `json:"schema_version"`
+	Provider         string   `json:"provider"`
+	ProviderVersion  string   `json:"provider_version"`
+	IdentityRevision string   `json:"identity_revision,omitempty"`
+	RepoRoot         string   `json:"repo_root"`
+	RepoKey          string   `json:"repo_key"`
+	Commit           string   `json:"commit"`
+	Tree             string   `json:"tree"`
+	Languages        []string `json:"languages"`
 	// LanguageTiers classifies each language present in this snapshot as
 	// "semantic" (grammar-backed extraction) or "inventory-only" (file
 	// discovery + basic symbols), so a consumer can scope trust per language.
@@ -897,6 +900,7 @@ func leanHeader(sc sourceContext, providerVersion string, spec profileSpec) Snap
 		SchemaVersion:    SchemaVersion,
 		Provider:         ProviderName,
 		ProviderVersion:  providerVersion,
+		IdentityRevision: IdentityRevision,
 		RepoRoot:         sc.absRepo,
 		RepoKey:          sc.key,
 		Commit:           sc.commit,
