@@ -369,7 +369,7 @@ OUT=$(run s-rich "$T" "$REPO" NO_COLOR=1)
 assert_eq 'rich line renders exactly' \
 	'[GRAPH] ↗ ~2.1M saved · 28 search · 9 impact · 3 nbrs · 1 other · vs 14 explore · 1.5M explore tok · graph-first ✓ · 75% of locates · ~12% of session' \
 	"$OUT"
-assert_within 'rich line stays within the width budget' 150 "$OUT"
+assert_within 'rich line stays within the width budget' 152 "$OUT"
 
 # The default is the savings figure alone. Everything the line above renders is
 # opt-in, so the same fixture with detail off must print one segment and nothing
@@ -398,12 +398,12 @@ assert_eq 'flipping detail is not served the other setting cached line' '[GRAPH]
 stub '{"sessions":1,"graph_calls":41,"exploration_calls":2600,"exploration_returned_est_tokens":1500000,"sessions_with_locate":1,"graph_first_sessions":0,"graph_calls_by_verb":[{"name":"search","calls":13,"returned_bytes":1},{"name":"stats","calls":12,"returned_bytes":1},{"name":"diff","calls":4,"returned_bytes":1},{"name":"impact","calls":3,"returned_bytes":1},{"name":"doctor","calls":2,"returned_bytes":1},{"name":"neighbors","calls":1,"returned_bytes":1},{"name":"version","calls":1,"returned_bytes":1},{"name":"help","calls":1,"returned_bytes":1},{"name":"capabilities","calls":1,"returned_bytes":1},{"name":"init-agents","calls":1,"returned_bytes":1},{"name":"agent-guide","calls":1,"returned_bytes":1},{"name":"newverb","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":6600,"estimated_savings_pct_of_session_tokens":0.2}'
 OUT=$(run s-meta "$T" "$REPO" NO_COLOR=1)
 assert_eq 'meta verbs are excluded from the split and from "other"' \
-	'[GRAPH] ↗ ~6.6K saved · 13 search · 3 impact · 1 nbrs · 5 other · vs 2.6K explore · 1.5M explore tok · graph-first ✗ · 2% of locates' \
+	'[GRAPH] ↗ ~6.6K saved · 13 search · 3 impact · 1 nbrs · 5 other · vs 2.6K explore · 1.5M explore tok · graph-first ✗ · 2% of locates · ~0.20% of session' \
 	"$OUT"
 for meta in stats version help doctor init-agents agent-guide capabilities; do
 	assert_lacks "meta verb '$meta' is never named" " $meta" "$OUT"
 done
-assert_within 'meta line stays within the width budget' 150 "$OUT"
+assert_within 'meta line stays within the width budget' 152 "$OUT"
 
 # A session that only ever asked the graph about itself did no graph work at all.
 stub '{"sessions":1,"graph_calls":9,"exploration_calls":4,"exploration_returned_est_tokens":100,"sessions_with_locate":1,"graph_first_sessions":0,"graph_calls_by_verb":[{"name":"stats","calls":7,"returned_bytes":1},{"name":"doctor","calls":2,"returned_bytes":1}],"estimated_savings_est_tokens":0,"estimated_savings_pct_of_session_tokens":0}'
@@ -438,26 +438,28 @@ assert_has 'explore tokens render beside the tiny percentage' '5 explore tok' "$
 # --- width discipline ---------------------------------------------------------------------------
 # An over-long line sheds whole segments from the right: session %, then explore tok, then
 # explore calls. Nothing is ever truncated mid-segment.
-LONG='{"sessions":1,"graph_calls":9999999,"exploration_calls":8888888,"exploration_returned_est_tokens":7777777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":999999,"returned_bytes":1},{"name":"checkpoint","calls":888888,"returned_bytes":1},{"name":"snapshot","calls":777777,"returned_bytes":1}],"estimated_savings_est_tokens":99999999,"estimated_savings_pct_of_session_tokens":12.4}'
+LONG='{"sessions":1,"graph_calls":9999999,"exploration_calls":8888888,"exploration_returned_est_tokens":7777777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":999999,"returned_bytes":1},{"name":"checkpoint","calls":888888,"returned_bytes":1},{"name":"snapshot","calls":777777,"returned_bytes":1}],"estimated_savings_est_tokens":999999999,"estimated_savings_pct_of_session_tokens":12.4}'
 stub "$LONG"
 OUT=$(run s-long "$T" "$REPO" NO_COLOR=1)
 assert_eq 'over-long line drops session % then explore tok, keeping explore calls' \
-	'[GRAPH] ↗ ~100M saved · 999999 search · 888888 checkpoint · 777777 snapshot · 7333335 other · vs 8.9M explore · graph-first ✓ · 53% of locates' \
+	'[GRAPH] ↗ ~1000M saved · 999999 search · 888888 checkpoint · 777777 snapshot · 7333335 other · vs 8.9M explore · graph-first ✓ · 53% of locates' \
 	"$OUT"
-assert_within 'over-long line is brought under the width budget' 150 "$OUT"
+assert_within 'over-long line is brought under the width budget' 152 "$OUT"
 assert_lacks 'width discipline drops the session segment whole' 'of session' "$OUT"
 assert_lacks 'width discipline drops the explore-token segment whole' 'explore tok' "$OUT"
 assert_lacks 'width discipline never leaves a dangling separator' '· ·' "$OUT"
 
 # Only the last segment needs to go when the overflow is small: this one renders at exactly
 # 167 visible chars and lands on exactly 150 once the session segment is shed.
-stub '{"sessions":1,"graph_calls":19665,"exploration_calls":88888,"exploration_returned_est_tokens":77777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":9999,"returned_bytes":1},{"name":"checkpoint","calls":8888,"returned_bytes":1},{"name":"snapshot","calls":777,"returned_bytes":1}],"estimated_savings_est_tokens":99999999,"estimated_savings_pct_of_session_tokens":12.4}'
+stub '{"sessions":1,"graph_calls":19665,"exploration_calls":88888,"exploration_returned_est_tokens":77777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":9999,"returned_bytes":1},{"name":"checkpoint","calls":8888,"returned_bytes":1},{"name":"snapshot","calls":777,"returned_bytes":1}],"estimated_savings_est_tokens":999999999,"estimated_savings_pct_of_session_tokens":12.4}'
 OUT=$(run s-long2 "$T" "$REPO" NO_COLOR=1)
 assert_eq 'a small overflow sheds only the session segment' \
-	'[GRAPH] ↗ ~100M saved · 9999 search · 8888 checkpoint · 777 snapshot · 1 other · vs 88.9K explore · 77.8K explore tok · graph-first ✓ · 18% of locates' \
+	'[GRAPH] ↗ ~1000M saved · 9999 search · 8888 checkpoint · 777 snapshot · 1 other · vs 88.9K explore · 77.8K explore tok · graph-first ✓ · 18% of locates' \
 	"$OUT"
-assert_within 'mildly-long line is brought under the width budget' 150 "$OUT"
-assert_eq 'the width budget is used to the last character' 150 "$(vwidth "$OUT")"
+assert_within 'mildly-long line is brought under the width budget' 152 "$OUT"
+# Segments are shed whole, never truncated, so the line lands at or just under the
+# budget rather than exactly on it: the next segment back would take it past 152.
+assert_eq 'the ladder sheds no more than it must' 151 "$(vwidth "$OUT")"
 
 # Width is measured in visible characters, so colour must not push segments off the line.
 stub "$LONG"

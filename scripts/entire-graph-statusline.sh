@@ -15,7 +15,7 @@
 # verbs — stats, version, help, doctor, init-agents, agent-guide, capabilities — replace no
 # exploration, so they are struck from the verb split AND from the residual "other" count.
 #
-# The line is held under 150 visible characters. When it would overflow, whole segments are
+# The line is held under 152 visible characters. When it would overflow, whole segments are
 # dropped from the right — session %, then explore tok, then explore calls — never truncated.
 #
 # Claude Code invokes a status line command with the session JSON on stdin and takes stdout as
@@ -191,7 +191,12 @@ render() {
 		function addplain(text, rank) { addseg(sep() text, 3 + length(text), rank) }
 		{ blob = blob $0 }
 		END {
-			maxw = 150
+			# 152, not 150: the two estimate marks are mandatory content, not decoration,
+			# and the old budget was calibrated against a line that lacked them. Holding
+			# 150 made a 1-character overflow shed a ~20-character segment, so the reader
+			# paid twenty characters of real data for two characters of honesty. Two more
+			# characters of width is the cheaper side of that trade.
+			maxw = 152
 			sessions = number("sessions")
 			graph    = number("graph_calls")
 			explore  = number("exploration_calls")
