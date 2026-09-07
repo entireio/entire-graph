@@ -369,16 +369,25 @@ OUT=$(run s-rich "$T" "$REPO" NO_COLOR=1)
 assert_eq 'rich line renders exactly' \
 	'[GRAPH] ↗ 2.1M saved · 28 search · 9 impact · 3 nbrs · 1 other · vs 14 explore · 1.5M explore tok · graph-first ✓ · 75% of locates · 12% of session' \
 	"$OUT"
+assert_within 'rich line stays within the width budget' 150 "$OUT"
 
 # The default is the savings figure alone. Everything the line above renders is
 # opt-in, so the same fixture with detail off must print one segment and nothing
-# else -- no verb split, no exploration totals, no percentages.
+# else -- no verb split, no exploration totals, no percentages. Asserted AFTER the
+# width check above, which reads the same $OUT and is about the rich line.
 OUT=$(run s-terse "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
 assert_eq 'default line is the savings figure alone' '[GRAPH] ↗ 2.1M saved' "$OUT"
 for seg in 'search' 'impact' 'nbrs' 'explore' 'graph-first' 'of locates' 'of session'; do
-	assert_lacks "default line omits $seg" "$OUT" "$seg"
+	assert_lacks "default line omits $seg" "$seg" "$OUT"
 done
-assert_within 'rich line stays within the width budget' 150 "$OUT"
+
+# The detail flag changes WHAT is rendered, so it has to be part of the cache config:
+# same session, same transcript, same stamp, so the exact-match branch would serve the
+# other setting's stored line verbatim if the config did not carry it.
+OUT=$(run s-toggle "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=1)
+assert_has 'toggle: the detailed line is cached first' 'explore tok' "$OUT"
+OUT=$(run s-toggle "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
+assert_eq 'flipping detail is not served the other setting cached line' '[GRAPH] ↗ 2.1M saved' "$OUT"
 
 # --- meta verbs ------------------------------------------------------------------------------
 # stats/version/help/doctor/init-agents/agent-guide/capabilities are self-reporting: they
