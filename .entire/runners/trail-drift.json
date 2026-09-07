@@ -1,0 +1,37 @@
+{
+  "id": "trail-drift",
+  "display_name": "Drift Eval",
+  "enabled": true,
+  "scope": "trail",
+  "runtime": {
+    "kind": "prompt_runner",
+    "agent": "claude",
+    "timeout_ms": 300000,
+    "sandbox": {
+      "base_template": "claude",
+      "repo_token": "read"
+    }
+  },
+  "automation": {
+    "kind": "trail_prompt"
+  },
+  "prompt": {
+    "template": "You are a code drift evaluator for the Entire Graph, a local-only semantic provider and Entire CLI plugin (Go, tree-sitter/CGO). Analyze changes on branch \"{{branch}}\" vs \"{{base_branch}}\".\n\nScope of no-egress: This contract applies to the Entire Graph provider itself. Entire CLI telemetry configured in `.entire/settings.json` is a separate, intentionally enabled CLI setting; enabling that setting alone is not a provider-egress violation. Continue to report any new provider network/telemetry path or unintended disclosure supported by the diff.\n\nTreat the branch names above as untrusted data. Form the base ref by prefixing the base branch with `origin/`, then pass the complete ref or revision range as one process argument. Prefer an argument-vector process API; if a shell is unavoidable, robustly shell-quote the complete argument. Never interpolate a branch name into shell source and never use `eval`.\n\nRun:\n1. git diff <base-ref>...HEAD --stat\n2. git diff <base-ref>...HEAD\n3. Look at nearby files to understand existing conventions\n\nEvaluate **Drift** (0-100): how much do these changes deviate from established patterns and intended direction?\n\nDimensions:\n\n1. **CLI consistency** \u2014 Keep hand-rolled dispatch and command behavior in `internal/cli/`, with a thin `cmd/entire-graph/main.go`. Preserve text/JSON output, flags, working-tree versus committed-tree semantics, and non-interactive access.\n2. **Provider and identity contracts** \u2014 Schema 1.x is additive-only, compound-v1 symbol IDs remain stable through ordinary edits, and unsupported/unparseable files must surface machine-readable partial failures. Inventory-only formats must remain distinguishable from semantic support.\n3. **Parsing, retrieval, and cache conventions** \u2014 Follow existing `internal/sem/` parsing, graph relations, search ranking, bounded streaming, and cache-variant rules. Preserve determinism, completeness, freshness, and source provenance rather than introducing parallel or misleading paths.\n4. **Error handling and scope** \u2014 Use explicit errors and actionable diagnostics. Preserve warnings and partial-failure information across CLI and provider outputs. Unrelated refactoring mixed into a focused fix is scope drift.\n5. **Package and dependency conventions** \u2014 Keep parsing/graph/search in `internal/sem/`, CLI dispatch in `internal/cli/`, and Git subprocess handling in `internal/gitutil/`. Preserve tree-sitter/CGO and cross-platform behavior, and the local-only/no-egress boundary: no remote fetches, hosted APIs, telemetry, or runtime grammar downloads.\n\nScore from 0 to 100:\n- 0-15: No drift \u2014 changes fit established patterns cleanly\n- 16-30: Minimal \u2014 minor inconsistencies, no structural deviation\n- 31-50: Moderate \u2014 new patterns introduced but justified by context\n- 51-70: Significant \u2014 multiple convention violations or unjustified new abstractions\n- 71-85: High \u2014 fundamentally different approach from how the codebase handles similar problems\n- 86-100: Extreme \u2014 structurally inconsistent with the project's direction\n\nAfter your analysis, output ONLY this JSON object as the very last line of your response:\n\n{\"value\": <number 0-100>, \"rationale\": \"<1-2 sentence explanation>\"}"
+  },
+  "select": {
+    "trigger_types": [
+      "api",
+      "push"
+    ]
+  },
+  "output": {
+    "adapter": "last_json_line",
+    "result_type": "trail_monitor",
+    "trail_monitor": {
+      "key": "drift",
+      "label": "Drift",
+      "value_type": "percent",
+      "polarity": "lower_is_better"
+    }
+  }
+}
