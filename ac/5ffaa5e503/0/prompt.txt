@@ -1,17 +1,1 @@
-Review Entire trail 156. Check that all runners have an eval, if not push an empty commit. Also check that the branch is mergable into main and no behind. If it's behind, update the branch. Then loop and address all findings of any severity.
-
----
-
-Risk runner flags this:
-
-Fixes cache invalidation behavior and multi-language parameter extraction bugs affecting DATA\_FLOWS/PARAM\_TYPE edges, with cache schema bump and nested-entry layout change. Changes are contained to internal cache format (not provider wire contract) and fail closed on ambiguity, but touch common parsing and caching paths with potential downstream Entire Brain impact if edge sets change.
-
-Thoughts?
-
----
-
-Yes please
-
----
-
 Push an empty commit to 156 to document this in the Entire session.
