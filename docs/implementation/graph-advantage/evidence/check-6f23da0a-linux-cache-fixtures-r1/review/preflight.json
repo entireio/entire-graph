@@ -1,0 +1,15 @@
+{
+  "cloud_calls": 0,
+  "bash_syntax": "pass",
+  "functional_test_command": "python3 review/local_functional_test.py",
+  "cases": [
+    {"name": "valid", "exit_code": 0, "fake_go_calls": 2, "fake_go_test_calls": 1, "fake_upload_calls": 1},
+    {"name": "missing", "exit_code": 72, "fake_go_calls": 0, "fake_go_test_calls": 0, "fake_upload_calls": 0},
+    {"name": "wrong_host", "exit_code": 72, "fake_go_calls": 0, "fake_go_test_calls": 0, "fake_upload_calls": 0},
+    {"name": "wrong_go", "exit_code": 76, "fake_go_calls": 1, "fake_go_test_calls": 0, "fake_upload_calls": 1},
+    {"name": "changed_source", "exit_code": 75, "fake_go_calls": 0, "fake_go_test_calls": 0, "fake_upload_calls": 1}
+  ],
+  "real_network_calls": 0,
+  "real_go_test_calls": 0,
+  "real_sas_values": 0
+}

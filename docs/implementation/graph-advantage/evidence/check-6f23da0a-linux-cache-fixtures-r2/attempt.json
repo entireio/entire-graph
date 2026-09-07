@@ -1,0 +1,21 @@
+{
+  "attempt": "r2",
+  "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+  "source_archive_sha256": "e1a42113a94d043c79833ea9d16ae568965bdb50efdd7a5ccc5f3186c883032b",
+  "results_archive_sha256": "9cc3119d1f64333379a66df52aa7ef222378a66e08b2220f5ba6d651b5d55cfd",
+  "transport_exit": 0,
+  "remote_toolchain_exit": 0,
+  "remote_tests_exit": 0,
+  "remote_overall_exit": 0,
+  "source_root_present": true,
+  "source_archive_present": true,
+  "source_download_exit": 0,
+  "source_archive_verified": true,
+  "source_tree_matches_archive": true,
+  "named_tests_passed": 3,
+  "named_tests_failed": 0,
+  "named_tests_skipped": 0,
+  "mise_available": false,
+  "retry_performed": false,
+  "all_vms_terminal_state": "deallocated"
+}

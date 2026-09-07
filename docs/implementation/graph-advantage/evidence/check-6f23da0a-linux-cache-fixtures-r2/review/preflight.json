@@ -1,0 +1,12 @@
+{
+  "remote_template_sha256": "a9fe685689b05ae186bb76c0d843a8e8bb2eba7146b74c1b191ff9e9a7b8ea30",
+  "controller_template_sha256": "8ed072de0a0e004bf8e75b7684c32d1632d2b93d4be119f7b9cba8bd416660b0",
+  "local_functional_test_sha256": "c22cb787d4e8f716b60620b71d77380161ba863dd2da452f9f0c178d6cf69b83",
+  "source_archive_sha256": "e1a42113a94d043c79833ea9d16ae568965bdb50efdd7a5ccc5f3186c883032b",
+  "bash_syntax": "pass",
+  "valid_fake_test_calls": 1,
+  "wrong_source_hash_fake_test_calls": 0,
+  "changed_source_fake_test_calls": 0,
+  "wrong_toolchain_fake_test_calls": 0,
+  "network_or_cloud_used_by_local_test": false
+}

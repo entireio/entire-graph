@@ -73,6 +73,8 @@ normal/race passes belong to different tests in the first failed check. Counts
 remain five controlled product invocations and zero clean stability batches,
 with all VMs off.
 
+Two separate Linux cache-fixture infrastructure attempts did not reach tests. The original `evidence/check-6f23da0a-linux-cache-fixtures/` attempt stopped at the URL-substitution guard before tests; exit 73 is inferred from the guard path rather than observed. The `evidence/check-6f23da0a-linux-cache-fixtures-r1/` attempt observed remote exit 74 because the source directory or the temporary source archive was absent; retained evidence does not identify which. Transport and upload both recorded exit 0. Both attempts ran zero tests and made zero product or corpus invocations; the VM reached terminal deallocated state at the end of r1. The r2 durable-archive repair/check succeeded for its scoped cache-fixture validation: exactly three named tests passed with zero skips or failures in 2.190 seconds, using Go 1.26.1 and gopls v0.20.0; source-hash and source-comparison checks passed. mise was absent, so this is not a full `mise run check`, a timeout explanation, or a performance result. All three validation VMs were deallocated.
+
 ## Current status
 
 The revised resumption controls are implemented at `58f03a22`: each selected

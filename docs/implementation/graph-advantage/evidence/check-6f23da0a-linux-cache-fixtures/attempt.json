@@ -1,0 +1,16 @@
+{
+  "attempt": 1,
+  "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+  "transport_exit_code": 0,
+  "remote_exit_code_observed": null,
+  "inferred_template_exit_code": 73,
+  "inference_basis": "global substitution made the retained literal guard self-match",
+  "result_blob_before": false,
+  "result_blob_after": false,
+  "test_invocations_observed": 0,
+  "product_invocations": 0,
+  "corpus_invocations": 0,
+  "all_vms_terminal_deallocated": true,
+  "original_remote_template_sha256": "2d22c192bc75010298b1a5f9f511aa4553b4ade15edb9cace3e9c80448e749cd",
+  "original_controller_template_sha256": "b98a3ca629144f2d5925a6d35dd67d3a8f49fa1608a1609dd0107a488ee4520d"
+}
