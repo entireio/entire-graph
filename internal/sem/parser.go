@@ -4330,11 +4330,12 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 			// already names a callable it is kept instead, so the body is
 			// anchored to the nearest ENCLOSING callable that has a qualified
 			// name (`A.m.helper` vs `B.m.helper`) and its container is a
-			// symbol that exists. A type scope still hands off to entity.Name
-			// on the first hop, which is what takes the declaration out of the
-			// type in the first place.
+			// symbol that exists. The same guard retains the class scope for an
+			// unqualified callback in a static block: otherwise A and B would
+			// both emit cb.helper. Marking the body scope callable still makes
+			// its helpers local functions rather than phantom class methods.
 			if functionLocalScopeResets(language) && scope != "" {
-				if !scopeIsCallable || strings.HasPrefix(entity.Name, scope+".") {
+				if strings.HasPrefix(entity.Name, scope+".") {
 					childScope = entity.Name
 				}
 				childScopeIsCallable = true

@@ -848,3 +848,47 @@ func symbolIDs(symbols []SymbolRecord) string {
 	}
 	return out
 }
+
+// Static-block callbacks start with a type scope rather than a method scope.
+// Adding the same callback to another class must not re-identify its helper.
+func TestStaticBlockCallbackKeepsClassScope(t *testing.T) {
+	for _, tc := range []struct{ language, path string }{{"JavaScript", "w.js"}, {"TypeScript", "w.ts"}} {
+		t.Run(tc.language, func(t *testing.T) {
+			const classA = "class A { static { const cb = () => { function helper() {} }; } }\n"
+			const classB = "class B { static { const cb = () => { function helper() {} }; } }\n"
+			parse := func(src string) []SymbolRecord {
+				t.Helper()
+				entities, _, status := TreeSitterParser{}.ParseWithStatus(tc.path, src)
+				if status.ParseError {
+					t.Fatalf("parse error: %s", status.Detail)
+				}
+				return entitySymbols("local/r", tc.path, tc.language, entities)
+			}
+			var before string
+			for _, src := range []string{classA, classA + classB} {
+				found := false
+				for _, s := range parse(src) {
+					if s.Name != "helper" || s.StartLine != 1 {
+						continue
+					}
+					found = true
+					if before == "" {
+						before = s.ID
+					} else if s.ID != before {
+						t.Errorf("adding B changed A helper ID: %s -> %s", before, s.ID)
+					}
+					want := "local/r:" + tc.language + ":" + tc.path + ":function:A.helper"
+					if s.ID != want || s.Kind != "function" || !s.Local {
+						t.Errorf("helper = %#v, want local function %s", s, want)
+					}
+					if s.ContainerID != "local/r:"+tc.language+":"+tc.path+":class:A" {
+						t.Errorf("helper container = %q, want class A", s.ContainerID)
+					}
+				}
+				if !found {
+					t.Fatal("missing helper in A")
+				}
+			}
+		})
+	}
+}
