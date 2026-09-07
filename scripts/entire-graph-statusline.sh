@@ -101,9 +101,17 @@ SESSION=$3
 
 # --- binary --------------------------------------------------------------------------------
 BIN=
+# Order matters, and the managed install has to outrank a developer build. A stray
+# `go install` leaves a binary in GOBIN or ~/go/bin that never updates again, and the
+# badge would silently report ITS accounting: measured on one machine, a six-week-old
+# GOBIN build reported 82,929,185 saved where the installed plugin reported 45,942 for
+# the same repository, window and sessions directory -- a factor of 1805, from nothing
+# but binary resolution. The savings model changes between versions, so an old binary
+# does not report a stale number, it reports a wrong one.
 for candidate in \
 	"${ENTIRE_GRAPH_BIN:-}" \
 	"${CLAUDE_PLUGIN_ROOT:-}${CLAUDE_PLUGIN_ROOT:+/entire-graph}" \
+	"${XDG_DATA_HOME:-$HOME/.local/share}/entire/plugins/bin/entire-graph" \
 	"${GOBIN:-}${GOBIN:+/entire-graph}" \
 	"${HOME}/go/bin/entire-graph"; do
 	if [ -n "$candidate" ] && [ -x "$candidate" ]; then

@@ -292,6 +292,27 @@ assert_empty 'empty stdin prints nothing' "$OUT"
 OUT=$(run_json '{"session_id":"x"}')
 assert_empty 'stdin without transcript_path prints nothing' "$OUT"
 
+# The managed install outranks a developer build. A stray `go install` leaves a binary in
+# GOBIN or ~/go/bin that never updates, and because the savings model changes between
+# versions an old one does not report a stale number, it reports a wrong one -- measured
+# at 82,929,185 against 45,942 for the same inputs. Both candidates are planted here and
+# the managed path has to win.
+mkdir -p "$WORK/xdg/entire/plugins/bin" "$WORK/gohome/go/bin" "$WORK/pref-tmp"
+for planted in "$WORK/xdg/entire/plugins/bin/entire-graph:managed" "$WORK/gohome/go/bin/entire-graph:gobin"; do
+	path=${planted%:*}
+	which=${planted##*:}
+	cat >"$path" <<PLANTED
+#!/bin/sh
+printf '{"sessions":1,"graph_calls":9,"exploration_calls":9,"graph_calls_by_verb":[{"name":"search","calls":9,"returned_bytes":1}],"estimated_savings_est_tokens":%s}\n' "$([ "$which" = managed ] && echo 4242 || echo 999999)"
+PLANTED
+	chmod +x "$path"
+done
+set -- "PATH=/usr/bin:/bin" "HOME=$WORK/gohome" "XDG_DATA_HOME=$WORK/xdg"
+OUT=$(stdin_json s-prefer "$T" "$REPO" |
+	env -i "$@" TMPDIR="$WORK/pref-tmp" NO_COLOR=1 /bin/sh "$SCRIPT")
+assert_has 'the managed install outranks a GOBIN build' '4.2K' "$OUT"
+assert_lacks 'a stray go install does not decide the number' '1000K' "$OUT"
+
 # Missing binary: an override pointing nowhere, no entire-graph on PATH, no $HOME/go/bin, and
 # env -i to clear GOBIN / CLAUDE_PLUGIN_ROOT. PATH must stay REAL: with PATH=/nonexistent the
 # script loses awk and dies at the stdin parse, so the empty-BIN guard is never reached and the
