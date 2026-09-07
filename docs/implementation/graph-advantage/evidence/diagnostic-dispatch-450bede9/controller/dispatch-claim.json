@@ -1,0 +1,8 @@
+{
+  "batch_manifest_sha256": "73a222413a9bdb112235c983e187c7903de98523d25563df7d2d5fd15639283f",
+  "control_archive_sha256": "e19a460ec3d6923df16554dda4bde94d1ce09a38909811af5789cf725ad5dff3",
+  "dispatch_id": "p1-diag-450bede9-k8s-route-prefilter-off-01",
+  "profile": "full",
+  "source_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+  "state": "claimed_before_cloud_upload"
+}
