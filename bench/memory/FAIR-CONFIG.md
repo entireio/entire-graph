@@ -224,14 +224,83 @@ Only mem0's re-run is free. The other five cost their ingest again — for eg th
 `benchmarks/common/runmeta.py` (new) is called at all four metadata sites —
 `longmemeval/run.py:1263,1446` and `locomo/run.py:870,1024` — writing `metadata.env_capture`:
 
-- `env` — every `EG_* ENTIRE_* MEM0_* QDRANT_* SUPERMEMORY_* SM_* LETTA_* COGNEE_* GRAPHITI_*
-  NEO4J_* REDIS_* EMBED_* OPENAI_* AZURE_* ANTHROPIC_* LLM_* FAIR_* BENCH_* HARNESS_* COLLECTION_*`
-  variable, with any name matching `KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API` replaced by a
-  `sha256:` fingerprint so configs are comparable without leaking credentials
-- `argv` — the literal command line, which is what records `--user-profile`
-- `asymmetric_settings_active` and `fair_mode`
+- `env` — every variable under an **arm namespace** (`runmeta.ARM_PREFIXES`: `EG_* ENTIRE_*
+  MEM0_* BM25_* CMM_* GRAPHIFY_* COGNEE_* LETTA_* GRAPHITI_* SUPERMEMORY_*`) or a shared
+  infrastructure namespace (`QDRANT_* SM_* NEO4J_* REDIS_* EMBED_* OPENAI_* AZURE_* ANTHROPIC_*
+  LLM_* FAIR_* BENCH_* HARNESS_* COLLECTION_*`), with **values recorded by class, not by what
+  the name looks like** — the same partition argv uses:
+
+  - **verbatim** when the value validates against the closed domain declared for that variable in
+    `runmeta.ENV_VALUE_DOMAINS` (integers, booleans, `MEM0_BACKEND`, `EG_INGEST_GRANULARITY`,
+    the reasoning-effort enums, `LLM_TIMEOUT`, `AZURE_AI_API_VERSION`);
+  - **`sha256:` fingerprint** for a path, host or free-text value, listed in
+    `runmeta.ENV_DERIVED_VALUES`, and for any value that fails its domain or has none declared;
+  - **`<redacted>`** for a credential-named variable — never a fingerprint, because a 12-hex
+    digest of a low-entropy secret such as `neo4j/password` is recoverable by hashing a guessed
+    candidate list.
+
+  The old rule filtered on the *name* alone, and on real input it was inverted rather than merely
+  incomplete: `NEO4J_AUTH`, `NEO4J_URI`, `REDIS_URL`, `LETTA_PG_URI`, `COGNEE_DB_CONNECTION`,
+  `MEM0_HOST` and `AZURE_AI_ENDPOINT` were all recorded verbatim — every one a documented
+  credential carrier — while the single value it did redact was
+  `AZURE_AI_API_VERSION=2024-05-01-preview`, which is not a secret and is real provenance. That
+  version string is readable again.
+
+  **What this costs.** On a real fair run about eight captured values — `MEM0_HOST`,
+  `AZURE_AI_ENDPOINT`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and the `*_STATE_ROOT` /
+  `ENTIRE_CORPUS_ROOT` paths — become comparable but no longer readable. **Unlike the argv
+  identity options, these are *not* recoverable from `metadata`**, which records no paths or
+  endpoints: if you need to know where a run wrote or which endpoint it called, the artifact can
+  only tell you whether two runs agree. Nothing that determines a *measurement* is lost —
+  `code_md5` binds the harness and `implementations` binds the build each arm actually executed.
+  `env_snapshot()` and `asymmetry_report()` share one `_env_value()` so the artifact and the
+  `FAIR_MODE` exception text (which lands in CI logs) cannot drift apart. `BM25_*`, `CMM_*` and
+  `GRAPHIFY_*` were previously
+  absent while every other arm namespace was captured, so two runs differing in `CMM_STATE_ROOT`,
+  `GRAPHIFY_BRIDGE` or `BM25_STATE_ROOT` serialized byte-identical environment metadata — those
+  knobs are classified infrastructure, so `asymmetric_settings_active` excludes them by design
+  and they reached no part of the artifact at all. `runmeta.ARM_PREFIXES` is now the single
+  definition of "arm-scoped": the same tuple drives capture and the coverage guard below
+- `argv` — the command line, which is what records `--user-profile`. Both the option name and
+  its value are allowlisted: names against the set the runners accept, values against the
+  **closed domain of their own option**, never trusted because the name is known. A value is
+  recorded verbatim only when it validates (integers, comma-separated integer lists, and the
+  `--backend` / `--mode` enums); everything else is recorded in derived form or not at all.
+  Anything unrecognised — an unknown flag and its value, a `NAME=value` prefix, a bare
+  positional, or a value outside its option's domain — becomes `<redacted>`.
+
+  **What this costs, and where to find it instead.** `--dataset-path` and `--output-dir` are
+  recorded as `sha256:` fingerprints: two runs can be compared for having used the same path,
+  but the path is no longer readable from the artifact. `--judge-provider` is likewise a
+  fingerprint, because `metadata` records `provider` but never `judge_provider`. The identity
+  options `--project-name`, `--run-id`, `--answerer-model`, `--judge-model`, `--provider` and
+  `--question-types` keep their names and drop their values — **nothing is lost: every one is
+  recorded by `metadata` as a typed field** (`project_name`, `run_id`, `answerer_model`,
+  `judge_model`, `provider`, `question_types`), which is where an auditor should read them.
+  `--mem0-host` keeps its scheme and a `sha256:` fingerprint of its authority; userinfo, path,
+  query and fragment are dropped, and a URI with no network location (`file:///hooks/<token>`)
+  keeps only its scheme. The authority is fingerprinted rather than kept because a hostname is
+  free-form — a tenant id or token can live in one — so runs stay comparable by host while the
+  readable host is read from `env.MEM0_HOST`.
+  `--backend` is recorded verbatim because `ci/summarize_run.py` reads the running arm back out
+  of the captured argv and it is the one value with no `metadata` twin.
+- `asymmetric_settings_active` and `fair_mode` — secret-named knobs are fingerprinted here too,
+  because this map is both persisted and interpolated into the `FAIR_MODE` exception text
 - `code_md5` — the 16-entry reconstructed-harness map in B9, including the Entra helper and
   dependency lock
+- `implementations` — the resolved path and sha256 of every backend build the run actually
+  executed (`ENTIRE_GRAPH_BIN`, `CMM_BIN`, `GRAPHIFY_PYTHON`, and the git state of
+  `GRAPHIFY_SOURCE`), with `source` naming where the name came from (the env override, or the
+  arm client's own default read from the module the run imported) and `resolved_via` whether it
+  was already a path or was looked up on PATH. Digests are cached by file identity (device,
+  inode, size, mtime) rather than by path, so a binary rebuilt between the four capture sites
+  is re-hashed instead of being reported as the build the run started with; a dirty source
+  checkout additionally records a `dirty_digest` of its working tree, so two different
+  uncommitted implementations at one path do not both serialize as `commit=X, dirty=true`
+  — a bare `ENTIRE_GRAPH_BIN=entire-graph` is
+  executed through PATH by the adapter, so it is resolved the same way here.
+  `code_md5` binds the harness; this binds the thing the harness drives, so a run cannot
+  execute a modified `entire-graph` and still be stamped fair
 - `host`
 
 An audit should never again have to reconstruct a config from launcher scripts.
@@ -239,9 +308,28 @@ An audit should never again have to reconstruct a config from launcher scripts.
 ## B8. Arm-asymmetric settings are now refused by the harness, not just by policy
 
 `runmeta.assert_fair_mode(args)` runs immediately after argument parsing
-(`longmemeval/run.py:1111`, `locomo/run.py:788`). Under `FAIR_MODE=1` it hard-exits if any of
-`EG_SESSION_EXPAND`, `EG_SESSION_EXPAND_CAP`, `EG_ANSWER_ENUM`, `EG_ANSWER_ENUM_R`,
-`EG_USER_PROFILE`, or `--user-profile` is active. Verified live on both benchmarks:
+(`longmemeval/run.py:1111`, `locomo/run.py:788`). Under `FAIR_MODE=1` it hard-exits if any entry
+of `runmeta.ASYMMETRY_FLAGS` is set, if any unrecognised `EG_*` variable is set, or if
+`--user-profile` is active, and if `MEM0_BACKEND` is set to anything other than the arm named
+by `--backend`. That override wins over the flag (`backend = os.getenv("MEM0_BACKEND",
+args.backend)`), so without the check a run could record one arm in argv — the value
+`ci/summarize_run.py` reads the arm from — while executing another. The list covers entire-graph's retrieval and prompt knobs
+(`EG_SESSION_EXPAND`, `EG_SESSION_EXPAND_CAP`, `EG_ANSWER_ENUM`, `EG_ANSWER_ENUM_R`,
+`EG_USER_PROFILE`, `EG_PROFILE*`), its ingest shape (`EG_INGEST_GRANULARITY`, `EG_CONSOLIDATE`,
+`EG_DEEP`, `EG_CHRONO_ORDER`, `ENTIRE_MAX_CONTEXT_BYTES`), mem0's ingest rewrite
+(`MEM0_DATE_INJECT`), the BM25 scoring parameters, and the per-arm budgets and deadlines
+(`CMM_MEM_BUDGET_MB`, `CMM_TIMEOUT`, `GRAPHIFY_TIMEOUT`). Location-only variables
+(`ENTIRE_CORPUS_ROOT`, `MEM0_HOST`, the `*_STATE_ROOT` paths) are declared in
+`runmeta.SYMMETRIC_ARM_SETTINGS` and stay legal. A knob counts as *active* only when it
+deviates from what the arm does unset, taken from the client's own `os.getenv` default
+(`runmeta.ENV_KNOB_DEFAULTS`): `EG_DEEP=0` and `EG_INGEST_GRANULARITY=session` are the
+defaults and do not abort, while `BM25_STEM=0` and `BM25_K1=0` do — those two default *on*,
+so reading `0` as "off" had the polarity backwards. And
+`benchmarks/common/test_runmeta.py::AsymmetryCoverageTest` fails if an adapter gains an arm-scoped
+knob that is in neither list, and — since classifying a knob as infrastructure is what excludes it
+from `asymmetric_settings_active` — also fails if a classified knob's namespace is not captured in
+`env`, so every classified knob reaches the artifact through one block or the other. Verified live
+on both benchmarks:
 
 ```
 FAIR_MODE=1 but arm-asymmetric settings are active: EG_SESSION_EXPAND=2, EG_ANSWER_ENUM=2
@@ -279,13 +367,13 @@ c8456d70200f73a88ceca1696ba28eea  benchmarks/common/cmm_client.py
 3f7d918dc36ccc066ebdd4cbad3e80dc  benchmarks/common/entra_auth.py
 5e7b1d0f566636717e222c9e160cc464  benchmarks/common/graphify_client.py
 592bbcc560b15b88aabb2c9d0280380f  benchmarks/common/llm_client.py
-041f93a130c1a91d1b81f67622555b8c  benchmarks/common/mem0_client.py
+bb763cabd9e586cf9aa2699c67f96358  benchmarks/common/mem0_client.py
 abdbb9f272e4265153b7e3e71837007e  benchmarks/common/metrics.py
-5fcdb16d2711068bc3355d820a45c63f  benchmarks/common/runmeta.py
+91a45f3dde782187cc9a6814df0a9b08  benchmarks/common/runmeta.py
 7083a692eecbee5f73834e8f1d7f6804  benchmarks/common/test_bm25_client.py
 4fc59cb9e449551eac2b31b35230b0dd  benchmarks/common/utils.py
 8e0106beab951536141d39bf88d9ea27  benchmarks/locomo/prompts.py
-41158a8eb87cdeeb53d23c3ad845b7bc  benchmarks/locomo/run.py
+c3331bce8631d07cf69ae94cb82f821c  benchmarks/locomo/run.py
 180750bea9900b826dd5990fc9e16787  benchmarks/longmemeval/prompts.py
 632e01d52537e5b931994d61a246cd9b  benchmarks/longmemeval/run.py
 72544a7a6b0f0a10103d640b1f281e68  requirements-lock-py312.txt
