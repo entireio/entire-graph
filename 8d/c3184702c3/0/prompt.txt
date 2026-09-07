@@ -1,0 +1,21 @@
+Review Entire trail 163. Check that all runners have an eval, if not push an empty commit. Also check that the branch is mergable into main and no behind. If it's behind, update the branch. Then loop and address all findings of any severity.
+
+---
+
+The trail risk runner flags the following risk:
+
+Compact snapshot format changes touch streaming wire contract with risk of decoder failure if limits diverge; parser fixes alter stable symbol identity for JS default exports which affects downstream reconciliation and entity history.
+
+Wdyt?
+
+---
+
+What’s the current identity revision vs. the new one?
+
+---
+
+Where is that revision used?
+
+---
+
+Ok, make it so. Show me the output of entire graph version --json before and after the fix.
