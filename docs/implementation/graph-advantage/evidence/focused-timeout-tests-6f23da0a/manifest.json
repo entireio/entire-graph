@@ -1,0 +1,25 @@
+{
+  "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+  "scope": [
+    "TestGitDirExcluderSweepsIgnoredCollapsedTrees",
+    "TestSearchRepositoryReturnsCompleteEnclosingBody"
+  ],
+  "normal": {
+    "exit_code": 0,
+    "timeout": "2m",
+    "passed_tests": 2,
+    "skipped_tests": 0,
+    "failed_tests": 0,
+    "log_sha256": "23243ea8d74ddb49dcf1b5891161559ad4a7a22dcfe7e111e7e4791b3929fc8d"
+  },
+  "race": {
+    "exit_code": 0,
+    "timeout": "5m",
+    "passed_tests": 2,
+    "skipped_tests": 0,
+    "failed_tests": 0,
+    "log_sha256": "362b3bb550ce3aded8b3377c8e3b96f27e23dcb1a471ffe1bb7fce3c8de324a8"
+  },
+  "source_status_after_bytes": 0,
+  "full_gate_implication": "These isolated passes show that the two tests named at timeout complete normally in isolation. They do not repair or pass the failed full immutable gate."
+}

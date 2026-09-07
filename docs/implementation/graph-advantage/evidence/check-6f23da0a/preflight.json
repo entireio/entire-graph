@@ -1,0 +1,9 @@
+{
+  "expected_head": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+  "actual_head": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+  "checkout": "/tmp/graph-integration-check-6f23da0a",
+  "mise_toml_sha256": "6aeb64b910281ebe72f54ffe17546bb4d0bcf09a199e7173ba94c84e63f686ae",
+  "tracked_mise_toml_sha256": "6aeb64b910281ebe72f54ffe17546bb4d0bcf09a199e7173ba94c84e63f686ae",
+  "mise_trusted_before_launch": true,
+  "before_status_bytes": 0
+}

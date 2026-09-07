@@ -52,6 +52,13 @@ multiline quoted scalars (`7c3405ae`), protobuf compatibility context
 (`84ab23aa`) and harness phase breadcrumbs (`84cbb46`). The prior `8763b0d8`
 full check remains retained as a separate failed source-state record.
 
+The source-`6f23da0a` immutable full `mise run check` terminated failed at
+`2026-09-07T16:39:00.860837Z` after 2334.829470 seconds with return code 1.
+The checkout head and tracked-source hashes were unchanged before and after;
+the `internal/sem` race suite failed after 1801.172 seconds. Raw evidence is
+retained under `evidence/check-6f23da0a/`. This is a failed full check, not a
+release or admission pass.
+
 ## Current status
 
 The revised resumption controls are implemented at `58f03a22`: each selected
@@ -135,12 +142,21 @@ remains pending; no further sampling is authorized before that run. Zero clean
 stability batches have run, and no stability, release, timeout-resolution or
 performance claim follows. The resumed invocation total is five.
 
+The source-`6f23da0a` pinned Linux evidence is separate from the failed full
+check: 32/32 affected normal, 32/32 affected race, and 28/28 compiler
+correctness tests passed, including 10 live tests; evaluator binary SHA-256 is
+`9562a0f5ee9558a0c6e7533ad7cfa6511251e52588e976cf09ee86564fa4966d`.
+Evidence is under `evidence/diagnostics-linux-6f23da0a/` and establishes only
+the named focused stages. It does not repair the full-check failure or open
+diagnostic packaging/runtime execution.
+
 Source `78c8b496` implements the bounded Go HTTP route-parser refactor
 motivated by the retained relations profile. Focused normal, race,
 compatibility-oracle and resource-bound checks are recorded in
 `evidence/route-parser-profile-8689fc3d/`. This is implementation and
 correctness evidence only; the controlled runtime timeout remains unresolved
-pending a fresh product run.
+pending focused diagnosis, and diagnostic packaging/runtime execution is
+blocked.
 
 The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
 6 timeouts. It is therefore collected but incomplete. The campaign remains
@@ -149,7 +165,7 @@ P2, P3 or P4 release gate has passed.
 
 | Workstream | Implementation and correctness | Evaluation and release status |
 |---|---|---|
-| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. The route refactor at `78c8b496` has focused normal/race/oracle/resource evidence; the latest immutable full check is the historical `450bede9` pass, and the `6f23da0a` full check is in progress with no result yet. | Fixed-corpus baseline and paired matrix are incomplete; timeout/partial admission, performance and RSS remain open. |
+| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. The route refactor at `78c8b496` has focused normal/race/oracle/resource evidence; source `6f23da0a` has separate pinned Linux focused success, while its immutable full check failed in `internal/sem`. | Fixed-corpus baseline and paired matrix are incomplete; timeout/partial admission, performance, RSS and full-check correctness remain open. |
 | P2 | Pinned Go analysis, lifecycle, source identity, mapping, compiler-view integration and invalidation contracts have implementation and focused correctness evidence. | Hard-Go quality and adjudicated precision/recall studies are deferred; no gate passed. |
 | P3 | Relation policy, bounded traversal, path evidence, CLI/output and compiler-view contracts have focused correctness evidence. | Realistic affected-site precision/recall/cost studies and coverage gates are deferred; no gate passed. |
 | P4 | Candidate-only ranking, experimental integration, fallback behavior and one bounded candidate-expansion policy are implemented. `current-expansion`, `uniform` and `weighted` use identical no-compiler candidate pools while `current-expansion` retains baseline ranking; compiler evidence may change the eligible pool in `weighted-compiler`. Focused normal/race contract evidence is retained. | No new retrieval measurement or tuning was run. No winning configuration, held-out result or downstream agent study is established; no gate passed. |
