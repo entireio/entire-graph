@@ -42,8 +42,11 @@ finalization, the first serialized retry ended before a terminal result, and
 retry 2 reported `Finished in 86.27s` followed by `[test:ci] ERROR task failed`
 without a completed `test:ci` result. Its foreground controller then sent
 Ctrl-C after a GitHub username prompt; this is a task/transport failure, not a
-test assertion. The source was unchanged in all attempts; none is a
-source-pass or release claim. Evidence is retained in
+test assertion. Retry 2 retains the same source/head and tracked-hash
+snapshots, but `result.json` is missing and `postcheck_completed` is null, so
+those post-check files cannot be conclusively attributed to wrapper completion.
+The source was unchanged in all attempts; none is a source-pass or release
+claim. Evidence is retained in
 `evidence/check-12574522-retry-2/`. The earlier `6cf92c9c` check and pinned Linux
 evidence are also retained historical evidence. Accepted changes after those checkpoints include
 `4cd72774`, `c5971406`, `5ed08ed6`, `7c3405ae`, `84ab23aa`, and harness
