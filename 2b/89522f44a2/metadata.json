@@ -1,0 +1,47 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "2b89522f44a2",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/README.md",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/batch-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/build-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/collector/batch_budget.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/collector/campaign_gate.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/collector/cloud.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/collector/run_remote.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/collector/test_r2_collector_regressions.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/collector/test_run_remote.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/control-files.tar.gz",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/control-hashes.txt",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/test_controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/test_r2_controller_regressions.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/corpus/corpus-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/corpus/p1_scenario.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/full-check-gate.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/package-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/proposed-next-batch.md",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/source-identity.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/verification.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/2b/89522f44a2/0/metadata.json",
+      "transcript": "/2b/89522f44a2/0/full.jsonl",
+      "compact_transcript": "/2b/89522f44a2/0/transcript.jsonl",
+      "content_hash": "/2b/89522f44a2/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 10575,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1518720,
+    "output_tokens": 1843,
+    "api_call_count": 15
+  }
+}
