@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "batch_id": "p1-diag-450bede9-k8s-route-prefilter-off-01",
+  "scope": "bounded-diagnostic",
+  "cap": 100,
+  "total_attempts": 1,
+  "derived_invocations": 1,
+  "preparatory_invocations": 0,
+  "profiler_enabled": true,
+  "workers": {
+    "1": 1
+  },
+  "cells": [
+    {
+      "worker": 1,
+      "repository": "kubernetes-kubernetes",
+      "profile": "full",
+      "verb": "snapshot",
+      "scenario": "diagnostic",
+      "trial": 0,
+      "arms": [
+        false
+      ],
+      "preparatory_invocations": 0,
+      "cell_id": "b2d03eea03b80fa61eebfeab5ccd7b17db8138e407ce73101531be2869c235db"
+    }
+  ],
+  "identity": {
+    "binary_sha256": "b4d7e1a5ef72d4e09d045e562ce08cb38ff63a9c3912aef0e002bc70bb5f0674",
+    "input_manifest_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0",
+    "runner_sha256": "4b394501868f4db6e6dd10af1adc874e3401dfcc78e061d64c9034fd9195a5f5",
+    "scenario_sha256": "6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75",
+    "gate_sha256": "8c07cdac2089a99aae7c338f65472885d3039f223080d60d57978ae08587cae6",
+    "budget_sha256": "23f7d063c75fb3190da21b232145181dd7ac8ff5e30436d65de76eedc678df3a",
+    "build_manifest_sha256": "80e1dafd3a861be1cbba67fec08fd717c89cd2860dd3502aab947fe73c7fe546"
+  }
+}

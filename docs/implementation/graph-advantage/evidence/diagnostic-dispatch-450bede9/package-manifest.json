@@ -1,0 +1,87 @@
+{
+  "control_archive": "control-files.tar.gz",
+  "control_archive_sha256": "e19a460ec3d6923df16554dda4bde94d1ce09a38909811af5789cf725ad5dff3",
+  "members": {
+    "README.md": {
+      "bytes": 1771,
+      "sha256": "e291769499f596dcd4d33feab531ed57a3d2c8ee38ecd2e28d0cd6e6a76c4c3e"
+    },
+    "batch-manifest.json": {
+      "bytes": 1282,
+      "sha256": "73a222413a9bdb112235c983e187c7903de98523d25563df7d2d5fd15639283f"
+    },
+    "build-manifest.json": {
+      "bytes": 3223,
+      "sha256": "80e1dafd3a861be1cbba67fec08fd717c89cd2860dd3502aab947fe73c7fe546"
+    },
+    "collector/batch_budget.py": {
+      "bytes": 10624,
+      "sha256": "23f7d063c75fb3190da21b232145181dd7ac8ff5e30436d65de76eedc678df3a"
+    },
+    "collector/campaign_gate.py": {
+      "bytes": 4439,
+      "sha256": "8c07cdac2089a99aae7c338f65472885d3039f223080d60d57978ae08587cae6"
+    },
+    "collector/cloud.py": {
+      "bytes": 1593,
+      "sha256": "927ff2bc4e7647c88d60c39123477953102391936d38ec2c57d9f44f73dcd548"
+    },
+    "collector/run_remote.py": {
+      "bytes": 36982,
+      "sha256": "4b394501868f4db6e6dd10af1adc874e3401dfcc78e061d64c9034fd9195a5f5"
+    },
+    "collector/test_r2_collector_regressions.py": {
+      "bytes": 13263,
+      "sha256": "e693917d659ba4052cb015036ff7762e603dd3ed8ec8467b359c1a2b04185a2e"
+    },
+    "collector/test_run_remote.py": {
+      "bytes": 11489,
+      "sha256": "2d0bae060facb7269e4ec1d1e01bb1a434cc18abc651fdb15b3da364cdeec9ff"
+    },
+    "control-hashes.txt": {
+      "bytes": 714,
+      "sha256": "497a3d60ede91d1f6625333253f42e5f663cd98f1318a9cc2e27fb2dcd1c7da3"
+    },
+    "controller/controller.py": {
+      "bytes": 31936,
+      "sha256": "a324f768fad2de809c954dcee1cf002c4d5b78e510e53d9bafef5a6eb218fa8a"
+    },
+    "controller/manifest.json": {
+      "bytes": 2850,
+      "sha256": "5890856b6cc991ab178475de29e138892e5e1a56733b2ec64f26bcea52d082b0"
+    },
+    "controller/test_controller.py": {
+      "bytes": 3861,
+      "sha256": "c51b406577b0627c30a11744d67954c7b861f31f19a3e9eb4b05fb96ffce010a"
+    },
+    "controller/test_r2_controller_regressions.py": {
+      "bytes": 33859,
+      "sha256": "91d3fe827b4474e8b7a56b043e5531f34bf3f2205a0a3f3d3533af71fae969b8"
+    },
+    "corpus/corpus-manifest.json": {
+      "bytes": 24349,
+      "sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0"
+    },
+    "corpus/p1_scenario.py": {
+      "bytes": 8025,
+      "sha256": "6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75"
+    },
+    "full-check-gate.json": {
+      "bytes": 2815,
+      "sha256": "067c68b10fbd417439ea64c4ed17c909c411ab26197249e0864e0a03446e5b0a"
+    },
+    "proposed-next-batch.md": {
+      "bytes": 4301,
+      "sha256": "6d0da6003cf472e28fd8955ac535710d36dd25732ee1e0d0392d7c11056be338"
+    },
+    "source-identity.json": {
+      "bytes": 1703,
+      "sha256": "af8eb21b01d315552be0295d93dcf2db44bd1e80d5f65628e009f7613c4fe17a"
+    },
+    "verification.json": {
+      "bytes": 4251,
+      "sha256": "4f286b014a9b3a5e1be42856f2cbeaee3367c74c09d3f1dfcf2bdca7ed23f5d9"
+    }
+  },
+  "status": "prepared-only; source/binary/build/archive/corpus identities bound; immutable full-check passed; no execution"
+}
