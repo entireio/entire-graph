@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,14 +33,18 @@ import (
 )
 
 const (
-	// SchemaVersion is bumped to 1.1 for the additive snapshot fields introduced
+	// SchemaVersion is bumped to 1.2 for optional parser identity metadata.
+	// Schema 1.1 added the snapshot fields introduced
 	// alongside boundary source locations (the `external` flag on external records
 	// and the per-symbol source-location fields). The shape is backward compatible
 	// for tolerant readers; the bump lets consumers detect the new fields.
-	SchemaVersion         = "1.1"
+	SchemaVersion         = "1.2"
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
-	defaultMaxParseBytes  = 4 * 1024 * 1024
+	// IdentityRevision is a global, opaque revision of parser identity rules across
+	// all languages. Change it when corrections re-key existing symbols.
+	IdentityRevision     = "2"
+	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
 	// are the only memory that grows with repository size, so this is the ceiling
@@ -140,8 +145,10 @@ var ooRelationSupport = map[string][]string{
 	// produces none), so every USES_TYPE edge observed from R had resolved to a
 	// foreign type.
 	"C": {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	// C++ shares C's extraction path, so it reaches the same passes.
-	"C++":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	// C++ shares C's extraction path and can resolve reads, writes and
+	// address-taking through typed receivers now that class data members are
+	// extracted.
+	"C++":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "DATA_FLOWS"},
 	"Clojure": {"USES_TYPE"},
 	// ClojureScript reads .cljs with the Clojure grammar and so reaches the same
 	// `^Point` type hint, but it was not a key of this map at all -- the
@@ -219,14 +226,15 @@ type ProviderRecord struct {
 }
 
 type SnapshotHeader struct {
-	SchemaVersion   string   `json:"schema_version"`
-	Provider        string   `json:"provider"`
-	ProviderVersion string   `json:"provider_version"`
-	RepoRoot        string   `json:"repo_root"`
-	RepoKey         string   `json:"repo_key"`
-	Commit          string   `json:"commit"`
-	Tree            string   `json:"tree"`
-	Languages       []string `json:"languages"`
+	SchemaVersion    string   `json:"schema_version"`
+	Provider         string   `json:"provider"`
+	ProviderVersion  string   `json:"provider_version"`
+	IdentityRevision string   `json:"identity_revision,omitempty"`
+	RepoRoot         string   `json:"repo_root"`
+	RepoKey          string   `json:"repo_key"`
+	Commit           string   `json:"commit"`
+	Tree             string   `json:"tree"`
+	Languages        []string `json:"languages"`
 	// LanguageTiers classifies each language present in this snapshot as
 	// "semantic" (grammar-backed extraction) or "inventory-only" (file
 	// discovery + basic symbols), so a consumer can scope trust per language.
@@ -347,6 +355,10 @@ type SymbolRecord struct {
 	// ambiguous same-name definitions. Private, so the frozen schema and the
 	// compound-v1 IDs are unchanged.
 	bodyless bool
+	// cPlusPlusOwners carry legal lexical namespace/class owner spellings used
+	// only to match a bodyless declaration to its out-of-line C++ definition.
+	cPlusPlusOwners         []string
+	cPlusPlusDefinitionName string
 	// cLinkage: this symbol is declared inside an `extern "C" { ... }` block
 	// (see Entity.cLinkage). candidateSharesDeclarations reads it to tell the
 	// C-linkage half of a dual-use header from the C++ half. Private, so the
@@ -894,6 +906,7 @@ func leanHeader(sc sourceContext, providerVersion string, spec profileSpec) Snap
 		SchemaVersion:    SchemaVersion,
 		Provider:         ProviderName,
 		ProviderVersion:  providerVersion,
+		IdentityRevision: IdentityRevision,
 		RepoRoot:         sc.absRepo,
 		RepoKey:          sc.key,
 		Commit:           sc.commit,
@@ -997,6 +1010,102 @@ func collectRegistrationAliases(paths []string, read contentReader) map[string][
 		aliasesByHandler[handler] = dedupeSortedStrings(aliases)
 	}
 	return aliasesByHandler
+}
+
+// registrationBindableKind reports whether a symbol kind is one a registration
+// table can bind a command verb to. A commands/<name>.json entry names a
+// FUNCTION; the corpus may also hold a type, field, constant or variable with
+// that same bare name, and those are not rival handlers — counting them as
+// ambiguity suppressed the only real binding.
+func registrationBindableKind(kind string) bool {
+	switch kind {
+	case "function", "method", "constructor", "procedure", "subroutine", "macro", "closure", "lambda":
+		return true
+	}
+	return false
+}
+
+// registrationCandidateCounts counts, across the whole corpus, how many symbols
+// of a kind a registration table can bind carry each handler name. A verb is
+// attached only to a name that is counted exactly once, so the count has to be
+// complete before the FIRST candidate is emitted.
+//
+// It is a separate pass because the file pipeline cannot supply it. That
+// pipeline reduces results as workers finish -- the coordinator admits only
+// twice the worker count of unreduced results -- so at the moment a handler's
+// own file is reduced, the files after it have not been parsed and its rivals
+// are not yet knowable. Holding the candidate RECORDS back until the loop ended
+// answered that, but it moved them out of their file's place in the record
+// stream: a symbol from the first file was written after the last file's record
+// and its symbols, which the snapshot format documents as impossible ("file
+// records, then symbol records, emitted per file as parsing progresses"), and a
+// consumer that closes file-scoped state when the next file record arrives has
+// nowhere to put them. Buffering the DECISION instead keeps every symbol in its
+// own file's block.
+//
+// The cost is confined to repositories that ship a registration table: with no
+// commands/<name>.json the map is empty and this returns immediately. Where
+// there is one, every file is read and tokenized once more, and only the files
+// that MENTION a handler name -- the identifier has to appear for the file to
+// define it -- are parsed a second time.
+func registrationCandidateCounts(
+	ctx context.Context,
+	sc sourceContext,
+	spec profileSpec,
+	maxParseBytes int,
+	workers int,
+	aliasesByHandler map[string][]string,
+) (map[string]int, error) {
+	counts := map[string]int{}
+	if len(aliasesByHandler) == 0 {
+		return counts, nil
+	}
+	err := runProviderFilePipeline(ctx, sc.paths, workers,
+		func(workerCtx context.Context, index int, path string) providerFileResult {
+			content, readable := sc.read(path)
+			if !readable || !mentionsRegistrationHandlerInFile(path, content, aliasesByHandler) {
+				return providerFileResult{index: index, path: path}
+			}
+			return processProviderFile(workerCtx, sc, spec, maxParseBytes, index, path)
+		},
+		func(result providerFileResult) error {
+			for _, symbol := range result.symbols {
+				if len(aliasesByHandler[symbol.Name]) > 0 && registrationBindableKind(symbol.Kind) {
+					counts[symbol.Name]++
+				}
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return counts, nil
+}
+
+// mentionsRegistrationHandler reports whether the content writes a handler name
+// as a whole identifier. Content is tokenized once and each token looked up,
+// rather than searched once per handler, so a table of several hundred verbs
+// costs the same single pass as one verb. A file that never writes the
+// identifier cannot define it, which is what keeps the census from parsing the
+// whole corpus twice.
+func mentionsRegistrationHandler(content string, aliasesByHandler map[string][]string) bool {
+	for index := 0; index < len(content); {
+		character := content[index]
+		if !(character == '_' || (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z')) {
+			index++
+			continue
+		}
+		end := index
+		for end < len(content) && isIdentifierByte(content[end]) {
+			end++
+		}
+		if _, isHandler := aliasesByHandler[content[index:end]]; isHandler {
+			return true
+		}
+		index = end
+	}
+	return false
 }
 
 // dedupeSortedStrings removes adjacent duplicates from a sorted slice in place.
@@ -1169,6 +1278,19 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// (commands/<name>.json) never appear in the handler body; index them once as
 	// searchable aliases so they can be attached to the handler symbol below.
 	aliasesByHandler := collectRegistrationAliases(sc.paths, sc.read)
+	// A command verb names ONE callable. The verb was attached to every symbol
+	// that happened to share the handler's unqualified name, so a repository
+	// with a same-named function in another package — or a method, or a
+	// declaration in a different language entirely — answered the command query
+	// with symbols that are not the handler, ranked as an exact alias hit.
+	// Uniqueness is only knowable once the corpus is parsed, so it is decided
+	// by its own census pass BEFORE the file loop; the candidate symbols
+	// themselves are then emitted in their own file's place, as every other
+	// symbol is.
+	aliasCandidateCount, err := registrationCandidateCounts(ctx, sc, spec, maxParseBytes, workers, aliasesByHandler)
+	if err != nil {
+		return err
+	}
 
 	// Phase 1: workers independently read, classify, and parse files. Only this
 	// reducer mutates graph indexes or calls emit, and it consumes the original
@@ -1196,12 +1318,23 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 
 			if result.parsed {
 				parsedFileCount++
-				for i := range result.symbols {
-					if aliases := aliasesByHandler[result.symbols[i].Name]; len(aliases) > 0 {
-						result.symbols[i].Aliases = aliases
+				applyCppSpecializationAliases(result.symbols)
+				for index := range result.symbols {
+					symbol := &result.symbols[index]
+					// Only a callable can carry the verb: a registration table
+					// binds it to a function, never to a type, field, constant
+					// or variable, so counting those kinds turned an unrelated
+					// same-named struct into a phantom rival and suppressed the
+					// one real handler. An ambiguous name carries none, because
+					// a symbol that claims to be a command it does not implement
+					// is worse than a command with no symbol.
+					if len(aliasesByHandler[symbol.Name]) == 0 || !registrationBindableKind(symbol.Kind) {
+						continue
+					}
+					if aliasCandidateCount[symbol.Name] == 1 {
+						symbol.Aliases = appendUnique(symbol.Aliases, aliasesByHandler[symbol.Name]...)
 					}
 				}
-				applyCppSpecializationAliases(result.symbols)
 				for _, symbol := range result.symbols {
 					if err := emit(symbol); err != nil {
 						return err
@@ -1316,7 +1449,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			symbolsByID, filesByID = recordIndexes(files, recordsByFile)
 		}
 		var relationFailures []PartialFailure
-		forEachRelation(sc.key, files, recordsByFile, sc.read, precomputedImports, spec, func() bool {
+		forEachRelation(ctx, sc.key, files, recordsByFile, sc.read, precomputedImports, spec, workers, func() bool {
 			return emitErr != nil || ctx.Err() != nil
 		}, func(r RelationRecord) {
 			emitRelation(r, symbolsByID, filesByID)
@@ -1341,6 +1474,11 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	}
 	if emitErr != nil {
 		return emitErr
+	}
+	// The relation pipeline can observe cancellation without emitting another
+	// record, so emitErr alone does not establish successful completion.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 
@@ -1383,6 +1521,11 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			CompletenessLevel: completenessLevel(completenessFailureCount(failures), len(files), parsedFileCount, symbolCount),
 		},
 		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
+	}
+	// Progress callbacks and the last external record can cancel as well.
+	// Never publish a success summary for a canceled snapshot.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := emit(summary); err != nil {
 		return err
@@ -1648,7 +1791,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		key = repoKey(ctx, absRepo)
 		commit, tree, headErr = resolveCommittedHEAD(ctx, absRepo)
 	} else {
-		headErr = fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", absRepo)
+		headErr = gitMetadataRefusalError(absRepo)
 	}
 
 	// The provider is local-only. NoNetwork is accepted to make that contract
@@ -1738,7 +1881,7 @@ func resolveMaxParseBytes(requested int) int {
 // between subprocesses.
 func resolveCommittedHEAD(ctx context.Context, repo string) (string, string, error) {
 	if !gitMetadataSafeForSubprocessContext(ctx, repo) {
-		err := fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+		err := gitMetadataRefusalError(repo)
 		return "", "", err
 	}
 	commit, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
@@ -1838,6 +1981,13 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 		colliding := definitionCounts[id] > 1
 		if entity.bodyless {
 			colliding = definitionCounts[id]+declarationCounts[id] > 1
+			// C++ member declarations are new records. Always disambiguate
+			// them, even when alone, so adding an overload never retires the
+			// existing declaration's ID. Signature identity also survives
+			// reordering and insertion before existing overloads.
+			if language == "C++" {
+				colliding = true
+			}
 		}
 		if colliding {
 			// Disambiguate same-name symbols by signature hash plus an ordinal
@@ -1865,24 +2015,26 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			containerID = symbols[parent].ID
 		}
 		symbol := SymbolRecord{
-			RecordType:      "symbol",
-			ID:              id,
-			StableIDVersion: StableSymbolIDVersion,
-			Kind:            entity.Kind,
-			Name:            shortEntityName(entity.Name),
-			QualifiedName:   qualified,
-			FilePath:        path,
-			StartLine:       entity.StartLine,
-			EndLine:         entity.EndLine,
-			Signature:       entity.Signature,
-			BodyHash:        entity.BodyHash,
-			Language:        language,
-			ContainerID:     containerID,
-			Local:           entity.Local,
-			sourceStartByte: entity.sourceStartByte,
-			sourceEndByte:   entity.sourceEndByte,
-			bodyless:        entity.bodyless,
-			cLinkage:        entity.cLinkage,
+			RecordType:              "symbol",
+			ID:                      id,
+			StableIDVersion:         StableSymbolIDVersion,
+			Kind:                    entity.Kind,
+			Name:                    shortEntityName(entity.Name),
+			QualifiedName:           qualified,
+			FilePath:                path,
+			StartLine:               entity.StartLine,
+			EndLine:                 entity.EndLine,
+			Signature:               entity.Signature,
+			BodyHash:                entity.BodyHash,
+			Language:                language,
+			ContainerID:             containerID,
+			Local:                   entity.Local,
+			sourceStartByte:         entity.sourceStartByte,
+			sourceEndByte:           entity.sourceEndByte,
+			bodyless:                entity.bodyless,
+			cPlusPlusOwners:         append([]string(nil), entity.cPlusPlusOwners...),
+			cPlusPlusDefinitionName: entity.cPlusPlusDefinitionName,
+			cLinkage:                entity.cLinkage,
 		}
 		// Carried for every language: the parser marks parameterNamesKnown only
 		// when it actually read the names off the parse tree, so a grammar with
@@ -2046,6 +2198,1457 @@ func implicitReceiverLanguage(lang string) bool {
 // (Ported from fix/rust-call-resolution ad6ca4d onto the current gate shape.)
 func nameCallMayTargetMethod(lang string) bool {
 	return implicitReceiverLanguage(lang) || lang == "Rust"
+}
+
+// fsharpNamespaceScope is one `namespace X` declaration: the line it opens on
+// and the dotted path it nests everything below it under.
+type fsharpNamespaceScope struct {
+	line   int
+	prefix string
+}
+
+// A namespace declaration is a top-level form, so it starts at column 0. `rec`
+// is allowed between the keyword and the path (`namespace rec X.Y`).
+var fsharpNamespaceDeclPattern = regexp.MustCompile(`(?m)^namespace[ \t]+(?:rec[ \t]+)?([A-Za-z_][A-Za-z0-9_'.]*)[ \t]*\r?$`)
+
+// fsharpNamespaceScopes lists the namespaces an F# file opens, in source order.
+//
+// F# writes `namespace X` when a file's contents nest under a path without
+// introducing a module of that name, and the parser emits NO symbol for it --
+// a namespace holds no bindings of its own, so there is nothing to emit. The
+// container chain a module path is built from therefore starts at the module,
+// and `namespace X` + `module A` recorded its members under `A`. The call that
+// names them, `X.A.f`, then matched no declared module at all: it was not
+// recognised as a module qualifier, recorded bare, resolved unrestricted, and
+// bound to whichever same-named definition sat nearest -- or, once a second
+// module declared that name too, emitted no edge whatsoever despite naming its
+// target in full.
+//
+// Literals and comments are masked first, so a `namespace` line inside a
+// triple-quoted string or a `(* ... *)` block cannot open a scope. `namespace
+// global` is the root namespace and adds no prefix.
+func fsharpNamespaceScopes(content string) []fsharpNamespaceScope {
+	if !strings.Contains(content, "namespace") {
+		return nil
+	}
+	masked := maskFSharpLiteralsAndLineComments(maskFSharpBlockComments(content))
+	matches := fsharpNamespaceDeclPattern.FindAllStringSubmatchIndex(masked, -1)
+	scopes := make([]fsharpNamespaceScope, 0, len(matches))
+	for _, match := range matches {
+		prefix := masked[match[2]:match[3]]
+		if prefix == "global" {
+			prefix = ""
+		}
+		scopes = append(scopes, fsharpNamespaceScope{line: 1 + strings.Count(masked[:match[0]], "\n"), prefix: prefix})
+	}
+	return scopes
+}
+
+// fsharpNamespaceAt returns the namespace a line sits in -- the last one
+// declared at or above it. A file may open several in sequence, and anything
+// above the first declaration is in none.
+func fsharpNamespaceAt(scopes []fsharpNamespaceScope, line int) string {
+	prefix := ""
+	for _, scope := range scopes {
+		if scope.line > line {
+			break
+		}
+		prefix = scope.prefix
+	}
+	return prefix
+}
+
+// fsharpModulePaths maps each symbol in an F# file to the dotted path of the
+// modules it is declared in ("A", "LoadingScripts.ScriptGeneration"), and
+// returns the set of paths the file declares. F# files routinely hold several
+// modules, so a call written `A.convert` must be held to module A's members
+// instead of binding to whichever same-named definition sits nearest.
+//
+// The file's namespace declarations are part of that path even though no
+// symbol carries them (see fsharpNamespaceScopes): a file-heading `module
+// A.B.C` already spells its whole path in the symbol's name, and `namespace X`
+// + `module A` must record the same `X.A` rather than a bare `A`.
+func fsharpModulePaths(fileSymbols []SymbolRecord, namespaces []fsharpNamespaceScope) (map[string]string, map[string]bool) {
+	byID := make(map[string]SymbolRecord, len(fileSymbols))
+	for _, symbol := range fileSymbols {
+		byID[symbol.ID] = symbol
+	}
+	pathBySymbolID := make(map[string]string, len(fileSymbols))
+	declared := map[string]bool{}
+	for _, symbol := range fileSymbols {
+		var segments []string
+		// Bound by the file's symbol count: a container chain cannot revisit a
+		// symbol, and a malformed one stops at the first unknown container.
+		for container, hops := symbol.ContainerID, 0; container != "" && hops <= len(fileSymbols); hops++ {
+			parent, ok := byID[container]
+			if !ok {
+				break
+			}
+			if parent.Kind == "module" {
+				segments = append([]string{parent.Name}, segments...)
+			}
+			container = parent.ContainerID
+		}
+		path := strings.Join(segments, ".")
+		// The namespace the declaration sits in prefixes the whole chain: it is
+		// a container the symbol set does not model, not one the walk above
+		// missed.
+		if prefix := fsharpNamespaceAt(namespaces, symbol.StartLine); prefix != "" {
+			if path == "" {
+				path = prefix
+			} else {
+				path = prefix + "." + path
+			}
+		}
+		pathBySymbolID[symbol.ID] = path
+		if symbol.Kind == "module" {
+			own := symbol.Name
+			if path != "" {
+				own = path + "." + symbol.Name
+			}
+			declared[own] = true
+		}
+	}
+	return pathBySymbolID, declared
+}
+
+// fsharpProjectModulePaths is fsharpModulePaths over every F# file at once.
+//
+// F# modules are PROJECT-scoped, not file-scoped, and the usual layout is one
+// module per file, so `A.convert` written anywhere in the project names module
+// A wherever A is declared. Deciding what a qualifier may name from the caller
+// FILE's declarations alone therefore threw the restriction away on exactly the
+// calls that most need it: a cross-file `A.convert` was recorded as bare
+// `convert`, and once a second module declared a `convert` too, the
+// globally-unique fallback emitted NO edge at all despite the explicit
+// qualifier. The path map has to widen with it, because the scope a cross-file
+// qualifier names lives in another file and a map keyed on this file's symbols
+// cannot filter it.
+//
+// A qualifier naming no module the project declares -- a .NET namespace
+// (`System.Text.encode`), a value receiver (`svc.encode`) -- is still not a
+// qualifier here and still records as bare, so it keeps resolving unrestricted
+// instead of being held to an empty scope and losing its edge.
+//
+// Container chains never cross files, so merging the per-file maps is exact.
+func fsharpProjectModulePaths(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) (map[string]string, map[string]bool) {
+	pathBySymbolID := map[string]string{}
+	declared := map[string]bool{}
+	for _, file := range files {
+		if file.Language != "F#" {
+			continue
+		}
+		// The file's namespace declarations carry no symbol, so the path map
+		// has to read them out of the source.
+		var namespaces []fsharpNamespaceScope
+		if content, ok := readContent(file.Path); ok {
+			namespaces = fsharpNamespaceScopes(content)
+		}
+		filePaths, fileDeclared := fsharpModulePaths(recordsByFile[file.Path], namespaces)
+		for id, path := range filePaths {
+			pathBySymbolID[id] = path
+		}
+		for path := range fileDeclared {
+			declared[path] = true
+		}
+	}
+	return pathBySymbolID, declared
+}
+
+// fsharpQualifierMatchesModulePath reports whether a call's qualifier names the
+// module a symbol is declared in. A qualifier may be written relative to the
+// enclosing scope (`ScriptGeneration.f` inside `LoadingScripts`), so a suffix on
+// a dot boundary counts.
+func fsharpQualifierMatchesModulePath(path, qualifier string) bool {
+	return path == qualifier || strings.HasSuffix(path, "."+qualifier)
+}
+
+// fsharpRootAnchoredPath reads F#'s `global.` prefix off a qualifier and
+// reports whether it was there. `global` is a KEYWORD, not an identifier, and
+// the grammar admits it only at the head of a long identifier, so a nested
+// `A.global.B` does not parse and only a leading occurrence is stripped --
+// leaving a mid-path `global` alone, which is the direction that cannot invent
+// a match.
+//
+// The prefix is an explicit ROOT ANCHOR: `global.Serde` names the top-level
+// `Serde` and nothing else, which is exactly why the keyword exists -- it is
+// how F# reaches a root path that a nearer declaration of the same name would
+// otherwise shadow. So the anchored reading is the stripped path matched
+// EXACTLY. Reading it as an ordinary qualifier instead would be wrong in both
+// directions at once: `global.Serde` matched no declared path at all, so the
+// call recorded bare and bound whatever `serialize` sat nearest; and merely
+// dropping the prefix would let the relative rules that follow admit a nested
+// `Deep.Serde` or the caller's own `Use.Serde`, collapsing two genuinely
+// different modules onto the one spelling the source went out of its way to
+// disambiguate.
+//
+// `namespace global` is the same keyword saying the same thing at the other
+// end, and fsharpNamespaceScopes already reads it as "no prefix", so a path
+// declared under it is stored at the root and an anchored qualifier finds it.
+func fsharpRootAnchoredPath(qualifier string) (string, bool) {
+	if qualifier == "global" {
+		return "", true
+	}
+	if rest, anchored := strings.CutPrefix(qualifier, "global."); anchored {
+		return rest, true
+	}
+	return qualifier, false
+}
+
+// fsharpModulePathDeclared reports whether the qualifier names a module the
+// PROJECT declares -- see fsharpProjectModulePaths for why the caller file's
+// own declarations are the wrong question. A qualifier that names no declared
+// module is not a module qualifier at all (a .NET namespace, a value receiver),
+// so it stays unrestricted and resolves by name.
+//
+// A root-anchored qualifier is tested against the declared paths EXACTLY: it
+// names one absolute path, so the suffix rule -- which exists for a qualifier
+// written relative to an enclosing scope -- does not apply to it. `global`
+// alone anchors nothing further and names no module, so it declares nothing.
+func fsharpModulePathDeclared(declared map[string]bool, qualifier string) bool {
+	if root, anchored := fsharpRootAnchoredPath(qualifier); anchored {
+		return root != "" && declared[root]
+	}
+	for path := range declared {
+		if fsharpQualifierMatchesModulePath(path, qualifier) {
+			return true
+		}
+	}
+	return false
+}
+
+// fsharpModuleAbbreviationPattern matches an F# module abbreviation
+// (`module Json = Newtonsoft.Json`), which binds a LOCAL name to a module or
+// namespace path. The right-hand side is captured so the verbose nested-module
+// BLOCK form can be told apart by the one word that heads it; a plain
+// `module Nested =` heading a block has nothing after the `=` at all.
+//
+// The right-hand side used to be required to start with an UPPERCASE letter,
+// which is not what distinguishes an abbreviation -- it is only how the paths
+// in the common case happen to be spelled. F# writes the global namespace with
+// the lowercase keyword `global` (`module Json = global.Newtonsoft.Json`), and
+// lets a module or namespace be named in lowercase or with a leading
+// underscore, so every one of those abbreviations was missed and the alias it
+// binds went unrecorded. A missed abbreviation is not a neutral omission: the
+// qualifier is then classified by the project's module declarations alone, so
+// `Json.serialize` under `module Json = global.Newtonsoft.Json` was pinned to
+// an unrelated project module named `Json`.
+//
+// The WHOLE dotted right-hand side is captured, not just the word that heads
+// it, because the path is what the abbreviation binds the name TO. Keeping only
+// the first segment was enough to tell an abbreviation from a `begin` block but
+// left `module Json = Deep.Serde` indistinguishable from `module Json = Deep`,
+// so the alias could not be followed to the module it actually names.
+//
+// No accessibility modifier is accepted between `module` and the name, unlike
+// the `let` binding below. F# parses `module private Json = Serde` and then
+// rejects it outright -- FS0536, "The 'private' accessibility attribute is not
+// allowed on module abbreviation. Module abbreviations are always private."
+// (`pars.fsy` raises it from the abbreviation branch of the `moduleIntro EQUALS
+// namedModuleDefnBlock` rule). An abbreviation therefore never carries one, and
+// accepting the spelling would only invent an alias out of a line that does not
+// compile. `module private Json =` heading a nested module BLOCK stays outside
+// this pattern for the reason every block does: it has no path after the `=`.
+var fsharpModuleAbbreviationPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]+([A-Za-z_][A-Za-z0-9_']*)[ \t]*=[ \t]*([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)`)
+
+func fsharpModuleAbbreviationTargetIgnored(target string) bool {
+	switch target {
+	case "begin", "do", "exception", "external", "let", "module", "namespace", "open", "type", "val":
+		return true
+	default:
+		return false
+	}
+}
+
+// fsharpValueBindingPattern matches a `let`/`use` VALUE binding
+// (`let Json = Newtonsoft.Json.JsonConvert`, `let Json : JsonConvert = ...`),
+// which also binds the name lexically. A function binding carries parameters
+// between the name and the `=`, so it never matches here -- its parameters are
+// read by fsharpFunctionParameterNames instead, which is the only other thing
+// a `let` line can bind.
+//
+// The bang forms `let!` and `use!` are the same binding written inside a
+// computation expression (`let! Json = fetch ()` in an `async { ... }`), with
+// the same ordered, offside-delimited scope. Requiring the bare keyword missed
+// every one of them, so a qualifier the CE had rebound was still classified by
+// the project's module declarations and pinned `Json.serialize` to an unrelated
+// project module named `Json`.
+//
+// The modifiers before the name are captured rather than skipped because `rec`
+// changes the binding's SCOPE: without it the name is invisible inside its own
+// initializer, with it the name is in scope there. `rec` was not accepted at
+// all, so `let rec Json = ...` bound nothing and its own body was classified by
+// the project's module declarations alone.
+//
+// They are spelled in F#'s own order rather than as a set of interchangeable
+// words, because F# fixes that order: `let` takes `rec`, then the binding takes
+// `inline`, then `mutable`, and the accessibility modifier is part of the
+// PATTERN, so it stands last of all, immediately before the name --
+// `let rec inline mutable private Json = ...`. Writing it anywhere else
+// (`let private rec Json = ...`) is a syntax error, so a line spelled that way
+// is not F# and no shadow is invented for it.
+//
+// Accessibility was missing entirely, which is the same class of miss as `rec`
+// and not a neutral one: `let private Json = ...` bound nothing, so the
+// qualifier was classified by the project's module declarations alone and
+// `Json.serialize` was pinned to an unrelated project module named `Json` over
+// the `serialize` the binding leaves in scope. The gap also split one `let`
+// line in half -- fsharpFunctionHeaderPattern has always read `private`, so an
+// accessibility-modified FUNCTION bound its parameters while an
+// accessibility-modified VALUE bound nothing at all.
+var fsharpValueBindingPattern = regexp.MustCompile(`(?m)^[ \t]*(?:let|use)!?[ \t]+((?:rec[ \t]+)?(?:inline[ \t]+)?(?:mutable[ \t]+)?(?:(?:private|internal|public)[ \t]+)?)([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::[^=\n]*)?=`)
+
+// fsharpShadowBinding is one name a file binds lexically, together with the
+// lines that binding governs. F# scoping is ordered and offside-based: a
+// binding is invisible to everything written above it, and it dies at the
+// dedent that closes the block it was written in.
+type fsharpShadowBinding struct {
+	name string
+	// target is the module path a module ABBREVIATION binds the name to
+	// (`Newtonsoft.Json` for `module Json = Newtonsoft.Json`). Every other
+	// binder -- a value binding, a function parameter -- binds a value rather
+	// than a module and leaves this empty.
+	target string
+	// fromLine is the first line the binding shadows the name on, 1-based in
+	// file coordinates. That is NOT always the line the binding is written on:
+	// a non-recursive `let` is not in scope inside its own initializer, so its
+	// shadow starts only once the right-hand side has ended.
+	fromLine int
+	// fromColumn is the 0-based byte column ON fromLine from which the shadow
+	// applies; earlier columns of that line are outside it. It is 0 for every
+	// binding whose scope starts at a whole line, which is all of them but one:
+	// `let Json = value in Json.serialize x` writes the initializer and the body
+	// the binding governs on the SAME line, so the line cannot answer both ends
+	// of it and the start has to be a point rather than a line.
+	fromColumn int
+	// throughLine is the last line the binding still shadows the name on.
+	throughLine int
+}
+
+// fsharpFileShadowBindings lists the bindings this file makes, so a dotted
+// prefix spelling one of them can be recognised as NOT naming a project module
+// at the call sites the binding actually reaches.
+//
+// A qualifier was classified by the project's module declarations alone, which
+// is the wrong question whenever the file rebinds the name: with
+// `module Json = Newtonsoft.Json` (or `let Json = ...`) above a call and an
+// unrelated project module `Json` elsewhere, `Json.serialize` was held to the
+// project module and fabricated the edge into it. The local binding wins in F#'s
+// own scoping, so the qualifier names the alias, not the module, and belongs in
+// the same class as `System.Text.encode` and `svc.encode`: it names no project
+// module, so it records bare and resolves unrestricted rather than being pinned
+// to a module the source never meant.
+//
+// Each binding keeps its position because a file-wide set answers the question
+// in the wrong place as well as the right one. A `let Json = ...` inside ONE
+// function, or written BELOW the call, un-qualified every `Json.serialize` in
+// the file; and since a bare qualifier resolves unrestricted, those calls did
+// not merely lose a restriction, they bound whatever same-name definition sat
+// nearest instead of the module the source named.
+//
+// Every comment and literal form is masked first, because a binding has to be
+// WRITTEN to bind: only block comments were, so a `let Json = ...` line carried
+// inside a triple-quoted or verbatim string -- the shapes that reach a whole
+// line of their own, since a literal spanning newlines puts arbitrary text at
+// the head of a line -- was collected as a real binder, and so was a
+// `module Json = Newtonsoft.Json` there, which additionally REDIRECTED the
+// qualifier. A `//` comment reaches the parameter pass the same way, because
+// the region between a header's name and its `=` swallows a trailing comment
+// when the `=` continues on the next line. A phantom shadow is the
+// wrong-definition direction rather than a lost restriction: a shadowed
+// qualifier records bare and resolves unrestricted, so the call binds whatever
+// same-name definition sits nearest instead of the module the source wrote.
+//
+// The two maskers are length- and newline-preserving, which is what makes them
+// usable here: shadow bindings carry LINE NUMBERS, and the offside-rule scope
+// walk reads indentation, so blanking has to leave every line where it was.
+//
+// Bindings are per file because F# `let` and module abbreviations are lexically
+// scoped to the file that writes them, unlike module declarations themselves,
+// which are project-scoped.
+func fsharpFileShadowBindings(content string) []fsharpShadowBinding {
+	lines := strings.Split(maskFSharpLiteralsAndLineComments(maskFSharpBlockComments(content)), "\n")
+	var bindings []fsharpShadowBinding
+	for index, line := range lines {
+		if name, target, recursive := fsharpShadowBindingAt(line); name != "" {
+			// F# `let` is not recursive: the name a binding introduces is not
+			// in scope inside the initializer that defines it, so
+			// `let Json = Json.serialize x` still names the project module on
+			// its right-hand side and only rebinds the name below. Starting the
+			// shadow on the binding line read that qualifier as the new value,
+			// and a shadowed qualifier records bare and resolves unrestricted --
+			// the wrong-definition direction, an edge into whatever `serialize`
+			// sat nearest rather than the module the source wrote. `rec` asks
+			// for exactly the opposite rule and keeps the binding line.
+			fromLine, fromColumn := fsharpBindingScopeStart(lines, index, recursive)
+			bindings = append(bindings, fsharpShadowBinding{
+				name:        name,
+				target:      target,
+				fromLine:    fromLine,
+				fromColumn:  fromColumn,
+				throughLine: fsharpBindingScopeEnd(lines, index),
+			})
+			continue
+		}
+		// A `let` whose pattern is a TUPLE binds every name in it, and each one
+		// shadows exactly as a single-name binding does: `let (Json, code) =
+		// parse s` names the bound value below it, not the project module
+		// `Json`. Only a single name was recognised, so the whole line bound
+		// nothing and the qualifier was classified by the project's module
+		// declarations alone -- the fabricated-edge direction, into an
+		// unrelated project module named `Json`.
+		//
+		// Their scope is a `let`'s, not a parameter's: the same offside block,
+		// and the same exclusion from the initializer, which is why they are
+		// collected here rather than through the parameter pass. `let rec` does
+		// not apply -- F# admits `rec` only on a binding that names a single
+		// value or function -- so a destructured binding is never recursive.
+		if names := fsharpDestructuringBindingNames(line); len(names) > 0 {
+			fromLine, fromColumn := fsharpBindingScopeStart(lines, index, false)
+			throughLine := fsharpBindingScopeEnd(lines, index)
+			for _, name := range names {
+				bindings = append(bindings, fsharpShadowBinding{
+					name:        name,
+					fromLine:    fromLine,
+					fromColumn:  fromColumn,
+					throughLine: throughLine,
+				})
+			}
+			continue
+		}
+		// A function binding binds its PARAMETERS, and they shadow exactly as a
+		// `let` does: `let run (Json: JsonConvert) x = Json.serialize x` names
+		// the parameter, not the project module `Json`. Their scope is the body
+		// the header opens rather than the block the header sits in, so it is
+		// closed by the next line at the header's OWN indent -- the sibling
+		// binding after the function -- not only by a dedent past it.
+		//
+		// A parameter is bound by the HEADER, not by an initializer, so unlike
+		// a `let` it shadows from the header line itself: the body of
+		// `let run (Json: JsonConvert) x = Json.serialize x` is written there.
+		//
+		// The header is read as a LOGICAL line, because F# lets one span
+		// several physical ones. Parameter extraction ended at the `=` and
+		// gave up on a line that had none, so `let run` followed by an
+		// indented `(Json: JsonConvert) =` bound nothing at all and the
+		// qualifier was classified by the project's module declarations alone
+		// -- the fabricated-edge direction again, into an unrelated project
+		// module `Json`.
+		for _, name := range fsharpFunctionParameterNames(fsharpJoinedFunctionHeader(lines, index)) {
+			bindings = append(bindings, fsharpShadowBinding{
+				name:        name,
+				fromLine:    index + 1,
+				throughLine: fsharpParameterScopeEnd(lines, index),
+			})
+		}
+	}
+	return bindings
+}
+
+// fsharpShadowBindingAt returns the name this line binds lexically; when the
+// binder is a module abbreviation, the module path it binds that name TO; and
+// whether the binding is RECURSIVE, which decides whether it shadows inside its
+// own initializer. A name bound to no module path -- a value, a parameter --
+// comes back with an empty target. The name is empty if the line binds nothing.
+//
+// A module abbreviation is never recursive: `module Json = Newtonsoft.Json`
+// resolves its right-hand side in the scope OUTSIDE itself, exactly as a
+// non-recursive `let` does.
+func fsharpShadowBindingAt(line string) (string, string, bool) {
+	if match := fsharpModuleAbbreviationPattern.FindStringSubmatch(line); match != nil {
+		// A module element on the same physical line still starts a nested module
+		// BLOCK: `module M = let value = 1`. Its leading keyword is not a path
+		// being aliased. Treating `let` as the target made M shadow the real nested
+		// module and left `M.value` free to bind an unrelated same-named symbol.
+		if fsharpModuleAbbreviationTargetIgnored(match[2]) {
+			return "", "", false
+		}
+		return match[1], match[2], false
+	}
+	if match := fsharpValueBindingPattern.FindStringSubmatch(line); match != nil {
+		return match[2], "", slices.Contains(strings.Fields(match[1]), "rec")
+	}
+	return "", "", false
+}
+
+// fsharpBindingScopeStart returns the first POINT -- line and 0-based byte
+// column on it -- from which the binding written on lines[index] shadows its
+// name.
+//
+// Three of the four answers are whole lines and were already settled: `rec`
+// asks for the binding's own line, because the name is in scope inside its own
+// body; without it the shadow starts on the line after the initializer ends,
+// because the name is invisible in the right-hand side that defines it; and a
+// PARAMETER, which does not pass through here, shadows from its header line.
+//
+// The fourth is `let name = initializer in body`, and it is why a column is
+// needed at all. F# scope starts at a point in the token stream, not at a line
+// boundary; the line was only ever a workable approximation of it, and the
+// explicit `in` is the shape that breaks the approximation by writing the
+// initializer and the body it governs on ONE line. Rounding the start up to
+// the next line put the body outside the shadow, so `let Json = value in
+// Json.serialize x` -- a call the binding plainly reaches -- was classified by
+// the project's module declarations and pinned to an unrelated module `Json`.
+// Rounding it down to the whole line instead would break the other direction
+// that is already pinned: `let Json = Json.serialize x in Json` must keep its
+// right-hand side OUT of the shadow. Only a column answers both, so the start
+// is the column just past the `in`.
+func fsharpBindingScopeStart(lines []string, index int, recursive bool) (int, int) {
+	if recursive {
+		return index + 1, 0
+	}
+	if column, explicit := fsharpLetInBodyColumn(lines[index]); explicit {
+		return index + 1, column
+	}
+	return fsharpInitializerEnd(lines, index) + 1, 0
+}
+
+// fsharpLetInBodyColumn returns the column at which the body of an explicit
+// `let ... = ... in <body>` begins on this line, and whether the line writes
+// one. The `in` taken is the one this binding's own initializer reaches, and
+// finding it needs a DEPTH count rather than a first-match: an initializer may
+// itself open bindings, and each of those consumes an `in` of its own before
+// this binding's arrives.
+//
+// Taking the first one instead read the wrong keyword whenever the initializer
+// nested a binding of its own. In `let Json = let x = 1 in Json.serialize x`
+// the only `in` on the line closes the INNER `let x`, so the whole line is
+// still the outer binding's initializer and `Json` is unavailable across all of
+// it; starting the shadow past that `in` moved it EARLIER than the binding and
+// pinned the call to the local value instead of the project module `Json`.
+// That is the fabricated-edge direction, not the narrow one. Counting `let`
+// and `use` opened after the first `=` and spending one per `in` gives the
+// outer binding its own keyword back: the line above now opens no body at all,
+// and `let a = let x = 1 in x in a + 1` takes the SECOND `in`, not the first.
+//
+// Everything before the `in` that is taken belongs to an initializer, and
+// everything after it is governed by this binding, so a shadow that starts
+// there can only be too late, never too early -- which is what the count
+// restores.
+//
+// A top-level `for` before the `in` means the `in` is a SEQUENCE iterator
+// (`let total = for x in xs do count x`), not the keyword that opens a binding
+// body, so the line is declined: the loop body is still the initializer, and
+// the binding is not in scope there. `in` inside brackets is left alone for the
+// same reason -- a `for` or a nested `let` written inside a comprehension,
+// sequence expression or parenthesised group is not this binding's body.
+//
+// A nested binding that spends no `in` -- a computation expression's `let!`,
+// which is closed by the line ending rather than by a keyword -- leaves the
+// count one too high and the line is declined. That is the narrow answer: a
+// missed shadow leaves the previous classification standing, while an invented
+// one moves a call to a different definition.
+//
+// The line reaching here has already been through both maskers, so an `in`
+// written inside a string or a comment is blanked and cannot be seen.
+func fsharpLetInBodyColumn(line string) (int, bool) {
+	depth, afterEquals, nested := 0, false, 0
+	for index := 0; index < len(line); {
+		if fsharpWordByte(line[index]) {
+			end := index
+			for end < len(line) && fsharpWordByte(line[end]) {
+				end++
+			}
+			if depth == 0 {
+				switch line[index:end] {
+				case "for":
+					return 0, false
+				case "let", "use":
+					if afterEquals {
+						nested++
+					}
+				case "in":
+					if afterEquals {
+						if nested == 0 {
+							return end, true
+						}
+						nested--
+					}
+				}
+			}
+			index = end
+			continue
+		}
+		switch line[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case '=':
+			if depth == 0 {
+				afterEquals = true
+			}
+		}
+		index++
+	}
+	return 0, false
+}
+
+// fsharpWordByte reports whether the byte can stand inside an F# identifier.
+// The apostrophe is one of them (`xs'`), which is what keeps a name ending in
+// `in` or `for` from being read as the keyword.
+func fsharpWordByte(character byte) bool {
+	return character == '\'' || isIdentifierByte(character)
+}
+
+// fsharpDestructuringBindingHeadPattern matches the keyword and modifiers that
+// open a `let`/`use` binding, stopping at the pattern it binds. It is the same
+// head fsharpValueBindingPattern reads, minus the single NAME that pattern
+// requires next, so the shapes a name cannot describe are reachable.
+var fsharpDestructuringBindingHeadPattern = regexp.MustCompile(`^[ \t]*(?:let|use)!?[ \t]+(?:(?:rec|inline|mutable|private|internal|public)[ \t]+)*`)
+
+// fsharpDestructuringBindingNames lists the names a `let`/`use` binding whose
+// pattern is a TUPLE binds -- `let (Json, code) = parse s`, and the same
+// pattern written without its parentheses, `let Json, code = parse s`.
+//
+// The pattern must be a single parenthesised group, or a top-level
+// comma-separated list; a parenthesised one is then read by the same
+// fsharpParameterGroupBinders that reads a group in PARAMETER position, and
+// admits exactly what that function admits -- names, tuples and their
+// nestings, `as`, and a union-case application (`let (Ok Json) = result`
+// binds `Json`). A parameter and a `let` pattern are the same grammar
+// production, so reading a shape as binders in one and not the other is an
+// inconsistency, not a safety margin.
+//
+// Shapes the group reader declines are declined here too, for refinement 4's
+// reason -- a name standing in a pattern position need not be a binder, and
+// binding one that is really a union case un-qualifies calls that legitimately
+// name a module of that name. Two more are declined by this function's own
+// region test, which requires a SINGLE group and so never reaches the reader:
+//
+//   - A RECORD pattern (`let { Result = Json } = r`). The name stands after a
+//     field's own `=`, which is a nested pattern position in the fullest sense:
+//     `let { Result = Error } = r` matches the nullary case `Error` and binds
+//     nothing at all, and nothing on the line tells the two apart. The braces
+//     are shared with computation, object and anonymous-record expressions and
+//     the field label may itself be dotted, so the form is not even closed by
+//     its brackets.
+//   - A LIST or ARRAY pattern (`let [a; Json] = xs`, `let [| a; Json |] = xs`).
+//     Same nested pattern position, and the form is refutable by construction,
+//     so it is never a plain destructuring of a known shape.
+//   - A CONS pattern (`let head :: Json = xs`) -- refutable in the same way.
+//   - An `as` pattern written outside the group (`let (a, b) as Json = pair`),
+//     whose binder is unambiguous but whose region is a group followed by more
+//     text, which is also how an operator definition and an active pattern are
+//     told apart from a destructuring. Inside a group -- a parameter's
+//     `(pair as Json)` -- `as` IS read.
+//
+// A pattern spread over several lines is declined too: with no `=` on the line
+// there is no region to read, and the narrow answer keeps the previous
+// classification rather than inventing a shadow.
+func fsharpDestructuringBindingNames(line string) []string {
+	head := fsharpDestructuringBindingHeadPattern.FindString(line)
+	if head == "" {
+		return nil
+	}
+	region, found := fsharpParameterRegion(line[len(head):])
+	if !found {
+		return nil
+	}
+	// A top-level comma is the tuple written without parentheses. Reading it
+	// first keeps `let f (a, b) c = ...` out: that comma sits inside the
+	// parameter's brackets, so the header falls through to the parameter pass
+	// that owns it.
+	if parts := fsharpSplitTopLevel(region, ','); len(parts) > 1 {
+		var names []string
+		for _, part := range parts {
+			if name := fsharpParameterBinderName(part); name != "" {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	// A parenthesised pattern binds only when the parentheses are the WHOLE
+	// region: `let (a, Json) = ...` is a tuple binding, while `let f (a, b) =
+	// ...` names a function and `let (|Even|Odd|) n = ...` an active pattern,
+	// both of which carry text outside the group and belong to other passes.
+	pattern := strings.TrimSpace(region)
+	if !strings.HasPrefix(pattern, "(") || !strings.HasSuffix(pattern, ")") {
+		return nil
+	}
+	return fsharpParameterGroupBinders(pattern)
+}
+
+// fsharpFunctionHeaderPattern matches the head of a `let`/`use` FUNCTION
+// binding: the keyword, any modifiers, the name it binds, and the whitespace
+// before its first parameter. A VALUE binding writes `=` or a type annotation
+// straight after the name, so the two forms stay disjoint and a line is read as
+// one or the other, never both.
+var fsharpFunctionHeaderPattern = regexp.MustCompile(`^[ \t]*(?:let|use)!?[ \t]+(?:(?:rec|inline|mutable|private|internal|public)[ \t]+)*[A-Za-z_][A-Za-z0-9_']*[ \t]+`)
+
+// fsharpParameterBinderPattern matches a parameter that is a plain name,
+// carrying an optional type annotation (`Json`, `Json: JsonConvert`). Only the
+// NAME is captured: `let run (x: Json) = Json.serialize x` binds `x` and merely
+// MENTIONS the type `Json`, so reading an annotation as a binder would shadow a
+// qualifier nothing rebound -- and a shadowed qualifier resolves unrestricted,
+// which binds whatever same-name definition sits nearest instead of the module
+// the source wrote.
+var fsharpParameterBinderPattern = regexp.MustCompile(`^[ \t]*([A-Za-z_][A-Za-z0-9_']*)[ \t]*(?::.*)?$`)
+
+// fsharpFunctionParameterNames lists the names a function header binds through
+// its parameters. A parameter shadows a module qualifier exactly as a `let`
+// does -- `let run (Json: JsonConvert) x = Json.serialize x` names the
+// parameter -- but only value bindings were recognised, so the qualifier was
+// classified by the project's module declarations alone and the call was pinned
+// to an unrelated project module named `Json`.
+//
+// Each whitespace-separated group is one parameter, and what a group binds is
+// fsharpPatternComponentBinders' answer: a name, a tuple and its nestings, an
+// `as` pattern, or the arguments of a union-case application. A list, record,
+// cons, or/and pattern is left unbound, because a name standing there need not
+// be a binding at all: `Some`, `None` and `Error` are union CASES, and binding
+// them would un-qualify calls that legitimately name a module of that name.
+// Missing a shadow leaves the previous answer; inventing one changes a call's
+// target, so the unmodelled shapes stay out.
+func fsharpFunctionParameterNames(line string) []string {
+	header := fsharpFunctionHeaderPattern.FindString(line)
+	if header == "" {
+		return nil
+	}
+	region, found := fsharpParameterRegion(line[len(header):])
+	if !found {
+		return nil
+	}
+	var names []string
+	for _, group := range fsharpSplitTopLevel(region, ' ', '\t') {
+		names = append(names, fsharpParameterGroupBinders(group)...)
+	}
+	return names
+}
+
+// fsharpParameterRegion returns the parameter text of a function header: what
+// stands between the name and the `=` that opens the body. Brackets are counted
+// so a `=` inside an attribute is not mistaken for the one ending the header,
+// and a top-level `:` ends the region too because what follows it is the RETURN
+// type, not a parameter. A header split across lines carries no `=` on this
+// line and binds nothing here -- the narrow answer, which keeps the previous
+// classification rather than inventing a shadow.
+func fsharpParameterRegion(rest string) (string, bool) {
+	depth := 0
+	for index := 0; index < len(rest); index++ {
+		switch rest[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case ':', '=':
+			if depth == 0 {
+				return rest[:index], true
+			}
+		}
+	}
+	return "", false
+}
+
+// fsharpBindingKeywordPattern matches the keyword that can open a `let`/`use`
+// header, with the whitespace that must follow it. It is deliberately weaker
+// than fsharpFunctionHeaderPattern, which also demands whitespace AFTER the
+// bound name and so declines the very line this bug is about: `let run`, whose
+// parameters are written on the lines below it.
+var fsharpBindingKeywordPattern = regexp.MustCompile(`^[ \t]*(?:let|use)!?[ \t]`)
+
+// fsharpFunctionHeaderContinuationLines bounds how far a header is followed
+// down the file. A parameter list that long does not exist; the bound is what
+// stops a `let` whose `=` never arrives from swallowing the rest of the block.
+const fsharpFunctionHeaderContinuationLines = 32
+
+// fsharpJoinedFunctionHeader returns the LOGICAL header line that begins on
+// lines[index]: the line itself when it already carries the `=` (or the
+// top-level `:` introducing a return type) that ends a header, and otherwise
+// that line joined with the lines below it up to the one that does.
+//
+// F# writes a long signature across several lines, and a parameter binds a
+// qualifier from wherever it is written:
+//
+//	let run
+//	    (Json: JsonConvert)
+//	    (x: int) =
+//	    Json.serialize x
+//
+// Read one physical line at a time, `let run` has no `=` and bound nothing, so
+// `Json` was not recorded as shadowing and the call was pinned to whatever
+// project module happened to be named `Json`.
+//
+// The join follows the offside rule, which is what makes it safe: a
+// continuation of a header is indented PAST the `let` that opens it, so the
+// first following line back at the header's own indent -- the sibling binding
+// -- stops the join, and a blank line stops it too. Only a line that opens a
+// binding is followed at all, and the join stops at the first `=` outside
+// brackets, so it can never reach into a body. Where no such line is found the
+// caller reads no parameter region and binds nothing, which is the narrow
+// answer: a missed shadow leaves the previous classification standing, while an
+// invented one moves a call to a different definition.
+//
+// Completeness is judged on the JOINED text rather than the line just added, so
+// a header whose parenthesis opens on one line and closes on another is
+// followed to its real end instead of stopping inside the brackets.
+func fsharpJoinedFunctionHeader(lines []string, index int) string {
+	joined := lines[index]
+	if !fsharpBindingKeywordPattern.MatchString(joined) {
+		return joined
+	}
+	if _, complete := fsharpParameterRegion(joined); complete {
+		return joined
+	}
+	indent := fsharpIndentWidth(joined)
+	for next := index + 1; next < len(lines) && next-index <= fsharpFunctionHeaderContinuationLines; next++ {
+		if strings.TrimSpace(lines[next]) == "" || fsharpIndentWidth(lines[next]) <= indent {
+			break
+		}
+		joined += " " + lines[next]
+		if _, complete := fsharpParameterRegion(joined); complete {
+			break
+		}
+	}
+	return joined
+}
+
+// fsharpParameterGroupBinders returns the names one parameter group binds. A
+// parenthesised group holds a PATTERN, which is read by fsharpPatternBinders;
+// an unparenthesised group is a bare parameter and binds only when it is a
+// plain name.
+func fsharpParameterGroupBinders(group string) []string {
+	trimmed := strings.TrimSpace(group)
+	if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, ")") {
+		return fsharpPatternBinders(trimmed[1 : len(trimmed)-1])
+	}
+	if name := fsharpParameterBinderName(trimmed); name != "" {
+		return []string{name}
+	}
+	return nil
+}
+
+// fsharpPatternBinders returns the names the CONTENTS of a parenthesised
+// pattern bind. A top-level comma makes it a tuple, and every component is a
+// pattern in its own right.
+func fsharpPatternBinders(pattern string) []string {
+	if components := fsharpSplitTopLevel(pattern, ','); len(components) > 1 {
+		var names []string
+		for _, component := range components {
+			names = append(names, fsharpPatternComponentBinders(component)...)
+		}
+		return names
+	}
+	return fsharpPatternComponentBinders(pattern)
+}
+
+// fsharpPatternComponentBinders returns the names one pattern component binds.
+// Only names, tuples and their parenthesised nestings were read before, so
+// every other shape bound nothing: `let run (Some Json) = Json.serialize x`
+// left `Json` unbound and the qualifier resolution pinned the call to an
+// unrelated project module named `Json` -- an edge into a definition the source
+// never wrote, in place of the value the pattern leaves in scope.
+//
+// Four shapes are ADMITTED, each because the name it yields cannot be anything
+// but a binder:
+//
+//   - A plain name, with at most a type annotation (`Json`, `Json: JsonConvert`).
+//     Only the name is taken; the annotation is a MENTION.
+//   - A parenthesised nesting (`(a, (b, Json))`). A tuple inside a tuple is
+//     still a tuple, and reading the outer one but not the inner was an
+//     omission rather than a margin.
+//   - An `as` pattern (`(p as Json)`). F# grammar admits only an identifier
+//     after `as`, and it always binds. The pattern to its LEFT is read as a
+//     component too, which declines a type test (`(:? Stream as Json)` binds
+//     `Json` and not the type `Stream`) without a rule of its own.
+//   - A union-case application (`(Some Json)`, `(Response (code, Json))`). The
+//     HEAD of an application in pattern position is a case, never a binder, so
+//     it is dropped and the arguments are read. This is the one shape a
+//     previous round declined that the PARAMETER position argues back: peeling
+//     a single-case union in the header (`let handle (Request Json) = ...`) is
+//     how F# code uses one, it is irrefutable, and it draws no warning.
+//
+// The shapes still declined are the ones where a name standing in the pattern
+// need not be a binder at all -- `Some`, `None` and `Error` are union CASES,
+// and binding one un-qualifies calls that legitimately name a module of that
+// name. A shadowed qualifier records bare and resolves unrestricted, so
+// inventing a binder does not merely lose a restriction, it binds whatever
+// same-name definition sits nearest:
+//
+//   - The WILDCARD `_`, alone or annotated, which binds nothing by definition.
+//   - A RECORD pattern (`{ Result = Json }`). The name stands after a field's
+//     own `=`, where `{ Result = Error }` matches the nullary case and binds
+//     nothing; the braces are shared with computation, object and
+//     anonymous-record expressions, and the field label may be dotted.
+//   - A LIST or ARRAY pattern (`[a; Json]`, `[| a; Json |]`) and a CONS
+//     pattern (`head :: Json`), refutable by construction and never the plain
+//     peeling of a known shape that the union-case form is.
+//   - An OR or AND pattern (`Some Json | Other Json`, `a & Json`), whose
+//     alternatives are cases as readily as binders.
+//   - Anything carrying a top-level `:` the plain-name reader did not consume,
+//     which is an annotation on a shape this function does not model, and
+//     `?optional`, which exists only on members -- a form this pass never sees,
+//     because it reads `let`/`use` headers alone.
+func fsharpPatternComponentBinders(component string) []string {
+	trimmed := strings.TrimSpace(component)
+	if trimmed == "" {
+		return nil
+	}
+	if name := fsharpParameterBinderName(trimmed); name != "" {
+		return []string{name}
+	}
+	if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, ")") {
+		return fsharpPatternBinders(trimmed[1 : len(trimmed)-1])
+	}
+	if left, bound, isAs := fsharpAsPatternSplit(trimmed); isAs {
+		return append(fsharpPatternComponentBinders(left), bound)
+	}
+	if fsharpPatternComponentDeclined(trimmed) {
+		return nil
+	}
+	// An application: the head is the union case being matched and every
+	// argument after it is a pattern.
+	arguments := fsharpSplitTopLevel(trimmed, ' ', '\t')
+	if len(arguments) < 2 {
+		return nil
+	}
+	var names []string
+	for _, argument := range arguments[1:] {
+		names = append(names, fsharpPatternComponentBinders(argument)...)
+	}
+	return names
+}
+
+// fsharpAsPatternSplit splits `<pattern> as <name>` at its LAST top-level `as`,
+// which is the one that binds outermost in `a as b as c`. The name it binds is
+// reported only when it is a plain identifier, so a line that merely writes the
+// word is not read as the keyword.
+func fsharpAsPatternSplit(component string) (string, string, bool) {
+	depth, keyword := 0, -1
+	for index := 0; index < len(component); {
+		if fsharpWordByte(component[index]) {
+			end := index
+			for end < len(component) && fsharpWordByte(component[end]) {
+				end++
+			}
+			if depth == 0 && component[index:end] == "as" {
+				keyword = index
+			}
+			index = end
+			continue
+		}
+		switch component[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+		index++
+	}
+	if keyword < 0 {
+		return "", "", false
+	}
+	bound := fsharpParameterBinderName(component[keyword+len("as"):])
+	if bound == "" {
+		return "", "", false
+	}
+	return component[:keyword], bound, true
+}
+
+// fsharpPatternComponentDeclined reports whether a component carries a
+// top-level token that puts it in one of the shapes this reader does not model
+// -- a list or record body, a cons, an or/and pattern, an annotation the
+// plain-name reader did not consume, or an optional parameter. Brackets are
+// counted, so the same token written inside a nested group is not read here.
+func fsharpPatternComponentDeclined(component string) bool {
+	if strings.HasPrefix(component, "[") || strings.HasPrefix(component, "{") {
+		return true
+	}
+	depth := 0
+	for index := 0; index < len(component); index++ {
+		switch component[index] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case ':', ';', '|', '&', '?':
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// fsharpParameterBinderName returns the name a parameter binds, or "" when it
+// is not a plain name. The wildcard `_` binds nothing.
+func fsharpParameterBinderName(text string) string {
+	match := fsharpParameterBinderPattern.FindStringSubmatch(text)
+	if match == nil || match[1] == "_" {
+		return ""
+	}
+	return match[1]
+}
+
+// fsharpSplitTopLevel splits text on the separators, ignoring any that fall
+// inside brackets, and drops empty fields.
+func fsharpSplitTopLevel(text string, separators ...byte) []string {
+	var fields []string
+	depth, start := 0, -1
+	for index := 0; index < len(text); index++ {
+		character := text[index]
+		switch character {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth == 0 && slices.Contains(separators, character) {
+			if start >= 0 {
+				fields = append(fields, text[start:index])
+				start = -1
+			}
+			continue
+		}
+		if start < 0 {
+			start = index
+		}
+	}
+	if start >= 0 {
+		fields = append(fields, text[start:])
+	}
+	return fields
+}
+
+// fsharpBindingScopeEnd returns the last line the binding written on
+// lines[index] is still in scope for. F#'s offside rule closes the block a
+// binding lives in at the first following line indented less than the binding
+// itself, so a function-local binding ends with its function; a binding at its
+// module's own level is closed by nothing and reaches the end of the file.
+// Blank and comment-only lines carry no indentation of their own, so they never
+// close a block.
+func fsharpBindingScopeEnd(lines []string, index int) int {
+	return fsharpScopeEnd(lines, index, false)
+}
+
+// fsharpInitializerEnd returns the last line of the initializer belonging to the
+// binding written on lines[index] -- the whole right-hand side, which the
+// offside rule writes as the block that line opens and the first following line
+// back at the binding's own indent closes. A single-line binding therefore ends
+// on its own line, and a binding whose right-hand side runs on ends with the
+// last continuation line.
+//
+// This is what a non-recursive binding is NOT in scope for. It is the same
+// offside question a parameter's body asks, so it shares the rule, but it is a
+// different question and is asked at the other end of the binding.
+func fsharpInitializerEnd(lines []string, index int) int {
+	return fsharpScopeEnd(lines, index, true)
+}
+
+// fsharpParameterScopeEnd returns the last line the parameters declared by the
+// header on lines[index] are still in scope for. A parameter lives in the body
+// the header OPENS, and that body is written indented past the header, so the
+// next line back at the header's own indent -- the sibling `let` after the
+// function -- already ends it. Reusing the `let` rule instead would carry a
+// top-level function's parameters to the end of the file and un-qualify every
+// call below it, which is the wrong-definition direction of this same bug.
+func fsharpParameterScopeEnd(lines []string, index int) int {
+	return fsharpScopeEnd(lines, index, true)
+}
+
+func fsharpScopeEnd(lines []string, index int, closedByOwnIndent bool) int {
+	indent := fsharpIndentWidth(lines[index])
+	for i := index + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		width := fsharpIndentWidth(lines[i])
+		if width < indent || (closedByOwnIndent && width == indent) {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+func fsharpIndentWidth(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " \t"))
+}
+
+// fsharpShadowsAt returns a lookup from a byte offset inside one call block --
+// which starts at startLine in the file -- to the names shadowed on the LINE
+// that offset falls on.
+//
+// The shadow set used to be computed once for a whole block. F# scoping is
+// ordered, so that answered the question in the wrong place as well as the
+// right one: a `let Json = ...` written partway down a function was applied to
+// the `Json.serialize` calls ABOVE it too, and because a shadowed qualifier
+// records bare and resolves unrestricted, the earlier call did not merely lose
+// its restriction -- it bound whatever same-name definition sat nearest instead
+// of the module the source named. Both sightings then collapsed onto the bare
+// one and the module-qualified edge disappeared. Deciding per call SITE is the
+// same rule applied at the granularity F# actually scopes at.
+//
+// Blank lines need no special case any more: a call site is never on one. The
+// lookup is memoised per line because a block commonly holds many call sites on
+// few distinct lines.
+//
+// Each name maps to the module path it was bound to, empty for a binder that
+// binds no module. Bindings are visited in source order, so where two of them
+// reach the same line the LATER one is left standing -- the inner or nearer
+// binding, which is the one F# resolves the name to.
+func fsharpShadowsAt(bindings []fsharpShadowBinding, block string, startLine int) func(offset int) map[string]string {
+	if len(bindings) == 0 {
+		return func(int) map[string]string { return nil }
+	}
+	if startLine < 1 {
+		startLine = 1
+	}
+	newlines := newlineOffsets(block)
+	byLine := map[int][]fsharpShadowBinding{}
+	return func(offset int) map[string]string {
+		lineInBlock := lineAtOffset(newlines, offset)
+		at := startLine + lineInBlock - 1
+		reaching, known := byLine[at]
+		if !known {
+			for _, binding := range bindings {
+				if binding.fromLine <= at && at <= binding.throughLine {
+					reaching = append(reaching, binding)
+				}
+			}
+			byLine[at] = reaching
+		}
+		if len(reaching) == 0 {
+			return nil
+		}
+		// Only the line is memoised, because the column matters for at most
+		// the one binding whose scope STARTS on this line -- an explicit
+		// `let ... in ...`, whose initializer and body share it. Every other
+		// binding carries column 0 and is admitted by the same comparison.
+		//
+		// The column is the call site's offset within its line, and it is a
+		// FILE column because every F# block handed to this lookup begins at
+		// the start of startLine and holds whole lines from there.
+		column := offset - fsharpLineStartOffset(newlines, lineInBlock)
+		var shadows map[string]string
+		for _, binding := range reaching {
+			if at == binding.fromLine && column < binding.fromColumn {
+				continue
+			}
+			if shadows == nil {
+				shadows = map[string]string{}
+			}
+			shadows[binding.name] = binding.target
+		}
+		return shadows
+	}
+}
+
+// fsharpLineStartOffset returns the byte offset the 1-based line begins at,
+// given the newline offsets of the same text.
+func fsharpLineStartOffset(newlines []int, line int) int {
+	if line <= 1 {
+		return 0
+	}
+	if line-2 >= len(newlines) {
+		return 0
+	}
+	return newlines[line-2] + 1
+}
+
+// newlineOffsets lists the byte offset of every newline in text, so a byte
+// offset can be turned into a line number by a binary search instead of by
+// re-counting the text once per call site.
+func newlineOffsets(text string) []int {
+	var offsets []int
+	for start := 0; start < len(text); {
+		index := strings.IndexByte(text[start:], '\n')
+		if index < 0 {
+			break
+		}
+		offsets = append(offsets, start+index)
+		start += index + 1
+	}
+	return offsets
+}
+
+// lineAtOffset returns the 1-based line offset falls on, given the newline
+// offsets of the same text.
+func lineAtOffset(newlines []int, offset int) int {
+	return sort.SearchInts(newlines, offset) + 1
+}
+
+// fsharpShadowedQualifierAlias reports whether the shadows in scope at the call
+// site rebind the name the qualifier leads with, and if that binding was a
+// module abbreviation, returns the qualifier REWRITTEN through it. Only the
+// FIRST segment can be shadowed: a local `module Json = ...` rebinds `Json` and
+// therefore `Json.Linq`, but says nothing about `Newtonsoft.Json`.
+//
+// The rewrite is the point of keeping the abbreviation's target. `module Json =
+// Serde` does not make `Json.serialize` unqualified -- it makes it
+// `Serde.serialize`. Only the head is substituted, so `Json.Linq.parse` under
+// that binding reads `Serde.Linq.parse`, which is what the abbreviation means.
+func fsharpShadowedQualifierAlias(shadows map[string]string, qualifier string) (string, bool) {
+	if len(shadows) == 0 {
+		return "", false
+	}
+	head, rest := qualifier, ""
+	if cut := strings.Index(qualifier, "."); cut >= 0 {
+		head, rest = qualifier[:cut], qualifier[cut:]
+	}
+	target, shadowed := shadows[head]
+	if !shadowed || target == "" {
+		return "", shadowed
+	}
+	return target + rest, true
+}
+
+// recordFSharpCallQualifier remembers which module a qualified call named, so
+// resolution can keep `A.convert` off `B.convert`. EVERY distinct qualifier is
+// kept, because each one is its own call site: a caller writing
+// `x |> A.convert |> B.convert` calls two different functions, and collapsing
+// them onto one entry for the name loses one of the two edges. A call written
+// without a qualifier the project declares -- or spelling a name the FILE
+// rebinds, which is the same thing once F#'s own scoping is applied -- records
+// the empty string: that spelling names no module, so it means "the definition
+// in scope" and is resolved unrestricted -- alongside, not instead of, the
+// qualified sightings.
+func recordFSharpCallQualifier(qualifiers map[string]map[string]struct{}, declared map[string]bool, shadows map[string]string, name, target string) {
+	qualifier := ""
+	if cut := strings.LastIndex(target, "."); cut > 0 {
+		candidate := target[:cut]
+		alias, shadowed := fsharpShadowedQualifierAlias(shadows, candidate)
+		switch {
+		case !shadowed:
+			if fsharpModulePathDeclared(declared, candidate) {
+				qualifier = candidate
+			}
+		case alias != "" && fsharpModulePathDeclared(declared, alias):
+			// A module ABBREVIATION is the one shadow that still names a
+			// module. Treating it like any other rebinding recorded bare, and a
+			// bare spelling resolves unrestricted -- so `Json.serialize` under
+			// `module Json = Serde` bound whatever `serialize` sat nearest
+			// instead of Serde's, which is the wrong-definition direction of
+			// this same bug rather than a lost restriction. Follow the alias
+			// instead: the call names the module the abbreviation points at.
+			//
+			// Only when that target is a module the PROJECT declares. An
+			// abbreviation of an external path (`module Json =
+			// Newtonsoft.Json`) names nothing this index can hold the call to,
+			// so it stays bare exactly as before -- the same test
+			// `fsharpModulePathDeclared` already applies to an unshadowed
+			// qualifier, asked of the aliased spelling.
+			qualifier = alias
+		}
+	}
+	if qualifiers[name] == nil {
+		qualifiers[name] = map[string]struct{}{}
+	}
+	qualifiers[name][qualifier] = struct{}{}
+}
+
+// fsharpResolvableQualifiers lists the spellings a name was called with, one
+// resolution per spelling.
+//
+// The two spellings MEAN different things and are different call sites. A bare
+// `convert(x)` names no module: F# resolves it by scope, to whatever `convert`
+// is in scope at that point. A qualified `A.convert(x)` names module A
+// explicitly and can only be A's. A caller writing both therefore makes two
+// calls, and both edges exist.
+//
+// The empty string is one of those spellings, not a veto over the others.
+// Treating it as a veto -- reporting nothing, so the whole name fell back to
+// unrestricted resolution -- resolved `A.convert(x)` as if it had been written
+// bare, and unrestricted resolution emits only the same-name definition nearest
+// the call site, so A's edge was dropped outright.
+func fsharpResolvableQualifiers(qualifiers map[string]struct{}) []string {
+	return sortedKeysOf(qualifiers)
+}
+
+// fsharpRelativeQualifierPaths lists the module paths a relative qualifier may
+// name from inside callerPath, innermost enclosing scope first.
+//
+// A qualifier is read from the caller OUTWARDS, so every enclosing scope is a
+// reading, not just the caller's own module: inside `Root.Caller`, `A.f` means
+// the sibling `Root.A`. Trying only `callerPath + "." + qualifier` matched
+// nothing there and dropped to the plain suffix, which admits `Root.A` AND an
+// unrelated top-level `A` -- and `resolveCallTargets` then picked whichever sat
+// nearer the call site.
+//
+// The walk subsumes the caller's own path as a reading in its own right: from
+// inside `LoadingScripts.ScriptGeneration`, the scope `LoadingScripts` yields
+// `LoadingScripts.ScriptGeneration`, which is where `ScriptGeneration.build`
+// really points. The outermost scope is the empty one, so a qualifier naming a
+// top-level module resolves exactly rather than by suffix.
+//
+// A caller in no module at all -- a statement at file level, the normal shape
+// of an .fsx script -- has exactly one reading: the qualifier spelled from the
+// project root. It is the outermost step of the same walk with nothing above
+// it, so it is returned alone; concatenating it onto an empty caller path would
+// produce the leading-dot `.A`, which names nothing.
+func fsharpRelativeQualifierPaths(callerPath, qualifier string) []string {
+	if callerPath == "" {
+		return []string{qualifier}
+	}
+	paths := []string{callerPath + "." + qualifier}
+	for scope := callerPath; scope != ""; {
+		cut := strings.LastIndex(scope, ".")
+		if cut < 0 {
+			scope = ""
+		} else {
+			scope = scope[:cut]
+		}
+		if scope == "" {
+			paths = append(paths, qualifier)
+			break
+		}
+		paths = append(paths, scope+"."+qualifier)
+	}
+	return paths
+}
+
+// fsharpQualifiedScope drops the symbols that the qualifier rules out. F#
+// modules are project-scoped, so this reaches other files too: `A.convert`
+// written in C.fs is module A's, wherever A is declared. Symbols of another
+// language have no module path and are left alone.
+func fsharpQualifiedScope(symbols []SymbolRecord, qualifier, callerPath string, pathBySymbolID map[string]string, declared map[string]bool) []SymbolRecord {
+	if qualifier == "" {
+		// The BARE spelling restricts nothing: it names no module, so it means
+		// the definition in scope and resolves over every candidate, exactly as
+		// the unrestricted path does.
+		return symbols
+	}
+	// A ROOT-ANCHORED qualifier (`global.Serde.serialize`) has exactly one
+	// reading and it is absolute, so the relative walk and the suffix fallback
+	// below are both skipped: they are how a qualifier written relative to an
+	// enclosing scope is resolved, and `global.` is the spelling that says the
+	// qualifier is NOT relative. Letting them run on the stripped path would
+	// undo the anchor -- from inside `Use`, a nested `Use.Serde` is the first
+	// reading tried and would win the call that named the root `Serde`.
+	if root, anchored := fsharpRootAnchoredPath(qualifier); anchored {
+		return fsharpNarrowToModule(symbols, pathBySymbolID, func(path string) bool { return path == root })
+	}
+	// A relative qualifier is read from the caller outwards, so resolve it
+	// against the caller's own module before falling back to a suffix. With both
+	// `ScriptGeneration` and `LoadingScripts.ScriptGeneration` declaring `f`, a
+	// plain suffix admits BOTH and the winner then depends on caller scope and
+	// source order. From inside `LoadingScripts`, `ScriptGeneration.f` names the
+	// nested one, and that reading is exact rather than ambiguous.
+	//
+	// A file-level caller passes "" and has exactly one reading, the qualifier
+	// itself -- and it was skipped entirely, so those calls went straight to the
+	// suffix. That is too loose: at file level `A.build` names the top-level
+	// module A, while the suffix admits a nested `Outer.A` as well, and the
+	// nearest-definition tie-break then bound the call to a module the source
+	// never named. Trying the exact reading first fixes that without touching
+	// the case the suffix exists for -- a qualifier naming a module only ever
+	// declared inside another one, reached through an `open` this does not
+	// model, still finds no exact reading and still falls through.
+	//
+	// Innermost reading first: a module the caller's own module declares
+	// shadows the outer binding of the same name. Concatenating
+	// unconditionally repeated the segment
+	// (`...ScriptGeneration.ScriptGeneration`), matched nothing, and
+	// dropped to the plain suffix, which admits the nested module AND an
+	// unrelated top-level `ScriptGeneration`; the winner was then the
+	// definition nearest the call site rather than the one written.
+	// Which reading applies is a property of the PROJECT's declarations, not
+	// of the symbol set being filtered. F# modules are project-scoped and the
+	// usual layout is one module per file, so the sibling a relative
+	// qualifier names is normally declared somewhere ELSE: with `Outer.A` in
+	// one file and `Outer.Caller` in another, picking the reading by which
+	// candidate sat in the caller's own file made `Outer.A` unmatchable, and
+	// the call fell through to the plain suffix -- which admits `Outer.A` AND
+	// an unrelated top-level `A`. That lost the call both ways: ambiguous
+	// candidates dropped the edge outright, and where the top-level `A` was
+	// declared in the caller's own file it matched the OUTERMOST reading and
+	// won, so the nearer scope the caller actually meant was shadowed by the
+	// farther one. Reading against `declared` also keeps the two scopes this
+	// is called on -- the project-wide candidates and the caller file's own
+	// symbols -- agreeing on ONE reading; choosing per set let the narrower
+	// one settle on an outer reading the wider one had already rejected, and
+	// the same-file branch of resolveCallTargets then won with it.
+	for _, exact := range fsharpRelativeQualifierPaths(callerPath, qualifier) {
+		if !declared[exact] {
+			continue
+		}
+		return fsharpNarrowToModule(symbols, pathBySymbolID, func(path string) bool { return path == exact })
+	}
+	// Every F# symbol in the project has a known module path, so a qualified
+	// call is held to the module it names WHEREVER that module is declared.
+	// Exempting other files -- correct only while the qualifier's meaning was
+	// read from this file alone -- meant a cross-file `A.convert` never narrowed
+	// anything, so `B.convert` stayed a candidate and the ambiguity dropped the
+	// edge.
+	return fsharpNarrowToModule(symbols, pathBySymbolID, func(path string) bool {
+		return fsharpQualifierMatchesModulePath(path, qualifier)
+	})
+}
+
+// fsharpNarrowToModule keeps the candidates an F# module qualifier admits.
+// The qualifier has already been checked against the project's declared F#
+// modules before this helper runs. It therefore names that F# module, not an
+// arbitrary same-named symbol from another language. If the module lacks the
+// terminal member, the call is unresolved; falling back to a Python or other
+// pathless homonym fabricates an edge the source never named.
+func fsharpNarrowToModule(symbols []SymbolRecord, pathBySymbolID map[string]string, admits func(path string) bool) []SymbolRecord {
+	scoped := make([]SymbolRecord, 0, len(symbols))
+	for _, symbol := range symbols {
+		path, known := pathBySymbolID[symbol.ID]
+		if known && admits(path) {
+			scoped = append(scoped, symbol)
+		}
+	}
+	return scoped
+}
+
+// fsharpModuleInitBlock returns an F# module's own source with every binding
+// nested under it blanked out, so what is left is the module's
+// initialisation code.
+//
+// A `module` block spans every binding declared under it, so a scan of the
+// module's whole text sees the pipelines and calls written inside its
+// FUNCTIONS; crediting the module too produced a second edge from a symbol
+// that never made the call -- `B.run |> helper` appeared as both
+// `run -> helper` and `B -> helper`. Withdrawing every module-attributed call
+// cured that but also dropped the calls the module really does make: a
+// statement-position expression or a `do` binding runs when the module
+// initialises, belongs to no nested symbol, and cannot be recovered by the
+// file-level pass, which masks the module's whole line range. Blanking the
+// nested symbols separates the two: the members' bodies -- and their
+// definition heads, which read as calls to the generic scanner -- go, the
+// module's own statements stay.
+//
+// Only symbols strictly inside the module are blanked: an enclosing module
+// spans this one entirely and would blank all of it, and a symbol sharing the
+// module's exact range would do the same.
+//
+// Line numbering is preserved (nested lines become empty, they are not
+// removed) so the block stays comparable to the unmasked one.
+func fsharpModuleInitBlock(lines []string, symbol SymbolRecord, fileSymbols []SymbolRecord) string {
+	start := maxInt(1, symbol.StartLine)
+	if start > len(lines) {
+		return ""
+	}
+	end := maxInt(start, symbol.EndLine)
+	if end > len(lines) {
+		end = len(lines)
+	}
+	own := append([]string(nil), lines[start-1:end]...)
+	for _, other := range fileSymbols {
+		if other.ID == symbol.ID {
+			continue
+		}
+		otherStart := maxInt(1, other.StartLine)
+		otherEnd := maxInt(otherStart, other.EndLine)
+		if otherStart < start || otherEnd > end || (otherStart == start && otherEnd == end) {
+			continue
+		}
+		for i := otherStart; i <= otherEnd; i++ {
+			own[i-start] = ""
+		}
+	}
+	return strings.Join(own, "\n")
 }
 
 // resolveJuliaSameContainerMethodCallTargets is a conservative fallback for
@@ -2253,6 +3856,20 @@ func unionResolvedCallTargets(groups ...[]resolvedCallTarget) []resolvedCallTarg
 // retain the raw workspace candidates so an explicit, unique import path can
 // bind a local FFI target that the type-sharing policy deliberately excludes.
 func resolveCallTargetsWithRawImport(name string, from SymbolRecord, candidates, rawCandidates []SymbolRecord, rawImportModuleSets [][]string, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
+	targets := resolveCallTargetsWithRawImportDeclarations(name, from, candidates, rawCandidates, rawImportModuleSets, sameFile, importsByName, allowMethodTargets)
+	for i := range targets {
+		if definition, ok := cPlusPlusOutOfLineDefinition(targets[i].SymbolRecord, candidates); ok {
+			targets[i].SymbolRecord = definition
+			targets[i].Reason = "C++ call resolved through member declaration to out-of-line definition"
+			if definition.FilePath != from.FilePath {
+				targets[i].Scope = "module"
+			}
+		}
+	}
+	return targets
+}
+
+func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord, candidates, rawCandidates []SymbolRecord, rawImportModuleSets [][]string, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	// candidates arrive ALREADY filtered to languages the caller can name: every
 	// call site wraps its symbolsByShortName lookup in sharedTypeCandidates,
 	// because that is where the referring symbol is known. Re-filtering here
@@ -2609,11 +4226,18 @@ func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []Symb
 // emitting an edge. Files without namespaces — or whose scope parse fails —
 // yield "" for every symbol; each file is read and scanned at most once.
 func jsCrossFileNamespaceLookup(readContent contentReader, recordsByFile map[string][]SymbolRecord) func(SymbolRecord) string {
+	// The relation phase resolves files across workers, so the memo is shared.
+	// The lock is held across the scan rather than only across the map access:
+	// this fires for TypeScript namespaces alone, which is rare enough that
+	// serializing it costs less than letting two workers scan the same file.
+	var mu sync.Mutex
 	cache := map[string]map[string]string{}
 	return func(symbol SymbolRecord) string {
 		if symbol.Language != "JavaScript" && symbol.Language != "TypeScript" {
 			return ""
 		}
+		mu.Lock()
+		defer mu.Unlock()
 		byID, ok := cache[symbol.FilePath]
 		if !ok {
 			if content, okRead := readContent(symbol.FilePath); okRead {
@@ -2858,7 +4482,7 @@ func sameFileOverloadSet(candidates []SymbolRecord) ([]SymbolRecord, bool) {
 // snapshot path; the streaming path uses forEachRelation directly.
 func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	var relations []RelationRecord
-	forEachRelation(repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), nil, func(r RelationRecord) {
+	forEachRelation(context.Background(), repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), defaultProviderWorkerCount(), nil, func(r RelationRecord) {
 		relations = append(relations, r)
 	}, nil)
 	relations = dedupeRelations(relations)
@@ -3005,7 +4629,37 @@ func jsScanDepthPartialFailure(path string) PartialFailure {
 	}
 }
 
-func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
+// fileRelationScan is one file's share of the relation phase: what its scan
+// accumulates for later cross-file passes, replayed by the reducer in file order.
+//
+// The three entry slices are the accumulator writes the scan used to make
+// directly. They are kept as ordered entries rather than merged maps so the
+// reducer reproduces the exact append order the sequential loop produced, which
+// is what routeBridgeRelations and the OVERRIDES derivation read.
+type fileRelationScan struct {
+	failures        []PartialFailure
+	resolvedImports map[string][]string
+	routeHandlers   []routeHandlerEntry
+	httpCalls       []httpCallEntry
+	inheritance     []RelationRecord
+}
+
+type routeHandlerEntry struct {
+	route   string
+	handler SymbolRecord
+}
+
+type httpCallEntry struct {
+	route    string
+	relation RelationRecord
+}
+
+// errRelationScanStopped unwinds the pipeline when the consumer has errored or
+// the context is done. It never reaches a caller: forEachRelation reports a stop
+// by returning, exactly as the sequential loop did.
+var errRelationScanStopped = errors.New("relation scan stopped")
+
+func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, workers int, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelations(repoKey, files, recordsByFile, emit)
 		return
@@ -3039,6 +4693,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	symbolsByFile := map[string][]SymbolRecord{}
 	childNamesByContainer := map[string]map[string]bool{}
 	methodsByContainer := map[string]map[string]SymbolRecord{}
+	ambiguousCPlusPlusMethods := map[string]map[string]bool{}
 	fieldsByContainer := map[string]map[string]SymbolRecord{}
 	returnTypesBySymbolNameAndFile := map[string]map[string][]string{}
 	returnTypesBySymbolNameAndDir := map[string]map[string][]string{}
@@ -3195,7 +4850,37 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if methodsByContainer[symbol.ContainerID] == nil {
 						methodsByContainer[symbol.ContainerID] = map[string]SymbolRecord{}
 					}
-					methodsByContainer[symbol.ContainerID][symbol.Name] = symbol
+					if ambiguousCPlusPlusMethods[symbol.ContainerID][symbol.Name] {
+						continue
+					}
+					// This index is keyed by NAME, so C++ overloads collide in
+					// it. Last-write-wins made the winner depend on source
+					// order: with `void f(int) { ... }` followed by
+					// `void f(double);`, the bodyless declaration replaced the
+					// inline definition and every `obj.f(...)` call resolved to
+					// the declaration, leaving the real implementation with no
+					// callers at all.
+					//
+					// A body is what a caller means, so a bodyless entry never
+					// displaces one that has a body. The reverse still applies,
+					// which is what lets a real definition replace a declaration
+					// indexed before it.
+					existing, collides := methodsByContainer[symbol.ContainerID][symbol.Name]
+					if collides && symbol.Language == "C++" && existing.Language == "C++" &&
+						normalize(existing.Signature) != normalize(symbol.Signature) {
+						// A name-keyed index cannot select between overloads. Keeping
+						// either entry would turn source order into a confidently wrong
+						// CALLS edge, so make the name unavailable to this coarse tier.
+						delete(methodsByContainer[symbol.ContainerID], symbol.Name)
+						if ambiguousCPlusPlusMethods[symbol.ContainerID] == nil {
+							ambiguousCPlusPlusMethods[symbol.ContainerID] = map[string]bool{}
+						}
+						ambiguousCPlusPlusMethods[symbol.ContainerID][symbol.Name] = true
+						continue
+					}
+					if !collides || (existing.bodyless && !symbol.bodyless) {
+						methodsByContainer[symbol.ContainerID][symbol.Name] = symbol
+					}
 				}
 				// C# receiver-call resolution also reads the field index:
 				// class-level `Type Name { get; }` members type `Name.Method()`
@@ -3286,6 +4971,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 	handledRoutes := map[string]struct{}{}
+	// Shared by the route pass below and the per-file loop further down, which
+	// both resolve routes spelled as constants out of the same files.
+	constantsByFile := newFileStringConstants()
 	knownFiles := map[string]bool{}
 	for _, file := range files {
 		if shouldStop != nil && shouldStop() {
@@ -3297,7 +4985,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 	if spec.emits("HANDLES_ROUTE") {
-		for _, r := range goHTTPRouteRelations(files, recordsByFile, readContent) {
+		for _, r := range goHTTPRouteRelations(files, recordsByFile, readContent, constantsByFile) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -3363,6 +5051,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 	manifestImports := buildManifestImportResolver(files, readContent)
+	// Import blocks of files OTHER than the one being scanned, which the Go
+	// interface-implementation hop needs to decide package qualifiers across the
+	// declaring files. Lazy and memoised: only files that actually reach a
+	// signature comparison are read.
+	goFileImportIndex := newGoFileImports(readContent, files, manifestImports.goModules)
 
 	// pythonModuleExists reports whether the repo contains a Python file that the
 	// strict dotted-module matcher resolves `module` to (the module's own source
@@ -3371,8 +5064,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	// identical importsByName entry — by asking whether the submodule actually
 	// exists. Results are memoized; the scan is restricted to Python files so a
 	// same-stem file in another language is never mistaken for a module.
+	// Shared by the relation workers below, so the memo is locked. Each module
+	// is scanned for once and answered from the map after that.
+	var pythonModuleMu sync.Mutex
 	pythonModuleFileExists := map[string]bool{}
 	pythonModuleExists := func(module string) bool {
+		pythonModuleMu.Lock()
+		defer pythonModuleMu.Unlock()
 		if v, ok := pythonModuleFileExists[module]; ok {
 			return v
 		}
@@ -3424,12 +5122,34 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 
-	for _, file := range files {
-		if shouldStop != nil && shouldStop() {
-			return
+	// Every F# module path in the project, collected once: an F# qualifier is
+	// read against the whole project, not against the caller file. Repos with no
+	// F# file get two empty maps for one pass over the file list.
+	var fsharpProjectModulePathBySymbolID map[string]string
+	var fsharpProjectDeclaredModulePaths map[string]bool
+	if needsCallScan {
+		fsharpProjectModulePathBySymbolID, fsharpProjectDeclaredModulePaths = fsharpProjectModulePaths(files, recordsByFile, readContent)
+	}
+
+	// The file scan. Every index built above is read-only from here on, and the
+	// four accumulators it feeds are append-only, so files resolve on workers
+	// while a reducer replays each file's relations, failures and accumulator
+	// entries in the original file order. The reducer decides emission order, so
+	// worker timing cannot reach the snapshot bytes.
+	resolveFileRelations := func(workerCtx context.Context, file FileRecord, emit func(RelationRecord)) fileRelationScan {
+		var result fileRelationScan
+		// Relations stream through a bounded channel to the ordered reducer.
+		// Failures remain per-file metadata, replayed after that file's relations.
+		var bufferFailure func(PartialFailure)
+		if recordFailure != nil {
+			bufferFailure = func(failure PartialFailure) { result.failures = append(result.failures, failure) }
 		}
-		if !profileNeedsPerFileScan(spec) {
-			break // syntax-only: no content-derived relations
+		recordFailure := bufferFailure
+		// The outer shouldStop reads emitErr, which the reducer writes. A worker
+		// has to ask the context instead.
+		shouldStop := func() bool { return workerCtx.Err() != nil }
+		if shouldStop() {
+			return result
 		}
 		imports, havePrecomputedImports := precomputedImports[file.Path]
 		content := ""
@@ -3437,7 +5157,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			var ok bool
 			content, ok = readContent(file.Path)
 			if !ok {
-				continue
+				return result
 			}
 			if !havePrecomputedImports {
 				imports = importsFor(file.Path, content)
@@ -3510,7 +5230,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		importsByName := importedNamesFor(file.Path, content)
 		importsByName = resolvedImportedNameModules(file.Path, importsByName, manifestImports, knownFiles, readContent)
 		if needsSignatureTypeImports && len(importsByName) > 0 {
-			resolvedImportsByFile[file.Path] = importsByName
+			result.resolvedImports = importsByName
 		}
 		// The Python dotted-call composer resolves `alias.<tail>.fn()` from the
 		// syntactic form each import binding was recorded with (plain, alias
@@ -3522,7 +5242,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			pythonImportForms = importedPythonImportForms(content)
 		}
 		if skipFastProfilePerSymbolScan(spec, file.Language) {
-			continue
+			return result
 		}
 		lines := strings.Split(content, "\n")
 		currentFileSymbols := recordsByFile[file.Path]
@@ -3545,7 +5265,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		fileNeedsChannelScan := channelScanLanguage(file.Language)
 		var fileStringConstants map[string]string
 		if fileNeedsRouteScan || fileNeedsHTTPScan {
-			fileStringConstants = staticStringConstants(content)
+			fileStringConstants = constantsByFile.forFile(file.Path, content)
 		}
 		var routeSymbolsByID map[string]SymbolRecord
 		if fileNeedsRouteScan {
@@ -3599,6 +5319,17 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// annotations outside the method body. Collect those once per file
 			// and let receiverCallRelations apply the usual shadowing rules.
 			typeScriptPropTypes = typeScriptPropertyTypes(content, recordsByFile[file.Path])
+		}
+		var fsharpModulePathBySymbolID map[string]string
+		var fsharpDeclaredModulePaths map[string]bool
+		var fsharpShadowBindings []fsharpShadowBinding
+		if file.Language == "F#" && fileNeedsCallScan {
+			fsharpModulePathBySymbolID, fsharpDeclaredModulePaths = fsharpProjectModulePathBySymbolID, fsharpProjectDeclaredModulePaths
+			// Module abbreviations and value bindings are file-scoped, so this
+			// is read per file rather than merged into the project-wide map.
+			// They keep their positions: which of them shadows a qualifier is a
+			// question each call block answers for itself, below.
+			fsharpShadowBindings = fsharpFileShadowBindings(content)
 		}
 		var fsharpCallableNames map[string]bool
 		if file.Language == "F#" && fileNeedsCallScan {
@@ -3654,8 +5385,8 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			swiftTypes = swiftFileTypeInfo(content)
 		}
 		for _, from := range currentFileSymbols {
-			if shouldStop != nil && shouldStop() {
-				return
+			if shouldStop() {
+				return result
 			}
 			block := symbolBlockFromLines(lines, from)
 			if file.Language == "JavaScript" || file.Language == "TypeScript" || file.Language == "Julia" {
@@ -3698,6 +5429,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			} else if fileNeedsCallScan && !typeLikeKind(from.Kind) {
 				callBlock := block
+				if file.Language == "F#" && from.Kind == "module" {
+					// A module's block spans its members, so scanning it whole
+					// credits the module with the calls its FUNCTIONS make.
+					// Its own initialisation code is what is left once those
+					// are blanked out, and it is the only scan that can see it.
+					callBlock = fsharpModuleInitBlock(lines, from, currentFileSymbols)
+				}
 				if file.Language == "Rust" {
 					callBlock = stripRustCodegenMacroBodies(block)
 				}
@@ -3721,6 +5459,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				callNames := callLikeIdentifiers(callBlock, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
+				fsharpCallQualifiers := map[string]map[string]struct{}{}
 				var juliaLocalBindings map[string]struct{}
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
@@ -3777,9 +5516,48 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				if file.Language == "F#" {
 					// F# module-qualified calls (`UpdateProcess.SmartInstall(...)`,
 					// `LoadingScripts.ScriptGeneration.constructScriptsFromData(...)`)
-					// hide the target behind a dotted path.
-					for name := range fsharpDottedCallIdentifiers(callBlock) {
+					// hide the target behind a dotted path; forward pipes
+					// (`value |> normalize`) apply a function by juxtaposition, with
+					// no dot and no parentheses, so neither the dotted scanners nor
+					// the generic `name(` one sees them. Resolution matches on the
+					// name, but the qualifier is kept so a call naming a module this
+					// file declares stays inside it.
+					masked := maskFSharpBlockComments(callBlock)
+					// Shadowing is lexical AND ordered, so it is answered per
+					// call SITE: only the file's bindings that reach the line a
+					// call is written on may un-qualify it. A binding local to a
+					// sibling function, written below the block, or written
+					// below the call inside this very block, is not in scope
+					// there and leaves the qualifier alone.
+					fsharpShadowedQualifiers := fsharpShadowsAt(fsharpShadowBindings, masked, from.StartLine)
+					// An unqualified call written with parentheses (`convert(x)`)
+					// has no dot and no pipe, so only the generic scanner above
+					// sees it and it reached no qualifier record. A block holding
+					// both `A.convert(x)` and `convert(x)` was then restricted to
+					// A, and the bare site -- which meant this module's own
+					// `convert` -- resolved to A's. Record the generic names
+					// first, unqualified, exactly as a bare pipe target is
+					// recorded, so both spellings of a bare call clear the
+					// restriction alike. They are read from the masked block for
+					// the same reason the targets are: a call inside `(* ... *)`
+					// is not a call site.
+					for name := range callLikeIdentifiers(masked, file.Language) {
+						// A bare spelling carries no qualifier to shadow, so no
+						// binding can change what it records.
+						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, nil, name, name)
+					}
+					for target, offsets := range fsharpCallTargetSites(masked) {
+						name := lastDottedCallSegment(target)
+						if name == "" {
+							continue
+						}
 						callNames[name] = struct{}{}
+						// One record per SIGHTING: the same spelling written
+						// above and below a binding of its head is two call
+						// sites with two different answers.
+						for _, offset := range offsets {
+							recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers(offset), name, target)
+						}
 					}
 					// Plain juxtaposition (`add ledger amount`) is F#'s ordinary
 					// call syntax and has neither a dot, a pipe nor parentheses
@@ -3789,6 +5567,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// file — an unrecognized name is never guessed into a call.
 					for name := range fsharpJuxtapositionCallIdentifiers(callBlock, fsharpCallableNames) {
 						callNames[name] = struct{}{}
+						// Juxtaposition is a bare spelling just like convert(x).
+						// Keep it beside any A.convert sighting with the same
+						// terminal name instead of inheriting A's restriction.
+						recordFSharpCallQualifier(fsharpCallQualifiers, fsharpDeclaredModulePaths, nil, name, name)
 					}
 				}
 				if file.Language == "Lua" {
@@ -3889,6 +5671,31 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						targets = resolveJSNamespaceCallChain(name, from, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, func(terminal string) bool {
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
+					} else if quals := fsharpResolvableQualifiers(fsharpCallQualifiers[name]); len(quals) > 0 {
+						// One resolution per SPELLING, not one per name: with both
+						// `A.convert` and `B.convert` written in this caller, a single
+						// entry had to pick one module or neither, and picking neither
+						// left `resolveCallTargets` choosing the same-file definition
+						// nearest the call site -- one real call dropped and the
+						// survivor decided by line distance rather than by what was
+						// written. A bare sighting is a spelling too, resolved
+						// unrestricted BESIDE the qualified ones rather than
+						// cancelling them. Targets are de-duplicated because two
+						// qualifiers may name the same module by different relative
+						// paths, and because a bare and a qualified sighting can agree.
+						seenTargets := map[string]bool{}
+						for _, qualifier := range quals {
+							for _, to := range resolveCallTargets(name, from,
+								fsharpQualifiedScope(symbolsByShortName[name], qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
+								fsharpQualifiedScope(currentFileSymbols, qualifier, fsharpModulePathBySymbolID[from.ID], fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
+								callImportsByName, false) {
+								if seenTargets[to.ID] {
+									continue
+								}
+								seenTargets[to.ID] = true
+								targets = append(targets, to)
+							}
+						}
 					} else {
 						targets = resolveCallTargetsWithRawImport(name, from, sharedTypeCandidates(from, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
 						juliaTargets, found, blocked := resolveJuliaSameContainerMethodCallTargets(name, from, currentFileSymbols, juliaLocalBindings)
@@ -3993,8 +5800,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			callableSymbol := !typeLikeKind(from.Kind)
+			// One stripped copy of this symbol, read by every generic scanner
+			// below. Behind the union of their guards, and behind the callable
+			// test all of them apply, so a profile that runs none of them and a
+			// symbol none of them look at both still cost nothing.
+			var body symbolBody
+			if callableSymbol && (needsAsyncCalls || needsDataFlow || needsFields || spec.callResolution == "full") {
+				body = newSymbolBody(block)
+			}
 			if needsAsyncCalls && callableSymbol {
-				for _, name := range asyncCallNames(block) {
+				for _, name := range asyncCallNames(body) {
 					if name == from.Name {
 						continue
 					}
@@ -4056,7 +5871,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				// paid for. Revisit if a corpus shows it is not rare.
 				edgeOrder := []string{}
 				flowsByEdge := map[string]*RelationRecord{}
-				for _, flow := range returnFlowCalls(block, symbolFlowParameterNames(from)) {
+				for _, flow := range returnFlowCalls(body, symbolFlowParameterNames(from)) {
 					if flow.Name == from.Name {
 						continue
 					}
@@ -4178,7 +5993,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						WarningCodes: []string{},
 					}
 					emit(relation)
-					routeHandlers[route] = append(routeHandlers[route], from)
+					result.routeHandlers = append(result.routeHandlers, routeHandlerEntry{route: route, handler: from})
 				}
 			}
 			if fileNeedsHTTPScan && callableSymbol {
@@ -4207,7 +6022,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						WarningCodes: []string{},
 					}
 					emit(relation)
-					httpCallsByRoute[call.Path] = append(httpCallsByRoute[call.Path], relation)
+					result.httpCalls = append(result.httpCalls, httpCallEntry{route: call.Path, relation: relation})
 				}
 			}
 			if fileNeedsChannelScan {
@@ -4271,15 +6086,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// symbol still reached it and matched a `x.y(...)` shape anywhere
 			// in the file against another language's methods.
 			if spec.callResolution == "full" && callExtractionLanguage(file.Language) {
-				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, implementersByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, typeScriptPropTypes, fieldsByContainer, swiftTypes) {
+				for _, r := range receiverCallRelations(from, body, methodsByContainer, superContainerByID, implementersByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModules, goFileImportIndex, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, typeScriptPropTypes, fieldsByContainer, swiftTypes) {
 					emit(r)
 				}
-				for _, r := range importedReceiverCallRelations(from, block, importsByName, symbolsByShortName) {
+				for _, r := range importedReceiverCallRelations(from, body, importsByName, symbolsByShortName) {
 					emit(r)
 				}
 			}
 			if needsFields {
-				for _, r := range fieldAccessRelations(from, block, fieldsByContainer, symbolsByShortName) {
+				for _, r := range fieldAccessRelations(from, body, fieldsByContainer, symbolsByShortName) {
 					emit(r)
 				}
 			}
@@ -4328,6 +6143,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
+				topLevelFSharpQualifiers := map[string]map[string]struct{}{}
 				if file.Language == "Julia" {
 					topLevelNames = juliaCallIdentifiers(topLevel)
 				}
@@ -4352,8 +6168,30 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				if file.Language == "F#" {
-					for name := range fsharpDottedCallIdentifiers(topLevel) {
+					// Statement-position pipelines (`"x" |> normalize |> ignore` in an
+					// .fsx script, or in a module body) are bound to no symbol, so the
+					// per-symbol scan above never sees them.
+					masked := maskFSharpBlockComments(topLevel)
+					// The top-level block spans the file with every symbol's
+					// lines blanked, so it is already in file coordinates and a
+					// binding buried in a function body covers only lines that
+					// hold no top-level call site.
+					fsharpShadowedQualifiers := fsharpShadowsAt(fsharpShadowBindings, masked, 1)
+					// Same as the per-symbol path: a parenthesised bare call is
+					// seen only by the generic scanner, so it has to clear the
+					// qualifier here too, and it carries no qualifier to shadow.
+					for name := range callLikeIdentifiers(masked, file.Language) {
+						recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, nil, name, name)
+					}
+					for target, offsets := range fsharpCallTargetSites(masked) {
+						name := lastDottedCallSegment(target)
+						if name == "" {
+							continue
+						}
 						topLevelNames[name] = struct{}{}
+						for _, offset := range offsets {
+							recordFSharpCallQualifier(topLevelFSharpQualifiers, fsharpDeclaredModulePaths, fsharpShadowedQualifiers(offset), name, target)
+						}
 					}
 				}
 				if file.Language == "Lua" {
@@ -4408,6 +6246,24 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// file-level pseudo-symbol has no self-call or member names
 						// to exclude, so the terminal fallback is unguarded.
 						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
+					} else if quals := fsharpResolvableQualifiers(topLevelFSharpQualifiers[name]); len(quals) > 0 {
+						// Same as the per-symbol path: each spelling resolves on its
+						// own, so a statement-position `1 |> A.convert |> B.convert`
+						// keeps both edges and a file that writes `convert(1)` as
+						// well as `A.convert(2)` keeps both of those.
+						seenTargets := map[string]bool{}
+						for _, qualifier := range quals {
+							for _, to := range resolveCallTargets(name, fileSource,
+								fsharpQualifiedScope(symbolsByShortName[name], qualifier, "", fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
+								fsharpQualifiedScope(currentFileSymbols, qualifier, "", fsharpModulePathBySymbolID, fsharpDeclaredModulePaths),
+								importsByName, false) {
+								if seenTargets[to.ID] {
+									continue
+								}
+								seenTargets[to.ID] = true
+								targets = append(targets, to)
+							}
+						}
 					} else {
 						targets = resolveCallTargetsWithRawImport(name, fileSource, sharedTypeCandidates(fileSource, symbolsByShortName[name]), rawCandidates, rawImportModuleSets, currentFileSymbols, importsForCall, false)
 					}
@@ -4450,7 +6306,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		if needsTypes {
 			for _, r := range typeRelationsForFile(repoKey, file, content, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName) {
 				if r.Type == "EXTENDS" || r.Type == "IMPLEMENTS" {
-					inheritanceEdges = append(inheritanceEdges, r)
+					result.inheritance = append(result.inheritance, r)
 				}
 				emit(r)
 			}
@@ -4459,6 +6315,46 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			for _, r := range extensionMemberRelations(repoKey, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName) {
 				emit(r)
 			}
+		}
+		return result
+	}
+	// Syntax-only resolves no content-derived relations, so it runs no scan at
+	// all rather than starting workers that would each return nothing.
+	if profileNeedsPerFileScan(spec) {
+		scanErr := runIndexedStreamingPipeline(ctx, len(files), workers,
+			func(workerCtx context.Context, index int, stream func(RelationRecord)) fileRelationScan {
+				return resolveFileRelations(workerCtx, files[index], stream)
+			},
+			func(_ int, relation RelationRecord) error {
+				if shouldStop != nil && shouldStop() {
+					return errRelationScanStopped
+				}
+				emit(relation)
+				return nil
+			},
+			func(index int, scanned fileRelationScan) error {
+				if shouldStop != nil && shouldStop() {
+					return errRelationScanStopped
+				}
+				if recordFailure != nil {
+					for _, failure := range scanned.failures {
+						recordFailure(failure)
+					}
+				}
+				if scanned.resolvedImports != nil {
+					resolvedImportsByFile[files[index].Path] = scanned.resolvedImports
+				}
+				for _, entry := range scanned.routeHandlers {
+					routeHandlers[entry.route] = append(routeHandlers[entry.route], entry.handler)
+				}
+				for _, entry := range scanned.httpCalls {
+					httpCallsByRoute[entry.route] = append(httpCallsByRoute[entry.route], entry.relation)
+				}
+				inheritanceEdges = append(inheritanceEdges, scanned.inheritance...)
+				return nil
+			})
+		if scanErr != nil {
+			return
 		}
 	}
 
@@ -5205,17 +7101,23 @@ func collectPackageVarTypes(content string) map[string]pkgQualType {
 }
 
 // resolveQualifiedType picks the type-like symbol for a package-qualified
-// reference by the Go convention that a package's import alias equals its
-// directory basename (json.Encoder -> the Encoder in .../json/). Requires a
-// unique match so an ambiguous alias resolves to nothing rather than wrongly.
-func resolveQualifiedType(from SymbolRecord, qt pkgQualType, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
+// reference. The written qualifier is only a spelling: `import foo "m/realpkg"`
+// binds foo to realpkg, and a different in-module package whose directory is
+// literally foo/ is an unrelated package. So when the file's imports resolve the
+// qualifier, the candidate's directory must match that import PATH; the Go
+// convention that a qualifier equals a directory basename (json.Encoder -> the
+// Encoder in .../json/) only stands in when the qualifier is unresolved.
+// Requires a unique match so an ambiguous qualifier resolves to nothing rather
+// than wrongly.
+func resolveQualifiedType(from SymbolRecord, qt pkgQualType, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord, goModules goModuleIndex) (SymbolRecord, bool) {
+	importPaths := importsByName[qt.alias]
 	var match SymbolRecord
 	found := 0
 	for _, cand := range sharedTypeCandidates(from, symbolsByShortName[qt.typeName]) {
 		if !typeLikeKind(cand.Kind) {
 			continue
 		}
-		if filepath.Base(filepath.Dir(filepath.ToSlash(cand.FilePath))) == qt.alias {
+		if qualifiedTypeDirMatches(cand.FilePath, qt.alias, goModules, importPaths) {
 			match = cand
 			found++
 		}
@@ -5226,7 +7128,46 @@ func resolveQualifiedType(from SymbolRecord, qt pkgQualType, symbolsByShortName 
 	return SymbolRecord{}, false
 }
 
-func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, implementersByContainer map[string][]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes, typeScriptPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord, swiftTypes swiftFileTypes) []RelationRecord {
+// qualifiedTypeDirMatches reports whether a declaration's directory is the
+// package a qualifier names.
+//
+// With resolved import paths the import must be one a MODULE OF THIS REPOSITORY
+// owns, and the declaration's repo-relative directory must be exactly the part
+// of that path below its module — the layout Go requires of an in-module
+// package. A path SUFFIX is not that test: `foo "external.example/realpkg"` ends
+// in `/realpkg`, so a suffix rule let a third-party import bind the repository's
+// own `realpkg/` directory and emit a CALLS edge into a package the file never
+// imported. An import outside every module in the repository resolves to
+// nothing, because no repository symbol can be its declaration.
+//
+// The owning module is resolved per directory rather than assumed to be the root
+// one. A repository may hold several go.mod files (a tools/ module, a local
+// `replace` target, a test module), and each re-roots the import paths beneath
+// it: with tools/go.mod declaring example.com/tool, tools/lib is
+// example.com/tool/lib. Keying that directory off the ROOT module produced
+// <root-module>/tools/lib, matched no import, and deleted every qualified
+// receiver edge into a nested module.
+//
+// With no resolved path for the qualifier the alias-equals-basename convention
+// (json.Encoder -> the Encoder in .../json/) is all the evidence there is.
+func qualifiedTypeDirMatches(filePath, alias string, goModules goModuleIndex, importPaths []string) bool {
+	dir := normalizeRepoDir(filepath.Dir(filepath.ToSlash(filePath)))
+	if len(importPaths) == 0 {
+		return dir != "" && path.Base(dir) == alias
+	}
+	want, ok := goModules.importPathFor(dir)
+	if !ok {
+		return false
+	}
+	for _, importPath := range importPaths {
+		if strings.Trim(filepath.ToSlash(importPath), "/") == want {
+			return true
+		}
+	}
+	return false
+}
+
+func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, implementersByContainer map[string][]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModules goModuleIndex, goImports *goFileImports, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes, typeScriptPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord, swiftTypes swiftFileTypes) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
@@ -5234,14 +7175,17 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// Multi-line verbatim (@"...") and raw ("""...""") string bodies pass
 		// through the generic stripper (which contains string masking to one
 		// line), so SQL/text blocks would feed every extractor below.
-		block = maskCSharpTextBlocks(block)
+		body = body.masked(maskCSharpTextBlocks(body.text))
 	}
 	if from.Language == "Swift" {
 		// Multiline string bodies ("""...""") likewise span lines and would
 		// feed every extractor below through the line-scoped generic stripper.
-		block = maskSwiftMultilineStrings(block)
+		body = body.masked(maskSwiftMultilineStrings(body.text))
 	}
-	calls := receiverCalls(block)
+	// The language-specific scanners below take the text and strip it their own
+	// way, behind their own masks. Only the generic ones share body's copy.
+	block := body.text
+	calls := receiverCalls(body)
 	allReceiverCalls := calls
 	if from.Language == "Dart" {
 		// Dart property assignment invokes a setter method when one exists
@@ -5259,12 +7203,12 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// fallback — receiver-agnostic by construction — sees every pair.
 		calls = csharpNonTailReceiverCalls(block)
 	}
-	chainedCalls := chainedConstructorCalls(block)
-	returnedCalls := returnedReceiverCalls(block)
-	chainedReturnCalls := chainedConstructorReturnCalls(block)
-	deepChainedReturnCalls := chainedConstructorDeepReturnCalls(block)
-	returnedChainCalls := returnedReceiverChainCalls(block)
-	returnedDeepChainCalls := returnedReceiverDeepChainCalls(block)
+	chainedCalls := chainedConstructorCalls(body)
+	returnedCalls := returnedReceiverCalls(body)
+	chainedReturnCalls := chainedConstructorReturnCalls(body)
+	deepChainedReturnCalls := chainedConstructorDeepReturnCalls(body)
+	returnedChainCalls := returnedReceiverChainCalls(body)
+	returnedDeepChainCalls := returnedReceiverDeepChainCalls(body)
 	var rubyBareCalls []string
 	if from.Language == "Ruby" {
 		// Ruby call sites often omit parentheses and method names may end in
@@ -5358,7 +7302,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
-	localTypes := localVarTypes(block)
+	localTypes := localVarTypes(body)
 	// perlVarTypes holds Perl-inferred receiver types. They are kept OUT of the
 	// shared localTypes/varTypes maps so a Perl package name can never resolve a
 	// receiver call in another language's context (and vice versa); only the
@@ -5443,9 +7387,12 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if _, isParameter := varTypes[name]; isParameter {
 				continue
 			}
-			if _, exists := localTypes[name]; !exists {
-				localTypes[name] = typeName
-			}
+			// The declared left-hand type is authoritative and must replace the
+			// generic constructor inference. For `acct::Ledger* ledger = new
+			// acct::Ledger()` the generic `new T` scanner records the first path
+			// segment (`acct`), while the C++ declaration scanner deliberately
+			// records the terminal type (`Ledger`) used by the symbol index.
+			localTypes[name] = typeName
 		}
 	}
 	if from.Language == "TypeScript" {
@@ -5506,13 +7453,13 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
-	factoryTypes := factoryReturnVarTypes(block, from.FilePath, returnTypesBySymbolNameAndFile)
+	factoryTypes := factoryReturnVarTypes(body, from.FilePath, returnTypesBySymbolNameAndFile)
 	if from.Language == "Go" {
 		// Multi-value assignments (`cmd, flags, err := c.Find(args)`) type
 		// their first variable from the callee's declared first result; the
 		// generic factory-assignment scan matches only single-variable,
 		// unqualified factories.
-		for name, typeName := range goMultiAssignReturnVarTypes(block, from, symbolsByShortName) {
+		for name, typeName := range goMultiAssignReturnVarTypes(body, from, symbolsByShortName) {
 			if _, exists := factoryTypes[name]; !exists {
 				factoryTypes[name] = typeName
 			}
@@ -5616,14 +7563,14 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
-	importedReceiverVars := importedReceiverVarTypes(from.Signature, block, importsByName, goModule)
+	importedReceiverVars := importedReceiverVarTypes(from.Signature, body, importsByName, goModules)
 	// Receivers declared with an in-module package-qualified type
 	// (`comm communicator.Communicator`). parameterVarTypes cannot see these, so
 	// without this tier an interface-typed parameter — the ordinary way Go passes
 	// a collaborator — carries no receiver type at all.
 	goQualifiedReceiverVars := map[string]pkgQualType{}
 	if from.Language == "Go" {
-		goQualifiedReceiverVars = goInModuleQualifiedReceiverTypes(from.Signature, block, importsByName, goModule)
+		goQualifiedReceiverVars = goInModuleQualifiedReceiverTypes(from.Signature, body, importsByName, goModules)
 	}
 	deepReturnedCallSuffixes := receiverDeepChainSuffixes(deepChainedReturnCalls, returnedDeepChainCalls)
 	paramTypes := parameterVarTypes(from.Signature)
@@ -5769,7 +7716,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// convention resolveQualifiedType already encodes) so the method
 				// lookup below runs against the right declaration. For an interface
 				// that declaration's members are its method requirements.
-				sym, ok := resolveQualifiedType(from, qt, symbolsByShortName)
+				sym, ok := resolveQualifiedType(from, qt, importsByName, symbolsByShortName, goModules)
 				if !ok {
 					continue
 				}
@@ -5781,7 +7728,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				// Package-level var of a package-qualified type (alias.Type). Resolve
 				// the specific imported type so an ambiguous bare name (Encoder in
 				// both json and cbor) maps to the right one.
-				sym, ok := resolveQualifiedType(from, qt, symbolsByShortName)
+				sym, ok := resolveQualifiedType(from, qt, importsByName, symbolsByShortName, goModules)
 				if !ok {
 					continue
 				}
@@ -5856,6 +7803,13 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 		if !ok || method.ID == from.ID {
 			continue
+		}
+		if definition, found := cPlusPlusOutOfLineDefinition(method, symbolsByShortName[method.Name]); found {
+			// The receiver resolved to a header's in-class DECLARATION. The code
+			// that runs is the out-of-line definition in the .cpp, so point the
+			// edge there: leaving it on the declaration hides the implementation
+			// from its own callers and from impact.
+			method = definition
 		}
 		if inherited {
 			// Resolved on a base class, not the receiver's own type. Still a real
@@ -7028,7 +8982,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			break
 		}
 	}
-	return appendGoInterfaceImplementationCalls(relations, from, symbolsByShortName, methodsByContainer)
+	return appendGoInterfaceImplementationCalls(relations, from, symbolsByShortName, methodsByContainer, goImports)
 }
 
 func receiverQualifiedMethodTarget(from SymbolRecord, call receiverCall, candidates []SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) (SymbolRecord, float64, string, string, string, bool) {
@@ -7105,7 +9059,7 @@ func goInterfaceRequirementMethod(symbol SymbolRecord) bool {
 //
 // The interface-method edge itself is always emitted by the caller; this is only
 // the extra implementation hop.
-func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortName map[string][]SymbolRecord, methodsByContainer map[string]map[string]SymbolRecord) []SymbolRecord {
+func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortName map[string][]SymbolRecord, methodsByContainer map[string]map[string]SymbolRecord, goImports *goFileImports) []SymbolRecord {
 	if !goInterfaceRequirementMethod(ifaceMethod) || ifaceMethod.ContainerID == "" {
 		return nil
 	}
@@ -7144,7 +9098,8 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 		implMembers := methodsByContainer[candidate.ContainerID]
 		satisfied := true
 		for _, requirement := range requirements {
-			if _, ok := implMembers[requirement]; !ok {
+			implMember, ok := implMembers[requirement]
+			if !ok || !goImports.signaturesMatch(members[requirement], implMember) {
 				satisfied = false
 				break
 			}
@@ -7169,6 +9124,163 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 		return out[i].StartLine < out[j].StartLine
 	})
 	return out
+}
+
+// goMethodSignaturesMatch compares signatures using only explicit import evidence.
+// The relation path also supplies package declarations through goFileImports.
+func goMethodSignaturesMatch(requirement, implementation string, requirementImports, implementationImports map[string]string) bool {
+	return compareGoSignatures(requirement, implementation,
+		&goTypeScope{imports: requirementImports}, &goTypeScope{imports: implementationImports}) == goTypeMatch
+}
+
+// goNormalizedMethodSignature renders a Go method signature — an interface
+// requirement (`Upload(path string, r io.Reader) error`) or a concrete
+// declaration (`func (c *Communicator) Upload(path string, r io.Reader) error`)
+// — as `(paramTypes)(resultTypes)`. The receiver, the method name and every
+// parameter/result name are dropped. It declines (false) on a generic
+// type-parameter list and on any list it cannot split into types.
+func goNormalizedMethodSignature(signature string) (string, bool) {
+	rest := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(signature), "{"))
+	if after, ok := strings.CutPrefix(rest, "func"); ok {
+		rest = strings.TrimSpace(after)
+		if strings.HasPrefix(rest, "(") { // method receiver
+			closing := matchingParen(rest, 0)
+			if closing < 0 {
+				return "", false
+			}
+			rest = strings.TrimSpace(rest[closing+1:])
+		}
+	}
+	name := 0
+	for name < len(rest) && identifierByte(rest[name]) && rest[name] != '.' {
+		name++
+	}
+	if name == 0 {
+		return "", false
+	}
+	rest = strings.TrimSpace(rest[name:])
+	if strings.HasPrefix(rest, "[") { // generic method: decline rather than guess
+		return "", false
+	}
+	if !strings.HasPrefix(rest, "(") {
+		return "", false
+	}
+	closing := matchingParen(rest, 0)
+	if closing < 0 {
+		return "", false
+	}
+	params, ok := goSignatureTypeList(rest[1:closing])
+	if !ok {
+		return "", false
+	}
+	results := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rest[closing+1:]), "{"))
+	if strings.HasPrefix(results, "(") {
+		end := matchingParen(results, 0)
+		if end < 0 || strings.TrimSpace(results[end+1:]) != "" {
+			return "", false
+		}
+		results = results[1:end]
+	}
+	resultTypes, ok := goSignatureTypeList(results)
+	if !ok {
+		return "", false
+	}
+	return "(" + strings.Join(params, ",") + ")(" + strings.Join(resultTypes, ",") + ")", true
+}
+
+// goSignatureTypeList reduces a Go parameter or result list to its types. Go
+// requires a list to be entirely named or entirely unnamed, so one part of the
+// form `ident <type>` marks the whole list named; in a named list a bare
+// identifier is a grouped name that borrows the type declared to its right
+// (`a, b string`).
+func goSignatureTypeList(list string) ([]string, bool) {
+	list = strings.TrimSpace(list)
+	if list == "" {
+		return nil, true
+	}
+	parts := splitTopLevelParameters(list)
+	named := false
+	for _, part := range parts {
+		if _, _, ok := goNamedParamSplit(part); ok {
+			named = true
+			break
+		}
+	}
+	types := make([]string, len(parts))
+	if !named {
+		for i, part := range parts {
+			typeText := goCanonicalTypeText(part)
+			if typeText == "" {
+				return nil, false
+			}
+			types[i] = typeText
+		}
+		return types, true
+	}
+	pending := ""
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := strings.TrimSpace(parts[i])
+		if _, typeText, ok := goNamedParamSplit(part); ok {
+			pending = goCanonicalTypeText(typeText)
+		} else if !isTypeName(part) {
+			// In a named list every remaining part must be a grouped name.
+			return nil, false
+		}
+		if pending == "" {
+			return nil, false
+		}
+		types[i] = pending
+	}
+	return types, true
+}
+
+// goTypeLeadKeywords are the words that open a type expression, so a part
+// beginning with one (`chan int`, `func(int) error`) is an unnamed type and not
+// a `name type` pair.
+var goTypeLeadKeywords = map[string]bool{"chan": true, "func": true, "map": true, "struct": true, "interface": true}
+
+// goNamedParamSplit splits `name type` when the part is unambiguously that.
+func goNamedParamSplit(part string) (string, string, bool) {
+	part = strings.TrimSpace(part)
+	i := 0
+	for i < len(part) && identifierByte(part[i]) && part[i] != '.' {
+		i++
+	}
+	if i == 0 || i >= len(part) || (part[i] != ' ' && part[i] != '\t') {
+		return "", "", false
+	}
+	name := part[:i]
+	if goTypeLeadKeywords[name] {
+		return "", "", false
+	}
+	typeText := strings.TrimSpace(part[i:])
+	if typeText == "" {
+		return "", "", false
+	}
+	return name, typeText, true
+}
+
+// goCanonicalTypeText drops whitespace that is not separating two identifier
+// characters, so `map[string] int` and `map[string]int` compare equal while
+// `chan int` keeps its word break.
+func goCanonicalTypeText(text string) string {
+	var out strings.Builder
+	prevIdent, pendingSpace := false, false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			pendingSpace = out.Len() > 0
+			continue
+		}
+		cur := identifierByte(c)
+		if pendingSpace && prevIdent && cur {
+			out.WriteByte(' ')
+		}
+		pendingSpace = false
+		out.WriteByte(c)
+		prevIdent = cur
+	}
+	return out.String()
 }
 
 // uniqueGoConcreteMethodByShortName is uniqueMethodByShortName restricted to Go
@@ -7217,7 +9329,7 @@ func goMethodSymbolByID(id string, symbolsByShortName map[string][]SymbolRecord)
 // never rewritten — this is purely additive, and the interface node keeps the
 // incoming edge that used to be impossible (a Go interface had no method symbols
 // at all, so terraform's communicator.Communicator was a dead end).
-func appendGoInterfaceImplementationCalls(relations []RelationRecord, from SymbolRecord, symbolsByShortName map[string][]SymbolRecord, methodsByContainer map[string]map[string]SymbolRecord) []RelationRecord {
+func appendGoInterfaceImplementationCalls(relations []RelationRecord, from SymbolRecord, symbolsByShortName map[string][]SymbolRecord, methodsByContainer map[string]map[string]SymbolRecord, goImports *goFileImports) []RelationRecord {
 	if from.Language != "Go" || len(relations) == 0 {
 		return relations
 	}
@@ -7240,7 +9352,7 @@ func appendGoInterfaceImplementationCalls(relations []RelationRecord, from Symbo
 		if !ok {
 			continue
 		}
-		for _, impl := range goInterfaceImplementationMethods(ifaceMethod, symbolsByShortName, methodsByContainer) {
+		for _, impl := range goInterfaceImplementationMethods(ifaceMethod, symbolsByShortName, methodsByContainer, goImports) {
 			if impl.ID == from.ID || existing[impl.ID] {
 				continue
 			}
@@ -7280,6 +9392,280 @@ func appendGoInterfaceImplementationCalls(relations []RelationRecord, from Symbo
 // uniqueMethodByShortName returns the sole method whose short name matches, if
 // exactly one method (across the workspace) carries that name. Used as a
 // last-resort receiver.method() resolver when the receiver type is unknown.
+// signatureNamesQualifiedMethod reports whether signature writes
+// `Container::Name` as a whole qualified name.
+//
+// A raw substring test is wrong in both directions. It matches too much --
+// `BA::foo` contains `A::foo`, so an unrelated class's definition was accepted
+// as the out-of-line body and produced a false CALLS edge -- and too little,
+// because a template definition is spelled `A<T>::foo` and never contains the
+// bare `A::foo` at all, leaving those calls pointed at the bodyless
+// declaration. Both are the same mistake: treating a qualified name as text
+// rather than as tokens.
+func signatureNamesQualifiedMethod(signature, container, name string) bool {
+	ownerParts := strings.Split(container, "::")
+	if len(ownerParts) == 0 || ownerParts[0] == "" {
+		return false
+	}
+	for offset := 0; ; {
+		index := strings.Index(signature[offset:], ownerParts[0])
+		if index < 0 {
+			return false
+		}
+		start := offset + index
+		offset = start + len(ownerParts[0])
+		// The container must start a token: `BA::foo` must not match `A::foo`.
+		if start > 0 && isIdentifierByte(signature[start-1]) {
+			continue
+		}
+		// It must also start the owner qualification, not merely a suffix of
+		// one: owner `a::Ledger` must not match `x::a::Ledger`. Whitespace is
+		// legal around `::`, so inspect the trimmed prefix.
+		if strings.HasSuffix(strings.TrimRight(signature[:start], " \t\r\n"), "::") {
+			continue
+		}
+		rest := signature[offset:]
+		matched := true
+		for index, part := range append(ownerParts[1:], name) {
+			rest = strings.TrimLeft(rest, " \t\r\n")
+			// Every owner segment may carry template arguments in the
+			// definition (`Outer<T>::Inner<U>::foo`).
+			if strings.HasPrefix(rest, "<") {
+				after, closed := skipBalancedAngles(rest)
+				if !closed {
+					matched = false
+					break
+				}
+				rest = strings.TrimLeft(after, " \t\r\n")
+			}
+			if !strings.HasPrefix(rest, "::") {
+				matched = false
+				break
+			}
+			rest = strings.TrimLeft(rest[2:], " \t\r\n")
+			if !strings.HasPrefix(rest, part) {
+				matched = false
+				break
+			}
+			rest = rest[len(part):]
+			if index < len(ownerParts)-1 && len(rest) > 0 && isIdentifierByte(rest[0]) {
+				matched = false
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		// The name must end a token, so `A::foobar` does not match `A::foo`.
+		if rest == "" || !isIdentifierByte(rest[0]) {
+			return true
+		}
+	}
+}
+
+// skipBalancedAngles returns the text following the template argument list that
+// begins at text[0] == '<', and whether that list was closed. Angle brackets
+// nest, so the list ends at the bracket that matches the opening one -- the
+// SECOND `>` of `<std::vector<T>>` -- and a depth count is the only way to find
+// it. `>>` is two ordinary `>` bytes here, so the C++11 spelling and the
+// spaced-out `> >` both close at the same depth.
+func skipBalancedAngles(text string) (string, bool) {
+	depth := 0
+	parens, brackets, braces := 0, 0, 0
+	var quote byte
+	escaped := false
+	for i := 0; i < len(text); i++ {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if text[i] == '\\' {
+				escaped = true
+				continue
+			}
+			if text[i] == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch text[i] {
+		case '\'', '"':
+			quote = text[i]
+		case '(':
+			parens++
+		case ')':
+			if parens > 0 {
+				parens--
+			}
+		case '[':
+			brackets++
+		case ']':
+			if brackets > 0 {
+				brackets--
+			}
+		case '{':
+			braces++
+		case '}':
+			if braces > 0 {
+				braces--
+			}
+		case '<':
+			if parens == 0 && brackets == 0 && braces == 0 {
+				depth++
+			}
+		case '>':
+			if parens == 0 && brackets == 0 && braces == 0 {
+				depth--
+				if depth == 0 {
+					return text[i+1:], true
+				}
+			}
+		}
+	}
+	return text, false
+}
+
+// cPlusPlusOutOfLineDefinition returns the definition that a bodyless C++
+// in-class method declaration stands for. A header declares
+// `int Add(int) const;` inside `class Ledger` and the .cpp defines
+// `int Ledger::Add(int) const { ... }`; tree-sitter-cpp gives that qualified
+// definition no container, so it parses as a file-scope function and never
+// reaches methodsByContainer. A typed receiver therefore resolves `l.Add(3)` to
+// the DECLARATION — a symbol with no body — which hides the implementation's
+// callers and makes impact on the real code report nothing.
+//
+// The definition is identified by naming this container explicitly: the
+// candidate is a non-bodyless C++ callable of the same short name whose
+// AST declarator and lexical namespace name `Container::Name`. Anything less certain is refused — two
+// such definitions are overloads the name-keyed method index cannot tell apart,
+// and the declaration is then the honest target.
+func cPlusPlusOutOfLineDefinition(declaration SymbolRecord, candidates []SymbolRecord) (SymbolRecord, bool) {
+	if !declaration.bodyless || declaration.Language != "C++" || declaration.Name == "" {
+		return SymbolRecord{}, false
+	}
+	owners := declaration.cPlusPlusOwners
+	if len(owners) == 0 {
+		owners = []string{containerName(declaration.QualifiedName)}
+	}
+	if len(owners) == 0 || owners[0] == "" {
+		return SymbolRecord{}, false
+	}
+	var definition SymbolRecord
+	found := 0
+	for _, candidate := range candidates {
+		if candidate.bodyless || candidate.Language != "C++" || candidate.ID == declaration.ID {
+			continue
+		}
+		if candidate.Name != declaration.Name {
+			continue
+		}
+		ownerMatches := false
+		for _, owner := range owners {
+			if signatureNamesQualifiedMethodPattern(candidate.cPlusPlusDefinitionName, owner, declaration.Name) {
+				ownerMatches = true
+				break
+			}
+		}
+		if !ownerMatches {
+			continue
+		}
+		found++
+		if found > 1 {
+			return SymbolRecord{}, false
+		}
+		definition = candidate
+	}
+	return definition, found == 1
+}
+
+// signatureNamesQualifiedMethodPattern matches the private owner pattern built
+// by cPlusPlusDeclarationOwners. A NUL-prefixed segment is an inline namespace
+// and may be present or omitted. Matching uses memoized (segment, remainder)
+// states, so deeply nested inline namespaces stay linear in the signature size
+// rather than expanding into 2^N owner aliases.
+func signatureNamesQualifiedMethodPattern(signature, pattern, name string) bool {
+	if !strings.Contains(pattern, "\x00") {
+		return signatureNamesQualifiedMethod(signature, pattern, name)
+	}
+	parts := strings.Split(pattern, "::")
+	type state struct{ part, remaining int }
+	memo := map[state]bool{}
+	seen := map[state]bool{}
+	var matchTail func(string, int) bool
+	matchTail = func(rest string, index int) bool {
+		key := state{part: index, remaining: len(rest)}
+		if seen[key] {
+			return memo[key]
+		}
+		seen[key] = true
+		if index == len(parts) {
+			rest = strings.TrimLeft(rest, " \t\r\n")
+			memo[key] = strings.HasPrefix(rest, name) &&
+				(len(rest) == len(name) || !isIdentifierByte(rest[len(name)]))
+			return memo[key]
+		}
+		part := parts[index]
+		inlineable := strings.HasPrefix(part, "\x00")
+		part = strings.TrimPrefix(part, "\x00")
+		if inlineable && matchTail(rest, index+1) {
+			memo[key] = true
+			return true
+		}
+		after, ok := consumeCPlusPlusOwnerSegment(rest, part)
+		memo[key] = ok && matchTail(after, index+1)
+		return memo[key]
+	}
+	for first := 0; first < len(parts); first++ {
+		part := strings.TrimPrefix(parts[first], "\x00")
+		for offset := 0; ; {
+			at := strings.Index(signature[offset:], part)
+			if at < 0 {
+				break
+			}
+			start := offset + at
+			offset = start + len(part)
+			if start > 0 && isIdentifierByte(signature[start-1]) {
+				continue
+			}
+			if strings.HasSuffix(strings.TrimRight(signature[:start], " \t\r\n"), "::") {
+				continue
+			}
+			after, ok := consumeCPlusPlusOwnerSegment(signature[start:], part)
+			if ok && matchTail(after, first+1) {
+				return true
+			}
+		}
+		if !strings.HasPrefix(parts[first], "\x00") {
+			break
+		}
+	}
+	return false
+}
+
+func consumeCPlusPlusOwnerSegment(text, part string) (string, bool) {
+	text = strings.TrimLeft(text, " \t\r\n")
+	if !strings.HasPrefix(text, part) {
+		return text, false
+	}
+	rest := text[len(part):]
+	if len(rest) > 0 && isIdentifierByte(rest[0]) {
+		return text, false
+	}
+	rest = strings.TrimLeft(rest, " \t\r\n")
+	if strings.HasPrefix(rest, "<") {
+		after, closed := skipBalancedAngles(rest)
+		if !closed {
+			return text, false
+		}
+		rest = strings.TrimLeft(after, " \t\r\n")
+	}
+	if !strings.HasPrefix(rest, "::") {
+		return text, false
+	}
+	return rest[2:], true
+}
+
 func uniqueMethodByShortName(candidates []SymbolRecord) (SymbolRecord, bool) {
 	var methods []SymbolRecord
 	for _, c := range candidates {
@@ -7330,12 +9716,14 @@ func receiverQualifiedOverloadByArgReturnType(from SymbolRecord, call receiverCa
 	return SymbolRecord{}, false
 }
 
+var receiverCallArgumentReturnTypesRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+
 func receiverCallArgumentReturnTypes(args, filePath string, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, arg := range splitTopLevelStaticComma(args) {
 		arg = strings.TrimSpace(arg)
-		m := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*\(`).FindStringSubmatch(arg)
+		m := receiverCallArgumentReturnTypesRe.FindStringSubmatch(arg)
 		if len(m) != 2 {
 			continue
 		}
@@ -7493,13 +9881,13 @@ func importedReceiverCallTargets(from SymbolRecord, modules []string, candidates
 	return targets
 }
 
-func importedReceiverCallRelations(from SymbolRecord, block string, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+func importedReceiverCallRelations(from SymbolRecord, body symbolBody, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
 	var relations []RelationRecord
 	seen := map[string]bool{}
-	for _, call := range receiverCalls(block) {
+	for _, call := range receiverCalls(body) {
 		localTargets := importedReceiverCallTargets(from, importsByName[call.Receiver], symbolsByShortName[call.Method])
 		if len(localTargets) > 0 {
 			for _, target := range localTargets {
@@ -7712,9 +10100,10 @@ func dockerfileResourceDependsOnRelations(recordsByFile map[string][]SymbolRecor
 	return relations
 }
 
+var dockerCopyFromStagesRe = regexp.MustCompile(`(?im)^\s*COPY\s+(?:--[^\s=]+(?:=\S+)?\s+)*--from=([A-Za-z0-9_.-]+)\b`)
+
 func dockerCopyFromStages(content string) []string {
-	re := regexp.MustCompile(`(?im)^\s*COPY\s+(?:--[^\s=]+(?:=\S+)?\s+)*--from=([A-Za-z0-9_.-]+)\b`)
-	matches := re.FindAllStringSubmatch(content, -1)
+	matches := dockerCopyFromStagesRe.FindAllStringSubmatch(content, -1)
 	out := make([]string, 0, len(matches))
 	seen := map[string]bool{}
 	for _, match := range matches {
@@ -7779,6 +10168,28 @@ type resourceReference struct {
 	Confidence   float64
 }
 
+var (
+	kubernetesResourceReferencesRe   = regexp.MustCompile(`(?is)\bconfigMapRef:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe2  = regexp.MustCompile(`(?is)\bconfigMapKeyRef:[ \t]*\n(?:[ \t]+[A-Za-z0-9_-]+:[^\n]*\n)*[ \t]+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe3  = regexp.MustCompile(`(?im)^\s*(?:-\s*)?configMap:\s*\n\s+name:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe4  = regexp.MustCompile(`(?is)\bsecretRef:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe5  = regexp.MustCompile(`(?is)\bsecretKeyRef:[ \t]*\n(?:[ \t]+[A-Za-z0-9_-]+:[^\n]*\n)*[ \t]+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe6  = regexp.MustCompile(`(?im)^\s*(?:-\s*)?secret:\s*\n\s+name:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe7  = regexp.MustCompile(`(?im)^\s*secretName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe8  = regexp.MustCompile(`(?is)\bimagePullSecrets:\s*\n(?:\s+-\s*)?name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe9  = regexp.MustCompile(`(?im)^\s*serviceAccountName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe10 = regexp.MustCompile(`(?im)^\s*claimName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe11 = regexp.MustCompile(`(?im)^\s*storageClassName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe12 = regexp.MustCompile(`(?im)^\s*volumeName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe13 = regexp.MustCompile(`(?im)^\s*persistentVolumeClaimName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe14 = regexp.MustCompile(`(?im)^\s*ingressClassName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe15 = regexp.MustCompile(`(?im)^\s*runtimeClassName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe16 = regexp.MustCompile(`(?im)^\s*priorityClassName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesResourceReferencesRe17 = regexp.MustCompile(`(?is)\bsubjects:\s*\n(?:\s+-\s*)?kind:\s*ServiceAccount\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe18 = regexp.MustCompile(`(?is)\bservice:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesResourceReferencesRe19 = regexp.MustCompile(`(?im)^\s*serviceName:\s*([A-Za-z0-9_.-]+)\s*$`)
+)
+
 func kubernetesResourceReferences(content string) []resourceReference {
 	var refs []resourceReference
 	metadata := yamlMapAtPath(content, "metadata")
@@ -7798,40 +10209,40 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add("namespace", namespace, "kubernetes_metadata_namespace", 0.84)
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bconfigMapRef:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe.FindAllStringSubmatch(content, -1) {
 		add("configmap", match[1], "kubernetes_configmap_ref", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bconfigMapKeyRef:[ \t]*\n(?:[ \t]+[A-Za-z0-9_-]+:[^\n]*\n)*[ \t]+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe2.FindAllStringSubmatch(content, -1) {
 		add("configmap", match[1], "kubernetes_configmap_key_ref", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*(?:-\s*)?configMap:\s*\n\s+name:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe3.FindAllStringSubmatch(content, -1) {
 		add("configmap", match[1], "kubernetes_configmap_volume", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bsecretRef:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe4.FindAllStringSubmatch(content, -1) {
 		add("secret", match[1], "kubernetes_secret_ref", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bsecretKeyRef:[ \t]*\n(?:[ \t]+[A-Za-z0-9_-]+:[^\n]*\n)*[ \t]+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe5.FindAllStringSubmatch(content, -1) {
 		add("secret", match[1], "kubernetes_secret_key_ref", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*(?:-\s*)?secret:\s*\n\s+name:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe6.FindAllStringSubmatch(content, -1) {
 		add("secret", match[1], "kubernetes_secret_volume", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*secretName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe7.FindAllStringSubmatch(content, -1) {
 		add("secret", match[1], "kubernetes_secret_name", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bimagePullSecrets:\s*\n(?:\s+-\s*)?name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe8.FindAllStringSubmatch(content, -1) {
 		add("secret", match[1], "kubernetes_image_pull_secret", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*serviceAccountName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe9.FindAllStringSubmatch(content, -1) {
 		add("serviceaccount", match[1], "kubernetes_service_account", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*claimName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe10.FindAllStringSubmatch(content, -1) {
 		add("persistentvolumeclaim", match[1], "kubernetes_pvc_claim", 0.78)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*storageClassName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe11.FindAllStringSubmatch(content, -1) {
 		add("storageclass", match[1], "kubernetes_storage_class", 0.78)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*volumeName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe12.FindAllStringSubmatch(content, -1) {
 		add("persistentvolume", match[1], "kubernetes_persistent_volume", 0.78)
 	}
 	if kubernetesManifestHasAnyKind(content, "PersistentVolumeClaim") {
@@ -7843,7 +10254,7 @@ func kubernetesResourceReferences(content string) []resourceReference {
 		}
 	}
 	if kubernetesManifestHasAnyKind(content, "VolumeSnapshot") {
-		for _, match := range regexp.MustCompile(`(?im)^\s*persistentVolumeClaimName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		for _, match := range kubernetesResourceReferencesRe13.FindAllStringSubmatch(content, -1) {
 			add("persistentvolumeclaim", match[1], "kubernetes_volume_snapshot_pvc_ref", 0.82)
 		}
 	}
@@ -7852,13 +10263,13 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*ingressClassName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe14.FindAllStringSubmatch(content, -1) {
 		add("ingressclass", match[1], "kubernetes_ingress_class", 0.8)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*runtimeClassName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe15.FindAllStringSubmatch(content, -1) {
 		add("runtimeclass", match[1], "kubernetes_runtime_class", 0.78)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*priorityClassName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe16.FindAllStringSubmatch(content, -1) {
 		add("priorityclass", match[1], "kubernetes_priority_class", 0.78)
 	}
 	for _, ref := range kubernetesKindNameBlockReferences(content, "roleRef", "kubernetes_rbac_role_ref", 0.82) {
@@ -8010,13 +10421,13 @@ func kubernetesResourceReferences(content string) []resourceReference {
 	for _, ref := range kubernetesKindNameBlockReferences(content, "ownerReferences", "kubernetes_owner_reference", 0.78) {
 		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bsubjects:\s*\n(?:\s+-\s*)?kind:\s*ServiceAccount\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe17.FindAllStringSubmatch(content, -1) {
 		add("serviceaccount", match[1], "kubernetes_rbac_subject", 0.82)
 	}
-	for _, match := range regexp.MustCompile(`(?is)\bservice:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe18.FindAllStringSubmatch(content, -1) {
 		add("service", match[1], "kubernetes_ingress_service", 0.82)
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*serviceName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesResourceReferencesRe19.FindAllStringSubmatch(content, -1) {
 		add("service", match[1], "kubernetes_ingress_service_name", 0.8)
 	}
 	for _, ref := range kubernetesGatewayBackendReferences(content) {
@@ -8208,10 +10619,11 @@ func kubernetesSealedSecretTargetReferences(content string) []resourceReference 
 	}}
 }
 
+var kubernetesKnativeTriggerBrokerReferencesRe = regexp.MustCompile(`(?im)^\s*broker:\s*([A-Za-z0-9_.-]+)\s*$`)
+
 func kubernetesKnativeTriggerBrokerReferences(content string) []resourceReference {
 	var refs []resourceReference
-	re := regexp.MustCompile(`(?im)^\s*broker:\s*([A-Za-z0-9_.-]+)\s*$`)
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesKnativeTriggerBrokerReferencesRe.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			refs = append(refs, resourceReference{
 				Kind:         "broker",
@@ -8224,12 +10636,17 @@ func kubernetesKnativeTriggerBrokerReferences(content string) []resourceReferenc
 	return refs
 }
 
+var (
+	kubernetesKnativeServingTrafficReferencesRe  = regexp.MustCompile(`(?im)^\s*(?:-\s*)?revisionName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesKnativeServingTrafficReferencesRe2 = regexp.MustCompile(`(?im)^\s*(?:-\s*)?configurationName:\s*([A-Za-z0-9_.-]+)\s*$`)
+)
+
 func kubernetesKnativeServingTrafficReferences(content string) []resourceReference {
 	if !kubernetesManifestAPIMatches(content, `serving\.knative\.dev/`) || !kubernetesManifestHasAnyKind(content, "Service", "Route") {
 		return nil
 	}
 	var refs []resourceReference
-	for _, match := range regexp.MustCompile(`(?im)^\s*(?:-\s*)?revisionName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesKnativeServingTrafficReferencesRe.FindAllStringSubmatch(content, -1) {
 		refs = append(refs, resourceReference{
 			Kind:         "revision",
 			Name:         match[1],
@@ -8237,7 +10654,7 @@ func kubernetesKnativeServingTrafficReferences(content string) []resourceReferen
 			Confidence:   0.82,
 		})
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*(?:-\s*)?configurationName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesKnativeServingTrafficReferencesRe2.FindAllStringSubmatch(content, -1) {
 		refs = append(refs, resourceReference{
 			Kind:         "configuration",
 			Name:         match[1],
@@ -8407,13 +10824,18 @@ func kubernetesRolloutsAnalysisTemplateReferences(content string) []resourceRefe
 	return refs
 }
 
+var (
+	kubernetesArgoEventsReferencesRe  = regexp.MustCompile(`(?im)^\s*eventSourceName:\s*([A-Za-z0-9_.-]+)\s*$`)
+	kubernetesArgoEventsReferencesRe2 = regexp.MustCompile(`(?im)^\s*eventBusName:\s*([A-Za-z0-9_.-]+)\s*$`)
+)
+
 func kubernetesArgoEventsReferences(content string) []resourceReference {
 	if !kubernetesManifestAPIMatches(content, `argoproj\.io/`) || !kubernetesManifestHasAnyKind(content, "Sensor", "EventSource") {
 		return nil
 	}
 	var refs []resourceReference
 	if kubernetesManifestHasAnyKind(content, "Sensor") {
-		for _, match := range regexp.MustCompile(`(?im)^\s*eventSourceName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		for _, match := range kubernetesArgoEventsReferencesRe.FindAllStringSubmatch(content, -1) {
 			if len(match) == 2 && match[1] != "" {
 				refs = append(refs, resourceReference{
 					Kind:         "eventsource",
@@ -8424,7 +10846,7 @@ func kubernetesArgoEventsReferences(content string) []resourceReference {
 			}
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?im)^\s*eventBusName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesArgoEventsReferencesRe2.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 && match[1] != "" {
 			refs = append(refs, resourceReference{
 				Kind:         "eventbus",
@@ -8437,12 +10859,14 @@ func kubernetesArgoEventsReferences(content string) []resourceReference {
 	return refs
 }
 
+var kubernetesArgoCDApplicationProjectReferencesRe = regexp.MustCompile(`(?im)^\s*project:\s*([A-Za-z0-9_.-]+)\s*$`)
+
 func kubernetesArgoCDApplicationProjectReferences(content string) []resourceReference {
 	if !kubernetesManifestAPIMatches(content, `argoproj\.io/`) || !kubernetesManifestHasAnyKind(content, "Application", "ApplicationSet") {
 		return nil
 	}
 	var refs []resourceReference
-	for _, match := range regexp.MustCompile(`(?im)^\s*project:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range kubernetesArgoCDApplicationProjectReferencesRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 2 || match[1] == "" {
 			continue
 		}
@@ -8466,8 +10890,10 @@ func kubernetesManifestHasAnyKind(content string, kinds ...string) bool {
 	return false
 }
 
+var kubernetesScaledObjectScaleTargetReferencesRe = regexp.MustCompile(`(?im)^\s*kind:\s*ScaledObject\s*$`)
+
 func kubernetesScaledObjectScaleTargetReferences(content string) []resourceReference {
-	if !regexp.MustCompile(`(?im)^\s*kind:\s*ScaledObject\s*$`).MatchString(content) {
+	if !kubernetesScaledObjectScaleTargetReferencesRe.MatchString(content) {
 		return nil
 	}
 	lines := strings.Split(content, "\n")
@@ -8625,8 +11051,10 @@ func kubernetesGatewayParentReferences(content string) []resourceReference {
 	return refs
 }
 
+var kubernetesGatewayPolicyTargetReferencesRe = regexp.MustCompile(`(?im)^\s*kind:\s*[A-Za-z0-9_.-]*Policy\s*$`)
+
 func kubernetesGatewayPolicyTargetReferences(content string) []resourceReference {
-	if !kubernetesManifestAPIMatches(content, `gateway\.networking\.k8s\.io/`) || !regexp.MustCompile(`(?im)^\s*kind:\s*[A-Za-z0-9_.-]*Policy\s*$`).MatchString(content) {
+	if !kubernetesManifestAPIMatches(content, `gateway\.networking\.k8s\.io/`) || !kubernetesGatewayPolicyTargetReferencesRe.MatchString(content) {
 		return nil
 	}
 	var refs []resourceReference
@@ -8641,10 +11069,15 @@ func kubernetesGatewayPolicyTargetReferences(content string) []resourceReference
 	return refs
 }
 
+var (
+	kubernetesIstioServiceMeshReferencesRe  = regexp.MustCompile(`(?is)\bdestination:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+host:\s*([A-Za-z0-9_.-]+)`)
+	kubernetesIstioServiceMeshReferencesRe2 = regexp.MustCompile(`(?im)^\s*host:\s*([A-Za-z0-9_.-]+)\s*$`)
+)
+
 func kubernetesIstioServiceMeshReferences(content string) []resourceReference {
 	var refs []resourceReference
 	if kubernetesManifestHasAnyKind(content, "VirtualService", "DestinationRule") {
-		for _, match := range regexp.MustCompile(`(?is)\bdestination:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+host:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+		for _, match := range kubernetesIstioServiceMeshReferencesRe.FindAllStringSubmatch(content, -1) {
 			service := kubernetesServiceNameFromHost(match[1])
 			if service == "" {
 				continue
@@ -8658,7 +11091,7 @@ func kubernetesIstioServiceMeshReferences(content string) []resourceReference {
 		}
 	}
 	if kubernetesManifestHasAnyKind(content, "DestinationRule") {
-		for _, match := range regexp.MustCompile(`(?im)^\s*host:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		for _, match := range kubernetesIstioServiceMeshReferencesRe2.FindAllStringSubmatch(content, -1) {
 			service := kubernetesServiceNameFromHost(match[1])
 			if service == "" {
 				continue
@@ -9249,6 +11682,11 @@ func kustomizeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord
 	return relations
 }
 
+var (
+	kustomizeFileReferencesRe  = regexp.MustCompile(`^(resources|patches|components):\s*$`)
+	kustomizeFileReferencesRe2 = regexp.MustCompile(`^[A-Za-z0-9_-]+:`)
+)
+
 func kustomizeFileReferences(content string) []string {
 	var refs []string
 	inList := false
@@ -9258,10 +11696,10 @@ func kustomizeFileReferences(content string) []string {
 			continue
 		}
 		switch {
-		case regexp.MustCompile(`^(resources|patches|components):\s*$`).MatchString(trimmed):
+		case kustomizeFileReferencesRe.MatchString(trimmed):
 			inList = true
 			continue
-		case regexp.MustCompile(`^[A-Za-z0-9_-]+:`).MatchString(trimmed):
+		case kustomizeFileReferencesRe2.MatchString(trimmed):
 			inList = false
 		}
 		if !inList || !strings.HasPrefix(trimmed, "-") {
@@ -9500,9 +11938,11 @@ func composeServiceConfigTargets(symbol SymbolRecord, content string) []configTa
 	return targets
 }
 
+var composeServiceImagesRe = regexp.MustCompile(`(?im)^\s*image:\s*["']?([^"'\s#]+)`)
+
 func composeServiceImages(block string) []string {
 	var images []string
-	for _, match := range regexp.MustCompile(`(?im)^\s*image:\s*["']?([^"'\s#]+)`).FindAllStringSubmatch(block, -1) {
+	for _, match := range composeServiceImagesRe.FindAllStringSubmatch(block, -1) {
 		if len(match) == 2 {
 			images = append(images, strings.TrimSpace(match[1]))
 		}
@@ -10145,7 +12585,7 @@ func fileChangesWithRelations(ctx context.Context, repo, revision, repoKey strin
 // method receiver variable, or a local constructor assignment; accesses whose
 // receiver type cannot be resolved, or whose field is not a known local field,
 // are skipped (no guessed edges).
-func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+func fieldAccessRelations(from SymbolRecord, body symbolBody, fieldsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
 	if from.Kind != "function" && from.Kind != "method" {
 		return nil
 	}
@@ -10158,7 +12598,7 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 		}
 	}
 	varTypes := parameterVarTypes(from.Signature)
-	localTypes := localVarTypes(block)
+	localTypes := localVarTypes(body)
 	for name, typeName := range localTypes {
 		varTypes[name] = typeName
 	}
@@ -10169,7 +12609,7 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 
 	var relations []RelationRecord
 	emitted := map[string]bool{}
-	for _, access := range fieldAccesses(block) {
+	for _, access := range fieldAccesses(body) {
 		containerID := ""
 		confidence := 0.9
 		if id, ok := selfContainers[access.Receiver]; ok {
@@ -11377,6 +13817,12 @@ func isInstalledDependencyDirName(rel, name string) bool {
 // .gitignore files can answer it.
 type vendorIgnoreRules interface {
 	ReincludesDescendant(rel string) bool
+	// ReincludesPath is the same question asked about one path rather than
+	// about a whole subtree. Directory pruning needs the subtree answer (a
+	// re-included package can only be reached by descending); a per-file
+	// verdict needs this one, or a single negation anywhere under a vendored
+	// tree re-admits all of it.
+	ReincludesPath(rel string) bool
 }
 
 // hasGitDirComponent reports whether a repo-relative path IS a git directory, or
@@ -11828,6 +14274,12 @@ type gitDirExcluder struct {
 	// be inspected. hiddenEvidence already drives the fail-closed exclusion;
 	// this list makes that wider omission visible to callers and cache identity.
 	unreadablePointers []string
+	// unreadableIgnorePolicyDirs samples the readable directories whose OWN
+	// .gitignore could not be read within its per-file bounds, capped like
+	// unreadableWalkDirs. The directory itself is readable, so
+	// unreadableWalkWarning's wording would be untrue; these get their own
+	// disclosure.
+	unreadableIgnorePolicyDirs []string
 }
 
 // maxUnreadableWalkDirSample bounds unreadableWalkDirs and sweepUnreadableDirs.
@@ -11851,6 +14303,33 @@ var errGitDirSweepHalted = errors.New("git directory sweep halted")
 // to say so itself.
 func (g *gitDirExcluder) noteUnreadableWalkDir(rel string) {
 	retainSmallestPathSample(&g.unreadableWalkDirs, rel)
+}
+
+// noteUnreadableIgnorePolicyDir records one readable directory whose own
+// .gitignore could not be read within its per-file bounds, for
+// unreadableIgnorePolicyWarning. The subtree is excluded rather than admitted,
+// so the omission is a completeness fact the caller has to be told about.
+func (g *gitDirExcluder) noteUnreadableIgnorePolicyDir(rel string) {
+	retainSmallestPathSample(&g.unreadableIgnorePolicyDirs, rel)
+}
+
+// unreadableIgnorePolicyWarning discloses the subtrees excluded because their
+// own .gitignore was unreadable. Reporting nothing would leave the corpus
+// quietly smaller than the caller believes; failing the whole listing, which is
+// what this replaced, made one such file an outage for the entire repository.
+func (g *gitDirExcluder) unreadableIgnorePolicyWarning() []ProviderWarning {
+	if len(g.unreadableIgnorePolicyDirs) == 0 {
+		return nil
+	}
+	return []ProviderWarning{{
+		Code:     "W_WALK_UNREADABLE_IGNORE_POLICY",
+		Severity: "warning",
+		EffectOnCompleteness: "one or more directories have a .gitignore that could not be read within its " +
+			"size and rule-length bounds, so their rules are unknown and everything under them is excluded " +
+			"from this listing rather than indexed against unknown policy",
+		Detail: fmt.Sprintf("unreadable ignore policy: %s",
+			termsafe.Line(strings.Join(g.unreadableIgnorePolicyDirs, ", "))),
+	}}
 }
 
 // unreadableWalkWarning reports the shortfall noteUnreadableWalkDir recorded:
@@ -14409,9 +16888,15 @@ func skipVendoredDir(rel, name string, ignores vendorIgnoreRules, dirTracked fun
 	if hasGitDirComponent(rel) {
 		return true
 	}
+	return vendoredScanDirName(rel, name, dirTracked) && !ignores.ReincludesDescendant(rel)
+}
+
+// vendoredScanDirName is skipVendoredDir's name-and-tracked-ness half, without
+// the re-inclusion question. Splitting it lets directory pruning keep asking
+// about the subtree while a per-path verdict asks about the path.
+func vendoredScanDirName(rel, name string, dirTracked func(string) bool) bool {
 	untrackedOnly := isAmbiguousVendoredDirName(name) || isInstalledDependencyDirName(rel, name)
-	vendored := isVendoredScanDir(rel, name) || (untrackedOnly && !dirTracked(rel))
-	return vendored && !ignores.ReincludesDescendant(rel)
+	return isVendoredScanDir(rel, name) || (untrackedOnly && !dirTracked(rel))
 }
 
 // trackedDirSet returns every repo-relative directory (slash-separated) that
@@ -15943,7 +18428,115 @@ func EnsureGitMetadataSafeForSubprocess(repo string) error {
 	if gitMetadataSafeForSubprocess(repo) {
 		return nil
 	}
-	return fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+	return gitMetadataRefusalError(repo)
+}
+
+// gitMetadataRefusalError names the condition that made a repository unsafe.
+//
+// The refusal itself is a safety decision, but "unsafe or unreadable repository
+// metadata" tells the reader nothing about which of a dozen conditions tripped,
+// and every one of them has a different answer. Diagnosing one by hand means
+// walking the same checks the predicate walks. So re-derive the common causes
+// here and say which applied.
+//
+// This is diagnosis only: it never widens what is accepted. When no specific
+// cause is recognised the message degrades to the original wording, so an
+// unrecognised condition still refuses.
+func gitMetadataRefusalError(repo string) error {
+	base := fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+	reason := describeGitMetadataRefusal(repo)
+	if reason == "" {
+		return base
+	}
+	return fmt.Errorf("%w: %s", base, reason)
+}
+
+// describeGitMetadataRefusal returns a human-readable cause, or "" when none of
+// the recognised conditions explains the refusal.
+//
+// It reads the config the same way the predicate does -- through a resolver,
+// never a direct open -- so it applies the same path, mount and special-file
+// policy rather than a looser one of its own.
+//
+// It is nonetheless a second observation, taken after the predicate has already
+// refused. Nothing pins the two reads to one inode, so a config replaced in
+// between yields a cause that is true of the file now and may not be the cause
+// that fired. Pinning them would mean carrying evidence out of the predicate
+// itself, which is a safety boundary this diagnosis is not worth restructuring;
+// the cost of the race is a misattributed sentence in an error, never a
+// different accept/reject decision. Read the cause as "this is what the config
+// says", not as a receipt from the refusal.
+//
+// It is deliberately narrower than the predicate. The predicate also supports
+// Git discovery in ancestor directories, bare repositories, and `.git` gitfiles;
+// this only speaks when `<repo>/.git` is a directory it can open, which is the
+// one case where it knows it is describing the same metadata. Everywhere else it
+// returns "" and the caller keeps the original wording, because a confident
+// wrong cause is worse than no cause at all.
+func describeGitMetadataRefusal(repo string) string {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return ""
+	}
+	resolver, err := newSameVolumePathResolver(repoAbs)
+	if err != nil {
+		return ""
+	}
+	defer resolver.Close()
+
+	gitDir, ok := diagnosableGitDirectory(resolver, repoAbs)
+	if !ok {
+		return ""
+	}
+	common, state := gitCommonDirStateWithResolver(resolver, gitDir, nil)
+	if state != gitCommonDirResolved {
+		return "its Git common directory could not be resolved inside this repository's filesystem"
+	}
+	opened, _, openErr := resolver.open(filepath.Join(common, "config"))
+	if openErr != nil {
+		return ""
+	}
+	defer func() { _ = opened.Close() }()
+	info, statErr := opened.Stat()
+	if statErr != nil {
+		return ""
+	}
+	config, configOK := gitLocalConfigPreflightFromOpened(opened, info)
+	if !configOK {
+		return "its Git config could not be parsed under Git's own config grammar, so it is refused rather than guessed at"
+	}
+	switch {
+	case config.hasPromisorRemote:
+		return "its Git config declares a promisor remote (a partial clone), so Git commands here can fetch objects over the network; " +
+			"indexing falls back to a filesystem walk to stay offline"
+	case config.hasPartialCloneExtension:
+		return "its Git config enables the partial-clone extension, so Git commands here can fetch objects over the network; " +
+			"indexing falls back to a filesystem walk to stay offline"
+	case config.hasInclude:
+		return "its Git config uses include or includeIf, so the effective configuration is not knowable from this file alone"
+	case config.hasCoreWorktree && !gitCoreWorktreePathSafeWithResolver(resolver, gitDir, config.coreWorktree):
+		// The key merely being present is not the refusal; the predicate refuses
+		// only when the path it names leaves the repository's filesystem, so ask
+		// the same question rather than reporting a valid core.worktree as bad.
+		return "its Git config sets core.worktree to a path that leaves this repository's filesystem"
+	}
+	return ""
+}
+
+// diagnosableGitDirectory returns `<repo>/.git` when it is a directory this
+// process can open, which is the only shape describeGitMetadataRefusal can
+// attribute a cause to with certainty.
+func diagnosableGitDirectory(resolver *sameVolumePathResolver, repoAbs string) (string, bool) {
+	opened, resolved, err := resolver.open(filepath.Join(repoAbs, ".git"))
+	if err != nil {
+		return "", false
+	}
+	info, statErr := opened.Stat()
+	_ = opened.Close()
+	if statErr != nil || !info.IsDir() {
+		return "", false
+	}
+	return resolved, true
 }
 
 type gitMetadataValidationContextKey struct{}
@@ -15960,7 +18553,7 @@ type gitMetadataValidationReceipt struct {
 func WithGitMetadataValidationForSetup(ctx context.Context, repo string) (context.Context, error) {
 	validated, safe := newGitMetadataValidation(ctx, repo)
 	if !safe {
-		return validated, fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+		return validated, gitMetadataRefusalError(repo)
 	}
 	return validated, nil
 }
@@ -16356,7 +18949,7 @@ func worktreeSourceFilesWithLister(
 	listWorktreeFiles worktreeFilesLister,
 ) ([]string, []ProviderWarning, error) {
 	if !gitMetadataSafeForSubprocessContext(ctx, repo) {
-		err := fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+		err := gitMetadataRefusalError(repo)
 		// No Git process is started. The fallback treats every ambiguous vendored
 		// directory as potentially tracked so unsafe metadata cannot cause source
 		// omissions, and the warning reports the Git-only policy that is unavailable.
@@ -16757,6 +19350,25 @@ func visitWalkWorktreeFilesWithRawLimit(
 					frames = frames[:len(frames)-1]
 					continue
 				}
+				// One directory's own .gitignore that cannot be read within its
+				// per-file bounds (over 1 MiB, a rule line over 64 KiB, mode
+				// 000, replaced mid-read) used to fail the WHOLE listing, so a
+				// single such file made a non-Git repository — or a Git
+				// checkout whose `git ls-files` failed — completely
+				// unindexable. Its rules are unknown for this subtree only, so
+				// exclude that subtree and disclose it: nothing the unknown
+				// policy might have excluded can be admitted, which is the
+				// property the hard error was protecting, and the rest of the
+				// repository stays searchable. The operation-wide rule
+				// allowance and the nested-file count are NOT this, and both
+				// still abort.
+				if errors.Is(err, errNestedIgnorePolicyUnreadable) {
+					gitDirs.hiddenEvidence++
+					gitDirs.noteUnreadableIgnorePolicyDir(rel)
+					gitDirs.observePrunedSubtree(rel)
+					frames = frames[:len(frames)-1]
+					continue
+				}
 				walkErr = err
 				break
 			}
@@ -16911,6 +19523,7 @@ func visitWalkWorktreeFilesWithRawLimit(
 	}
 	sort.Strings(paths)
 	warnings := append(gitDirs.sweepWarnings(), gitDirs.unreadableWalkWarning()...)
+	warnings = append(warnings, gitDirs.unreadableIgnorePolicyWarning()...)
 	warnings = append(warnings, gitDirs.sweepUnreadableDirWarning()...)
 	for _, rel := range paths {
 		if !visit(rel) {
@@ -17133,16 +19746,33 @@ func vendoredScanPath(rel string, ignores vendorIgnoreRules, dirTracked func(str
 	if len(parts) == 0 {
 		return false
 	}
+	// This repository's own git directory is decided BEFORE any negation, for
+	// the reason skipVendoredDir states: `!.git/config` in a repo-committed
+	// .gitignore must not cancel the skip.
+	if hasGitDirComponent(rel) {
+		return true
+	}
 	if isVendoredScanFile(rel, parts[len(parts)-1]) {
 		return true
 	}
+	vendored := false
 	for i, part := range parts[:len(parts)-1] {
-		dirRel := strings.Join(parts[:i+1], "/")
-		if skipVendoredDir(dirRel, part, ignores, dirTracked) {
-			return true
+		if vendoredScanDirName(strings.Join(parts[:i+1], "/"), part, dirTracked) {
+			vendored = true
+			break
 		}
 	}
-	return false
+	if !vendored {
+		return false
+	}
+	// A negation inside a vendored tree spares the paths it names, not the
+	// tree. Asking ReincludesDescendant about the ANCESTOR here made one
+	// `!mypkg/` in `vendor/.gitignore` re-admit every tracked file under
+	// `vendor/` — and in HEAD mode nothing downstream filters them, because
+	// filterIgnoredPaths applies only explicit CLI ignore files, so a
+	// force-tracked dependency tree beside the re-included package was parsed
+	// in full and could spend the file ceiling on third-party code.
+	return !ignores.ReincludesPath(rel)
 }
 
 func firstError(errs ...error) error {
@@ -17301,8 +19931,102 @@ func resolveCFamilyLocalInclude(importingPath, spec string, knownFiles map[strin
 	return "", false
 }
 
+// goModuleRoot is one go.mod in the repository: the repo-relative directory it
+// sits in ("" for the root module) and the module path it declares.
+type goModuleRoot struct {
+	Dir  string
+	Path string
+}
+
+// goModuleIndex answers which Go module OWNS a repo-relative directory, and
+// whether an import path names a package this repository builds.
+//
+// A repository is not one module. A nested go.mod (tools/go.mod declaring
+// example.com/tool, a local `replace` target, a test module) re-roots every
+// directory beneath it: tools/lib is example.com/tool/lib, NOT
+// <root-module>/tools/lib. Deciding ownership against the root module alone
+// therefore declares those packages external, and every qualified receiver
+// pointing into them loses its edge. Roots are held longest-directory-first so
+// the innermost enclosing module wins.
+type goModuleIndex struct {
+	roots []goModuleRoot
+}
+
+// newGoModuleIndex sorts the roots innermost-first and drops incomplete entries.
+func newGoModuleIndex(roots []goModuleRoot) goModuleIndex {
+	kept := make([]goModuleRoot, 0, len(roots))
+	for _, root := range roots {
+		if root.Path == "" {
+			continue
+		}
+		kept = append(kept, goModuleRoot{Dir: normalizeRepoDir(root.Dir), Path: root.Path})
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		if len(kept[i].Dir) != len(kept[j].Dir) {
+			return len(kept[i].Dir) > len(kept[j].Dir)
+		}
+		return kept[i].Dir < kept[j].Dir
+	})
+	return goModuleIndex{roots: kept}
+}
+
+// normalizeRepoDir renders a repo-relative directory as a slash path with no
+// leading or trailing separator; the repository root is "".
+func normalizeRepoDir(dir string) string {
+	dir = strings.Trim(filepath.ToSlash(dir), "/")
+	if dir == "." {
+		return ""
+	}
+	return dir
+}
+
+// empty reports whether the repository declares no Go module at all.
+func (index goModuleIndex) empty() bool { return len(index.roots) == 0 }
+
+// owner returns the innermost module whose directory contains dir.
+func (index goModuleIndex) owner(dir string) (goModuleRoot, bool) {
+	dir = normalizeRepoDir(dir)
+	for _, root := range index.roots {
+		if root.Dir == "" || dir == root.Dir || strings.HasPrefix(dir, root.Dir+"/") {
+			return root, true
+		}
+	}
+	return goModuleRoot{}, false
+}
+
+// importPathFor renders the import path of the package declared in dir, using
+// the module that owns it.
+func (index goModuleIndex) importPathFor(dir string) (string, bool) {
+	root, ok := index.owner(dir)
+	if !ok {
+		return "", false
+	}
+	dir = normalizeRepoDir(dir)
+	rest := strings.TrimPrefix(strings.TrimPrefix(dir, root.Dir), "/")
+	if rest == "" {
+		return root.Path, true
+	}
+	return root.Path + "/" + rest, true
+}
+
+// ownsImport reports whether an import path names a package built by ANY module
+// in this repository.
+func (index goModuleIndex) ownsImport(importPath string) bool {
+	importPath = strings.Trim(filepath.ToSlash(strings.TrimSpace(importPath)), "/")
+	if importPath == "" {
+		return false
+	}
+	for _, root := range index.roots {
+		if importPath == root.Path || strings.HasPrefix(importPath, root.Path+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 type manifestImportResolver struct {
 	goModule            string
+	goModules           goModuleIndex
 	goPackages          map[string]string
 	jsPackageName       string
 	jsPackageExports    map[string]string
@@ -17531,6 +20255,30 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 			cargoPaths = append(cargoPaths, filepath.ToSlash(file.Path))
 		}
 	}
+	// Every go.mod in the tree, not just the root one: a nested module re-roots
+	// the import paths of everything beneath it, and code inside it importing its
+	// own sibling packages is importing REPOSITORY source, not a dependency.
+	// go.mod carries no supported extension, so it is not among `files`; the
+	// manifests are found by walking each Go file's ancestor directories, the
+	// same way Rust crates are located from .rs paths.
+	moduleRoots := []goModuleRoot{}
+	if resolver.goModule != "" {
+		moduleRoots = append(moduleRoots, goModuleRoot{Dir: "", Path: resolver.goModule})
+	}
+	for _, modPath := range inferGoModulesFromGoPaths(goPaths, readContent) {
+		dir := normalizeRepoDir(filepath.Dir(modPath))
+		if dir == "" {
+			continue // the root module is already recorded from readContent("go.mod")
+		}
+		content, ok := readContent(modPath)
+		if !ok {
+			continue
+		}
+		if modulePath := parseGoModulePath(content); modulePath != "" {
+			moduleRoots = append(moduleRoots, goModuleRoot{Dir: dir, Path: modulePath})
+		}
+	}
+	resolver.goModules = newGoModuleIndex(moduleRoots)
 	cargoPaths = append(cargoPaths, inferCargoManifestsFromRustPaths(rustPaths, readContent)...)
 	cargoPaths = uniqueStrings(cargoPaths)
 	sort.Slice(goPaths, func(i, j int) bool {
@@ -18266,6 +21014,8 @@ func parsePyProjectPackageDirRoots(line string) []string {
 	return []string{value}
 }
 
+var parsePyProjectPackageDirMappingsRe = regexp.MustCompile(`(?m)["']([^"']*)["']\s*=\s*["']([^"']+)["']`)
+
 func parsePyProjectPackageDirMappings(line string) []pythonPackageDirMapping {
 	parts := strings.SplitN(line, "=", 2)
 	if len(parts) != 2 {
@@ -18276,8 +21026,7 @@ func parsePyProjectPackageDirMappings(line string) []pythonPackageDirMapping {
 		return []pythonPackageDirMapping{{Dir: strings.Trim(value, `"'`)}}
 	}
 	var mappings []pythonPackageDirMapping
-	re := regexp.MustCompile(`(?m)["']([^"']*)["']\s*=\s*["']([^"']+)["']`)
-	for _, match := range re.FindAllStringSubmatch(value, -1) {
+	for _, match := range parsePyProjectPackageDirMappingsRe.FindAllStringSubmatch(value, -1) {
 		if len(match) == 3 {
 			mappings = append(mappings, pythonPackageDirMapping{Package: match[1], Dir: match[2]})
 		}
@@ -18285,10 +21034,11 @@ func parsePyProjectPackageDirMappings(line string) []pythonPackageDirMapping {
 	return mappings
 }
 
+var regexpPackageDirRootValuesRe = regexp.MustCompile(`(?m)(?:""|'')\s*=\s*["']([^"']+)["']`)
+
 func regexpPackageDirRootValues(value string) []string {
 	var roots []string
-	re := regexp.MustCompile(`(?m)(?:""|'')\s*=\s*["']([^"']+)["']`)
-	for _, match := range re.FindAllStringSubmatch(value, -1) {
+	for _, match := range regexpPackageDirRootValuesRe.FindAllStringSubmatch(value, -1) {
 		if len(match) == 2 && strings.TrimSpace(match[1]) != "" {
 			roots = append(roots, match[1])
 		}
@@ -18404,6 +21154,40 @@ func cargoRustSourceRootDir(cargoPath, content string) string {
 		return "src"
 	}
 	return dir + "/src"
+}
+
+// inferGoModulesFromGoPaths returns every go.mod that governs at least one Go
+// file, found by walking each file's ancestor directories to the repository
+// root. Mirrors inferCargoManifestsFromRustPaths: a manifest with no supported
+// extension never reaches the file list, so it has to be looked up by path.
+func inferGoModulesFromGoPaths(goPaths []string, readContent contentReader) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, path := range goPaths {
+		dir := filepath.ToSlash(filepath.Dir(path))
+		for {
+			candidate := "go.mod"
+			if dir != "." && dir != "" {
+				candidate = dir + "/go.mod"
+			}
+			if !seen[candidate] {
+				seen[candidate] = true
+				if _, ok := readContent(candidate); ok {
+					out = append(out, candidate)
+				}
+			}
+			if dir == "." || dir == "" {
+				break
+			}
+			parent := filepath.ToSlash(filepath.Dir(dir))
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func inferCargoManifestsFromRustPaths(rustPaths []string, readContent contentReader) []string {
@@ -18945,6 +21729,8 @@ func pythonPackageDirUnderNamespaceRoot(path string, mapping pythonPackageDirMap
 	return !pyFileSet[dir+"/__init__.py"]
 }
 
+var parsePythonSourceRootValuesRe = regexp.MustCompile(`["']([^"']+)["']`)
+
 func parsePythonSourceRootValues(line string) []string {
 	parts := strings.SplitN(line, "=", 2)
 	if len(parts) != 2 || !strings.EqualFold(strings.TrimSpace(parts[0]), "where") {
@@ -18956,7 +21742,7 @@ func parsePythonSourceRootValues(line string) []string {
 	}
 	var roots []string
 	if strings.HasPrefix(value, "[") {
-		matches := regexp.MustCompile(`["']([^"']+)["']`).FindAllStringSubmatch(value, -1)
+		matches := parsePythonSourceRootValuesRe.FindAllStringSubmatch(value, -1)
 		for _, match := range matches {
 			roots = append(roots, match[1])
 		}
@@ -19182,14 +21968,21 @@ func normalizeJVMPackagePrefixes(prefixes []string) []string {
 	return out
 }
 
+var (
+	normalizeJVMPackagePrefixRe  = regexp.MustCompile(`[^A-Za-z0-9.]+`)
+	normalizeJVMPackagePrefixRe2 = regexp.MustCompile(`\.+`)
+)
+
 func normalizeJVMPackagePrefix(prefix string) string {
 	prefix = strings.TrimSpace(prefix)
 	prefix = strings.ReplaceAll(prefix, "-", ".")
 	prefix = strings.ReplaceAll(prefix, "_", ".")
-	prefix = regexp.MustCompile(`[^A-Za-z0-9.]+`).ReplaceAllString(prefix, ".")
-	prefix = regexp.MustCompile(`\.+`).ReplaceAllString(prefix, ".")
+	prefix = normalizeJVMPackagePrefixRe.ReplaceAllString(prefix, ".")
+	prefix = normalizeJVMPackagePrefixRe2.ReplaceAllString(prefix, ".")
 	return strings.Trim(prefix, ".")
 }
+
+var jvmQualifiedTypeNameRe = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?`)
 
 func jvmQualifiedTypeName(path, content string) string {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
@@ -19197,8 +21990,7 @@ func jvmQualifiedTypeName(path, content string) string {
 		return ""
 	}
 	pkg := ""
-	re := regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?`)
-	if match := re.FindStringSubmatch(content); len(match) == 2 {
+	if match := jvmQualifiedTypeNameRe.FindStringSubmatch(content); len(match) == 2 {
 		pkg = strings.TrimSpace(match[1])
 	}
 	if pkg == "" {
@@ -19207,9 +21999,10 @@ func jvmQualifiedTypeName(path, content string) string {
 	return pkg + "." + base
 }
 
+var csharpNamespaceNameRe = regexp.MustCompile(`(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:[;{]|$)`)
+
 func csharpNamespaceName(content string) string {
-	re := regexp.MustCompile(`(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:[;{]|$)`)
-	if match := re.FindStringSubmatch(content); len(match) == 2 {
+	if match := csharpNamespaceNameRe.FindStringSubmatch(content); len(match) == 2 {
 		return normalizeCSharpNamespace(match[1])
 	}
 	return ""
@@ -19230,11 +22023,13 @@ func normalizeCSharpNamespaces(names []string) []string {
 	return out
 }
 
+var normalizeCSharpNamespaceRe = regexp.MustCompile(`[^A-Za-z0-9_.]+`)
+
 func normalizeCSharpNamespace(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.ReplaceAll(name, "-", ".")
-	name = regexp.MustCompile(`[^A-Za-z0-9_.]+`).ReplaceAllString(name, ".")
-	name = regexp.MustCompile(`\.+`).ReplaceAllString(name, ".")
+	name = normalizeCSharpNamespaceRe.ReplaceAllString(name, ".")
+	name = normalizeJVMPackagePrefixRe2.ReplaceAllString(name, ".")
 	return strings.Trim(name, ".")
 }
 
@@ -19355,12 +22150,13 @@ func composerPSR4Dirs(raw any) []string {
 	return out
 }
 
+var phpQualifiedTypeNamesRe = regexp.MustCompile(`(?im)^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
+
 func phpQualifiedTypeNames(content string) []string {
 	namespace := phpNamespaceName(content)
-	re := regexp.MustCompile(`(?im)^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
 	var names []string
 	seen := map[string]bool{}
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range phpQualifiedTypeNamesRe.FindAllStringSubmatch(content, -1) {
 		name := match[1]
 		if namespace != "" {
 			name = namespace + `\` + name
@@ -19375,9 +22171,10 @@ func phpQualifiedTypeNames(content string) []string {
 	return names
 }
 
+var phpNamespaceNameRe = regexp.MustCompile(`(?im)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\\]*)\s*(?:[;{]|$)`)
+
 func phpNamespaceName(content string) string {
-	re := regexp.MustCompile(`(?im)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\\]*)\s*(?:[;{]|$)`)
-	if match := re.FindStringSubmatch(content); len(match) == 2 {
+	if match := phpNamespaceNameRe.FindStringSubmatch(content); len(match) == 2 {
 		return normalizePHPClassName(match[1])
 	}
 	return ""
@@ -19408,6 +22205,12 @@ func normalizePHPClassPrefix(name string) string {
 	return strings.TrimSuffix(name, `\`) + `\`
 }
 
+var (
+	normalizePHPClassNameRe  = regexp.MustCompile(`(?i)\s+as\s+`)
+	normalizePHPClassNameRe2 = regexp.MustCompile(`[^A-Za-z0-9_\\]+`)
+	normalizePHPClassNameRe3 = regexp.MustCompile(`\\+`)
+)
+
 func normalizePHPClassName(name string) string {
 	name = strings.TrimSpace(name)
 	lower := strings.ToLower(name)
@@ -19418,13 +22221,13 @@ func normalizePHPClassName(name string) string {
 			break
 		}
 	}
-	if idx := regexp.MustCompile(`(?i)\s+as\s+`).FindStringIndex(name); len(idx) == 2 {
+	if idx := normalizePHPClassNameRe.FindStringIndex(name); len(idx) == 2 {
 		name = strings.TrimSpace(name[:idx[0]])
 	}
 	name = strings.Trim(name, `\`)
 	name = strings.ReplaceAll(name, "/", `\`)
-	name = regexp.MustCompile(`[^A-Za-z0-9_\\]+`).ReplaceAllString(name, `\`)
-	name = regexp.MustCompile(`\\+`).ReplaceAllString(name, `\`)
+	name = normalizePHPClassNameRe2.ReplaceAllString(name, `\`)
+	name = normalizePHPClassNameRe3.ReplaceAllString(name, `\`)
 	return strings.Trim(name, `\`)
 }
 
@@ -19627,10 +22430,11 @@ func (resolver manifestImportResolver) rustAliasesForFile(path, content string) 
 	return aliases
 }
 
+var manifestImportResolverRustPathModuleAliasesRe = regexp.MustCompile(`(?m)#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]\s*(?:pub\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;`)
+
 func (resolver manifestImportResolver) rustPathModuleAliases(path, content, current string) []rustAlias {
-	re := regexp.MustCompile(`(?m)#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]\s*(?:pub\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;`)
 	var aliases []rustAlias
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range manifestImportResolverRustPathModuleAliasesRe.FindAllStringSubmatch(content, -1) {
 		targetPath := filepath.ToSlash(filepath.Join(filepath.Dir(path), match[1]))
 		keys := resolver.rustModuleKeysForPath(targetPath)
 		if len(keys) == 0 {
@@ -19642,10 +22446,11 @@ func (resolver manifestImportResolver) rustPathModuleAliases(path, content, curr
 	return aliases
 }
 
+var rustPubUseAliasesRe = regexp.MustCompile(`(?m)^\s*pub\s+use\s+([^;]+);`)
+
 func rustPubUseAliases(content, current, crate string) []rustAlias {
-	re := regexp.MustCompile(`(?m)^\s*pub\s+use\s+([^;]+);`)
 	var aliases []rustAlias
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range rustPubUseAliasesRe.FindAllStringSubmatch(content, -1) {
 		source, exported, ok := parseRustPubUseAlias(match[1], current, crate)
 		if ok {
 			aliases = append(aliases, rustAlias{From: exported, To: source})
@@ -19808,6 +22613,11 @@ func importsFor(path, content string) []string {
 	return scan(content)
 }
 
+var (
+	scanPythonImportsRe  = regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`)
+	scanPythonImportsRe2 = regexp.MustCompile(`(?m)^\s*import\s+([^\n#]+)`)
+)
+
 func scanPythonImports(content string) []string {
 	seen := map[string]struct{}{}
 	add := func(module string) {
@@ -19816,7 +22626,7 @@ func scanPythonImports(content string) []string {
 			seen[module] = struct{}{}
 		}
 	}
-	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`)) {
+	for _, module := range scanImports(content, scanPythonImportsRe) {
 		if strings.HasPrefix(module, ".") && strings.Trim(module, ".") == "" {
 			continue
 		}
@@ -19829,7 +22639,7 @@ func scanPythonImports(content string) []string {
 		add(statement.module)
 	}
 	runtimeImportCalls := []string{`importlib\s*\.\s*import_module`, `__import__`}
-	for _, match := range regexp.MustCompile(`(?m)^\s*import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range scanPythonImportsRe2.FindAllStringSubmatch(content, -1) {
 		if len(match) != 2 {
 			continue
 		}
@@ -19908,6 +22718,8 @@ func isSimpleIdentifier(value string) bool {
 	return true
 }
 
+var scanJSImportsRe = regexp.MustCompile(`(?m)^\s*import\s+.*?\s+from\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\)|import\s*\(\s*['"]([^'"]+)['"]\s*\)`)
+
 func scanJSImports(content string) []string {
 	seen := map[string]struct{}{}
 	add := func(module string) {
@@ -19916,7 +22728,7 @@ func scanJSImports(content string) []string {
 			seen[module] = struct{}{}
 		}
 	}
-	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+.*?\s+from\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\)|import\s*\(\s*['"]([^'"]+)['"]\s*\)`)) {
+	for _, module := range scanImports(content, scanJSImportsRe) {
 		add(module)
 	}
 	constants := staticJSStringConstants(content)
@@ -19928,10 +22740,11 @@ func scanJSImports(content string) []string {
 	return sortedKeys(seen)
 }
 
+var scanJSDynamicImportExpressionsCallRe = regexp.MustCompile(`\b(?:require|import)\s*\(`)
+
 func scanJSDynamicImportExpressions(content string) []string {
-	callRe := regexp.MustCompile(`\b(?:require|import)\s*\(`)
 	var expressions []string
-	for _, loc := range callRe.FindAllStringIndex(content, -1) {
+	for _, loc := range scanJSDynamicImportExpressionsCallRe.FindAllStringIndex(content, -1) {
 		if len(loc) != 2 {
 			continue
 		}
@@ -19985,10 +22798,13 @@ func staticJSStringConstants(content string) map[string]string {
 	return constants
 }
 
+var (
+	scanGoImportsSingleImport = regexp.MustCompile(`^\s*import\s+(?:\w+\s+)?["]([^"]+)["]`)
+	scanGoImportsBlockImport  = regexp.MustCompile(`^\s*(?:\w+\s+)?["]([^"]+)["]`)
+)
+
 func scanGoImports(content string) []string {
 	seen := map[string]struct{}{}
-	singleImport := regexp.MustCompile(`^\s*import\s+(?:\w+\s+)?["]([^"]+)["]`)
-	blockImport := regexp.MustCompile(`^\s*(?:\w+\s+)?["]([^"]+)["]`)
 	inBlock := false
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
@@ -19998,7 +22814,7 @@ func scanGoImports(content string) []string {
 				inBlock = true
 				continue
 			}
-			if matches := singleImport.FindStringSubmatch(line); len(matches) > 1 {
+			if matches := scanGoImportsSingleImport.FindStringSubmatch(line); len(matches) > 1 {
 				seen[matches[1]] = struct{}{}
 			}
 			continue
@@ -20007,7 +22823,7 @@ func scanGoImports(content string) []string {
 			inBlock = false
 			continue
 		}
-		if matches := blockImport.FindStringSubmatch(line); len(matches) > 1 {
+		if matches := scanGoImportsBlockImport.FindStringSubmatch(line); len(matches) > 1 {
 			seen[matches[1]] = struct{}{}
 		}
 	}
@@ -20052,6 +22868,11 @@ func importedNamesFor(path, content string) map[string][]string {
 	}
 }
 
+var (
+	importedGoNamesSingleImport = regexp.MustCompile(`^\s*import\s+(?:(\w+)\s+)?["]([^"]+)["]`)
+	importedGoNamesBlockImport  = regexp.MustCompile(`^\s*(?:(\w+)\s+)?["]([^"]+)["]`)
+)
+
 func importedGoNames(content string) map[string][]string {
 	imports := map[string][]string{}
 	add := func(alias, module string) {
@@ -20065,8 +22886,6 @@ func importedGoNames(content string) map[string][]string {
 			imports[alias] = append(imports[alias], module)
 		}
 	}
-	singleImport := regexp.MustCompile(`^\s*import\s+(?:(\w+)\s+)?["]([^"]+)["]`)
-	blockImport := regexp.MustCompile(`^\s*(?:(\w+)\s+)?["]([^"]+)["]`)
 	inBlock := false
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
@@ -20076,7 +22895,7 @@ func importedGoNames(content string) map[string][]string {
 				inBlock = true
 				continue
 			}
-			if matches := singleImport.FindStringSubmatch(line); len(matches) == 3 {
+			if matches := importedGoNamesSingleImport.FindStringSubmatch(line); len(matches) == 3 {
 				add(matches[1], matches[2])
 			}
 			continue
@@ -20085,7 +22904,7 @@ func importedGoNames(content string) map[string][]string {
 			inBlock = false
 			continue
 		}
-		if matches := blockImport.FindStringSubmatch(line); len(matches) == 3 {
+		if matches := importedGoNamesBlockImport.FindStringSubmatch(line); len(matches) == 3 {
 			add(matches[1], matches[2])
 		}
 	}
@@ -20102,15 +22921,18 @@ func goImportDefaultName(module string) string {
 	return strings.ReplaceAll(base, "-", "_")
 }
 
+var (
+	importedJavaScriptNamesNamedImport        = regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
+	importedJavaScriptNamesDefaultImport      = regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
+	importedJavaScriptNamesNamespaceImport    = regexp.MustCompile(`(?m)^\s*import\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
+	importedJavaScriptNamesRequireNamed       = regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)`)
+	importedJavaScriptNamesRequireDefault     = regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)`)
+	importedJavaScriptNamesRequireNamedExpr   = regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*([^\n)]+)\s*\)`)
+	importedJavaScriptNamesRequireDefaultExpr = regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*([^\n)]+)\s*\)`)
+)
+
 func importedJavaScriptNames(content string) map[string][]string {
 	imports := map[string][]string{}
-	namedImport := regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
-	defaultImport := regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
-	namespaceImport := regexp.MustCompile(`(?m)^\s*import\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
-	requireNamed := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)`)
-	requireDefault := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)`)
-	requireNamedExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*([^\n)]+)\s*\)`)
-	requireDefaultExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*([^\n)]+)\s*\)`)
 	constants := staticJSStringConstants(content)
 	add := func(local, module string) {
 		local = strings.TrimSpace(local)
@@ -20119,26 +22941,26 @@ func importedJavaScriptNames(content string) map[string][]string {
 			imports[local] = append(imports[local], module)
 		}
 	}
-	for _, match := range namedImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesNamedImport.FindAllStringSubmatch(content, -1) {
 		for _, item := range strings.Split(match[1], ",") {
 			add(javascriptImportedLocalName(item), match[2])
 		}
 	}
-	for _, match := range defaultImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesDefaultImport.FindAllStringSubmatch(content, -1) {
 		add(match[1], match[2])
 	}
-	for _, match := range namespaceImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesNamespaceImport.FindAllStringSubmatch(content, -1) {
 		add(match[1], match[2])
 	}
-	for _, match := range requireNamed.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireNamed.FindAllStringSubmatch(content, -1) {
 		for _, item := range strings.Split(match[1], ",") {
 			add(javascriptImportedLocalName(item), match[2])
 		}
 	}
-	for _, match := range requireDefault.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireDefault.FindAllStringSubmatch(content, -1) {
 		add(match[1], match[2])
 	}
-	for _, match := range requireNamedExpr.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireNamedExpr.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -20150,7 +22972,7 @@ func importedJavaScriptNames(content string) map[string][]string {
 			add(javascriptImportedLocalName(item), module)
 		}
 	}
-	for _, match := range requireDefaultExpr.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireDefaultExpr.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -20161,10 +22983,11 @@ func importedJavaScriptNames(content string) map[string][]string {
 	return imports
 }
 
+var importedKotlinNamesImportRe = regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*(?:\.\*)?)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?`)
+
 func importedKotlinNames(content string) map[string][]string {
 	imports := map[string][]string{}
-	importRe := regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*(?:\.\*)?)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?`)
-	for _, match := range importRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedKotlinNamesImportRe.FindAllStringSubmatch(content, -1) {
 		module := strings.TrimSpace(match[1])
 		if module == "" || strings.HasSuffix(module, ".*") {
 			continue
@@ -20389,36 +23212,29 @@ func importedJavaScriptBindings(content string) map[string][]jsImportBinding {
 		}
 		bindings[local] = append(bindings[local], binding)
 	}
-	namedImport := regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
-	defaultImport := regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
-	namespaceImport := regexp.MustCompile(`(?m)^\s*import\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
-	requireNamed := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)`)
-	requireDefault := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)`)
-	requireNamedExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*([^\n)]+)\s*\)`)
-	requireDefaultExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*([^\n)]+)\s*\)`)
 	constants := staticJSStringConstants(content)
-	for _, match := range namedImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesNamedImport.FindAllStringSubmatch(content, -1) {
 		for _, item := range strings.Split(match[1], ",") {
 			imported, local := javascriptImportNames(item)
 			add(local, jsImportBinding{Module: match[2], Imported: imported})
 		}
 	}
-	for _, match := range defaultImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesDefaultImport.FindAllStringSubmatch(content, -1) {
 		add(match[1], jsImportBinding{Module: match[2], Imported: "default"})
 	}
-	for _, match := range namespaceImport.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesNamespaceImport.FindAllStringSubmatch(content, -1) {
 		add(match[1], jsImportBinding{Module: match[2], Namespace: true})
 	}
-	for _, match := range requireNamed.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireNamed.FindAllStringSubmatch(content, -1) {
 		for _, item := range strings.Split(match[1], ",") {
 			imported, local := javascriptImportNames(item)
 			add(local, jsImportBinding{Module: match[2], Imported: imported})
 		}
 	}
-	for _, match := range requireDefault.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireDefault.FindAllStringSubmatch(content, -1) {
 		add(match[1], jsImportBinding{Module: match[2]})
 	}
-	for _, match := range requireNamedExpr.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireNamedExpr.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -20431,7 +23247,7 @@ func importedJavaScriptBindings(content string) map[string][]jsImportBinding {
 			add(local, jsImportBinding{Module: module, Imported: imported})
 		}
 	}
-	for _, match := range requireDefaultExpr.FindAllStringSubmatch(content, -1) {
+	for _, match := range importedJavaScriptNamesRequireDefaultExpr.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -20693,6 +23509,8 @@ func pythonFromImportItems(items string) []string {
 	return out
 }
 
+var importedPythonNamesAndFormsImportRe = regexp.MustCompile(`^\s*import\s+(.+)$`)
+
 // importedPythonNamesAndForms is the single parser shared by importedPythonNames
 // and importedPythonImportForms, so the module strings and their recorded forms
 // can never drift apart.
@@ -20709,7 +23527,6 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 	for _, statement := range pythonFromImportStatements(content) {
 		fromByLine[statement.line] = statement
 	}
-	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
 	for lineNumber, text := range strings.Split(content, "\n") {
 		if statement, ok := fromByLine[lineNumber]; ok {
 			for _, item := range statement.items {
@@ -20731,7 +23548,7 @@ func importedPythonNamesAndForms(content string) (map[string][]string, map[strin
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
+		if matches := importedPythonNamesAndFormsImportRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {
@@ -20970,6 +23787,8 @@ func matchDelimiter(b []byte, openIdx int) int {
 	return -1
 }
 
+var callLikeIdentifiersCall = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>\n;{}()]*>)?\(`)
+
 func callLikeIdentifiers(content, language string) map[string]struct{} {
 	stripped := stripCodeLiteralsAndComments(content)
 	if language == "Python" {
@@ -20982,8 +23801,7 @@ func callLikeIdentifiers(content, language string) map[string]struct{} {
 		stripped = stripPythonLiteralsAndComments(content)
 	}
 	identifiers := map[string]struct{}{}
-	call := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>\n;{}()]*>)?\(`)
-	for _, match := range call.FindAllStringSubmatchIndex(stripped, -1) {
+	for _, match := range callLikeIdentifiersCall.FindAllStringSubmatchIndex(stripped, -1) {
 		if len(match) < 4 {
 			continue
 		}
@@ -21023,6 +23841,334 @@ func callNameIgnored(content string, start int, name, language string) bool {
 	default:
 		return false
 	}
+}
+
+// maskFSharpBlockComments blanks `(* ... *)` comment bodies, preserving length and
+// line structure so every offset around them is unchanged.
+//
+// The generic literal/comment stripper does not know this form, so a commented
+// pipeline -- `(* xs |> helper *)` -- reached the F# scanners and emitted a CALLS edge
+// to a function the code does not call. Commented-out code is the shape most likely to
+// contain a call, which is what makes the fabrication easy to hit.
+//
+// F# block comments NEST, so the scan counts depth rather than stopping at the first
+// `*)`; a single-pass strip would end the mask early and expose the tail of an outer
+// comment. Line comments are already handled by the generic stripper.
+func maskFSharpBlockComments(text string) string {
+	if !strings.Contains(text, "(*") {
+		return text
+	}
+	return maskFSharpSource(text, true, false)
+}
+
+// maskFSharpLiteralsAndLineComments blanks F# STRING and CHARACTER literal
+// bodies and `//` line comments, preserving length and line structure.
+//
+// The F# call scanners used stripCodeLiteralsAndComments, which is shared by
+// thirty-odd languages and models none of F#'s literal forms. A triple-quoted
+// string is raw -- it ends only at the next `"""` -- but the generic stripper
+// pairs quotes two at a time, so `let s = """a " x |> helper """` left
+// `x |> helper` standing as code and the pipeline scanner emitted a CALLS edge
+// to a function the file never calls. The same held for anything a verbatim or
+// triple-quoted literal spanned a newline to reach, because the generic
+// stripper abandons a string at the first line break, and for `""` preceded by
+// a backslash, which it consumed as an escape a verbatim string does not have.
+// It went wrong in the other direction too: F# spells a generic type parameter
+// with the same apostrophe as a character literal, so `'T` opened a literal
+// that closed on the next `'` on the line and blanked the real pipeline between
+// them -- `let run (xs: 'T list) = xs |> other 'a'` lost its call to `other`.
+//
+// The state machine that already reads these forms correctly is the block
+// comment masker's, so it is shared rather than reimplemented. Only literals
+// are blanked here: `(* ... *)` is left exactly as it was, because in
+// production this runs on a block that maskFSharpBlockComments has already
+// masked, and on raw input the pipeline scanner deliberately matches its dotted
+// sibling instead of diverging from it.
+func maskFSharpLiteralsAndLineComments(text string) string {
+	return maskFSharpSource(text, false, true)
+}
+
+// fsharpLiteral is the F# string form the masker is currently inside.
+//
+// `dollars` is the number of `$` sigils the literal opened with, and it is the
+// width of its interpolation delimiter: `$"{x}"` holds an expression in ONE
+// brace, `$$"""{{x}}"""` in two. Zero means the literal is not interpolated and
+// has no holes at all.
+type fsharpLiteral struct {
+	verbatim bool
+	triple   bool
+	dollars  int
+}
+
+// fsharpHole is an OPEN interpolation hole: the literal to resume when it
+// closes, how deeply bracketed the expression inside it currently is, and
+// whether the scan has passed the `,`/`:` that ends the expression and begins
+// the alignment/format text.
+type fsharpHole struct {
+	lit    fsharpLiteral
+	nested int
+	format bool
+}
+
+// maskFSharpSource walks F# source once, tracking the block comment depth and
+// the literal it is inside, and blanks whichever of the two the caller asked
+// for. Blanking is always length- and line-preserving.
+//
+// The holes of an INTERPOLATED string are the exception: they are not literal
+// text, they are expressions the compiler evaluates, so `$"{value |> normalize}"`
+// really does call normalize. Blanking the whole literal deleted that call and
+// every other one written in a hole. Only the literal text around a hole is
+// blanked; the expression inside it is left standing as the code it is, and a
+// hole is entered by leaving string state entirely, so a string nested inside
+// one (`$"{f (g "a |> helper")}"`) is masked by the same machine.
+//
+// What is deliberately NOT modelled: a run of `{` longer than the delimiter in
+// a `$$`-style raw literal is read as escapes plus one opener, which is the
+// rule F# states for `$` and merely extends to the wider delimiter; and the
+// alignment/format text after an unbracketed `,` or `:` is blanked as the
+// literal text it is, so a `::`, `:>` or `:?` operator is spelled out here to
+// keep a cons or a cast from being mistaken for one.
+func maskFSharpSource(text string, blankComments, blankLiterals bool) string {
+	out := []byte(text)
+	blank := func(from, to int) {
+		if blankLiterals {
+			maskBytes(out, from, to)
+		}
+	}
+	depth := 0
+	inString := false
+	var cur fsharpLiteral
+	var holes []fsharpHole
+	for i := 0; i < len(out); i++ {
+		if inString {
+			start := i
+			if cur.dollars > 0 && out[i] == '{' {
+				// A run of `{` inside an interpolated literal either OPENS A
+				// HOLE or is an escaped brace. Either way the braces themselves
+				// are literal syntax and go; what follows an opener is code.
+				run := fsharpBraceRun(out, i, '{')
+				blank(start, i+run)
+				i += run - 1
+				if fsharpHoleOpens(run, cur.dollars) {
+					holes = append(holes, fsharpHole{lit: cur})
+					inString = false
+				}
+				continue
+			}
+			switch {
+			case cur.triple:
+				// A TRIPLE-QUOTED string is raw and ends only at the next
+				// `"""`, so the unescaped quotes it exists to hold are
+				// ordinary content. Ending it at the first one left the rest
+				// of the literal being read as code: `"""a " (* b"""`
+				// opened a block comment that never closed, and every genuine
+				// pipeline after it was blanked away.
+				if out[i] == '"' && i+2 < len(out) && out[i+1] == '"' && out[i+2] == '"' {
+					i += 2
+					inString = false
+				}
+			case !cur.verbatim && out[i] == '\\' && i+1 < len(out):
+				// An escape consumes the next byte, so a `\"` does not end the
+				// string and expose the code after it to the comment scanner.
+				i++
+			case out[i] == '"':
+				if cur.verbatim && i+1 < len(out) && out[i+1] == '"' {
+					i++ // "" is one escaped quote inside a verbatim string
+					blank(start, i+1)
+					continue
+				}
+				inString = false
+			}
+			blank(start, i+1)
+			continue
+		}
+		if n := len(holes); n > 0 && depth == 0 {
+			hole := &holes[n-1]
+			if out[i] == '}' && hole.nested == 0 && fsharpBraceRun(out, i, '}') >= hole.lit.dollars {
+				// The hole CLOSES: its delimiter is literal syntax, and the
+				// text after it is literal text again.
+				blank(i, i+hole.lit.dollars)
+				i += hole.lit.dollars - 1
+				cur, inString = hole.lit, true
+				holes = holes[:n-1]
+				continue
+			}
+			if hole.format {
+				blank(i, i+1)
+				continue
+			}
+			switch out[i] {
+			case '(', '[', '{':
+				hole.nested++
+			case ')', ']', '}':
+				if hole.nested > 0 {
+					hole.nested--
+				}
+			case ',', ':':
+				// `,` and `:` end the expression and begin the alignment and
+				// FORMAT text, which is literal: a date format's dots
+				// (`$"{d:yyyy.MM.dd}"`) would otherwise read as a qualified
+				// call. `::`, `:>` and `:?` are operators, not a format.
+				if out[i] == ':' && i+1 < len(out) && (out[i+1] == ':' || out[i+1] == '>' || out[i+1] == '?') {
+					i++
+					continue
+				}
+				// Only a TOP-LEVEL separator begins the format text. Inside a
+				// bracket the same byte is ordinary code -- the argument comma
+				// of `$"{f(a, b) |> normalize}"`, the type annotation of
+				// `$"{(v: int) |> normalize}"` -- and reading it as a format
+				// did not merely blank that hole: the `)` that followed was
+				// blanked too, so `nested` never came back to zero, the hole
+				// never closed, and every byte after it in the masked text was
+				// blanked as literal. One nested comma deleted the call in the
+				// hole and every call written after it.
+				if hole.nested > 0 {
+					break
+				}
+				hole.format = true
+				blank(i, i+1)
+				continue
+			}
+		}
+		switch {
+		case depth == 0 && out[i] == '/' && i+1 < len(out) && out[i+1] == '/':
+			// A LINE COMMENT is not code, and it is the likeliest place in a
+			// file for a lone `"` -- prose, or a quoted word. Counting that
+			// quote as a string opener left the scan stuck inside a string for
+			// the rest of the block, so a `(* xs |> helper *)` below it was
+			// never masked and the pipeline scanner emitted a CALLS edge to a
+			// function the code does not call.
+			start := i
+			for i+1 < len(out) && out[i+1] != '\n' {
+				i++
+			}
+			blank(start, i+1)
+		case depth == 0 && out[i] == '\'':
+			// A CHARACTER LITERAL is one token: the quote in `'"'` opens
+			// nothing. Reading it as a string opener stranded the scan the same
+			// way a line comment did. F# spells generic type parameters with
+			// the same leading apostrophe (`'T`, `'a`) and allows a trailing
+			// one in identifiers (`f'`), so only a well-formed literal is
+			// consumed and anything else is left exactly as before -- blanking
+			// a `'T` and everything up to the next apostrophe is how the
+			// generic stripper deleted real calls.
+			if end := fsharpCharLiteralEnd(out, i); end > i {
+				blank(i, end+1)
+				i = end
+			}
+		case depth == 0 && out[i] == '"':
+			// A STRING is not code. `let marker = "(*"` used to open a comment
+			// that never closed, and the rest of the block -- every real
+			// pipeline in it -- was blanked away, dropping those calls silently.
+			start := i
+			prefix, lit := fsharpLiteralPrefix(out, i)
+			cur, inString = lit, true
+			// `@"""x"""` is a VERBATIM string whose `""` are escaped
+			// quotes, not a triple-quoted one, so the `@` is read first and
+			// only an unprefixed `"""` opens the raw form.
+			if !cur.verbatim && i+2 < len(out) && out[i+1] == '"' && out[i+2] == '"' {
+				cur.triple = true
+				i += 2
+			}
+			// The `$` and `@` sigils belong to the literal, not to the code
+			// around it.
+			blank(prefix, start)
+			blank(start, i+1)
+		case i+1 < len(out) && out[i] == '(' && out[i+1] == '*':
+			depth++
+			if blankComments {
+				out[i], out[i+1] = ' ', ' '
+			}
+			i++
+		case depth > 0 && i+1 < len(out) && out[i] == '*' && out[i+1] == ')':
+			depth--
+			if blankComments {
+				out[i], out[i+1] = ' ', ' '
+			}
+			i++
+		case depth > 0 && blankComments:
+			// The line structure is load-bearing: callers index the masked copy
+			// at offsets they read from the original, and entity line numbers
+			// are counted in it. maskBytes leaves BOTH break bytes alone --
+			// blanking a lone `\r` inside a comment, which this branch used to
+			// do, breaks that invariant on a CRLF file.
+			maskBytes(out, i, i+1)
+		}
+	}
+	return string(out)
+}
+
+// fsharpLiteralPrefix reads the `$` and `@` sigils in front of the quote at
+// `quote`, returning where they start and the literal form they describe.
+//
+// The number of `$` is load-bearing: it sets how many braces open a hole, so
+// `$$"""{{x}}"""` is read with a two-brace delimiter and its single braces stay
+// literal text. `@` may come on either side of the `$` (`$@"..."`, `@$"..."`).
+func fsharpLiteralPrefix(out []byte, quote int) (int, fsharpLiteral) {
+	var lit fsharpLiteral
+	start := quote
+	for start > 0 && (out[start-1] == '$' || out[start-1] == '@') {
+		start--
+		if out[start] == '$' {
+			lit.dollars++
+		} else {
+			lit.verbatim = true
+		}
+	}
+	return start, lit
+}
+
+// fsharpBraceRun counts the run of `brace` bytes starting at i.
+func fsharpBraceRun(out []byte, i int, brace byte) int {
+	run := 0
+	for i+run < len(out) && out[i+run] == brace {
+		run++
+	}
+	return run
+}
+
+// fsharpHoleOpens reports whether a run of `run` opening braces in a literal
+// whose delimiter is `dollars` wide opens an interpolation hole.
+//
+// In a one-`$` literal `{{` is an ESCAPED brace, so pairs cancel and only an
+// odd brace is left to open a hole -- `$"{{x}}"` prints `{x}` and calls
+// nothing. The same rule read at the wider delimiter covers `$$`.
+func fsharpHoleOpens(run, dollars int) bool {
+	if dollars == 1 {
+		return run%2 == 1
+	}
+	return run >= dollars
+}
+
+// fsharpCharLiteralEnd returns the index of the closing quote of the F#
+// character literal starting at the apostrophe at i, or -1 when that apostrophe
+// is not one. F# reuses the apostrophe for generic type parameters (`'T`) and
+// permits it inside identifiers (`f'`), so the shape is checked rather than
+// assumed: a bare `'` is left untouched and the caller's state is unchanged.
+func fsharpCharLiteralEnd(b []byte, i int) int {
+	if i+2 >= len(b) {
+		return -1
+	}
+	if b[i+1] == '\\' {
+		// An escape runs to the closing quote: `'\n'`, `'\''`, `'\u0041'`,
+		// `'\U0001F600'`. Bounded so a stray backslash cannot swallow the file.
+		for j := i + 2; j < len(b) && j <= i+12; j++ {
+			if b[j] == '\n' || b[j] == '\r' {
+				return -1
+			}
+			if b[j] == '\'' {
+				return j
+			}
+		}
+		return -1
+	}
+	if b[i+1] == '\'' || b[i+1] == '\n' || b[i+1] == '\r' {
+		return -1
+	}
+	if b[i+2] == '\'' {
+		return i + 2
+	}
+	return -1
 }
 
 func stripCodeLiteralsAndComments(content string) string {
@@ -21214,7 +24360,7 @@ func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, sy
 	return sortedKeys(seen)
 }
 
-func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {
+func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, constantsByFile *fileStringConstants) []expressRouteRelation {
 	var relations []expressRouteRelation
 	seen := map[string]bool{}
 	for _, file := range files {
@@ -21239,7 +24385,7 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 				}
 			}
 		}
-		for _, registration := range goHTTPRouteRegistrations(content) {
+		for _, registration := range goHTTPRouteRegistrations(content, constantsByFile.forFile(file.Path, content)) {
 			handler, ok := resolveRouteHandlerSymbol(handlers, registration.Handler)
 			if !ok {
 				continue
@@ -21283,11 +24429,11 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 	return relations
 }
 
-func goHTTPRouteRegistrations(content string) []goHTTPRouteRegistration {
-	constants := staticStringConstants(content)
+var goHTTPRouteRegistrationsGroupRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)`)
+
+func goHTTPRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {
 	groupPrefixes := map[string]string{}
-	groupRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)`)
-	groupMatches := groupRe.FindAllStringSubmatch(content, -1)
+	groupMatches := goHTTPRouteRegistrationsGroupRe.FindAllStringSubmatch(content, -1)
 	changed := true
 	for changed {
 		changed = false
@@ -21616,11 +24762,14 @@ func pythonModuleFiles(files []FileRecord) map[string]string {
 	return out
 }
 
+var (
+	djangoIncludeMountsStringRe = regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([rRuUbB]*["'][^"']*["'])`)
+	djangoIncludeMountsTargetRe = regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.urlpatterns)?)\s*[\),]`)
+)
+
 func djangoIncludeMounts(content string) []djangoIncludeMount {
-	stringRe := regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([rRuUbB]*["'][^"']*["'])`)
-	targetRe := regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.urlpatterns)?)\s*[\),]`)
 	var mounts []djangoIncludeMount
-	for _, match := range stringRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range djangoIncludeMountsStringRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -21631,7 +24780,7 @@ func djangoIncludeMounts(content string) []djangoIncludeMount {
 		}
 		mounts = append(mounts, djangoIncludeMount{Prefix: prefix, Module: module})
 	}
-	for _, match := range targetRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range djangoIncludeMountsTargetRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -21784,11 +24933,12 @@ type pythonTornadoRouteRegistration struct {
 	Detail  string
 }
 
+var pythonTornadoRouteRegistrationsRouteTupleRe = regexp.MustCompile(`\(\s*((?:[rRuUbB]*)?["'][^"']+["'])\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\b`)
+
 func pythonTornadoRouteRegistrations(content string) []pythonTornadoRouteRegistration {
-	routeTupleRe := regexp.MustCompile(`\(\s*((?:[rRuUbB]*)?["'][^"']+["'])\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\b`)
 	var registrations []pythonTornadoRouteRegistration
 	seen := map[string]bool{}
-	for _, match := range routeTupleRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range pythonTornadoRouteRegistrationsRouteTupleRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -21816,15 +24966,18 @@ func pythonTornadoRouteRegistrations(content string) []pythonTornadoRouteRegistr
 	return registrations
 }
 
+var (
+	pythonTornadoRoutePatternValueNamedCaptureRe   = regexp.MustCompile(`\(\?P<([A-Za-z_][A-Za-z0-9_]*)>[^)]*\)`)
+	pythonTornadoRoutePatternValueUnnamedCaptureRe = regexp.MustCompile(`\([^)]*\)`)
+)
+
 func pythonTornadoRoutePatternValue(pattern string) string {
 	route := djangoRoutePatternValue(pattern, true)
 	if route == "" {
 		return ""
 	}
-	namedCaptureRe := regexp.MustCompile(`\(\?P<([A-Za-z_][A-Za-z0-9_]*)>[^)]*\)`)
-	route = namedCaptureRe.ReplaceAllString(route, `{$1}`)
-	unnamedCaptureRe := regexp.MustCompile(`\([^)]*\)`)
-	route = unnamedCaptureRe.ReplaceAllString(route, `{param}`)
+	route = pythonTornadoRoutePatternValueNamedCaptureRe.ReplaceAllString(route, `{$1}`)
+	route = pythonTornadoRoutePatternValueUnnamedCaptureRe.ReplaceAllString(route, `{param}`)
 	route = strings.ReplaceAll(route, `\/`, `/`)
 	route = strings.ReplaceAll(route, `\d+`, `{param}`)
 	return normalizeRouteParamSyntax(route)
@@ -21915,6 +25068,11 @@ func laravelRouteRelations(files []FileRecord, recordsByFile map[string][]Symbol
 	return relations
 }
 
+var (
+	laravelRouteRegistrationsArrayRe  = regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*\[\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*,\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]`)
+	laravelRouteRegistrationsStringRe = regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*["']([A-Za-z_\\][A-Za-z0-9_\\]*)@([A-Za-z_][A-Za-z0-9_]*)["']`)
+)
+
 func laravelRouteRegistrations(content string) []laravelRouteRegistration {
 	var registrations []laravelRouteRegistration
 	add := func(route, controller, method, evidence string) {
@@ -21931,15 +25089,13 @@ func laravelRouteRegistrations(content string) []laravelRouteRegistration {
 			Detail:       route + " -> " + controller + "." + method,
 		})
 	}
-	arrayRe := regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*\[\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*,\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]`)
-	stringRe := regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*["']([A-Za-z_\\][A-Za-z0-9_\\]*)@([A-Za-z_][A-Za-z0-9_]*)["']`)
 	scan := func(body, prefix, evidenceSuffix string) {
-		for _, match := range arrayRe.FindAllStringSubmatch(body, -1) {
+		for _, match := range laravelRouteRegistrationsArrayRe.FindAllStringSubmatch(body, -1) {
 			if len(match) == 4 {
 				add(joinRoutePaths(prefix, match[1]), match[2], match[3], "laravel_route_controller_array"+evidenceSuffix)
 			}
 		}
-		for _, match := range stringRe.FindAllStringSubmatch(body, -1) {
+		for _, match := range laravelRouteRegistrationsStringRe.FindAllStringSubmatch(body, -1) {
 			if len(match) == 4 {
 				add(joinRoutePaths(prefix, match[1]), match[2], match[3], "laravel_route_controller_string"+evidenceSuffix)
 			}
@@ -21971,11 +25127,12 @@ type laravelControllerGroup struct {
 	Body       string
 }
 
+var laravelPrefixGroupsRe = regexp.MustCompile(`(?is)Route::prefix\s*\(\s*["']([^"']+)["']\s*\)\s*->\s*group\s*\(\s*function\s*\(\)\s*\{(.*?)\}\s*\);`)
+
 func laravelPrefixGroups(content string) (string, []laravelPrefixGroup) {
-	re := regexp.MustCompile(`(?is)Route::prefix\s*\(\s*["']([^"']+)["']\s*\)\s*->\s*group\s*\(\s*function\s*\(\)\s*\{(.*?)\}\s*\);`)
 	var groups []laravelPrefixGroup
-	top := re.ReplaceAllStringFunc(content, func(block string) string {
-		match := re.FindStringSubmatch(block)
+	top := laravelPrefixGroupsRe.ReplaceAllStringFunc(content, func(block string) string {
+		match := laravelPrefixGroupsRe.FindStringSubmatch(block)
 		if len(match) == 3 {
 			groups = append(groups, laravelPrefixGroup{Prefix: normalizeSlashRoute(match[1]), Body: match[2]})
 		}
@@ -21984,22 +25141,25 @@ func laravelPrefixGroups(content string) (string, []laravelPrefixGroup) {
 	return top, groups
 }
 
+var (
+	laravelControllerGroupsRe           = regexp.MustCompile(`(?is)\bRoute::((?:(?:prefix|controller)\s*\([^)]*\)\s*->\s*)+)group\s*\(\s*function\s*\(\)\s*\{(.*?)\}\s*\);`)
+	laravelControllerGroupsPrefixRe     = regexp.MustCompile(`(?is)\bprefix\s*\(\s*["']([^"']+)["']\s*\)`)
+	laravelControllerGroupsControllerRe = regexp.MustCompile(`(?is)\bcontroller\s*\(\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*\)`)
+)
+
 func laravelControllerGroups(content string) []laravelControllerGroup {
-	re := regexp.MustCompile(`(?is)\bRoute::((?:(?:prefix|controller)\s*\([^)]*\)\s*->\s*)+)group\s*\(\s*function\s*\(\)\s*\{(.*?)\}\s*\);`)
-	prefixRe := regexp.MustCompile(`(?is)\bprefix\s*\(\s*["']([^"']+)["']\s*\)`)
-	controllerRe := regexp.MustCompile(`(?is)\bcontroller\s*\(\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*\)`)
 	var groups []laravelControllerGroup
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range laravelControllerGroupsRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
 		chain, body := match[1], match[2]
-		controllerMatch := controllerRe.FindStringSubmatch(chain)
+		controllerMatch := laravelControllerGroupsControllerRe.FindStringSubmatch(chain)
 		if len(controllerMatch) != 2 {
 			continue
 		}
 		prefix := "/"
-		if prefixMatch := prefixRe.FindStringSubmatch(chain); len(prefixMatch) == 2 {
+		if prefixMatch := laravelControllerGroupsPrefixRe.FindStringSubmatch(chain); len(prefixMatch) == 2 {
 			prefix = normalizeSlashRoute(prefixMatch[1])
 		}
 		groups = append(groups, laravelControllerGroup{
@@ -22011,8 +25171,10 @@ func laravelControllerGroups(content string) []laravelControllerGroup {
 	return groups
 }
 
+var laravelControllerGroupMethodRouteReRe = regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*["']([A-Za-z_][A-Za-z0-9_]*)["']`)
+
 func laravelControllerGroupMethodRouteRe() *regexp.Regexp {
-	return regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*["']([A-Za-z_][A-Za-z0-9_]*)["']`)
+	return laravelControllerGroupMethodRouteReRe
 }
 
 func railsRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {
@@ -22100,6 +25262,11 @@ func railsRoutesFile(path, content string) bool {
 	return strings.HasSuffix(slashPath, "config/routes.rb") || strings.Contains(content, ".routes.draw")
 }
 
+var (
+	railsRouteRegistrationsToRe         = regexp.MustCompile(`(?is)\b(?:get|post|put|patch|delete|match)\s+["']([^"']+)["']\s*,\s*to:\s*["']([A-Za-z0-9_/]+)#([A-Za-z_][A-Za-z0-9_]*)["']`)
+	railsRouteRegistrationsHashRocketRe = regexp.MustCompile(`(?is)\b(?:get|post|put|patch|delete|match)\s+["']([^"']+)["']\s*=>\s*["']([A-Za-z0-9_/]+)#([A-Za-z_][A-Za-z0-9_]*)["']`)
+)
+
 func railsRouteRegistrations(content string) []railsRouteRegistration {
 	var registrations []railsRouteRegistration
 	add := func(route, controller, action, evidence string) {
@@ -22117,15 +25284,13 @@ func railsRouteRegistrations(content string) []railsRouteRegistration {
 			Detail:       route + " -> " + controller + "#" + action,
 		})
 	}
-	toRe := regexp.MustCompile(`(?is)\b(?:get|post|put|patch|delete|match)\s+["']([^"']+)["']\s*,\s*to:\s*["']([A-Za-z0-9_/]+)#([A-Za-z_][A-Za-z0-9_]*)["']`)
-	hashRocketRe := regexp.MustCompile(`(?is)\b(?:get|post|put|patch|delete|match)\s+["']([^"']+)["']\s*=>\s*["']([A-Za-z0-9_/]+)#([A-Za-z_][A-Za-z0-9_]*)["']`)
 	scan := func(body, routePrefix, controllerPrefix, evidenceSuffix string) {
-		for _, match := range toRe.FindAllStringSubmatch(body, -1) {
+		for _, match := range railsRouteRegistrationsToRe.FindAllStringSubmatch(body, -1) {
 			if len(match) == 4 {
 				add(joinRoutePaths(routePrefix, match[1]), railsJoinControllerPrefix(controllerPrefix, match[2]), match[3], "rails_route_to"+evidenceSuffix)
 			}
 		}
-		for _, match := range hashRocketRe.FindAllStringSubmatch(body, -1) {
+		for _, match := range railsRouteRegistrationsHashRocketRe.FindAllStringSubmatch(body, -1) {
 			if len(match) == 4 {
 				add(joinRoutePaths(routePrefix, match[1]), railsJoinControllerPrefix(controllerPrefix, match[2]), match[3], "rails_route_hash_rocket"+evidenceSuffix)
 			}
@@ -22174,11 +25339,12 @@ type railsNestedResourceBlock struct {
 	Body          string
 }
 
+var railsNestedResourceBlocksRe = regexp.MustCompile(`(?ims)^\s*resources\s+:([A-Za-z_][A-Za-z0-9_]*)([^\n]*)\s+do\s*(.*?)^\s*end\b`)
+
 func railsNestedResourceBlocks(content string) (string, []railsNestedResourceBlock) {
-	re := regexp.MustCompile(`(?ims)^\s*resources\s+:([A-Za-z_][A-Za-z0-9_]*)([^\n]*)\s+do\s*(.*?)^\s*end\b`)
 	var blocks []railsNestedResourceBlock
-	top := re.ReplaceAllStringFunc(content, func(block string) string {
-		match := re.FindStringSubmatch(block)
+	top := railsNestedResourceBlocksRe.ReplaceAllStringFunc(content, func(block string) string {
+		match := railsNestedResourceBlocksRe.FindStringSubmatch(block)
 		if len(match) != 4 {
 			return block
 		}
@@ -22192,11 +25358,12 @@ func railsNestedResourceBlocks(content string) (string, []railsNestedResourceBlo
 	return top, blocks
 }
 
+var railsScopedRouteBlocksRe = regexp.MustCompile(`(?ims)^\s*(scope\s+["']([^"']+)["']|namespace\s+:([A-Za-z_][A-Za-z0-9_]*))\s+do\s*(.*?)^\s*end\b`)
+
 func railsScopedRouteBlocks(content string) (string, []railsScopedRouteBlock) {
-	re := regexp.MustCompile(`(?ims)^\s*(scope\s+["']([^"']+)["']|namespace\s+:([A-Za-z_][A-Za-z0-9_]*))\s+do\s*(.*?)^\s*end\b`)
 	var blocks []railsScopedRouteBlock
-	top := re.ReplaceAllStringFunc(content, func(block string) string {
-		match := re.FindStringSubmatch(block)
+	top := railsScopedRouteBlocksRe.ReplaceAllStringFunc(content, func(block string) string {
+		match := railsScopedRouteBlocksRe.FindStringSubmatch(block)
 		if len(match) != 5 {
 			return block
 		}
@@ -22281,10 +25448,11 @@ func railsResourceRoutes(resource string, actions []string) []railsResourceRoute
 	return routes
 }
 
+var railsResourceDeclarationsRe = regexp.MustCompile(`(?m)^\s*resources\s+:([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*(.*))?$`)
+
 func railsResourceDeclarations(content string) []railsResourceDeclaration {
-	re := regexp.MustCompile(`(?m)^\s*resources\s+:([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*(.*))?$`)
 	var declarations []railsResourceDeclaration
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range railsResourceDeclarationsRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -22307,6 +25475,8 @@ func railsDefaultResourceActions() []string {
 	return []string{"index", "create", "new", "show", "edit", "update", "destroy"}
 }
 
+var railsResourceActionsRe = regexp.MustCompile(`[:'",\[\]]`)
+
 func railsResourceActions(value string) []string {
 	seen := map[string]bool{}
 	var actions []string
@@ -22314,7 +25484,7 @@ func railsResourceActions(value string) []string {
 	for _, action := range railsDefaultResourceActions() {
 		known[action] = true
 	}
-	normalized := regexp.MustCompile(`[:'",\[\]]`).ReplaceAllString(value, " ")
+	normalized := railsResourceActionsRe.ReplaceAllString(value, " ")
 	for _, action := range strings.Fields(normalized) {
 		if !known[action] {
 			continue
@@ -22576,10 +25746,15 @@ func jsRouterComposedRouteLiterals(block string, constants map[string]string) []
 	return sortedKeys(seen)
 }
 
+var (
+	jsRouterMountsRe         = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.(?:use|route)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)`)
+	jsRouterMountsKoaMountRe = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*mount\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\.routes\s*\(\s*\)\s*\)\s*\)`)
+	jsRouterMountsKoaUseRe   = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\.routes\s*\(\s*\)\s*\)`)
+)
+
 func jsRouterMounts(block string, constants map[string]string) []jsRouterMount {
-	re := regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.(?:use|route)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)`)
 	var mounts []jsRouterMount
-	for _, match := range re.FindAllStringSubmatch(block, -1) {
+	for _, match := range jsRouterMountsRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 4 {
 			continue
 		}
@@ -22588,8 +25763,7 @@ func jsRouterMounts(block string, constants map[string]string) []jsRouterMount {
 			mounts = append(mounts, jsRouterMount{Receiver: match[1], Prefix: prefix, Target: match[3]})
 		}
 	}
-	koaMountRe := regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*mount\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\.routes\s*\(\s*\)\s*\)\s*\)`)
-	for _, match := range koaMountRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range jsRouterMountsKoaMountRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 4 {
 			continue
 		}
@@ -22598,8 +25772,7 @@ func jsRouterMounts(block string, constants map[string]string) []jsRouterMount {
 			mounts = append(mounts, jsRouterMount{Receiver: match[1], Prefix: prefix, Target: match[3]})
 		}
 	}
-	koaUseRe := regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\.routes\s*\(\s*\)\s*\)`)
-	for _, match := range koaUseRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range jsRouterMountsKoaUseRe.FindAllStringSubmatch(block, -1) {
 		if len(match) == 3 {
 			mounts = append(mounts, jsRouterMount{Receiver: match[1], Prefix: "/", Target: match[2]})
 		}
@@ -22607,15 +25780,19 @@ func jsRouterMounts(block string, constants map[string]string) []jsRouterMount {
 	return mounts
 }
 
+var (
+	jsFastifyPluginMountsRe  = regexp.MustCompile(`(?is)\b[A-Za-z_$][\w$]*\.register\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*,\s*\{([^}]*)\}`)
+	jsFastifyPluginMountsRe2 = regexp.MustCompile(`(?is)\bprefix\s*:\s*([^,\n}]+)`)
+)
+
 func jsFastifyPluginMounts(block string, constants map[string]string) []jsFastifyPluginMount {
-	re := regexp.MustCompile(`(?is)\b[A-Za-z_$][\w$]*\.register\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*,\s*\{([^}]*)\}`)
 	var mounts []jsFastifyPluginMount
-	for _, match := range re.FindAllStringSubmatch(block, -1) {
+	for _, match := range jsFastifyPluginMountsRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
 		options := match[2]
-		prefixMatch := regexp.MustCompile(`(?is)\bprefix\s*:\s*([^,\n}]+)`).FindStringSubmatch(options)
+		prefixMatch := jsFastifyPluginMountsRe2.FindStringSubmatch(options)
 		if len(prefixMatch) != 2 {
 			continue
 		}
@@ -22664,14 +25841,18 @@ func jsRouterRoutes(block string, constants map[string]string) []jsRouterRoute {
 	return routes
 }
 
+var (
+	jsRouterConstructorPrefixesRe  = regexp.MustCompile(`(?is)\b(?:const|let|var)?\s*([A-Za-z_$][\w$]*)\s*=\s*new\s+(?:[A-Za-z_$][\w$]*\.)?(?:Router|KoaRouter)\s*\(\s*\{([^}]*)\}\s*\)`)
+	jsRouterConstructorPrefixesRe2 = regexp.MustCompile(`(?:^|,)\s*prefix\s*(?:,|$)`)
+)
+
 func jsRouterConstructorPrefixes(block string, constants map[string]string) map[string]string {
-	re := regexp.MustCompile(`(?is)\b(?:const|let|var)?\s*([A-Za-z_$][\w$]*)\s*=\s*new\s+(?:[A-Za-z_$][\w$]*\.)?(?:Router|KoaRouter)\s*\(\s*\{([^}]*)\}\s*\)`)
 	prefixes := map[string]string{}
-	for _, match := range re.FindAllStringSubmatch(block, -1) {
+	for _, match := range jsRouterConstructorPrefixesRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}
-		prefixMatch := regexp.MustCompile(`(?is)\bprefix\s*:\s*([^,\n}]+)`).FindStringSubmatch(match[2])
+		prefixMatch := jsFastifyPluginMountsRe2.FindStringSubmatch(match[2])
 		if len(prefixMatch) == 2 {
 			prefix, ok := staticRouteExpressionValue(prefixMatch[1], constants)
 			if !ok {
@@ -22680,7 +25861,7 @@ func jsRouterConstructorPrefixes(block string, constants map[string]string) map[
 			prefixes[match[1]] = prefix
 			continue
 		}
-		if regexp.MustCompile(`(?:^|,)\s*prefix\s*(?:,|$)`).MatchString(strings.TrimSpace(match[2])) {
+		if jsRouterConstructorPrefixesRe2.MatchString(strings.TrimSpace(match[2])) {
 			if prefix, ok := staticRouteExpressionValue("prefix", constants); ok {
 				prefixes[match[1]] = prefix
 			}
@@ -23463,13 +26644,20 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 	return relations
 }
 
+var (
+	javascriptDefaultExportNameRe  = regexp.MustCompile(`(?m)^\s*export\s+default\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`)
+	javascriptDefaultExportNameRe2 = regexp.MustCompile(`(?m)^\s*export\s*\{([^}]+)\}`)
+	javascriptDefaultExportNameRe3 = regexp.MustCompile(`(?m)^\s*module\.exports\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`)
+	javascriptDefaultExportNameRe4 = regexp.MustCompile(`(?m)^\s*exports\.default\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`)
+)
+
 func javascriptDefaultExportName(content string) string {
-	for _, match := range regexp.MustCompile(`(?m)^\s*export\s+default\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range javascriptDefaultExportNameRe.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			return match[1]
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*export\s*\{([^}]+)\}`).FindAllStringSubmatch(content, -1) {
+	for _, match := range javascriptDefaultExportNameRe2.FindAllStringSubmatch(content, -1) {
 		if len(match) != 2 {
 			continue
 		}
@@ -23480,12 +26668,12 @@ func javascriptDefaultExportName(content string) string {
 			}
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*module\.exports\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range javascriptDefaultExportNameRe3.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			return match[1]
 		}
 	}
-	for _, match := range regexp.MustCompile(`(?m)^\s*exports\.default\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range javascriptDefaultExportNameRe4.FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			return match[1]
 		}
@@ -23695,8 +26883,10 @@ func pythonDirectRouteRegistrations(content string) []goHTTPRouteRegistration {
 	return registrations
 }
 
+var pythonAsViewClassNameRe = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\.as_view\s*\(`)
+
 func pythonAsViewClassName(handler string) (string, bool) {
-	match := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\.as_view\s*\(`).FindStringSubmatch(handler)
+	match := pythonAsViewClassNameRe.FindStringSubmatch(handler)
 	if len(match) != 2 {
 		return "", false
 	}
@@ -23738,7 +26928,6 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 	for _, statement := range pythonFromImportStatements(content) {
 		fromByLine[statement.line] = statement
 	}
-	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
 	for lineNumber, text := range strings.Split(content, "\n") {
 		if statement, ok := fromByLine[lineNumber]; ok {
 			for _, item := range statement.items {
@@ -23758,7 +26947,7 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if matches := importRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
+		if matches := importedPythonNamesAndFormsImportRe.FindStringSubmatch(pythonDirectImportStatement(line)); len(matches) == 2 {
 			for _, item := range strings.Split(matches[1], ",") {
 				module, alias := parsePythonImportItem(item)
 				if module == "" {
@@ -23776,24 +26965,27 @@ func importedPythonBindings(content string) map[string][]pythonImportBinding {
 	return imports
 }
 
+var (
+	pythonRouterMountsIncludeRouterRe = regexp.MustCompile(`\.include_router\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	pythonRouterMountsBlueprintRe     = regexp.MustCompile(`\.register_blueprint\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	pythonRouterMountsPrefixRe        = regexp.MustCompile(`\bprefix\s*=\s*["']([^"']+)["']`)
+	pythonRouterMountsUrlPrefixRe     = regexp.MustCompile(`\burl_prefix\s*=\s*["']([^"']+)["']`)
+)
+
 func pythonRouterMounts(content string) []pythonRouterMount {
-	includeRouterRe := regexp.MustCompile(`\.include_router\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)`)
-	blueprintRe := regexp.MustCompile(`\.register_blueprint\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)`)
-	prefixRe := regexp.MustCompile(`\bprefix\s*=\s*["']([^"']+)["']`)
-	urlPrefixRe := regexp.MustCompile(`\burl_prefix\s*=\s*["']([^"']+)["']`)
 	var mounts []pythonRouterMount
 	for _, line := range strings.Split(content, "\n") {
-		targetMatch := includeRouterRe.FindStringSubmatch(line)
+		targetMatch := pythonRouterMountsIncludeRouterRe.FindStringSubmatch(line)
 		if len(targetMatch) == 2 {
-			prefixMatch := prefixRe.FindStringSubmatch(line)
+			prefixMatch := pythonRouterMountsPrefixRe.FindStringSubmatch(line)
 			if len(prefixMatch) == 2 && strings.HasPrefix(prefixMatch[1], "/") {
 				mounts = append(mounts, pythonRouterMount{Prefix: prefixMatch[1], Target: targetMatch[1]})
 			}
 		}
-		targetMatch = blueprintRe.FindStringSubmatch(line)
+		targetMatch = pythonRouterMountsBlueprintRe.FindStringSubmatch(line)
 		if len(targetMatch) == 2 {
 			prefix := "/"
-			if prefixMatch := urlPrefixRe.FindStringSubmatch(line); len(prefixMatch) == 2 && strings.HasPrefix(prefixMatch[1], "/") {
+			if prefixMatch := pythonRouterMountsUrlPrefixRe.FindStringSubmatch(line); len(prefixMatch) == 2 && strings.HasPrefix(prefixMatch[1], "/") {
 				prefix = prefixMatch[1]
 			}
 			mounts = append(mounts, pythonRouterMount{Prefix: prefix, Target: targetMatch[1]})
@@ -23830,6 +27022,8 @@ type pythonRouteDecorator struct {
 	Route    string
 }
 
+var pythonRouteDecoratorsNearSymbolRouteDecoratorRe = regexp.MustCompile(`^@([A-Za-z_][A-Za-z0-9_]*)\.(?:get|post|put|patch|delete|head|options|route)\s*\(\s*["']([^"']+)["']`)
+
 func pythonRouteDecoratorsNearSymbol(content string, symbol SymbolRecord) []pythonRouteDecorator {
 	if symbol.StartLine <= 0 {
 		return nil
@@ -23839,7 +27033,6 @@ func pythonRouteDecoratorsNearSymbol(content string, symbol SymbolRecord) []pyth
 	if index >= len(lines) {
 		index = len(lines) - 1
 	}
-	routeDecoratorRe := regexp.MustCompile(`^@([A-Za-z_][A-Za-z0-9_]*)\.(?:get|post|put|patch|delete|head|options|route)\s*\(\s*["']([^"']+)["']`)
 	seen := map[string]bool{}
 	var routes []pythonRouteDecorator
 	for i := index; i >= 0 && index-i <= 8; i-- {
@@ -23853,7 +27046,7 @@ func pythonRouteDecoratorsNearSymbol(content string, symbol SymbolRecord) []pyth
 		if !strings.HasPrefix(line, "@") {
 			break
 		}
-		match := routeDecoratorRe.FindStringSubmatch(line)
+		match := pythonRouteDecoratorsNearSymbolRouteDecoratorRe.FindStringSubmatch(line)
 		if len(match) != 3 || !strings.HasPrefix(match[2], "/") {
 			continue
 		}
@@ -24011,11 +27204,14 @@ type csharpMinimalAPIRouteRegistration struct {
 	Detail  string
 }
 
+var (
+	csharpMinimalAPIRouteRegistrationsMapRouteRe          = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Map(?i:Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\b`)
+	csharpMinimalAPIRouteRegistrationsChainedGroupRouteRe = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*MapGroup\s*\(\s*([^,\n)]+)\s*\)\s*\.\s*Map(?i:Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\b`)
+)
+
 func csharpMinimalAPIRouteRegistrations(content string) []csharpMinimalAPIRouteRegistration {
 	constants := staticStringConstants(content)
 	groupPrefixes := csharpMinimalAPIGroupPrefixes(content, constants)
-	mapRouteRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Map(?i:Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\b`)
-	chainedGroupRouteRe := regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*MapGroup\s*\(\s*([^,\n)]+)\s*\)\s*\.\s*Map(?i:Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\b`)
 	var registrations []csharpMinimalAPIRouteRegistration
 	seen := map[string]bool{}
 	add := func(route, handler string) {
@@ -24031,7 +27227,7 @@ func csharpMinimalAPIRouteRegistrations(content string) []csharpMinimalAPIRouteR
 			Detail:  route + " -> " + handler,
 		})
 	}
-	for _, match := range mapRouteRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range csharpMinimalAPIRouteRegistrationsMapRouteRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 4 {
 			continue
 		}
@@ -24044,7 +27240,7 @@ func csharpMinimalAPIRouteRegistrations(content string) []csharpMinimalAPIRouteR
 		}
 		add(route, match[3])
 	}
-	for _, match := range chainedGroupRouteRe.FindAllStringSubmatch(content, -1) {
+	for _, match := range csharpMinimalAPIRouteRegistrationsChainedGroupRouteRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 4 {
 			continue
 		}
@@ -24067,12 +27263,13 @@ func csharpMinimalAPIRouteRegistrations(content string) []csharpMinimalAPIRouteR
 	return registrations
 }
 
+var csharpMinimalAPIGroupPrefixesGroupRe = regexp.MustCompile(`\b(?:var|[A-Za-z_][A-Za-z0-9_<>,.?]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*MapGroup\s*\(\s*([^,\n)]+)\s*\)`)
+
 func csharpMinimalAPIGroupPrefixes(content string, constants map[string]string) map[string]string {
-	groupRe := regexp.MustCompile(`\b(?:var|[A-Za-z_][A-Za-z0-9_<>,.?]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*MapGroup\s*\(\s*([^,\n)]+)\s*\)`)
 	groups := map[string]string{}
 	for i := 0; i < 5; i++ {
 		changed := false
-		for _, match := range groupRe.FindAllStringSubmatch(content, -1) {
+		for _, match := range csharpMinimalAPIGroupPrefixesGroupRe.FindAllStringSubmatch(content, -1) {
 			if len(match) != 4 {
 				continue
 			}
@@ -24193,12 +27390,13 @@ func nestJSRouteDecoratorLiteralsAroundSymbol(content string, symbol SymbolRecor
 	return sortedKeys(seen)
 }
 
+var nestJSRouteDecoratorLiteralsDecoratorRe = regexp.MustCompile("(?i)@(?:[A-Za-z_$][A-Za-z0-9_$]*\\.)?(Controller|Get|Post|Put|Patch|Delete|Head|Options|All)\\s*(?:\\((.*)\\))?")
+
 func nestJSRouteDecoratorLiterals(line string, controllerOnly bool) []string {
-	decoratorRe := regexp.MustCompile("(?i)@(?:[A-Za-z_$][A-Za-z0-9_$]*\\.)?(Controller|Get|Post|Put|Patch|Delete|Head|Options|All)\\s*(?:\\((.*)\\))?")
 	stringRe := regexp.MustCompile(`^\s*(?:"([^"]*)"|'([^']*)'|` + "`" + `([^` + "`" + `]*)` + "`" + `)`)
 	pathPropertyRe := regexp.MustCompile(`(?i)\bpath\s*:\s*(?:"([^"]*)"|'([^']*)'|` + "`" + `([^` + "`" + `]*)` + "`" + `)`)
 	var routes []string
-	for _, match := range decoratorRe.FindAllStringSubmatch(line, -1) {
+	for _, match := range nestJSRouteDecoratorLiteralsDecoratorRe.FindAllStringSubmatch(line, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -24487,10 +27685,11 @@ func csharpRouteAnnotationLiteralsAroundSymbol(content string, symbol SymbolReco
 	return sortedKeys(seen)
 }
 
+var csharpRouteAnnotationLiteralsAttributeRe = regexp.MustCompile(`\[(?i:(Route|HttpGet|HttpPost|HttpPut|HttpPatch|HttpDelete|HttpHead|HttpOptions))\s*(?:\(\s*(?:"([^"]*)"|'([^']*)'))?`)
+
 func csharpRouteAnnotationLiterals(line string, tokens map[string]string) []string {
-	attributeRe := regexp.MustCompile(`\[(?i:(Route|HttpGet|HttpPost|HttpPut|HttpPatch|HttpDelete|HttpHead|HttpOptions))\s*(?:\(\s*(?:"([^"]*)"|'([^']*)'))?`)
 	var routes []string
-	for _, match := range attributeRe.FindAllStringSubmatch(line, -1) {
+	for _, match := range csharpRouteAnnotationLiteralsAttributeRe.FindAllStringSubmatch(line, -1) {
 		if len(match) < 4 {
 			continue
 		}
@@ -24574,10 +27773,11 @@ func phpRouteAttributeLiteralsAroundSymbol(content string, symbol SymbolRecord) 
 	return sortedKeys(seen)
 }
 
+var phpRouteAttributeLiteralsAttributeRe = regexp.MustCompile(`(?i)#\[\s*(?:[A-Za-z_\\][A-Za-z0-9_\\]*\\)?Route\s*\(\s*(?:"([^"]*)"|'([^']*)')`)
+
 func phpRouteAttributeLiterals(line string) []string {
-	attributeRe := regexp.MustCompile(`(?i)#\[\s*(?:[A-Za-z_\\][A-Za-z0-9_\\]*\\)?Route\s*\(\s*(?:"([^"]*)"|'([^']*)')`)
 	var routes []string
-	for _, match := range attributeRe.FindAllStringSubmatch(line, -1) {
+	for _, match := range phpRouteAttributeLiteralsAttributeRe.FindAllStringSubmatch(line, -1) {
 		if len(match) < 3 {
 			continue
 		}
@@ -24983,10 +28183,22 @@ func completenessLevel(failures, files, parsedFiles, symbols int) string {
 		// Files were parsed but zero symbols came out — the graph is empty and
 		// unusable even though no hard parse failure occurred.
 		return "degraded"
-	case failures == 0:
-		return "ok"
 	case failures*4 > files:
 		return "unsafe"
+	case parsedFiles*4 < files*3:
+		// More than a quarter of the RECORDED files were never parsed. Only an
+		// intentional skip can land here — every other unparsed file leaves no
+		// file record at all — so this is the backstop intentionalSkipFailureCodes
+		// promises above. Its exclusion is deliberate and must stay (one vendored
+		// bundle among five hundred sources is not a degraded graph), but the
+		// ratio guard it names only fires past a strict MAJORITY, so a repository
+		// whose whole dist/ tree was skipped — 200 of 500 files never opened —
+		// reported "ok" with no stderr banner while every trust gate keyed on this
+		// level stayed quiet about 40% of the code. It sits AFTER the failure
+		// ratio so it can never soften an "unsafe".
+		return "degraded"
+	case failures == 0:
+		return "ok"
 	default:
 		return "degraded"
 	}
@@ -25118,15 +28330,22 @@ func githubRemoteURLs(ctx context.Context, repo string) []string {
 	return urls
 }
 
+var (
+	githubRepoKeyRe  = regexp.MustCompile(`^git@github\.com:([^/]+)/(.+)$`)
+	githubRepoKeyRe2 = regexp.MustCompile(`^https://github\.com/([^/]+)/(.+)$`)
+	githubRepoKeyRe3 = regexp.MustCompile(`^http://github\.com/([^/]+)/(.+)$`)
+	githubRepoKeyRe4 = regexp.MustCompile(`^ssh://git@github\.com/([^/]+)/(.+)$`)
+)
+
 func githubRepoKey(remoteURL string) (string, bool) {
 	remoteURL = strings.TrimSpace(remoteURL)
 	remoteURL = strings.TrimRight(remoteURL, "/")
 	remoteURL = strings.TrimSuffix(remoteURL, ".git")
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`^git@github\.com:([^/]+)/(.+)$`),
-		regexp.MustCompile(`^https://github\.com/([^/]+)/(.+)$`),
-		regexp.MustCompile(`^http://github\.com/([^/]+)/(.+)$`),
-		regexp.MustCompile(`^ssh://git@github\.com/([^/]+)/(.+)$`),
+		githubRepoKeyRe,
+		githubRepoKeyRe2,
+		githubRepoKeyRe3,
+		githubRepoKeyRe4,
 	}
 	for _, pattern := range patterns {
 		matches := pattern.FindStringSubmatch(remoteURL)

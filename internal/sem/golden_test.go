@@ -99,7 +99,9 @@ func TestReturnFlowCallsOrderIsTotal(t *testing.T) {
 	block := "func handler(alpha string, bravo string, charlie string) string {\n\treturn forward(alpha, bravo, charlie)\n}\n"
 	params := map[string]bool{"alpha": true, "bravo": true, "charlie": true}
 
-	first := returnFlowCalls(block, params)
+	body := newSymbolBody(block)
+
+	first := returnFlowCalls(body, params)
 	forwards := 0
 	for _, flow := range first {
 		if flow.EvidenceKind == "argument_forward_flow" && flow.Name == "forward" {
@@ -111,7 +113,7 @@ func TestReturnFlowCallsOrderIsTotal(t *testing.T) {
 	}
 
 	for i := 0; i < 200; i++ {
-		got := returnFlowCalls(block, params)
+		got := returnFlowCalls(body, params)
 		if !reflect.DeepEqual(got, first) {
 			t.Fatalf("returnFlowCalls order varies across calls: run %d got %+v want %+v", i+2, got, first)
 		}
@@ -914,6 +916,848 @@ func TestHeuristicRelationTypesMatchDocumentation(t *testing.T) {
 	for relation := range actual {
 		if !documented[relation] {
 			t.Errorf("capabilities reports %s as globally heuristic but the docs omit it", relation)
+		}
+	}
+}
+
+// TestFSharpModuleDoesNotClaimItsMembersCalls pins who owns a pipeline call.
+//
+// An F# `module` block spans every binding under it, so scanning the module's own text
+// sees the pipelines written inside its FUNCTIONS. Those calls belong to the functions,
+// which emit them already, and crediting the module produced a second edge from a symbol
+// that never made the call: `B.run`'s `v |> helper` appeared as both `run -> helper` and
+// `B -> helper`. Impact on `helper` then named a module that does not call it.
+//
+// The real edge is asserted alongside because the fix withdraws candidates, and a
+// withdrawal that also drops the true edge has traded one wrong answer for another.
+func TestFSharpModuleDoesNotClaimItsMembersCalls(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	for name, content := range map[string]string{
+		"a.fs": "module A\nlet helper x = x + 1\n",
+		"b.fs": "module B\nlet run v =\n    v |> helper\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+
+	pipeline := 0
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "CALLS" {
+			continue
+		}
+		from, to := symbolsByID[relation.FromID], symbolsByID[relation.ToID]
+		if from.Language == "F#" && from.Kind == "module" {
+			t.Errorf("module %s credited with calling %s; the call belongs to the binding that wrote it", from.Name, to.Name)
+		}
+		if from.Name == "run" && to.Name == "helper" {
+			pipeline++
+		}
+	}
+	if pipeline != 1 {
+		t.Fatalf("the real pipeline edge run -> helper was withdrawn too (found %d)", pipeline)
+	}
+}
+
+// TestFSharpBlockCommentDoesNotFabricateACall pins that a commented pipeline is not a call.
+//
+// The generic literal/comment stripper does not know F#'s `(* ... *)` form, so a commented
+// pipeline reached the F# scanners and emitted a CALLS edge to a function the code does
+// not call. Commented-out code is the shape most likely to contain a call, which is what
+// makes the fabrication easy to hit.
+//
+// The nested case is here because F# block comments nest: a single-pass strip ends at the
+// first `*)` and exposes the tail of the outer comment, which is a call again.
+func TestFSharpBlockCommentDoesNotFabricateACall(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name   string
+		source string
+	}{
+		{"a commented pipeline", "let run v =\n    (* xs |> helper *)\n    v |> other\n"},
+		{"nested block comments", "let run v =\n    (* outer (* inner |> hidden *) tail |> alsoHidden *)\n    v |> other\n"},
+		// A STRING is not code: an unmatched `(*` inside one used to open a comment
+		// that never closed, blanking every real pipeline after it.
+		{"a comment opener inside a string literal", "let marker = \"(*\"\nlet run v =\n    v |> other\n"},
+		{"an escaped quote does not end the string", "let m = \"a\\\"(*\"\nlet run v =\n    v |> other\n"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			targets := fsharpCallTargets(maskFSharpBlockComments(stripCodeLiteralsAndComments(testCase.source)))
+			for _, commented := range []string{"helper", "hidden", "alsoHidden"} {
+				if _, fabricated := targets[commented]; fabricated {
+					t.Errorf("a commented call %q was scanned as a real one: %v", commented, targets)
+				}
+			}
+			if _, ok := targets["other"]; !ok {
+				t.Fatalf("the real pipeline call was masked away too: %v", targets)
+			}
+		})
+	}
+}
+
+// TestFSharpQuoteThatIsNotAStringDoesNotStrandTheMasker pins that a `"` which is
+// not a string delimiter cannot flip the F# comment masker's string state.
+//
+// maskFSharpBlockComments runs on RAW source -- the generic stripper runs after
+// it, inside the scanners -- so it is the pass that meets `// prose with a "` and
+// F#'s `'"'` character literal first. It counted both as string openers, and
+// because an F# string may legally span newlines nothing closed them again, so
+// everything after was read in the wrong state. That went wrong in both
+// directions: a `(* v |> helper *)` below such a line was left unmasked and
+// became a CALLS edge to a function the code does not call, and a later `"(*"`
+// re-synchronised the state the other way, opening a comment that never closed
+// and blanking every genuine pipeline to the end of the block.
+func TestFSharpQuoteThatIsNotAStringDoesNotStrandTheMasker(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+	}{
+		{"a quote in a line comment", "let run v =\n    // the marker is a \" character\n    (* v |> helper *)\n    v |> other\n", []string{"helper"}},
+		{"a quote character literal", "let run v =\n    let quote = '\"'\n    (* v |> helper *)\n    v |> other\n", []string{"helper"}},
+		// The other direction: the stranded state closes on the NEXT quote, and
+		// the `(*` behind it then opens a comment that runs to the end of the
+		// block, silently deleting the real call.
+		{"a comment opener re-synchronising after a line comment", "let run v =\n    // a \" here\n    let s = \"(*\"\n    v |> other\n", nil},
+		{"a comment opener re-synchronising after a character literal", "let run v =\n    let quote = '\"'\n    let s = \"(*\"\n    v |> other\n", nil},
+		// Guards on the two new cases. A generic type parameter and a primed
+		// identifier are spelled with the same apostrophe as a character
+		// literal and must be left exactly as they were.
+		{"a generic type parameter is not a character literal", "let run (v: 'T) =\n    (* v |> helper *)\n    v |> other\n", []string{"helper"}},
+		{"a primed identifier is not a character literal", "let run v =\n    let v' = v\n    (* v' |> helper *)\n    v' |> other\n", []string{"helper"}},
+		// A line comment is only a line comment outside a string and outside a
+		// block comment: inside either it is ordinary text, and treating it as
+		// a comment would hide the `(*` or the closing `*)` after it.
+		{"a line comment inside a string literal", "let marker = \"// (*\"\nlet run v =\n    v |> other\n", nil},
+		{"a line comment inside a block comment", "let run v =\n    (* // v |> helper *)\n    v |> other\n", []string{"helper"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			// The production composition order: the masker sees raw source, and
+			// the scanners strip literals and line comments afterwards.
+			targets := fsharpCallTargets(maskFSharpBlockComments(testCase.source))
+			for _, commented := range testCase.fabricated {
+				if _, ok := targets[commented]; ok {
+					t.Errorf("a commented call %q was scanned as a real one: %v", commented, targets)
+				}
+			}
+			if _, ok := targets["other"]; !ok {
+				t.Fatalf("the real pipeline call was masked away: %v", targets)
+			}
+		})
+	}
+}
+
+// TestFSharpTripleQuotedStringDoesNotStrandTheMasker pins that a `"""..."""`
+// string is read as ONE literal.
+//
+// A triple-quoted string is F#'s raw form: it exists precisely to hold
+// unescaped quotes, and it ends only at the next `"""`. The masker ended it at
+// the first internal quote, so the remainder of the literal was read as code --
+// `let doc = """a " (* b"""` opened a block comment that never closed, and every
+// genuine pipeline after it in the block was blanked away and its CALLS edge
+// silently lost.
+func TestFSharpTripleQuotedStringDoesNotStrandTheMasker(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+	}{
+		// The defect: an internal quote ends the literal early and the `(*`
+		// behind it swallows the rest of the block.
+		{"an unescaped quote inside a triple-quoted string", "let run v =\n    let doc = \"\"\"a \" (* b\"\"\"\n    v |> other\n", nil},
+		// A `(*` inside the literal is text, not a comment opener.
+		{"a comment opener inside a triple-quoted string", "let doc = \"\"\"(*\"\"\"\nlet run v =\n    v |> other\n", nil},
+		// ... and a `*)` inside one must not close a comment that is open.
+		{"a triple-quoted string after a real comment", "let run v =\n    (* v |> helper *)\n    let doc = \"\"\"x\"\"\"\n    v |> other\n", []string{"helper"}},
+		// A backslash is NOT an escape in a raw string, so it cannot consume
+		// the quote that ends it.
+		{"a backslash before the closing quotes", "let doc = \"\"\"a\\\"\"\"\nlet run v =\n    v |> other\n", nil},
+		// Guards. An empty ordinary string is two quotes, not the start of a
+		// raw one, and `@"""x"""` is a VERBATIM string whose `""` are escaped
+		// quotes -- reading either as triple-quoted would swallow the code
+		// after it.
+		{"an empty string is not a triple-quoted opener", "let e = \"\"\nlet run v =\n    v |> other\n", nil},
+		{"a verbatim string is not a triple-quoted one", "let m = @\"\"\"a\"\"\"\nlet run v =\n    v |> other\n", nil},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			// The production composition order: the masker sees raw source.
+			targets := fsharpCallTargets(maskFSharpBlockComments(testCase.source))
+			for _, commented := range testCase.fabricated {
+				if _, ok := targets[commented]; ok {
+					t.Errorf("a commented call %q was scanned as a real one: %v", commented, targets)
+				}
+			}
+			if _, ok := targets["other"]; !ok {
+				t.Fatalf("the real pipeline call was masked away: %v", targets)
+			}
+		})
+	}
+}
+
+// TestFSharpLiteralFormsTheGenericStripperDoesNotModel pins that the F# call
+// scanners read F#'s own literal forms, not the generic thirty-language ones.
+//
+// The scanners masked their input with stripCodeLiteralsAndComments, which
+// knows one string form: quote, backslash escapes, ends at the closing quote or
+// the line break. F# has three more, and each one broke a different way.
+//
+// A TRIPLE-QUOTED string is raw: it ends only at the next `"""`, and the
+// unescaped quotes it exists to hold are content. Pairing quotes two at a time
+// ended it at the first internal one and left the rest of the literal standing
+// as code, so `let s = """a " x |> helper """` fabricated a CALLS edge to
+// `helper` -- a function the file never calls.
+//
+// A VERBATIM string spells an escaped quote `""` and takes no backslash escape,
+// so a backslash in front of one (`@"a\"" |> helper"`) was consumed as an escape
+// that is not there, shifting the pairing by one quote and exposing the tail of
+// the literal the same way.
+//
+// Both of those forms, and F#'s ordinary strings, may SPAN NEWLINES. The generic
+// stripper abandons a string at the first line break, so everything a multi-line
+// literal covered below its opening line was read as code.
+//
+// And the apostrophe is not only a character literal in F#: it opens a generic
+// type parameter (`'T`) and may end an identifier (`f'`). Treating the first one
+// as a literal opener closed it on the next apostrophe on the line and blanked
+// the real code between them, so `let run (xs: 'T list) = xs |> other 'a'` lost
+// its call to `other` altogether.
+func TestFSharpLiteralFormsTheGenericStripperDoesNotModel(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+		want       []string
+	}{
+		// The four reproduced defects.
+		{
+			"an unescaped quote inside a triple-quoted string",
+			"let s = \"\"\"a \" x |> helper \"\"\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a triple-quoted string spanning newlines",
+			"let sql = \"\"\"\nselect x |> helper\n\"\"\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a verbatim string spanning newlines",
+			"let m = @\"a\nb |> helper\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a backslash before an escaped quote in a verbatim string",
+			"let m = @\"a\\\"\" |> helper\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		// The same defect deleting a real call rather than inventing one: `'T`
+		// is a type parameter, and the literal it opened swallowed the pipeline
+		// up to the next apostrophe.
+		{
+			"a generic type parameter before a character literal",
+			"let run (xs: 'T list) = xs |> other 'a'\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		// The dotted scanner shares the masker and the defect.
+		{
+			"a dotted call inside a triple-quoted string",
+			"let s = \"\"\"a \" A.helper(x) \"\"\"\nlet run v = B.other(v)\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		// Guards. These forms were already read correctly and must stay so: a
+		// plain raw string, a verbatim string with a proper `""` escape, a
+		// quote character literal, a line comment, and a primed identifier.
+		{
+			"a pipe inside a plain triple-quoted string",
+			"let s = \"\"\"x |> helper\"\"\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a pipe inside a verbatim string with an escaped quote",
+			"let m = @\"a\"\" |> helper\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a quote character literal",
+			"let c = '\"'\nlet s = \"x |> helper\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a pipe in a line comment",
+			"// x |> helper\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a primed identifier",
+			"let run' v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			// The production composition order: the masker sees raw source, and
+			// the scanners mask literals themselves afterwards.
+			targets := fsharpCallTargetNames(fsharpCallTargets(maskFSharpBlockComments(testCase.source)))
+			for _, invented := range testCase.fabricated {
+				if _, ok := targets[invented]; ok {
+					t.Errorf("a call inside a literal, %q, was scanned as a real one: %v", invented, targets)
+				}
+			}
+			for _, real := range testCase.want {
+				if _, ok := targets[real]; !ok {
+					t.Errorf("the real call %q was blanked away with the literal: %v", real, targets)
+				}
+			}
+		})
+	}
+}
+
+// TestFSharpLiteralFormsCorruptTheCallGraph is the same defect at the graph
+// level: the fabricated edge and the deleted one both reach CALLS.
+func TestFSharpLiteralFormsCorruptTheCallGraph(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", "module A\n"+
+		"\n"+
+		"let helper (value: int) = value + 1\n"+
+		"\n"+
+		"let other (value: int) = value * 2\n"+
+		"\n"+
+		"let raw (v: int) =\n"+
+		"    let doc = \"\"\"a \" v |> helper \"\"\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let spanning (v: int) =\n"+
+		"    let sql = \"\"\"\n"+
+		"select v |> helper\n"+
+		"\"\"\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let verbatim (v: int) =\n"+
+		"    let m = @\"a\\\"\" |> helper\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let generic (xs: 'T list) =\n"+
+		"    xs |> other 'a'\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caller := range []string{"raw", "spanning", "verbatim"} {
+		if hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "helper") {
+			t.Errorf("fabricated CALLS %s->helper from a pipeline inside a string literal: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+	// `'T` is a generic type parameter, not a character literal: reading it as
+	// one blanked the pipeline between it and the `'a'` that follows.
+	for _, caller := range []string{"raw", "spanning", "verbatim", "generic"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "other") {
+			t.Errorf("missing CALLS %s->other; a literal mask ate a real pipeline: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+// TestFSharpInterpolationHolesKeepTheirCalls pins that the expression inside an
+// F# interpolated string is scanned as the code it is.
+//
+// The literal masker blanked interpolated strings whole, and the holes of one
+// are not literal text: `$"{value |> normalize}"` really does call normalize,
+// and every call written in a hole -- the idiomatic place to put one, since a
+// hole is the only way to get a computed value into an F# string -- was deleted
+// along with the text around it. Every interpolated form lost them: `$"..."`,
+// the verbatim `$@"..."`/`@$"..."`, the raw `$"""..."""`, and the wide-delimiter
+// `$$"""{{...}}"""`.
+//
+// The guards are the other direction, which is the defect this masker exists to
+// prevent: ordinary literal text must still be masked, whether it sits outside
+// a hole, between two of them, behind an escaped `{{`, inside a nested string
+// in a hole, or in the alignment/format text after a `:`.
+func TestFSharpInterpolationHolesKeepTheirCalls(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+		want       []string
+	}{
+		// The reported defect, in each interpolated form.
+		{
+			"a pipeline in an interpolation hole",
+			"let run v =\n    let s = $\"{v |> normalize}\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a qualified call in an interpolation hole",
+			"let run v =\n    let s = $\"x{A.normalize(v)}y\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a hole in a verbatim interpolated string",
+			"let run v =\n    let s = $@\"{v |> normalize}\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a hole in an interpolated string spelled @$",
+			"let run v =\n    let s = @$\"{v |> normalize}\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a hole in a triple-quoted interpolated string",
+			"let run v =\n    let s = $\"\"\"{v |> normalize}\"\"\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a doubled-brace hole in a $$ interpolated string",
+			"let run v =\n    let s = $$\"\"\"{{v |> normalize}}\"\"\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a hole spanning lines in a triple-quoted string",
+			"let run v =\n    let s = $\"\"\"\n{v |> normalize}\n\"\"\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		// Guards. The literal text of an interpolated string is still text, and
+		// reading any of these as code is the fabrication the masker prevents.
+		{
+			"a pipe in the text of an interpolated string",
+			"let s = $\"x |> helper\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a pipe in the text after a hole",
+			"let run v =\n    let s = $\"{v |> normalize} |> helper \"\n    v |> other\n",
+			[]string{"helper"}, []string{"normalize", "other"},
+		},
+		{
+			"an escaped brace is not a hole",
+			"let s = $\"{{x |> helper}}\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a single brace is text in a $$ interpolated string",
+			"let s = $$\"\"\"{x |> helper}\"\"\"\nlet run v = v |> other\n",
+			[]string{"helper"}, []string{"other"},
+		},
+		{
+			"a string nested inside a hole is still masked",
+			"let run v =\n    let s = $\"{v |> normalize (g \"a |> helper\")}\"\n    v |> other\n",
+			[]string{"helper"}, []string{"normalize", "other"},
+		},
+		// A format specifier is literal text, and a date format's dots would
+		// otherwise be read as a qualified call.
+		{
+			"a dotted format specifier is not a call",
+			"let s = $\"{dt:yyyy.MM.dd}\"\nlet run v = v |> other\n",
+			[]string{"dd", "MM"}, []string{"other"},
+		},
+		// ... but `::` is the cons operator, not the start of a format.
+		{
+			"a cons operator in a hole is not a format specifier",
+			"let run v =\n    let s = $\"{x :: xs |> normalize}\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			// The production composition order: the masker sees raw source, and
+			// the scanners mask literals themselves afterwards.
+			targets := fsharpCallTargetNames(fsharpCallTargets(maskFSharpBlockComments(testCase.source)))
+			for _, invented := range testCase.fabricated {
+				if _, ok := targets[invented]; ok {
+					t.Errorf("a call inside literal TEXT, %q, was scanned as a real one: %v", invented, targets)
+				}
+			}
+			for _, real := range testCase.want {
+				if _, ok := targets[real]; !ok {
+					t.Errorf("the real call %q was blanked away with the literal: %v", real, targets)
+				}
+			}
+		})
+	}
+}
+
+// TestFSharpInterpolationHolesReachTheCallGraph is the same defect at the graph
+// level: the call written in a hole is missing from CALLS entirely.
+//
+// One form per interpolated spelling, because each opens the literal
+// differently and the masker has to read the sigils to know how wide the
+// hole delimiter is.
+func TestFSharpInterpolationHolesReachTheCallGraph(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", "module A\n"+
+		"\n"+
+		"let normalize (value: int) = value + 1\n"+
+		"\n"+
+		"let other (value: int) = value * 2\n"+
+		"\n"+
+		"let interpolated (v: int) =\n"+
+		"    let s = $\"{v |> normalize}\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let verbatim (v: int) =\n"+
+		"    let s = $@\"{v |> normalize}\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let raw (v: int) =\n"+
+		"    let s = $\"\"\"{v |> normalize}\"\"\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let doubled (v: int) =\n"+
+		"    let s = $$\"\"\"{{v |> normalize}}\"\"\"\n"+
+		"    v |> other\n"+
+		"\n"+
+		"let tail (v: int) =\n"+
+		"    v |> other\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caller := range []string{"interpolated", "verbatim", "raw", "doubled"} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "normalize") {
+			t.Errorf("missing CALLS %s->normalize; the mask blanked an interpolation hole: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", caller, "other") {
+			t.Errorf("missing CALLS %s->other; a literal mask ate a real pipeline: %#v", caller, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+// TestFSharpStrandedMaskerCorruptsTheCallGraph is the same defect at the graph
+// level: the fabricated edge and the deleted one both reach CALLS.
+func TestFSharpStrandedMaskerCorruptsTheCallGraph(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/A.fs", `module A
+
+let helper (value: int) = value + 1
+
+let other (value: int) = value * 2
+
+let run (v: int) =
+    // the marker is a " character
+    (* v |> helper *)
+    v |> other
+
+let dropped (v: int) =
+    let quote = '"'
+    let s = "(*"
+    v |> other
+
+let raw (v: int) =
+    let doc = """a " (* b"""
+    v |> other
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "run", "helper") {
+		t.Errorf("fabricated CALLS run->helper from a commented pipeline: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "run", "other") {
+		t.Errorf("missing CALLS run->other: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "dropped", "other") {
+		t.Errorf("missing CALLS dropped->other; the masker blanked a real pipeline: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	// A triple-quoted string is raw: it holds unescaped quotes, and ending it at
+	// the first one left `(*` reading as a comment opener that never closed.
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "raw", "other") {
+		t.Errorf("missing CALLS raw->other; a quote inside a triple-quoted string ended it early: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+// TestFSharpJuxtaposedCallIsNotSwallowedByTheApplicationBeforeIt pins the
+// scanner defect that made a juxtaposed F# call disappear.
+//
+// RE2 has no lookahead, so the application pattern has to CONSUME the first
+// character of the argument to know an application is there, and the
+// non-overlapping walk restarted past it. When the argument was itself a dotted
+// call that character was its head, so the call never began at a word boundary
+// and produced no CALLS edge at all:
+//
+//	let Json = Newtonsoft.Json.JsonConvert
+//	Json.serialize x
+//
+// The parenthesised `Json.serialize(x)` resolved normally, which is what made
+// the hole easy to miss -- and juxtaposition is the ordinary way to write an F#
+// application, so this was a silently missing edge on idiomatic source.
+//
+// The guards are the other direction: recovering the swallowed position must
+// not start reading masked text or declaration heads as applications.
+func TestFSharpJuxtaposedCallIsNotSwallowedByTheApplicationBeforeIt(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+		want       []string
+	}{
+		// The reported shape, and the same swallow without a newline.
+		{
+			"a juxtaposed call on the line after a function-local binding",
+			"let run x =\n    let Json = Newtonsoft.Json.JsonConvert\n    Json.serialize x\n",
+			nil, []string{"serialize"},
+		},
+		{
+			"a juxtaposed call after a module-level binding",
+			"module Use\n\nlet Json = Newtonsoft.Json.JsonConvert\n\nlet run x = Json.serialize x\n",
+			nil, []string{"serialize"},
+		},
+		{
+			"a dotted argument to a dotted application on one line",
+			"let run x = A.f B.g x\n",
+			nil, []string{"f", "g"},
+		},
+		// Guards. The recovered scan positions are still ordinary source, so
+		// everything that was not code before must still not be code.
+		{
+			"a swallowed name inside a block comment stays masked",
+			"(* let Json = Newtonsoft.Json.JsonConvert\n   Json.serialize x *)\nlet run v = v |> other\n",
+			[]string{"serialize"}, []string{"other"},
+		},
+		{
+			"a swallowed name inside a string literal stays masked",
+			"let s = \"A.f B.g x\"\nlet run v = v |> other\n",
+			[]string{"f", "g"}, []string{"other"},
+		},
+		{
+			"an open declaration is still not an application",
+			"open System.Text\nJson.serialize x\n",
+			[]string{"Text"}, []string{"serialize"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			// The production composition order: the masker sees raw source, and
+			// the scanners mask literals themselves afterwards.
+			targets := fsharpCallTargetNames(fsharpCallTargets(maskFSharpBlockComments(testCase.source)))
+			for _, invented := range testCase.fabricated {
+				if _, ok := targets[invented]; ok {
+					t.Errorf("%q is not a call site, but the scanner read one: %v", invented, targets)
+				}
+			}
+			for _, real := range testCase.want {
+				if _, ok := targets[real]; !ok {
+					t.Errorf("the real call %q was swallowed by the application before it: %v", real, targets)
+				}
+			}
+		})
+	}
+}
+
+// TestFSharpNestedSeparatorInAnInterpolationHoleIsNotAFormat pins the other
+// half of the same masker's contract.
+//
+// Only a TOP-LEVEL `,`/`:` in a hole begins the alignment/format text, but the
+// branch did not check the bracket depth. A nested one -- the argument comma of
+// `$"{f(a, b) |> normalize}"`, the annotation colon of `$"{(v: int) |> ...}"` --
+// switched the hole into format mode, and because format mode blanks brackets
+// without counting them the `)` never brought the depth back to zero: the hole
+// never closed and every byte after it was blanked as literal text. One nested
+// comma deleted the call in the hole and every call written after it.
+//
+// The guards are the direction the format branch exists for: a top-level
+// separator must still begin literal text, including when the expression in
+// front of it held a nested separator of its own.
+func TestFSharpNestedSeparatorInAnInterpolationHoleIsNotAFormat(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		source     string
+		fabricated []string
+		want       []string
+	}{
+		{
+			"an argument comma inside a hole",
+			"let run v =\n    let s = $\"{A.f(a, b) |> normalize}\"\n    v |> other\n",
+			nil, []string{"f", "normalize", "other"},
+		},
+		{
+			"a type annotation colon inside a hole",
+			"let run v =\n    let s = $\"{(v: int) |> normalize}\"\n    v |> other\n",
+			nil, []string{"normalize", "other"},
+		},
+		{
+			"a lambda tuple comma inside a hole",
+			"let run v =\n    let s = $\"{xs |> List.map (fun (k, x) -> A.pick k x)}\"\n    v |> other\n",
+			nil, []string{"map", "pick", "other"},
+		},
+		{
+			"a nested separator in a wide-delimiter hole",
+			"let run v =\n    let s = $$\"\"\"{{A.f(a, b) |> normalize}}\"\"\"\n    v |> other\n",
+			nil, []string{"f", "normalize", "other"},
+		},
+		// Guards: the top-level separator still ends the expression.
+		{
+			"a format specifier after a nested comma is still literal",
+			"let s = $\"{A.f(a, b):yyyy.MM.dd}\"\nlet run v = v |> other\n",
+			[]string{"dd", "MM"}, []string{"f", "other"},
+		},
+		{
+			"alignment text after a nested comma is still literal",
+			"let s = $\"{A.f(a, b),10:B.g x}\"\nlet run v = v |> other\n",
+			[]string{"g"}, []string{"f", "other"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			targets := fsharpCallTargetNames(fsharpCallTargets(maskFSharpBlockComments(testCase.source)))
+			for _, invented := range testCase.fabricated {
+				if _, ok := targets[invented]; ok {
+					t.Errorf("format text %q was scanned as a real call: %v", invented, targets)
+				}
+			}
+			for _, real := range testCase.want {
+				if _, ok := targets[real]; !ok {
+					t.Errorf("the real call %q was blanked by a nested separator read as a format: %v", real, targets)
+				}
+			}
+		})
+	}
+}
+
+// TestLiteralMaskersPreserveLengthAndLineStructure pins the invariant every
+// caller of these two maskers depends on.
+//
+// stripRustCodegenMacroBodies blanks bytes of the ORIGINAL text at offsets it
+// found in the masked copy, and every language mask that chains into these two
+// (maskCSharpTextBlocks, maskSwiftMultilineStrings, maskKotlinRawStrings,
+// maskGroovyLiteralsAndComments, the Flow mask) reports entity line numbers read
+// from the masked text. A masker that added or dropped a single byte, or moved
+// one line break, would silently misalign all of them, so the invariant is
+// asserted rather than assumed.
+func TestLiteralMaskersPreserveLengthAndLineStructure(t *testing.T) {
+	t.Parallel()
+
+	sources := []string{
+		"let run v =\n    // the marker is a \" character\n    (* v |> helper *)\n    v |> other\n",
+		"let quote = '\"'\nlet s = \"(*\"\nlet run v = v |> other\n",
+		"let m = @\"a\"\"b(*\"\nlet run v = v |> other\n",
+		"let doc = \"\"\"a \" (* b\"\"\"\nlet run v = v |> other\n",
+		"let unterminated = \"\"\"abc\n(* v |> helper\n",
+		"\"\"\"",
+		"\"\"",
+		"let e = \"\"\nlet run v = v |> other\n",
+		"let unterminated = \"abc\n(* v |> helper\n",
+		// The forms the F# literal masker blanks rather than merely skipping:
+		// every one of them is a place a byte could go missing.
+		"let s = \"\"\"a \" x |> helper \"\"\"\nlet run v = v |> other\n",
+		"let sql = \"\"\"\nselect x |> helper\n\"\"\"\nlet run v = v |> other\n",
+		"let m = @\"a\nb |> helper\"\nlet run v = v |> other\n",
+		"let m = @\"a\\\"\" |> helper\"\nlet run v = v |> other\n",
+		"let run (xs: 'T list) = xs |> other 'a'\n",
+		"let c = '\"'\nlet s = \"x |> helper\"\nlet run v = v |> other\n",
+		"// x |> helper\r\nlet run' v = v |> other\r\n",
+		// A lone `\r` inside a block comment: the comment branch used to blank
+		// every byte that was not `\n`, which moved the break on a CRLF file.
+		"let run v =\r\n    (* v |> helper\r\n       more *)\r\n    v |> other\r\n",
+		"@\"",
+		"@",
+		"let trailing = '",
+		"let escape = '\\''\nlet run v = v |> other\n",
+		// A quote RUN is not an opener width: `""` is an empty string, `@""` an
+		// empty verbatim one, and the leading `""` of `@"""a"" b"` an escaped
+		// quote -- each of them a place the scan used to run on to the next
+		// quote in the file, or to EOF, and skip whatever it crossed.
+		"let e = \"\"\nlet f x = $@\"hi {x}\"\n",
+		"let e = @\"\"\nlet f x = $@\"hi {x}\"\n",
+		"let m = @\"\"\"a\"\" b\"\nlet f x = $@\"hi {x}\"\n",
+		"let r = \"\"\"\"a\"\"\"\nlet f x = $@\"hi {x}\"\n",
+		"\"\"\"\"",
+		"@\"\"",
+		// Interpolated forms: the masker now blanks the literal text AROUND a
+		// hole and leaves the hole itself, so both edges of every hole are a
+		// place a byte could go missing.
+		"let s = $\"{v |> normalize}\"\nlet run v = v |> other\n",
+		"let s = $@\"{v |> normalize}\"\n",
+		"let s = @$\"{v |> normalize}\"\n",
+		"let s = $\"\"\"{v |> normalize}\"\"\"\n",
+		"let s = $$\"\"\"{{v |> normalize}}\"\"\"\n",
+		"let s = $\"{{x |> helper}}\"\n",
+		"let s = $\"{dt:yyyy.MM.dd}\"\n",
+		"let s = $\"{v |> f (g \"a |> h\")}\"\n",
+		"let s = $\"\"\"\r\n{v |> f}\r\n\"\"\"\r\n",
+		"let s = $\"{v |> f\nlet t = 1\n",
+		// A separator NESTED in a hole is code, not the start of format text,
+		// and the branch that decides is a place a byte could go missing.
+		"let s = $\"{A.f(a, b) |> normalize}\"\nlet run v = v |> other\n",
+		"let s = $\"{(v: int) |> normalize}\"\n",
+		"let s = $\"{A.f(a, b):yyyy.MM.dd}\"\n",
+		"let s = $\"{A.f(a, b),10:B.g x}\"\n",
+		"let s = $$\"\"\"{{A.f(a, b) |> normalize}}\"\"\"\n",
+		"let s = $\"{A.f(a, b) |> normalize}\"\r\nlet run v = v |> other\r\n",
+		"let s = $\"{A.f(a, b\nlet t = 1\n",
+		"let s = $\"{x :: xs, y}\"\n",
+		"$\"{f(a,",
+		"$\"{(",
+		"$\"{,",
+		"$\"{:",
+		"$\"{",
+		"$\"",
+		"$$\"\"\"{{",
+		"$",
+		"{}",
+		// Shadow-binding sources: fsharpFileShadowBindings runs on masked lines
+		// and reports LINE NUMBERS from them, and the offside scope walk reads
+		// their indentation, so a byte or a break moved inside one of these would
+		// put a binding's scope on the wrong lines rather than merely mis-mask a
+		// literal.
+		"let template = \"\"\"\nlet Json = Newtonsoft.Json.JsonConvert\n\"\"\"\n\nlet run (x: int) = Json.serialize x\n",
+		"let template = @\"\nmodule Json = Newtonsoft.Json\n\"\n\nlet run (x: int) = Json.serialize x\n",
+		"let template (v: int) = $\"\"\"\nlet Json = {v}\n\"\"\"\n\nlet run (x: int) = Json.serialize x\n",
+		"let run (x: int) // Json = the alias\r\n    = Json.serialize x\r\n",
+		"let run (x: int) =\n    let Json = Serde.parse \"text\"  // note\n    Json.serialize x\n",
+		"x = \"a\" // b\nfunction f() { /* c */ return `t`; }\n\r\n",
+		"'",
+		"\"",
+		"(*",
+		"",
+	}
+	for _, source := range sources {
+		for name, mask := range map[string]func(string) string{
+			"maskFSharpBlockComments":           maskFSharpBlockComments,
+			"maskFSharpLiteralsAndLineComments": maskFSharpLiteralsAndLineComments,
+			"maskFSharpUnsupportedSyntax":       maskFSharpUnsupportedSyntax,
+			"stripCodeLiteralsAndComments":      stripCodeLiteralsAndComments,
+		} {
+			got := mask(source)
+			if len(got) != len(source) {
+				t.Fatalf("%s changed length of %q: %d -> %d", name, source, len(source), len(got))
+			}
+			for i := 0; i < len(source); i++ {
+				if source[i] == '\n' || source[i] == '\r' {
+					if got[i] != source[i] {
+						t.Fatalf("%s moved the line break at %d of %q", name, i, source)
+					}
+				}
+			}
 		}
 	}
 }

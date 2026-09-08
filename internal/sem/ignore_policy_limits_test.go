@@ -60,6 +60,29 @@ func wantIgnoreLimitError(t *testing.T, err error, file, limit string) {
 	}
 }
 
+// wantIgnorePolicySubtreeExcluded is the filesystem fallback's contract for a
+// directory whose OWN .gitignore cannot be read within its per-file bounds: its
+// rules are unknown, so nothing under it is listed — the property the former
+// hard error was protecting — and the omission is disclosed as a warning
+// instead of failing the entire listing.
+func wantIgnorePolicySubtreeExcluded(t *testing.T, paths []string, warnings []ProviderWarning, err error, dir string) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unreadable ignore policy under %q failed the whole listing: %v", dir, err)
+	}
+	for _, rel := range paths {
+		if rel == dir || strings.HasPrefix(rel, dir+"/") {
+			t.Fatalf("listed %q under a directory whose ignore policy is unknown: %#v", rel, paths)
+		}
+	}
+	for _, warning := range warnings {
+		if warning.Code == "W_WALK_UNREADABLE_IGNORE_POLICY" && strings.Contains(warning.Detail, dir) {
+			return
+		}
+	}
+	t.Fatalf("excluded %q without disclosing it: %#v", dir, warnings)
+}
+
 func TestOversizedNestedIgnoreIsReportedAcrossListings(t *testing.T) {
 	body := oversizedNestedIgnoreBody()
 	if len(body) <= maxNestedIgnoreFileBytes {
@@ -68,10 +91,17 @@ func TestOversizedNestedIgnoreIsReportedAcrossListings(t *testing.T) {
 
 	t.Run("filesystem walk", func(t *testing.T) {
 		repo := t.TempDir()
+		writeFile(t, repo, "root.go", "package root\n")
 		writeFile(t, repo, "nested/.gitignore", body)
 		writeFile(t, repo, "nested/keep.go", "package nested\n")
-		_, _, err := walkWorktreeFiles(t.Context(), repo, ignoreMatcher{}, func(string) bool { return false })
-		wantIgnoreLimitError(t, err, "nested/.gitignore", strconv.Itoa(maxNestedIgnoreFileBytes))
+		paths, warnings, err := walkWorktreeFiles(t.Context(), repo, ignoreMatcher{}, func(string) bool { return false })
+		// The fallback excludes the subtree whose policy it cannot read and
+		// says so. Returning the error here made one oversized metadata file an
+		// outage for the whole repository; see wantIgnorePolicySubtreeExcluded.
+		wantIgnorePolicySubtreeExcluded(t, paths, warnings, err, "nested")
+		if !slices.Contains(paths, "root.go") {
+			t.Fatalf("filesystem walk dropped the rest of the repository: %#v", paths)
+		}
 	})
 
 	t.Run("Git worktree", func(t *testing.T) {

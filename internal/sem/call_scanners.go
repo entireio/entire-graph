@@ -5,15 +5,23 @@ import (
 	"strings"
 )
 
+const fsharpCallTargetSegmentPattern = "(?:[A-Za-z_][A-Za-z0-9_']*|``[^`\\r\\n]+``)"
+
 var (
 	clojureCallHeadRe       = regexp.MustCompile(`\(\s*([A-Za-z0-9_.$!?*+\-<>=/]+)`)
 	sqlRoutineCallRe        = regexp.MustCompile(`(?i)\b((?:@?[A-Za-z_][A-Za-z0-9_]*@?|"[^"]+")(?:\s*\.\s*(?:@?[A-Za-z_][A-Za-z0-9_]*@?|"[^"]+"))*)\s*\(`)
 	objectiveCMessageSendRe = regexp.MustCompile(`\[\s*([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)`)
 	fsharpDottedCallRe      = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_']*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_']*)+)\s*\(`)
 	fsharpDottedApplyRe     = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_']*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_']*)+)\s+[A-Za-z_({\["'0-9]`)
-	juliaCallRe             = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:!)?)\s*(?:\{[^{}\n;()]*\})?\s*\(`)
-	luaDottedCallRe         = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:(?:\s*[.:]\s*)[A-Za-z_][A-Za-z0-9_]*)+)\s*\(`)
-	zigDottedCallRe         = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*\(`)
+	// The token immediately to the right of a forward pipe is, by the
+	// operator's definition, the function being applied — `|>`, `||>` and
+	// `|||>` all differ only in how many arguments they feed it. That makes the
+	// position unambiguous in a way bare juxtaposition (`add 1 2`) is not, so it
+	// is scanned on its own rather than waiting on a full F# application parser.
+	fsharpPipelineCallRe = regexp.MustCompile(`\|>\s*(` + fsharpCallTargetSegmentPattern + `(?:\s*\.\s*` + fsharpCallTargetSegmentPattern + `)*)`)
+	juliaCallRe          = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:!)?)\s*(?:\{[^{}\n;()]*\})?\s*\(`)
+	luaDottedCallRe      = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:(?:\s*[.:]\s*)[A-Za-z_][A-Za-z0-9_]*)+)\s*\(`)
+	zigDottedCallRe      = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*\(`)
 )
 
 func clojureCallIdentifiers(content string) map[string]struct{} {
@@ -222,22 +230,245 @@ func maskJuliaLiteralsAndComments(content string) string {
 }
 
 func fsharpDottedCallIdentifiers(content string) map[string]struct{} {
-	stripped := stripCodeLiteralsAndComments(content)
-	out := dottedCallIdentifiers(stripped, fsharpDottedCallRe)
-	for _, match := range fsharpDottedApplyRe.FindAllStringSubmatchIndex(stripped, -1) {
-		if len(match) < 4 {
+	return fsharpCallTargetNames(fsharpDottedCallTargets(content))
+}
+
+// fsharpDottedCallTargets returns the module-qualified call targets in content
+// as they are written (`UpdateProcess.SmartInstall`, `A.convert`), with the
+// whitespace F# allows around a dot removed. Resolution needs the qualifier:
+// reducing `A.convert` to `convert` before matching lets the call bind to any
+// same-named definition in the file.
+func fsharpDottedCallTargets(content string) map[string]struct{} {
+	return fsharpTargetsOfSites(fsharpDottedCallSites(content))
+}
+
+// fsharpDottedCallSites is fsharpDottedCallTargets with the byte offset of
+// every sighting kept beside the target it saw.
+func fsharpDottedCallSites(content string) map[string][]int {
+	stripped := maskFSharpLiteralsAndLineComments(content)
+	out := map[string][]int{}
+	for _, match := range fsharpDottedCallRe.FindAllStringSubmatchIndex(stripped, -1) {
+		if len(match) < 4 || match[2] < 0 {
 			continue
 		}
-		if fsharpDottedApplyIgnored(stripped, match[0]) {
-			continue
+		addFSharpCallSite(out, stripped[match[2]:match[3]], match[2])
+	}
+	// The scan resumes at the end of the applied NAME, not at the end of the
+	// match. RE2 has no lookahead, so the pattern has to CONSUME the first
+	// character of the argument to know an application is there, and
+	// FindAll's non-overlapping walk then restarts past it. When that argument
+	// is itself a dotted call the swallowed character is its head, and the call
+	// vanished from the graph completely:
+	//
+	//	let Json = Newtonsoft.Json.JsonConvert
+	//	Json.serialize x
+	//
+	// matched `Newtonsoft.Json.JsonConvert` plus the `J` of the next line, so
+	// `Json.serialize` never began at a word boundary and produced no CALLS
+	// edge -- while the parenthesised `Json.serialize(x)` resolved normally.
+	// Juxtaposition is the ordinary way to write an F# application, and a
+	// silently missing edge is the expensive direction for a call graph. The
+	// same swallow hit an argument written on the same line (`A.f B.g x` lost
+	// `B.g`), which is why this is fixed at the walk rather than by forbidding
+	// the newline.
+	for pos := 0; pos < len(stripped); {
+		match := fsharpDottedApplyRe.FindStringSubmatchIndex(stripped[pos:])
+		if match == nil || len(match) < 4 {
+			break
 		}
-		name := lastDottedCallSegment(stripped[match[2]:match[3]])
-		if name == "" {
-			continue
+		start, end := pos+match[2], pos+match[3]
+		if !fsharpDottedApplyIgnored(stripped, pos+match[0]) {
+			addFSharpCallSite(out, stripped[start:end], start)
 		}
-		out[name] = struct{}{}
+		// `end` lands on the whitespace the pattern required after the name, so
+		// the next search can never begin inside an identifier and assert a
+		// word boundary the full text does not have.
+		pos = end
 	}
 	return out
+}
+
+// fsharpCallTargets returns every call target the F# scanners can see, dotted
+// and bare alike, as written.
+func fsharpCallTargets(content string) map[string]struct{} {
+	return fsharpTargetsOfSites(fsharpCallTargetSites(content))
+}
+
+// fsharpCallTargetSites is fsharpCallTargets with each target paired with the
+// byte offsets in content at which it is written.
+//
+// A caller that must answer a question DIFFERENTLY on different lines of one
+// block -- which of the file's local bindings is in scope, which is ordered and
+// offside-scoped in F# -- cannot do it from a set of names. Collapsing a block
+// onto one answer applied a binding written partway down to the calls ABOVE it,
+// and since a shadowed qualifier records bare and resolves unrestricted, those
+// earlier calls did not merely lose a restriction: they bound whatever same-name
+// definition sat nearest instead of the module the source named.
+func fsharpCallTargetSites(content string) map[string][]int {
+	out := fsharpDottedCallSites(content)
+	for target, offsets := range fsharpPipelineCallSites(content) {
+		out[target] = append(out[target], offsets...)
+	}
+	return out
+}
+
+// fsharpTargetsOfSites drops the positions, for the callers that only need to
+// know which targets are present.
+func fsharpTargetsOfSites(sites map[string][]int) map[string]struct{} {
+	out := make(map[string]struct{}, len(sites))
+	for target := range sites {
+		out[target] = struct{}{}
+	}
+	return out
+}
+
+// fsharpCallTargetNames reduces call targets to the names resolution matches on.
+func fsharpCallTargetNames(targets map[string]struct{}) map[string]struct{} {
+	out := map[string]struct{}{}
+	for target := range targets {
+		if name := lastDottedCallSegment(target); name != "" {
+			out[name] = struct{}{}
+		}
+	}
+	return out
+}
+
+// addFSharpCallSite records one sighting of target at offset, normalising the
+// whitespace F# allows around a dot out of the spelling.
+func addFSharpCallSite(out map[string][]int, target string, offset int) {
+	target = normalizeFSharpCallTarget(target)
+	if target == "" || lastDottedCallSegment(target) == "" {
+		return
+	}
+	out[target] = append(out[target], offset)
+}
+
+// normalizeFSharpCallTarget removes the optional whitespace around dots while
+// preserving whitespace inside double-backtick identifiers, where it is part
+// of the name (`Input.“normalize input```).
+func normalizeFSharpCallTarget(target string) string {
+	var out strings.Builder
+	escaped := false
+	for i := 0; i < len(target); i++ {
+		if target[i] == '`' && i+1 < len(target) && target[i+1] == '`' {
+			escaped = !escaped
+			out.WriteString("``")
+			i++
+			continue
+		}
+		if !escaped && isASCIISpace(target[i]) {
+			continue
+		}
+		out.WriteByte(target[i])
+	}
+	return out.String()
+}
+
+// fsharpPipelineCallIdentifiers returns the functions applied by F# forward
+// pipes (`value |> normalize`, `(a, b) ||> combine`, `xs |> List.map f`).
+//
+// The forward pipe is the dominant F# call idiom, and only module-qualified and
+// parenthesised calls had a scanner: `fsharpDottedCallRe`/`fsharpDottedApplyRe`
+// both require a dot, and the generic scanner requires `name(`. A bare piped
+// function matched neither, so idiomatic pipelines produced no CALLS edge while
+// `capabilities --json` advertises CALLS for F#.
+//
+// Only the pipe position is read. Bare juxtaposition elsewhere (`add 1 2`)
+// needs the kind of application parser Haskell and OCaml have and is not
+// guessed at here — an over-eager head-position heuristic would trade the
+// precision the call graph is built on for recall.
+func fsharpPipelineCallIdentifiers(content string) map[string]struct{} {
+	return fsharpCallTargetNames(fsharpPipelineCallTargets(content))
+}
+
+// fsharpPipelineCallTargets returns the piped call targets as written, keeping
+// the module qualifier of `xs |> A.convert` for resolution to hold the call to.
+func fsharpPipelineCallTargets(content string) map[string]struct{} {
+	return fsharpTargetsOfSites(fsharpPipelineCallSites(content))
+}
+
+// fsharpPipelineCallSites is fsharpPipelineCallTargets with the byte offset of
+// every sighting kept beside the target it saw.
+func fsharpPipelineCallSites(content string) map[string][]int {
+	stripped := maskFSharpLiteralsAndLineComments(content)
+	out := map[string][]int{}
+	for _, match := range fsharpPipelineCallRe.FindAllStringSubmatchIndex(stripped, -1) {
+		if len(match) < 4 || match[2] < 0 {
+			continue
+		}
+		if !fsharpIsForwardPipeOperator(stripped, match[0]) {
+			continue
+		}
+		target := stripped[match[2]:match[3]]
+		if fsharpPipelineTargetIgnored(target) {
+			continue
+		}
+		addFSharpCallSite(out, target, match[2])
+	}
+	return out
+}
+
+// fsharpIsForwardPipeOperator reports whether the `|>` starting at pipeStart is
+// a whole forward-pipe operator rather than a fragment of a longer one.
+//
+// F# lexes a run of operator characters as a single token and lets users define
+// their own, so plenty of legal operators merely *contain* `|>`: FParsec's and
+// FSharpPlus's alternative combinator `<|>` (`digit <|> letter`), and any custom
+// `+|>`, `^|>`, `.|>`. In those the right operand is an alternative or the
+// custom operator's own argument, not a function being handed the left one, so
+// reading them as pipes invents a call. Matching the substring therefore is not
+// enough: the surrounding run of operator characters is walked out and the whole
+// token compared.
+//
+// `||>` and `|||>` are kept as pipes, not merely excluded. They are the standard
+// tuple pipes and differ from `|>` only in how many arguments they feed: the
+// token to their right is still definitionally the function being applied, which
+// is exactly the property the scanner reads.
+func fsharpIsForwardPipeOperator(s string, pipeStart int) bool {
+	start := pipeStart
+	for start > 0 && isFSharpOperatorChar(s[start-1]) {
+		start--
+	}
+	end := pipeStart + len("|>")
+	for end < len(s) && isFSharpOperatorChar(s[end]) {
+		end++
+	}
+	switch s[start:end] {
+	case "|>", "||>", "|||>":
+		return true
+	default:
+		return false
+	}
+}
+
+// isFSharpOperatorChar reports whether b may appear in a symbolic operator name,
+// per the `op-char` production of the F# spec.
+//
+// `$` belongs in the set -- the compiler's own lexer spells it
+// `let op_char = '!'|'$'|'%'|...` -- and leaving it out cut the walk short in
+// the middle of an operator that contains one: `value $|> helper` was read as a
+// plain `|>` and fabricated a call to helper, which is really the right operand
+// of the custom `$|>`.
+func isFSharpOperatorChar(b byte) bool {
+	switch b {
+	case '!', '$', '%', '&', '*', '+', '-', '.', '/', '<', '=', '>', '@', '^', '|', '~', '?':
+		return true
+	default:
+		return false
+	}
+}
+
+// fsharpPipelineTargetIgnored drops the keywords that can follow a pipe and
+// introduce an inline function rather than name one (`xs |> fun x -> x`,
+// `xs |> function _ -> 1`, `xs |> match ...`). They are language syntax, not
+// call targets, and would otherwise resolve against any same-named symbol.
+func fsharpPipelineTargetIgnored(target string) bool {
+	switch strings.TrimSpace(target) {
+	case "fun", "function", "match", "if", "let", "try", "while", "for", "new", "do", "then", "else", "async", "task":
+		return true
+	default:
+		return false
+	}
 }
 
 func fsharpDottedApplyIgnored(content string, start int) bool {

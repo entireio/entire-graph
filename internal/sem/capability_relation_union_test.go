@@ -280,6 +280,11 @@ int total(int a, int b) { return add(a, b); }
 
 int pointSum(Point p) { return add(p.x, p.y); }
 
+int* update(Point p, int x) {
+  p.x = x;
+  return &p.y;
+}
+
 Point make(int a, int b) {
   Point q;
   q.x = a;

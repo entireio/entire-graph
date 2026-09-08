@@ -1015,8 +1015,14 @@ func RenderSearchClosedSet(block *SearchClosedSet) []byte {
 		return nil
 	}
 	var buffer strings.Builder
+	// termsafe.Line, not the writer wrap, for the same reason the site lines below use it: this is
+	// a one-record-per-line block, and Type is a name read off the scanned repository. A newline in
+	// it would split this record and let a file print a line the search never emitted. Kind and
+	// Warning are tool-authored today; they are escaped too so that stays true by construction
+	// rather than by anyone remembering. See internal/cli/search_forgery.go for the same problem in
+	// the one place it cannot be solved this way — a snippet body, whose newlines are its structure.
 	fmt.Fprintf(&buffer, "CLOSED SET %s (%s, %d variants): %s\n",
-		block.Type, block.Kind, block.Variants, block.Warning)
+		termsafe.Line(block.Type), termsafe.Line(block.Kind), block.Variants, termsafe.Line(block.Warning))
 	for _, site := range block.Sites {
 		coverage := fmt.Sprintf("%d/%d arms", site.Arms, block.Variants)
 		if site.Exhaustive {

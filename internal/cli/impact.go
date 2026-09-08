@@ -147,12 +147,15 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The snapshot is loaded, so the index phase is over: read the clock before
+	// opening the source reader, whose `git cat-file` spawn belongs to answering
+	// the query rather than to the index-cache telemetry. See runDef.
+	indexLatency := time.Since(indexStarted)
+	queryStarted := time.Now()
 	readSource, closeSource := openSnapshotLineReaderOrDegrade(ctx, snapshot, flags.Worktree, opts.Stderr)
 	if closeSource != nil {
 		defer closeSource()
 	}
-	indexLatency := time.Since(indexStarted)
-	queryStarted := time.Now()
 	response := buildImpactResponseFromReader(snapshot, flags, readSource)
 	annotateImpactCallSites(&response, readSource)
 	// The verdict is computed once, on the finished response, so the text marker and the JSON fields
