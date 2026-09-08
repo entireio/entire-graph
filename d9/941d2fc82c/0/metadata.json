@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "d9941d2fc82c",
+  "session_id": "01a080a4-1d22-7e33-b650-f53baa34b73c",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-08T10:57:05.635237Z",
+  "branch": "codex/trail101-review",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "22ce6eca6f58",
+  "checkpoint_transcript_start": 265,
+  "transcript_lines_at_start": 265,
+  "compact_transcript_start": 26,
+  "token_usage": {
+    "input_tokens": 847,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 198272,
+    "output_tokens": 206,
+    "api_call_count": 2
+  }
+}
