@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "607a0fe751ee",
+  "strategy": "manual-commit",
+  "branch": "security/enforce-wall-clock-budget",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/60/7a0fe751ee/0/metadata.json",
+      "transcript": "/60/7a0fe751ee/0/full.jsonl",
+      "compact_transcript": "/60/7a0fe751ee/0/transcript.jsonl",
+      "content_hash": "/60/7a0fe751ee/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 612,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 82688,
+    "output_tokens": 132,
+    "api_call_count": 1
+  }
+}
