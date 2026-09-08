@@ -415,8 +415,11 @@ func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
 		return repoOutputTarget{}, traversedSymlinkError(routed, path)
 	}
 	// Where the only link on the route is the caller's own, the on-disk destination
-	// stands, exactly as the os.WriteFile this helper replaced left it.
-	return repoOutputTarget{path: onDisk, given: path}, nil
+	// stands, exactly as the os.WriteFile this helper replaced left it. The route is
+	// carried out with it: openUnconfinedOutputFile walks it rather than reopening the
+	// destination this answer named, so the two cannot be answered about different
+	// filesystems.
+	return repoOutputTarget{path: onDisk, given: path, traversed: traversed}, nil
 }
 
 // realOutputPath makes path absolute the way the PLATFORM reads it: the directory
@@ -895,16 +898,27 @@ func traversedRepositorySymlink(roots []string, raw string) (string, bool) {
 			continue
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			for _, root := range roots {
-				if rel, ok := containedRel(root, next); ok {
-					return rel, true
-				}
+			if rel, ok := containedInAnyRoot(roots, next); ok {
+				return rel, true
 			}
 			if resolved, err := filepath.EvalSymlinks(next); err == nil {
 				next = resolved
 			}
 		}
 		prefix = next
+	}
+	return "", false
+}
+
+// containedInAnyRoot reports path's name beneath the FIRST implicated checkout that
+// owns it. Ownership is the question every refusal in this file turns on, and asking
+// it in one place is what keeps the route walk and the write that follows it from
+// disagreeing about which links belong to a repository.
+func containedInAnyRoot(roots []string, path string) (string, bool) {
+	for _, root := range roots {
+		if rel, ok := containedRel(root, path); ok {
+			return rel, true
+		}
 	}
 	return "", false
 }
@@ -976,14 +990,7 @@ func writeOutputFileUnderAny(
 		// unconfined, so it is an error rather than a default.
 		return fmt.Errorf("refusing to write %s: no confinement boundary was resolved", path)
 	}
-	if createParents {
-		if directory := filepath.Dir(outside.path); directory != "" && directory != "." {
-			if err := os.MkdirAll(directory, 0o755); err != nil {
-				return err
-			}
-		}
-	}
-	return os.WriteFile(outside.path, data, perm)
+	return writeUnconfinedOutputFile(confinements, outside, data, perm, createParents)
 }
 
 // writeConfinedOutputFile writes a target under the boundary that owns its
@@ -1013,6 +1020,426 @@ func writeConfinedOutputFile(
 		return err
 	}
 	return file.Close()
+}
+
+// The links this walk follows are bounded by containedLinkHopLimit — the SAME budget
+// the contained walk in agents.go applies, for the same reason and from the same
+// table (linkHopLimitFor). Two notions of the limit would be two answers to one
+// question, and the second one was wrong: a fixed 40 is the Linux figure, and the
+// claim that "a chain the host itself would refuse fails at the host" does not hold
+// here. This walk expands every link ITSELF and hands one link-free component at a
+// time to openat, so the kernel's cumulative ELOOP counter never fires and the limit
+// applied below is the only limit there is. At 40 it followed 32-to-40-link routes
+// that Darwin, the BSDs, illumos, Solaris and AIX all refuse, and wrote to a
+// destination the host's own pathname resolution cannot reach.
+
+// writeUnconfinedOutputFile writes the caller-owned half of the rule at the top of
+// this file, and it exists for the same reason openConfinedOutputFile does.
+//
+// "Caller-owned" is a verdict about the DESTINATION, and it was reached by two
+// separate readings of the same spelling — realOutputPath, which resolves the
+// directory part, and traversedRepositorySymlink, which walks the route. Between them
+// the repository can change what a component IS, and the two answers then describe
+// two different filesystems: with `<repo>/link/../out.md`, the first reading sees a
+// committed link and lets the ".." step out of its TARGET, which puts the destination
+// outside the repository; the second sees an ordinary directory and finds no
+// committed link to refuse. Neither is wrong about what it saw, and the write then
+// went to the destination the repository chose, unconfined
+// (TestWriteOutputFileDoesNotWriteOutsideThroughALinkSwappedDuringClassification
+// truncated a file outside the repository through exactly that window).
+//
+// So the destination those checks named is not what is opened. The ROUTE is walked
+// once more, component by component, holding each directory open and verifying it by
+// identity, and the file is opened through the handle at the end of that walk. A
+// committed link on the route is refused wherever it is found rather than followed,
+// and a caller-owned one is followed, which is the same ownership rule the checks
+// apply — asked here of the objects the write actually uses.
+func writeUnconfinedOutputFile(
+	confinements []string, target repoOutputTarget, data []byte, perm os.FileMode, createParents bool,
+) error {
+	file, err := openUnconfinedOutputFile(confinements, target, perm, createParents)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+// openUnconfinedOutputFile walks target.traversed the way the kernel does — pinning
+// every directory it enters — and returns the destination open for writing.
+//
+// os.Root is used for the pinning and NOT for confinement: one root is opened per
+// directory component, so it bounds nothing except that single openat, and the walk
+// leaves it as soon as a caller-owned link says to. That is deliberate. The whole
+// point of the outside branch is that the caller may name any path on the machine,
+// and /tmp is itself a symlink on macOS; confining this walk would refuse the
+// documented `--record-baseline /tmp/base.json`.
+//
+// What it does NOT claim: it is not proof that no name on the route ever pointed
+// elsewhere. A walk that loses the race is refused, not silently redirected, and the
+// file it would have hit is untouched.
+func openUnconfinedOutputFile(
+	confinements []string, target repoOutputTarget, perm os.FileMode, createParents bool,
+) (*os.File, error) {
+	route := target.traversed
+	if route == "" || !filepath.IsAbs(route) {
+		// traversedPath only comes back empty when the spelling cannot be made
+		// absolute at all; the destination the classifier resolved is then the only
+		// route there is.
+		route = target.path
+	}
+	held, names, err := openVolumeRoot(route)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		for _, root := range held {
+			root.Close()
+		}
+	}()
+
+	pending := pathComponents(route)
+	hops := 0
+	fullyQualifiedTarget := false
+	for len(pending) > 0 {
+		component := pending[0]
+		pending = pending[1:]
+		switch component {
+		case ".":
+			continue
+		case "..":
+			// The prefix is link-free by construction — a link is either refused or
+			// followed before it is entered — so the parent of the directory being
+			// held IS the one the kernel would step back to, and it is already open.
+			if len(held) > 1 {
+				held[len(held)-1].Close()
+				held, names = held[:len(held)-1], names[:len(names)-1]
+			}
+			continue
+		}
+		directory := held[len(held)-1]
+		full := filepath.Join(names[len(names)-1], component)
+		info, statErr := directory.Lstat(component)
+		if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+			return nil, statErr
+		}
+		// A component that MIGHT redirect resolution, which on Windows the mode alone
+		// cannot decide (see unconfinedRouteAliasCandidate). What it actually is, is
+		// settled by the raw reparse tag below — the same question, asked the same
+		// way, as in the contained walker.
+		aliasCandidate := statErr == nil && unconfinedRouteAliasCandidate(runtime.GOOS, info.Mode())
+		var link string
+		if aliasCandidate && runtime.GOOS == "windows" {
+			rawTarget, kind, rawErr := windowsRawReparseTarget(directory.Name(), component, info)
+			if rawErr != nil {
+				return nil, fmt.Errorf(
+					"refusing to write %s: cannot inspect the raw Windows reparse target of %s: %w",
+					target.given, full, rawErr)
+			}
+			switch kind {
+			case windowsReparseOpaqueAlias:
+				// A NAME SURROGATE whose tag this code cannot decode. Windows follows it
+				// while resolving the path, to somewhere this walk cannot name, so its
+				// own chain would be neither expanded nor counted against the hop budget.
+				// There is nothing to resolve and nothing safe to assume.
+				return nil, fmt.Errorf(
+					"refusing to write %s: %s is a Windows reparse point of an unsupported kind "+
+						"that the kernel follows", target.given, full)
+			case windowsReparseInert:
+				if info.Mode()&os.ModeSymlink != 0 {
+					return nil, fmt.Errorf(
+						"refusing to write %s: cannot inspect the raw Windows reparse target of %s",
+						target.given, full)
+				}
+				// A tag that annotates the file rather than naming another entity —
+				// deduplication, WOF compression, a cloud placeholder. Windows resolves
+				// the path straight through it, so it is the ordinary component it looks
+				// like and the walk opens it as one.
+				aliasCandidate = false
+			case windowsReparseResolved:
+				// Read from the same reparse-buffer snapshot that was screened, so a
+				// malformed offset never reaches Readlink's unsafe parser and an in-place
+				// update cannot pair an unchecked target with this walk.
+				link = rawTarget
+			}
+		}
+		if aliasCandidate {
+			if rel, ok := containedInAnyRoot(confinements, full); ok {
+				return nil, traversedSymlinkError(rel, target.given)
+			}
+			if runtime.GOOS != "windows" {
+				readLink, readErr := directory.Readlink(component)
+				if readErr != nil {
+					return nil, readErr
+				}
+				link = readLink
+			}
+			hops++
+			anchor := linkTargetAnchorOf(link)
+			if anchor == linkTargetDriveRelative {
+				// `C:file` is resolved against that drive's OWN working directory, which
+				// is process-global state this pinned walk has no handle on and cannot
+				// reproduce. There is no anchor to restart at, so the write is refused
+				// rather than resolved somewhere the caller did not name.
+				return nil, fmt.Errorf(
+					"refusing to write %s: %s is a symbolic link to the drive-relative target %s",
+					target.given, full, link)
+			}
+			if anchor != linkTargetRelative {
+				// Windows resolves a chain of ROOTED reparse targets against a tighter
+				// budget than a relative one, and the flag is sticky here for the same
+				// reason it is in the contained walk: one such target lowers the limit
+				// for the whole resolution. The drive-rooted spelling filepath.IsAbs
+				// reports false for restarts at a volume root exactly as the qualified
+				// ones do, so it takes the same smaller budget.
+				fullyQualifiedTarget = true
+			}
+			hopLimit := containedLinkHopLimit(fullyQualifiedTarget)
+			if hops > hopLimit {
+				return nil, fmt.Errorf(
+					"refusing to write %s: the path follows more than %d symbolic links",
+					target.given, hopLimit)
+			}
+			if anchor == linkTargetVolumeRooted {
+				// `\dir\file` is anchored at the volume of the path being resolved, not
+				// at the link's parent. Name that volume explicitly — the walk is already
+				// holding it as names[0] — so the restart below opens the right root
+				// instead of leaving the components to be resolved beneath the link.
+				link = filepath.VolumeName(names[0]) + link
+			}
+			if anchor != linkTargetRelative {
+				restarted, restartedNames, openErr := openVolumeRoot(link)
+				if openErr != nil {
+					return nil, openErr
+				}
+				for _, root := range held {
+					root.Close()
+				}
+				held, names = restarted, restartedNames
+			}
+			// A relative target is resolved against the link's PARENT, which is the
+			// directory still being held, so nothing is popped for it.
+			pending = append(pathComponents(link), pending...)
+			continue
+		}
+		if len(pending) == 0 {
+			return openUnconfinedLeaf(directory, component, full, target.given, perm)
+		}
+		if statErr != nil {
+			if !createParents {
+				// The same failure os.WriteFile produced, reported against the path
+				// the caller typed rather than against one component of it.
+				return nil, &fs.PathError{Op: "open", Path: target.path, Err: fs.ErrNotExist}
+			}
+			if err := directory.Mkdir(component, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+				return nil, err
+			}
+		}
+		next, err := directory.OpenRoot(component)
+		if err != nil {
+			return nil, err
+		}
+		held, names = append(held, next), append(names, full)
+		if err := refuseUnlessSameEntryOutside(confinements, directory, component, next, full, target.given); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("refusing to write %s: the path names no file", target.given)
+}
+
+// unconfinedRouteAliasCandidate reports whether one component of the unconfined route may redirect
+// pathname resolution, and therefore has to be CLASSIFIED before the walk may open it as an ordinary
+// component.
+//
+// The mode is not the answer on Windows, and taking it for one is what this exists to stop. Since Go
+// 1.23 Windows reports every reparse point Go does not itself decode as ModeIrregular — the two it
+// does decode, IO_REPARSE_TAG_SYMLINK and IO_REPARSE_TAG_MOUNT_POINT, still arrive as ModeSymlink,
+// and everything else does not. That "everything else" contains NAME SURROGATES the kernel follows
+// while resolving the path: an LX symlink written by WSL, a junction spelled with a tag this build
+// cannot decode, IO_REPARSE_TAG_GLOBAL_REPARSE. A ModeSymlink-only test called each of those an
+// ordinary component, so the walk opened the ALIAS and then compared the object it got against the
+// name it asked for — a comparison that cannot hold through a redirect — and refused a
+// caller-owned `--report` or `--record-baseline` path the kernel resolves perfectly well.
+//
+// It also contains tags that only ANNOTATE a file — deduplication, WOF compression, a cloud
+// placeholder — which Windows resolves straight through. Those must stay ordinary components, so
+// this predicate answers "classify it", not "it is an alias"; the raw tag decides which, exactly as
+// it does in the contained walker.
+//
+// The host family is a parameter rather than runtime.GOOS so the rule can be asserted from any
+// machine, which is the same reason linkTargetAnchorFor takes one: Windows is the only platform
+// where this distinction exists and it cannot execute on this repository's development hosts.
+func unconfinedRouteAliasCandidate(goos string, mode fs.FileMode) bool {
+	if mode&fs.ModeSymlink != 0 {
+		return true
+	}
+	return goos == "windows" && mode&fs.ModeIrregular != 0
+}
+
+// linkTargetAnchor says where pathname resolution restarts for one symbolic-link
+// target, which is the only thing the walk above needs to know about its spelling.
+type linkTargetAnchor int
+
+const (
+	// linkTargetRelative is resolved against the link's own PARENT directory: any
+	// POSIX target that does not begin with a separator, and any Windows target that
+	// is neither rooted nor drive-qualified.
+	linkTargetRelative linkTargetAnchor = iota
+	// linkTargetQualified carries its own volume, so resolution restarts at that
+	// volume: `/dir/file` everywhere, and `C:\dir\file`, `\\server\share\dir\file`
+	// and `\\?\C:\dir\file` on Windows.
+	linkTargetQualified
+	// linkTargetVolumeRooted is the Windows drive-rooted spelling `\dir\file`. It is
+	// ROOTED but not FULLY QUALIFIED: resolution restarts at a volume root, but at the
+	// volume of the path being resolved rather than at one the target names.
+	linkTargetVolumeRooted
+	// linkTargetDriveRelative is the Windows drive-relative spelling `C:file`, which
+	// is resolved against that DRIVE's own working directory. It is neither rooted nor
+	// link-relative, and a pinned walk has no handle on the anchor it needs.
+	linkTargetDriveRelative
+)
+
+// linkTargetAnchorOf classifies one link target for the host this binary runs on.
+func linkTargetAnchorOf(target string) linkTargetAnchor {
+	return linkTargetAnchorFor(runtime.GOOS, target)
+}
+
+// linkTargetAnchorFor is linkTargetAnchorOf with the host family passed in, so every
+// platform's classification can be asserted from one machine. That matters here more
+// than usual: Windows is where all four of the interesting spellings exist and it
+// cannot execute on this repository's development hosts, so the decision is a pure
+// function of the string and only the syscall path that consumes it is left to the
+// Windows CI leg. The Windows rules are spelled out rather than delegated to filepath,
+// whose IsAbs and VolumeName answer for the GOOS the package was compiled for.
+//
+// The distinction filepath.IsAbs cannot make is the whole reason this exists. On
+// Windows IsAbs reports false for `\dir\file`, which IS rooted, and false for
+// `C:file`, which is not; a single IsAbs test therefore resolved a rooted target's
+// components beneath the link's parent, and an unconfined output routed through such a
+// link overwrote a different file than the caller named.
+func linkTargetAnchorFor(goos, target string) linkTargetAnchor {
+	if target == "" {
+		return linkTargetRelative
+	}
+	if goos != "windows" {
+		if target[0] == '/' {
+			return linkTargetQualified
+		}
+		return linkTargetRelative
+	}
+	// Windows accepts both separators in every position, so neither may be assumed.
+	separator := func(character byte) bool { return character == '\\' || character == '/' }
+	if separator(target[0]) {
+		if len(target) > 1 && separator(target[1]) {
+			// A UNC or device root: `\\server\share\x`, `\\?\C:\x`, `\\.\x`. The
+			// volume is part of the target, so it is fully qualified.
+			return linkTargetQualified
+		}
+		return linkTargetVolumeRooted
+	}
+	if len(target) > 1 && target[1] == ':' && windowsDriveLetter(target[0]) {
+		if len(target) > 2 && separator(target[2]) {
+			return linkTargetQualified
+		}
+		return linkTargetDriveRelative
+	}
+	return linkTargetRelative
+}
+
+// windowsDriveLetter reports whether character can name a drive. Windows accepts only
+// a single ASCII letter, in either case, before the colon.
+func windowsDriveLetter(character byte) bool {
+	return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z')
+}
+
+// openVolumeRoot opens the volume an absolute path is anchored at, which is where a
+// pinned walk of it has to start. It returns the one-element stacks the walk grows.
+func openVolumeRoot(path string) ([]*os.Root, []string, error) {
+	volume := path[:len(filepath.VolumeName(path))] + string(filepath.Separator)
+	root, err := os.OpenRoot(volume)
+	if err != nil {
+		return nil, nil, err
+	}
+	return []*os.Root{root}, []string{volume}, nil
+}
+
+// openUnconfinedLeaf opens the final component through the directory handle the walk
+// is holding. The component is known not to be a symbolic link — one is followed or
+// refused before this is reached — so the identity check below can only fail on a
+// link swapped in afterwards, and that write is refused rather than redirected.
+//
+// The open order is openConfinedOutputFile's, and for the same reason: O_CREATE|O_EXCL
+// first, which Go documents as never following a symbolic link whatever the OS
+// returns, then a plain O_WRONLY when the entry already exists, so nothing is
+// destroyed before the identity check has run. The truncation happens through the
+// verified handle, where no name is left to swap.
+func openUnconfinedLeaf(
+	directory *os.Root, component, full, given string, perm os.FileMode,
+) (*os.File, error) {
+	file, err := directory.OpenFile(component, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if errors.Is(err, fs.ErrExist) {
+		file, err = directory.OpenFile(component, os.O_WRONLY, 0)
+	}
+	if err != nil {
+		return nil, err
+	}
+	named, err := directory.Lstat(component)
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	if !os.SameFile(named, opened) {
+		file.Close()
+		return nil, racedOutputPathError(full, given)
+	}
+	if err := file.Truncate(0); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+// refuseUnlessSameEntryOutside is refuseUnlessSameEntry for the unconfined walk. The
+// verdict is the same — the directory now HELD is not the object the name lstats to,
+// so a link was swapped in between the two — and only the wording differs, because
+// out here the link need not be the repository's. When it is, the message names it as
+// such; when it is not, the caller is told their own path moved under them.
+func refuseUnlessSameEntryOutside(
+	confinements []string, parent *os.Root, component string, held *os.Root, full, given string,
+) error {
+	named, err := parent.Lstat(component)
+	if err != nil {
+		return err
+	}
+	info, err := held.Stat(".")
+	if err != nil {
+		return err
+	}
+	if os.SameFile(named, info) {
+		return nil
+	}
+	if rel, ok := containedInAnyRoot(confinements, full); ok {
+		return traversedSymlinkError(rel, given)
+	}
+	return racedOutputPathError(full, given)
+}
+
+// racedOutputPathError reports a component that changed while the write was being
+// opened. It is not a refusal of the caller's path — it is a refusal to guess which
+// of the two things that path named in the same instant was meant.
+func racedOutputPathError(rel, given string) error {
+	return fmt.Errorf(
+		"refusing to write %s: %s changed while the write was being opened, so it no "+
+			"longer names the file the path was checked against. Run the command again",
+		given, rel)
 }
 
 // openConfinedOutputFile opens the confined destination for writing, and is where

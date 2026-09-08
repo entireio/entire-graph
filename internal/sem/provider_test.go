@@ -18925,6 +18925,66 @@ func TestSearchRepositoryStillIndexesSourceTreeNamedLikeAGitDir(t *testing.T) {
 	}
 }
 
+// TestSignatureNamesQualifiedMethodUsesTokenBoundaries pins the qualified-name match
+// against both directions of a raw substring test.
+//
+// Matching `Container::Name` with strings.Contains was wrong twice over. It matched too
+// much -- `BA::foo` contains `A::foo`, so an unrelated class's definition was accepted as
+// a declaration's out-of-line body and emitted a CALLS edge to the wrong function -- and
+// too little, because a template definition is spelled `A<T>::foo` and never contains the
+// bare text, leaving those calls resolved to the bodyless declaration whose callers the
+// lookup exists to redirect.
+func TestSignatureNamesQualifiedMethodUsesTokenBoundaries(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name      string
+		signature string
+		container string
+		method    string
+		want      bool
+	}{
+		{"plain qualified definition", "int A::foo(int x)", "A", "foo", true},
+		{"template definition qualifies through its arguments", "int A<T>::foo(int x)", "A", "foo", true},
+		{"spaces around template arguments", "int A <T> ::foo(int x)", "A", "foo", true},
+		{"space after scope operator", "int A<T>:: foo(int x)", "A", "foo", true},
+		{"full namespace owner", "int a::Ledger::foo(int x)", "a::Ledger", "foo", true},
+		{"nested templated owner", "int a::Outer<T>::Inner<U>::foo(int x)", "a::Outer::Inner", "foo", true},
+		{"non-type comparison argument", "int A<(N > 0)>::foo(int x)", "A", "foo", true},
+		{"different namespace owner", "int b::Ledger::foo(int x)", "a::Ledger", "foo", false},
+		{"owner suffix is not the full owner", "int x::a::Ledger::foo(int x)", "a::Ledger", "foo", false},
+		{"a longer class name is not this class", "int BA::foo(int x)", "A", "foo", false},
+		{"a longer method name is not this method", "int A::foobar(int x)", "A", "foo", false},
+		{"a different class does not match", "int B::foo(int x)", "A", "foo", false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := signatureNamesQualifiedMethod(testCase.signature, testCase.container, testCase.method); got != testCase.want {
+				t.Fatalf("signatureNamesQualifiedMethod(%q, %q, %q) = %v, want %v",
+					testCase.signature, testCase.container, testCase.method, got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestSignatureNamesQualifiedMethodPatternOmitsAnyInlineNamespaceSubset(t *testing.T) {
+	t.Parallel()
+	pattern := "api::\x00v1::\x00v2::\x00v3::\x00v4::\x00v5::Client"
+	for _, signature := range []string{
+		"int api::v1::v2::v3::v4::v5::Client::Fetch()",
+		"int api::v1::v3::v4::v5::Client::Fetch()",
+		"int api::v2::v4::Client::Fetch()",
+		"int api::Client::Fetch()",
+	} {
+		if !signatureNamesQualifiedMethodPattern(signature, pattern, "Fetch") {
+			t.Errorf("did not match legal inline-namespace subset in %q", signature)
+		}
+	}
+	if signatureNamesQualifiedMethodPattern("int other::api::Client::Fetch()", pattern, "Fetch") {
+		t.Error("matched an owner suffix under an unrelated outer namespace")
+	}
+}
+
 func TestFSharpCustomOperatorContainingADollarIsNotACall(t *testing.T) {
 	// `$` is an op-char in F#'s own lexer (`let op_char = '!'|'$'|'%'|...`), so
 	// `$|>` is ONE operator token exactly as `+|>` is. Omitting `$` from the

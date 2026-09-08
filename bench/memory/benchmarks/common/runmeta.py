@@ -115,6 +115,8 @@ SYMMETRIC_ARM_SETTINGS = frozenset({
     "MEM0_HOST",
     "BM25_STATE_ROOT",
     "CMM_BIN",
+    # Verifies the chosen binary's build; implementation_provenance binds it.
+    "CMM_BUILD",
     "CMM_STATE_ROOT",
     "GRAPHIFY_BRIDGE",
     "GRAPHIFY_PYTHON",
@@ -337,6 +339,7 @@ ENV_VALUE_DOMAINS = {
     "BM25_STEM": _ENV_BOOL,
     "CMM_MEM_BUDGET_MB": _ENV_INT_RE,
     "CMM_TIMEOUT": _ENV_INT_RE,
+    "CMM_BUILD": frozenset({"patched", "stock"}),
     "GRAPHIFY_TIMEOUT": _ENV_INT_RE,
     "FAIR_MODE": _ENV_BOOL,
     "HARNESS_SEARCH_RETRIES": _ENV_INT_RE,

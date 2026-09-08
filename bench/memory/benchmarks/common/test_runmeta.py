@@ -809,6 +809,15 @@ class FairModeGuardTest(unittest.TestCase):
                 runmeta.assert_fair_mode(None)
             self.assertIn(knob, str(raised.exception))
 
+    def test_cmm_build_declarations_are_recorded_without_changing_fairness(self) -> None:
+        """The declaration verifies CMM_BIN's build; provenance binds that binary."""
+        for build in ("patched", "stock"):
+            with self.subTest(build=build), patch.dict(
+                "os.environ", {"FAIR_MODE": "1", "CMM_BUILD": build}, clear=True
+            ):
+                runmeta.assert_fair_mode(None)
+                self.assertEqual(runmeta.env_snapshot()["CMM_BUILD"], build)
+
     def test_rejects_ingest_granularity(self) -> None:
         """`session` is the client default; `turn+session` is the deviation."""
         self._assert_rejected("EG_INGEST_GRANULARITY", "turn+session")
