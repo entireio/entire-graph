@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "e7583192883b",
+  "strategy": "manual-commit",
+  "branch": "codex/trail157-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/ignore.go",
+    "internal/sem/worktree_listing_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e7/583192883b/0/metadata.json",
+      "transcript": "/e7/583192883b/0/full.jsonl",
+      "compact_transcript": "/e7/583192883b/0/transcript.jsonl",
+      "content_hash": "/e7/583192883b/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 26674,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 3111808,
+    "output_tokens": 4439,
+    "api_call_count": 32
+  }
+}
