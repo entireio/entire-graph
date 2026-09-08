@@ -14,8 +14,9 @@ compiler-correctness evidence is at source `effa358f`; the latest diagnostic
 timed out. One completion diagnostic without an arbitrary elapsed product
 deadline is authorized in principle, but no execution may begin until the user
 resumes and the 14 GiB/`TasksMax=512` controls are implemented and verified.
-Full-campaign approval remains absent. The prepared package is WIP and has not
-been reviewed, tested or launched; preserve exact identities and protected
+Full-campaign approval remains absent. The documentation checkpoint is
+committed; the prepared partial package is tracked with this handoff, remains
+unfrozen and behaviorally unvalidated, and has not been launched. Preserve exact identities and protected
 untracked files. Heartbeat `monitor-p1-corpus-campaign` was paused via the
 automation control plane and must remain paused until resume.
 
@@ -25,12 +26,22 @@ Owned moving files are `collector/run_remote.py`,
 `collector/observe_remote.py`, `collector/cloud.py` and
 `controller/controller.py`; `controller/test_completion_controls.py` has only
 passed syntax and diff checks. The integrated suite and CLI preflight did not
-run. The package was never frozen, reviewed, committed or launched; its
-`controller/manifest.json` is stale and `batch-manifest.json`, `README`,
-`control-hashes.txt` and `control-files.tar.gz` were not created. No cloud, VM
+run. The package was never frozen, behaviorally validated or launched; its
+`controller/manifest.json` is stale and `batch-manifest.json`,
+`control-hashes.txt` and `control-files.tar.gz` were not created. Its README is
+at `evidence/diagnostic-dispatch-effa358f-completion/README.md`. No cloud, VM
 or product launch occurred; all three VMs were last verified deallocated.
-Preserved untracked WIP was not pushed. See the
+The package is tracked with this handoff for takeover; its internal control
+artifacts remain incomplete and require owner review. See the
 [authoritative resumption plan](resumption-plan-20260907.md).
+
+Another Codex instance can take over after that WIP commit by cloning or
+fetching `https://github.com/entireio/entire-graph.git`, checking out
+`codex/graph-advantage`, and using its own checkout path. It must read the
+resumption plan and this handoff,
+confirm the committed partial package and owner report, then wait for the user
+to resume. No implementation, runtime, VM, cloud or automation work resumes
+from this pause state.
 
 ## Historical status after explicit resume — 2026-09-07
 

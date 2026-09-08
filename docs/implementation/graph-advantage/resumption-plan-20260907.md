@@ -139,7 +139,11 @@ benchmark dataset. Failed gates and experimental defaults remain unchanged.
 Planning documents and the bounded verification status were reconciled after
 the explicit resume. Work is now paused at the user’s request; do not execute,
 resume or heartbeat until the user resumes. The prepared completion-diagnostic
-package is WIP and has not been reviewed, tested or launched. Preserve its
+package is WIP and has not been behaviorally validated or launched; its README
+records the static checks performed. Preserve its
 exact source, binary, input and control identities, plus pending test contracts;
-do not alter protected untracked files. This resumption plan governs the
-earlier shutdown handoff and the authorized but paused completion diagnostic.
+do not alter protected untracked files. The partial package is tracked with this handoff; another instance can fetch
+`https://github.com/entireio/entire-graph.git`, check out
+`codex/graph-advantage`, and read this plan plus the handoff before waiting for
+user resume. This resumption plan governs the earlier shutdown handoff and the
+authorized but paused completion diagnostic.

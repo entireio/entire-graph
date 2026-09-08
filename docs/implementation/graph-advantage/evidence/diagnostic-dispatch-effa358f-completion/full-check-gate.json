@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "schema": "full-check-archive-v1",
+  "status": "passed",
+  "required_for_execution": true,
+  "admission_eligible": false,
+  "evaluator_source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+  "full_check_source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+  "full_check_evidence_commit": "a54a0a6440e705690bc3efdf21f67b236c56a9a3",
+  "evaluator_binary_sha256": "f2c2940a565397a010488843af99ff469c725dd54a720c90ed190311249ed1f6",
+  "evaluator_build_manifest_sha256": "fcb17b1b279acbfd80bde9f753b1fcad0e6cae2aef55db88e55bb319a0cecb4c",
+  "source_archive_sha256": "81c0ba6ba6f58c61270a6f70517b6ed23db806f1e64852ab5c69c9649a45fed3",
+  "tracked_manifest_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
+  "tracked_file_count": 2512,
+  "full_check_evidence": "../check-effa358f-linux-full-01/",
+  "full_check_result_path": "../check-effa358f-linux-full-01/result.json",
+  "full_check_result_sha256": "06e439d6a70acce9063f45625c9b143947174009231b23e05cae92e9b1f8315d",
+  "full_check_log_path": "../check-effa358f-linux-full-01/raw/mise-check.raw.log",
+  "full_check_log_sha256": "05553d1353683f98af3aa92e5f2fb75cc738b23495afcb7c2d9a3d203ca0a568",
+  "before_tracked_manifest_path": "../check-effa358f-linux-full-01/raw/before-tracked-manifest.tsv",
+  "before_tracked_manifest_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
+  "after_tracked_manifest_path": "../check-effa358f-linux-full-01/raw/after-tracked-manifest.tsv",
+  "after_tracked_manifest_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
+  "source_provenance_path": "../check-effa358f-linux-full-01/source-provenance.json",
+  "source_provenance_sha256": "a9fd2be5bb1871af2610da0d4e4c33e83b8217c6b3036770e9f7078d75e6797c",
+  "overall_exit_path": "../check-effa358f-linux-full-01/raw/overall.exit.txt",
+  "overall_exit_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+  "check_exit_path": "../check-effa358f-linux-full-01/raw/check.exit.txt",
+  "check_exit_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+  "producer_path": "../check-effa358f-linux-full-01/review/remote-template.sh",
+  "producer_sha256": "28518e3931f73ffd7c66235009e4cb306bc281e3681fa8dd06137ea710ebb569",
+  "ordered_task_commands": [
+    "[fmt] $ gofmt -s -w .",
+    "[vet] $ go vet ./...",
+    "[test:ci] $ go test -race -timeout 30m ./...",
+    "[build] $ go build -o entire-graph ./cmd/entire-graph",
+    "[test:statusline] $ sh scripts/entire-graph-statusline_test.sh"
+  ],
+  "disclosed_limitations": {
+    "statusline_platform_skips": 3,
+    "full_coverage_claimed": false
+  },
+  "equal_paths": [
+    {
+      "path": "internal",
+      "evaluator_git_object": "babb3d9a4897b120b923030ac797a930ae00fdae",
+      "full_check_git_object": "babb3d9a4897b120b923030ac797a930ae00fdae",
+      "kind": "tree"
+    },
+    {
+      "path": "cmd/entire-graph",
+      "evaluator_git_object": "216ad024d2ff65938eeb37b8339c0064f1aa591d",
+      "full_check_git_object": "216ad024d2ff65938eeb37b8339c0064f1aa591d",
+      "kind": "tree"
+    },
+    {
+      "path": "cmd/graph-bench/main.go",
+      "evaluator_git_object": "87fb5ff13fdca61f8bed24ec9abdd71ebf65584a",
+      "full_check_git_object": "87fb5ff13fdca61f8bed24ec9abdd71ebf65584a",
+      "kind": "blob"
+    },
+    {
+      "path": "scripts",
+      "evaluator_git_object": "da526cc8875d898ff28dc3c3f418fddaa792e647",
+      "full_check_git_object": "da526cc8875d898ff28dc3c3f418fddaa792e647",
+      "kind": "tree"
+    },
+    {
+      "path": "go.mod",
+      "evaluator_git_object": "8c0ec906fa824a9269c2d9b88b333b2e9f68a7a0",
+      "full_check_git_object": "8c0ec906fa824a9269c2d9b88b333b2e9f68a7a0",
+      "kind": "blob"
+    },
+    {
+      "path": "go.sum",
+      "evaluator_git_object": "8f9a3c17709e91f76c9162c192d4fe5101d00c88",
+      "full_check_git_object": "8f9a3c17709e91f76c9162c192d4fe5101d00c88",
+      "kind": "blob"
+    }
+  ],
+  "allowed_difference_paths": [],
+  "expected_changed_paths": [],
+  "source_difference_paths": [],
+  "source_equality": "exact same Git revision; covered object identities equal; scoped diff empty",
+  "claims": {
+    "correctness": "immutable-exact-source-full-check-with-disclosed-go-and-statusline-skips",
+    "performance": "none",
+    "stability": "none",
+    "release": "none"
+  }
+}
