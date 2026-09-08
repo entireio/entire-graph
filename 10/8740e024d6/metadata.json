@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "108740e024d6",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/README.md",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/build-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/collector/batch_budget.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/collector/campaign_gate.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/collector/cloud.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/collector/observe_remote.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/collector/run_remote.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/controller/controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/controller/manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/controller/test_completion_controls.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/controller/test_controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/corpus/corpus-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/corpus/p1_scenario.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/full-check-gate.json",
+    "docs/implementation/graph-advantage/ledger.md",
+    "docs/implementation/graph-advantage/resumption-plan-20260907.md",
+    "docs/implementation/graph-advantage/shutdown-handoff-20260906.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/10/8740e024d6/0/metadata.json",
+      "transcript": "/10/8740e024d6/0/full.jsonl",
+      "compact_transcript": "/10/8740e024d6/0/transcript.jsonl",
+      "content_hash": "/10/8740e024d6/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8196,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1687424,
+    "output_tokens": 1838,
+    "api_call_count": 17
+  }
+}
