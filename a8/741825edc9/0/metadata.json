@@ -1,0 +1,48 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "a8741825edc9",
+  "session_id": "01a08085-be96-7732-b1f1-dfd18b406f86",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-08T10:23:28.245347Z",
+  "branch": "fix/committed-tree-regular-files",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/gitutil/git.go",
+    "internal/gitutil/git_test.go",
+    "internal/gitutil/index_symlink_review_test.go",
+    "internal/sem/index_symlink_review_test.go",
+    "internal/sem/provider.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "b9cdabdb001d",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 106860,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1523968,
+    "output_tokens": 6421,
+    "api_call_count": 22
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-08T10:23:28.188387Z",
+    "agent_lines": 511,
+    "agent_removed": 2,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 511,
+    "total_lines_changed": 513,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
