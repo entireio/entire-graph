@@ -124,7 +124,7 @@ class Derived : public Base {};`)
 	// extraction is separate from the redirection behavior under test.
 	relations := receiverCallRelations(from, newSymbolBody("int run() { Derived d; return d.Fetch(); }"),
 		map[string]map[string]SymbolRecord{base.ID: {"Fetch": declaration}},
-		map[string]string{derived.ID: base.ID}, nil, byName, nil, nil, nil, "", nil, nil, nil, nil, nil, swiftFileTypes{})
+		map[string]string{derived.ID: base.ID}, nil, byName, nil, nil, nil, goModuleIndex{}, nil, nil, nil, nil, nil, nil, swiftFileTypes{})
 	for _, r := range relations {
 		if r.Type == "CALLS" && byID[r.FromID].Name == "run" && byID[r.ToID].Name == "Fetch" {
 			if byID[r.ToID].FilePath != "base.cpp" || r.Confidence > 0.82 || !strings.Contains(r.Reason, "inherited") {
