@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "75e0c58fc1f2",
+  "session_id": "01a08043-e61d-7c60-bf44-ef0873610ce7",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-08T09:45:25.238541Z",
+  "branch": "security/enforce-wall-clock-budget",
+  "checkpoints_count": 6,
+  "files_touched": null,
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "1e9cb73007d3",
+  "checkpoint_transcript_start": 452,
+  "transcript_lines_at_start": 452,
+  "compact_transcript_start": 43,
+  "token_usage": {
+    "input_tokens": 39173,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4352640,
+    "output_tokens": 8651,
+    "api_call_count": 36
+  },
+  "session_metrics": {
+    "turn_count": 6
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
