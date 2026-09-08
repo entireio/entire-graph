@@ -7,7 +7,7 @@ Date: 2026-07-03
 
 `entire-graph` emits a semantic index consumed by downstream tools (notably
 `entire-brain`). The wire format carries `schema_version` in `major.minor` form.
-The provider currently advertises **`1.1`** (`internal/sem/provider.go`
+The provider currently advertises **`1.2`** (`internal/sem/provider.go`
 `SchemaVersion`), where the `1.1` minor adds *optional, additive* relation fields
 that tolerant readers ignore. A compatibility policy already exists in the
 [semantic provider requirements](../semantic-provider-requirements.md), but it
@@ -19,7 +19,7 @@ against it and so future changes have clear, non-breaking rules.
 
 ## Decision
 
-**GA ships on schema `1.x`, with `1.1` as the current minor. `1.x` is the frozen,
+**GA ships on schema `1.x`, with `1.2` as the current minor. `1.x` is the frozen,
 stable GA contract.** We do NOT roll back to `1.0`; `1.1` is strictly additive
 over `1.0` and every `1.0` reader already tolerates it.
 
@@ -101,3 +101,47 @@ same schema-version decision.
 - The stale `1.0` example header in the
   [semantic provider requirements](../semantic-provider-requirements.md) is
   updated to `1.1` for consistency with the emitted version.
+
+### Parser identity corrections and consumer upgrades
+
+`identity_revision` is an additive, opaque field on the snapshot header and on
+`graph version --json`, and the persisted diff/checkpoint Result payload.
+Schema `1.2` adds this optional field to the `1.1` contract; its presence does
+not change the stable-ID format or require a major bump. It identifies parser
+rules that affect existing symbol
+IDs or entity-history keys; it does not replace `schema_version` or
+`stable_id_version`. Its absence means legacy parser rules. Consumers comparing
+stored and current revisions must treat inequality (including missing/present)
+as a need to refresh derived semantic data. History consumers must also migrate
+previously persisted entity deltas rather than merely append newly parsed ones.
+
+This is one global revision for parser identity rules across all languages.
+The value is a decimal revision encoded as a string, currently `"2"`. Consumers
+compare the complete opaque string for equality rather than relying on numeric
+ordering. The field name supplies its meaning; the value names no language or
+feature. A bump invalidates both snapshot and search
+cache namespaces even when the source tree and provider release are unchanged.
+It does not change the individual symbol-ID format.
+
+The current revision `"2"` includes trail 154's JS/TS callable-scope
+corrections and trail 163's anonymous default-export corrections. Callable exports
+previously classified as classes receive corrected function IDs, phantom exports
+in comments and literals are removed, and corrected source ranges/signatures can
+affect entity history. The original token `js-ts-callable-scope-1` and the interim
+`js-ts-callable-scope-2` are historical values, not separate language revisions.
+
+Consumers upgrading from either historical token must refresh derived snapshots
+and recompute persisted entity deltas using the current parser, preserving source
+commits, checkpoint/session provenance, and authored memory. A revision mismatch
+is the migration trigger; changing the producer token alone does not implement
+the consumer migration. Verify consumer support before deploying this revision.
+Future changes that re-key existing symbols in any language must revise this token
+and document the corresponding consumer migration; ordinary body edits do not.
+
+### Compact snapshot reader compatibility
+
+Trail 163 raises the compact summary allowance from 16 MiB to 128 MiB and enforces
+the same ceiling on encoding and decoding. Older readers can still reject summary
+records larger than 16 MiB; upgrade readers before exchanging these larger
+artifacts. The identity revision describes parser identity rules, not compact
+reader compatibility, and does not remove this reader upgrade requirement.

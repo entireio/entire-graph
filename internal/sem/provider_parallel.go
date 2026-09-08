@@ -256,6 +256,31 @@ func processProviderFile(
 	return result
 }
 
+// workerStop reports why a pipeline worker must abandon the file it is on.
+//
+// A worker cannot see the reducer's stop decision -- the reducer runs on the
+// coordinator, and its error is what unwinds the pipeline -- so it has to ask
+// the two things it can see. canceled is non-nil once the pipeline has canceled
+// the worker context, which happens on the way out of runIndexedPipeline: no
+// result produced from here on is ever reduced, so finishing the file only
+// delays the deferred worker join and pushes the run further past its budget.
+// budget is true once the wall-clock budget has run out, which is provably
+// wasted work rather than a decision: the reducer re-checks the same monotonic
+// deadline in file order at a strictly later moment, so it will stop at this
+// index whatever this file returns. Neither can move the truncated set, so
+// abandoning changes only how much work is thrown away.
+//
+// overBudget may be nil for a pipeline with no budget.
+func workerStop(ctx context.Context, overBudget func() bool) (canceled error, budget bool) {
+	if err := ctx.Err(); err != nil {
+		return err, false
+	}
+	if overBudget == nil {
+		return nil, false
+	}
+	return nil, overBudget()
+}
+
 // runProviderFilePipeline processes paths concurrently but reduces results in
 // the exact input order. The coordinator admits at most twice the worker count
 // of results that have not yet been reduced.

@@ -75,14 +75,18 @@ func TestSearchBoundsCommittedTreePathsInTheDisclosure(t *testing.T) {
 	write(t, repo, "visible/auth.go", "package visible\n\n"+
 		"// ValidateToken checks the bearer token presented on a request.\n"+
 		"func ValidateToken(token string) bool { return len(token) == 64 }\n")
+	git(t, repo, "add", "visible/auth.go", graphIgnoreFileName)
 	blob := gitInput(t, repo, "package hidden\n", "hash-object", "-w", "--stdin")
 	var index strings.Builder
 	for i := range 6 {
 		fmt.Fprintf(&index, "100644 %s\thidden/%s%02d.go\n", blob, strings.Repeat("a", 60_000), i)
 	}
 	gitInput(t, repo, index.String(), "update-index", "--add", "--index-info")
-	git(t, repo, "add", "visible/auth.go", graphIgnoreFileName)
-	git(t, repo, "commit", "-q", "-m", "seed")
+	// Commit the synthetic tree without refreshing filesystem entries: Git
+	// for Windows aborts when its fscache sees these intentionally long paths.
+	tree := gitInput(t, repo, "", "write-tree")
+	commit := gitInput(t, repo, "seed\n", "commit-tree", tree)
+	git(t, repo, "update-ref", "HEAD", commit)
 
 	response, err := SearchRepository(t.Context(), repo, "test", "bearer token validation", SearchOptions{
 		Profile: ProfileSyntaxOnly,

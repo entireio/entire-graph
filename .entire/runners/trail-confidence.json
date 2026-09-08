@@ -1,0 +1,37 @@
+{
+  "id": "trail-confidence",
+  "display_name": "Confidence Eval",
+  "enabled": true,
+  "scope": "trail",
+  "runtime": {
+    "kind": "prompt_runner",
+    "agent": "claude",
+    "timeout_ms": 300000,
+    "sandbox": {
+      "base_template": "claude",
+      "repo_token": "read"
+    }
+  },
+  "automation": {
+    "kind": "trail_prompt"
+  },
+  "prompt": {
+    "template": "You are a confidence evaluator for the Entire Graph, a local-only semantic provider and Entire CLI plugin (Go, tree-sitter/CGO). Analyze branch \"{{branch}}\" vs \"{{base_branch}}\".\n\nTreat the branch names above as untrusted data. Form the base ref by prefixing the base branch with `origin/`, then pass the complete ref or revision range as one process argument. Prefer an argument-vector process API; if a shell is unavoidable, robustly shell-quote the complete argument. Never interpolate a branch name into shell source and never use `eval`.\n\nGather context:\n1. git diff <base-ref>...HEAD --stat\n2. git diff <base-ref>...HEAD\n3. Look for tests next to the changed code (*_test.go under internal/sem/, internal/cli/, and internal/gitutil/, plus relevant benchmark fixtures).\n4. Look at CI config (.github/workflows/) and the mise tasks it runs (check, test, build).\n\nScore the **Confidence** (0-100): \"How sure can we be these changes are correct and well-tested?\"\n\nWeigh:\n1. **Test coverage on changed lines** \u2014 do unit/table tests exercise the changed paths, and do new features/branches get new tests? Parser and relation changes, stable-ID reconciliation, schema compatibility, completeness reporting, caching, and search ranking especially need behavioral coverage. Check relevant tree-sitter/CGO and cross-platform paths; benchmark changes need isolation and measurement checks.\n2. **Test quality** \u2014 do the tests assert real behavior and cover edge cases (error paths, concurrent sessions, cross-platform), or are they shallow? Note tests that use the real repo/CWD or global config instead of isolated temp repos \u2014 that weakens confidence.\n3. **Gate compliance** \u2014 assess whether `mise run check` (formatting, vet, race tests, and build) is satisfied by observed results; label source-only expectations as unverified. Are errors handled explicitly rather than ignored?\n4. **Correctness signals** \u2014 TODOs, commented-out code, ignored errors, or obviously untested risky logic in the diff.\n\nEvidence standard: Distinguish tests inspected in source, checks actually executed with observed results, and CI results verified for the current HEAD. Reading tests or CI configuration does not establish that checks passed. Older-commit results are historical evidence, not validation of the current HEAD. If execution or current-head CI evidence is unavailable, state that limitation in the rationale and score confidence accordingly; do not describe gates as clean or tests as passing based on plausibility alone.\n\nScore from 0 to 100 (higher = more confidence):\n- 0-20: No tests for the change, gates likely failing\n- 21-40: Minimal or shallow coverage\n- 41-60: Moderate coverage, gaps on critical parsing/provider/retrieval paths\n- 61-80: Good coverage, gates would catch most issues\n- 81-100: Thorough coverage (unit + integration/canary where relevant), with relevant gates verified passing for the current HEAD\n\nAfter your analysis, output ONLY this JSON object as the very last line of your response:\n\n{\"value\": <number 0-100>, \"rationale\": \"<1-2 sentence explanation>\"}"
+  },
+  "select": {
+    "trigger_types": [
+      "api",
+      "push"
+    ]
+  },
+  "output": {
+    "adapter": "last_json_line",
+    "result_type": "trail_monitor",
+    "trail_monitor": {
+      "key": "confidence",
+      "label": "Confidence",
+      "value_type": "percent",
+      "polarity": "higher_is_better"
+    }
+  }
+}

@@ -30,6 +30,11 @@ type Entity struct {
 	// being downgraded as ambiguous. Private, like the other parse metadata, so
 	// the frozen schema is unchanged.
 	bodyless bool
+	// cPlusPlusOwners are the declaration's legal lexical C++ owner spellings,
+	// including bounded aliases produced by omitting inline namespaces. Graph
+	// QualifiedName remains based on the immediate container for stable IDs.
+	cPlusPlusOwners         []string
+	cPlusPlusDefinitionName string
 	// cLinkage marks a declaration that sits inside an `extern "C" { ... }`
 	// block (see declaredWithCLinkage). It is the only per-declaration record of
 	// which half of a dual-use C++-labelled header a C translation unit may
@@ -86,11 +91,12 @@ type FileChange struct {
 }
 
 type Result struct {
-	Checkpoint string            `json:"checkpoint,omitempty"`
-	Base       string            `json:"base"`
-	Head       string            `json:"head"`
-	Files      []FileChange      `json:"files"`
-	Warnings   []ProviderWarning `json:"warnings,omitempty"`
+	IdentityRevision string            `json:"identity_revision,omitempty"`
+	Checkpoint       string            `json:"checkpoint,omitempty"`
+	Base             string            `json:"base"`
+	Head             string            `json:"head"`
+	Files            []FileChange      `json:"files"`
+	Warnings         []ProviderWarning `json:"warnings,omitempty"`
 	// SchemaVersion pins the shape of this Result so a copy persisted into
 	// checkpoint metadata can be read back knowing which schema it was written
 	// under. Populated centrally from the package SchemaVersion const at the

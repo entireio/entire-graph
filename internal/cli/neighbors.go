@@ -162,12 +162,15 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The snapshot is loaded, so the index phase is over: read the clock before
+	// opening the source reader, whose `git cat-file` spawn belongs to answering
+	// the query rather than to the index-cache telemetry. See runDef.
+	indexLatency := time.Since(indexStarted)
+	queryStarted := time.Now()
 	readSource, closeSource := openSnapshotLineReaderOrDegrade(ctx, snapshot, flags.Worktree, opts.Stderr)
 	if closeSource != nil {
 		defer closeSource()
 	}
-	indexLatency := time.Since(indexStarted)
-	queryStarted := time.Now()
 	response := buildNeighborResponseFromReader(snapshot, flags, readSource)
 	// Call-site resolution reads the caller's source from the same snapshot-bound
 	// reader as fuzzy and ambiguous bodies. It runs after the graph query and is
@@ -506,9 +509,10 @@ func endpointForFile(file sem.FileRecord) neighborEndpoint {
 }
 
 // focusQueryLanguage is the language a relation answer is about: the language of
-// the focus symbol. It scopes the coverage report, because relations in this
-// graph do not cross language boundaries, so a failure in another language
-// cannot have removed a fact this answer needed.
+// the focus symbol. It scopes the coverage report: a failure in an unrelated
+// language cannot have removed a fact this answer needed. "Unrelated" is decided
+// by sameCompletenessLanguageFamily, not by the label alone, because JS/TS and
+// C/C++ resolve across their labels.
 func focusQueryLanguage(focuses []sem.SymbolRecord) string {
 	if len(focuses) != 1 {
 		return ""

@@ -38,7 +38,8 @@ func TestSearchFundsTheIgnoreDisclosureFromInsideTheCallerCeiling(t *testing.T) 
 			"func ValidateTokenStub%d(token string) bool {\n\tif token == \"\" {\n\t\treturn false\n\t}\n"+
 			"\tif len(token) != 64 {\n\t\treturn false\n\t}\n\treturn true\n}\n", i, i))
 	}
-	for _, budget := range []int{600, 1400, 2000, 4000, 24576} {
+	floorBudget := len(RenderRepoIgnoreDisclosureFloor(&RepoIgnoreReport{Files: 1}))
+	for _, budget := range []int{floorBudget, floorBudget + 1, 600, 1400, 2000, 4000, 24576} {
 		t.Run(strconv.Itoa(budget), func(t *testing.T) {
 			response, err := SearchRepository(t.Context(), repo, "test", "bearer token validation", SearchOptions{
 				Worktree:        true,
@@ -62,6 +63,11 @@ func TestSearchFundsTheIgnoreDisclosureFromInsideTheCallerCeiling(t *testing.T) 
 				t.Fatalf("a report of %d excluded files rendered no floor", response.RepoIgnored.Files)
 			}
 			funded := response.Stats.ResultBytes + response.Stats.TypeCardBytes + response.Stats.SignatureTypeBytes
+			// Empty JSON results cost two bytes in statistics, but text emits
+			// no array delimiters and has no ranked source to fund.
+			if len(response.Results) == 0 {
+				funded -= serializedSearchResultBytes([]SearchResult{})
+			}
 			if funded+floor > budget {
 				t.Errorf("the ranking was fitted to %d funded bytes of a %d-byte ceiling, leaving %d for a"+
 					" %d-byte disclosure floor: a payload that says what the repository removed can only"+
