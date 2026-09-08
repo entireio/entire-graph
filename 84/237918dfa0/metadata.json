@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "84237918dfa0",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "docs/implementation/graph-advantage/shutdown-handoff-20260906.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/84/237918dfa0/0/metadata.json",
+      "transcript": "/84/237918dfa0/0/full.jsonl",
+      "compact_transcript": "/84/237918dfa0/0/transcript.jsonl",
+      "content_hash": "/84/237918dfa0/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 29753,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2958336,
+    "output_tokens": 3194,
+    "api_call_count": 29
+  }
+}

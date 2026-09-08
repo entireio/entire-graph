@@ -1,0 +1,49 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "84237918dfa0",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-08T07:22:23.918927Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "docs/implementation/graph-advantage/shutdown-handoff-20260906.md"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "356d3bd33d94",
+  "checkpoint_transcript_start": 29698,
+  "transcript_lines_at_start": 29698,
+  "compact_transcript_start": 3597,
+  "token_usage": {
+    "input_tokens": 29753,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2958336,
+    "output_tokens": 3194,
+    "api_call_count": 29
+  },
+  "session_metrics": {
+    "turn_count": 8
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-08T07:22:22.542241Z",
+    "agent_lines": 157,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 157,
+    "total_lines_changed": 157,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
