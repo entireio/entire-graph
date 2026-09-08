@@ -1,0 +1,17 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "825f55bebb2c",
+  "strategy": "manual-commit",
+  "branch": "fix/statusline-prefer-managed-binary",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/82/5f55bebb2c/0/metadata.json",
+      "transcript": "/82/5f55bebb2c/0/full.jsonl",
+      "compact_transcript": "/82/5f55bebb2c/0/transcript.jsonl",
+      "content_hash": "/82/5f55bebb2c/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}

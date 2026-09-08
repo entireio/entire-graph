@@ -1,0 +1,16 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "825f55bebb2c",
+  "session_id": "01a07f83-6e1e-7a00-9191-4192e5fb69e0",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-08T05:36:46.919929Z",
+  "branch": "fix/statusline-prefer-managed-binary",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "85ddeac2ca51",
+  "checkpoint_transcript_start": 75,
+  "transcript_lines_at_start": 75,
+  "compact_transcript_start": 7
+}
