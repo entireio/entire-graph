@@ -7,7 +7,7 @@ labelled by their source checkpoint and are not current-head certification.
 
 ## Source and verification boundary
 
-The latest completed immutable full check is `effa358f` at exact source `effa358f2ceaca2b9accd829984272598fa78078`. Unchanged tracked `mise run check` exited 0 from `2026-09-07T23:57:48.568720438Z` to `2026-09-08T00:10:35.752391387Z`, a duration of 767.183670949s; formatting, vet, the complete race suite, build and status-line task passed. All 9 Go packages passed; `internal/sem` took 459.084 seconds and `internal/cli` 93.448 seconds. The status-line driver reported 145 passed, zero failed and three unchanged platform/ownership skips; `HOME` was observed unset and unchanged. The Go test output records 52 skips, including 10 opt-in live compiler tests and other platform/permission/evaluation-gated tests; these are separate from the three status-line skips. The separate pinned compiler correctness run also passed 28 top-level tests, including 10 named live tests, with zero skips or failures; its compiler-review and compiler-advantage results report `failed=false`. Evidence: `evidence/diagnostics-linux-effa358f-compiler-01/`; the compiled binary was not run. This establishes correctness coverage only; it does not close P2 quality/adjudication or release gates, and does not alter the P1 timeout or seven-invocation/zero-stability status. Prior source-`6f23da0a` focused compiler coverage remains historical evidence. All three validation VMs were deallocated.
+The latest completed immutable full check is `effa358f` at exact source `effa358f2ceaca2b9accd829984272598fa78078`. Unchanged tracked `mise run check` exited 0 from `2026-09-07T23:57:48.568720438Z` to `2026-09-08T00:10:35.752391387Z`, a duration of 767.183670949s; formatting, vet, the complete race suite, build and status-line task passed. All 9 Go packages passed; `internal/sem` took 459.084 seconds and `internal/cli` 93.448 seconds. The status-line driver reported 145 passed, zero failed and three unchanged platform/ownership skips; `HOME` was observed unset and unchanged. The Go test output records 52 skips, including 10 opt-in live compiler tests and other platform/permission/evaluation-gated tests; these are separate from the three status-line skips. The separate pinned compiler correctness run also passed 28 top-level tests, including 10 named live tests, with zero skips or failures; its compiler-review and compiler-advantage results report `failed=false`. Evidence: `evidence/diagnostics-linux-effa358f-compiler-01/`; the compiler correctness/build stage did not run the compiled evaluator. This establishes correctness coverage only; it does not close P2 quality/adjudication or release gates, and does not alter the P1 timeout or eight-invocation/zero-stability status. Prior source-`6f23da0a` focused compiler coverage remains historical evidence. All three validation VMs were deallocated.
 
 All 2,512 tracked path/content/Git-mode identities matched before and after; manifest SHA-256 is `ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267`. This is correctness evidence only, not a release, stability or performance result, and no product or corpus invocation occurred. Evidence: `evidence/check-effa358f-linux-full-01/`.
 
@@ -97,8 +97,8 @@ The bounded Kubernetes syntax-only diagnostic separately collected 194
 known partials and one warning. All 194 entries have been classified in the
 source-review packet, but that classification does not close parser defects,
 verify every current file, or adopt proposed ADR0049 reviewed-partial
-admission. The resumed sequence has consumed seven controlled product
-invocations: that completed syntax-only diagnostic and the six full-profile
+admission. The resumed sequence has consumed eight controlled product
+invocations: that completed syntax-only diagnostic and the seven full-profile
 timeouts described below. Zero stability batches have run. The first full-profile OFF dispatch attempted
 transport once but failed before product startup because the packaged collector
 still contained placeholder constants (`consumed=0`, `reserved=1`); it is
@@ -159,8 +159,8 @@ with byte-identical before/after inputs and zero control-identity mismatches.
 No retry was made and the VM is deallocated. The focused gate is not a full
 check or admission substitute. Offline analysis of that retained
 `8689fc3d` profile found that route-regex work remained a CPU hotspot. The route refactor and focused
-correctness evidence are complete, but the latest `950567a3` diagnostic timed
-out at 120 seconds with zero completed arms; no further sampling is authorized.
+correctness evidence are complete, but the latest `effa358f` diagnostic timed
+out at 120 seconds with zero completed arms; further runtime sampling is stopped pending workload and deadline diagnosis.
 Zero clean stability batches have run, and no stability, release,
 timeout-resolution, performance or bottleneck claim follows. The resumed
 invocation total is seven.
@@ -193,13 +193,27 @@ inferred. All three VMs were deallocated after collection. This is a failed
 diagnostic issue, not timeout-resolution, performance, stability, release or
 campaign-admission evidence. Evidence: `evidence/diagnostic-dispatch-950567a3/`.
 
+The eighth controlled product invocation, `diagnostic-dispatch-effa358f`,
+started one OFF/full/snapshot arm and timed out at 120 seconds
+(`process=-9`, `collector=1`) with zero completed arms. Its diagnostic-only
+relations profile captured 20.031817991 seconds and 44,928 bytes; the 1,313
+progress events and first/latest relation counts of 512/672,256 are cumulative
+progress counters, not sample-local work. The relation phase reached status
+Relations began at 53.804 seconds and accumulated through profiler status
+completion around 108.045 seconds; no relation-phase end was observed. RSS is
+unknown. All three VMs were deallocated.
+This is a failed diagnostic issue, not a timeout cure, performance, stability,
+release or campaign-admission result. Evidence:
+`evidence/diagnostic-dispatch-effa358f/`; further runtime sampling is stopped
+pending workload and deadline diagnosis.
+
 Source `78c8b496` implements the bounded Go HTTP route-parser refactor
 motivated by the retained relations profile. Focused normal, race,
 compatibility-oracle and resource-bound checks are recorded in
 `evidence/route-parser-profile-8689fc3d/`. This is implementation and
-correctness evidence only; the latest `950567a3` diagnostic timed out at 120
+correctness evidence only; the latest `effa358f` diagnostic timed out at 120
 seconds with zero completed arms; further runtime sampling is stopped pending
-diagnosis.
+workload and deadline diagnosis.
 
 The historical P1 baseline contains 108 requests: 69 complete, 33 partial and
 6 timeouts. It is therefore collected but incomplete. The campaign remains
@@ -208,7 +222,7 @@ P2, P3 or P4 release gate has passed.
 
 | Workstream | Implementation and correctness | Evaluation and release status |
 |---|---|---|
-| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. Route changes at `78c8b496`, return-flow gating at `3a3d6137`, and delayed profile scheduling at `950567a3` have source/evidence coverage; source `6f23da0a` has separate pinned Linux focused success and failed immutable checks, while source `effa358f` has the latest immutable Linux full-check pass. Source `25887f69` remains historical. | Fixed-corpus baseline and paired matrix are incomplete; the seventh diagnostic timed out; partial admission, performance, RSS and campaign admission remain open. |
+| P1 | Extraction, storage, relation-input, diagnostics, freshness and bounded-control code has focused fixture and race evidence. Route changes at `78c8b496`, return-flow gating at `3a3d6137`, and delayed profile scheduling at `950567a3` have source/evidence coverage; source `6f23da0a` has separate pinned Linux focused success and failed immutable checks, while source `effa358f` has the latest immutable Linux full-check pass. Source `25887f69` remains historical. | Fixed-corpus baseline and paired matrix are incomplete; the eighth diagnostic timed out; partial admission, performance, RSS and campaign admission remain open. |
 | P2 | Pinned Go analysis, lifecycle, source identity, mapping, compiler-view integration and invalidation contracts have implementation and focused correctness evidence. | Hard-Go quality and adjudicated precision/recall studies are deferred; no gate passed. |
 | P3 | Relation policy, bounded traversal, path evidence, CLI/output and compiler-view contracts have focused correctness evidence. | Realistic affected-site precision/recall/cost studies and coverage gates are deferred; no gate passed. |
 | P4 | Candidate-only ranking, experimental integration, fallback behavior and one bounded candidate-expansion policy are implemented. `current-expansion`, `uniform` and `weighted` use identical no-compiler candidate pools while `current-expansion` retains baseline ranking; compiler evidence may change the eligible pool in `weighted-compiler`. Focused normal/race contract evidence is retained. | No new retrieval measurement or tuning was run. No winning configuration, held-out result or downstream agent study is established; no gate passed. |
@@ -245,7 +259,7 @@ policy, the shared 100-invocation cap, durable duplicate/retry prevention and
 first-issue stop. Three clean representative batches are a checkpoint for
 stability only, not a release gate.
 
-The existing timeouts remain failed diagnostics. The latest `950567a3` diagnostic timed out at 120 seconds with zero completed arms and retained
+The existing timeouts remain failed diagnostics. The latest `effa358f` diagnostic timed out at 120 seconds with zero completed arms and retained
 a diagnostic-only CPU profile; the route refactor and focused correctness
 evidence are complete, but no timeout-resolution or bottleneck claim exists. No further
 sampling or full campaign is authorized by this evidence.
